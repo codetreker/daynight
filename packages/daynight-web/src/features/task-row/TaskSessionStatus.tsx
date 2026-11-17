@@ -20,17 +20,19 @@ const labels = {
   },
 } as const;
 
-export function TaskSessionStatus({ title, status, statusId, observation, onActivate, showTaskStatus = true }: {
+export function TaskSessionStatus({ title, status, statusId, observation, allowAgents, onActivate, showTaskStatus = true }: {
   readonly title: string; readonly status: TaskProgressStatus; readonly statusId?: string;
+  readonly allowAgents: boolean;
   readonly observation: Observation | null; readonly onActivate?: (event: MouseEvent<HTMLButtonElement>) => void;
   readonly showTaskStatus?: boolean;
 }) {
   const { locale, messages: { common } } = useI18n();
   const m = labels[locale];
-  const detail = observation?.state == null ? null : m[observation.state];
+  const detail = observation?.state == null || (!allowAgents && observation.state === 'no_session') ? null : m[observation.state];
   const attention = observation?.needsAttention === true ? m.attention : null;
   const description = [detail, attention].filter(Boolean).join(' · ');
   const open = observation?.canOpen === true && onActivate !== undefined;
+  if (!showTaskStatus && !description && !open) return null;
   const separator = locale === 'zh-CN' ? '，' : ', ';
   const label = [title, common.status[status], description || m.accessible, m.open].join(separator);
   return <span className="project-session-status">

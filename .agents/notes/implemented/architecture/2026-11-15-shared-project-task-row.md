@@ -33,6 +33,8 @@ Instance-specific associations and existing navigation owners preserve focus
 and disclosure across repeated appearances of a Task. The
 [Web specification](../../../../docs/spec/daynight-web.md#项目普通-task-行)
 owns the visible fields and interaction contract.
+The [manual Task Session hint decision](../bug-fix/2026-11-17-hide-manual-no-session.md)
+defines when this shared presentation omits confirmed absence text.
 
 ## Alternatives
 

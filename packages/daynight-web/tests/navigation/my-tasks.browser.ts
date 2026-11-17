@@ -20,6 +20,28 @@ const row = (n: number) => ({ project, task: { id: taskId(n), version: '1', titl
 const payload = { observedAt: '2026-11-13T10:00:00Z', responseTaskAt: '2026-11-13T10:00:00Z', responseSessionAt: '2026-11-13T10:00:00Z', inventoryRevision: 'a'.repeat(64), totalTaskCount: 17, totalProjectCount: 2, sessionPartial: true,
   items: [...Array.from({ length: 16 }, (_, i) => row(i + 1)), { ...row(17), project: { ...project, id: otherProjectId, name: 'Other project', matchedTaskCount: 1 } }], nextCursor: null };
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`manual empty Session leaves no space at ${width}px in ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    let allowAgents = false;
+    const example = row(1);
+    await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: {
+      ...payload, totalTaskCount: 1, totalProjectCount: 1, sessionPartial: false,
+      items: [{ ...example, project: { ...project, matchedTaskCount: 1 }, task: { ...example.task, allowAgents, worker: null }, sessionRow }],
+    }, headers: { 'Daynight-User-ID': userId } }));
+    await page.goto('/tests/navigation/my-tasks-browser.html');
+    await page.getByLabel('Language').selectOption(locale);
+    const task = page.getByRole('link', { name: longTask, exact: true }).locator('xpath=ancestor::li');
+    await expect(task.locator('.project-session-status')).toHaveCount(0);
+    await expect(task).toContainText(locale === 'en' ? 'In progress' : '进行中');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    allowAgents = true;
+    await page.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' }).click();
+    await expect(task.locator('.project-session-status')).toHaveText(locale === 'en' ? 'No current Session' : '无当前 Session');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 1280]) {
   test(`personal shared row preserves ID, profile and independent links at ${width}px in ${locale}`, async ({ page, context }) => {
     await page.setViewportSize({ width, height: 900 });
