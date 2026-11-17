@@ -881,7 +881,9 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 草稿或导航变化、提交时已有待决导航或提交后出现过待决导航时保留对话框并提供已创建项目链接，
 不自动关闭或导航。暂停中不自动读取或重放创建。
 [创建结果决策](../../.agents/notes/implemented/bug-fix/2026-11-11-project-creation-result-ownership.md)记录取舍。
-账户页管理 PAT，项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
+账户页管理 PAT。撤销确认框通过共享 `ManagementDialog` 的 `initialFocus="cancel"` 及取消按钮的
+`data-dialog-cancel` 指定初始焦点；共享弹窗负责焦点循环、Escape 和返回入口。创建令牌仍以名称输入框为初始焦点。
+项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
 服务端在项目锁后独立复核角色与设置版本。设置按 user/project 键隔离，草稿不写入权威 Project；
 设置保存按实际派发与可信回执记录结果，本地 pending 不等待展示准入；确认、未知和已知拒绝保留各自分类。原 user/project owner 持有可取消的延迟发布，准入恢复后才安装结果或读取；较新的草稿不被旧回执重置。
 不确定 PATCH 先重读 Project 和当前 access，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
