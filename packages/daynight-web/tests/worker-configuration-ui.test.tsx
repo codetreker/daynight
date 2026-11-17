@@ -435,6 +435,49 @@ describe('Worker configuration form', () => {
     expect(input('Model')).toHaveValue(''); expect(input('Startup arguments')).toHaveValue('[]');
     save(); await flush(); expect(submitted).toEqual({ ...value, native: { agent: 'claude', model: null, args: [] } });
   });
+  it('shows the saved and conflicting raw target without changing it while editing', async () => {
+    const source = (maximum: number, number: string) => JSON.stringify({ ...configurationValue(), maxConcurrent: maximum, future: { nested: ['RAW_NUMBER', 'kept'] } }).replace('"RAW_NUMBER"', number);
+    const oldSource = source(2, '900719925474099312345'), latestSource = source(9, '1.2300e+45');
+    const rawResponse = (revision: string, value: string) => new Response(`{"desired":{"revision":"${revision}","updatedAt":"${WORKER_TIME}","value":${value}},"observationRevision":"0","observation":null}`, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1' } });
+    let reads = 0;
+    const fetch = install((_url, init) => init.method === 'PUT' ? configurationError(409, 'version_conflict') : rawResponse(++reads === 1 ? '1' : '2', reads === 1 ? oldSource : latestSource));
+    mount(); await flush();
+    const saved = screen.getByText('View saved configuration response').closest('details')!;
+    fireEvent.click(within(saved).getByText('View saved configuration response'));
+    expect(saved.querySelector('pre')).toHaveTextContent(oldSource);
+    change('Concurrent task limit', '3'); expect(saved.querySelector('pre')).toHaveTextContent(oldSource);
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    save(); await flush();
+    const latest = screen.getByText('View latest cloud configuration response').closest('details')!;
+    fireEvent.click(within(latest).getByText('View latest cloud configuration response'));
+    expect(latest.querySelector('pre')).toHaveTextContent(latestSource); expect(saved.querySelector('pre')).toHaveTextContent(latestSource);
+    expect(input()).toHaveValue('3');
+    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' }));
+    expect(input()).toHaveValue('9'); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('identifies a capability-projected save response and does not invent omitted fields', async () => {
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths() };
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') return configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 }));
+      const response = configurationResponse(configurationResource('1', value));
+      response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response;
+    });
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    const details = screen.getByText('View saved configuration response').closest('details')!;
+    fireEvent.click(within(details).getByText('View saved configuration response'));
+    expect(within(details).getByText('This response may omit fields due to capability negotiation.')).toBeInTheDocument();
+    expect(details.querySelector('pre')).not.toHaveTextContent('toolPaths');
+    expect(details.querySelector('pre')).toHaveTextContent('"maxConcurrent":3');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+  it('does not present a stale response as latest when conflict rereading fails', async () => {
+    let reads = 0;
+    install((_url, init) => init.method === 'PUT' ? configurationError(409, 'version_conflict') : ++reads === 1 ? configurationResponse(configurationResource()) : configurationError(500, 'internal_error'));
+    mount(); await flush(); change('Concurrent task limit', '3'); save(); await flush();
+    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
+    expect(screen.queryByText('View latest cloud configuration response')).toBeNull();
+    expect(input()).toHaveValue('3');
+  });
   it('retains the input on conflict and loads the new target only after an explicit action', async () => {
     let reads = 0;
     const fetch = install((_url, init) => init?.method === 'PUT' ? configurationError(409, 'version_conflict') : configurationResponse(++reads === 1 ? configurationResource() : configurationResource('2', { ...configurationValue(), maxConcurrent: 9 })));

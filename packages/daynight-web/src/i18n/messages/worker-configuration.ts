@@ -41,6 +41,8 @@ export type WorkerConfigurationMessages = {
   readonly uncertain: string;
   readonly verifySave: string;
   readonly conflict: string;
+  readonly savedSource: string;
+  readonly sourceProjection: string;
   readonly viewLatest: string;
   readonly loadLatest: string;
   readonly settings: string;

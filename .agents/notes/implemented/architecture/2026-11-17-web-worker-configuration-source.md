@@ -19,7 +19,10 @@ source and revision for a submission and compares complete semantic values when
 checking receipts and uncertain outcomes. Project entities match by ID; unknown
 arrays keep their order and numbers compare without floating-point conversion.
 The existing mode and tool-path admission rules still select their wire projection.
-Unknown observation items are retained but are not rendered as applied.
+Unknown observation items are retained but are not rendered as applied. The saved configuration response and conflict details display the source attached
+to the selected response, so unknown fields and number spelling remain visible
+while editing the draft. Capability negotiation may omit fields from that source;
+the UI states this limit rather than presenting it as a complete stored target.
 
 The [configuration specification](../../../../docs/spec/daynight-worker-configuration.md#web-消费者)
 owns observable behavior and the [design](../../../../docs/design/daynight-worker-configuration.md#web-字段与保存)
