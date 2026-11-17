@@ -118,12 +118,12 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 		returned = workerHTTPResult(t, returned, worker)
 		h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != worker.Phase || input.Herdr == nil || *input.Herdr != nil || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native || input.StartupReport != nil {
+			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != worker.Phase || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native || input.StartupReport != nil {
 				t.Fatalf("session update input: %+v", input)
 			}
 			return returned, nil
 		}
-		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "herdr": nil, "nativeSessionId": native})), http.StatusOK)
+		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "nativeSessionId": native})), http.StatusOK)
 		claim := apiWorker(t, got.Properties)
 		if claim.Herdr != nil || claim.NativeSessionID == nil || *claim.NativeSessionID != native || claim.Phase != "executing" || !reflect.DeepEqual(apiPullRequests(t, got.Properties), apiPullRequests(t, api.TaskProperties(returned.Properties))) || !reflect.DeepEqual(got.StartedAt, returned.StartedAt) {
 			t.Fatal("worker response lost sessions, task timing or unrelated properties")
@@ -135,12 +135,12 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Herdr == nil || *input.Herdr != nil || input.NativeSessionID == nil || *input.NativeSessionID != nil || input.Phase != nil {
+			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.NativeSessionID == nil || *input.NativeSessionID != nil || input.Phase != nil {
 				t.Fatalf("null patch collapsed into omission: %+v", input)
 			}
 			return returned, nil
 		}
-		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "herdr": nil, "nativeSessionId": nil})), http.StatusOK)
+		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "nativeSessionId": nil})), http.StatusOK)
 		claim := apiWorker(t, got.Properties)
 		if claim.Herdr != nil || claim.NativeSessionID != nil {
 			t.Fatal("service null sessions were not preserved")
@@ -225,6 +225,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 		{map[string]any{"version": 1, "claimId": workerHTTPClaimID}, true},
 		{map[string]any{"version": 1, "claimId": workerHTTPClaimID, "phase": nil}, false},
 		{map[string]any{"version": 1, "claimId": workerHTTPClaimID, "phase": "unknown"}, true},
+		{map[string]any{"version": 1, "claimId": workerHTTPClaimID, "herdr": nil}, false},
 		{map[string]any{"version": 1, "claimId": workerHTTPClaimID, "herdr": false}, false},
 		{map[string]any{"version": 1, "claimId": workerHTTPClaimID, "herdr": map[string]any{"session": "w"}}, false},
 		{map[string]any{"version": 1, "claimId": workerHTTPClaimID, "herdr": map[string]any{"session": "w", "workspaceId": "x", "paneId": true}}, false},

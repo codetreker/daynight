@@ -242,6 +242,13 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 		plan := expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, returned, &claimedAt, store.TransactionCommitted)
 		claimed := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPost, path+"/worker-claim", jsonBody(t, body)), http.StatusOK)
 		plan.check()
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(claimed.Properties["worker"], &wire); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := wire["herdr"]; exists {
+			t.Fatal("new claim returned herdr field")
+		}
 		if claimed.Status != "in_progress" || !reflect.DeepEqual(claimed.AssignedTo, assigned) || apiWorker(t, claimed.Properties).UserID != f.principal.UserID {
 			t.Fatalf("claim did not use authenticated assignee: %#v", claimed)
 		}
@@ -379,7 +386,10 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				after.Properties = model.TaskProperties{"worker": raw}
+				after.Properties, err = taskproperty.NormalizeStored(model.TaskProperties{"worker": raw})
+				if err != nil {
+					t.Fatal(err)
+				}
 				values := workerHTTPWriteValues(after)
 				plan := expectWorkerHTTPWrite(t, f.store, task, f.principal, model.ProjectAdmin, &values, after, nil, store.TransactionCommitted)
 				got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPut, taskPath(assignmentHTTPAPI(t, task))+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: "done", ClaimID: &claim.ClaimID})), http.StatusOK)

@@ -75,6 +75,7 @@ func TestWorkerClaimLifecycle(t *testing.T) {
 	if err != nil || fresh.Status != model.TaskInProgress {
 		t.Fatal(fresh, err)
 	}
+	assertWebWorkerOmitsHerdr(t, fresh.Properties)
 }
 
 func TestNewWorkerClaimsRequireExplicitWeb(t *testing.T) {
@@ -156,10 +157,9 @@ func TestWorkerUpdatesValidateAndProtectOwner(t *testing.T) {
 	current, worker := activeFixture(t)
 	claim := worker.ClaimID
 	invalidPhase := model.WorkerPhase("bad")
-	herdr := &model.WorkerHerdr{}
 	native := " "
 	badReport := &sp.StartupReport{}
-	for _, in := range []UpdateWorker{{ClaimID: "bad"}, {ClaimID: claim}, {ClaimID: claim, Phase: &invalidPhase}, {ClaimID: claim, Herdr: &herdr}, {ClaimID: claim, NativeSessionID: ptr(&native)}, {ClaimID: claim, StartupReport: badReport}} {
+	for _, in := range []UpdateWorker{{ClaimID: "bad"}, {ClaimID: claim}, {ClaimID: claim, Phase: &invalidPhase}, {ClaimID: claim, NativeSessionID: ptr(&native)}, {ClaimID: claim, StartupReport: badReport}} {
 		if _, err := ValidateWorkerUpdate(in); err == nil {
 			t.Fatalf("accepted %+v", in)
 		}
@@ -173,16 +173,13 @@ func TestWorkerUpdatesValidateAndProtectOwner(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatal(values, changed, err)
 	}
+	assertWebWorkerOmitsHerdr(t, values.Properties)
 	next, err := taskproperty.Worker(values.Properties)
 	if err != nil || next.Phase != phase {
 		t.Fatal(next, err)
 	}
 	web := *worker
 	web.AgentControlMode = model.AgentControlModeWeb
-	herdr = &model.WorkerHerdr{Session: "s", WorkspaceID: "w", PaneID: "p"}
-	if err := WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{Herdr: &herdr}); err == nil {
-		t.Fatal("web herdr")
-	}
 	faultCode(t, WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{StartupReport: &sp.StartupReport{ClaimID: "other"}}), "claim_conflict")
 	if err := WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{}); err != nil {
 		t.Fatal(err)
@@ -270,7 +267,7 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 		t.Fatal("active worker accepted")
 	}
 	current, worker = activeFixture(t)
-	input := UpdateWorker{Herdr: ptr[*model.WorkerHerdr](nil), NativeSessionID: ptr(ptr("native"))}
+	input := UpdateWorker{NativeSessionID: ptr(ptr("native"))}
 	values, changed, err := WorkerUpdateCandidate(current, worker, worker.ClaimID, input)
 	if err != nil || !changed {
 		t.Fatal(values, changed, err)
@@ -284,5 +281,16 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 	values, changed, err = WorkerUpdateCandidate(current, worker, worker.ClaimID, UpdateWorker{StartupReport: report})
 	if err != nil || !changed || len(values.Properties["sessionStartup"]) == 0 {
 		t.Fatal(values, changed, err)
+	}
+}
+
+func assertWebWorkerOmitsHerdr(t *testing.T, properties model.TaskProperties) {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(properties["worker"], &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fields["herdr"]; exists {
+		t.Fatal("Web worker write included herdr")
 	}
 }

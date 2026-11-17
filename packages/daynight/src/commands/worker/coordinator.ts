@@ -958,8 +958,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             startupReport = changedReport && await options.verifyWebStartupReporting?.(signal) ? report : undefined;
           } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The startup report could not be prepared; ordinary execution summary reconciliation remains available.", error }); }
           try {
-            if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || worker.herdr !== null || startupReport !== undefined) {
-              await options.remote.update(remoteTask, { phase, nativeSessionId, herdr: null, ...(startupReport === undefined ? {} : { startupReport }) }, signal);
+            if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || startupReport !== undefined) {
+              await options.remote.update(remoteTask, { phase, nativeSessionId, ...(startupReport === undefined ? {} : { startupReport }) }, signal);
             }
           } catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The Web execution summary was not confirmed; the next round will read it again.", error }); }
         }

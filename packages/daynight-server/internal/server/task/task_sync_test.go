@@ -576,7 +576,7 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	executing := current
 	executing.Version, executing.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
 	executing.Properties = workerHTTPProperties(t, current.Properties, &worker)
-	update := map[string]any{"version": current.Version, "claimId": worker.ClaimID, "phase": "executing", "herdr": nil, "nativeSessionId": native}
+	update := map[string]any{"version": current.Version, "claimId": worker.ClaimID, "phase": "executing", "nativeSessionId": native}
 	values = workerHTTPWriteValues(executing)
 	plan = expectWorkerHTTPWrite(t, f.store, current, f.principal, model.ProjectAdmin, &values, executing, nil, store.TransactionCommitted)
 	full = decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPatch, path+"/worker-claim", jsonBody(t, update)), http.StatusOK)

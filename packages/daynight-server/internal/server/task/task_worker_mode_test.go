@@ -54,14 +54,14 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 				}
 			case "update":
 				method = http.MethodPatch
-				body = map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "nativeSessionId": "claude-session", "herdr": nil}
+				body = map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "nativeSessionId": "claude-session"}
 				worker.Phase = model.WorkerExecuting
 				native := "claude-session"
 				worker.NativeSessionID = &native
 				returned = workerHTTPResult(t, returned, worker)
 				h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 					assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-					if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != model.WorkerExecuting || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native || input.Herdr == nil || *input.Herdr != nil {
+					if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != model.WorkerExecuting || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native {
 						t.Fatalf("web summary fields: %+v", input)
 					}
 					return returned, nil
@@ -121,6 +121,25 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 			t.Fatal("Herdr resource reached service")
 		}
 	})
+}
+
+func TestWorkerHTTPRejectsHerdrMember(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPatch} {
+		for _, value := range []any{nil, map[string]any{"session": "s", "workspaceId": "w", "paneId": "p"}} {
+			t.Run(method+"/"+jsonBody(t, value), func(t *testing.T) {
+				h := newHTTPFixture(t, io.Discard)
+				body := workerClaimBody(1)
+				if method == http.MethodPatch {
+					body = map[string]any{"version": 1, "claimId": workerHTTPClaimID, "phase": "executing"}
+				}
+				body["herdr"] = value
+				assertProjectError(t, protocolRequest(h, method, workerHTTPPath(), jsonBody(t, body), "2"), http.StatusBadRequest, "invalid_input")
+				if h.Tasks.TotalCalls() != 0 {
+					t.Fatal("invalid member reached service")
+				}
+			})
+		}
+	}
 }
 
 func TestWorkerHTTPModeRequiresExplicitWeb(t *testing.T) {

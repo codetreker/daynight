@@ -205,7 +205,7 @@ it("keeps ordinary Web failures separate from native recovery and retries after 
     await tick();
     await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(2));
     expect(vi.mocked(f.remote.update).mock.calls[1]![0].version).toBe(17n);
-    expect(vi.mocked(f.remote.update).mock.calls[1]![1]).toEqual({ phase: "waiting", nativeSessionId: uuid(880), herdr: null });
+    expect(vi.mocked(f.remote.update).mock.calls[1]![1]).toEqual({ phase: "waiting", nativeSessionId: uuid(880) });
     await coordinator.shutdown();
     webStore.close(); webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
     coordinator = createWorkerCoordinator(options());

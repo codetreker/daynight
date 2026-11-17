@@ -86,7 +86,7 @@ func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, 
 }
 
 func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
-	workerMutation(h, w, request, principal, "update", []string{"version", "claimId", "phase", "herdr", "nativeSessionId", "startupReport"}, updateWorkerInput, h.tasks.UpdateWorker)
+	workerMutation(h, w, request, principal, "update", []string{"version", "claimId", "phase", "nativeSessionId", "startupReport"}, updateWorkerInput, h.tasks.UpdateWorker)
 }
 
 func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -153,18 +153,6 @@ func claimWorkerInput(fields map[string]json.RawMessage) (taskcore.ClaimWorker, 
 	return input, nil
 }
 
-func nullableWorkerHerdr(fields map[string]json.RawMessage) (**model.WorkerHerdr, error) {
-	raw, exists := fields["herdr"]
-	if !exists {
-		return nil, nil
-	}
-	var value *model.WorkerHerdr
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return &value, nil
-	}
-	return nil, httpx.InvalidInput("herdr must be null.")
-}
-
 func nullableWorkerSession(fields map[string]json.RawMessage) (**string, error) {
 	raw, exists := fields["nativeSessionId"]
 	if !exists {
@@ -196,10 +184,6 @@ func updateWorkerInput(fields map[string]json.RawMessage) (taskcore.UpdateWorker
 	if phase != nil {
 		value := model.WorkerPhase(*phase)
 		input.Phase = &value
-	}
-	input.Herdr, err = nullableWorkerHerdr(fields)
-	if err != nil {
-		return taskcore.UpdateWorker{}, err
 	}
 	input.NativeSessionID, err = nullableWorkerSession(fields)
 	if err != nil {

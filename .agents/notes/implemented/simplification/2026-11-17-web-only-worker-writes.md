@@ -12,8 +12,8 @@ execution work.
 ## Decision
 
 New claims require an explicit Web mode for each supported provider. Execution
-updates accept only Web claims and reject nonempty Herdr resources. The current
-Web wire may still carry `herdr:null`. Stored claims retain their original modes
+updates accept only Web claims. The [claim DTO decision](2026-11-18-web-claim-dto.md)
+removes the former `herdr:null` request slot. Stored claims retain their original modes
 and resources; manual release and withdrawal remain available. Historical
 migration and stored decoding retain their broader format. The
 [claim design](../../../../docs/design/daynight-worker-claims.md) owns the
