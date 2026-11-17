@@ -99,7 +99,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const prepareRepository = vi.fn(async () => {}), dispose = vi.fn(async () => {});
   mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
-  mocks.backend.mockReturnValue({ advance, cleanup });
+  mocks.backend.mockReturnValue({ advance, cleanup, closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
