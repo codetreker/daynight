@@ -201,7 +201,9 @@ records the controlled boundaries and cleanup fallback.
 Real Bot integration owns a 180-second teardown hook because original process
 proof, IPC stop, Windows Job termination and diagnostics can outlast the ordinary
 hook limit. Each process confirmation probe is joined before another round or
-escalation; only complete teardown restores mocks and environment variables.
+escalation. The polling window controls starting another confirmation, while an
+already started confirmation retains the production per-query budgets; only
+complete teardown restores mocks and environment variables.
 Failed startup records the controlled child's logs, journal and parent/child
 ticket paths while retaining original errors and unknown process ownership. The
 [Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)

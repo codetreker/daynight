@@ -36,9 +36,12 @@ owns the caller allowances; this hook does not set production launch or stop
 deadlines.
 
 Process confirmation is polled sequentially, joining each system probe before
-starting another or escalating. A polling deadline limits another round; an
-already started probe retains its per-call budget and joins native work already
-in progress. Native proofs observed before
+starting another or escalating. The soft polling window limits another round;
+it is not passed as a confirmation deadline. An already started confirmation
+retains the production per-query budgets and joins native work already in
+progress. A controlled clock and barrier verify both stopped and still-running
+results across that window, without starting another probe after it expires.
+Native proofs observed before
 and after shutdown are deduplicated by original process identity before cleanup.
 No timeout race releases fixture ownership while its cleanup continues.
 
@@ -82,6 +85,11 @@ limits and makes the resource owner responsible for its longer cleanup.
 was observed, but the missing first child journal did not establish its startup
 cause. Altering product deadlines would not repair teardown isolation. Original
 startup diagnostics preserve the evidence needed to reconsider that policy.
+
+**Use the polling window as each confirmation deadline.** A probe launched near
+the end receives only the remaining fraction of the window, so an ordinary end
+of polling can instead surface as a query failure even after escalation confirms
+stop. Increasing the window would not remove that coupling.
 
 **Keep the original eleven-second cleanup and 1.5-second observation.** Those
 waits originally crossed the ordinary ten-second hook limit and exposed late

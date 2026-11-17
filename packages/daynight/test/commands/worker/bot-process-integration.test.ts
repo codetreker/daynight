@@ -53,7 +53,8 @@ const waitForProcessesStopped = async (controller: ProcessProof, native: readonl
   let conflict: ControllerProcessIdentityConflictError | undefined;
   const diagnosed = new Set<number>();
   for (;;) {
-    try { if (await confirmControllerProcessesStopped(controller, native, deadline, lease)) return; }
+    // The polling window must not shorten a confirmation already in progress.
+    try { if (await confirmControllerProcessesStopped(controller, native, undefined, lease)) return; }
     catch (error) {
       if (!(error instanceof ControllerProcessIdentityConflictError)) {
         if (conflict !== undefined) throw new AggregateError([conflict, error], "Fixture identity and stop observation failed.", { cause: error });
@@ -155,14 +156,32 @@ describe("fixture teardown isolation", { concurrent: false, shuffle: false }, ()
   });
 });
 
-test("joins the final process observation before rejecting its expired window", async () => {
-  let active = 0;
-  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async () => {
+test.each([true, false])("joins a process observation across the soft window (stopped: %s)", async stopped => {
+  let now = 0, active = 0, finished = false;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockImplementation(async (_controller, _native, deadline) => {
     active++;
-    try { await delay(50); return false; } finally { active--; }
+    try {
+      await gate;
+      if (deadline !== undefined && now >= deadline) throw new Error("Process observation was cut short by the polling deadline.");
+      return stopped;
+    } finally { active--; }
   });
   const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
-  await expect(waitForProcessesStopped(proof, [], 1)).rejects.toThrow("Original fixture processes did not stop within the observation window.");
+  const lease = {} as ControllerJobLease;
+  const result = waitForProcessesStopped(proof, [], 1, lease, { now: () => now, wait: async ms => { now += ms; } })
+    .then(() => { finished = true; return undefined; }, error => { finished = true; return error; });
+  expect(active).toBe(1);
+  now = 2;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(finished).toBe(false);
+  release();
+  const error = await result;
+  if (stopped) expect(error).toBeUndefined();
+  else { expect(error).toBeInstanceOf(FixtureStopTimeoutError); expect(error.cause).toBeUndefined(); }
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(confirm).toHaveBeenCalledWith(proof, [], undefined, lease);
   expect(active).toBe(0);
 });
 
