@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -175,6 +176,7 @@ func TestGrantReadsRespectRolesAndPersonalPrivacy(t *testing.T) {
 		sql  string
 		args []any
 	}{
+		{`INSERT INTO users(id,uniauth_id,name,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,'Owner',now(),now())`, []any{actor}},
 		{`INSERT INTO teams(id,personal_user_id,name) VALUES($1,$2,NULL)`, []any{personal, actor}},
 		{`INSERT INTO teams(id,name) VALUES($1,'ordinary')`, []any{ordinary}},
 		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin'),($1,$3,'member')`, []any{personal, actor, outsider}},
@@ -454,4 +456,144 @@ func TestGrantDAOFailuresAndBoundaries(t *testing.T) {
 			t.Fatalf("cancelled stop changed data: %v %d %v", intact, count, err)
 		}
 	})
+}
+
+func TestGrantPersonalOwnerProjection(t *testing.T) {
+	db, admin := dbFixture(t)
+	ctx := t.Context()
+	app := uuid.NewString()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,1,'app','remote','slug','k','s')`, app); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO github_app_admins(app_resource_id,user_id) VALUES($1,$2)`, app, admin); err != nil {
+		t.Fatal(err)
+	}
+	alice, bob, blank, empty := "Alice", "Bob", " \u2003 ", ""
+	cases := []struct {
+		team, owner, grant string
+		name               *string
+	}{
+		{uuid.NewString(), uuid.NewString(), uuid.NewString(), &alice},
+		{uuid.NewString(), uuid.NewString(), uuid.NewString(), &bob},
+		{uuid.NewString(), uuid.NewString(), uuid.NewString(), &blank},
+		{uuid.NewString(), uuid.NewString(), uuid.NewString(), &empty},
+		{uuid.NewString(), uuid.NewString(), uuid.NewString(), nil},
+	}
+	for _, tc := range cases {
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO users(id,uniauth_id,name,created_at,updated_at) VALUES($1::uuid,($1::uuid)::text,$2,now(),now())`, tc.owner, tc.name); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO teams(id,personal_user_id) VALUES($1,$2)`, tc.team, tc.owner); err != nil {
+			t.Fatal(err)
+		}
+		check := func(team store.GitHubGrantTeam) error {
+			if team.ID != tc.team || team.Kind != "personal" || team.Name != nil || team.PersonalOwner == nil || team.PersonalOwner.UserID != tc.owner || (team.PersonalOwner.Name == nil) != (tc.name == nil) || tc.name != nil && *team.PersonalOwner.Name != *tc.name {
+				return fmt.Errorf("unexpected team projection: %+v", team)
+			}
+			return nil
+		}
+		if err := db.ReadGitHubGrants(ctx, func(r store.GitHubGrantReadDAO) error {
+			p, err := r.Preview(ctx, app, admin, tc.team)
+			if err != nil {
+				return err
+			}
+			if p.Grant != nil {
+				return errors.New("unexpected existing grant")
+			}
+			return check(p.TargetTeam)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		completion, err := db.WriteGitHubGrant(ctx, tc.team, app, admin, func(w store.GitHubGrantWriteDAO) error {
+			facts, err := w.Facts(ctx, admin)
+			if err != nil {
+				return err
+			}
+			if err = check(facts.Team); err != nil {
+				return err
+			}
+			g, err := w.Insert(ctx, tc.grant)
+			if err != nil {
+				return err
+			}
+			return check(g.Team)
+		})
+		if err != nil || completion.Outcome != store.TransactionCommitted {
+			t.Fatalf("insert: %+v %v", completion, err)
+		}
+		if err := db.ReadGitHubGrants(ctx, func(r store.GitHubGrantReadDAO) error {
+			p, err := r.Preview(ctx, app, admin, tc.team)
+			if err != nil {
+				return err
+			}
+			if p.Grant == nil {
+				return errors.New("missing grant")
+			}
+			if err = check(p.TargetTeam); err != nil {
+				return err
+			}
+			if err = check(p.Grant.Team); err != nil {
+				return err
+			}
+			g, err := r.Grant(ctx, app, admin, tc.grant)
+			if err != nil {
+				return err
+			}
+			return check(g.Team)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ordinary, ordinaryGrant := uuid.NewString(), uuid.NewString()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'Ordinary')`, ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO github_app_team_grants(id,team_id,app_resource_id) VALUES($1,$2,$3)`, ordinaryGrant, ordinary, app); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReadGitHubGrants(ctx, func(r store.GitHubGrantReadDAO) error {
+		page, err := r.Grants(ctx, app, admin, nil, 25)
+		if err != nil {
+			return err
+		}
+		if len(page.Items) != len(cases)+1 {
+			return fmt.Errorf("got %d grants", len(page.Items))
+		}
+		for _, g := range page.Items {
+			if g.Team.ID == ordinary {
+				if g.Team.Kind != "ordinary" || g.Team.Name == nil || *g.Team.Name != "Ordinary" || g.Team.PersonalOwner != nil {
+					return fmt.Errorf("ordinary projection: %+v", g.Team)
+				}
+				continue
+			}
+			found := false
+			for _, tc := range cases {
+				if g.Team.ID == tc.team {
+					found = g.Team.PersonalOwner != nil && g.Team.PersonalOwner.UserID == tc.owner && ((tc.name == nil && g.Team.PersonalOwner.Name == nil) || (tc.name != nil && g.Team.PersonalOwner.Name != nil && *tc.name == *g.Team.PersonalOwner.Name))
+				}
+			}
+			if !found {
+				return fmt.Errorf("wrong owner: %+v", g.Team)
+			}
+		}
+		_, err = r.Grants(ctx, app, uuid.NewString(), nil, 25)
+		if !errors.Is(err, model.ErrNotFound) {
+			return fmt.Errorf("non-admin list: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, cases[0].owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReadGitHubGrants(ctx, func(r store.GitHubGrantReadDAO) error { _, err := r.Grants(ctx, app, admin, nil, 25); return err }); err == nil || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing owner must be an integrity error: %v", err)
+	}
+	if err := db.ReadGitHubGrants(ctx, func(r store.GitHubGrantReadDAO) error {
+		_, err := r.Preview(ctx, app, admin, cases[0].team)
+		return err
+	}); err == nil || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing preview owner must be an integrity error: %v", err)
+	}
 }

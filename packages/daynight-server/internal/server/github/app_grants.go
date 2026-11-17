@@ -60,7 +60,11 @@ func RegisterGrantRoutes(mux *http.ServeMux, ops GrantOperations, auth RouteAuth
 }
 
 func grantTeam(t store.GitHubGrantTeam) api.GitHubGrantTeam {
-	return api.GitHubGrantTeam{ID: t.ID, Kind: t.Kind, Name: t.Name, Version: decimal(t.Version)}
+	out := api.GitHubGrantTeam{ID: t.ID, Kind: t.Kind, Name: t.Name, Version: decimal(t.Version)}
+	if t.PersonalOwner != nil {
+		out.PersonalOwner = &api.GitHubGrantPersonalOwner{UserID: t.PersonalOwner.UserID, Name: t.PersonalOwner.Name}
+	}
+	return out
 }
 func grantResponse(g store.GitHubTeamGrant) api.GitHubTeamGrant {
 	return api.GitHubTeamGrant{ID: g.ID, AppID: g.AppID, Team: grantTeam(g.Team), CreatedAt: g.CreatedAt.UTC()}

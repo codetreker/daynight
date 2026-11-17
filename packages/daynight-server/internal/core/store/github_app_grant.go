@@ -14,7 +14,13 @@ var ErrGitHubGrantTeamRootMissing = errors.New("github grant Team root is missin
 
 type GitHubGrantTeam struct {
 	model.TeamRef
-	Version int64
+	Version       int64
+	PersonalOwner *GitHubGrantPersonalOwner
+}
+
+type GitHubGrantPersonalOwner struct {
+	UserID string
+	Name   *string
 }
 
 type GitHubTeamGrant struct {

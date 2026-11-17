@@ -4,10 +4,16 @@ import "time"
 
 // GitHubGrantTeam is the minimal Team identity used by App administrators.
 type GitHubGrantTeam struct {
-	ID      string  `json:"id"`
-	Kind    string  `json:"kind"`
-	Name    *string `json:"name"`
-	Version string  `json:"version"`
+	ID            string                    `json:"id"`
+	Kind          string                    `json:"kind"`
+	Name          *string                   `json:"name"`
+	Version       string                    `json:"version"`
+	PersonalOwner *GitHubGrantPersonalOwner `json:"personalOwner"`
+}
+
+type GitHubGrantPersonalOwner struct {
+	UserID string  `json:"userId"`
+	Name   *string `json:"name"`
 }
 
 type GitHubTeamGrant struct {

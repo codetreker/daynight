@@ -8,6 +8,8 @@
 .github-grants-team-input input { flex: 1; min-width: 0; }
 .github-grants-team-input .button { flex: none; white-space: nowrap; }
 .github-grants-target { margin: 16px 0; padding: 14px; border: 1px solid #dfe5ec; border-radius: 8px; overflow-wrap: anywhere; }
+.github-grants .notice, .github-grants-observed { overflow-wrap: anywhere; }
+.github-grants-personal-label { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 480px) { .github-grants-list li { flex-wrap: wrap; align-items: flex-start; padding: 16px; } .github-grants-list li > div { flex-basis: 100%; } }
 
 .github-grants .button[aria-disabled="true"], .github-grant-action[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
