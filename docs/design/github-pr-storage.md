@@ -12,7 +12,9 @@ GitHub 连接和 PR 观测是 Project 的独立资源，不改变 Project 设置
 
 ## 读取与一致性
 
-Project 权限、连接状态、计数及列表或详情可在同一只读 Repeatable Read snapshot 中读取。列表按 number 降序，以固定上界及锚点进行有界 keyset 分页；向前查询恢复降序。标题搜索按字面匹配，编号搜索使用十进制文本；用户输入不作为 SQL 结构。状态计数不随搜索条件缩小，筛选后的总数和页面共享 snapshot。跨请求分页不冻结后续观测。
+Project 权限、连接状态、计数及列表或详情可在同一只读 Repeatable Read snapshot 中读取。列表按 number 降序，以固定上界及锚点进行有界 keyset 分页；向前查询恢复降序。作者 ID、状态和标题或编号条件在分页前组合；缺失作者只属于无作者条件的读取。标题搜索按字面匹配，编号搜索使用十进制文本；用户输入不作为 SQL 结构。一次聚合读取目标作者范围的状态计数和包含缺失作者的全项目总数；状态计数不随搜索或状态条件缩小，完整组合总数不受分页锚点或上界限制。计数和页面共享 snapshot，跨请求分页不冻结后续观测。
+
+部分索引 `project_pull_requests_author_number` 按 `(project_id, author_id, number DESC)` 索引有作者的记录，支持具体作者的编号导航；全项目聚合仍需检查项目范围的记录，索引也增加同步写入成本。
 
 ## 同步协调
 
@@ -27,3 +29,5 @@ Webhook 提示事务按活 App、当前授权及连接身份锁定并重新检�
 迁移 `073_project_github_sync.sql` 为已有行设置默认关闭，推进 version、generation 和 revision，清除调度、领取、access hint 与 pending PR；绑定、PR、历史事实和 `not_before` 保留。缺失行不补建。溢出或数据库错误使迁移失败。升级须先停止并 drain 全部旧服务副本，完成迁移和替换后再启动；旧代码不识别同步开关，不能与新版混跑。
 
 迁移 `076_github_apps.sql` 为独立 App、管理员、邀请和 Team 授权准备存储，并增加连接授权字段；它删除同步意愿依赖连接的 CHECK，但不修改既有连接、领取、同步意愿或 PR。迁移 `077_github_app_cutover.sql` 将旧连接转换为未连接状态，清除活动 App、installation、授权、领取、提示和日程，推进 version、generation 和 revision，保留同步意愿、仓库与 PR。溢出使数据和迁移账本一起回滚；缺失行不补建。应用 077 前须停止并 drain 所有旧副本，不得混跑；二进制回滚须恢复匹配的数据库备份。独立资源的存储与证明见 [独立 GitHub App 登记](github-app-registration.md)。
+
+迁移 `078_project_pull_requests_author_number.sql` 仅建立作者部分索引，不改写保存数据。索引与迁移账本在同一事务中提交，失败时一起回滚。迁移后不直接运行不认识该账本的旧二进制；向前修复，或使用保留当前迁移集合的回退构建。

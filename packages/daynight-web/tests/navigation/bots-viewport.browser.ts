@@ -28,6 +28,51 @@ const install = async (page: Page, options: { items?: readonly BotDefinition[]; 
   return writes;
 };
 const visiblePane = '.bot-session-pane:not([hidden])';
+test.describe('assistant create icon alignment', () => {
+  test.use({ deviceScaleFactor: 2 });
+  for (const locale of ['en', 'zh-CN']) for (const width of [1440, 390, 320]) {
+    test(`centers the visible path at ${width}px in ${locale}`, async ({ page }, info) => {
+      await install(page);
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto('/bots');
+      await page.locator('.locale-control select').selectOption(locale);
+      const button = page.locator('.bot-create');
+      const label = locale === 'en' ? 'Create assistant' : '创建助手';
+      await expect(button).toBeEnabled();
+      await expect(button).toHaveAttribute('aria-label', label);
+      await expect(button).toHaveAttribute('title', label);
+      await expect(button.locator('svg')).toHaveAttribute('aria-hidden', 'true');
+      await expect(button.locator('svg')).toHaveAttribute('focusable', 'false');
+      for (const font of ['system-ui', 'serif']) {
+        await button.evaluate((node, family) => { node.style.fontFamily = family; }, font);
+        const geometry = await button.evaluate(node => {
+          const buttonRect = node.getBoundingClientRect();
+          const svg = node.querySelector('svg')!, path = svg.querySelector('path')!;
+          const svgRect = svg.getBoundingClientRect(), box = path.getBBox(), matrix = path.getScreenCTM()!;
+          const center = new DOMPoint(box.x + box.width / 2, box.y + box.height / 2).matrixTransform(matrix);
+          return { button: buttonRect.toJSON(), svg: svgRect.toJSON(), dx: center.x - (buttonRect.left + buttonRect.width / 2), dy: center.y - (buttonRect.top + buttonRect.height / 2), font: getComputedStyle(node).fontFamily, documentWidth: document.documentElement.scrollWidth };
+        });
+        expect(geometry.button.width).toBe(width === 1440 ? 36 : 44);
+        expect(geometry.button.height).toBe(geometry.button.width);
+        expect(geometry.svg.width).toBe(18); expect(geometry.svg.height).toBe(18);
+        expect(Math.abs(geometry.dx)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(geometry.dy)).toBeLessThanOrEqual(0.5);
+        expect(geometry.documentWidth).toBeLessThanOrEqual(width);
+        await button.screenshot({ path: info.outputPath(`${locale}-${width}-${font}.png`) });
+        await writeFile(info.outputPath(`${locale}-${width}-${font}.json`), JSON.stringify(geometry, null, 2));
+      }
+      await button.focus();
+      await page.keyboard.press('Enter');
+      await expect(page.locator('#bot-name')).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(button).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(page.locator('#bot-name')).toBeFocused();
+      await page.locator('.bot-create-dialog').getByRole('button', { name: /^(Cancel|取消)$/ }).click();
+      await expect(button).toBeFocused();
+    });
+  }
+});
 const geometry = (page: Page) => page.evaluate(() => {
   const timeline = document.querySelector<HTMLElement>('.bot-session-pane:not([hidden]) .session-timeline')!;
   const composer = document.querySelector<HTMLElement>('.bot-session-pane:not([hidden]) .session-composer')!;

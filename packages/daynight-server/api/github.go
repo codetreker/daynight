@@ -99,6 +99,8 @@ type PullRequestCounts struct {
 	All    string `json:"all"`
 }
 type PullRequestPage struct {
+	AuthorID       *string              `json:"authorId,omitempty"`
+	ProjectTotal   *string              `json:"projectTotal,omitempty"`
 	ProjectID      string               `json:"projectId"`
 	Revision       string               `json:"revision"`
 	Items          []PullRequestSummary `json:"items"`

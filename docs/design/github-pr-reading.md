@@ -4,7 +4,9 @@ Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配�
 
 项目读取权限、连接、计数和页面或详情在同一只读快照内验证与读取。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要不包含 description，详情保留原始 Markdown，空字符串和 null 不合并。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
 
-列表按 number 降序读取，支持 `state=active|closed|merged|all`（默认 active）、字面大小写不敏感的标题或编号子串 `q`（最多 1024 UTF-8 bytes）、`limit`（默认 20，范围 1–100）和可选 cursor。counts 独立于 q 和状态筛选，total 对应当前筛选。游标绑定 Project、条件、页大小、首次读取上界、锚点和方向，条件不匹配或格式错误予以拒绝。后续新编号不会插入已有页；已有记录变化仍可改变页面和计数，空锚定页保留返回路径。
+列表按 number 降序读取，支持 `state=active|closed|merged|all`（默认 active）、字面大小写不敏感的标题或编号子串 `q`（最多 1024 UTF-8 bytes）、`limit`（默认 20，范围 1–100）、可选 `authorId` 和 cursor。`authorId` 必须是正 int64 规范十进制字符串，省略表示全部作者；不存在的合法 ID 返回实际零匹配。作者、状态和查询在分页前组合，`total` 统计完整组合，不受页锚点和上界限制。
+
+省略作者时响应保持原有字段及全项目 `counts`；指定作者时 `counts` 统计该作者各状态，不受状态或查询限制，并返回相同的 `authorId` 和全项目 `projectTotal`，后者包括缺失作者的记录。所有数字均为十进制字符串。无作者请求使用严格八字段 v1 cursor；具体作者使用包含 `authorId` 的严格九字段 v2 cursor。游标绑定 Project、作者、条件、页大小、首次读取上界、锚点和方向，条件不匹配或格式错误予以拒绝。后续新编号不会插入已有页；已有记录变化仍可改变页面和计数，空锚定页保留返回路径。
 
 作者目录覆盖项目全部已保存 PR 中的作者，按稳定 GitHub ID 去重；同一 ID 取 `observed_at`、`revision`、`number` 依次降序的最新保存登录名。完整规范集合先标记不区分大小写的同名，再应用字面子串 `q`（默认空、最多 1024 UTF-8 bytes）、`limit`（默认 50、范围 1–100）和可选 cursor。响应包含十进制字符串 `revision` 和作者 `id`、`login`、`loginAmbiguous` 及可空 `nextCursor`，没有总数。SQL 按 C 排序键和 ID 进行 keyset 分页，只返回有界目录页；生成目录仍需检查项目范围的保存记录，响应有界不代表查询成本固定。游标绑定 Project、查询、页大小、revision 和最后的排序键；格式或请求不匹配返回 `invalid_input`，同一读取快照中的 revision 变化返回 `resource_conflict`，调用方须从头读取。目录不读取正文或访问 GitHub，权限与保存事实使用同一快照；错误日志不记录查询、游标或作者内容。
 

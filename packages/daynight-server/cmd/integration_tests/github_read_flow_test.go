@@ -54,6 +54,8 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 		(project_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision)
 		VALUES
 		($1,9007199254740993,9007199254740995,'https://github.com/owner/repository/pull/9007199254740993','First PR',9007199254740997,'author','open',true,'main',9007199254740999,'fork/repository','feature','abcdef','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',$2,'2026-01-03T00:00:00Z',7),
+		($1,4,104,'https://github.com/owner/repository/pull/4','Author closed PR',9007199254740997,'author','closed',false,'main',NULL,NULL,NULL,'345678','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
+		($1,3,103,'https://github.com/owner/repository/pull/3','Author second PR',9007199254740997,'author','open',false,'main',NULL,NULL,NULL,'234567','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
 		($1,2,102,'https://github.com/owner/repository/pull/2','Second PR',NULL,NULL,'open',false,'main',NULL,NULL,NULL,'123456','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
 		($1,1,101,'https://github.com/owner/repository/pull/1','Closed PR',9007199254740998,'zeta','closed',false,'main',NULL,NULL,NULL,'789abc','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7)`, project.ID, "正文\n**original**\n")
 	if err != nil {
@@ -95,8 +97,14 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 
 	first := read(base + "/pull-requests?limit=1")
 	counts, ok := first["counts"].(map[string]any)
-	if first["projectId"] != project.ID || first["revision"] != "7" || first["total"] != "2" || !ok || counts["active"] != "2" || counts["closed"] != "1" || counts["merged"] != "0" || counts["all"] != "3" {
+	if first["projectId"] != project.ID || first["revision"] != "7" || first["total"] != "3" || !ok || counts["active"] != "3" || counts["closed"] != "2" || counts["merged"] != "0" || counts["all"] != "5" {
 		t.Fatalf("first page metadata differs: %+v", first)
+	}
+	if _, present := first["authorId"]; present {
+		t.Fatalf("unfiltered page contains authorId: %+v", first)
+	}
+	if _, present := first["projectTotal"]; present {
+		t.Fatalf("unfiltered page contains projectTotal: %+v", first)
 	}
 	items, ok := first["items"].([]any)
 	if !ok || len(items) != 1 {
@@ -127,8 +135,21 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 		t.Fatalf("second page items differ: %+v", second)
 	}
 	secondSummary, ok := items[0].(map[string]any)
-	if !ok || secondSummary["number"] != "2" || secondSummary["author"] != nil || second["nextCursor"] != nil {
+	if !ok || secondSummary["number"] != "3" || second["nextCursor"] == nil {
 		t.Fatalf("second page differs: %+v", second)
+	}
+	thirdCursor, ok := second["nextCursor"].(string)
+	if !ok || thirdCursor == "" {
+		t.Fatalf("second page lacks next cursor: %+v", second)
+	}
+	third := read(base + "/pull-requests?limit=1&cursor=" + url.QueryEscape(thirdCursor))
+	thirdItems, ok := third["items"].([]any)
+	if !ok || len(thirdItems) != 1 {
+		t.Fatalf("third page items differ: %+v", third)
+	}
+	thirdSummary, ok := thirdItems[0].(map[string]any)
+	if !ok || thirdSummary["number"] != "2" || thirdSummary["author"] != nil || third["nextCursor"] != nil {
+		t.Fatalf("third page differs: %+v", third)
 	}
 	previous, ok := second["previousCursor"].(string)
 	if !ok || previous == "" {
@@ -142,6 +163,86 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	backSummary, ok := backItems[0].(map[string]any)
 	if !ok || backSummary["number"] != summary["number"] {
 		t.Fatalf("previous page did not return the first PR: %+v", back)
+	}
+
+	authorQuery := "?authorId=9007199254740997&state=all&limit=1"
+	authorFirst := read(base + "/pull-requests" + authorQuery)
+	authorCounts, ok := authorFirst["counts"].(map[string]any)
+	if !ok || authorFirst["authorId"] != "9007199254740997" || authorFirst["projectTotal"] != "5" || authorFirst["total"] != "3" || authorCounts["active"] != "2" || authorCounts["closed"] != "1" || authorCounts["merged"] != "0" || authorCounts["all"] != "3" {
+		t.Fatalf("author page metadata differs: %+v", authorFirst)
+	}
+	authorItems, ok = authorFirst["items"].([]any)
+	if !ok || len(authorItems) != 1 {
+		t.Fatalf("author page items differ: %+v", authorFirst)
+	}
+	authorSummary, ok := authorItems[0].(map[string]any)
+	if !ok || authorSummary["number"] != summary["number"] {
+		t.Fatalf("author page first item differs: %+v", authorFirst)
+	}
+	author, ok := authorSummary["author"].(map[string]any)
+	if !ok || author["id"] != "9007199254740997" || author["login"] != "author" {
+		t.Fatalf("author identity differs: %+v", authorSummary)
+	}
+	authorNext, ok := authorFirst["nextCursor"].(string)
+	if !ok || authorNext == "" || authorFirst["previousCursor"] != nil {
+		t.Fatalf("author page cursors differ: %+v", authorFirst)
+	}
+	authorSecond := read(base + "/pull-requests" + authorQuery + "&cursor=" + url.QueryEscape(authorNext))
+	authorItems, ok = authorSecond["items"].([]any)
+	if !ok || len(authorItems) != 1 {
+		t.Fatalf("author second page items differ: %+v", authorSecond)
+	}
+	authorSummary, ok = authorItems[0].(map[string]any)
+	if !ok || authorSummary["number"] != "4" || authorSecond["total"] != "3" || authorSecond["projectTotal"] != "5" {
+		t.Fatalf("author second page differs: %+v", authorSecond)
+	}
+	authorNext, ok = authorSecond["nextCursor"].(string)
+	if !ok || authorNext == "" {
+		t.Fatalf("author second page lacks next cursor: %+v", authorSecond)
+	}
+	authorThird := read(base + "/pull-requests" + authorQuery + "&cursor=" + url.QueryEscape(authorNext))
+	authorItems, ok = authorThird["items"].([]any)
+	if !ok || len(authorItems) != 1 {
+		t.Fatalf("author third page items differ: %+v", authorThird)
+	}
+	authorSummary, ok = authorItems[0].(map[string]any)
+	if !ok || authorSummary["number"] != "3" || authorThird["nextCursor"] != nil {
+		t.Fatalf("author third page differs: %+v", authorThird)
+	}
+	authorPrevious, ok := authorSecond["previousCursor"].(string)
+	if !ok || authorPrevious == "" {
+		t.Fatalf("author second page lacks previous cursor: %+v", authorSecond)
+	}
+	authorBack := read(base + "/pull-requests" + authorQuery + "&cursor=" + url.QueryEscape(authorPrevious))
+	backItems, ok = authorBack["items"].([]any)
+	if !ok || len(backItems) != 1 {
+		t.Fatalf("author previous page differs: %+v", authorBack)
+	}
+	backSummary, ok = backItems[0].(map[string]any)
+	if !ok || backSummary["number"] != summary["number"] {
+		t.Fatalf("author previous page did not return first item: %+v", authorBack)
+	}
+	filtered := read(base + "/pull-requests?authorId=9007199254740997&state=closed&q=closed")
+	filteredItems, ok := filtered["items"].([]any)
+	filteredCounts, countsOK := filtered["counts"].(map[string]any)
+	if !ok || len(filteredItems) != 1 || !countsOK || filtered["total"] != "1" || filtered["projectTotal"] != "5" || filteredCounts["active"] != "2" || filteredCounts["closed"] != "1" || filteredCounts["all"] != "3" {
+		t.Fatalf("combined author, state and query differ: %+v", filtered)
+	}
+	filteredSummary, ok := filteredItems[0].(map[string]any)
+	if !ok || filteredSummary["number"] != "4" {
+		t.Fatalf("combined filter item differs: %+v", filtered)
+	}
+	noMatch := read(base + "/pull-requests?authorId=9007199254740997&state=closed&q=absent")
+	noMatchItems, ok := noMatch["items"].([]any)
+	noMatchCounts, countsOK := noMatch["counts"].(map[string]any)
+	if !ok || len(noMatchItems) != 0 || !countsOK || noMatch["total"] != "0" || noMatch["projectTotal"] != "5" || noMatchCounts["all"] != "3" {
+		t.Fatalf("empty combined filter differs: %+v", noMatch)
+	}
+	missing := read(base + "/pull-requests?authorId=9223372036854775807&state=all")
+	missingItems, ok := missing["items"].([]any)
+	missingCounts, countsOK := missing["counts"].(map[string]any)
+	if !ok || len(missingItems) != 0 || !countsOK || missing["authorId"] != "9223372036854775807" || missing["projectTotal"] != "5" || missing["total"] != "0" || missingCounts["all"] != "0" {
+		t.Fatalf("missing author page differs: %+v", missing)
 	}
 	detail := read(base + "/pull-requests/9007199254740993")
 	if detail["number"] != summary["number"] || detail["id"] != summary["id"] || detail["description"] != "正文\n**original**\n" {

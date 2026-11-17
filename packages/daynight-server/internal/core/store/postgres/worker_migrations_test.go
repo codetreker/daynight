@@ -113,10 +113,10 @@ func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 func TestWorkerSudoCleanupMigration(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if len(schemaMigrations) < 78 || schemaMigrations[77].version != 78 {
-		t.Fatal("sudo cleanup migration must follow version 77")
+	if len(schemaMigrations) < 79 || schemaMigrations[78].version != 79 {
+		t.Fatal("sudo cleanup migration must follow version 78")
 	}
-	if err := migrate(ctx, pool, schemaMigrations[:77]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:78]); err != nil {
 		t.Fatal(err)
 	}
 	database := &Store{Pool: pool}
@@ -143,7 +143,7 @@ func TestWorkerSudoCleanupMigration(t *testing.T) {
 	}
 	unchanged := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w WHERE worker_id <> '` + queryID(2) + `'`)
 	otherFacts := rows(`SELECT (to_jsonb(w)-'desired_configuration'-'configuration_revision'-'configuration_updated_at')::text FROM workers w WHERE worker_id = '` + queryID(2) + `'`)
-	if err := migrate(ctx, pool, schemaMigrations[:78]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:79]); err != nil {
 		t.Fatal(err)
 	}
 	if got := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w WHERE worker_id <> '` + queryID(2) + `'`); got != unchanged {
@@ -163,7 +163,7 @@ func TestWorkerSudoCleanupMigration(t *testing.T) {
 		t.Fatalf("migrated desired=%s revision=%d updated=%v err=%v", desired, revision, updated, err)
 	}
 	beforeRepeat := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w`)
-	if err := migrate(ctx, pool, schemaMigrations[:78]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:79]); err != nil {
 		t.Fatal(err)
 	}
 	if got := rows(`SELECT jsonb_agg(to_jsonb(w) ORDER BY worker_id)::text FROM workers w`); got != beforeRepeat {
@@ -174,7 +174,7 @@ func TestWorkerSudoCleanupMigration(t *testing.T) {
 func TestWorkerSudoCleanupMigrationRevisionOverflowRollsBack(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:77]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:78]); err != nil {
 		t.Fatal(err)
 	}
 	database := &Store{Pool: pool}
@@ -194,7 +194,7 @@ func TestWorkerSudoCleanupMigrationRevisionOverflowRollsBack(t *testing.T) {
 		return result
 	}
 	before := rows()
-	if err := migrate(ctx, pool, schemaMigrations[:78]); err == nil {
+	if err := migrate(ctx, pool, schemaMigrations[:79]); err == nil {
 		t.Fatal("exhausted revision did not fail migration")
 	} else {
 		var pgErr *pgconn.PgError
@@ -203,7 +203,7 @@ func TestWorkerSudoCleanupMigrationRevisionOverflowRollsBack(t *testing.T) {
 		}
 	}
 	var ledger int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=78`).Scan(&ledger); err != nil || ledger != 0 || rows() != before {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=79`).Scan(&ledger); err != nil || ledger != 0 || rows() != before {
 		t.Fatalf("overflow changed workers or migration ledger: ledger=%d err=%v", ledger, err)
 	}
 }
