@@ -293,10 +293,10 @@ export const createApiClient = (options: {
   if (workerToolPaths.serverOrigin !== origin.origin || expectedUserId !== undefined && workerToolPaths.userId !== expectedUserId) workerToolPaths.supported = false;
   const toolPathsSupported = () => workerToolPaths.supported && workerToolPaths.serverOrigin === origin.origin && toolPathsPrincipal !== undefined && workerToolPaths.userId === toolPathsPrincipal;
   const confirmToolPaths = (header: string | null, principal: string | undefined) => {
-    if (header !== null && header !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
+    if (header !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server.");
     if (principal === undefined) { workerToolPaths.supported = false; return; }
     toolPathsPrincipal = principal;
-    Object.assign(workerToolPaths, { supported: header === "1", serverOrigin: origin.origin, userId: principal });
+    Object.assign(workerToolPaths, { supported: header === "2", serverOrigin: origin.origin, userId: principal });
   };
   const projectToolReport = (input: WorkerReport, supported: boolean): WorkerReport => {
     if (supported) return input;
@@ -431,7 +431,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerControlMode === true ? { "Daynight-Worker-Control-Mode": "1" } : {}), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "1" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -518,6 +518,7 @@ export const createApiClient = (options: {
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
         serverError = mode.kind === "json" && mode.parseError !== undefined ? mode.parseError(value) : parseServerError(value);
+        if (context.workerToolPaths === true && status === 400 && serverError.code === "invalid_input" && serverError.message === "Unsupported Worker tool paths protocol.") serverError = { ...serverError, message: "The server does not support Worker tool paths version 2; upgrade the server." };
         if (invitationIdentityMismatch && serverError.code !== "identity_mismatch") { serverError = undefined; throw new ProtocolError("The authenticated response principal changed during the operation."); }
         if (secret !== undefined) {
           const safeCodes = ["unauthenticated", "forbidden", "invalid_input", "identity_mismatch", "invitation_unavailable", "write_outcome_unknown", "internal_error"];
@@ -889,9 +890,8 @@ export const createApiClient = (options: {
     listWorkers: async () => {
       const principal = accountPrincipal();
       let observedAt: string | undefined;
-      const items = await list<WorkerSummary>({ operation: "worker.list", workerToolPaths: true }, "/me/workers", (value, metadata) => {
+      const items = await list<WorkerSummary>({ operation: "worker.list" }, "/me/workers", (value, metadata) => {
         principal(metadata);
-        if (metadata.toolPathsHeader !== null && metadata.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
         const page = parseWorkerPage(value);
         observedAt = page.observedAt;
         return page;
@@ -900,7 +900,7 @@ export const createApiClient = (options: {
     },
     getWorker: (workerId) => {
       const target = resourceId(workerId), principal = accountPrincipal();
-      return exchange({ operation: "worker.show", workerToolPaths: true }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); if (metadata.toolPathsHeader !== null && metadata.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability."); return parseWorkerDetail(value, target, metadata.toolPathsHeader === "1"); } }, [200]);
+      return exchange({ operation: "worker.show", workerToolPaths: true }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); if (metadata.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server."); return parseWorkerDetail(value, target, true); } }, [200]);
     },
     listTaskSteps: (projectId, taskId, options) => {
       const project = resourceId(projectId), task = resourceId(taskId);
@@ -1250,7 +1250,7 @@ export const createApiClient = (options: {
     },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], reportBody(projectToolReport(input, false)), true);
+      return exchange({ operation: "worker.report", workerToolPaths: true }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: (value, response) => { if (response.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server."); return parseWorkerReportReceipt(value); } }, [200], reportBody(input), true);
     },
     writeWorkerMonitoring: (workerId, observation, requestId) => {
       const worker = resourceId(workerId);
@@ -1263,39 +1263,37 @@ export const createApiClient = (options: {
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerControlMode: true, workerToolPaths: true, workerArchiveSessions: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
+      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerToolPaths: true, workerArchiveSessions: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         decodeJsonSource: (source, response) => response.success ? decodeWorkerCloudJsonSource(source) : parseApiJson(source),
         parse: (value, response) => {
           if (response.configurationHeader !== "1") throw new ProtocolError("The server does not support Worker configuration exchange version 1.");
-          if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
+          if (response.toolPathsHeader !== "2") throw new ProtocolError("The server does not support Worker tool paths version 2; upgrade the server.");
           if (response.archiveSessionsHeader !== null && response.archiveSessionsHeader !== "1") throw new ProtocolError("Invalid Worker archive sessions capability.");
-          const resource = parseReceivedWorkerConfigurationResource(value, { controlMode: response.controlModeHeader === "1", toolPaths: response.toolPathsHeader === "1", archiveSessions: response.archiveSessionsHeader === "1" });
+          const resource = parseReceivedWorkerConfigurationResource(value, { controlMode: false, toolPaths: true, archiveSessions: response.archiveSessionsHeader === "1" });
           confirmArchive(response.archiveSessionsHeader, response.principalId);
           confirmToolPaths(response.toolPathsHeader, response.principalId);
-          workerControlMode.supported = response.controlModeHeader === "1";
           return resource;
         },
       }, [200], undefined, true);
     },
     reportWorkerConfiguration: (workerId, input, configuration, selectors) => {
-      const worker = resourceId(workerId), supported = workerControlMode.supported, toolsSupported = toolPathsSupported();
+      const worker = resourceId(workerId), supported = false, toolsSupported = true;
       const archive = archiveSupported();
       if (!archive && configuration.bootstrap?.archiveSessions === false) throw new ProtocolError("The server does not support disabling Worker session archives.");
       const capabilities = { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archive };
       const parsed = parseWorkerCloudReport(projectWorkerCloudReport(configuration, capabilities), capabilities);
       const promptSelectors = selectors === undefined ? undefined : parseWorkerPromptSelectors(selectors);
-      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, ...(supported ? { workerControlMode: true as const } : {}), ...(toolsSupported ? { workerToolPaths: true as const } : {}), ...(archive ? { workerArchiveSessions: true as const } : {}), ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
+      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, workerToolPaths: true, ...(archive ? { workerArchiveSessions: true as const } : {}), ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         ...(promptSelectors === undefined ? {} : { responseBytes: 48 * 1_048_576 }),
         decodeJsonSource: (source, response) => !response.success ? parseApiJson(source) : promptSelectors === undefined ? decodeWorkerCloudJsonSource(source) : decodeWorkerCloudSyncSource(source),
         parse: (value, response) => {
           if (response.configurationHeader !== (promptSelectors === undefined ? "1" : "2")) throw new ProtocolError("The server does not support the requested Worker configuration exchange version.");
           const sync = promptSelectors === undefined ? undefined : value as { native: unknown; promptSource: string | undefined };
-          if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1" || toolsSupported && response.toolPathsHeader !== "1") { workerToolPaths.supported = false; throw new ProtocolError("The server did not confirm the requested Worker tool paths capability."); }
+          if (response.toolPathsHeader !== "2") { workerToolPaths.supported = false; throw new ProtocolError("The server did not confirm the requested Worker tool paths capability."); }
           if (response.archiveSessionsHeader !== null && response.archiveSessionsHeader !== "1" || archive && response.archiveSessionsHeader !== "1") { workerArchiveSessions.supported = false; throw new ProtocolError("The server did not confirm the requested Worker archive sessions capability."); }
-          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: supported && response.controlModeHeader === "1", toolPaths: toolsSupported && response.toolPathsHeader === "1", archiveSessions: archive && response.archiveSessionsHeader === "1" });
-          workerControlMode.supported = supported && response.controlModeHeader === "1";
+          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: false, toolPaths: true, archiveSessions: archive && response.archiveSessionsHeader === "1" });
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           if (sync === undefined || promptSelectors === undefined) return receipt;
           let prompts: WorkerPromptResults;

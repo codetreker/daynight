@@ -61,20 +61,15 @@ describe.each([
   });
 });
 
-it("imports local choices while preserving the legacy cloud report projection", async () => {
+it("imports local choices into the two-tool cloud report", async () => {
   const codex = path.resolve("/tools/codex");
   const source = stringify({ worker: { toolPaths: { codex } } });
   const bootstrap = await parseWorkerCloudBootstrap(source, paths, async () => { throw new Error("No Projects configured."); }, new AbortController().signal);
   expect(parseWorkerLocalConfiguration(source, paths).toolPaths.codex).toEqual({ kind: "path", path: codex });
-  const legacy = {
-    agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
-    preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [],
-  };
-  expect(bootstrap).toEqual({ ...legacy, archiveSessions: true, toolPaths: { ...automatic, codex: { kind: "path", path: codex } } });
-  expect(projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: true, toolPaths: false })).toEqual({
-    bootstrap: legacy, observation: null, controlModeBootstrap: null,
-  });
-  expect(projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: true, toolPaths: false, archiveSessions: true })).toEqual({
-    bootstrap: { ...legacy, archiveSessions: true }, observation: null, controlModeBootstrap: null,
-  });
+  expect(bootstrap).toEqual({ maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
+    preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [], archiveSessions: true,
+    toolPaths: { codex: { kind: "path", path: codex }, copilot: { kind: "auto" } } });
+  const report = projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: false, toolPaths: true, archiveSessions: true });
+  expect(report).toEqual({ bootstrap, observation: null, toolPathsBootstrap: null });
+  expect(report).not.toHaveProperty("controlModeBootstrap");
 });

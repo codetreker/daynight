@@ -56,18 +56,7 @@ func (v rawConfigurationProjection) MarshalJSON() ([]byte, error) {
 	if _, exists := fields["enableSudoCleanup"]; !exists {
 		fields["enableSudoCleanup"] = json.RawMessage(`false`)
 	}
-	if v.capabilities.ControlMode {
-		if _, exists := fields["agentControlMode"]; !exists {
-			fields["agentControlMode"] = json.RawMessage(`null`)
-		}
-	} else {
-		delete(fields, "agentControlMode")
-	}
-	if v.capabilities.ToolPaths {
-		if _, exists := fields["toolPaths"]; !exists {
-			fields["toolPaths"] = json.RawMessage(`{"codex":null,"copilot":null,"herdr":null}`)
-		}
-	} else {
+	if !v.capabilities.ToolPaths {
 		delete(fields, "toolPaths")
 	}
 	if v.capabilities.ArchiveSessions {
@@ -96,8 +85,7 @@ func projectDesiredConfiguration(desired *model.WorkerDesiredConfiguration, capa
 	if capabilities.ToolPaths {
 		value.ToolPaths = desired.Value.ToolPaths
 	}
-	if capabilities.ControlMode {
-		// An interface holding a typed nil emits explicit null; omission belongs only to legacy clients.
+	if desired.Value.AgentControlMode != nil {
 		value.AgentControlMode = desired.Value.AgentControlMode
 	}
 	if capabilities.ArchiveSessions {

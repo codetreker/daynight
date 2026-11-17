@@ -18,8 +18,8 @@ func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error)
 		return result, err
 	}
 	if values, exists := header[workerToolPathsHeader]; exists {
-		if len(values) != 1 || values[0] != "1" {
-			return result, httpx.InvalidInput("Unsupported Worker tool paths protocol.")
+		if len(values) != 1 || values[0] != "2" {
+			return result, httpx.InvalidInput("Worker tool paths protocol requires version 2; upgrade the Worker or refresh the Web client.")
 		}
 		result.ToolPaths = true
 	}
@@ -37,9 +37,20 @@ func writeWorkerCapabilities(header http.Header, capabilities workerprotocol.Cap
 		header.Set(workerControlModeHeader, "1")
 	}
 	if capabilities.ToolPaths {
-		header.Set(workerToolPathsHeader, "1")
+		header.Set(workerToolPathsHeader, "2")
 	}
 	if capabilities.ArchiveSessions {
 		header.Set(workerArchiveSessionsHeader, "1")
 	}
+}
+
+// The two-tool contract is mandatory only for report, configuration and detail.
+func requireToolPaths(capabilities workerprotocol.Capabilities) error {
+	if !capabilities.ToolPaths {
+		return httpx.InvalidInput("Worker tool paths protocol requires version 2; upgrade the Worker or refresh the Web client.")
+	}
+	if capabilities.ControlMode {
+		return httpx.InvalidInput("Worker control mode protocol is no longer supported; upgrade the Worker or refresh the Web client.")
+	}
+	return nil
 }

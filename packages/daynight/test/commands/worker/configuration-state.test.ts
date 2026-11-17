@@ -7,7 +7,7 @@ import { acceptConfigurationProjection, allConfigurationItems, configurationHasU
 
 const id = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const native: WorkerCloudNative = { agent: "codex", model: "original", args: [] };
-const desired = (revision = "1", projects: readonly string[] = []): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { agentControlMode: "web", maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) } });
+const desired = (revision = "1", projects: readonly string[] = []): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) } });
 const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 10, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0", pendingApplication: target === null }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
 const received = (...args: Parameters<typeof desired>) => receiveWorkerDesired(JSON.stringify(desired(...args)));
 const tracked = (number: number, key: WorkerCloudItemKey, appliedValue: TrackedConfigurationItem["value"]["appliedValue"] = null): TrackedConfigurationItem => ({ recordId: id(number), origin: { generation: id(8000), targetRevision: "1", source: "application" }, value: { key, targetRevision: "1", appliedValue, state: appliedValue === null ? "pending" : "applied", error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, started: false, actualSource: appliedValue === null ? null : { kind: "observed", recordId: id(number), generation: id(8000), targetRevision: "1" }, blockedByRemovalId: null });
@@ -17,17 +17,13 @@ const options = { synchronized: true, localTools: { codex: { kind: "auto" as con
 const ids = () => { let value = 1000; return () => id(value++); };
 
 describe("Worker configuration fact transitions", () => {
-  it("requires a persisted mode item rather than deriving adoption from the desired value", () => {
+  it("requires a synchronized supported target without reporting mode adoption", () => {
     const pending = transitionConfigurationDesired(empty(null), received(), new Set(), ids());
-    expect(findCurrentConfigurationItem(pending, { kind: "agentControlMode" })).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
-    expect(configurationSnapshot(pending, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
-    const applied = tracked(1, { kind: "agentControlMode" }, "web");
-    const cache = { ...pending, currentItems: pending.currentItems.map(item => item.value.key.kind === "agentControlMode" ? applied : item) };
-    expect(configurationSnapshot(cache, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBe("web");
-    expect(configurationSnapshot(cache, false, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
-    const unsupported = transitionConfigurationDesired(cache, receiveWorkerDesired(JSON.stringify({ ...desired("2"), value: { ...desired("2").value, agentControlMode: "herdr" } })), new Set(), ids());
-    const restored = transitionConfigurationDesired(unsupported, received("3"), new Set(), ids());
-    expect(findCurrentConfigurationItem(restored, { kind: "agentControlMode" })).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
+    expect(findCurrentConfigurationItem(pending, { kind: "agentControlMode" })).toBeUndefined();
+    expect(configurationSnapshot(pending, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBe("web");
+    expect(configurationSnapshot(pending, false, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
+    const unsupported = transitionConfigurationDesired(pending, receiveWorkerDesired(JSON.stringify({ ...desired("2"), value: { ...desired("2").value, agentControlMode: "herdr" } })), new Set(), ids());
+    expect(configurationSnapshot(unsupported, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
   });
 
   it.each(["empty", "applied A"] as const)("rebuilds newly understood same-revision authority B from an %s ledger", state => {
@@ -211,45 +207,29 @@ describe("Worker configuration fact transitions", () => {
 const valueProof = (_cache: WorkerConfigurationCache, value: WorkerCloudNative): WorkerNativeProof => ({ native: value, tools: [] });
 
 describe("Worker configuration projection acceptance", () => {
-  it("keeps independent capability adoption wrappers when no full candidate supplies those fields", () => {
-    const { agentControlMode: _mode, ...legacyCandidate } = desired().value;
-    for (const [cache, bootstrap] of [[empty(null), null], [empty(null), legacyCandidate], [empty(), legacyCandidate]] as const) {
-      const projection = projectConfigurationReport(cache, { ...options, bootstrap });
-      expect(projection.report).toMatchObject({ controlModeBootstrap: "web", toolPathsBootstrap: null });
-      expect(parseWorkerCloudReport(projectWorkerCloudReport(projection.report))).toEqual({ bootstrap: cache.authority.desiredJson === null ? bootstrap : null,
-        observation: cache.authority.desiredJson === null ? null : { baseRevision: "0", desiredRevision: "1", items: [] } });
+  it("does not report mode or adopt tools for unsupported raw authority", () => {
+    const base = desired();
+    for (const value of [{ ...base.value, agentControlMode: "herdr" }, { ...base.value, toolPaths: { ...base.value.toolPaths!, herdr: null } }, (({ toolPaths: _tools, ...rest }) => rest)(base.value)]) {
+      const cache = empty({ ...base, value } as WorkerCloudDesired), raw = cache.authority.desiredJson;
+      const report = projectConfigurationReport(cache, options).report;
+      expect(report).not.toHaveProperty("controlModeBootstrap");
+      expect(report.toolPathsBootstrap).toBeNull();
+      expect(report.observation).toBeNull();
+      expect(cache.authority.desiredJson).toBe(raw);
     }
   });
 
-  it.each(["herdr mode", "unadopted mode", "unsupported target", "missing tool paths", "unadopted Herdr path", "unread authority"] as const)("does not let the server adopt local tool choices for %s", scenario => {
-    const base = desired();
-    const paths = { codex: null, copilot: { kind: "auto" as const }, herdr: null };
-    const value = { ...base.value, ...(scenario === "herdr mode" ? { agentControlMode: "herdr" as const } : {}),
-      ...(scenario === "unadopted mode" ? { agentControlMode: null } : {}),
-      ...(scenario === "unsupported target" ? { maxConcurrent: 65 } : {}),
-      ...(scenario === "missing tool paths" ? {} : { toolPaths: paths }) };
-    const cache = empty({ ...base, value });
-    const raw = cache.authority.desiredJson;
-    const report = projectConfigurationReport(cache, { ...options, synchronized: scenario !== "unread authority" }).report;
-    const capabilities = { controlMode: true, toolPaths: true, archiveSessions: false };
-    expect(parseWorkerCloudReport(projectWorkerCloudReport(report, capabilities), capabilities)).toMatchObject({ controlModeBootstrap: "web", toolPathsBootstrap: null });
-    expect(cache.authority.desiredJson).toBe(raw);
-  });
-
-  it("uses the complete bootstrap candidate rather than unrelated local choices", () => {
-    const candidate = { ...desired().value, toolPaths: { codex: { kind: "path" as const, path: "/candidate/codex" }, copilot: { kind: "auto" as const }, herdr: { kind: "path" as const, path: "/candidate/herdr" } } };
+  it("uses the complete two-tool bootstrap candidate", () => {
+    const candidate = { ...desired().value, toolPaths: { codex: { kind: "path" as const, path: "/candidate/codex" }, copilot: { kind: "auto" as const } } };
     const report = projectConfigurationReport(empty(null), { ...options, bootstrap: candidate }).report;
-    const capabilities = { controlMode: true, toolPaths: true, archiveSessions: false };
-    expect(parseWorkerCloudReport(projectWorkerCloudReport(report, capabilities), capabilities)).toMatchObject({ bootstrap: candidate, controlModeBootstrap: "web", toolPathsBootstrap: candidate.toolPaths });
+    expect(parseWorkerCloudReport(report, { controlMode: false, toolPaths: true, archiveSessions: false })).toMatchObject({ bootstrap: candidate, toolPathsBootstrap: candidate.toolPaths });
   });
 
-  it("adopts missing Web choices only when the cloud already supplies its Herdr choice", () => {
-    const base = desired(), herdr = { kind: "path" as const, path: "/cloud/herdr" }, copilot = { kind: "path" as const, path: "/cloud/copilot" };
-    const target = { ...base, value: { ...base.value, toolPaths: { codex: null, copilot, herdr } } };
-    const cache = empty(target), raw = cache.authority.desiredJson;
+  it("adopts unselected Web tool choices without changing raw authority", () => {
+    const base = desired(), copilot = { kind: "path" as const, path: "/cloud/copilot" };
+    const cache = empty({ ...base, value: { ...base.value, toolPaths: { codex: null, copilot } } }), raw = cache.authority.desiredJson;
     const report = projectConfigurationReport(cache, options).report;
-    const capabilities = { controlMode: true, toolPaths: true, archiveSessions: false };
-    expect(parseWorkerCloudReport(projectWorkerCloudReport(report, capabilities), capabilities)).toMatchObject({ toolPathsBootstrap: { codex: options.localTools.codex, copilot, herdr } });
+    expect(report.toolPathsBootstrap).toEqual({ codex: options.localTools.codex, copilot });
     expect(cache.authority.desiredJson).toBe(raw);
   });
 

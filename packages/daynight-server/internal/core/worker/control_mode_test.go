@@ -113,8 +113,10 @@ func TestControlModeAdoptionAndLegacyReplacement(t *testing.T) {
 			t.Fatalf("legacy replacement: %+v %v", result, err)
 		}
 		value.PreserveAgentControlMode = false
-		_, err = PutConfiguration(ctx, dao, principal, "worker", 2, value)
-		requireFault(t, err, "invalid_input")
+		result, err = PutConfiguration(ctx, dao, principal, "worker", 2, value)
+		if err != nil || result.Desired.Value.AgentControlMode != nil {
+			t.Fatalf("complete replacement must clear old mode: %+v %v", result, err)
+		}
 	})
 	t.Run("adoption version exhausted and storage errors", func(t *testing.T) {
 		dao := configuredDAO(strconv.FormatInt(math.MaxInt64, 10))
@@ -139,7 +141,7 @@ func TestControlModeProtocolRequiresNegotiatedShape(t *testing.T) {
 			document["agentControlMode"] = nil
 		}
 		value, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: aware})
-		if err != nil || value.PreserveAgentControlMode == aware {
+		if err != nil || value.PreserveAgentControlMode {
 			t.Fatalf("valid shape aware=%v: %+v %v", aware, value, err)
 		}
 		if aware {

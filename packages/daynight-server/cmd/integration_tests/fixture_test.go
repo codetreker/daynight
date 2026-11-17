@@ -492,7 +492,7 @@ func (r tokenTransport) RoundTrip(request *http.Request) (*http.Response, error)
 	return r.next.RoundTrip(copy)
 }
 
-func (f *fixture) request(t *testing.T, method, path, contentType string, body []byte, status int) (*http.Response, []byte) {
+func (f *fixture) request(t *testing.T, method, path, contentType string, body []byte, status int, headers ...http.Header) (*http.Response, []byte) {
 	t.Helper()
 	request, err := http.NewRequestWithContext(f.context, method, f.origin+path, bytes.NewReader(body))
 	if err != nil {
@@ -500,6 +500,13 @@ func (f *fixture) request(t *testing.T, method, path, contentType string, body [
 	}
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
+	}
+	for _, header := range headers {
+		for key, values := range header {
+			for _, value := range values {
+				request.Header.Add(key, value)
+			}
+		}
 	}
 	response, err := f.client.Do(request)
 	if err != nil {
@@ -516,7 +523,7 @@ func (f *fixture) request(t *testing.T, method, path, contentType string, body [
 	return response, data
 }
 
-func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any, status int) T {
+func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any, status int, headers ...http.Header) T {
 	t.Helper()
 	var body []byte
 	if input != nil {
@@ -526,7 +533,7 @@ func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any
 			t.Fatal(err)
 		}
 	}
-	_, data := f.request(t, method, path, "application/json", body, status)
+	_, data := f.request(t, method, path, "application/json", body, status, headers...)
 	var result T
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("decode %s %s: %v: %s", method, path, err, data)

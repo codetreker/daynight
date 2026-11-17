@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { receiveWorkerDesired, parseReceivedWorkerConfigurationReceipt, parseWorkerCloudRevision } from "../../api/worker-configuration.js";
+import { receiveWorkerDesired, parseReceivedWorkerConfigurationReceipt, parseWorkerCloudRevision, desiredCapabilitySources } from "../../api/worker-configuration.js";
+import { jsonObjectSources } from "../../api/json-source.js";
 import { canonicalId } from "../../api/parse.js";
 import { ProtocolError } from "../../api/validation.js";
 import { OperationError } from "../../api/operation.js";
@@ -53,13 +54,13 @@ export type WorkerConfigurationManagerOptions = {
   readonly onNativeApplication?: (event: WorkerNativeApplicationEvent) => void;
   readonly onApplication?: (event: WorkerConfigurationApplicationEvent) => void;
   readonly onError?: (error: unknown) => void;
-  readonly onInvalidDesired?: (revision: string, reason: "unsupported_mode" | "unsupported_configuration" | "limits") => void;
+  readonly onInvalidDesired?: (revision: string, reason: "unsupported_mode" | "unsupported_legacy_fields" | "unsupported_configuration" | "limits") => void;
   readonly onStorageState?: (event: ConfigurationPersistenceEvent) => void;
   readonly now?: () => number;
   readonly persist?: (file: string, chunks: () => Iterable<string>) => Promise<void>;
 };
 type Job = { readonly recordId: string; readonly key: WorkerCloudItemKey; readonly controller: AbortController; readonly promise: Promise<void>; proof: WorkerNativeProof | null; preparing: boolean };
-const nativeTools = (native: WorkerCloudNative): readonly Tool[] => native.agent === "codex" || native.agent === "copilot" ? [native.agent] : [];
+const nativeTools = (native: WorkerCloudNative): readonly ("codex" | "copilot")[] => native.agent === "codex" || native.agent === "copilot" ? [native.agent] : [];
 const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "agentControlMode" || key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "enableSudoCleanup" || key.kind === "archiveSessions";
 const observedSource = (item: TrackedConfigurationItem): TrackedConfigurationItem["actualSource"] => ({ kind: "observed", recordId: item.recordId, generation: item.origin.generation, targetRevision: item.origin.targetRevision });
 const isJobCancellation = (error: unknown, signal: AbortSignal): boolean => {
@@ -83,7 +84,7 @@ const failure = (error: unknown, key: WorkerCloudItemKey, phase: WorkerCloudFail
 };
 export const createWorkerConfigurationManager = async (options: WorkerConfigurationManagerOptions) => {
   options.signal.throwIfAborted();
-  const localTools = freeze(parseToolPathsBootstrap(options.localToolPaths ?? parseLocalToolPaths(undefined)));
+  const localTools = freeze(options.localToolPaths ?? parseLocalToolPaths(undefined));
   const proofFor = (current: WorkerConfigurationCache, native: WorkerCloudNative): WorkerNativeProof => {
     const choices = toolTargets(current, localTools)?.choices, keys = options.readToolSelectionKeys?.(native);
     return { native, tools: nativeTools(native).map(tool => ({ tool, choice: choices?.[tool] ?? null, selectionKey: keys?.[tool] ?? null })) };
@@ -204,8 +205,12 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         if (confirm && !stopped) synchronized = true;
         const authority = configurationAuthority(next), desired = authority?.known ?? null;
         if (authority !== null && (firstAuthority || next.authority.desiredJson !== current.authority.desiredJson)) {
-          if (desired === null) options.onInvalidDesired?.(authority.revision, "unsupported_configuration");
-          else if (desired.value.agentControlMode !== null && desired.value.agentControlMode !== undefined && !supportsDesired(desired)) options.onInvalidDesired?.(authority.revision, desired.value.agentControlMode === "herdr" ? "unsupported_mode" : "limits");
+          if (desired === null) {
+            const fields = desiredCapabilitySources(authority.json), tools = fields.get("toolPaths");
+            const legacy = fields.has("agentControlMode") || tools === undefined || tools.trimStart().startsWith("{") && jsonObjectSources(tools).has("herdr");
+            options.onInvalidDesired?.(authority.revision, legacy ? "unsupported_legacy_fields" : "unsupported_configuration");
+          }
+          else if (!supportsDesired(desired)) options.onInvalidDesired?.(authority.revision, "limits");
         }
         options.onChange?.(snapshot(cache, usable(), validatedNative, localTools, proofFor));
         kick();
@@ -407,8 +412,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   return {
     current: (): WorkerConfigurationSnapshot => snapshot(cache, usable(), validatedNative, localTools, proofFor),
     readCleanupPolicy: (): { readonly enableSudoCleanup: boolean; readonly revision: string } | null => {
+      const authority = configurationAuthority(cache);
+      if (authority === null) return null;
+      const target = desiredCapabilitySources(authority.json).get("enableSudoCleanup")?.trim();
       const item = findItem(cache, { kind: "enableSudoCleanup" });
-      if (configurationDesired(cache)?.value.enableSudoCleanup === undefined || item?.actualSource?.kind !== "observed" || typeof item.value.appliedValue !== "boolean") return null;
+      if (target !== "true" && target !== "false" || item?.actualSource?.kind !== "observed" || typeof item.value.appliedValue !== "boolean") return null;
       return { enableSudoCleanup: item.value.appliedValue, revision: item.actualSource.targetRevision };
     },
     hasAuthority: (): boolean => synchronized,

@@ -21,6 +21,15 @@ type ToolPathError = model.ToolPathError
 func DetailForCapabilities(snapshot model.WorkerSnapshot, capabilities Capabilities) WorkerDetail {
 	if !capabilities.ToolPaths {
 		snapshot.Telemetry.ToolPaths = nil
+	} else if snapshot.Telemetry.ToolPaths != nil {
+		paths := *snapshot.Telemetry.ToolPaths
+		paths.Entries = make([]model.ToolPathObservation, 0, len(snapshot.Telemetry.ToolPaths.Entries))
+		for _, entry := range snapshot.Telemetry.ToolPaths.Entries {
+			if (entry.Tool == "codex" || entry.Tool == "copilot") && entry.Context == "web" {
+				paths.Entries = append(paths.Entries, entry)
+			}
+		}
+		snapshot.Telemetry.ToolPaths = &paths
 	}
 	return Detail(snapshot)
 }

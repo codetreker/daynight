@@ -20,11 +20,11 @@ export type DraftIssue = 'integer' | 'model' | 'args' | 'agent' | 'project' | 'c
 export type ParsedConfigurationDraft = { readonly value: WorkerConfigurationValue | null; readonly errors: Readonly<Record<string, DraftIssue>> };
 export type ConfigurationDraftOptions = { readonly toolPathsSupported?: boolean; readonly archiveSessionsSupported?: boolean; readonly platform?: ExecutionPlatform };
 const agents: readonly string[] = ['codex', 'claude', 'copilot'];
-const tools: readonly Tool[] = ['codex', 'copilot', 'herdr'];
+const tools: readonly Tool[] = ['codex', 'copilot'];
 export const emptyProjectDraft = (projectId: string): ConfigurationDraft['projects'][number] => ({ projectId, native: { agent: 'inherit', modelMode: 'inherit', model: '', argsMode: 'inherit', args: '[]' } });
 export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDraft => ({
   maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit), preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
-  ...(value.agentControlMode === undefined ? {} : { agentControlMode: value.agentControlMode }),
+
   ...(value.archiveSessions === undefined ? {} : { archiveSessions: value.archiveSessions }),
   ...(value.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: value.enableSudoCleanup }),
   ...(value.toolPaths === undefined ? {} : { toolPaths: structuredClone(value.toolPaths) }),

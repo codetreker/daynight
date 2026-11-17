@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
 
 func TestToolPathsConfigurationRetainsThreeStates(t *testing.T) {
@@ -24,7 +25,7 @@ func TestToolPathsConfigurationRetainsThreeStates(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if string(got["toolPaths"]) != `{"codex":{"kind":"path","path":"/Applications/工具 $()/codex"},"copilot":{"kind":"auto"},"herdr":null}` {
+	if string(got["toolPaths"]) != `{"codex":{"kind":"path","path":"/Applications/工具 $()/codex"},"copilot":{"kind":"auto"}}` {
 		t.Fatalf("tool choices lost: %s", raw)
 	}
 }
@@ -110,11 +111,36 @@ func TestToolPathsStrictChoiceSyntax(t *testing.T) {
 			t.Fatalf("invalid choice accepted: %+v", choice)
 		}
 	}
-	for _, raw := range []string{`{"codex":null,"copilot":null}`, `{"codex":null,"copilot":null,"herdr":null,"other":null}`, `{"codex":{"kind":"path","path":"/\ud800"},"copilot":null,"herdr":null}`} {
+	for _, raw := range []string{`{"codex":null}`, `{"codex":null,"copilot":null,"herdr":null,"other":null}`, `{"codex":{"kind":"path","path":"/\ud800"},"copilot":null,"herdr":null}`} {
 		document := configurationInputDocument()
 		document["toolPaths"] = json.RawMessage(raw)
 		if _, err := ParseWorkerConfiguration(configurationInputJSON(t, document)); err == nil {
 			t.Fatalf("invalid choices accepted: %s", raw)
 		}
+	}
+}
+
+func TestTwoToolProtocolRejectsLegacyFields(t *testing.T) {
+	capabilities := workerprotocol.Capabilities{ToolPaths: true, ArchiveSessions: true}
+	document := configurationInputDocument()
+	document["toolPaths"] = map[string]any{"codex": nil, "copilot": nil}
+	document["archiveSessions"] = true
+	if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), capabilities); err != nil {
+		t.Fatalf("valid two-tool candidate: %v", err)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"mode":         func(v map[string]any) { v["agentControlMode"] = "web" },
+		"third tool":   func(v map[string]any) { v["toolPaths"] = map[string]any{"codex": nil, "copilot": nil, "herdr": nil} },
+		"missing tool": func(v map[string]any) { v["toolPaths"] = map[string]any{"codex": nil} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := configurationInputDocument()
+			candidate["toolPaths"] = map[string]any{"codex": nil, "copilot": nil}
+			candidate["archiveSessions"] = true
+			mutate(candidate)
+			if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, candidate), capabilities); err == nil {
+				t.Fatal("legacy or incomplete candidate accepted")
+			}
+		})
 	}
 }

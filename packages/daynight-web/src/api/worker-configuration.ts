@@ -3,7 +3,7 @@ import { ApiError, assertResponsePrincipal, json, request, requestId } from './c
 import { array, boolean, id, malformed, parseProjectPage, record, string, timestamp } from './parse';
 import { decodeProjectPageJson } from './project-json';
 import { parseApiJson } from './json';
-import { configurationBaseline, configurationValueSourcesEqual, decodeConfigurationDocument, encodeConfigurationPut, withoutArchiveSessions, type ConfigurationBaseline, type ConfigurationDocument, type ConfigurationSubmission } from './configuration-source';
+import { configurationBaseline, configurationValueSourcesEqual, decodeConfigurationDocument, encodeConfigurationPut, unsupportedConfigurationFields, withoutArchiveSessions, type ConfigurationBaseline, type ConfigurationDocument, type ConfigurationSubmission } from './configuration-source';
 import type { ProjectPage, WorkerAgent } from './types';
 import type { WorkerReadAdmission } from './workers';
 
@@ -53,7 +53,7 @@ const fields = (value: unknown, names: readonly string[], optional = false, allo
 };
 const knownToolPaths = (value: unknown): unknown => {
   const data = record(value);
-  return Object.fromEntries(['codex', 'copilot', 'herdr'].filter(key => Object.hasOwn(data, key)).map(key => {
+  return Object.fromEntries(['codex', 'copilot'].filter(key => Object.hasOwn(data, key)).map(key => {
     const raw = data[key];
     if (raw === null) return [key, null];
     const choice = record(raw);
@@ -137,14 +137,23 @@ const outcome = (value: unknown, controlModeSupported: boolean, archiveSessionsS
   if ((state === 'error') !== (error !== null) || state === 'applied' && appliedValue === null || state !== 'error' && nextAttemptAt !== null) return malformed();
   return { key, targetRevision: parseConfigurationRevision(data.targetRevision), appliedValue, state, error, lastFailure: failure(data.lastFailure), nextAttemptAt };
 };
-export const parseWorkerConfiguration = (value: unknown, options: WorkerConfigurationCapabilityInput = false): WorkerConfigurationResource => {
-  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported } = workerConfigurationCapabilities(options);
+export const parseWorkerConfiguration = (value: unknown, options?: WorkerConfigurationCapabilityInput): WorkerConfigurationResource => {
+  const source = record(value);
+  const desired = source.desired === null || source.desired === undefined ? null : record(source.desired);
+  const desiredValue = desired === null ? null : record(desired.value);
+  const capabilities = options ?? { controlMode: false, toolPaths: desiredValue !== null && Object.hasOwn(desiredValue, 'toolPaths'), archiveSessions: desiredValue !== null && Object.hasOwn(desiredValue, 'archiveSessions') };
+  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported } = workerConfigurationCapabilities(capabilities);
   const data = fields(value, ['desired', 'observationRevision', 'observation'], false, true);
   const observationRevision = parseConfigurationRevision(data.observationRevision, true);
-  let desired: WorkerConfigurationDesired | null = null, observation: WorkerConfigurationObservation | null = null;
+  let target: WorkerConfigurationDesired | null = null, observation: WorkerConfigurationObservation | null = null;
   if (data.desired !== null) {
     const raw = fields(data.desired, ['revision', 'updatedAt', 'value'], false, true);
-    desired = { revision: parseConfigurationRevision(raw.revision), updatedAt: configurationTimestamp(raw.updatedAt), value: parseWorkerConfigurationValue(raw.value, options) };
+    // The stored target may predate the current contract. Keep its exact source
+    // in the document while projecting only editable fields into the form.
+    const stored = record(raw.value);
+    const { agentControlMode: _mode, toolPaths: rawTools, ...rest } = stored;
+    const projected = { ...rest, ...(toolPathsSupported ? { toolPaths: rawTools === undefined ? { codex: null, copilot: null } : { codex: null, copilot: null, ...record(knownToolPaths(rawTools)) } } : {}) };
+    target = { revision: parseConfigurationRevision(raw.revision), updatedAt: configurationTimestamp(raw.updatedAt), value: parseWorkerConfigurationValue(projected, { controlMode: false, toolPaths: toolPathsSupported, archiveSessions: archiveSessionsSupported === true }) };
   }
   if (data.observation !== null) {
     const raw = fields(data.observation, ['baseRevision', 'desiredRevision', 'items', 'reportedAt'], false, true);
@@ -159,10 +168,10 @@ export const parseWorkerConfiguration = (value: unknown, options: WorkerConfigur
     }).filter((item): item is WorkerConfigurationOutcome => item !== null);
     if (new Set(items.map(item => `${item.key.kind}/${'projectId' in item.key ? item.key.projectId : ''}`)).size !== items.length || items.some(item => BigInt(item.targetRevision) > BigInt(desiredRevision))) return malformed();
     observation = { baseRevision: parseConfigurationRevision(raw.baseRevision, true), desiredRevision, items, reportedAt: configurationTimestamp(raw.reportedAt) };
-    if (desired === null || BigInt(desiredRevision) > BigInt(desired.revision) || BigInt(observation.baseRevision) + 1n !== BigInt(observationRevision)) return malformed();
+    if (target === null || BigInt(desiredRevision) > BigInt(target.revision) || BigInt(observation.baseRevision) + 1n !== BigInt(observationRevision)) return malformed();
   }
-  if ((observationRevision === '0') !== (observation === null) || desired === null && observation !== null) return malformed();
-  return { desired, observationRevision, observation, ...(controlModeSupported ? { controlModeSupported: true } : {}), ...(toolPathsSupported ? { toolPathsSupported: true } : {}), ...(archiveSessionsSupported ? { archiveSessionsSupported: true } : {}) };
+  if ((observationRevision === '0') !== (observation === null) || target === null && observation !== null) return malformed();
+  return { desired: target, observationRevision, observation, ...(controlModeSupported ? { controlModeSupported: true } : {}), ...(toolPathsSupported ? { toolPathsSupported: true } : {}), ...(archiveSessionsSupported ? { archiveSessionsSupported: true } : {}) };
 };
 
 export type WorkerConfigurationWriteAdmission = WorkerReadAdmission & { readonly onDispatch?: () => void; readonly onConfirmed?: (resource: WorkerConfigurationResource) => void; readonly onRejected?: (error: ApiError) => void; readonly controlModeSupported?: boolean; readonly toolPathsSupported?: boolean; readonly archiveSessionsSupported?: boolean };
@@ -177,39 +186,40 @@ const decoder = (options: WorkerConfigurationCapabilityInput) => async (response
 const url = (workerId: string) => `/api/v1/me/workers/${requestId(workerId)}/configuration`;
 export const getWorkerConfiguration = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission & { readonly toolPathsSupported?: boolean }): Promise<WorkerConfigurationResource> => {
   const userId = requestId(admission.userId);
-  const response = await request(url(workerId), signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Control-Mode': '1', 'Daynight-Worker-Archive-Sessions': '1', ...(admission.toolPathsSupported === true ? { 'Daynight-Worker-Tool-Paths': '1' } : {}) } });
+  const response = await request(url(workerId), signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Archive-Sessions': '1', 'Daynight-Worker-Tool-Paths': '2' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
+  if (response.ok && response.headers.get('Daynight-Worker-Tool-Paths') !== '2') throw new ApiError('protocol', response.status, 'worker_tool_paths_upgrade');
   return json(response, signal, data => {
     if (response.status !== 200 || response.headers.get('Daynight-Worker-Configuration') !== '1') throw new ApiError('protocol', response.status);
     const toolHeader = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (toolHeader !== null && toolHeader !== '1') throw new ApiError('protocol', response.status);
+    if (toolHeader !== '2') throw new ApiError('protocol', response.status);
     const archiveHeader = response.headers.get('Daynight-Worker-Archive-Sessions');
     if (archiveHeader !== null && archiveHeader !== '1') throw new ApiError('protocol', response.status);
     return rememberDocument(data as ConfigurationDocument);
-  }, decoder({ controlMode: response.headers.get('Daynight-Worker-Control-Mode') === '1', toolPaths: admission.toolPathsSupported === true && response.headers.get('Daynight-Worker-Tool-Paths') === '1', archiveSessions: response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }));
+  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }));
 };
 export const saveWorkerConfiguration = async (workerId: string, revision: string, value: WorkerConfigurationValue | ConfigurationSubmission, signal: AbortSignal, admission: WorkerConfigurationWriteAdmission): Promise<WorkerConfigurationResource> => {
-  const supported = admission.controlModeSupported === true, toolsSupported = admission.toolPathsSupported === true, archiveSupported = admission.archiveSessionsSupported === true;
+  const supported = false, toolsSupported = true, archiveSupported = admission.archiveSessionsSupported === true;
   const userId = requestId(admission.userId), expected = parseConfigurationRevision(revision);
   const input = 'valueSource' in value ? value.known : value;
-  const projected = Object.fromEntries(Object.entries(input).filter(([key]) => (toolsSupported || key !== "toolPaths") && (archiveSupported || key !== "archiveSessions")));
+  const projected = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'agentControlMode' && (toolsSupported || key !== "toolPaths") && (archiveSupported || key !== "archiveSessions")));
   const validated = parseWorkerConfigurationValue(projected, { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archiveSupported });
   const submission: ConfigurationSubmission = 'valueSource' in value ? { ...value, valueSource: archiveSupported ? value.valueSource : withoutArchiveSessions(value.valueSource) } : { baseline: { revision: expected, valueSource: JSON.stringify(validated), known: validated }, valueSource: JSON.stringify(validated), known: validated };
-  if (submission.baseline.revision !== expected) throw new ApiError('protocol');
-  const response = await request(url(workerId), signal, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(supported ? { 'Daynight-Worker-Control-Mode': '1' } : {}), ...(toolsSupported ? { 'Daynight-Worker-Tool-Paths': '1' } : {}), ...(archiveSupported ? { 'Daynight-Worker-Archive-Sessions': '1' } : {}) }, body: encodeConfigurationPut(submission) }, admission.onDispatch);
+  if (submission.baseline.revision !== expected || unsupportedConfigurationFields(submission.valueSource).length > 0) throw new ApiError('protocol');
+  const response = await request(url(workerId), signal, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Tool-Paths': '2', ...(archiveSupported ? { 'Daynight-Worker-Archive-Sessions': '1' } : {}) }, body: encodeConfigurationPut(submission) }, admission.onDispatch);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
+  if (response.ok && response.headers.get('Daynight-Worker-Tool-Paths') !== '2') throw new ApiError('protocol', response.status, 'worker_tool_paths_upgrade');
   return json(response, signal, data => {
     if (response.status !== 200 || response.headers.get('Daynight-Worker-Configuration') !== '1') throw new ApiError('protocol', response.status);
-    if (supported && response.headers.get('Daynight-Worker-Control-Mode') !== '1') throw new ApiError('protocol', response.status);
     const toolHeader = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (toolHeader !== null && toolHeader !== '1' || toolsSupported && toolHeader !== '1') throw new ApiError('protocol', response.status);
+    if (toolHeader !== '2') throw new ApiError('protocol', response.status);
     const archiveHeader = response.headers.get('Daynight-Worker-Archive-Sessions');
     if (archiveHeader !== null && archiveHeader !== '1' || archiveSupported && archiveHeader !== '1') throw new ApiError('protocol', response.status);
     const resource = rememberDocument(data as ConfigurationDocument), baseline = workerConfigurationBaseline(resource);
-    if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource, { controlMode: supported, toolPaths: toolsSupported, archiveSessions: archiveSupported })) throw new ApiError('protocol', response.status);
+    if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource, { archiveSessions: archiveSupported })) throw new ApiError('protocol', response.status);
     admission.onConfirmed?.(resource);
     return resource;
-  }, decoder({ controlMode: response.headers.get('Daynight-Worker-Control-Mode') === '1', toolPaths: toolsSupported && response.headers.get('Daynight-Worker-Tool-Paths') === '1', archiveSessions: archiveSupported && response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }), false, admission.onRejected);
+  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: archiveSupported && response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }), false, admission.onRejected);
 };
 export const listWorkerConfigurationProjects = async (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission: WorkerReadAdmission): Promise<ProjectPage> => {
   const userId = requestId(admission.userId), parameters = new URLSearchParams();

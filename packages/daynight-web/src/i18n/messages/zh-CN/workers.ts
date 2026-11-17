@@ -11,7 +11,7 @@ export const workers: WorkersMessages = {
   refresh: '刷新', refreshing: '正在刷新…', retry: '重试',
   readError: '服务暂时无法提供已确认的 Worker 观测。', networkError: '请检查网络连接后重试。',
   cacheStorageError: '无法检查或清理本地项目缓存。受影响项目的私有内容已隐藏，请重试。',
-  protocolError: '服务返回的 Worker 信息格式无效。', refreshFailed: 'Worker 信息同步失败。',
+  protocolError: '服务返回的 Worker 信息格式无效。', upgradeService: '升级服务后可查看 Worker 详情。', refreshFailed: 'Worker 信息同步失败。',
   retainedState: '当前数值和徽标显示上次确认的观测。',
   lastSynchronized: '最后同步', lastReported: '最后上报', sampledAt: '资源采样时间', checkedAt: '检测时间',
   online: '在线', offline: '离线', confirmedStatus: ({ status }) => `${status} · 上次确认`,

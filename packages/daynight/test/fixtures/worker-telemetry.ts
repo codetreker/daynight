@@ -7,5 +7,5 @@ export const workerTelemetry: WorkerTelemetry = {
   cpu: { state: "ok", checkedAt: workerTelemetryTime, value: { model: "CPU", logicalProcessors: 4, usagePercent: 12 } },
   memory: { state: "ok", checkedAt: workerTelemetryTime, value: { usedBytes: 100, totalBytes: 200 } },
   disk: { state: "ok", checkedAt: workerTelemetryTime, value: { availableBytes: 300, totalBytes: 400 } },
-  versions: { daynight: "0.26.1", herdr: { state: "not_running", checkedAt: workerTelemetryTime }, codex: { state: "not_installed", checkedAt: workerTelemetryTime }, copilot: { state: "not_installed", checkedAt: workerTelemetryTime } },
+  versions: { daynight: "0.26.1", codex: { state: "not_installed", checkedAt: workerTelemetryTime }, copilot: { state: "not_installed", checkedAt: workerTelemetryTime } },
 };

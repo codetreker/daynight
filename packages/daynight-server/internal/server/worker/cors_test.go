@@ -74,8 +74,7 @@ func TestWorkerCORSConfigurationReportsPreserveProtocol(t *testing.T) {
 			headers := http.Header{}
 			headers.Set("daynight-worker-configuration", version)
 			headers.Set("daynight-worker-protocol", "1")
-			headers.Set("daynight-worker-control-mode", "1")
-			headers.Set("daynight-worker-tool-paths", "1")
+			headers.Set("daynight-worker-tool-paths", "2")
 			headers.Set("daynight-worker-archive-sessions", "1")
 			if version == "2" {
 				headers.Set("daynight-worker-prompts", "[]")
@@ -90,14 +89,13 @@ func TestWorkerCORSConfigurationReportsPreserveProtocol(t *testing.T) {
 			}
 			assertWorkerBrowserResponse(t, preflight)
 			body := configurationHTTPReportBody(nil, nil)
-			body["configuration"].(map[string]any)["controlModeBootstrap"] = "web"
-			body["configuration"].(map[string]any)["toolPathsBootstrap"] = map[string]any{"codex": map[string]any{"kind": "auto"}, "copilot": map[string]any{"kind": "auto"}, "herdr": map[string]any{"kind": "auto"}}
+			body["configuration"].(map[string]any)["toolPathsBootstrap"] = map[string]any{"codex": map[string]any{"kind": "auto"}, "copilot": map[string]any{"kind": "auto"}}
 			body["toolPaths"] = map[string]any{"schemaVersion": 1, "observedAt": "2026-11-08T00:00:00Z", "entries": []any{}}
 			businessCalls := 0
 			result := workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: &model.WorkerConfigurationReceipt{ObservationRevision: "7"}}
 			check := func(ctx context.Context, p model.Principal, id string, in model.WorkerReport) {
 				businessCalls++
-				if ctx.Err() != nil || p != defaultHTTPPrincipal() || id != corsWorkerID || in.Configuration == nil || in.Configuration.ControlModeBootstrap == nil || *in.Configuration.ControlModeBootstrap != "web" || in.Configuration.ToolPathsBootstrap == nil || in.Telemetry.ToolPaths == nil {
+				if ctx.Err() != nil || p != defaultHTTPPrincipal() || id != corsWorkerID || in.Configuration == nil || in.Configuration.ControlModeBootstrap != nil || in.Configuration.ToolPathsBootstrap == nil || in.Telemetry.ToolPaths == nil {
 					t.Fatalf("Worker protocol arguments changed: %+v", in)
 				}
 			}
@@ -120,7 +118,7 @@ func TestWorkerCORSConfigurationReportsPreserveProtocol(t *testing.T) {
 				t.Fatalf("Worker report: %d business=%d auth=%d %s", w.Code, businessCalls, *authCalls, w.Body.String())
 			}
 			assertWorkerBrowserResponse(t, w)
-			for name, value := range map[string]string{"Daynight-Worker-Configuration": version, "Daynight-Worker-Control-Mode": "1", "Daynight-Worker-Tool-Paths": "1", "Daynight-Worker-Archive-Sessions": "1", "Daynight-User-ID": defaultHTTPPrincipal().UserID} {
+			for name, value := range map[string]string{"Daynight-Worker-Configuration": version, "Daynight-Worker-Tool-Paths": "2", "Daynight-Worker-Archive-Sessions": "1", "Daynight-User-ID": defaultHTTPPrincipal().UserID} {
 				if w.Header().Get(name) != value {
 					t.Fatalf("Worker response %s=%s", name, w.Header().Get(name))
 				}

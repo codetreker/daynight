@@ -33,12 +33,12 @@ test("target publication does not probe and unchanged choices retain verified re
 });
 test("unadopted choices cannot probe or launch and do not prevent another tool", async () => {
   const { manager, checked } = create();
-  manager.setTargets({ ...targets("A"), choices: { ...targets("A").choices, copilot: null, herdr: null } });
+  manager.setTargets({ ...targets("A"), choices: { ...targets("A").choices, copilot: null } });
   await expect(manager.selectForNewExecution("copilot", "web", op())).rejects.toThrow("has not been adopted");
   const selected = await manager.selectForNewExecution("codex", "web", op());
   expect(selected.entryPath).toBe(path.resolve("/tools/A")); expect(checked).toHaveLength(1);
   const telemetry = manager.snapshot();
-  expect(telemetry.entries.map(value => value.tool)).toEqual(["codex", "codex"]);
+  expect(telemetry.entries.map(value => value.tool)).toEqual(["codex"]);
   expect(parseToolPathTelemetry(telemetry)).toEqual(telemetry);
   await manager.close(op());
 });
@@ -47,11 +47,11 @@ test("an unrelated target change preserves an in-flight probe; withdrawing its o
   const { manager, checked } = create({ probe: { check: async value => { entered.resolve(); await release.promise; checked.push(value.entryPath); return { version: "1.0.0" }; } } });
   manager.setTargets(targets("A"));
   const pending = manager.prepare("codex", "web", op()); await entered.promise;
-  manager.setTargets({ ...targets("A", "2"), choices: { ...targets("A").choices, herdr: null } });
+  manager.setTargets({ ...targets("A", "2"), choices: { ...targets("A").choices } });
   release.resolve(); await pending;
   expect(entry(manager)).toMatchObject({ state: "applied", targetRevision: "2" }); expect(checked).toHaveLength(1);
   const frozen = manager.currentSelection("codex", "web")!;
-  manager.setTargets({ ...targets("A", "3"), choices: { ...targets("A").choices, codex: null, herdr: null } });
+  manager.setTargets({ ...targets("A", "3"), choices: { ...targets("A").choices, codex: null } });
   expect(manager.currentSelection("codex", "web")).toBeUndefined();
   await expect(manager.prepare("codex", "web", op())).rejects.toThrow("has not been adopted");
   await manager.verifyFrozen(frozen, op()); await manager.close(op());
@@ -216,7 +216,7 @@ for (const mode of ["in-place", "symlink"] as const) test.skipIf(mode === "symli
     const checks: string[] = [], manager = new ToolSelectionManager({ environment: process.env, cwd: root, workerNode: process.execPath, now: () => now, readActiveSelections: () => [], probe: {
       check: async value => { const command = toolCommand(value, []); const result = await promisify(execFile)(command.file, command.args, { cwd: root, timeout: 5000 }); checks.push(result.stdout.trim()); return { version: result.stdout.trim(), checkedAt: now }; }, close: async () => {},
     } });
-    manager.setTargets({ source: "cloud", revision: "1", choices: { codex: { kind: "path", path: entryPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+    manager.setTargets({ source: "cloud", revision: "1", choices: { codex: { kind: "path", path: entryPath }, copilot: { kind: "auto" } } });
     const old = await manager.selectForNewExecution("codex", "web", op());
     if (mode === "symlink") { await rm(entryPath); await symlink(second, entryPath, "file"); await rm(first); }
     else await writeFile(first, "#!/usr/bin/env node\nconsole.log('2.0.0')\n");

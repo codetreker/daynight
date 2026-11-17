@@ -29,8 +29,13 @@ func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerpr
 			return model.WorkerConfiguration{}, invalidInput("configuration." + key + " is required.")
 		}
 	}
+	if capabilities.ToolPaths {
+		if _, err := configurationObject(fields["toolPaths"], "toolPaths", false, "codex", "copilot"); err != nil {
+			return model.WorkerConfiguration{}, err
+		}
+	}
 	value, err := ParseWorkerConfiguration(raw)
-	value.PreserveAgentControlMode = !capabilities.ControlMode
+	value.PreserveAgentControlMode = false
 	value.PreserveToolPaths = !capabilities.ToolPaths
 	value.PreserveArchiveSessions = !capabilities.ArchiveSessions
 	_, present := fields["enableSudoCleanup"]
@@ -55,11 +60,16 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 		if err != nil {
 			return nil, err
 		}
-		if capabilities.ToolPaths && (value.ToolPaths.Codex == nil || value.ToolPaths.Copilot == nil || value.ToolPaths.Herdr == nil) {
+		if capabilities.ToolPaths && (value.ToolPaths.Codex == nil || value.ToolPaths.Copilot == nil) {
 			return nil, invalidInput("Initial configuration requires all tool path choices.")
 		}
 		if capabilities.ControlMode && value.AgentControlMode == nil {
 			return nil, invalidInput("Initial configuration requires an agent control mode.")
+		}
+	}
+	if capabilities.ToolPaths && !configurationNull(fields["toolPathsBootstrap"]) {
+		if _, err := configurationObject(fields["toolPathsBootstrap"], "toolPathsBootstrap", false, "codex", "copilot"); err != nil {
+			return nil, err
 		}
 	}
 	exchange, err := ParseWorkerConfigurationExchange(raw)

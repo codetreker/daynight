@@ -63,7 +63,7 @@ test("background preparation follows Copilot demand on each refresh", async () =
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
     localToolPaths: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
-  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") } } });
   const prepare = vi.spyOn(runtime.manager, "prepare");
   let now = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   const copilot = () => runtime.manager.snapshot().entries.find(entry => entry.tool === "copilot" && entry.context === "web")!;
@@ -91,7 +91,7 @@ test("demand changes during a refresh take effect after the current preparation 
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
     localToolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
-  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" } } });
   let release!: () => void;
   const pending = new Promise<void>(resolve => { release = resolve; });
   const prepare = vi.spyOn(runtime.manager, "prepare").mockImplementation(async tool => { if (tool === "codex" && prepare.mock.calls.length === 1) await pending; });

@@ -24,6 +24,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   uninitialized: 'Configuration management is not connected', uninitializedDetail: 'Run a configuration-aware Worker to import its local settings.',
   readFailed: 'Configuration could not be loaded.', saveFailed: 'Configuration could not be saved.',
   networkError: 'Check your connection and try again.', protocolError: 'The service returned an invalid configuration response.',
+  unsupportedFields: 'The saved configuration contains unsupported or missing fields.', unsupportedFieldsDetail: 'Review the configuration and save to replace the target. Reading this page does not change it.',
   permissionError: 'You do not have access to this configuration.', retainedDraft: 'Your draft has been kept.',
   saved: 'Saved to the cloud. Application is confirmed by a Worker report.',
   reconciled: 'The cloud confirms the submitted configuration.', notSaved: 'The cloud does not contain the submitted configuration. Review the latest values before saving again.',

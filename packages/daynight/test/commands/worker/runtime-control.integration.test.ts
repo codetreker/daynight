@@ -73,7 +73,7 @@ const captureWebOptions = () => {
   vi.spyOn(webBackendModule, "createWebExecutionBackend").mockImplementation(options => { captured = options; return create(options); });
   return () => { if (captured === undefined) throw new Error("Web backend was not constructed."); return captured; };
 };
-const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { agentControlMode: "web", maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
+const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
 
 describe("worker synchronous management runtime ownership", () => {
   it("keeps the original Web project binding without resolving unrelated projects", async () => {

@@ -29,6 +29,7 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	request := func(method, path, body string, version ...string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set(workerToolPathsHeader, "2")
 		r.AddCookie(cookie)
 		r.Header.Set("Origin", h.Origin)
 		for _, v := range version {
@@ -104,10 +105,10 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	}
 	check(request("PUT", path+"/configuration", `{}`), 400, "invalid_input")
 	check(request("PUT", path+"/configuration", `{"revision":"1","value":null}`), 400, "invalid_input")
-	config := map[string]any{"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false, "native": map[string]any{"agent": "codex", "model": nil, "args": []any{}}, "projects": []any{}}
+	config := map[string]any{"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false, "native": map[string]any{"agent": "codex", "model": nil, "args": []any{}}, "projects": []any{}, "toolPaths": map[string]any{"codex": map[string]any{"kind": "auto"}, "copilot": map[string]any{"kind": "auto"}}}
 	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": 1, "value": config})), 400, "invalid_input")
 	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": "1", "value": config})), 409, "configuration_not_initialized")
-	observed["configuration"] = map[string]any{"bootstrap": config, "observation": nil}
+	observed["configuration"] = map[string]any{"bootstrap": config, "observation": nil, "toolPathsBootstrap": nil}
 	check(request("POST", path+"/report", jsonBody(t, observed), "1"), 200, "")
 	w = request("GET", path+"/configuration", "")
 	resource := testsupport.DecodeResponse[model.WorkerConfigurationResource](t, w, 200)

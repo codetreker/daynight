@@ -11,7 +11,7 @@ import { replaceFileAtomicallyFromChunks } from "../../../src/platform/files.js"
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
-const desired = (revision: string, model = "original", selected = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { agentControlMode: "web", maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model, args: [] }, projects: selected ? [{ projectId, nativeOverrides: {} }] : [] } });
+const desired = (revision: string, model = "original", selected = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model, args: [] }, projects: selected ? [{ projectId, nativeOverrides: {} }] : [] } });
 const barrier = () => {
   let resolve!: () => void;
   const promise = new Promise<void>(accept => { resolve = accept; });
@@ -39,7 +39,7 @@ describe("Worker canonical configuration authority", () => {
     if (restart) await first.manager.stop();
     await manager.receive(receivedDesired(desired("5", "canonical", false)), "3"); await manager.settle();
     expect(manager.current()).toMatchObject({ synchronized: true, desired: { revision: "5" }, observationRevision: "3", effective: { native: { model: "canonical" } } });
-    expect(parseWorkerCloudReport(manager.report(), { controlMode: true, toolPaths: true }).observation).toMatchObject({ baseRevision: "3", desiredRevision: "5" });
+    expect(parseWorkerCloudReport(manager.report(), { controlMode: false, toolPaths: true }).observation).toMatchObject({ baseRevision: "3", desiredRevision: "5" });
     const saved = await first.read();
     expect(saved.authority).toMatchObject({ desiredJson: expect.any(String), applicationRevision: "5", observationRevision: "3" });
     expect(saved.currentItems.every(item => BigInt(item.value.targetRevision) <= 5n)).toBe(true);
@@ -152,7 +152,7 @@ describe("Worker canonical configuration authority", () => {
       expect(current.currentItems.find(item => item.value.key.kind === "projectRemoval")).toMatchObject({ value: { targetRevision: "5", state: "applied" } });
       expect(current.retainedItems.find(item => item.recordId === original.recordId)).toEqual(original);
     }
-    expect(parseWorkerCloudReport(manager.report(), { controlMode: true, toolPaths: true }).observation!.items.every(item => BigInt(item.targetRevision) <= 5n)).toBe(true);
+    expect(parseWorkerCloudReport(manager.report(), { controlMode: false, toolPaths: true }).observation!.items.every(item => BigInt(item.targetRevision) <= 5n)).toBe(true);
   });
 
   it.each([false, true])("retains the original high stop and performs current verification before lower target selected=%s becomes ready", async selected => {
@@ -170,7 +170,7 @@ describe("Worker canonical configuration authority", () => {
       expect(carrier).toMatchObject({ value: { targetRevision: "5", state: "pending" }, blockedByRemovalId: original.recordId });
       expect(prepare).toHaveBeenCalledOnce();
       expect(manager.current().effective.projects.every(project => !project.ready)).toBe(true);
-      expect(parseWorkerCloudReport(manager.report(), { controlMode: true, toolPaths: true }).observation!.items.every(item => BigInt(item.targetRevision) <= 5n)).toBe(true);
+      expect(parseWorkerCloudReport(manager.report(), { controlMode: false, toolPaths: true }).observation!.items.every(item => BigInt(item.targetRevision) <= 5n)).toBe(true);
     } finally { release.resolve(); }
     await manager.settle();
     expect(stops).toBe(2);

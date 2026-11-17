@@ -5,8 +5,8 @@ import { useI18n } from '../../../i18n/LocaleProvider';
 import { WorkerToolPathDetails } from '../WorkerToolPathDetails';
 import type { ConfigurationDraft, ParsedConfigurationDraft } from './model';
 
-const tools: readonly Tool[] = ['codex', 'copilot', 'herdr'];
-const names = { codex: 'Codex', copilot: 'Copilot', herdr: 'Herdr' };
+const tools: readonly Tool[] = ['codex', 'copilot'];
+const names = { codex: 'Codex', copilot: 'Copilot' };
 
 export const ConfigurationToolPathsFields = ({ resource, value, telemetry, online, disabled, changed, errors, onRevealToolPaths, onChange }: {
   readonly onRevealToolPaths?: () => void;
@@ -53,7 +53,7 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
           </div>
           {error !== undefined && <p className="field-error" id={`${id}-error`}>{m.invalidPath}</p>}
           {changed[tool] && <p className="application-feedback"><span className="status-chip unsaved">{m.unsaved}</span></p>}
-          {tool !== 'herdr' && <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online} />}
+          <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online} />
         </div>;
       })}
     </div>

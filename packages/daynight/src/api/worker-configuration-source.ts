@@ -22,7 +22,7 @@ const arraySource = (source: string, map: (source: string) => string): string =>
 };
 const native = (source: string): string => project(source, ["agent", "model", "args"]);
 const nullable = (source: string, map: (source: string) => string): string => source === "null" ? source : map(source);
-const tools = (source: string): string => project(source, ["codex", "copilot", "herdr"], Object.fromEntries(["codex", "copilot", "herdr"].map(key => [key, (source: string) => nullable(source, value => {
+const tools = (source: string): string => project(source, ["codex", "copilot"], Object.fromEntries(["codex", "copilot"].map(key => [key, (source: string) => nullable(source, value => {
   return project(value, ["kind", "path"]);
 })])));
 const desiredProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true): string => {
@@ -53,13 +53,17 @@ export const receiveWorkerDesired = (json: string, options?: WorkerConfiguration
   const revision = parseWorkerCloudRevision(knownJson(root.get("revision")!));
   const updatedAt = timestamp(knownJson(root.get("updatedAt")!));
   if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(updatedAt)) return malformed();
-  const capabilities = options ?? { controlMode: members.has("agentControlMode"), toolPaths: members.has("toolPaths"), archiveSessions: members.has("archiveSessions") };
+  const capabilities = options ?? { controlMode: false, toolPaths: true, archiveSessions: members.has("archiveSessions") };
   const enabled = workerConfigurationCapabilities(capabilities);
-  if (enabled.controlMode !== members.has("agentControlMode") || enabled.toolPaths !== members.has("toolPaths") || Boolean(enabled.archiveSessions) !== members.has("archiveSessions")) return malformed();
   // The full source was validated above; a known-field shape or value that this
   // binary cannot decode is retained as raw authority, not a partial target.
   let known: WorkerCloudDesired | null;
-  try { known = parseWorkerCloudDesired(knownJson(desiredProjection(json, capabilities, recognizeSudo)), false, capabilities); }
+  try {
+    if (members.has("agentControlMode") || enabled.toolPaths !== members.has("toolPaths") || Boolean(enabled.archiveSessions) !== members.has("archiveSessions")) return { json, revision, updatedAt, known: null };
+    const toolSource = members.get("toolPaths");
+    if (toolSource !== undefined && jsonObjectSources(toolSource).has("herdr")) return { json, revision, updatedAt, known: null };
+    known = parseWorkerCloudDesired(knownJson(desiredProjection(json, { ...enabled, controlMode: false }, recognizeSudo)), false, { ...enabled, controlMode: false });
+  }
   catch (error) { if (!(error instanceof ProtocolError || error instanceof SyntaxError)) throw error; known = null; }
   return { json, revision, updatedAt, known };
 };
@@ -159,7 +163,7 @@ export const desiredCapabilitySources = (json: string): ReadonlyMap<string, stri
 export const configurationDesiredSourcesComparable = (left: string, right: string): boolean => {
   const leftRoot = jsonObjectSources(left), rightRoot = jsonObjectSources(right);
   const leftValue = desiredCapabilitySources(left), rightValue = desiredCapabilitySources(right);
-  const hidden = new Set(workerCapabilityKeys.filter(key => leftValue.has(key) !== rightValue.has(key)));
+  const hidden = new Set<WorkerCapabilityKey>(leftValue.has("archiveSessions") !== rightValue.has("archiveSessions") ? ["archiveSessions"] : []);
   const comparable = (root: ReadonlyMap<string, string>, value: ReadonlyMap<string, string>): string => objectSource(
     [...root].map(([key, source]) => [key, key === "value" ? objectSource([...value].filter(([name]) => !hidden.has(name as WorkerCapabilityKey))) : source]),
   );

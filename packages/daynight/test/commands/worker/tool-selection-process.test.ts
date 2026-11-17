@@ -20,7 +20,7 @@ test("real child processes use the selected recipe while old frozen execution st
   } });
   try {
     const first = await script("A"), second = await script("B");
-    const target = (file: string, revision: string) => manager.setTargets({ source: "cloud", revision, choices: { codex: { kind: "path", path: file }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+    const target = (file: string, revision: string) => manager.setTargets({ source: "cloud", revision, choices: { codex: { kind: "path", path: file }, copilot: { kind: "auto" } } });
     target(first, "1"); const frozen = await manager.selectForNewExecution("codex", "web", operation);
     expect(manager.observationFor(frozen)?.version).toBe("1.0.0");
     target(second, "2"); const next = await manager.selectForNewExecution("codex", "web", operation);

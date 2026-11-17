@@ -65,7 +65,7 @@ afterEach(async () => {
 
 it("retains identity and request order through two-project inventory, claim and report", async () => {
   const second = uuid(8), token = "fixture-worker-token";
-  const desired: WorkerCloudDesired = { revision: "1", updatedAt: time, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })) } };
+  const desired: WorkerCloudDesired = { revision: "1", updatedAt: time, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })) } };
   const account = { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(90), kind: "personal" as const, name: null } };
   const candidate = { ...task(), assignedTo: worker.userId };
   const claimed = { ...task(taskId, worker), assignedTo: worker.userId, version: 2n };
@@ -74,8 +74,8 @@ it("retains identity and request order through two-project inventory, claim and 
     const url = new URL(request.url!, "http://localhost");
     requests.push({ method: request.method!, url: request.url!, authorization: request.headers.authorization, body });
     if (url.pathname === "/api/v1/me") respond(response, account);
-    else if (url.pathname.endsWith("/configuration")) { response.setHeader("Daynight-Worker-Configuration", "1"); respond(response, { desired, observationRevision: "0", observation: null }); }
-    else if (url.pathname.endsWith("/report")) respond(response, { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime });
+    else if (url.pathname.endsWith("/configuration")) { response.setHeader("Daynight-Worker-Configuration", "1"); response.setHeader("Daynight-Worker-Tool-Paths", "2"); respond(response, { desired, observationRevision: "0", observation: null }); }
+    else if (url.pathname.endsWith("/report")) { response.setHeader("Daynight-Worker-Tool-Paths", "2"); respond(response, { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime }); }
     else if (url.pathname.endsWith("/worker-claim")) respond(response, claimed);
     else if (url.pathname.endsWith("/tasks")) respond(response, { items: url.searchParams.has("assignedTo") && url.pathname.includes(projectId) ? [candidate] : [], nextCursor: null });
     else if (url.pathname === `/api/v1/projects/${projectId}`) respond(response, project());

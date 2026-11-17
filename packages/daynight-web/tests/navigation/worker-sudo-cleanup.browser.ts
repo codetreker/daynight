@@ -7,7 +7,7 @@ const setup = async (page: Page) => {
   const state = { value: false, revision: 1, applied: false };
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname;
-    const send = (json: unknown, archive = false) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1',  } });
+    const send = (json: unknown, archive = false) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2',  } });
     if (path === '/api/v1/me') return send({ id: WORKER_USER, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects' || path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/me/workers/${worker}`) return send(workerDetail());

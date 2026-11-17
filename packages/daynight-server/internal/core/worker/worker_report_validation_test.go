@@ -81,9 +81,12 @@ func TestWorkerReportValidationRejectsInvalidDomainValues(t *testing.T) {
 		"error missing code":         func(r *model.WorkerReport) { r.Telemetry.Versions.Copilot.Code = nil },
 		"error value":                func(r *model.WorkerReport) { r.Telemetry.Versions.Copilot.Value = workerValidationValue("version") },
 		"missing installation value": func(r *model.WorkerReport) { r.Telemetry.Versions.Codex.Value = workerValidationValue("version") },
-		"installed blank version":    func(r *model.WorkerReport) { r.Telemetry.Versions.Herdr.Value = workerValidationValue(" ") },
-		"inventory time":             func(r *model.WorkerReport) { r.TaskInventory.ObservedAt = time.Time{} },
-		"null claims":                func(r *model.WorkerReport) { r.TaskInventory.Claims = nil },
+		"installed blank version": func(r *model.WorkerReport) {
+			r.Telemetry.Versions.Codex.State = "ok"
+			r.Telemetry.Versions.Codex.Value = workerValidationValue(" ")
+		},
+		"inventory time": func(r *model.WorkerReport) { r.TaskInventory.ObservedAt = time.Time{} },
+		"null claims":    func(r *model.WorkerReport) { r.TaskInventory.Claims = nil },
 		"reference project": func(r *model.WorkerReport) {
 			r.TaskInventory.Claims = []model.WorkerTaskReference{{ProjectID: "bad", TaskID: uuid.NewString(), ClaimID: uuid.NewString()}}
 		},

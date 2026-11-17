@@ -94,7 +94,7 @@ const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantH
 };
 const telemetry = (value: unknown, toolPathsSupported: boolean): WorkerTelemetry => {
   const data = fields(value, ["machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", ...["assistantHost", "runtimeConfiguration", ...(toolPathsSupported ? ["toolPaths"] : [])].filter(key => Object.hasOwn(record(value), key))]);
-  const versions = fields(data.versions, ["daynight", "herdr", "codex", "copilot"]);
+  const versions = fields(data.versions, ["daynight", "codex", "copilot"]);
   return {
     ...(Object.hasOwn(data, "toolPaths") ? { toolPaths: parseToolPathTelemetry(data.toolPaths, executionPlatform(data.platform)) } : {}),
     ...(Object.hasOwn(data, "assistantHost") ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
@@ -122,7 +122,7 @@ const telemetry = (value: unknown, toolPathsSupported: boolean): WorkerTelemetry
       if (availableBytes > totalBytes) return malformed();
       return { availableBytes, totalBytes };
     }),
-    versions: { daynight: text(versions.daynight), herdr: software(versions.herdr, "not_running"), codex: software(versions.codex, "not_installed"), copilot: software(versions.copilot, "not_installed") },
+    versions: { daynight: text(versions.daynight), codex: software(versions.codex, "not_installed"), copilot: software(versions.copilot, "not_installed") },
   };
 };
 const summaryFields = ["workerId", "machine", "platform", "lastReportedAt", "taskObservationState", "taskObservedAt", "activeTaskCount"] as const;

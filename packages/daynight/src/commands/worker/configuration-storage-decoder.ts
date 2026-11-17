@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { receiveWorkerDesired as receiveCurrentDesired, parseWorkerCloudDesired as parseCurrentDesired, desiredCapabilitySources as currentCapabilitySources } from "../../api/worker-configuration.js";
 import { canonicalId, ProtocolError } from "../../api/validation.js";
 import { configurationJsonChunks } from "./configuration-json.js";
 import { parseWorkerCloudItem, parseWorkerCloudRevision, parseConfigurationDesired } from "./configuration-storage-wire.js";
@@ -186,11 +187,14 @@ const requireReferences = (items: readonly DecodedTracked[]): void => {
     for (const id of path) complete.add(id);
   }
 };
-const parseSchema5 = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity, applicationRevision?: string, preSudo = false, webOnly = false, targetMatches = true, modeAdoption = false): Cache5 => {
+const parseSchema5 = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity, applicationRevision?: string, preSudo = false, webOnly = false, targetMatches = true, modeAdoption = false, currentWire = false): Cache5 => {
   const data = exact(source, ["schemaVersion", "identity", "authority", "nextFailureId", "projectionCursor", "currentItems", "retainedItems"]);
   identityMatches(data.identity, identity);
   const authority = exact(data.authority, ["generation", "desired", "observationRevision"]);
-  const desired = authority.desired === null ? null : parseConfigurationDesired(authority.desired as WorkerCloudDesired, false);
+  const sourceDesired = authority.desired as WorkerCloudDesired | null;
+  const desired = sourceDesired === null ? null : currentWire
+    ? parseCurrentDesired(sourceDesired, false, { controlMode: false, toolPaths: sourceDesired.value.toolPaths !== undefined, archiveSessions: sourceDesired.value.archiveSessions !== undefined })
+    : parseConfigurationDesired(sourceDesired, false);
   if (preSudo && (desired?.value.enableSudoCleanup !== undefined || desired?.value.archiveSessions !== undefined)) throw new TypeError("Worker configuration cache has a future known field.");
   const observationRevision = parseWorkerCloudRevision(authority.observationRevision, true), nextFailureId = counter(data.nextFailureId, 1);
   if (!webOnly && desired === null && observationRevision !== "0") throw new TypeError("Worker configuration cache has an observation without a target.");
@@ -232,7 +236,10 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   if (authority.desiredJson !== null && typeof authority.desiredJson !== "string") throw new TypeError("Worker configuration cache has an invalid desired source.");
   const legacyReceived = authority.desiredJson === null || webOnly ? null : receiveWorkerDesired(authority.desiredJson);
   const currentReceived = authority.desiredJson === null || !webOnly ? null : receiveStoredDesired9(authority.desiredJson);
-  const desired = legacyReceived?.known ?? currentReceived?.known ?? null;
+  // Schema 10 can persist the current network authority without changing its storage envelope.
+  // Older decoders continue to interpret their original wire formats independently.
+  const networkReceived = authority.desiredJson === null || data.schemaVersion !== 10 ? null : receiveCurrentDesired(authority.desiredJson, { controlMode: false, toolPaths: true, archiveSessions: currentCapabilitySources(authority.desiredJson).has("archiveSessions") });
+  const desired = networkReceived?.known ?? legacyReceived?.known ?? currentReceived?.known ?? null;
   const rawRevision = legacyReceived?.known.revision ?? currentReceived?.revision ?? null;
   const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
   if (!webOnly && ((desired === null) !== (applicationRevision === null) || applicationRevision !== null && desired !== null && BigInt(applicationRevision) > BigInt(desired.revision))) throw new TypeError("Worker configuration cache has an invalid application revision.");
@@ -249,7 +256,11 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   const previousDesired = desired === null ? null : { ...desired, value: { ...desired.value } };
   if (missingSudo) delete (previousDesired!.value as { enableSudoCleanup?: boolean }).enableSudoCleanup;
   if (missingArchive) delete (previousDesired!.value as { archiveSessions?: boolean }).archiveSessions;
-  const applicableWeb = isApplicableWeb(desired);
+  let applicableWeb = isApplicableWeb(desired);
+  if (networkReceived?.known !== null && networkReceived?.known !== undefined) {
+    try { parseCurrentDesired(networkReceived.known, true, { controlMode: false, toolPaths: networkReceived.known.value.toolPaths !== undefined, archiveSessions: networkReceived.known.value.archiveSessions !== undefined }); applicableWeb = true; }
+    catch (error) { if (!(error instanceof ProtocolError)) throw error; applicableWeb = false; }
+  }
   if (webOnly && typeof authority.pendingApplication !== "boolean") throw new TypeError("Worker configuration cache has an invalid pending application flag.");
   const pendingApplication = webOnly ? authority.pendingApplication as boolean : !applicableWeb || applicationRevision === null;
   if (webOnly && !pendingApplication && (!applicableWeb || applicationRevision === null)) throw new TypeError("Worker configuration cache has an invalid applied target.");
@@ -258,7 +269,7 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
     authority: { generation: authority.generation, desired: previousDesired, observationRevision: authority.observationRevision },
     nextFailureId: data.nextFailureId, projectionCursor: data.projectionCursor, currentItems: data.currentItems, retainedItems: data.retainedItems,
   }, identity, applicationRevision ?? undefined, data.schemaVersion === 6, webOnly,
-  !webOnly || !pendingApplication, data.schemaVersion === 10);
+  !webOnly || !pendingApplication, data.schemaVersion === 10, networkReceived?.known !== null && networkReceived?.known !== undefined);
   let remoteObservation: WorkerConfigurationCache["remoteObservation"] = null;
   if (data.remoteObservation !== null) {
     const remote = exact(data.remoteObservation, ["observationRevision", "json"]);

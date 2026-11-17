@@ -176,7 +176,7 @@ export const createWorkerConfigurationExchange = (options: {
         bootstrap = null;
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
       }
-      if (current.desired?.value.agentControlMode === undefined || current.desired?.value.toolPaths === undefined) needsRead = true;
+      if (current.desired?.value.toolPaths === undefined) needsRead = true;
       return outcome;
     },
     acceptanceOutcome: sent => acknowledgements.get(sent),

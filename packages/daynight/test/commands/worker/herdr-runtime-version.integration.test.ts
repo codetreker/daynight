@@ -72,8 +72,8 @@ describe("read-only durable Herdr runtime versions", () => {
     const f = fixture(), record = f.add(), original = readFileSync(f.journal), entries = readdirSync(f.paths.workerDirectory);
     mocks.peer.mockResolvedValue(record.runs[0]!.daemon);
     mocks.rpc.mockImplementation(async address => ({ type: "pong", version: address === endpoint(record) ? "0.9.5" : "0.1.0" }));
-    const sample = await f.collect().collect(operation());
-    expect(sample.telemetry.versions.herdr).toMatchObject({ state: "ok", value: "0.9.5" });
+    const sample = await f.observer().observe(operation());
+    expect(sample).toBe("0.9.5");
     expect(mocks.rpc.mock.calls.map(call => call[0])).toEqual([endpoint(record)]);
     expect(mocks.rpc).toHaveBeenCalledWith(endpoint(record), "ping", {}, expect.anything());
     expect(mocks.peer).toHaveBeenCalledTimes(2);
@@ -81,9 +81,9 @@ describe("read-only durable Herdr runtime versions", () => {
     expect(readFileSync(f.journal)).toEqual(original);
     // SQLite may create WAL coordination files even for a read-only connection.
     expect(readdirSync(f.paths.workerDirectory).filter(name => !name.endsWith("-shm") && !name.endsWith("-wal"))).toEqual(entries);
-    expect(JSON.stringify(sample.telemetry)).not.toContain("private assignment content");
-    expect(JSON.stringify(sample.telemetry)).not.toContain(record.claimId);
-    expect(JSON.stringify(sample.telemetry)).not.toContain(record.runs[0]!.instanceDirectory);
+    expect(JSON.stringify(sample)).not.toContain("private assignment content");
+    expect(JSON.stringify(sample)).not.toContain(record.claimId);
+    expect(JSON.stringify(sample)).not.toContain(record.runs[0]!.instanceDirectory);
   });
 
   it("keeps optional assistant observations alongside the owned durable daemon version", async () => {
@@ -96,13 +96,13 @@ describe("read-only durable Herdr runtime versions", () => {
     const parent = operation();
     const sample = await createWorkerTelemetryCollector({ ...f.options, homeDirectory: f.home, version: "0.41.0", workingDirectory: f.home,
       machine: { id: "fixture", name: "Fixture" }, assistantHost: assistant }).collect(parent);
-    expect(sample.telemetry.versions.herdr).toMatchObject({ state: "ok", value: "0.9.5" });
+    expect(sample.telemetry.versions).not.toHaveProperty("herdr");
     expect(sample.telemetry.assistantHost).toEqual(assistantHost);
     expect(assistant.collect.mock.calls[0]?.[0]).toBe(parent);
     expect(assistant.collect).toHaveBeenCalledExactlyOnceWith(parent, expect.objectContaining({
       observe: expect.any(Function), assertAvailable: expect.any(Function), revision: expect.any(Function), close: expect.any(Function),
     }));
-    expect(mocks.rpc.mock.calls.map(call => call[0])).toEqual([endpoint(record)]);
+    expect(mocks.rpc).not.toHaveBeenCalled();
     expect(readFileSync(f.journal)).toEqual(original);
     expect(mocks.execution).not.toHaveBeenCalled();
   });
@@ -110,8 +110,7 @@ describe("read-only durable Herdr runtime versions", () => {
   it("reports no live run without consulting a retained shared daemon", async () => {
     const f = fixture(), store = openHerdrLifecycleStore(f.journal, { onMigration: () => {} }); store.close();
     mocks.rpc.mockResolvedValue({ type: "pong", version: "0.1.0" });
-    const sample = await f.collect().collect(operation());
-    expect(sample.telemetry.versions.herdr.state).toBe("not_running");
+    expect(await f.observer().observe(operation())).toBeNull();
     expect(mocks.rpc).not.toHaveBeenCalled(); expect(mocks.native).not.toHaveBeenCalled();
   });
 
@@ -119,8 +118,8 @@ describe("read-only durable Herdr runtime versions", () => {
     const f = fixture(), first = f.add(1), second = f.add(2);
     mocks.peer.mockImplementation(async address => address === endpoint(first) ? first.runs[0]!.daemon : second.runs[0]!.daemon);
     mocks.rpc.mockImplementation(async address => ({ type: "pong", version: address === endpoint(first) ? "0.9.5" : version }));
-    const sample = await f.collect().collect(operation());
-    expect(sample.telemetry.versions.herdr).toMatchObject(version === "0.9.5" ? { state: "ok", value: version } : { state: "error", code: "unavailable" });
+    if (version === "0.9.5") expect(await f.observer().observe(operation())).toBe(version);
+    else await expect(f.observer().observe(operation())).rejects.toBeInstanceOf(HerdrVersionUnavailableError);
     expect(mocks.rpc.mock.calls.map(call => call[0])).toEqual([endpoint(first), endpoint(second)]);
   });
 
@@ -164,9 +163,7 @@ describe("read-only durable Herdr runtime versions", () => {
     mocks.peer.mockResolvedValue(mode === "replaced-peer" ? daemon(999) : original);
     if (mode === "changed-after-ping") mocks.peer.mockResolvedValueOnce(original).mockResolvedValueOnce(daemon(999));
     if (mode !== "missing-socket") mocks.rpc.mockResolvedValue({ type: "pong", version: "0.9.5" });
-    const sample = await f.collect().collect(operation());
-    expect(sample.telemetry.versions.herdr).toMatchObject({ state: "error", code: "unavailable" });
-    expect(sample.issues.find(issue => issue.component === "herdr")?.error).toBeInstanceOf(HerdrVersionUnavailableError);
+    await expect(f.observer().observe(operation())).rejects.toBeInstanceOf(HerdrVersionUnavailableError);
   });
 
   it("observes captured preparation daemons and refuses an unconfirmed launch with no identity", async () => {
@@ -186,10 +183,8 @@ describe("read-only durable Herdr runtime versions", () => {
 
   it("preserves journal filesystem errors without falling back to the shared endpoint", async () => {
     const f = fixture(); mocks.stat.mockRejectedValue(Object.assign(new Error("private journal details"), { code: "EACCES" }));
-    const sample = await f.collect().collect(operation());
-    expect(sample.telemetry.versions.herdr).toMatchObject({ state: "error", code: "permission_denied" });
+    await expect(f.observer().observe(operation())).rejects.toMatchObject({ code: "EACCES" });
     expect(mocks.rpc).not.toHaveBeenCalled(); expect(mocks.native).not.toHaveBeenCalled();
-    expect(JSON.stringify(sample.telemetry)).not.toContain("private journal details");
   });
 
   it.each(["malformed-journal", "old-journal", "invalid-pong", "peer-failure"])("keeps %s as a field error without repairing or disclosing private evidence", async mode => {
@@ -198,9 +193,8 @@ describe("read-only durable Herdr runtime versions", () => {
     if (mode === "malformed-journal") writeFileSync(f.journal, "private invalid database");
     if (mode === "old-journal") { const db = new Database(f.journal); db.pragma("user_version = 0"); db.close(); }
     if (mode === "peer-failure") mocks.peer.mockRejectedValue(Object.assign(new Error("private identity details"), { code: "EACCES" }));
-    const bytes = readFileSync(f.journal), sample = await f.collect().collect(operation());
-    expect(sample.telemetry.versions.herdr).toMatchObject({ state: "error", code: mode === "peer-failure" ? "permission_denied" : "io_error" });
-    expect(JSON.stringify(sample.telemetry)).not.toMatch(/private invalid database|private identity details|secret-output/);
+    const bytes = readFileSync(f.journal);
+    await expect(f.observer().observe(operation())).rejects.toBeDefined();
     expect(readFileSync(f.journal)).toEqual(bytes); expect(mocks.execution).not.toHaveBeenCalled();
   });
 
@@ -213,23 +207,12 @@ describe("read-only durable Herdr runtime versions", () => {
     expect(await createHerdrRuntimeVersionObserver({ ...f.options, platform }).observe(operation())).toBeNull();
   });
 
-  it("bounds an unresolved native observation by collection deadline and starts no later RPC", async () => {
-    vi.useFakeTimers(); const f = fixture(); f.add();
-    let resolve!: (state: string) => void; mocks.observe.mockReturnValue(new Promise<string>(yes => { resolve = yes; }));
-    const pending = f.collect().collect(operation(10_000));
-    await vi.advanceTimersByTimeAsync(5_010);
-    expect((await pending).telemetry.versions.herdr).toMatchObject({ state: "error", code: "timeout" });
-    resolve("same"); await vi.advanceTimersByTimeAsync(0);
-    expect(mocks.peer).not.toHaveBeenCalled(); expect(mocks.rpc).not.toHaveBeenCalled();
-  });
-
   it("propagates root cancellation and stops subsequent observation steps", async () => {
     const f = fixture(); f.add(); const controller = new AbortController();
     let resolve!: (state: string) => void; mocks.observe.mockReturnValue(new Promise<string>(yes => { resolve = yes; }));
-    const op = operation(5_000, controller.signal), pending = f.collect().collect(op);
+    const op = operation(5_000, controller.signal), pending = f.observer().observe(op);
     await vi.waitFor(() => expect(mocks.observe).toHaveBeenCalledOnce()); controller.abort();
-    await expect(pending).rejects.toBe(op.signal.reason);
-    resolve("same"); await Promise.resolve();
+    resolve("same"); await expect(pending).rejects.toBe(op.signal.reason);
     expect(mocks.peer).not.toHaveBeenCalled(); expect(mocks.rpc).not.toHaveBeenCalled(); expect(mocks.execution).not.toHaveBeenCalled();
   });
 });

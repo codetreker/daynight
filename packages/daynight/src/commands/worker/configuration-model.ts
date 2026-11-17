@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { receiveWorkerDesired, parseWorkerCloudDesired } from "../../api/worker-configuration.js";
+import { receiveWorkerDesired, parseWorkerCloudDesired, desiredCapabilitySources } from "../../api/worker-configuration.js";
 import { ProtocolError } from "../../api/validation.js";
 import type { ReceivedWorkerDesired, WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import type { AgentControlMode, WorkerReport } from "../../api/types.js";
@@ -103,7 +103,10 @@ export const freezeConfiguration = <T>(value: T): T => {
 
 const derivedDesired = new WeakMap<WorkerConfigurationCache["authority"], ReceivedWorkerDesired | null>();
 export const configurationAuthority = (cache: WorkerConfigurationCache): ReceivedWorkerDesired | null => {
-  if (!derivedDesired.has(cache.authority)) derivedDesired.set(cache.authority, cache.authority.desiredJson === null ? null : freezeConfiguration(receiveWorkerDesired(cache.authority.desiredJson)));
+  if (!derivedDesired.has(cache.authority)) {
+    const json = cache.authority.desiredJson;
+    derivedDesired.set(cache.authority, json === null ? null : freezeConfiguration(receiveWorkerDesired(json, { controlMode: false, toolPaths: true, archiveSessions: desiredCapabilitySources(json).has("archiveSessions") })));
+  }
   return derivedDesired.get(cache.authority)!;
 };
 export const configurationDesired = (cache: WorkerConfigurationCache): WorkerCloudDesired | null => configurationAuthority(cache)?.known ?? null;
@@ -112,7 +115,7 @@ export const configurationDesiredRevision = (cache: WorkerConfigurationCache): s
 // Raw authority remains readable even when this binary cannot apply it.
 const applicableDesired = new WeakMap<WorkerCloudDesired, WorkerCloudDesired | null>();
 export const applicableConfigurationDesired = (desired: WorkerCloudDesired | null): WorkerCloudDesired | null => {
-  if (desired === null || desired.value.agentControlMode !== "web") return null;
+  if (desired === null || Object.hasOwn(desired.value, "agentControlMode")) return null;
   if (!applicableDesired.has(desired)) {
     try { applicableDesired.set(desired, parseConfigurationDesired(desired)); }
     catch (error) { if (!(error instanceof ProtocolError)) throw error; applicableDesired.set(desired, null); }

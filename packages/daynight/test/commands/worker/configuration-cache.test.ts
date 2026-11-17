@@ -8,7 +8,7 @@ import type { TrackedConfigurationItem, WorkerConfigurationCache } from "../../.
 import type { WorkerConfigurationCache as ActiveCache } from "../../../src/commands/worker/configuration-model.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey } from "../../../src/api/worker-configuration.js";
 import { replaceFileAtomicallyFromChunks } from "../../../src/platform/files.js";
-import { configurationSnapshot } from "../../../src/commands/worker/configuration-state.js";
+import { configurationSnapshot, transitionConfigurationDesired } from "../../../src/commands/worker/configuration-state.js";
 
 const uuid = (n: number): string => `${n.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
 const generation = uuid(1), projectId = uuid(2), previousProjectId = uuid(3);
@@ -18,6 +18,14 @@ const desired: WorkerCloudDesired = { revision: "10", updatedAt: "2026-11-04T00:
   maxConcurrent: 4, pollIntervalMs: 1500, recoveryLimit: 2, preferPlatformSpecificTasks: true, native,
   agentControlMode: "web", projects: [{ projectId, nativeOverrides: {} }],
 } };
+const modern = (target: WorkerCloudDesired, revision = target.revision): WorkerCloudDesired => {
+  const { agentControlMode: _mode, ...rest } = target.value;
+  return { ...target, revision, value: { ...rest, toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } } } };
+};
+const correct = (cache: ActiveCache, target: WorkerCloudDesired): ActiveCache => {
+  let next = 1000;
+  return transitionConfigurationDesired(cache, receiveWorkerDesired(JSON.stringify(modern(target, "12"))), new Set(), () => uuid(next++));
+};
 const failure = { code: "permission_denied" as const, category: "runtime" as const, phase: "stop" as const, occurredAt: "2026-11-04T01:00:00Z" };
 const value = (key: WorkerCloudItemKey): WorkerCloudItem["appliedValue"] => {
   switch (key.kind) {
@@ -88,11 +96,68 @@ describe("Worker configuration cache", () => {
     expect(result.cache.remoteObservation).toEqual(remoteObservation);
     expect(result.cache.currentItems.filter(item => item.value.key.kind !== "agentControlMode")).toEqual(currentItems);
     expect(result.cache.retainedItems).toEqual([stop]);
-    const mode = result.cache.currentItems.find(item => item.value.key.kind === "agentControlMode");
-    expect(mode).toMatchObject({ origin: { generation: result.cache.authority.generation, targetRevision: "10", source: "application" },
-      value: { appliedValue: null, state: "pending", targetRevision: "10" }, actualSource: null, started: false });
-    expect(mode!.recordId).not.toBe(original.currentItems.find(item => item.value.key.kind === "agentControlMode")!.recordId);
+    expect(result.cache.authority.pendingApplication).toBe(true);
+    expect(result.cache.currentItems.some(item => item.value.key.kind === "agentControlMode")).toBe(false);
     expect(parseConfigurationCache(result.cache, identity)).toEqual({ cache: result.cache, migrated: false });
+  });
+
+  it("restarts an unsupported schema 9 Web target without changing raw authority or applied archive and sudo facts", async () => {
+    const original = cache(), archive = { ...tracked(80, { kind: "archiveSessions" }), value: { ...tracked(80, { kind: "archiveSessions" }).value, appliedValue: false } }, sudo = tracked(81, { kind: "enableSudoCleanup" });
+    const raw = JSON.stringify({ ...desired, value: { ...desired.value, archiveSessions: false, enableSudoCleanup: true } });
+    const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson: raw, pendingApplication: false }, currentItems: withoutModeItems([...original.currentItems, archive, sudo]) };
+    const folder = await directory(), file = path.join(folder, "historical.json"), signal = new AbortController().signal;
+    await replaceFileAtomicallyFromChunks(file, [JSON.stringify(source)], 0o600);
+    const applyNative = vi.fn(async () => {}), invalid = vi.fn(), options = { file, identity, signal, applyNative, onInvalidDesired: invalid };
+    const first = await createWorkerConfigurationManager(options);
+    await first.receive(receiveWorkerDesired(raw), "9"); await first.settle();
+    expect(first.current().effective.native).toBeNull();
+    expect(first.current().retainedArchiveSessions).toBe(false);
+    expect(first.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(invalid).toHaveBeenCalledWith("10", "unsupported_legacy_fields");
+    await first.stop();
+    const second = await createWorkerConfigurationManager(options);
+    await second.receive(receiveWorkerDesired(raw), "9"); await second.settle();
+    const saved = (await readConfigurationCache(file, identity, signal)).cache;
+    expect(saved.authority).toMatchObject({ desiredJson: raw, applicationRevision: "10", pendingApplication: true });
+    expect(saved.currentItems).toContainEqual(withoutMode(archive));
+    expect(saved.currentItems).toContainEqual(withoutMode(sudo));
+    expect(second.current().effective.native).toBeNull();
+    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(applyNative).not.toHaveBeenCalled();
+    await second.receive(receiveWorkerDesired(JSON.stringify(modern({ ...desired, value: { ...desired.value, archiveSessions: false, enableSudoCleanup: true } }, "11"))), "9");
+    await second.settle();
+    expect(second.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
+    expect(second.current().effective.archiveSessions).toBe(false);
+    expect(applyNative).toHaveBeenCalledTimes(2);
+    await second.stop();
+  });
+
+  it.each([
+    { target: false, applied: true, source: "observed", expected: true },
+    { target: true, applied: false, source: "observed", expected: false },
+    { target: undefined, applied: true, source: "observed", expected: null },
+    { target: "invalid", applied: true, source: "observed", expected: null },
+    { target: true, applied: true, source: "schema4", expected: null },
+    { target: true, applied: null, source: null, expected: null },
+  ] as const)("keeps cleanup based on observed applied sudo facts through two restarts: $target / $applied / $source", async ({ target, applied, source: actualKind, expected }) => {
+    const original = cache(), recorded = tracked(81, { kind: "enableSudoCleanup" });
+    const actualSource = actualKind === "observed" ? recorded.actualSource : actualKind === "schema4" ? { kind: "schema4" as const, successRevision: null } : null;
+    const sudo = { ...recorded, value: { ...recorded.value, appliedValue: applied, state: applied === null ? "pending" as const : "applied" as const }, actualSource };
+    const raw = JSON.stringify({ ...desired, value: { ...desired.value, ...(target === undefined ? {} : { enableSudoCleanup: target }) } });
+    const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson: raw, pendingApplication: true }, currentItems: withoutModeItems([...original.currentItems, sudo]) };
+    const folder = await directory(), file = path.join(folder, "sudo.json"), signal = new AbortController().signal;
+    await replaceFileAtomicallyFromChunks(file, [JSON.stringify(source)], 0o600);
+    const options = { file, identity, signal, applyNative: async () => { throw new Error("Unsupported target must not execute."); } };
+    for (let restart = 0; restart < 3; restart++) {
+      const manager = await createWorkerConfigurationManager(options);
+      try {
+        await manager.receive(receiveWorkerDesired(raw), "9"); await manager.settle();
+        expect(manager.readCleanupPolicy()).toEqual(expected === null ? null : { enableSudoCleanup: expected, revision: "10" });
+        const saved = (await readConfigurationCache(file, identity, signal)).cache;
+        expect(saved.authority.desiredJson).toBe(raw);
+        expect(saved.currentItems).toContainEqual(withoutMode(sudo));
+      } finally { await manager.stop(); }
+    }
   });
 
   it.each(["herdr", null, "absent", "future"] as const)("does not adopt schema 9 %s authority or lose its prior native proof", mode => {
@@ -112,9 +177,8 @@ describe("Worker configuration cache", () => {
     const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson: JSON.stringify({ ...desired, revision: "12" }), pendingApplication: false }, currentItems: withoutModeItems(original.currentItems) };
     const result = parseConfigurationCache(source, identity).cache;
     expect(result.authority.applicationRevision).toBe("10");
-    expect(result.currentItems.find(item => item.value.key.kind === "agentControlMode")).toMatchObject({
-      origin: { targetRevision: "10" }, value: { targetRevision: "10", appliedValue: null, state: "pending" }, actualSource: null,
-    });
+    expect(result.authority.pendingApplication).toBe(true);
+    expect(result.currentItems.some(item => item.value.key.kind === "agentControlMode")).toBe(false);
     expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
   });
 
@@ -130,7 +194,10 @@ describe("Worker configuration cache", () => {
     const old = { ...original, schemaVersion: 6, authority: { ...original.authority, desiredJson: JSON.stringify({ ...desired, value: { ...desired.value, archiveSessions: false } }) } };
     const upgraded = parseConfigurationCache(old, identity);
     expect(upgraded.migrated).toBe(true);
-    expect(upgraded.cache.currentItems.find(item => item.value.key.kind === "archiveSessions")).toMatchObject({ value: { state: "pending", appliedValue: null, targetRevision: "10" }, actualSource: null });
+    expect(upgraded.cache.authority.pendingApplication).toBe(true);
+    expect(upgraded.cache.currentItems.some(item => item.value.key.kind === "archiveSessions")).toBe(false);
+    const corrected = correct(upgraded.cache, { ...desired, value: { ...desired.value, archiveSessions: false } });
+    expect(corrected.currentItems.find(item => item.value.key.kind === "archiveSessions")).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
     expect(parseConfigurationCache(upgraded.cache, identity).migrated).toBe(false);
   });
 
@@ -138,7 +205,7 @@ describe("Worker configuration cache", () => {
     const source = { ...cache(), schemaVersion: 6 };
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache).toEqual({ ...source, schemaVersion: 10, authority: { ...source.authority, generation: expect.any(String), pendingApplication: false }, projectionCursor: null, currentItems: [...withoutModeItems(source.currentItems), expect.objectContaining({ value: expect.objectContaining({ key: { kind: "agentControlMode" }, state: "pending", appliedValue: null }), actualSource: null })] });
+    expect(result.cache).toEqual({ ...source, schemaVersion: 10, authority: { ...source.authority, generation: expect.any(String), pendingApplication: true }, projectionCursor: null, currentItems: withoutModeItems(source.currentItems) });
     expect(result.cache.currentItems.some(item => item.value.key.kind === "enableSudoCleanup")).toBe(false);
   });
 
@@ -148,9 +215,10 @@ describe("Worker configuration cache", () => {
     const source = { ...previous, schemaVersion: 6, authority: { ...previous.authority, desiredJson } };
     const { cache: upgraded, migrated } = parseConfigurationCache(source, identity);
     expect(migrated).toBe(true);
-    expect(upgraded.authority.applicationRevision).toBe("11");
-    expect(upgraded.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")?.value).toMatchObject({ state: "pending", appliedValue: null, targetRevision: "11" });
-    expect(upgraded.retainedItems).toEqual(withoutModeItems(previous.currentItems));
+    expect(upgraded.authority).toMatchObject({ applicationRevision: "10", pendingApplication: true, desiredJson });
+    expect(upgraded.currentItems).toEqual(withoutModeItems(previous.currentItems));
+    const corrected = correct(upgraded, { ...desired, value: { ...desired.value, enableSudoCleanup: enabled } });
+    expect(corrected.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")?.value).toMatchObject({ state: "pending", appliedValue: null, targetRevision: "12" });
     expect(parseConfigurationCache(upgraded, identity)).toEqual({ cache: upgraded, migrated: false });
   });
 
@@ -163,10 +231,12 @@ describe("Worker configuration cache", () => {
       currentItems: old.currentItems.map((item, index) => index === 4 ? failed : item).concat(known) };
     const { cache: upgraded, migrated } = parseConfigurationCache(source, identity);
     expect(migrated).toBe(true);
-    expect(upgraded.authority.applicationRevision).toBe("11");
-    expect(upgraded.currentItems.find(item => item.value.key.kind === missingKind)).toMatchObject({ value: { state: "pending", appliedValue: null, targetRevision: "11" }, actualSource: null });
-    expect(upgraded.currentItems.find(item => item.value.key.kind === knownKind)).toMatchObject({ value: { state: "applied", appliedValue: true, targetRevision: "11" }, actualSource: known.actualSource });
-    expect(upgraded.retainedItems).toEqual(expect.arrayContaining([withoutMode(known), withoutMode(failed)]));
+    expect(upgraded.authority).toMatchObject({ applicationRevision: "10", pendingApplication: true, desiredJson: source.authority.desiredJson });
+    expect(upgraded.currentItems).toEqual(withoutModeItems(source.currentItems));
+    const corrected = correct(upgraded, { ...desired, value: { ...desired.value, archiveSessions: true, enableSudoCleanup: true } });
+    expect(corrected.currentItems.find(item => item.value.key.kind === missingKind)).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
+    expect(corrected.currentItems.find(item => item.value.key.kind === knownKind)).toMatchObject({ value: { state: "applied", appliedValue: true }, actualSource: known.actualSource });
+    expect(corrected.retainedItems).toContainEqual(withoutMode(failed));
     expect(upgraded.remoteObservation).toEqual(remoteObservation);
     expect(parseConfigurationCache(upgraded, identity)).toEqual({ cache: upgraded, migrated: false });
   });
@@ -175,9 +245,10 @@ describe("Worker configuration cache", () => {
     const old = cache();
     const source = { ...old, schemaVersion: version, authority: { ...old.authority, desiredJson: JSON.stringify({ ...desired, revision: "11", value: { ...desired.value, archiveSessions: false, enableSudoCleanup: true } }) } };
     const upgraded = parseConfigurationCache(source, identity).cache;
-    expect(upgraded.authority.applicationRevision).toBe("11");
-    for (const kind of ["archiveSessions", "enableSudoCleanup"]) expect(upgraded.currentItems.find(item => item.value.key.kind === kind)).toMatchObject({ value: { state: "pending", appliedValue: null, targetRevision: "11" }, actualSource: null });
-    expect(upgraded.retainedItems).toEqual(withoutModeItems(old.currentItems));
+    expect(upgraded.authority).toMatchObject({ applicationRevision: "10", pendingApplication: true, desiredJson: source.authority.desiredJson });
+    expect(upgraded.currentItems).toEqual(withoutModeItems(old.currentItems));
+    const corrected = correct(upgraded, { ...desired, value: { ...desired.value, archiveSessions: false, enableSudoCleanup: true } });
+    for (const kind of ["archiveSessions", "enableSudoCleanup"]) expect(corrected.currentItems.find(item => item.value.key.kind === kind)).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
     expect(parseConfigurationCache(upgraded, identity)).toEqual({ cache: upgraded, migrated: false });
   });
 
@@ -187,8 +258,9 @@ describe("Worker configuration cache", () => {
     const source = { ...old, schemaVersion: 7, authority: { ...old.authority, desiredJson: JSON.stringify({ ...desired, revision: "11", value: { ...desired.value, enableSudoCleanup: true } }) },
       hiddenCapabilitySources: { archiveSessions: { revision: "10", json: "false" } }, retainedItems: [savedArchive] };
     const upgraded = parseConfigurationCache(source, identity).cache;
-    expect(upgraded.authority.applicationRevision).toBe("11");
-    expect(upgraded.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
+    expect(upgraded.authority).toMatchObject({ applicationRevision: "10", pendingApplication: true, desiredJson: source.authority.desiredJson });
+    const corrected = correct(upgraded, { ...desired, value: { ...desired.value, enableSudoCleanup: true } });
+    expect(corrected.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
     expect(upgraded.retainedItems).toContainEqual(withoutMode(savedArchive));
     expect(upgraded.hiddenCapabilitySources).toEqual(source.hiddenCapabilitySources);
     const snapshot = (value: ActiveCache) => configurationSnapshot(value, false, new Map(), { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, () => { throw new Error("An unsynchronized snapshot cannot prove a native selection."); });
@@ -206,10 +278,8 @@ describe("Worker configuration cache", () => {
       : { ...original, schemaVersion: version };
     const result = parseConfigurationCache(source, identity).cache;
     expect(result.currentItems.filter(item => item.value.key.kind !== "agentControlMode")).toEqual(withoutModeItems(original.currentItems));
-    expect(result.currentItems.find(item => item.value.key.kind === "agentControlMode")).toMatchObject({
-      origin: { generation: result.authority.generation, targetRevision: "10", source: "application" },
-      value: { state: "pending", appliedValue: null }, actualSource: null,
-    });
+    expect(result.authority.pendingApplication).toBe(true);
+    expect(result.currentItems.some(item => item.value.key.kind === "agentControlMode")).toBe(false);
     expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
   });
 
@@ -252,8 +322,9 @@ describe("Worker configuration cache", () => {
   });
 
   it("validates the last applied ledger after a future-only raw update", () => {
-    const previous = parseConfigurationCache(cache(), identity).cache;
-    const raw = JSON.stringify({ ...desired, revision: "11", future: { retained: true } });
+    const migrated = parseConfigurationCache(cache(), identity).cache;
+    const previous = { ...migrated, authority: { ...migrated.authority, desiredJson: JSON.stringify(modern(desired)), pendingApplication: false } };
+    const raw = JSON.stringify({ ...modern(desired), revision: "11", future: { retained: true } });
     const source = { ...previous, authority: { ...previous.authority, desiredJson: raw } };
     expect(parseConfigurationCache(source, identity)).toEqual({ cache: source, migrated: false });
     expect(() => parseConfigurationCache({ ...source, currentItems: source.currentItems.filter(item => item.value.key.kind !== "native") }, identity)).toThrow(/missing target/);
@@ -350,9 +421,9 @@ describe("Worker configuration cache", () => {
         await new Promise<void>(resolve => { if (jobSignal.aborted) resolve(); else jobSignal.addEventListener("abort", () => resolve(), { once: true }); });
         jobSignal.throwIfAborted();
       } });
-      await manager.receive(receiveWorkerDesired(JSON.stringify(desired)), "0");
+      await manager.receive(receiveWorkerDesired(JSON.stringify(modern(desired))), "0");
       await manager.settle();
-      const removed = { ...desired, revision: "11", value: { ...desired.value, projects: [] } };
+      const removed = { ...modern(desired), revision: "11", value: { ...modern(desired).value, projects: [] } };
       await manager.receive(receiveWorkerDesired(JSON.stringify(removed)), "0");
       await vi.waitFor(() => expect(removing).toBe(true), { timeout: 3000 });
       const before = await readConfigurationCache(file, identity, signal);
@@ -391,8 +462,8 @@ describe("Worker configuration cache", () => {
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
     expect(result.cache).toEqual({
-      ...original, schemaVersion: 10, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String), pendingApplication: false },
-      currentItems: [...withoutModeItems(currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item)), expect.objectContaining({ value: expect.objectContaining({ key: { kind: "agentControlMode" }, state: "pending", appliedValue: null }), actualSource: null })], retainedItems: [withoutMode(stop)],
+      ...original, schemaVersion: 10, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String), pendingApplication: true },
+      currentItems: withoutModeItems(currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item)), retainedItems: [withoutMode(stop)],
     });
     expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(desired);
     expect(source.currentItems[4]!.value.state).toBe("applying");
@@ -461,10 +532,8 @@ describe("Worker configuration cache", () => {
     const source = { ...previous, desired: { ...previous.desired, value: { ...previous.desired.value, agentControlMode: "web" } },
       items: [...previous.items, { value: old.value, attempts: 0, failureId: null, started: false }] };
     const result = parseConfigurationCache(source, identity).cache;
-    expect(result.currentItems.find(item => item.value.key.kind === "agentControlMode")).toMatchObject({
-      origin: { generation: result.authority.generation, targetRevision: "10", source: "application" },
-      value: { state: "pending", appliedValue: null }, actualSource: null,
-    });
+    expect(result.authority.pendingApplication).toBe(true);
+    expect(result.currentItems.some(item => item.value.key.kind === "agentControlMode")).toBe(false);
     expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
   });
 

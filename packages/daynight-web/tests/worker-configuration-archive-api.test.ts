@@ -7,9 +7,9 @@ import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
 const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() };
 const signal = () => new AbortController().signal;
-const capability = { controlMode: false, toolPaths: false, archiveSessions: true };
+const capability = { controlMode: false, toolPaths: true, archiveSessions: true };
 const response = (resource: unknown, archiveHeader?: string) => new Response(JSON.stringify(resource), { headers: {
-  'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1',
+  'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2',
   ...(archiveHeader === undefined ? {} : { 'Daynight-Worker-Archive-Sessions': archiveHeader }),
 } });
 const resource = (archiveSessions: boolean, revision = '1') => configurationResource(revision, { ...configurationValue(), archiveSessions });
@@ -30,24 +30,26 @@ describe('archive configuration negotiation', () => {
       if (value !== null) expect(() => parseWorkerConfiguration(observed(value), capability)).toThrow();
     }
     expect(() => parseWorkerConfiguration(observed(null), capability)).toThrow();
-    expect(() => parseWorkerConfiguration(resource(false))).toThrow();
+    expect(parseWorkerConfiguration(resource(false)).desired?.value.archiveSessions).toBe(false);
     expect(() => parseWorkerConfiguration({ ...observed(false), desired: configurationResource().desired })).toThrow();
   });
 
   it('requests a capability and preserves false in read and full PUT', async () => {
-    const fetch = vi.fn().mockResolvedValueOnce(response(observed(false), '1')).mockResolvedValueOnce(response(resource(false, '2'), '1'));
+    const initial = observed(false);
+    const fetch = vi.fn().mockResolvedValueOnce(response({ ...initial, desired: { ...initial.desired!, value: { ...initial.desired!.value, enableSudoCleanup: true } } }, '1'));
     vi.stubGlobal('fetch', fetch);
     const current = await getWorkerConfiguration(workerId(1), signal(), admission);
     expect(current.archiveSessionsSupported).toBe(true);
     const baseline = workerConfigurationBaseline(current)!;
     const submission = mergeConfigurationDraft(baseline, { ...baseline.known, maxConcurrent: 3 });
     // The response must match the complete submitted value, including false.
-    fetch.mockReset().mockResolvedValue(response(configurationResource('2', { ...configurationValue(), maxConcurrent: 3, archiveSessions: false }), '1'));
+    fetch.mockReset().mockResolvedValue(response(configurationResource('2', { ...configurationValue(), maxConcurrent: 3, archiveSessions: false, enableSudoCleanup: true }), '1'));
     const saved = await saveWorkerConfiguration(workerId(1), '1', submission, signal(), { ...admission, archiveSessionsSupported: true });
     expect(saved.desired?.value.archiveSessions).toBe(false);
     const init = fetch.mock.calls[0]![1];
     expect(new Headers(init.headers).get('Daynight-Worker-Archive-Sessions')).toBe('1');
     expect(JSON.parse(init.body).value.archiveSessions).toBe(false);
+    expect(JSON.parse(init.body).value.enableSudoCleanup).toBe(true);
   });
 
   it('handles unsupported service and rejects inconsistent capability replies', async () => {

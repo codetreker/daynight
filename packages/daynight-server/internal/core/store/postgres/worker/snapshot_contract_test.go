@@ -31,7 +31,6 @@ func TestWorkerSnapshotUpsertUnknownStaleAndObservedTime(t *testing.T) {
 	worker.Telemetry.Disk = model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: stamp, Value: &model.WorkerDisk{AvailableBytes: 1 << 40, TotalBytes: 1 << 41}}
 	version := testutil.WorkerStoredUTF8(256)
 	worker.Telemetry.Versions = model.WorkerVersions{Daynight: version,
-		Herdr:   model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
 		Codex:   model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
 		Copilot: model.WorkerProbe[string]{State: "ok", CheckedAt: stamp, Value: &version},
 	}

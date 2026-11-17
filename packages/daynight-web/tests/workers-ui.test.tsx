@@ -28,7 +28,7 @@ const detail = () => ({ ...summary(), inventoryObservedAt: '2026-10-29T11:59:30Z
     cpu: { state: 'ok' as const, checkedAt: report, value: { model: 'Actual CPU model', logicalProcessors: 32, usagePercent: 34.25 } },
     memory: { state: 'ok' as const, checkedAt: report, value: { usedBytes: 16 * 1024 ** 3, totalBytes: 64 * 1024 ** 3 } },
     disk: { state: 'ok' as const, checkedAt: report, value: { availableBytes: 32 * 1024 ** 3, totalBytes: 1024 ** 4 } },
-    versions: { daynight: '0.27.1', herdr: { state: 'ok' as const, checkedAt: report, value: '0.9.9-private' }, codex: { state: 'ok' as const, checkedAt: report, value: '0.164.0' }, copilot: { state: 'not_installed' as const, checkedAt: report } },
+    versions: { daynight: '0.27.1', codex: { state: 'ok' as const, checkedAt: report, value: '0.164.0' }, copilot: { state: 'not_installed' as const, checkedAt: report } },
   },
 } satisfies WorkerDetail);
 const refresh = vi.fn();
@@ -50,12 +50,12 @@ beforeEach(() => {
 });
 
 describe('Worker software summary', () => {
-  const empty = (tool: 'codex' | 'copilot' | 'herdr', context: 'web' | 'herdr') => toolPathObservation(tool, context, { state: 'not_checked', actual: null });
+  const empty = (tool: 'codex' | 'copilot', context: 'web') => toolPathObservation(tool, context, { state: 'not_checked', actual: null });
   const row = (tool: string) => document.querySelector(`.worker-software-tool-paths[data-tool="${tool}"]`)!;
   const lines = (tool: string) => Array.from(row(tool).querySelectorAll('.worker-tool-version'), element => element.textContent);
 
   it('shows only native Web observations and never substitutes legacy versions', () => {
-    detailState = shown(withTools([toolPathObservation(), empty('copilot', 'web'), toolPathObservation('copilot', 'herdr', { actual: toolPathActual('copilot', { version: 'legacy' }) }), toolPathObservation('herdr', 'herdr')]));
+    detailState = shown(withTools([toolPathObservation(), empty('copilot', 'web')]));
     showDetail();
     expect(lines('codex')).toEqual(['1.2.3']);
     expect(row('copilot')).toHaveTextContent('Not checked');
@@ -260,7 +260,7 @@ describe('Worker detail presentation', () => {
   it('keeps absent and failed software distinct and exposes collection errors without invented values', () => {
     const worker = detail(); detailState = shown({ ...worker, telemetry: { ...worker.telemetry,
       cpu: { state: 'error', checkedAt: report, code: 'invalid_sample' }, memory: { state: 'error', checkedAt: report, code: 'permission_denied' }, disk: { state: 'error', checkedAt: report, code: 'timeout' }, os: { state: 'error', checkedAt: report, code: 'io_error' },
-      versions: { ...worker.telemetry.versions, herdr: { state: 'not_running', checkedAt: report }, codex: { state: 'error', checkedAt: report, code: 'command_failed' } },
+      versions: { ...worker.telemetry.versions, codex: { state: 'error', checkedAt: report, code: 'command_failed' } },
     } });
     showDetail(); expect(screen.getByText('Not installed')).toBeInTheDocument(); expect(screen.getByText('Detection failed')).toBeInTheDocument(); expect(screen.getAllByText('Collection failed')).toHaveLength(6); expect(screen.queryByRole('meter')).toBeNull();
     expect(screen.getByText('The version command failed.')).toBeInTheDocument(); expect(screen.queryByText(/logical processors/)).toBeNull();

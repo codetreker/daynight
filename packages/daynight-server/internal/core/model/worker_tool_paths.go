@@ -11,7 +11,7 @@ type ToolPathChoice struct {
 type WorkerToolPaths struct {
 	Codex   *ToolPathChoice `json:"codex"`
 	Copilot *ToolPathChoice `json:"copilot"`
-	Herdr   *ToolPathChoice `json:"herdr"`
+	Herdr   *ToolPathChoice `json:"herdr,omitempty"`
 }
 
 type ToolPathTelemetry struct {

@@ -28,6 +28,12 @@ export const parseConfigurationCache = (source: unknown, identity: WorkerConfigu
     projectionCursor: decoded.migrated ? null : decoded.cache.projectionCursor,
     currentItems: convertItems(decoded.cache.currentItems), retainedItems: convertItems(decoded.cache.retainedItems),
   };
+  // Historical authorities may be structurally valid but unsupported by the
+  // current network contract. Keep their ledger and raw source without marking
+  // them as an applied current target in the new checkpoint.
+  if (decoded.migrated && cache.authority.desiredJson !== null && applicableConfigurationDesired(configurationDesired(cache)) === null) {
+    cache = { ...cache, authority: { ...cache.authority, pendingApplication: true } };
+  }
   if (decoded.migration !== null && decoded.migration.received.known.value.agentControlMode === "web") {
     const { received, previousDesired } = decoded.migration;
     cache = transitionConfigurationDesired(cache, received, new Set(), randomUUID, previousDesired, true);

@@ -73,12 +73,12 @@ const mergeMembers = (source: string, value: object, keys: readonly string[]): s
   return objectSource(result);
 };
 const projectId = (source: string): string => String(JSON.parse(jsonObjectSources(source).get('projectId')!)).toLowerCase();
-const tools = ['codex', 'copilot', 'herdr'] as const;
+const tools = ['codex', 'copilot'] as const;
 
 export const configurationBaselinesCompatible = (baseline: ConfigurationBaseline, observed: ConfigurationBaseline | null): boolean => {
   if (observed === null || baseline.revision !== observed.revision) return true;
   return configurationValueSourcesEqual(baseline.valueSource, observed.valueSource, {
-    controlMode: baseline.known.agentControlMode !== undefined && observed.known.agentControlMode !== undefined,
+    controlMode: true,
     toolPaths: baseline.known.toolPaths !== undefined && observed.known.toolPaths !== undefined,
     archiveSessions: baseline.known.archiveSessions !== undefined && observed.known.archiveSessions !== undefined,
   });
@@ -100,6 +100,20 @@ export const enrichConfigurationBaseline = (baseline: ConfigurationBaseline, obs
   return { ...baseline, known, valueSource: objectSource(original) };
 };
 
+// Unsupported stored fields remain visible in the source until an explicit save.
+export const unsupportedConfigurationFields = (source: string): readonly string[] => {
+  const root = sourceObject(source), fields: string[] = [];
+  if (root.has('agentControlMode')) fields.push('agentControlMode');
+  const paths = root.get('toolPaths');
+  if (paths === undefined) fields.push('toolPaths');
+  else if (paths.trim().startsWith('{')) {
+    const tools = sourceObject(paths);
+    if (tools.has('herdr')) fields.push('toolPaths.herdr');
+    if (!tools.has('codex') || !tools.has('copilot')) fields.push('toolPaths');
+  }
+  return fields;
+};
+
 export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: WorkerConfigurationValue): ConfigurationSubmission => {
   const root = sourceObject(baseline.valueSource);
   for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup'] as const) setKnown(root, key, known[key]);
@@ -117,6 +131,7 @@ export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: 
   else {
     const source = root.get('toolPaths');
     const result = source === undefined ? new Map<string, string>() : sourceObject(source);
+    result.delete('herdr');
     for (const tool of tools) {
       const next = known.toolPaths[tool], old = result.get(tool);
       if (next === null || old === undefined || old.trim() === 'null') { result.set(tool, JSON.stringify(next)); continue; }

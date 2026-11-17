@@ -206,6 +206,7 @@ export const parseWorkerCloudBootstrap = async (
   signal.throwIfAborted();
   const worker = workerMapping(sourceMapping(source, paths));
   if (worker.agentControlMode === "herdr") throw new WorkerConfigurationSourceError("worker.agentControlMode herdr is no longer supported; remove it or set it to web in the local configuration.");
+  if (typeof worker.toolPaths === "object" && worker.toolPaths !== null && Object.hasOwn(worker.toolPaths, "herdr")) throw new WorkerConfigurationSourceError("worker.toolPaths.herdr is no longer supported; remove it from the local configuration.");
   const repositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(repositories)) throw new TypeError("worker.repositories must be a sequence.");
   if (repositories.length > 128) throw new RangeError("worker.repositories must contain at most 128 Projects.");
@@ -223,8 +224,7 @@ export const parseWorkerCloudBootstrap = async (
   }
   signal.throwIfAborted();
   return parseWorkerCloudValue({
-    agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "web",
-    toolPaths: parseLocalToolPaths(worker.toolPaths),
+    toolPaths: (({ codex, copilot }) => ({ codex, copilot }))(parseLocalToolPaths(worker.toolPaths)),
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
     recoveryLimit: Object.hasOwn(worker, "recoveryLimit") ? worker.recoveryLimit : workerConfigurationDefaults.recoveryLimit,
@@ -232,7 +232,7 @@ export const parseWorkerCloudBootstrap = async (
     archiveSessions: Object.hasOwn(worker, "archiveSessions") ? worker.archiveSessions : workerConfigurationDefaults.archiveSessions,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
-  }, true, { controlMode: true, toolPaths: true, archiveSessions: true });
+  }, true, { controlMode: false, toolPaths: true, archiveSessions: true });
 };
 
 export const readWorkerCloudBootstrap = async (paths: WorkerPaths, resolveProject: WorkerBootstrapProjectResolver, signal: AbortSignal): Promise<WorkerCloudValue> =>

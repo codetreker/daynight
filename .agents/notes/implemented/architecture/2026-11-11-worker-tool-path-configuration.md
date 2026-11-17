@@ -13,6 +13,8 @@ admits new work or which older selections still own running processes.
 
 ## Decision
 
+The [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md) supersedes the three-tool and mode portions of this decision. The original trade-offs below describe the earlier contract.
+
 The existing desired resource stores one nullable choice per tool. Null means
 unadopted; explicit auto is a durable choice that never reimports an old local
 path. A complete local bootstrap fills only null entries under the Worker lock.

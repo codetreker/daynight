@@ -132,7 +132,7 @@ export const createWorkerReporter = (options: {
         }
         operation.check();
         const unavailable = new Set(sample.issues.map(issue => issue.component));
-        for (const component of ["os", "cpu", "memory", "disk", "herdr", "codex", "copilot", "assistantHost_codex", "assistantHost_claude", "assistantHost_copilot"] as const) {
+        for (const component of ["os", "cpu", "memory", "disk", "codex", "copilot", "assistantHost_codex", "assistantHost_claude", "assistantHost_copilot"] as const) {
           if (!unavailable.has(component)) recover(component, "collect");
         }
         for (const issue of sample.issues) fail(issue.component, "collect", issue.error, issue.code);

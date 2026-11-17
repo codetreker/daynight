@@ -1,7 +1,7 @@
 // Frozen wire types for deployed Worker configuration checkpoints.
 export type AgentControlMode = "herdr" | "web";
 export type ToolPathChoice = { readonly kind: "auto" } | { readonly kind: "path"; readonly path: string };
-export type WorkerCloudToolPaths = Readonly<Record<"codex" | "copilot" | "herdr", ToolPathChoice | null>>;
+export type WorkerCloudToolPaths = Readonly<Record<"codex" | "copilot", ToolPathChoice | null> & Partial<Record<"herdr", ToolPathChoice | null>>>;
 export type WorkerCloudNative = { readonly agent: "codex" | "copilot" | "claude"; readonly model: string | null; readonly args: readonly string[] };
 export type WorkerCloudProject = { readonly projectId: string; readonly nativeOverrides: Readonly<Partial<WorkerCloudNative>> };
 export type WorkerCloudValue = { readonly enableSudoCleanup?: boolean; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly agentControlMode?: AgentControlMode | null; readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean; readonly native: WorkerCloudNative; readonly projects: readonly WorkerCloudProject[] };

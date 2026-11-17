@@ -89,6 +89,7 @@ func projectRequest(handler http.Handler, method, path, body string) *httptest.R
 		request.Header.Set("Authorization", "Bearer "+h.token)
 	}
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	request.Header.Set("Daynight-Worker-Tool-Paths", "2")
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

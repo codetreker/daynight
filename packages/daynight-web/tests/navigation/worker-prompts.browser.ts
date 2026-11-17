@@ -21,7 +21,7 @@ const install = async (page: Page) => {
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/me/workers') return send(workerPage());
     if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
-    if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), { 'Daynight-Worker-Configuration': '1' });
+    if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     if (path === `/api/v1/me/workers/${target}/prompt`) {
       if (request.method() === 'GET') await wait();
       if (request.method() === 'PUT') {

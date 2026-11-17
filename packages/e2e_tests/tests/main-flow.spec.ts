@@ -235,20 +235,22 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const probe = (value: unknown) => ({ state: "ok", checkedAt: sampledAt, value });
   const machine = { id: randomUUID(), name: "Product E2E worker" };
   const report = await fetch(`${topology.baseURL}${workerRoot}/report`, {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${serverToken}` },
+    method: "POST", headers: { "Content-Type": "application/json", "Daynight-Worker-Tool-Paths": "2", Authorization: `Bearer ${serverToken}` },
     body: JSON.stringify({
       machine, platform: "linux", workingDirectory: "/work", sampledAt,
       os: probe({ type: "Linux", release: "6.8", version: "kernel", arch: "x64" }),
       cpu: probe({ model: "CPU", logicalProcessors: 4, usagePercent: 1 }),
       memory: probe({ usedBytes: 4, totalBytes: 8 }), disk: probe({ availableBytes: 8, totalBytes: 16 }),
-      versions: { daynight: "1.0.0", herdr: probe("1.0.0"), codex: probe("1.0.0"), copilot: probe("1.0.0") },
+      versions: { daynight: "1.0.0", codex: probe("1.0.0"), copilot: probe("1.0.0") },
       taskInventory: null,
     }),
     signal: AbortSignal.timeout(30_000),
   });
   expect(report.status, await report.text()).toBe(200);
-  const worker = await page.request.get(workerRoot);
+  expect(report.headers.get("Daynight-Worker-Tool-Paths")).toBe("2");
+  const worker = await page.request.get(workerRoot, { headers: { "Daynight-Worker-Tool-Paths": "2" } });
   expect(worker.status(), await worker.text()).toBe(200);
+  expect(worker.headers()["daynight-worker-tool-paths"]).toBe("2");
   expect(await worker.json()).toMatchObject({ worker: { workerId, machine } });
   const monitoring = await page.request.get(`${workerRoot}/monitoring`);
   expect(monitoring.status(), await monitoring.text()).toBe(200);

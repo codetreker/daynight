@@ -36,7 +36,7 @@ export const renderWorkerDetail = (result: WorkerDetailResponse): string => {
     probe("CPU", telemetry.cpu, value => `${value.model}; ${value.logicalProcessors} logical processors; ${value.usagePercent}% used`),
     probe("Memory", telemetry.memory, value => `${value.usedBytes}/${value.totalBytes} bytes used`),
     probe("Disk", telemetry.disk, value => `${value.availableBytes}/${value.totalBytes} bytes available`),
-    line("Daynight", telemetry.versions.daynight), software("Herdr", telemetry.versions.herdr),
+    line("Daynight", telemetry.versions.daynight),
     software("Codex", telemetry.versions.codex), software("Copilot", telemetry.versions.copilot),
   ];
   const host = telemetry.assistantHost;

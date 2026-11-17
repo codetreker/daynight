@@ -20,6 +20,9 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	capabilities, err := workerCapabilities(request.Header)
+	if err == nil {
+		err = requireToolPaths(capabilities)
+	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_configuration", "validate", err)
 		return

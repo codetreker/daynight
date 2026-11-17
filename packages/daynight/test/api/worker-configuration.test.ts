@@ -17,9 +17,11 @@ const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, reco
 const desired: WorkerCloudDesired = { revision: "9223372036854775807", updatedAt: time, value };
 const item: WorkerCloudItem = { key: { kind: "maxConcurrent" }, targetRevision: "1", appliedValue: 2, state: "applied", error: null, lastFailure: null, nextAttemptAt: null };
 const configuration: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [item] } };
-const resource = { desired, observationRevision: "0", observation: null };
+const networkValue: WorkerCloudValue = { ...value, toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } } };
+const networkDesired = { ...desired, value: networkValue };
+const resource = { desired: networkDesired, observationRevision: "0", observation: null };
 const report = { ...workerTelemetry, taskInventory: null };
-const receipt = { observedAt: time, lastReportedAt: time, configuration: { desired, observationRevision: "1", observationAccepted: true } };
+const receipt = { observedAt: time, lastReportedAt: time, configuration: { desired: networkDesired, observationRevision: "1", observationAccepted: true } };
 const receivedDesired = (value: WorkerCloudDesired | null) => value === null ? null : { json: JSON.stringify(value), revision: value.revision, updatedAt: value.updatedAt, known: value };
 const receivedReceipt = (value: typeof receipt) => ({ ...value, configuration: { ...value.configuration, json: JSON.stringify(value.configuration), desired: receivedDesired(value.configuration.desired) } });
 const operations: Operation[] = [];
@@ -27,14 +29,14 @@ const api = (fetch: typeof globalThis.fetch) => {
   const operation = createOperation(); operations.push(operation);
   return createApiClient({ serverUrl: "http://localhost:8787", serverToken: "fixture-token", expectedUserId: userId, operation, fetch });
 };
-const response = (body: unknown, capability: string | null = "1", principal = userId) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": principal, ...(capability === null ? {} : { "Daynight-Worker-Configuration": capability }) } });
+const response = (body: unknown, capability: string | null = "1", principal = userId) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": principal, "Daynight-Worker-Tool-Paths": "2", ...(capability === null ? {} : { "Daynight-Worker-Configuration": capability }) } });
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); vi.restoreAllMocks(); });
 
 describe("Worker cloud configuration protocol", () => {
   it("retains incompatible stored targets across GET and report receipts", async () => {
-    const raw = JSON.stringify(desired).replace('"maxConcurrent":2', '"maxConcurrent":"future-value"').replace('"value":{', '"value":{"future":900719925474099312345,');
+    const raw = JSON.stringify(networkDesired).replace('"maxConcurrent":2', '"maxConcurrent":"future-value"').replace('"value":{', '"value":{"future":900719925474099312345,');
     const config = `{"desired":${raw},"observationRevision":"1","observationAccepted":true}`;
-    const rawResponse = (source: string, version: string) => new Response(source, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": version } });
+    const rawResponse = (source: string, version: string) => new Response(source, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": version, "Daynight-Worker-Tool-Paths": "2" } });
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(rawResponse(`{"desired":${raw},"observationRevision":"0","observation":null}`, "1"))
       .mockResolvedValueOnce(rawResponse(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${config}}`, "1"))
@@ -48,7 +50,7 @@ describe("Worker cloud configuration protocol", () => {
   });
 
   it("rejects an accepted observation newer than an incompatible stored target", async () => {
-    const raw = JSON.stringify(desired).replace('"maxConcurrent":2', '"maxConcurrent":"future-value"').replace(desired.revision, "1");
+    const raw = JSON.stringify(networkDesired).replace('"maxConcurrent":2', '"maxConcurrent":"future-value"').replace(desired.revision, "1");
     const config = `{"desired":${raw},"observationRevision":"1","observationAccepted":true}`;
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${config}}`, {
       headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1" },
@@ -59,16 +61,16 @@ describe("Worker cloud configuration protocol", () => {
 
   it("preserves future source values across GET and both report receipt variants", async () => {
     const future = '{"negative":-2,"fraction":1.25,"integer":9007199254740993,"exponent":1e9999,"array":[true,null]}';
-    const desiredJson = JSON.stringify(desired).replace('"value":{', `"future":${future},"value":{"future":${future},`).replace('"agent":"codex"', `"agent":"codex","future":${future}`);
+    const desiredJson = JSON.stringify(networkDesired).replace('"value":{', `"future":${future},"value":{"future":${future},`).replace('"agent":"codex"', `"agent":"codex","future":${future}`);
     const configJson = `{"desired":${desiredJson},"observationRevision":"1","observationAccepted":true,"future":${future}}`;
-    const rawResponse = (source: string, version: string) => new Response(source, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": version } });
+    const rawResponse = (source: string, version: string) => new Response(source, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": version, "Daynight-Worker-Tool-Paths": "2" } });
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(rawResponse(`{"desired":${desiredJson},"observationRevision":"0","observation":null,"future":${future}}`, "1"))
       .mockResolvedValueOnce(rawResponse(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson}}`, "1"))
       .mockResolvedValueOnce(rawResponse(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson.slice(0, -1)},"prompts":[]}}`, "2"));
     const client = api(fetch);
-    expect((await client.getWorkerConfiguration(workerId)).desired).toEqual({ json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: desired });
-    expect((await client.reportWorkerConfiguration(workerId, report, configuration)).configuration).toEqual({ json: configJson, desired: { json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: desired }, observationRevision: "1", observationAccepted: true });
+    expect((await client.getWorkerConfiguration(workerId)).desired).toEqual({ json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: networkDesired });
+    expect((await client.reportWorkerConfiguration(workerId, report, configuration)).configuration).toEqual({ json: configJson, desired: { json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: networkDesired }, observationRevision: "1", observationAccepted: true });
     const sync = await client.reportWorkerConfiguration(workerId, report, configuration, []);
     expect(sync.configuration.desired?.json).toBe(desiredJson);
     expect(sync.configuration.json).toBe(configJson);
@@ -134,7 +136,7 @@ describe("Worker cloud configuration protocol", () => {
   });
 
   it("preserves inheritance, explicit clears and the full int64 string range", () => {
-    expect(parseWorkerCloudResource(resource)).toEqual(resource);
+    expect(parseWorkerCloudResource(resource, { controlMode: false, toolPaths: true })).toEqual(resource);
     expect(parseWorkerCloudValue(value).projects.map(project => project.nativeOverrides)).toEqual([{ model: null, args: [] }, {}]);
     expect(parseWorkerCloudResource({ desired: null, observationRevision: "0", observation: null })).toEqual({ desired: null, observationRevision: "0", observation: null });
   });
@@ -197,8 +199,8 @@ describe("Worker cloud configuration client", () => {
   it("negotiates the archive field and observation across client instances", async () => {
     const operation = createOperation(); operations.push(operation);
     const capability = { supported: false }, sent: RequestInit[] = [];
-    const headers = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Archive-Sessions": "1" };
-    const archiveDesired = { ...desired, value: { ...value, archiveSessions: false } };
+    const headers = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Archive-Sessions": "1", "Daynight-Worker-Tool-Paths": "2" };
+    const archiveDesired = { ...networkDesired, value: { ...networkValue, archiveSessions: false } };
     const fetch = vi.fn(async (_url, init) => {
       sent.push(init!);
       return sent.length === 1
@@ -207,7 +209,7 @@ describe("Worker cloud configuration client", () => {
     }) as typeof globalThis.fetch;
     const client = () => createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: userId, operation, fetch, workerArchiveSessions: capability });
     await expect(client().getWorkerConfiguration(workerId)).rejects.toMatchObject({ status: 404 });
-    await client().reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, archiveSessions: false }, observation: null });
+    await client().reportWorkerConfiguration(workerId, report, { bootstrap: { ...networkValue, archiveSessions: false }, observation: null });
     expect(new Headers(sent[0]!.headers).get("Daynight-Worker-Archive-Sessions")).toBe("1");
     expect(new Headers(sent[1]!.headers).get("Daynight-Worker-Archive-Sessions")).toBe("1");
     expect(JSON.parse(sent[1]!.body as string).configuration.bootstrap.archiveSessions).toBe(false);
@@ -226,14 +228,14 @@ describe("Worker cloud configuration client", () => {
     }) as typeof globalThis.fetch;
     const client = api(fetch);
     await client.getWorkerConfiguration(workerId);
-    await client.reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, archiveSessions: true }, observation: null });
+    await client.reportWorkerConfiguration(workerId, report, { bootstrap: { ...networkValue, archiveSessions: true }, observation: null });
     expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Archive-Sessions")).toBeNull();
     expect(JSON.parse(calls[1]!.body as string).configuration.bootstrap).not.toHaveProperty("archiveSessions");
 
     const operation = createOperation(); operations.push(operation);
     const capability = { supported: false };
-    const archiveDesired = { ...desired, value: { ...value, archiveSessions: false } };
-    const modernHeaders = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Archive-Sessions": "1" };
+    const archiveDesired = { ...networkDesired, value: { ...networkValue, archiveSessions: false } };
+    const modernHeaders = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Archive-Sessions": "1", "Daynight-Worker-Tool-Paths": "2" };
     const broken = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ desired: archiveDesired, observationRevision: "0", observation: null }), { headers: modernHeaders }))
       .mockResolvedValueOnce(response({ ...receipt, configuration: { desired, observationRevision: "0", observationAccepted: false } }));
     const negotiated = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: userId, operation, fetch: broken, workerArchiveSessions: capability });
@@ -244,45 +246,8 @@ describe("Worker cloud configuration client", () => {
 
   it("does not silently submit a new disabled bootstrap to an unsupported service", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
-    expect(() => api(fetch).reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, archiveSessions: false }, observation: null })).toThrow("does not support disabling");
+    expect(() => api(fetch).reportWorkerConfiguration(workerId, report, { bootstrap: { ...networkValue, archiveSessions: false }, observation: null })).toThrow("does not support disabling");
     expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("retains authenticated fresh-Worker capability discovery across API clients", async () => {
-    const operation = createOperation(); operations.push(operation);
-    const capability = { supported: false }, sent: RequestInit[] = [];
-    const fetch = vi.fn(async (_url, init) => {
-      sent.push(init!);
-      const headers = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Control-Mode": "1" };
-      return sent.length === 1
-        ? new Response(JSON.stringify({ error: { code: "not_found", message: "not found", requestId: workerId } }), { status: 404, headers })
-        : new Response(JSON.stringify({ ...receipt, configuration: { desired: { ...desired, value: { ...value, agentControlMode: "web" } }, observationRevision: "0", observationAccepted: false } }), { headers });
-    }) as typeof globalThis.fetch;
-    const client = () => createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: userId, operation, fetch, workerControlMode: capability });
-    await expect(client().getWorkerConfiguration(workerId)).rejects.toMatchObject({ status: 404 });
-    await client().reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, agentControlMode: "web" }, observation: null, controlModeBootstrap: "web" });
-    expect(new Headers(sent[1]!.headers).get("Daynight-Worker-Control-Mode")).toBe("1");
-    expect(JSON.parse(sent[1]!.body as string).configuration).toMatchObject({ bootstrap: { agentControlMode: "web" }, controlModeBootstrap: "web" });
-  });
-
-  it.each([{ supported: false, prompts: false }, { supported: true, prompts: false }, { supported: false, prompts: true }, { supported: true, prompts: true }])("negotiates control mode independently of configuration version ($supported, prompts=$prompts)", async ({ supported, prompts }) => {
-    const calls: RequestInit[] = [];
-    const modeDesired = { ...desired, value: { ...value, agentControlMode: "web" } };
-    const fetch = vi.fn(async (_url, init) => {
-      calls.push(init!);
-      const body = calls.length === 1 ? { ...resource, desired: supported ? modeDesired : desired } : { ...receipt, configuration: { ...receipt.configuration, desired: supported ? modeDesired : desired, ...(prompts ? { prompts: [] } : {}) } };
-      const result = response(body, calls.length === 1 || !prompts ? "1" : "2");
-      if (supported) result.headers.set("Daynight-Worker-Control-Mode", "1");
-      return result;
-    }) as typeof globalThis.fetch;
-    const client = api(fetch);
-    await client.getWorkerConfiguration(workerId);
-    const result = await client.reportWorkerConfiguration(workerId, report, { ...configuration, controlModeBootstrap: "web" }, prompts ? [] : undefined);
-    expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Control-Mode")).toBe("1");
-    const sent = JSON.parse(calls[1]!.body as string).configuration;
-    expect(Object.hasOwn(sent, "controlModeBootstrap")).toBe(supported);
-    expect(result.configuration.desired?.known?.value.agentControlMode).toBe(supported ? "web" : undefined);
-    if (prompts) expect(result.prompts).toEqual({ ok: true, results: [] });
   });
 
   it("reports an older server's 413 as a capacity refusal", async () => {
@@ -324,11 +289,11 @@ describe("Worker cloud configuration client", () => {
     const legacy = { observedAt: time, lastReportedAt: time };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(resource)).mockResolvedValueOnce(response(receipt)).mockResolvedValueOnce(response(legacy, null));
     const client = api(fetch);
-    await expect(client.getWorkerConfiguration(workerId)).resolves.toEqual({ json: JSON.stringify(resource), desired: receivedDesired(desired), observationRevision: "0", observationJson: null });
+    await expect(client.getWorkerConfiguration(workerId)).resolves.toEqual({ json: JSON.stringify(resource), desired: receivedDesired(networkDesired), observationRevision: "0", observationJson: null });
     await expect(client.reportWorkerConfiguration(workerId, report, configuration)).resolves.toEqual(receivedReceipt(receipt));
     await expect(client.reportWorker(workerId, report)).resolves.toEqual(legacy);
     expect(fetch.mock.calls.map(([, options]) => new Headers(options!.headers).get("Daynight-Worker-Configuration"))).toEqual(["1", "1", null]);
-    expect(JSON.parse(fetch.mock.calls[1]![1]!.body as string)).toEqual({ ...report, configuration });
+    expect(JSON.parse(fetch.mock.calls[1]![1]!.body as string)).toEqual({ ...report, configuration: { ...configuration, toolPathsBootstrap: null } });
     expect(JSON.parse(fetch.mock.calls[2]![1]!.body as string)).toEqual(report);
   });
 
@@ -353,7 +318,7 @@ describe("Worker cloud configuration client", () => {
 
   it("does not acknowledge an observation that was absent or has a different CAS revision", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response(receipt));
-    await expect(api(fetch).reportWorkerConfiguration(workerId, report, { bootstrap: value, observation: null })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, { bootstrap: networkValue, observation: null })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
     await expect(api(fetch).reportWorkerConfiguration(workerId, report, { ...configuration, observation: { ...configuration.observation!, baseRevision: "9" } })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
@@ -376,7 +341,7 @@ describe("Worker cloud configuration client", () => {
     await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration)).rejects.toMatchObject({ outcomeUnconfirmed: true });
     expect(fetch).toHaveBeenCalledOnce();
     const bounded = vi.fn<typeof globalThis.fetch>();
-    expect(() => api(bounded).reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, native: { ...value.native, args: ["x".repeat(4097)] } }, observation: null })).toThrow(ProtocolError);
+    expect(() => api(bounded).reportWorkerConfiguration(workerId, report, { bootstrap: { ...networkValue, native: { ...value.native, args: ["x".repeat(4097)] } }, observation: null })).toThrow(ProtocolError);
     expect(bounded).not.toHaveBeenCalled();
   });
 });
@@ -394,14 +359,14 @@ describe("Worker prompt configuration sync", () => {
     const headers = new Headers(fetch.mock.calls[0]![1]!.headers);
     expect(headers.get("Daynight-Worker-Configuration")).toBe("2");
     expect(JSON.parse(headers.get("Daynight-Worker-Prompts")!)).toEqual(selectors);
-    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual({ ...report, configuration });
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual({ ...report, configuration: { ...configuration, toolPathsBootstrap: null } });
   });
   it("retains the native receipt while refusing malformed prompt batches", async () => {
     const invalid = { ...receipt, configuration: { ...receipt.configuration, prompts: [{ ...prompts[0], value: { ...prompts[0]!.value, scopeId: workerId } }] } };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(invalid, "2"));
     await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receivedReceipt(receipt), prompts: { ok: false } });
     const duplicate = JSON.stringify({ ...receipt, configuration: { ...receipt.configuration, prompts } }).replace('"scope":"user"', '"scope":"user","scope":"user"');
-    const raw = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(duplicate, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "2" } }));
+    const raw = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(duplicate, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "2", "Daynight-Worker-Tool-Paths": "2" } }));
     await expect(api(raw).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receivedReceipt(receipt), prompts: { ok: false } });
   });
   it("reads three worst-case escaped prompt values within the POST limit without lowering the operation budget", async () => {
@@ -410,7 +375,7 @@ describe("Worker prompt configuration sync", () => {
     const items = requested.map(({ key }, index) => ({ key, status: "value", value: { scope: key.scope, scopeId: index === 0 ? userId : index === 1 ? workerId : project, revision: "1", text: `PLACEHOLDER${index}`, updatedAt: time } }));
     let body = JSON.stringify({ ...receipt, configuration: { ...receipt.configuration, prompts: items } });
     for (let index = 0; index < 3; index++) body = body.replace(`PLACEHOLDER${index}`, "\\u0026".repeat(1_048_400));
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(resource)).mockResolvedValueOnce(new Response(body, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "2" } }));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(resource)).mockResolvedValueOnce(new Response(body, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "2", "Daynight-Worker-Tool-Paths": "2" } }));
     const operation = createOperation(); operations.push(operation);
     operation.consume(35 * 1_048_576);
     const client = createApiClient({ serverUrl: "http://localhost:8787", serverToken: "fixture-token", expectedUserId: userId, operation, fetch });

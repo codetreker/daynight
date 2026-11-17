@@ -4,7 +4,7 @@ import { captureToolEnvironment, resolveToolLaunch, verifyToolLaunch, ToolSelect
 import type { FrozenToolObservation } from "./types.js";
 import { withinOperation } from "../../platform/tool-io.js";
 
-export type ToolSelectionTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: Readonly<Record<Tool, ToolPathChoice | null>> };
+export type ToolSelectionTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: Readonly<Record<"codex" | "copilot", ToolPathChoice | null>> };
 export type ToolSelectionProbe = {
   reconcile?(launch: ResolvedToolLaunch, operation: Operation): Promise<unknown>;
   admit?(launch: ResolvedToolLaunch, receipt: unknown): void;
@@ -27,14 +27,14 @@ type Options = {
   readonly now?: () => string;
 };
 type Slot = {
-  tool: Tool; context: ToolContext; epoch: number; state: ToolPathObservation["state"]; reason: ToolPathObservation["reason"];
+  tool: "codex" | "copilot"; context: "web"; epoch: number; state: ToolPathObservation["state"]; reason: ToolPathObservation["reason"];
   actual: ToolPathActual | null; candidate: ToolPathActual | null; launch: ResolvedToolLaunch | undefined; token: unknown;
   error: ToolPathObservation["error"]; pending: { epoch: number; promise: Promise<void> } | undefined;
   probeRecipe: ResolvedToolLaunch | undefined; tail: Promise<void> | undefined;
   lastTarget: { source: "local" | "cloud"; revision: string | null; choice: ToolPathChoice } | undefined;
 };
-const contexts = [["codex", "web"], ["codex", "herdr"], ["copilot", "web"], ["copilot", "herdr"], ["herdr", "herdr"]] as const;
-const automatic = (): ToolPaths => ({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+const contexts = [["codex", "web"], ["copilot", "web"]] as const;
+const automatic = () => ({ codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } });
 const clone = <T>(value: T): T => structuredClone(value);
 const selection = (launch: ResolvedToolLaunch): ToolPathChoice => launch.source === "explicit" ? { kind: "path", path: launch.entryPath } : { kind: "auto" };
 const actual = (launch: ResolvedToolLaunch, version: string, checkedAt: string): ToolPathActual => ({ selection: selection(launch), selectionKey: launch.selectionKey, entryPath: launch.entryPath, executablePath: launch.executablePath, interpreterPath: launch.interpreterPath, source: launch.source, version, checkedAt });
@@ -93,7 +93,7 @@ export class ToolSelectionManager {
   async prepare(tool: Tool, context: ToolContext, operation: Operation): Promise<void> {
     const slot = this.slot(tool, context); this.checkOpen(slot, operation);
     if (this.suspended) throw new Error("Worker tool configuration is unavailable.");
-    if (this.targets.choices[tool] === null) throw new Error(`Worker ${tool} tool choice has not been adopted.`);
+    if (this.targets.choices[slot.tool] === null) throw new Error(`Worker ${tool} tool choice has not been adopted.`);
     if (context !== "web") throw new ToolSelectionError(tool, context, "launch", "incompatible_runtime");
     if (this.usable(slot)) {
       const verified = slot.launch!, verifiedEpoch = slot.epoch;
@@ -107,7 +107,7 @@ export class ToolSelectionManager {
     this.checkOpen(slot, operation);
     if (this.suspended) throw new Error("Worker tool configuration is unavailable.");
     if (slot.pending?.epoch === slot.epoch) return withinOperation(slot.pending.promise, operation);
-    const target = this.targets.choices[tool];
+    const target = this.targets.choices[slot.tool];
     if (target === null) throw new Error(`Worker ${tool} tool choice has not been adopted.`);
     const epoch = slot.epoch, choice = clone(target); slot.state = "checking"; slot.reason = null; slot.error = null;
     const previous = slot.tail;
