@@ -33,7 +33,7 @@ it.each(['409', '500', 'network'] as const)('preserves a %s DELETE outcome throu
   expect(stored[0]).toMatchObject({ phase: 'unknown', request: original, rejected: outcome === '409' });
   expect(f.cache.unblockBot).not.toHaveBeenCalled(); expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe('blocked');
   expect(f.fetcher).toHaveBeenCalledOnce();
-  resume(); await f.coordinator.check(f.bot.id);
+  resume(); await f.coordinator.check(f.bot.id, new AbortController().signal);
   expect(f.record().phase).toBe(outcome === '409' ? 'rejected' : 'unknown');
   expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe(outcome === '409' ? 'allowed' : 'blocked');
   expect(f.cache.unblockBot.mock.calls.length > 0).toBe(outcome === '409');
@@ -49,7 +49,7 @@ it('retains an authenticated successful DELETE while identity is paused', async 
   await operation;
   expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe('revoked'); expect(f.cache.invalidateBot).toHaveBeenCalled();
   expect(f.fetcher).toHaveBeenCalledOnce();
-  resume(); await f.coordinator.check(f.bot.id);
+  resume(); await f.coordinator.check(f.bot.id, new AbortController().signal);
   expect(f.record().phase).toBe('completed'); expect(f.cache.unblockBot).not.toHaveBeenCalled();
 });
 
@@ -89,7 +89,7 @@ it.each(['403', '404', 'completed', 'active'] as const)('retains an authenticate
   resume();
   if (outcome === 'active') {
     expect(f.record().phase).toBe('unknown'); expect(f.fetcher).toHaveBeenCalledTimes(2);
-    f.fetcher.mockResolvedValue(botResponse(f.bot)); await f.coordinator.check(f.bot.id);
+    f.fetcher.mockResolvedValue(botResponse(f.bot)); await f.coordinator.check(f.bot.id, new AbortController().signal);
   }
   expect(f.record().phase).toBe(outcome === 'active' ? 'rejected' : outcome === 'completed' ? 'completed' : 'unavailable');
   expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe(outcome === 'active' ? 'allowed' : 'revoked');
@@ -111,7 +111,7 @@ it('does not let a rejected retry during identity pause resolve an earlier unkno
   const retry = f.coordinator.retry(f.bot.id);
   await vi.waitFor(() => expect(f.fetcher.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(2));
   resume = pauseAuthRequests(); retryResponse.resolve(botError(409, 'version_conflict')); await retry;
-  resume(); await f.coordinator.check(f.bot.id);
+  resume(); await f.coordinator.check(f.bot.id, new AbortController().signal);
   expect(f.record().phase).toBe('unknown'); expect(f.record().request).toEqual(original);
   expect(f.cache.unblockBot).not.toHaveBeenCalled(); expect(f.coordinator.sessionAdmission(f.bot.sessionId)).toBe('blocked');
   expect(f.fetcher.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(2);
@@ -159,7 +159,7 @@ it('retires a superseded DELETE without changing the new operation or starting r
   f.coordinator.observe(other);
   const read = Promise.withResolvers<Response>();
   f.fetcher.mockImplementation(async () => read.promise);
-  const next = f.coordinator.check(f.bot.id);
+  const next = f.coordinator.check(f.bot.id, new AbortController().signal);
   await vi.waitFor(() => expect(f.fetcher).toHaveBeenCalledTimes(2));
   f.response.reject(new Error('old response lost')); await old;
   expect(f.record()).toMatchObject({ request: { deletionId: botId(95) }, phase: 'pending', busy: true, error: null });
@@ -170,11 +170,11 @@ it('retires a superseded DELETE without changing the new operation or starting r
 
 it.each(['check', 'retry'] as const)('does not make the replacement busy when %s is superseded before it starts', async action => {
   const f = fixture(); f.response.resolve(botError(500, 'failure')); await f.coordinator.begin(f.bot);
-  const old = f.coordinator[action](f.bot.id);
+  const old = action === 'check' ? f.coordinator.check(f.bot.id, new AbortController().signal) : f.coordinator.retry(f.bot.id);
   const other = { ...f.deleted(), deletion: { ...f.deleted().deletion, deletionId: botId(95), workerCleanup: { state: 'pending' as const, code: null }, serverCleanup: { state: 'pending' as const, code: null } } };
   f.coordinator.observe(other); await old;
   expect(f.record()).toMatchObject({ request: { deletionId: botId(95) }, phase: 'pending', busy: false });
   const calls = f.fetcher.mock.calls.length;
-  f.fetcher.mockResolvedValue(botResponse(other)); await f.coordinator.check(f.bot.id);
+  f.fetcher.mockResolvedValue(botResponse(other)); await f.coordinator.check(f.bot.id, new AbortController().signal);
   expect(f.fetcher).toHaveBeenCalledTimes(calls + 1); expect(f.record().busy).toBe(false);
 });

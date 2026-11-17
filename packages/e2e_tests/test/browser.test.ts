@@ -34,3 +34,28 @@ test('browser failures retain diagnostics while private data remains owned by th
     await assert.rejects(runCommand(process.execPath, ['-e', "require('node:fs').mkdtempSync('/proc/self/cwd/browser-');process.stderr.write('browser failed');process.exit(7)"], { ...browserCommandOptions(run), timeoutMs: 5_000, onOutput: () => {} }), (error: unknown) => error instanceof CommandFailure && error.result.stderr === 'browser failed');
   } finally { await rm(run, { recursive: true, force: true }); }
 });
+
+test('owned Playwright gate preserves the private cwd and verifies its stopped process', async () => {
+  const { randomUUID } = await import('node:crypto');
+  const { readFile } = await import('node:fs/promises');
+  const { initializeRunOwnership, recoverRunOwnership, startOwnedPlaywright } = await import('../src/fixture-owner.ts');
+  const repository = path.resolve(import.meta.dirname, '../../..');
+  const run = path.join(repository, '.tmp', 'product-e2e', randomUUID());
+  await mkdir(path.join(run, 'private'), { recursive: true });
+  try {
+    await initializeRunOwnership(repository, run);
+    const options = browserCommandOptions(run);
+    const program = "const fs=require('node:fs');const os=require('node:os');const p=fs.mkdtempSync(os.tmpdir()+'/profile-');process.stdout.write(JSON.stringify({cwd:fs.realpathSync('.'),profile:fs.realpathSync(p)}))";
+    const child = await startOwnedPlaywright({ repository, runDirectory: run, command: process.execPath, args: ['-e', program], options: { ...options, timeoutMs: 10_000, onOutput: () => {} } });
+    const result = await child.finished;
+    assert.equal(result.exitCode, 0);
+    const value = JSON.parse(result.stdout) as { cwd: string; profile: string };
+    assert.equal(value.cwd, await realpath(path.join(run, 'private')));
+    assert.equal(path.dirname(value.profile), value.cwd);
+    await recoverRunOwnership({ repository, runDirectory: run, mode: 'owner' });
+    const owner = JSON.parse(await readFile(path.join(run, 'results', 'fixture-owner.json'), 'utf8')) as { verified: boolean; playwright: { stopped: boolean }; browserUnconfirmed: boolean };
+    assert.equal(owner.verified, true);
+    assert.equal(owner.playwright.stopped, true);
+    assert.equal(owner.browserUnconfirmed, false);
+  } finally { await rm(run, { recursive: true, force: true }); }
+});

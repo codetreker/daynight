@@ -59,6 +59,10 @@ func AuthorizeAddMember(ctx context.Context, dao store.TeamWriteDAO, p model.Pri
 	if err != nil {
 		return err
 	}
+	return authorizeOrdinaryAdmin(t)
+}
+
+func authorizeOrdinaryAdmin(t model.Team) error {
 	if t.Membership.Role != model.ProjectAdmin {
 		return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 	}

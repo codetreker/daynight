@@ -64,7 +64,9 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 ## 读取与展示
 
-`useBotRead` 分别管理列表和 defaults。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。账户变化等待刷新保留同 scope、同 key 已确认的值，实际失败保留上次值并标记 stale。
+`useBotRead` 分别管理列表、defaults 和助手任务的普通读取。资源 key 与账号 scope 共同约束结果；`useBotDetail` 另按 Bot ID 和选择代次隔离详情。两个 hook 各自管理读取周期：`enabled`、可见性和有效 scope 允许周期启动，详情还要求非空 Bot ID。启动时立即读取并只持有一个五秒 interval；停用、隐藏、scope abort、资源变化或卸载时撤销入口、清除 interval 并取消当前 GET 或详情 ticket。提交后的布局阶段撤销旧周期，setup 才建立新的网络资源。恢复可读时建立新周期并立即读取，手动 refresh 只运行已有入口，不增加 timer 或并发请求。
+
+每次读取在等待 `scope.ready` 后、调用 loader 前及发布结果前重新检查生命周期和 signal；旧请求只收尾自己的 controller 或 ticket，不干扰新周期。`authRequestsPaused` 仍控制实际读取准入，恢复由父级 `readEnabled` 和页面生命周期驱动。正常取消不记为失败；空闲取消不重复发布相同状态。同 scope、同 key 已确认的值在临时停用时保留，实际失败保留上次值并标记 stale。读取生命周期的取舍见[决策记录](../../.agents/notes/implemented/bug-fix/2026-11-17-bot-read-poll-lifecycle.md)。
 
 选中详情由既有 `useBotDetail` / `BotDetailCache` 管理，按账号 scope、选择对象和请求代次隔离。页面传实际三席 pane 的 Bot ID 集合；新选择可读取自己的缓存详情与 `displayBinding`，但上次选择的确认不能成为本次 `actionBinding`。普通五秒轮询开始保留确认，真实网络、协议或服务错误撤确认，取消不产生成功或失败。`confirmed` 与 actionBinding 使用同一当前确认规则；无 Session 的启动详情仍可得到确认，不把空 binding 误解释成持续加载。
 
@@ -90,9 +92,13 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 权威删除按精确版本单调接纳，同一删除身份的旧阶段不得覆盖新结果；不同 Worker 响应不能影响目标。两个 cleanup 均 completed 才完成。协调器在接纳删除或权威拒绝访问时，直接按账号和 Bot 清理草稿、回执及对应 Session 显示偏好，再通知已挂载缓存通过 `invalidateBot` 清理内存与阅读状态。浏览器存储清理不依赖页面挂载，因此离开助手页后到达的删除结果仍完成定向清理。即使原响应来自另一删除身份，也不重开对话。请求重试由用户显式触发，先 GET 再沿用权威 deletionId/requestedVersion；自动轮询只读。scope abort 取消准入并清记录，提交结果未知不重放。
 
-WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身份和删除状态供重载恢复；存储失败保留内存。每次操作为准备和准入等待持有可取消信号，暂停取消未派发的准备并结束原 promise 与 busy；确认零派发时解除该次屏障，已派发的未知结果继续保留原身份。派发后临时暂停不丢弃同一有效 scope 的可信响应分类，暂停后的操作不自动读取或重放。active 读取尚未通过发布准入时结束原操作，后续核对仍需新的获准操作；明确拒绝的证据保留到同账号恢复后再查询权威状态。每次收尾检查操作身份；观察到另一删除身份时取消并解除旧操作，新操作不受旧结果或 busy 收尾影响，重试只处理开始时的原请求。真正的 scope 失效丢弃响应与记录。`BotsPage` 订阅协调器与缓存的 guard revision，以完整删除事实过滤列表和详情，因此删除前发出的迟到读取不能绕过屏障。旧页面卸载只解绑缓存，原在途请求仍归账号 scope；新页面重新绑定时先恢复对应屏障。侧栏和选中区共用过滤 completed 的反馈投影，未决状态继续展示实际阶段；完成记录仍供屏障和标题使用。选中完成的旧地址显示已有删除空态，名称未知时使用通用标题。完整页面刷新不是删除完成依据。
+WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身份和删除状态供重载恢复；存储失败保留内存。每次操作为准备和准入等待持有可取消信号，暂停取消未派发的准备并结束原 promise 与 busy；确认零派发时解除该次屏障，已派发的未知结果继续保留原身份。派发后临时暂停不丢弃同一有效 scope 的可信响应分类，暂停后的操作不自动读取或重放。active 读取尚未通过发布准入时结束原操作，后续核对仍需新的获准操作；明确拒绝的证据保留到同账号恢复后再查询权威状态。每次收尾检查操作身份；观察到另一删除身份时取消并解除旧操作，新操作不受旧结果或 busy 收尾影响，重试只处理开始时的原请求。真正的 scope 失效丢弃响应与记录。`BotsPage` 订阅协调器与缓存的 guard revision，以完整删除事实过滤列表和详情，因此删除前发出的迟到读取不能绕过屏障。页面卸载解绑缓存，账号 scope 继续结算在途删除提交及其内部确认；新页面重新绑定时先恢复对应屏障。侧栏和选中区共用过滤 completed 的反馈投影，未决状态继续展示实际阶段；完成记录仍供屏障和标题使用。选中完成的旧地址显示已有删除空态，名称未知时使用通用标题。完整页面刷新不是删除完成依据。
 
-取舍见[浏览器删除决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-browser-deletion.md)。
+独立状态核对使用页面拥有的 signal，与账号拥有的 `begin`、`retry` 及其内部读取分开。协调器按 Bot 串行化两种操作：核对遇到删除操作时跳过，同一页面的核对复用在途请求，新页面接替时先退休旧核对。退休立即释放其槽位与 busy，保留删除事实；对象身份检查阻止迟到收尾影响新操作。signal 穿透到实际 fetch，使取消后的迟到 401 在现有认证广播前被拒绝。
+
+`useBotDeletionChecks` 为每个可见且准入的页面周期持有 controller，供自动和手动核对共用。它对 unknown、pending、failed 且非 busy 的记录立即及每五秒读取，只在新增待核对目标时额外立即读取；记录的 busy、错误或结果变化不重建 owner。无自动目标时不保留 timer。隐藏、停用、scope 失效和卸载先撤入口及 timer，再取消 owner；恢复时创建新 controller。`BotsPage` 使用当前 scope 的全部记录，独立 `TestSessionPage` 只使用对应 Session 的记录，并由 shell 提供读取准入。
+
+取舍见[浏览器删除决策](../../.agents/notes/implemented/architecture/2026-11-05-bot-browser-deletion.md)及[独立核对生命周期决策](../../.agents/notes/implemented/architecture/2026-11-17-bot-deletion-check-lifetime.md)。
 
 ## 详情、焦点与全屏边界
 

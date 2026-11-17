@@ -48,6 +48,8 @@ macOS Herdr 的执行槽随原运行停止证明释放。确认停止、选择�
 
 `worktrees/migration.ts` 提供独立的显式转换入口：调用者持有既有实例所有权和仓库 gate，停止旧 Worker，并提供完整的清理调度、Web 与 Herdr 绑定。转换核对这些来源、旧 Git 注册和已发布清单；全部清单可靠发布并读回后才复核和解开旧 Worker 锁、移除关联的废弃 sidecar，再完整重枚举并发布格式标记。失败可按实际资源重试，冲突和读取失败保持可见；原 checkout 和冻结 cwd 不移动或改写。选中和保留的仓库在文件操作准入前完成转换；失败仅关闭对应仓库的文件 gate。转换不遍历 namespace 中的未知目录；只验证已有来源关联的 worktree，未关联目录保持原状且不阻断准备。非空且没有 Git 关联的目录不能凭清单获得删除授权。转换顺序与降级限制见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
 
+自动清理开始时从已提交的 appliedValue 与 actualSource 捕获 enableSudoCleanup 和真实 revision；缺席或尚未应用时只执行普通清理。文件系统阶段确认权限障碍后重新核验清单、目录身份和可访问的 Git 关联，再读取系统挂载清单并拒绝目标或其子树上的挂载；在已核验的仓库根目录通过 POSIX shell 删除原目标；root 使用 rm，其他用户使用 sudo -n，路径按单引号规则引用。普通清理的操作与句柄先收尾，shell 受原 Operation 预算与取消约束并等待关闭，再由普通 Git 清除原登记并重新观察。其他错误不触发提权；人工入口不接入该策略。整目录删除不保证最后移除 .git；部分失败后若 .git 已缺失、目录非空且原归属无法重新证明，后续重试保留错误与责任，不强行删除。进程内责任保持到命令收尾；非 root 的 sudo 在取消或超时后仍由原进程等待结束，不能以杀死父进程推断 root 子进程停止。挂载检查不能排除检查后外部并发挂载，强制重启后不提供新增跨进程互斥。取舍见[清理决策](../../.agents/notes/implemented/feature/2026-11-17-worker-sudo-cleanup.md)。
+
 历史执行可以保留已经交接的 cwd，同一 task 的后续 claim 也可以重用该目录。转换完整读取历史来源，按原 owner 关联 Web 终态清理完成记录，以及 Herdr 已确认资源删除或已核验的 never-started 退休记录；这些记录不证明当前目录缺席，也不授权重新删除。明确退休的历史绑定不占新清单的位置，仍有责任或证据不明的来源继续参与冲突检查。原锁、清单或来源身份与退休证据矛盾时保留错误；历史记录和残留调度不由转换器修改。
 
 ## 配置与目录
@@ -145,13 +147,13 @@ Worker instance lock 下的 `copilot-tool-materializer.ts` 在 `<workerDirectory
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
 
-configuration.json 使用 schemaVersion=6，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
+configuration.json 使用 schemaVersion=7，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
 
 | 模块 | 责任 |
 | --- | --- |
 | configuration-model.ts | 缓存、记录与捕获的完整类型、从原始目标派生的 known 视图及共用值规则 |
 | api/worker-configuration-source.ts | 配置专用源文本载体、已知路径投影、完整资源/回执解析与无损 JSON 语义比较 |
-| configuration-cache.ts | schema 6 严格校验、版本 1–4→5→6 显式升级与冻结编码 factory |
+| configuration-cache.ts | schema 7 严格校验、版本 1–4→5→6→7 显式升级与冻结编码 factory |
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
 | configuration-persistence.ts | 初始化读取、串行冻结检查点、存储 readiness、I/O 重试及关闭所有权 |
@@ -161,7 +163,7 @@ configuration.json 使用 schemaVersion=6，保持单个 JSON 对象、原路径
 
 authority 保存本机 generation UUID、完整 desiredJson、applicationRevision 与 observationRevision；generation 不是服务端 epoch。desiredJson 是唯一持久目标，known 从同一源文本按已知路径严格派生。applicationRevision 标识最近已知目标变化，可以小于最新 desired.revision；currentItems 的必需已知项对应这个锚点。工具目标 revision、native/tool preparation 的比较与证明、confirmProjectPrepared、延后准备确认和新增移除 origin 均消费该锚点；报告 envelope 使用最新 desiredRevision，item 保留原 targetRevision。remoteObservation 单独存储最后一次明确 GET 的 {observationRevision,json}，可落后 authority.observationRevision，服务回退或 null 重置也保留此前快照，独立按其原 base/版本验证；receipt 不将本机新报告伪装成已读取的远端事实。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，retainedItems 保存原工作、停止、未知结果、失败或必要实际值。recordId 全局唯一，origin 保留原 generation、targetRevision 与 application/schema4 来源且不可改写；actualSource 独立表达真实来源，复用值不修改旧历史。schema4/successRevision:null 保留历史未知版本；nativeMode 不授予进程资格，blockedByRemovalId 必须同项目且无环。
 
-版本 1–4 经原结构转换并严格验证为 schema 5，再与既有 schema 5 一起转为 schema 6；正常运行只处理 6。已验证旧 desired 编码为 desiredJson，applicationRevision 取旧目标版本，无目标则均为 null；remoteObservation 为 null。原 identity、generation、recordId、origin、actualSource、失败预算、期限、游标和引用关系保持，applying 沿原重启规则恢复；版本 1 继续补 preferPlatformSpecificTasks:false 及已初始化目标的同名 pending/null 项。格式、scope 和损坏仍拒绝，历史结构超过新业务容量限制不清空责任。结果在原子保存前冻结，重试不重新生成身份，失败保留原文件与原错误。
+版本 1–4 经原结构转换并严格验证为 schema 5，再与既有 schema 5 一起转为 schema 6；再按 schema 6 原已知集合验证并重新识别 enableSudoCleanup，原文本存在该字段时生成新的 pending 记录，缺席时不创建；其余未变实际值继承真实来源。重识别的 applicationRevision 指向当前目标，转换原子保存后才启动应用；正常运行只处理 7。从 schema 5 转换时，已验证旧 desired 编码为 desiredJson，applicationRevision 取旧目标版本，无目标则均为 null；remoteObservation 为 null。原 identity、generation、recordId、origin、actualSource、失败预算、期限、游标和引用关系保持，applying 沿原重启规则恢复；版本 1 继续补 preferPlatformSpecificTasks:false 及已初始化目标的同名 pending/null 项。格式、scope 和损坏仍拒绝，历史结构超过新业务容量限制不清空责任。结果在原子保存前冻结，重试不重新生成身份，失败保留原文件与原错误。
 
 读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；未知目标与远端观测位于普通 JSON 字符串内部，guard 不解释其中的任意数字或键。真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
 
@@ -346,11 +348,15 @@ Web 原生恢复复用持久 `recovery.count`、`pauseReason` 和 `retryAuthoriz
 
 工作树检查失败保存到独立编排阻塞记录，包含结构化来源、原因及原 claim、worktree、Session、原生会话、executionGeneration 和 controllerInstanceId。版本 2→3 只新增该记录的表，保留既有执行 JSON；旧二进制通过 SQLite 版本守卫拒绝打开升级后的库。异常期间不准备、启动或替换原执行，不清理归属尚未证明的工作树；可信原执行的只读观察、启动报告与既有独立 grant 续期仍可继续。
 
-每轮重新核验可恢复的编排条件。清除阻塞须通过完整工作树检查，以及原 launch ticket、经认证的 Controller 观察和进程实例证明；运行中的原 generation 还须满足同一 native ID、ready/working、startup ready、初始输入已确认且原进程未停止。所有已分配 generation 共用进程证明的追加规则：实时列表必须保留 Worker 与 Controller journal 已有列表的完整前缀，既有证明不得删改，新增证明也须逐个通过 OS 核验。清除和更高 revision 的启动报告一起持久提交，不调用 launcher.prepare/launch，不重放已提交输入或重置原生恢复计数。原进程已停止时不把停止视为健康：完整原 generation 停止证明和工作树核验通过后，只移交既有原生恢复流程，保留原生暂停、预算、显式 retry 与正常关停规则；编排记录不能额外阻挡已授权的恢复，也不能授予新的恢复许可。
+每轮重新核验可恢复的编排条件。清除阻塞须通过完整工作树检查，以及原 launch ticket、经认证的 Controller 观察和进程实例证明；运行中的原 generation 还须满足同一 native ID、ready/working、startup ready、初始输入已受理或确认且原进程未停止。所有已分配 generation 共用进程证明的追加规则：实时列表必须保留 Worker 与 Controller journal 已有列表的完整前缀，既有证明不得删改，新增证明也须逐个通过 OS 核验。清除和更高 revision 的启动报告一起持久提交，不调用 launcher.prepare/launch，不重放已提交输入或重置原生恢复计数。原进程已停止时不把停止视为健康：完整原 generation 停止证明和工作树核验通过后，只移交既有原生恢复流程，保留原生暂停、预算、显式 retry 与正常关停规则；编排记录不能额外阻挡已授权的恢复，也不能授予新的恢复许可。
 
 首次启动在原 Controller 尚未就绪时可能暂时没有 native ID 或首次输入回执。新版编排阻塞可在首代、未发生恢复且没有 retry/关停意图时，通过原 ticket、Controller journal、认证 IPC 和实际进程证明继续这次启动；已绑定的 native ID 不可更换，尚未绑定的 ID 只能取自同一原 Controller。仅本机和实时观察均为 not_submitted 时，才使用原 initialOperationId 递交首次 assignment；未知或已经递交的输入不重放。这条路径不适用于旧误锁纠正。显式 retry 的 pauseReason 非空表示尚待替换原停止代，pauseReason 为空表示已分配的单次尝试正在启动；后者在同代健康验证后完成 retry，不再停止健康进程、分配 generation 或增加次数。 首次 native 绑定必须核对原 Controller 的完整观察；存在编排阻塞时，在同一 SQLite 事务中确认阻塞仍等于绑定前的完整执行身份，再仅补齐其 native ID。关停观察同样先验证身份再绑定；阻塞来源、时间及其他归属字段保持不变，原有冲突不能用 null 通配。该首绑定同样适用于没有正常关停意图的意外退出：完整原 ticket、journal、进程停止证明及工作树核验通过后，先原子绑定已知 native ID 与原阻塞，再按更新后的严格身份清除阻塞并进入既有预算和 retry 流程。未知停止不构成绑定或替换许可。
 
 Worker claim 的 Controller 首次输入和 `submit_worker_input` 共用普通原生队列。队首先检查期限、连接和 idle 输入能力，再通过继承的配置读取同服务、同用户的当前 Task，核验未暂停、授权与原 claim/Worker/worktree/Agent/Web 归属，读取后再次检查本机状态并派发。配置或读取失败不使用旧快照；读取与原生派发不具有跨系统原子性。首次输入保留原 `initialOperationId` 和冻结正文；后续文本以本地 `worker_input` 操作记录，复用普通消息的来源关联和迟到受理，但不参与 relay 的远端命令对账。`observe` 顶层的 `workerInputProtocol:1` 声明该链路，旧调用方可忽略。正文上限为 4 MiB UTF-8，完整 IPC JSON 加换行上限为 5 MiB；排队准入期限为 30 秒，Controller 等待最多 65 秒，调用方等待最多 70 秒。断开不能撤回已派发输入。Test Session 首次输入及人工消息保留各自入口。
+
+Worker 的健康观察共用输入流程，以原运行绑定在内存维护 assignment 受理状态和至多一个待核对操作。首次 assignment 完成的轮次直接返回；恢复时用当前任务、冻结配置、已核实 native Session 与当前附加 prompts 构造完整 assignment。之后每轮符合输入条件时构造新 ping，不按 idle 观察去重。等待结果不消耗故障预算；未知结果按原 operation ID、generation、kind 和 hash 核对，assignment 未受理时不能用 ping 越过。普通 ping 的终态 unknown 不永久阻止下一轮，已派发输入不保证 exactly-once。
+
+旧存活 Controller 缺少能力声明时先结算原首次输入；明确尚未递交时使用原 operation 和冻结正文，在旧 IPC 前重新读取任务并复核本机资格。首次输入已受理、native Session 已核实且当前空闲可输入时，持有原 claim 串行锁的编排器执行既有 shutdown；只有完整停止证明后才清除 intent 并按正常 orderly restart 换代。停止未知保留原 intent 和责任，新代重新验证能力，同次 Worker 最多尝试一次升级。旧停止与最终观察之间仍有并发窗口，不宣称原子 compare-and-stop。取舍见[Web 自动输入决策](../../.agents/notes/implemented/architecture/2026-11-17-web-worker-patrol.md)。
 
 Windows 启动器最初保存基本 Controller 进程证明，原 Controller 随后在 journal 补齐 Job Object 名称。两次证明必须保持 PID、进程组、出生标识与命令摘要一致。POSIX 分离进程在 Worker 退出后可重挂父进程，parentPid 仅作观察，不能因此拒绝同一运行的恢复或清理；Windows 仍核对原父 PID。仅原证明缺少 Job 名称且为 Windows 进程形态时，才可从原 launch 对应的 journal/认证观察补入精确的 `Local\Daynight-<launchId>`。已有 Job 名称不可改变或丢失，native 进程列表的前缀核验保持严格。恢复与关停共享这条补齐规则，停止时仍核验完整进程及 Job 边界。
 
@@ -402,7 +408,7 @@ Linux/Windows legacy 路径中，NULL 是新 claim 首次启动的正常状态�
 
 巡查在每个 task 的串行操作内读取当前 agent。原 claim 仍有效、当前 task 未暂停周期输入、agent 存活且 interactiveReady、未在启动、没有首次输入待递交时，idle/done 触发继续原任务的 ping；working、blocked、unknown 或尚未就绪只观察。workerPingPrompt 将完整正文包在字面量 `<system remider>` 与 `</system remider>` 标签内，沿用原任务、claim、worktree 和授权，与启动及 macOS 延续或恢复输入使用相同的自主处理、严重设计冲突暂停和持续等待指引。Review 由人执行也不改变这一分类；agent 的 idle/done 不作为业务完成凭据。进入终止清理后只推进收尾。
 
-暂停使用可写布尔 task property paused。缺席与 false 在周期 ping 决策中均表示未暂停，但存储与通用读取保留两者差别；存在的错误类型必须暴露。该值不复制为 SQLite 状态，也不改变 worker.phase、task 状态或新 claim 资格。Web backend 当前没有周期 continuation ping，解除该属性不发送 Web 原生输入或启动/恢复指令；Web 操作者的暂停展示与解除入口由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
+暂停使用可写布尔 task property paused。缺席与 false 在周期 ping 决策中均表示未暂停，但存储与通用读取保留两者差别；存在的错误类型必须暴露。该值不复制为 SQLite 状态，也不改变 worker.phase、task 状态或新 claim 资格。Web 自动输入在最终派发时核对该属性；解除后由下一轮正常巡查重新决策。Web 操作者的暂停展示与解除入口由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 Herdr 适配层为周期 ping 接收独立的发送前检查，在 workspace 串行操作、结构化就绪及可见文本的已知阻塞检查之后、实际输入之前读取服务端当前 task，核验原 active claim、workerId 和 worktreeId，再检查 paused。Legacy 使用 agent.prompt；macOS 还在持久仲裁和每帧边界按用途重新核验。原库存快照不能授权该次输入。读取失败保持原错误链且不递交，归属不再匹配时不接管新 claim。最终检查之后与原生 mutation 之间没有跨系统原子事务；已发送或已受理的输入不会因随后暂停而撤回。
 
@@ -532,7 +538,7 @@ macOS lifecycle 验证严格 schema、原 owner/binding 不可更换、先身份
 
 真实 SQLite 验证精确列数、枚举、nullable ID、历史行及唯一 active。Git 测试验证 dirty state、静态归属、遗留发现、重开与安全删除。受控 HTTP/legacy Herdr 验证空库项目初始化、未知 claim 结果、重连、指定 ID resume、NULL 新建、idle/done 巡查 ping、paused 的多轮抑制与同观察恢复、排队及原生等待后的最终读取、读取失败及原 claim 换代拒绝、首次与待递交 assignment 及清理不受误拦截、未改变观察及未知输入去重、容量、清理通知后新 idle 观察选择停止、清理期限、真实资源消失判定和人工锁互斥。退出验证覆盖根取消在报告 join 前同步中止全部 job、报告延后时终止清理不删除工作区或完成本机行、全部 job 的等待收尾、终止清理中途退出、直接停止不递交清理消息、不删除 worktree 或把未完成行写 done、已结束归属重启后重新清理，以及停止错误和不确定停止时的私有实例保留。原生启动策略验证两个 provider 的 fresh/resume 完整 argv、Copilot 环境覆盖、Codex 路径编码与 Windows trust key 归一化、冲突参数拒绝及只读能力探测；真实原生会话恢复与三平台完整 Goal 验收仍需各自来源明确的运行证据。
 
-Web 恢复验证使用可重开的 SQLite 和受控 Controller/进程证据，覆盖暂停原因、次数与身份持久化，暂停多轮 tick 与普通重启不执行，shutdown/clearShutdown 不绕过，旧耗尽停止记录升级及健康最后一代对照。摘要验证覆盖首发失败、下一轮读取新版本重试和稳定后无重复写；retry 验证覆盖成功、再次失败、claim 失效、原生 ID 缺失及停止证明不足，确认原 assignment 不重发、claim 与容量责任保留。健康 orderly restart 与 Herdr 回归保持独立；这些受控证据不替代真实 provider 和完整集成验收。
+Web 恢复验证使用可重开的 SQLite 和受控 Controller/进程证据，覆盖暂停原因、次数与身份持久化，暂停多轮 tick 与普通重启不执行，shutdown/clearShutdown 不绕过，旧耗尽停止记录升级及健康最后一代对照。摘要验证覆盖首发失败、下一轮读取新版本重试和稳定后无重复写；retry 验证覆盖成功、再次失败、claim 失效、原生 ID 缺失及停止证明不足，确认原首次操作不重放、claim 与容量责任保留。恢复后按当前输入流程构造本次 assignment。健康 orderly restart 与 Herdr 回归保持独立；这些受控证据不替代真实 provider 和完整集成验收。
 
 命名验证覆盖创建与活 workspace 改名、同名/长标题/中文/emoji/分隔符/终端控制字符、无变化不请求 rename、未知回执再观察、执行超限仍同步、改名与 claim 结束竞争及冷恢复；四项身份和原 native session 不得因展示变化而改变。迁移验证覆盖清单发布、解锁、sidecar 和格式提交各阶段的故障与重入、持久读回及原 cwd 保留，不用成功退出码替代持久状态观察。
 

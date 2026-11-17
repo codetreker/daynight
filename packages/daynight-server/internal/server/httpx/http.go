@@ -188,13 +188,22 @@ func PageRequest(request *http.Request) (model.PageRequest, error) {
 }
 
 func WriteJSON(w http.ResponseWriter, request *http.Request, logger *slog.Logger, status int, value any) {
+	writeJSON(w, request, logger, "server", status, value)
+}
+
+// WriteOperationJSON retains an operation's diagnostic policy on response failures.
+func WriteOperationJSON(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, status int, value any) {
+	writeJSON(w, request, logger, component, status, value)
+}
+
+func writeJSON(w http.ResponseWriter, request *http.Request, logger *slog.Logger, component string, status int, value any) {
 	if request.Context().Err() != nil {
 		return
 	}
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(value); err != nil {
 		w.Header().Del("Location")
-		WriteError(w, request, logger, "server", "response encoding", err)
+		WriteError(w, request, logger, component, "response encoding", err)
 		return
 	}
 	if request.Context().Err() != nil {
@@ -207,7 +216,7 @@ func WriteJSON(w http.ResponseWriter, request *http.Request, logger *slog.Logger
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		LogFailure(logger, request.Context(), "server", "response", err)
+		LogFailure(logger, request.Context(), component, "response", err)
 	}
 }
 
@@ -227,7 +236,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 	var uriErr *URITooLongError
 	if errors.As(err, &uriErr) {
 		CloseUnreadBody(w, request)
-		WriteJSON(w, request, logger, http.StatusRequestURITooLong, api.ErrorResponse{Error: api.Error{Code: "uri_too_long", Message: "request target exceeds its input limit", RequestID: RequestID(request.Context())}})
+		writeJSON(w, request, logger, errorResponseComponent(component), http.StatusRequestURITooLong, api.ErrorResponse{Error: api.Error{Code: "uri_too_long", Message: "request target exceeds its input limit", RequestID: RequestID(request.Context())}})
 		return
 	}
 	CloseUnreadBody(w, request)
@@ -273,7 +282,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			w.Header().Set("Retry-After", "60")
 		case "task_deleted":
 			status = http.StatusGone
-		case "not_found", "tag_not_found", "message_not_found", "invitation_unavailable":
+		case "not_found", "user_not_found", "tag_not_found", "message_not_found", "invitation_unavailable":
 			status = http.StatusNotFound
 		case "media_outcome_unknown", "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			status = http.StatusServiceUnavailable
@@ -316,7 +325,14 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 		}
 		response.Code, response.Message = identityError.Code, identityError.Error()
 	}
-	WriteJSON(w, request, logger, status, api.ErrorResponse{Error: response})
+	writeJSON(w, request, logger, errorResponseComponent(component), status, api.ErrorResponse{Error: response})
+}
+
+func errorResponseComponent(component string) string {
+	if component == "member_candidate_search" {
+		return component
+	}
+	return "server"
 }
 
 func MethodNotAllowed(logger *slog.Logger, allowed string) http.HandlerFunc {

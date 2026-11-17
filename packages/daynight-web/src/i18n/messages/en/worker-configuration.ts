@@ -33,6 +33,8 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   agentControlMode: 'Control mode', controlModeDetail: 'Once applied, used for new tasks. Running tasks keep their original mode.',
   controlModeAwaitingAdoption: 'Waiting for the Worker to sync its control mode.', controlModeUnsupported: 'Upgrade the service to configure control mode.',
   preferPlatformSpecificTasks: 'Prefer platform-specific tasks', preferPlatformTasks: ({ platform }) => `Prefer ${platform} tasks`, platformPreferenceDetail: 'Check tasks requiring this Worker’s platform across all selected projects before unrestricted tasks.', enabled: 'On', disabled: 'Off',
+  archiveSessions: 'Archive Sessions', archiveSessionsDetail: 'On by default. When cleaning up ended Sessions, the Worker reads the currently applied setting. Turning this off skips archiving and releases recordings, including historical recordings. Running Sessions remain available to view, control and record. Deleted recordings cannot be uploaded later; existing cloud archives remain.',
+  archiveSessionsUnsupportedService: 'Upgrade the service to configure Session archiving.', archiveSessionsUnsupportedWorker: 'This Worker has not reported support for Session archiving. Upgrade it or wait for a supported report.',
   defaultNative: 'Default Agent', agent: 'Agent', model: 'Model', args: 'Startup arguments', defaultModel: 'Agent default model', customModel: 'Custom model',
   inherit: 'Inherit applicable settings', inheritGlobal: 'Inherit global', customArgs: 'Custom arguments', clearArgs: 'No extra arguments',
   argsHint: 'JSON string array; [] means no extra arguments.', inheritanceNote: 'With a different Agent, inherited model and arguments use that Agent’s defaults.', resolved: 'Resolved',
@@ -51,7 +53,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   localSettings: 'Local settings', localSettingsDetail: 'These settings stay on the Worker machine.',
   localSettingsItems: ['Repository root and local paths', 'Worker identity, service connection and credentials'],
   state: { pending: 'Awaiting application', applying: 'Applying', applied: 'Applied', error: 'Failed', unsaved: 'Unsaved' },
-  kind: { agentControlMode: 'Control mode', preferPlatformSpecificTasks: 'Prefer platform-specific tasks', maxConcurrent: 'Concurrent task limit', pollIntervalMs: 'Task polling interval', recoveryLimit: 'Automatic recovery limit', native: 'Default Agent', projectNative: 'Project Agent', projectPreparation: 'Repository preparation', projectRemoval: 'Stop project execution' },
+  kind: { archiveSessions: 'Archive Sessions', agentControlMode: 'Control mode', preferPlatformSpecificTasks: 'Prefer platform-specific tasks', maxConcurrent: 'Concurrent task limit', pollIntervalMs: 'Task polling interval', recoveryLimit: 'Automatic recovery limit', native: 'Default Agent', projectNative: 'Project Agent', projectPreparation: 'Repository preparation', projectRemoval: 'Stop project execution' },
   codes: { not_found: 'Resource not found', permission_denied: 'Permission denied', timeout: 'Operation timed out', command_failed: 'Command failed', invalid_output: 'Invalid command output', invalid_configuration: 'Invalid configuration', io_error: 'Storage or I/O error', unavailable: 'Resource unavailable' },
   phases: { validate: 'Validation', prepare: 'Preparation', apply: 'Application', stop: 'Stopping', persist: 'Persistence' },
 };

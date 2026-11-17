@@ -22,12 +22,14 @@ type DirectMembers struct {
 }
 
 type directMemberOperations struct {
-	validate     func(model.Principal, string, string, model.ProjectRole) (string, error)
-	validateUser func(model.User) (model.User, error)
-	credential   func(context.Context, store.IdentityDAO, store.CredentialFamilyDAO, model.Principal, string, time.Time) error
-	authorize    func(context.Context, store.TeamWriteDAO, model.Principal) error
-	add          func(context.Context, store.TeamWriteDAO, model.Principal, string, model.ProjectRole) (core.DirectMemberResult, error)
-	eligibility  func(context.Context, store.WebhookEligibilityDAO, store.WebhookEligibilityFilter) error
+	validate         func(model.Principal, string, string, model.ProjectRole) (string, error)
+	validateUser     func(model.User) (model.User, error)
+	credential       func(context.Context, store.IdentityDAO, store.CredentialFamilyDAO, model.Principal, string, time.Time) error
+	authorize        func(context.Context, store.TeamWriteDAO, model.Principal) error
+	add              func(context.Context, store.TeamWriteDAO, model.Principal, string, model.ProjectRole) (core.DirectMemberResult, error)
+	validateExisting func(model.Principal, string, string, string) (string, error)
+	addExisting      func(context.Context, store.TeamWriteDAO, model.Principal, string) (core.ExistingMemberResult, error)
+	eligibility      func(context.Context, store.WebhookEligibilityDAO, store.WebhookEligibilityFilter) error
 }
 
 func NewDirectMembers(writer store.TeamWriter, ensureUser func(context.Context, model.User) (model.User, error), resource string) *DirectMembers {
@@ -35,6 +37,7 @@ func NewDirectMembers(writer store.TeamWriter, ensureUser func(context.Context, 
 		validate: core.ValidateAddMember, validateUser: identity.ValidateExternalUser,
 		credential: identity.NewIdentity("").LockProfileCredential,
 		authorize:  core.AuthorizeAddMember, add: core.AddMember, eligibility: webhook.RefreshEligibility,
+		validateExisting: core.ValidateAddExistingMember, addExisting: core.AddExistingMember,
 	}}
 }
 

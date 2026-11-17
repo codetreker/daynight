@@ -85,6 +85,8 @@ Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝�
 账户页只显示用户自己的元数据，永不过期显示为“永不过期 / Never expires”。PAT 列表、创建和期限修改
 返回的元数据必须包含 `expiresAt` 与 `lastUsedAt`，二者可为 null；设备领取保持原有
 `{access_token,token_type}` 响应，其 PAT 元数据通过账户列表读取。秘密仅在创建或领取时交付一次。
+撤销 PAT 的确认框打开时默认聚焦取消按钮；取消或 Escape 不发出撤销请求，关闭后焦点返回仍存在的撤销入口。
+用户明确确认后才撤销所选令牌。键盘焦点保持在确认框内，关闭、取消和撤销按钮均可到达。
 
 令牌管理器允许将当前有效 PAT 的到期时间改为未来 UTC 时间或 null，保持同一秘密与散列，CLI
 无需重新登录。修改必须绑定页面显示的账号和观察到的到期值：账号不匹配返回 403，观察值过期返回
@@ -233,6 +235,8 @@ Team API 使用 session/PAT 或固定 API OAuth、Cookie 写请求 Origin 校验
 | `DELETE /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，有限回执 `{teamId,deleted:true}` |
 | `GET /api/v1/teams/{teamId}/members` | 当前 Team 成员 | `200`，完整目录 `{items}` |
 | `POST /api/v1/teams/{teamId}/members` | 当前 admin；`expectedUserId,user,role` | `200`，`{membership,added,actorRole:"admin"}` |
+| `POST /api/v1/teams/{teamId}/member-candidates/search` | 普通 Team admin；`expectedUserId,query`，可选 `limit,cursor` | `200`，既有账号资料分页 `{items,nextCursor,actorRole}` |
+| `POST /api/v1/teams/{teamId}/members/{userId}` | 普通 Team admin；`expectedUserId` | `200`，真实成员与资料回执 `{membership,added,actorRole:"admin"}` |
 | `PATCH /api/v1/teams/{teamId}/members/{userId}` | 当前 admin；`version,role,expectedUserId` | `200`，`{membership,actorRole}` |
 | `DELETE /api/v1/teams/{teamId}/members/{userId}` | 当前 admin 或本人；`version,expectedUserId` | `200`，`{teamId,userId,removed:true,actorRole}` |
 
@@ -290,6 +294,8 @@ Team 状态和目标关系。成员与必要 webhook eligibility 原子提交，
 修改角色。成功 membership 包含实际目标 UUID、Team UUID、角色、无损正 int64 版本和 UTC 时间。
 直接添加不推进 Team 元数据版本，不改变最后 admin 规则或独立 Project grant，不创建或消费邀请。
 
+普通 Team 的当前 admin 可按本地 UUID 直接添加既有账号：`POST /api/v1/teams/{teamId}/members/{userId}` 仅接受 `{expectedUserId}`，不接受 query、角色或资料。两个路径 ID 和主体必须为非零规范 UUID，主体必须匹配当前凭据；未知、重复、缺失、null、错误类型字段与非法 Unicode 明确拒绝。新关系固定为 member 并返回 added=true；已有 member 或 admin 返回 added=false 及原角色、版本和时间。回执的 membership 包含事务内保存的真实可空 profile，actorRole 为 admin。目标不存在返回 `404 user_not_found`，Team 缺失返回 `404 not_found`。该操作不初始化账号或 Personal Team、不创建或消费邀请、不推进 Team 元数据版本，也不改写 Project 独立授权。成员关系与 webhook eligibility 在同一事务提交，等待后重验当前凭据；仅确认提交后返回成功，未知结果不得自动重放。
+
 普通 Team 的当前 admin 可通过 `POST /api/v1/teams/{teamId}/members/resolve` 只读解析既有外部身份。
 请求仅接受 `{expectedUserId,user:{externalUserId}}`，拒绝 query、未知或重复字段以及 profile；
 Team 和 expectedUserId 必须是非零规范 UUID，expectedUserId 必须等于真实用户凭据的主体。
@@ -298,6 +304,10 @@ externalUserId 使用直接添加的身份校验和规范化规则。成功返�
 凭据失效、非 admin、Team 不存在、主体不匹配和 Personal Team 沿现有 401/403/404/409 拒绝，
 内部或事务完成失败不能返回成功。响应保留 `Daynight-User-ID` 和 `no-store`，不回显外部身份。
 此读取不创建用户、凭据或成员，不改变资料或角色；它不授权后续写入，角色变更仍须使用当前版本和权限检查。
+
+普通 Team 的当前 admin 可通过 `POST /api/v1/teams/{teamId}/member-candidates/search` 搜索全服务既有账号的姓名或邮箱字面片段。请求仅接受必需的 `expectedUserId`、`query` 和可选的 `limit`、`cursor`，不接受 query string；主体和 Team ID 为非零规范 UUID，主体必须匹配当前凭据。查询须为合法 UTF-8 且不含 NUL，裁切 Unicode 空白后最多 1024 bytes，ASCII 字母忽略大小写；空查询仍校验权限并返回空页，不能携带 cursor。limit 默认 20，范围 1–50；cursor 非空且最多 2048 bytes，并绑定主体、凭据、Team、规范化查询和 limit。未知、重复、缺失必需字段、null 或错误类型以及非法 Unicode 均拒绝。
+
+成功返回 `{items,nextCursor,actorRole}`，actorRole 为 `admin`；每项仅包含真实本地 `userId` 和必需的 `profile:{name,email,avatarUrl}`，资料字段可为 null。按 UUID 排序并按条分页，同名同邮箱的账号仍各自返回；静态数据可完整遍历，每页重新校验当前凭据与权限。分页间资料或账号变化不保证跨页快照一致。响应保留主体头与 `no-store`，查询、cursor 和资料不写入诊断日志。凭据失效、无权限、Team 缺失、主体不匹配或 Personal Team 分别沿用现有拒绝；无效输入或 cursor 返回 `400 invalid_input`，读取或清理失败不返回成功。
 
 角色修改和移除必须提供观察到的真实成员 version 及 `expectedUserId`，主体核对先于领域 SQL。
 过期版本返回 `409 version_conflict`，即使所请求角色与当前角色相同也不例外；精确版本下的

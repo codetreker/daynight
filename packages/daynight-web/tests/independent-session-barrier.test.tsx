@@ -22,7 +22,7 @@ function fixture() {
   const bot = { ...botDefinition(), sessionId: f.binding.sessionId, testExecutionId: f.binding.testExecutionId, roleConfiguration: { instructions: 'Assistant', revision: '1', digest: 'a'.repeat(64) } };
   const api = vi.spyOn(sessions, 'createTestSessionApi').mockImplementation(id => id === f.binding.sessionId ? f.api : other.api);
   const start = vi.spyOn(TaskSessionClient.prototype, 'start');
-  const element = (id = f.binding.sessionId, owner = scope) => <TaskCacheProvider scope={owner}><TestSessionPage sessionId={id} /></TaskCacheProvider>;
+  const element = (id = f.binding.sessionId, owner = scope) => <TaskCacheProvider scope={owner}><TestSessionPage sessionId={id} readEnabled /></TaskCacheProvider>;
   const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'DELETE' ? botError(500, 'failure') : botResponse(bot));
   vi.stubGlobal('fetch', fetcher);
   return { ...f, other, scope, coordinator, bot, apiFactory: api, start, element, fetcher };
@@ -88,7 +88,7 @@ it.each([false, true])('closes a live old-URL client and restores drafts after d
     if (paused) {
       expect(screen.queryByRole('textbox')).toBeNull();
       expect(f.coordinator.sessionAdmission(f.binding.sessionId)).toBe('blocked');
-      resume(); await act(async () => { await f.coordinator.check(f.bot.id); });
+      resume(); await act(async () => { await f.coordinator.check(f.bot.id, new AbortController().signal); });
     }
   } finally { resume(); }
   await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('retained draft'));
@@ -124,7 +124,7 @@ it('clears only the revoked independent Session storage and never restores its o
   expect(f.coordinator.sessionAdmission(f.binding.sessionId)).toBe('revoked');
   expect(keys.every(key => sessionStorage.getItem(key) === null)).toBe(true);
   expect(unrelated.map(key => sessionStorage.getItem(key))).toEqual(['keep', 'keep']);
-  await act(async () => { await f.coordinator.check(f.bot.id); });
+  await act(async () => { await f.coordinator.check(f.bot.id, new AbortController().signal); });
   expect(screen.queryByRole('textbox')).toBeNull(); expect(screen.queryByText(`Message ${f.binding.botId}`)).toBeNull();
   expect(f.apiFactory).toHaveBeenCalledOnce();
 });

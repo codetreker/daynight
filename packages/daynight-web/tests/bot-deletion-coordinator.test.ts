@@ -6,6 +6,7 @@ import type { DeletedBot } from '../src/api/bots';
 import { BotSessionCache, botSessionKey } from '../src/features/bots/session-cache';
 import { BotSessionStorage } from '../src/features/bots/session-storage';
 import { botFixture } from './helpers/bot-session';
+import { subscribeUnauthorized } from '../src/api/client';
 
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
 afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); sessionStorage.clear(); });
@@ -17,6 +18,81 @@ function fixture() {
   return { scope, cache, coordinator, record: () => coordinator.snapshot()[0]! };
 }
 function deferred<T>() { let resolve!: (value: T) => void; return { promise: new Promise<T>(done => { resolve = done; }), resolve }; }
+
+it.each(['200', '401', '403', '404', 'network'] as const)('retires a page check before a late %s result and preserves the deletion facts', async outcome => {
+  const f = fixture(); f.coordinator.observe(deleted());
+  const before = f.record(), response = Promise.withResolvers<Response>(), dispatched = Promise.withResolvers<AbortSignal>();
+  const fetcher = vi.fn((_url: string, init?: RequestInit) => { dispatched.resolve(init!.signal as AbortSignal); return response.promise; });
+  vi.stubGlobal('fetch', fetcher);
+  const unauthorized = vi.fn(), unsubscribe = subscribeUnauthorized(unauthorized), owner = new AbortController();
+  try {
+    const operation = f.coordinator.check(botId(), owner.signal);
+    const signal = await dispatched.promise;
+    expect(f.record().busy).toBe(true);
+    owner.abort();
+    expect(signal.aborted).toBe(true); expect(f.record()).toEqual(before);
+    if (outcome === 'network') response.reject(new Error('late network failure'));
+    else response.resolve(outcome === '200' ? botResponse(deleted('completed', '3')) : botError(Number(outcome), 'failure'));
+    await operation;
+    expect(f.record()).toEqual(before); expect(unauthorized).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+  } finally { unsubscribe(); }
+});
+
+it('deduplicates the same owner and prevents a retired owner from clearing a replacement', async () => {
+  const f = fixture(); f.coordinator.observe(deleted());
+  const first = Promise.withResolvers<Response>(), second = Promise.withResolvers<Response>();
+  const calls = Promise.withResolvers<void>();
+  const fetcher = vi.fn((_url: string, init?: RequestInit) => {
+    if (fetcher.mock.calls.length === 2) calls.resolve();
+    return fetcher.mock.calls.length === 1 ? first.promise : second.promise;
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const old = new AbortController(), next = new AbortController();
+  const operation = f.coordinator.check(botId(), old.signal);
+  expect(f.coordinator.check(botId(), old.signal)).toBe(operation);
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+  const replacement = f.coordinator.check(botId(), next.signal); await calls.promise;
+  expect((fetcher.mock.calls[0]![1]!.signal as AbortSignal).aborted).toBe(true);
+  first.resolve(botResponse(deleted('completed', '3'))); await operation;
+  expect(f.record()).toMatchObject({ phase: 'pending', busy: true });
+  second.resolve(botResponse(deleted('failed', '3'))); await replacement;
+  expect(f.record()).toMatchObject({ phase: 'failed', busy: false });
+});
+
+it('does not replace a mutation installed synchronously when an old check retires', async () => {
+  const f = fixture(); f.coordinator.observe(deleted());
+  const first = Promise.withResolvers<Response>(), mutationRead = Promise.withResolvers<Response>();
+  const fetcher = vi.fn((_url: string, init?: RequestInit) => fetcher.mock.calls.length === 1 ? first.promise : mutationRead.promise);
+  vi.stubGlobal('fetch', fetcher);
+  const old = new AbortController(), next = new AbortController();
+  const operation = f.coordinator.check(botId(), old.signal);
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+  let mutation: Promise<void> | undefined;
+  const unsubscribe = f.coordinator.subscribe(() => { if (!f.record().busy && !mutation) mutation = f.coordinator.retry(botId()); });
+  const skipped = f.coordinator.check(botId(), next.signal);
+  unsubscribe(); await skipped;
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  next.abort();
+  expect((fetcher.mock.calls[1]![1]!.signal as AbortSignal).aborted).toBe(false);
+  first.resolve(botResponse(deleted('completed', '3'))); await operation;
+  expect(f.record().busy).toBe(true);
+  mutationRead.resolve(botError(500, 'failure')); await mutation;
+  expect(f.record().busy).toBe(false); expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('ignores an aborted owner and never attaches it to an in-flight deletion', async () => {
+  const f = fixture(), response = Promise.withResolvers<Response>(), dispatched = Promise.withResolvers<AbortSignal>();
+  const fetcher = vi.fn((_url: string, init?: RequestInit) => { dispatched.resolve(init!.signal as AbortSignal); return response.promise; });
+  vi.stubGlobal('fetch', fetcher);
+  const owner = new AbortController(); owner.abort();
+  await f.coordinator.check(botId(), owner.signal); expect(fetcher).not.toHaveBeenCalled();
+  const mutation = f.coordinator.begin(botDefinition()); const signal = await dispatched.promise;
+  const page = new AbortController(); await f.coordinator.check(botId(), page.signal); page.abort();
+  expect(signal.aborted).toBe(false);
+  response.resolve(botResponse(deleted('completed', '2', f.record().request!.deletionId))); await mutation;
+  expect(f.record()).toMatchObject({ phase: 'completed', busy: false }); expect(fetcher).toHaveBeenCalledOnce();
+});
 it('blocks before DELETE dispatch and accepts completed only from both cleanup stages', async () => {
   const f = fixture(), pending = deferred<Response>(); let input: { deletionId: string };
   const fetch = vi.fn(async (_url, init) => { expect(f.cache.blockBot).toHaveBeenCalledWith(botId()); input = JSON.parse(init.body); return pending.promise; }); vi.stubGlobal('fetch', fetch);
@@ -33,7 +109,7 @@ it('retains a lost response and active read as unknown without restoring send or
   await f.coordinator.begin(botDefinition());
   expect(f.record().phase).toBe('unknown'); expect(f.record().request?.ifVersion).toBe('1');
   expect(f.cache.unblockBot).not.toHaveBeenCalled(); expect(f.cache.invalidateBot).not.toHaveBeenCalled();
-  await f.coordinator.check(botId()); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+  await f.coordinator.check(botId(), new AbortController().signal); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
   const second = fixture(); expect(second.record().request).toEqual(f.record().request); expect(second.record().phase).toBe('unknown');
   expect(second.cache.blockBot).toHaveBeenCalledWith(botId());
 });
@@ -41,7 +117,7 @@ it('only restores sending after a definite rejection followed by an authoritativ
   const f = fixture(); let readFails = true;
   vi.stubGlobal('fetch', vi.fn(async (_url, init) => init?.method === 'DELETE' ? botError(409, 'version_conflict') : readFails ? botError(500, 'failure') : botResponse({ ...botDefinition(), version: '4' })));
   await f.coordinator.begin(botDefinition()); expect(f.record().phase).toBe('unknown'); expect(f.cache.unblockBot).not.toHaveBeenCalled();
-  readFails = false; await f.coordinator.check(botId()); expect(f.record().phase).toBe('rejected'); expect(f.cache.unblockBot).toHaveBeenCalledWith(botId());
+  readFails = false; await f.coordinator.check(botId(), new AbortController().signal); expect(f.record().phase).toBe('rejected'); expect(f.cache.unblockBot).toHaveBeenCalledWith(botId());
 });
 it('adopts another deletion identity and retries only its current original request after checking', async () => {
   const f = fixture(), calls: {method:string;body?:unknown}[] = [];
@@ -59,7 +135,7 @@ it('adopts another deletion identity and retries only its current original reque
 it('does not retry when the required observation fails, and never equates access loss with completion', async () => {
   const f = fixture(); f.coordinator.observe(deleted()); const fetch = vi.fn(async () => botError(500, 'failure')); vi.stubGlobal('fetch', fetch);
   await f.coordinator.retry(botId()); expect(fetch).toHaveBeenCalledOnce(); expect(f.record().phase).toBe('pending');
-  fetch.mockResolvedValue(botError(404, 'not_found')); await f.coordinator.check(botId()); expect(f.record().phase).toBe('unavailable'); expect(f.cache.invalidateBot).toHaveBeenCalled();
+  fetch.mockResolvedValue(botError(404, 'not_found')); await f.coordinator.check(botId(), new AbortController().signal); expect(f.record().phase).toBe('unavailable'); expect(f.cache.invalidateBot).toHaveBeenCalled();
 });
 it('does not let a late active observation reverse confirmed deletion', async () => {
   const f = fixture(), read = deferred<Response>(); vi.stubGlobal('fetch', vi.fn(async (_url, init) => init?.method === 'DELETE' ? botError(409, 'version_conflict') : read.promise));

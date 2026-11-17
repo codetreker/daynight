@@ -141,7 +141,7 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	for _, op := range []string{"members", "invitations"} {
 		add("GET HEAD POST", team+"/"+op)
 	}
-	add("PATCH DELETE", team+"/members/"+id)
+	add("POST PATCH DELETE", team+"/members/"+id)
 	add("DELETE", team+"/invitations/"+id)
 	add("GET HEAD", "/api/v1/me/workers")
 	add("GET HEAD", worker)

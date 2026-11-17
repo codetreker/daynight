@@ -126,6 +126,14 @@
 .panel-heading p { color: var(--muted); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
 .panel-heading:last-child { border-bottom: 0; }
 .panel-body { padding: 23px; }
+.team-delete > summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 44px; padding: 20px 23px; cursor: pointer; list-style: none; }
+.team-delete > summary::-webkit-details-marker { display: none; }
+.team-delete > summary:focus-visible { outline: 3px solid #344054; outline-offset: -3px; }
+.team-delete > summary h2 { min-width: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.team-delete-chevron { width: 9px; height: 9px; flex: none; border-right: 2px solid #556176; border-bottom: 2px solid #556176; transform: rotate(45deg); margin: 0 3px 4px; }
+.team-delete[open] .team-delete-chevron { transform: rotate(225deg); margin: 4px 3px 0; }
+.team-delete > .panel-body { border-top: 1px solid var(--line); }
+.team-delete > .panel-body p { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; margin-bottom: 16px; }
 .team-settings-details { margin: 0; }
 .team-settings-context { color: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .team-settings-nav .button { min-height: 38px; }

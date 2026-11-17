@@ -122,7 +122,7 @@ it.each([false, true])("keeps retained Herdr and frozen Web execution responsibi
   const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
   mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
-  mocks.webBackend.mockReturnValue({ advance, cleanup });
+  mocks.webBackend.mockReturnValue({ advance, cleanup, closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
@@ -212,7 +212,7 @@ it.each(["null", "unread", "unsupported"] as const)("cold-resumes an original fr
   const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", worktreeId), branch: "original-branch" };
   const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
   mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), resolveWorktreeBinding: vi.fn(async () => binding), dispose }, { scanWorktrees: scanFromList }));
-  mocks.webBackend.mockReturnValue({ advance: vi.fn(), cleanup: vi.fn() });
+  mocks.webBackend.mockReturnValue({ advance: vi.fn(), cleanup: vi.fn(), closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
   mocks.nativeAdvance.mockImplementation(async (_input: ExecutionInput) => ({ kind: "waiting_input", reason: "configuration_pending", observation: null }));
   const cancellation = new AbortController(); cancellations.add(cancellation);
@@ -297,7 +297,7 @@ it("registers fresh stop verification after a failed startup read even when the 
   const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ owner, binding }] : [];
   mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(retainedBindings), listWorktreeManifests: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
-  mocks.webBackend.mockReturnValue({ advance, cleanup });
+  mocks.webBackend.mockReturnValue({ advance, cleanup, closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
@@ -393,7 +393,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
   const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ owner, binding }] : [];
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async (project: { localPath: string }) => { await mkdir(project.localPath, { recursive: true }); }), listWorktrees: vi.fn(retainedBindings), listWorktreeManifests: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose: vi.fn(async () => {}) }, { scanWorktrees: scanFromList }));
   const cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
-  mocks.webBackend.mockReturnValue({ advance: vi.fn(async (record: WebTask) => record), cleanup });
+  mocks.webBackend.mockReturnValue({ advance: vi.fn(async (record: WebTask) => record), cleanup, closeInput: vi.fn() });
   mocks.launcher.mockReturnValue({ launch: vi.fn() });
   let releaseJobs!: () => void, releaseWrite!: () => void, enteredWrite!: () => void, enteredJobs!: () => void;
   const jobsAllowed = new Promise<void>(resolve => { releaseJobs = resolve; }), writeAllowed = new Promise<void>(resolve => { releaseWrite = resolve; });

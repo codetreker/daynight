@@ -59,6 +59,28 @@ The Redis container has no published port or persistent volume and is included
 in the exact owner-checked cleanup and absence proof. Existing receipts without
 its identity must be cleaned by their original runner rather than inferred.
 
+Worker product journeys also register their original runner and gated process
+identities before the test can launch a detached Controller. Parent cleanup and
+independent recovery verify and stop the original processes before removing the
+fixture or its private execution evidence. Chromium launch intent and the
+original process-group identity are persisted separately, so a failed Playwright
+run can verify that the recorded browser group stopped without relying on
+`browser.close()` alone. A missing or conflicting proof keeps the responsibility
+visible instead of turning process absence into a guessed successful cleanup.
+The product E2E guide owns the recovery procedure.
+
+A failed build may release its lock only after its commands have all joined and
+the runner has persisted that stop boundary. Cancellation and unknown command
+outcomes retain the lock and evidence; a normal build error still fails the run.
+Recovery serializes removal of that lock with other recovery for the same run
+and refuses a lock owned by a different run.
+
+Worker completion is versioned. An explicit conflict rejects the attempted
+write, so the fixture can read the Task again, verify the original active
+assignment and authorization, and make a bounded new decision. An unknown
+outcome cannot justify a replay. This keeps concurrent Task updates from making
+the normal journey fail while preserving the original claim.
+
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
 remain with their established owners. Preparation may retrieve pinned build
@@ -82,6 +104,10 @@ production resource assembly. It does not establish the cross-client journey.
 and weaken resource ownership; a simulated API would not establish that the real
 Server can read monitoring through its configured store.
 
+**Infer browser shutdown from Playwright exit or close.** Chromium is detached,
+and a close result alone does not establish that its original process group has
+stopped. Recovery needs the persisted identity and a confirmed stop.
+
 ## Consequences
 
 The framework adds an independent build and runtime owner while reusing normal
@@ -95,5 +121,7 @@ not claim an offline build. The upstream source pin and local provider must be
 reviewed when UniAuth's protocol changes.
 
 Per-run cleanup remains part of success, and source/artifact identities bound
-the retained result. The independent hosted job does not replace module, installed CLI or deployment
+the retained result. A failed process observation can retain private fixture
+state until its original ownership can be established; it is excluded from CI
+artifact uploads. The independent hosted job does not replace module, installed CLI or deployment
 checks; module-only fixture changes do not schedule a complete product journey.

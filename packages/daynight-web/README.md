@@ -440,7 +440,7 @@ Team settings share a heading, the current Team name, and horizontal General and
 Members & invitations links. Native links preserve direct access, reload and browser
 history; the navigation wraps on narrow screens. General displays the saved name
 with its rename action, the selectable Team ID with an adjacent copy button for every
-viewer, and a separate deletion panel at the bottom. Members & invitations contains
+viewer, and a separate deletion panel at the bottom. Its native disclosure starts closed and retains its state within the same Team settings instance across section, locale and background updates; operation errors remain visible outside it. Members & invitations contains
 the roster and its existing role, removal and self-departure actions, followed by
 admin-only invitation management. The
 [settings sections decision](../../.agents/notes/implemented/feature/2026-11-10-team-settings-sections.md)
@@ -2478,9 +2478,12 @@ geometry or system-menu behavior.
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,
 and the statement checker with respective process limits of 1, 3, 5, 15 and 1
 minutes. Each limit includes process startup, reporting and exit. The Docker
-stage requires a Linux Docker engine and registry access; it verifies container
+stage requires a Linux Docker engine with Buildx and registry access. It runs
+the complete target with `--output=type=cacheonly`, verifying container
 installation, production compilation and asset publication using the actual
-build context. It starts no service or database and does not run Go validation.
+build context. The following checks consume no image, so the build retains only
+its cache and skips image export and loading. It starts no service or database
+and does not run Go validation.
 Vitest suppresses console output from passing tests, including diagnostics from
 expected failure scenarios, and retains console output from failing tests.
 `test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,

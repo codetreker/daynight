@@ -49,6 +49,9 @@ coordination without establishing the requested behavior.
 The server persists and exchanges the target while preserving strict legacy
 projections. Application evidence remains a separately versioned observation;
 its absence is not evidence that the default was applied. A Worker must report
-its actual application, and runtime cleanup and Web controls require their own
-implementations and validation. No target save changes or deletes an existing
+its actual application, and runtime cleanup requires its own implementation and validation. The Web editor
+uses the service capability and latest Worker observation independently: only a
+reported item permits editing, while saved targets and drafts survive support
+changes. The checkbox uses existing save and application feedback; neither proves
+that recording files were released. No target save changes or deletes an existing
 cloud archive.
