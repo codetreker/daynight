@@ -9,13 +9,12 @@ import (
 
 const workerToolPathsHeader = "Daynight-Worker-Tool-Paths"
 const workerArchiveSessionsHeader = "Daynight-Worker-Archive-Sessions"
+const workerControlModeHeader = "Daynight-Worker-Control-Mode"
 
 func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error) {
 	var result workerprotocol.Capabilities
-	var err error
-	result.ControlMode, err = controlModeProtocol(header)
-	if err != nil {
-		return result, err
+	if _, exists := header[workerControlModeHeader]; exists {
+		return result, httpx.InvalidInput("Worker control mode protocol is no longer supported; upgrade the Worker or refresh the Web client.")
 	}
 	if values, exists := header[workerToolPathsHeader]; exists {
 		if len(values) != 1 || values[0] != "2" {
@@ -33,9 +32,6 @@ func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error)
 }
 
 func writeWorkerCapabilities(header http.Header, capabilities workerprotocol.Capabilities) {
-	if capabilities.ControlMode {
-		header.Set(workerControlModeHeader, "1")
-	}
 	if capabilities.ToolPaths {
 		header.Set(workerToolPathsHeader, "2")
 	}
@@ -48,9 +44,6 @@ func writeWorkerCapabilities(header http.Header, capabilities workerprotocol.Cap
 func requireToolPaths(capabilities workerprotocol.Capabilities) error {
 	if !capabilities.ToolPaths {
 		return httpx.InvalidInput("Worker tool paths protocol requires version 2; upgrade the Worker or refresh the Web client.")
-	}
-	if capabilities.ControlMode {
-		return httpx.InvalidInput("Worker control mode protocol is no longer supported; upgrade the Worker or refresh the Web client.")
 	}
 	return nil
 }

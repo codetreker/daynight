@@ -108,24 +108,24 @@ func TestArchiveAndSudoIndependentReplacement(t *testing.T) {
 	}
 }
 
-func TestArchiveSudoModeObservationCapacity(t *testing.T) {
-	document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(1025, "0"), "controlModeBootstrap": nil}
+func TestArchiveSudoObservationCapacity(t *testing.T) {
+	document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(1025, "0")}
 	observation := document["observation"].(map[string]any)
 	items := observation["items"].([]any)
 	for _, spec := range []struct {
 		kind  string
 		value any
-	}{{"agentControlMode", "web"}, {"enableSudoCleanup", false}, {"archiveSessions", false}} {
+	}{{"enableSudoCleanup", false}, {"archiveSessions", false}} {
 		item := configurationInputItem(spec.kind, spec.value)
 		item["targetRevision"] = "1"
 		items = append(items, item)
 	}
 	observation["items"] = items
-	caps := workerprotocol.Capabilities{ControlMode: true, ArchiveSessions: true}
+	caps := workerprotocol.Capabilities{ArchiveSessions: true}
 	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), caps); err != nil {
-		t.Fatalf("1025 original items and all extensions: %v", err)
+		t.Fatalf("1025 original items and both extensions: %v", err)
 	}
-	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err == nil {
+	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{}); err == nil {
 		t.Fatal("archive observation accepted without capability")
 	}
 	observation["items"] = append(items, configurationInputItem("recoveryLimit", 1))

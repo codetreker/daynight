@@ -95,7 +95,7 @@ func TestWorkerCORSConfigurationReportsPreserveProtocol(t *testing.T) {
 			result := workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: &model.WorkerConfigurationReceipt{ObservationRevision: "7"}}
 			check := func(ctx context.Context, p model.Principal, id string, in model.WorkerReport) {
 				businessCalls++
-				if ctx.Err() != nil || p != defaultHTTPPrincipal() || id != corsWorkerID || in.Configuration == nil || in.Configuration.ControlModeBootstrap != nil || in.Configuration.ToolPathsBootstrap == nil || in.Telemetry.ToolPaths == nil {
+				if ctx.Err() != nil || p != defaultHTTPPrincipal() || id != corsWorkerID || in.Configuration == nil || in.Configuration.ToolPathsBootstrap == nil || in.Telemetry.ToolPaths == nil {
 					t.Fatalf("Worker protocol arguments changed: %+v", in)
 				}
 			}

@@ -23,7 +23,6 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 		return model.WorkerConfiguration{}, invalidInput("Worker configuration is invalid.")
 	}
 	normalized, err := ParseWorkerConfiguration(raw)
-	normalized.PreserveAgentControlMode = value.PreserveAgentControlMode
 	normalized.PreserveToolPaths = value.PreserveToolPaths
 	normalized.ArchiveSessions = value.ArchiveSessions
 	normalized.PreserveArchiveSessions = value.PreserveArchiveSessions
@@ -113,20 +112,7 @@ func retainedProjects(desired *model.WorkerDesiredConfiguration) map[string]mode
 	return retained
 }
 
-func storedModeAndPaths(fields map[string]json.RawMessage, value *model.WorkerConfiguration) error {
-	mode := fields["agentControlMode"]
-	if value.PreserveAgentControlMode {
-		if len(mode) != 0 && !configurationNull(mode) {
-			parsed, err := configurationControlMode(mode)
-			if err != nil {
-				return err
-			}
-			value.AgentControlMode = parsed
-		} else {
-			value.AgentControlMode = nil
-		}
-		value.PreserveAgentControlMode = false
-	}
+func storedPaths(fields map[string]json.RawMessage, value *model.WorkerConfiguration) error {
 	paths := fields["toolPaths"]
 	if value.PreserveToolPaths {
 		if len(paths) != 0 && !configurationNull(paths) {
@@ -173,8 +159,7 @@ func sameStoredConfiguration(desired *model.WorkerDesiredConfiguration, fields m
 		return false
 	}
 	_, storedMode := fields["agentControlMode"]
-	_, candidateMode := candidateFields["agentControlMode"]
-	if storedMode != candidateMode {
+	if storedMode {
 		return false
 	}
 	var storedPaths, candidatePaths map[string]json.RawMessage
@@ -219,13 +204,6 @@ func adoptRawConfiguration(desired *model.WorkerDesiredConfiguration, input mode
 		}
 	}
 	changed := false
-	if input.ControlModeBootstrap != nil && (len(fields["agentControlMode"]) == 0 || configurationNull(fields["agentControlMode"])) {
-		fields["agentControlMode"], err = json.Marshal(input.ControlModeBootstrap)
-		if err != nil {
-			return nil, false, err
-		}
-		changed = true
-	}
 	if input.ToolPathsBootstrap != nil {
 		var slots map[string]json.RawMessage
 		if len(fields["toolPaths"]) == 0 || configurationNull(fields["toolPaths"]) {
@@ -301,10 +279,10 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	if current.Desired.Raw != nil && (value.PreserveAgentControlMode || value.PreserveToolPaths || value.PreserveSudoCleanup) {
+	if current.Desired.Raw != nil && (value.PreserveToolPaths || value.PreserveSudoCleanup) {
 		return putWithPreservedRaw(ctx, dao, principal, workerID, current, fields, actual, value)
 	}
-	if err := storedModeAndPaths(fields, &value); err != nil {
+	if err := storedPaths(fields, &value); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
 	if value.PreserveArchiveSessions {
@@ -390,9 +368,6 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 			value.PreserveArchiveSessions = false
 		}
 		original := value
-		if value.AgentControlMode == nil {
-			value.AgentControlMode = input.ControlModeBootstrap
-		}
 		if input.ToolPathsBootstrap != nil {
 			value.ToolPaths = adoptToolPaths(value.ToolPaths, *input.ToolPathsBootstrap)
 		}
@@ -438,11 +413,7 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 }
 
 func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, current model.WorkerConfigurationResource, fields map[string]json.RawMessage, actual int64, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
-	preserveMode, preservePaths, preserveSudo := value.PreserveAgentControlMode, value.PreserveToolPaths, value.PreserveSudoCleanup
-	if preserveMode {
-		value.AgentControlMode = nil
-		value.PreserveAgentControlMode = false
-	}
+	preservePaths, preserveSudo := value.PreserveToolPaths, value.PreserveSudoCleanup
 	if preservePaths {
 		value.ToolPaths = model.WorkerToolPaths{}
 		value.PreserveToolPaths = false
@@ -456,13 +427,10 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 		value.PreserveArchiveSessions = false
 	}
 	checks := map[string]json.RawMessage{}
-	if !preserveMode {
-		checks["agentControlMode"] = fields["agentControlMode"]
-	}
 	if !preservePaths {
 		checks["toolPaths"] = fields["toolPaths"]
 	}
-	if err := storedModeAndPaths(checks, &value); err != nil {
+	if err := storedPaths(checks, &value); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
 	value, err := NormalizeConfiguration(value)
@@ -487,7 +455,7 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	for key, raw := range fields {
 		comparison[key] = raw
 	}
-	for key, preserve := range map[string]bool{"agentControlMode": preserveMode, "toolPaths": preservePaths, "enableSudoCleanup": preserveSudo} {
+	for key, preserve := range map[string]bool{"toolPaths": preservePaths, "enableSudoCleanup": preserveSudo} {
 		if !preserve {
 			continue
 		}

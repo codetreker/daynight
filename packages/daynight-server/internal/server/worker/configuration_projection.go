@@ -3,32 +3,16 @@ package worker
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
-
-const workerControlModeHeader = "Daynight-Worker-Control-Mode"
-
-func controlModeProtocol(header http.Header) (bool, error) {
-	values, exists := header[workerControlModeHeader]
-	if !exists {
-		return false, nil
-	}
-	if len(values) != 1 || values[0] != "1" {
-		return false, httpx.InvalidInput("Unsupported Worker control mode protocol.")
-	}
-	return true, nil
-}
 
 type projectedConfiguration struct {
 	model.WorkerConfigurationWire
-	AgentControlMode any `json:"agentControlMode,omitempty"`
-	ToolPaths        any `json:"toolPaths,omitempty"`
-	ArchiveSessions  any `json:"archiveSessions,omitempty"`
+	ToolPaths       any `json:"toolPaths,omitempty"`
+	ArchiveSessions any `json:"archiveSessions,omitempty"`
 }
 
 type projectedDesiredConfiguration struct {
@@ -81,12 +65,8 @@ func projectDesiredConfiguration(desired *model.WorkerDesiredConfiguration, capa
 		return &projectedDesiredConfiguration{Revision: desired.Revision, UpdatedAt: desired.UpdatedAt, Value: rawConfigurationProjection{raw: desired.Raw, archive: desired.ArchiveSessions, capabilities: capabilities}}
 	}
 	value := projectedConfiguration{WorkerConfigurationWire: model.WorkerConfigurationWire(desired.Value)}
-	value.WorkerConfigurationWire.AgentControlMode = nil
 	if capabilities.ToolPaths {
 		value.ToolPaths = desired.Value.ToolPaths
-	}
-	if desired.Value.AgentControlMode != nil {
-		value.AgentControlMode = desired.Value.AgentControlMode
 	}
 	if capabilities.ArchiveSessions {
 		value.ArchiveSessions = desired.Value.ArchiveSessions
@@ -102,11 +82,11 @@ type projectedConfigurationResource struct {
 
 func projectConfiguration(resource model.WorkerConfigurationResource, capabilities workerprotocol.Capabilities) projectedConfigurationResource {
 	observation := resource.Observation
-	if (!capabilities.ControlMode || !capabilities.ArchiveSessions) && observation != nil {
+	if observation != nil {
 		copied := *observation
 		copied.Items = make([]model.WorkerConfigurationItem, 0, len(observation.Items))
 		for _, item := range observation.Items {
-			if (item.Key.Kind != "agentControlMode" || capabilities.ControlMode) && (item.Key.Kind != "archiveSessions" || capabilities.ArchiveSessions) {
+			if item.Key.Kind != "agentControlMode" && (item.Key.Kind != "archiveSessions" || capabilities.ArchiveSessions) {
 				copied.Items = append(copied.Items, item)
 			}
 		}

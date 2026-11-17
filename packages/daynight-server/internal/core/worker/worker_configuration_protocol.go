@@ -7,13 +7,9 @@ import (
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
 
-// ParseWorkerConfigurationProtocol keeps negotiated writes strict while the
-// internal normalizer can still read configurations created before mode adoption.
+// ParseWorkerConfigurationProtocol enforces the negotiated configuration fields.
 func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerprotocol.Capabilities) (model.WorkerConfiguration, error) {
 	keys := []string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects"}
-	if capabilities.ControlMode {
-		keys = append(keys, "agentControlMode")
-	}
 	if capabilities.ToolPaths {
 		keys = append(keys, "toolPaths")
 	}
@@ -35,7 +31,6 @@ func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerpr
 		}
 	}
 	value, err := ParseWorkerConfiguration(raw)
-	value.PreserveAgentControlMode = false
 	value.PreserveToolPaths = !capabilities.ToolPaths
 	value.PreserveArchiveSessions = !capabilities.ArchiveSessions
 	_, present := fields["enableSudoCleanup"]
@@ -45,9 +40,6 @@ func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerpr
 
 func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities workerprotocol.Capabilities) (*model.WorkerConfigurationExchange, error) {
 	keys := []string{"bootstrap", "observation"}
-	if capabilities.ControlMode {
-		keys = append(keys, "controlModeBootstrap")
-	}
 	if capabilities.ToolPaths {
 		keys = append(keys, "toolPathsBootstrap")
 	}
@@ -63,9 +55,6 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 		if capabilities.ToolPaths && (value.ToolPaths.Codex == nil || value.ToolPaths.Copilot == nil) {
 			return nil, invalidInput("Initial configuration requires all tool path choices.")
 		}
-		if capabilities.ControlMode && value.AgentControlMode == nil {
-			return nil, invalidInput("Initial configuration requires an agent control mode.")
-		}
 	}
 	if capabilities.ToolPaths && !configurationNull(fields["toolPathsBootstrap"]) {
 		if _, err := configurationObject(fields["toolPathsBootstrap"], "toolPathsBootstrap", false, "codex", "copilot"); err != nil {
@@ -79,11 +68,7 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 	if exchange.Observation != nil {
 		legacyItems := 0
 		for _, item := range exchange.Observation.Items {
-			if item.Key.Kind == "agentControlMode" {
-				if !capabilities.ControlMode {
-					return nil, invalidInput("Agent control mode observations require the control mode capability.")
-				}
-			} else if item.Key.Kind == "archiveSessions" {
+			if item.Key.Kind == "archiveSessions" {
 				if !capabilities.ArchiveSessions {
 					return nil, invalidInput("Archive sessions observations require the archive sessions capability.")
 				}
