@@ -8,6 +8,7 @@ import type { TimerOptions } from "node:timers";
 import { afterEach, expect, it, vi } from "vitest";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
@@ -142,7 +143,7 @@ const fixture = async (maxConcurrent = 1) => {
 };
 const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store: WebExecutionStore, task: WebTask) => {
   const execution = task.webExecution!;
-  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: task.configuration!.agent, cwd: f.project.localPath, nativeHome: path.join(f.root, "native"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(f.root, "grant.json"), ipcEndpoint: path.join(f.root, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: task.configuration!.agent, cwd: task.resources.worktree?.worktreePath ?? f.project.localPath, nativeHome: path.join(f.root, "native"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "managed", resumeNativeSessionId: null, credentialFile: path.join(f.root, "grant.json"), ipcEndpoint: path.join(f.root, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   task = store.updateWebExecution(task, { ticketPath: await writeLaunchTicket(f.root, ticket) }, 6);
   const snapshot: lifecycle.ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: task.resources.nativeSession?.sessionId ?? null, initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) }, nativeProcesses: [], nativeStopped: true, stoppedAt: new Date().toISOString(), error: null };
   task = store.updateWebExecution(task, { controllerProcess: snapshot.controllerProcess }, 7);
@@ -151,7 +152,7 @@ const stoppedWebExecution = async (f: Awaited<ReturnType<typeof fixture>>, store
   vi.spyOn(launchObservation, "reconcileSubmittedControllerLaunch").mockImplementation(async input => ({ kind: "controller-exited", process: input.spawnProof, snapshot }));
   vi.spyOn(lifecycle, "recordStoppedControllerGeneration").mockResolvedValue(snapshot);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  return { task, request: vi.fn<typeof requestController>().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original controller is stopped.")) };
+  return { task, ticket, snapshot, request: vi.fn<typeof requestController>().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original controller is stopped.")) };
 };
 it("fences an unfinished Web record before the first reconciliation after restart", async () => {
     const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
@@ -668,3 +669,121 @@ it("preserves independent Web work when enumeration fails after another cleanup"
     await eventually(() => expect(advance.mock.calls.length).toBeGreaterThanOrEqual(2));
   } finally { finishCleanup.resolve(); finishScan.resolve(); await coordinator.shutdown(); webStore.close(); }
 });
+
+it.each(["recover", "next-generation", "automatic-generation", "same-task", "index-schedule", "journal-schedule", "cancel", "target-disappears", "first-generation", "pending"] as const)("reconciles an original Web execution through an incomplete Git scan: %s", async scenario => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+  const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
+  await mkdir(f.project.localPath, { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
+  git("init", "--initial-branch=main");
+  git("-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed");
+  git("remote", "add", "origin", f.project.repoUrl);
+  const bare = path.join(f.root, "origin.git");
+  execFileSync("git", ["clone", "--bare", f.project.localPath, bare], { cwd: f.root, stdio: "pipe", timeout: 10_000 });
+  git("config", `url.${bare}.insteadOf`, f.project.repoUrl);
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp"), prepareFormat });
+  const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(170), worktreeId: uuid(171) };
+  const sibling = { projectId: f.project.projectId, taskId: uuid(172), claimId: uuid(173), worktreeId: uuid(174) };
+  const operation = createOperation(); let binding: WorktreeBinding, badBinding: WorktreeBinding;
+  try { await manager.prepareRepository(f.project, operation); binding = await manager.prepareWorktree(f.project, owner, operation); badBinding = await manager.prepareWorktree(f.project, sibling, operation); }
+  finally { operation.dispose(); }
+  if (scenario === "same-task") {
+    const manifests = createWorktreeManifestStore(binding.commonDirectory), previous = manifests.read(sibling.worktreeId)!;
+    manifests.remove(previous); manifests.publish({ ...previous, taskId: owner.taskId });
+  }
+  await writeFile(path.join(badBinding.worktreePath, ".git"), "damaged pointer\n");
+  f.grant(f.candidates[0]!, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", agentControlMode: "web", machine: f.options.machine, platform: "linux" });
+  const local = f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+  if (scenario !== "pending") f.store.activateTask(local);
+  const config = { ...configuration, toolLaunch: frozenToolLaunch() };
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  record = webStore.bindWorktree(record, binding, 2);
+  record = webStore.initializeWebExecution(record, 3);
+  record = webStore.updateWebExecution(record, { sessionId: uuid(175), initialPrompt: "managed", ...(scenario === "first-generation" ? {} : { launchSubmission: "acknowledged" as const }) }, 4);
+  let stopped: Awaited<ReturnType<typeof stoppedWebExecution>> | undefined;
+  if (scenario !== "first-generation") {
+    record = webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(176) }, 5);
+    stopped = await stoppedWebExecution(f, webStore, record);
+    record = stopped.task;
+    const journalFile = path.join(controllerExecutionDirectory(f.root, record.webExecution!.executionId), "journal.sqlite");
+    await mkdir(path.dirname(journalFile), { recursive: true });
+    const journal = lifecycle.openControllerLifecycleStore(journalFile, stopped.ticket, { onMigration() {} });
+    const { executionId: _executionId, claimId: _claimId, sessionId: _sessionId, executionGeneration: _generation, controllerInstanceId: _instance, ...snapshotPatch } = stopped.snapshot;
+    try { journal.patchSnapshot(snapshotPatch); } finally { journal.close(); }
+    if (scenario === "next-generation") {
+      record = webStore.authorizeRecoveryRetry(record, 8);
+      record = webStore.beginWebGeneration(record, stopped.snapshot, 9);
+      record = webStore.pauseRecovery(record, "Original generation preparation failed.", 10);
+      record = webStore.authorizeRecoveryRetry(record, 11);
+    } else if (scenario === "automatic-generation") {
+      record = webStore.beginRecovery(record, 8);
+      record = webStore.beginWebGeneration(record, stopped.snapshot, 9);
+    }
+  }
+  if (scenario === "index-schedule" || scenario === "journal-schedule") {
+    const otherProject = { ...f.project, projectId: uuid(180), localPath: path.join(f.root, "other-project") };
+    f.store.registerProject(otherProject);
+    vi.mocked(f.remote.ownInventory).mockImplementation(async () => ({ tasks: [...f.grants.values()], coveredProjectIds: [owner.projectId], unavailableProjectIds: [] }));
+    const other = { projectId: otherProject.projectId, taskId: owner.taskId, claimId: uuid(181), worktreeId: uuid(182) };
+    if (scenario === "index-schedule") {
+      f.store.completeTask(f.store.registerPending({ ...other, agent: "codex", agentControlMode: "web" }));
+      f.store.saveCleanupSchedule(other, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+    } else {
+      let completed = webStore.register({ ...other, project: otherProject, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+      completed = webStore.beginCleanup(completed, { kind: "terminal", deadline: 1000 }, 2);
+      completed = webStore.completeTask(completed, 3);
+      f.store.saveCleanupSchedule(other, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null }, completed);
+    }
+  }
+  const scheduleReads = vi.spyOn(f.store, "listCleanupSchedules");
+  const manifestReads = vi.spyOn(manager, "listWorktreeManifests");
+  const verifyEntered = Promise.withResolvers<void>(), finishVerify = Promise.withResolvers<void>();
+  const verify = manager.verifyWorktree.bind(manager);
+  if (scenario === "cancel" || scenario === "target-disappears") vi.spyOn(manager, "verifyWorktree").mockImplementation(async (...args) => {
+    const found = await verify(...args); verifyEntered.resolve();
+    if (scenario === "cancel") { await finishVerify.promise; args[2].check(); }
+    else await rm(binding.worktreePath, { recursive: true, force: true });
+    return found;
+  });
+  const stop = new AbortController();
+  const interruption = new Error("Second generation reached after stopped proof.");
+  const prepare = vi.fn(async (value: WebTask) => {
+    if (scenario === "next-generation" || scenario === "automatic-generation" || value.webExecution!.executionGeneration !== "1") throw interruption;
+    return stopped!.ticket;
+  });
+  const launcher = { prepare, launch: vi.fn(async () => {}), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now,
+    ...(stopped === undefined ? {} : { request: stopped.request }), jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} } });
+  const advance = vi.spyOn(backend, "advanceResult");
+  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend: { ...backend, cleanup: vi.fn(async value => ({ task: value, complete: true })) },
+    repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, signal: stop.signal, verifyWebServer: async () => {} });
+  try {
+    await coordinator.tick();
+    if (scenario === "cancel") { await verifyEntered.promise; stop.abort(new Error("cancel original execution")); finishVerify.resolve(); await coordinator.shutdown(); }
+    else if (scenario === "recover" || scenario === "next-generation" || scenario === "automatic-generation") {
+      await vi.waitFor(() => expect(f.events.some(event => event.error === interruption), f.events.map(event => `${event.kind}: ${event.message} ${event.error instanceof Error ? event.error.stack : String(event.error)}`).join("\n")).toBe(true), { timeout: 10_000, interval: 20 });
+      expect(advance).toHaveBeenCalledOnce();
+      expect(advance.mock.calls[0]![4]).toBe(false);
+      expect(webStore.getTask(owner)?.webExecution?.executionGeneration).toBe("2");
+      expect(webStore.getTask(owner)?.resources.nativeSession?.sessionId).toBe(uuid(176));
+      expect(prepare).toHaveBeenCalled();
+      await vi.waitFor(() => expect(f.remote.update).toHaveBeenCalledOnce(), { timeout: 10_000, interval: 20 });
+    } else if (scenario === "target-disappears") {
+      await verifyEntered.promise;
+      await vi.waitFor(() => expect(advance).toHaveBeenCalledOnce(), { timeout: 10_000, interval: 20 });
+      await vi.waitFor(() => expect(f.remote.update).toHaveBeenCalledOnce(), { timeout: 10_000, interval: 20 });
+      expect(prepare).not.toHaveBeenCalled();
+      await expect(access(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      if (scenario === "same-task") await vi.waitFor(() => expect(manifestReads.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 10_000, interval: 20 });
+      else if (scenario === "index-schedule" || scenario === "journal-schedule") await vi.waitFor(() => expect(scheduleReads.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 10_000, interval: 20 });
+      else await new Promise<void>(resolve => setImmediate(resolve));
+      expect(advance).not.toHaveBeenCalled();
+      expect(f.remote.update).not.toHaveBeenCalled();
+      if (scenario === "pending") expect(f.store.getTask(owner)?.status).toBe("pending");
+    }
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(await readFile(path.join(badBinding.worktreePath, ".git"), "utf8")).toBe("damaged pointer\n");
+  } finally { finishVerify.resolve(); stop.abort(); await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
+}, 30_000);

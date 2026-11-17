@@ -255,7 +255,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     }
     return options.store.observeStartup(task, startup, options.now());
   };
-  const verifyWorktree = async (task: LocalTask, signal: AbortSignal): Promise<LocalTask> => {
+  const verifyWorktree = async (task: LocalTask, signal: AbortSignal, allowWorktreeRestore = true): Promise<LocalTask> => {
     try {
       const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
       phase(task, { kind: "execution", phase: "worktree-preparation" });
@@ -264,6 +264,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       if (preparing && task.webExecution !== null && (task.webExecution.launchSubmission !== "not-submitted" || task.webExecution.controllerProcess !== null || task.webExecution.nativeProcesses.length > 0)) throw new Error("An already started Web execution has no original worktree binding.");
       let allowRestore = task.webExecution === null;
       const admitRestore = async (): Promise<void> => {
+        if (!allowWorktreeRestore) throw new ConfigurationAdmissionWaiting();
         const execution = task.webExecution;
         let ticket: ControllerLaunchTicket | undefined;
         if (execution !== null) {
@@ -319,17 +320,18 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       return task;
     } catch (error) {
       signal.throwIfAborted();
+      if (error instanceof ConfigurationAdmissionWaiting) throw error;
       const failure = error instanceof WorktreePreconditionError ? error : new WorktreePreconditionError("validation_failed", error instanceof Error ? error.message : String(error), { cause: error });
       options.store.blockOrchestration(task, { source: "worktree", code: failure.code, message: failure.message }, options.now());
       throw failure;
     }
   };
-  const resumeOrchestration = async (original: LocalTask, blocker: OrchestrationBlocker, signal: AbortSignal, authority?: WebInputAuthority): Promise<{ task: LocalTask; live: boolean }> => {
+  const resumeOrchestration = async (original: LocalTask, blocker: OrchestrationBlocker, signal: AbortSignal, authority?: WebInputAuthority, allowWorktreeRestore = true): Promise<{ task: LocalTask; live: boolean }> => {
     let task = current(original);
     const legacyReport = blocker.source === "legacy_worktree" ? original.webExecution?.startupReport : undefined;
     const correctLegacyLatch = blocker.source === "legacy_worktree" && !task.recovery.retryAuthorized;
     if (!sameOrchestrationIdentity(task, blocker)) throw new Error("The orchestration block belongs to another original execution.");
-    task = await verifyWorktree(task, signal);
+    task = await verifyWorktree(task, signal, allowWorktreeRestore);
     const execution = task.webExecution;
     if (execution === null || execution.launchSubmission === "not-submitted") return { task: options.store.clearOrchestration(task, blocker, null, options.now()), live: false };
     phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-orchestration-ticket");
@@ -372,7 +374,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         || !preservesControllerEvidence(saved, stoppedSnapshot, ticket.launchId)
         || (observed !== null && !preservesControllerEvidence(observed, stoppedSnapshot, ticket.launchId))) throw new Error("The stopped native observation conflicts with the original controller evidence.");
       await jobLeases.release(ticket.launchId);
-      task = await verifyWorktree(task, signal);
+      task = await verifyWorktree(task, signal, allowWorktreeRestore);
       if (firstNativeObservation) {
         if (stoppedSnapshot.nativeSessionId === null) throw new Error("The stopped original native session identity is unavailable.");
         task = options.store.bindNativeSession(task, { source: "controller", sessionId: stoppedSnapshot.nativeSessionId }, options.now(), stoppedSnapshot);
@@ -384,7 +386,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       if (await inspectProcessProof(proof) !== "running") throw new Error("Orchestration verification could not confirm the original running processes.");
     }
     signal.throwIfAborted();
-    task = await verifyWorktree(task, signal);
+    task = await verifyWorktree(task, signal, allowWorktreeRestore);
     task = options.store.clearOrchestration(task, blocker, observed, options.now(), legacyReport);
     task = remember(task, observed);
     if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
@@ -395,7 +397,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   const backend = {
     observeStartupReport,
-    advance: async (original: LocalTask, signal: AbortSignal, admission?: () => boolean, authority?: WebInputAuthority): Promise<LocalTask> => {
+    advance: async (original: LocalTask, signal: AbortSignal, admission?: () => boolean, authority?: WebInputAuthority, allowWorktreeRestore = true): Promise<LocalTask> => {
       let task = current(original);
       waiting.delete(task.claimId);
       upgrades.delete(task.claimId);
@@ -412,12 +414,12 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         await verifyLegacyBranchProvenance(options.homeDirectory, task, signal);
         success(task, { kind: "execution", phase: "preparing" }, "web-legacy-provenance");
         const blocker = options.store.blockOrchestration(task, { source: "legacy_worktree", code: "branch_mismatch", message: task.recovery.pauseReason! }, options.now());
-        return (await resumeOrchestration(task, blocker, signal, authority)).task;
+        return (await resumeOrchestration(task, blocker, signal, authority, allowWorktreeRestore)).task;
       }
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) return task;
       const blocker = options.store.getOrchestrationBlocker(task);
       if (blocker !== null) {
-        const result = await resumeOrchestration(task, blocker, signal, authority);
+        const result = await resumeOrchestration(task, blocker, signal, authority, allowWorktreeRestore);
         task = result.task;
         if (result.live) return task;
       }
@@ -431,6 +433,18 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         return saved;
       };
       try {
+        if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
+        if (!allowWorktreeRestore && !retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission === "not-submitted" && BigInt(task.webExecution.executionGeneration) > 1n) {
+          const execution = task.webExecution, previous = readControllerSnapshot(journal(task));
+          if (previous === null || previous.controllerProcess === null || previous.lifecycle !== "stopped" || !previous.nativeStopped || previous.stoppedAt === null
+            || execution.controllerProcess !== null || execution.nativeProcesses.length !== 0 || previous.executionId !== execution.executionId || previous.claimId !== task.claimId
+            || previous.sessionId !== execution.sessionId || String(BigInt(previous.executionGeneration) + 1n) !== execution.executionGeneration
+            || previous.controllerInstanceId === execution.controllerInstanceId || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId)
+            throw new Error("Unsubmitted recovery requires the exact preceding stopped generation and original launch evidence.");
+          if (!await confirmWithLease(previousLaunchId(previous.controllerProcess, execution.launchId), previous.controllerProcess, previous.nativeProcesses, undefined, previous)) throw new Error("Unsubmitted recovery requires complete original controller and native process stop.");
+          signal.throwIfAborted();
+          if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed during unsubmitted recovery verification.");
+        }
         if (task.webExecution !== null && task.webExecution.launchSubmission === "unknown" && (retryAttempt || task.recovery.count >= task.configuration!.recoveryLimit)) {
           const execution = task.webExecution;
           if (execution.controllerProcess === null) throw new Error("The submitted controller has no original spawn proof; its launch is retained.");
@@ -456,6 +470,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (JSON.stringify(readControllerSnapshot(journal(task))) !== JSON.stringify(previous)) throw new Error("The original stopped generation changed during unsubmitted recovery verification.");
             const retryTicket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
             prepareControllerLaunchStorage(options.homeDirectory, retryTicket);
+            if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
             task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
           } else {
             const saved = originalSnapshot();
@@ -467,6 +482,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             const toolLaunch = await recoverySelection(task, ticket);
             const stopped = await recordWithLease(journal(task), ticket, undefined, true);
             await jobLeases.release(ticket.launchId);
+            if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
             task = options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch);
           }
           success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
@@ -490,7 +506,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             }
           } catch (error) { signal.throwIfAborted(); return pause(error); }
         }
-        task = await verifyWorktree(task, signal);
+        task = await verifyWorktree(task, signal, allowWorktreeRestore);
         assertConfigurationAdmission(canAdmitNewExecution);
         task = options.store.initializeWebExecution(task, options.now());
         if (task.webExecution!.initialPrompt === null && options.promptSource !== undefined) {
@@ -553,6 +569,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           const toolLaunch = await recoverySelection(task, ticket);
           const stopped = await recordWithLease(journal(task), ticket, undefined, true);
           await jobLeases.release(ticket.launchId);
+          if (!allowWorktreeRestore) task = await verifyWorktree(task, signal, false);
           if (!task.webExecution!.restartAfterShutdown) task = options.store.beginRecovery(task, options.now());
           if (task.recovery.pauseReason !== null) return task;
           recovering = true;
@@ -938,9 +955,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         try { if (value.observeUnattributed(pending.identity, pending.operationKey, true)) pendingIdentities.delete(key); } catch { /* Retain the current unattributed state. */ }
       }
     },
-    advanceResult: async (task: LocalTask, signal: AbortSignal, canAdmitNewExecution?: () => boolean, authority?: WebInputAuthority): Promise<WebAdvanceResult> => {
+    advanceResult: async (task: LocalTask, signal: AbortSignal, canAdmitNewExecution?: () => boolean, authority?: WebInputAuthority, allowWorktreeRestore = true): Promise<WebAdvanceResult> => {
       let result: LocalTask;
-      try { result = await backend.advance(task, signal, canAdmitNewExecution, authority); }
+      try { result = await backend.advance(task, signal, canAdmitNewExecution, authority, allowWorktreeRestore); }
       catch (cause) {
         if (signal.aborted || !(cause instanceof ControllerStorageWaitingError)) throw cause;
         result = current(task);

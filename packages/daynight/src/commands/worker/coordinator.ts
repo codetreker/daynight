@@ -842,7 +842,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       || (claim.nativeSessionId !== null && latest.resources.nativeSession !== null && claim.nativeSessionId !== latest.resources.nativeSession.sessionId)) return "claim_invalid";
     return readTaskPaused(fresh.properties) ? "task_paused" : null;
   };
-  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, explicitRetry = false): Promise<WorkerInputWait | undefined> => {
+  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, explicitRetry = false, allowWorktreeRestore = true): Promise<WorkerInputWait | undefined> => {
     if (ending.has(key(task))) return;
     const owner = remoteOwner(remoteTask);
     if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== "web") throw new Error("The local execution does not match the observed original worker claim.");
@@ -887,7 +887,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           advancing = true;
           if (options.webBackend.advanceResult) {
             const precedingGeneration = record.webExecution?.executionGeneration;
-            const result = await options.webBackend.advanceResult(record, signal, canAdmitNewExecution, authority);
+            const result = await options.webBackend.advanceResult(record, signal, canAdmitNewExecution, authority, allowWorktreeRestore);
             record = result.task;
             if (precedingGeneration !== undefined && record.webExecution?.executionGeneration !== precedingGeneration) webUpgradeAttempts.add(key(task));
             if (result.kind === "waiting_input") waitingInput = { kind: "waiting_input", reason: result.reason };
@@ -904,7 +904,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
                 record = options.webStore.clearShutdown(stopped.task, now());
               }
             }
-          } else record = await options.webBackend.advance(record, signal, canAdmitNewExecution);
+          } else record = await options.webBackend.advance(record, signal, canAdmitNewExecution, authority, allowWorktreeRestore);
           observed = true;
         }
       } catch (error) {
@@ -1023,6 +1023,63 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }, false, readWorkerClaim(remoteTask.properties));
   };
   const compatibleWebSessions = (...sessions: readonly (string | null | undefined)[]): boolean => new Set(sessions.filter((session): session is string => session != null)).size <= 1;
+  // A partial repository scan cannot authorize new work. An already submitted
+  // Web execution can still be reconciled after its own binding and competing
+  // same-task responsibilities are independently verified.
+  const scheduleKnownWebDuringIncompleteScan = (task: LocalTask, observed: Task): void => {
+    if (!canAdvance(task) || jobs.has(key(task)) || ending.has(key(task)) || !options.webStore || !options.webBackend) return;
+    const owner = remoteOwner(observed), claim = readWorkerClaim(observed.properties)!;
+    const activityKey = `false/${key(owner)}`, hadActivity = monitoringActivities.has(activityKey);
+    startJob(owner, async signal => {
+      let admitted = false;
+      try {
+        const record = options.webStore!.getTask(owner), original = record?.resources.worktree;
+        if (record == null || original == null || record.status !== "active" || record.control !== null
+          || record.cleanup !== null && record.cleanup.kind !== "shutdown" || record.webExecution == null
+          || record.webExecution.launchSubmission === "not-submitted" && !(BigInt(record.webExecution.executionGeneration) > 1n && record.resources.nativeSession !== null)
+          || record.serverOrigin !== options.serverOrigin || record.workerId !== options.workerId || record.userId !== options.userId
+          || record.userId !== claim.userId || record.worktreeId !== owner.worktreeId || record.configuration?.agent !== task.agent
+          || !compatibleWebSessions(task.sessionId, claim.nativeSessionId, record.resources.nativeSession?.sessionId)) return;
+        const project = projectFor(task);
+        if (repositoryIdentity(project.repoUrl) !== repositoryIdentity(record.repoUrl)
+          || !await sameWorktreeLocation(project.localPath, record.repositoryPath)
+          || !await sameWorktreeLocation(project.localPath, original.repositoryPath)) return;
+        const noCompetingTask = async (): Promise<boolean> => {
+          // Task IDs identify the shared branch even when projects use different
+          // worktree roots for the same Git common directory.
+          for (const other of [...options.store.listUnfinishedTasks(), ...options.store.listCleanupSchedules(), ...ending.values(), ...options.webStore!.listUnfinishedTasks()]) {
+            if (other.taskId === task.taskId && !sameClaim(other, task)) return false;
+          }
+          for (const other of options.webStore!.listCompletedTasks()) {
+            if (other.taskId === task.taskId && !sameClaim(other, task) && options.store.getCleanupSchedule(other, other) !== null) return false;
+          }
+          const manifests = await workerOperation(operation => options.git.listWorktreeManifests(project, operation, true), signal);
+          return !manifests.some(item => item.owner.taskId === task.taskId && (!sameClaim(item.owner, task) || item.owner.worktreeId !== owner.worktreeId));
+        };
+        if (!await noCompetingTask()) return;
+        const binding = await workerOperation(operation => options.git.verifyWorktree(project, owner, operation), signal);
+        if (binding.branch !== original.branch || !await sameWorktreeLocation(binding.worktreePath, original.worktreePath)
+          || !await sameWorktreeLocation(binding.repositoryPath, original.repositoryPath)
+          || !await sameWorktreeLocation(binding.commonDirectory, original.commonDirectory)) return;
+        signal.throwIfAborted();
+        const fresh = await options.remote.readTask(owner.projectId, owner.taskId, signal), currentClaim = readWorkerClaim(fresh.properties);
+        if (fresh.projectId !== owner.projectId || fresh.id !== owner.taskId || fresh.status !== "in_progress" || !fresh.allowAgents || readTaskPaused(fresh.properties)
+          || currentClaim?.state !== "active" || currentClaim.agentControlMode !== "web" || currentClaim.claimId !== owner.claimId
+          || currentClaim.workerId !== options.workerId || currentClaim.userId !== options.userId || currentClaim.worktreeId !== owner.worktreeId
+          || currentClaim.agent !== task.agent || !compatibleWebSessions(task.sessionId, currentClaim.nativeSessionId, record.resources.nativeSession?.sessionId)
+          || !isDeepStrictEqual(options.webStore!.getTask(owner), record) || !canAdvance(task) || ending.has(key(task))) return;
+        if (!await noCompetingTask() || !isDeepStrictEqual(options.webStore!.getTask(owner), record) || !canAdvance(task) || ending.has(key(task))) return;
+        signal.throwIfAborted();
+        admitted = true;
+        await ensure(task, fresh, signal, false, false);
+      } finally {
+        if (!admitted && !hadActivity) {
+          const activity = monitoringActivities.get(activityKey);
+          if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(activityKey); }
+        }
+      }
+    }, false, claim);
+  };
   // Project removal joins only Web executions whose original identity is proved.
   const stopProject = (projectId: string, signal?: AbortSignal): Promise<void> => {
     const existing = projectStops.get(projectId);
@@ -1373,7 +1430,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const [identityKey, remoteTask] of inventory) {
       let local = options.store.getTask(remoteOwner(remoteTask));
       if (local === null) continue;
-      if (local.status === "active" && !quarantinedTask(local) && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && !recheckFailedProjects.has(local.projectId) && !resources.unavailableProjects.has(local.projectId) && !blockedByOldClaim(local, resources.owners.values())) schedule(local, remoteTask);
+      if (local.status === "active" && !quarantinedTask(local) && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && !recheckFailedProjects.has(local.projectId) && !blockedByOldClaim(local, resources.owners.values())) {
+        if (resources.unavailableProjects.has(local.projectId)) scheduleKnownWebDuringIncompleteScan(local, remoteTask);
+        else schedule(local, remoteTask);
+      }
       if (!quarantinedTask(local) && allMappingsObserved() && coveredProjects.has(local.projectId) && prepared.has(local.projectId) && resources.scannedProjects.has(local.projectId) && canAdvance(local) && resources.owners.has(identityKey) && local.status === "pending" && !blockedByOldClaim(local, resources.owners.values())) {
         local = options.store.activateTask(local);
         schedule(local, remoteTask);

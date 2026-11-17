@@ -1538,3 +1538,24 @@ describe("Web ownership boundaries", () => {
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 });
+
+it("does not create a Web execution from an active index when Git inventory is incomplete", async () => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+  const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(985), worktreeId: uuid(986) };
+  f.grant(f.candidates[0]!, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", agentControlMode: "web", machine: f.options.machine, platform: "linux" });
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  f.git.scanWorktrees = vi.fn(async () => ({ enumerationComplete: false, validated: [], quarantined: [], unknown: [{ error: new Error("Unrelated Git metadata unreadable.") }] }));
+  const verify = vi.fn(async () => f.bind(owner)); f.git.verifyWorktree = verify;
+  const unregistered = vi.fn(async () => {}), advance = vi.fn(async (value: WebTask) => value);
+  const coordinator = createWorkerCoordinator({ ...f.options, webStore, verifyWebUnregistered: unregistered, webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
+  try {
+    await coordinator.tick();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(webStore.getTask(owner)).toBeNull();
+    expect(verify).not.toHaveBeenCalled();
+    expect(unregistered).not.toHaveBeenCalled();
+    expect(advance).not.toHaveBeenCalled();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
