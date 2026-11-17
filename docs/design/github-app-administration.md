@@ -22,4 +22,4 @@
 
 管理 API 使用 `/api/v1/github/apps/{id}` 下的 `/admins`、`/admin-invitations` 及精确成员移除、邀请撤销路径。检查和接受使用独立 `/api/v1/github-app-admin-invitations/inspect` 与 `/accept` POST，token 仅由 JSON body 传入。邀请链接使用可信 PublicOrigin 与 `/github-app-admin-invitations#<token>`，不放在 query 或路径中。响应设置 `Cache-Control: no-store`；列表不能恢复原 token 或链接，日志不记录 token、摘要或 fragment。
 
-本地管理的 15 秒预算从 HTTP 输入读取开始贯穿业务和提交，更短父期限优先；客户端响应 context 与内部操作期限分开，内部超时或 unknown 可以明确响应，客户端取消不重试写入。生产服务装配管理员用例并注册 HTTP adapter，Web 管理分区提供成员、邀请及精确移除操作。独立接收页面读取 fragment 后立即从地址清除，token 仅驻内存；清理失败不发送检查或接受请求。登录需要整页跳转时，用户登录后重新打开邀请链接。成功自我移除保留确认回执并清理管理视图，未知结果只能核对当前状态，不能推断原写入成功。
+本地管理的 15 秒预算从 HTTP 输入读取开始贯穿业务和提交，更短父期限优先；客户端响应 context 与内部操作期限分开，内部超时或 unknown 可以明确响应，客户端取消不重试写入。生产服务装配管理员用例并注册 HTTP adapter，Web 管理分区提供成员、邀请及精确移除操作。已发布的完整管理员名册仅有一人时，行内移除按钮使用原生禁用状态；未接受的邀请不计入人数，尚有下一页时不能据单条记录判断为最后一人。名册更新后重新计算，服务端仍负责并发变化时的 `last_admin` 保护。独立接收页面读取 fragment 后立即从地址清除，token 仅驻内存；清理失败不发送检查或接受请求。登录需要整页跳转时，用户登录后重新打开邀请链接。成功自我移除保留确认回执并清理管理视图，未知结果只能核对当前状态，不能推断原写入成功。
