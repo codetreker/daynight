@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types';
+import type { SessionV2Archive } from '../../../../daynight/src/session/v2/recording-types';
 import { sessionFence, sessionFenceKey } from '../../../../daynight/src/session/protocol';
 import { ApiError, authRequestsPaused, isAbortError, readAuthRequestGeneration, subscribeAuthPause } from '../../api/client';
 import type { LoadedSessionArchive } from '../../api/sessions';

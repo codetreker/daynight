@@ -41,6 +41,8 @@ func New(writer store.SessionWriter, files ...filestorage.Storage) *Execution {
 	}
 	execution := NewExecution(engine, c.browserFor, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
 	execution.SetArchivePreflight(c.archivePreflight)
+	execution.SetTerminalHistoryRunner(c.terminalHistory)
+	execution.SetTerminalDirectoryRunners(c.terminalDirectory, c.terminalDirectory)
 	return execution
 }
 
@@ -253,6 +255,55 @@ func (s *fixtureCoordinator) terminal(ctx context.Context, principal model.Princ
 			return err
 		}
 		return work(access)
+	})
+}
+
+func (s *fixtureCoordinator) terminalHistory(ctx context.Context, principal model.Principal, project, taskID, id string, finalize bool, work func(*TerminalHistoryAccess) error) error {
+	op, err := s.engine.BeginOperation()
+	if err != nil {
+		return err
+	}
+	defer op.Close()
+	return s.write(ctx, op, func(scope store.SessionScope) error {
+		_, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
+		if err != nil {
+			return err
+		}
+		if err = op.LockCredential(ctx, scope, principal); err != nil {
+			return err
+		}
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
+			return err
+		}
+		access, err := op.LoadTerminalHistory(ctx, scope, id)
+		if err != nil {
+			return err
+		}
+		if err = op.BindTerminalHistory(access, principal, project, taskID, deleted); err != nil {
+			return err
+		}
+		return work(access)
+	})
+}
+
+func (s *fixtureCoordinator) terminalDirectory(ctx context.Context, principal model.Principal, project, taskID string, work func(*Operation, store.SessionScope, *TaskAccess) error) error {
+	op, err := s.engine.BeginOperation()
+	if err != nil {
+		return err
+	}
+	defer op.Close()
+	return s.write(ctx, op, func(scope store.SessionScope) error {
+		task, err := op.LockTask(ctx, scope, project, taskID)
+		if err != nil {
+			return err
+		}
+		if err = op.LockCredential(ctx, scope, principal); err != nil {
+			return err
+		}
+		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
+			return err
+		}
+		return work(op, scope, task)
 	})
 }
 

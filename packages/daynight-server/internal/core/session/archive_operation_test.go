@@ -299,6 +299,15 @@ func TestTerminalArchiveReadbackStaysInsideItsAdmittedScope(t *testing.T) {
 		defer active.Store(0)
 		return run(ctx, p, project, task, id, archive, work)
 	}
+	historyRun := f.s.terminalHistoryRun
+	f.s.terminalHistoryRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalHistoryAccess) error) error {
+		if !active.CompareAndSwap(0, 1) {
+			t.Error("archive readback attempted a nested history scope")
+			return errors.New("nested history scope")
+		}
+		defer active.Store(0)
+		return historyRun(ctx, p, project, task, id, archive, work)
+	}
 	files := &scopedArchiveObjectStorage{Storage: f.s.files, t: t, active: &active}
 	f.s.files = files
 	data := encode(doc)
@@ -694,10 +703,10 @@ func TestTerminalArchiveRejectsChangedOwnerAndCompleteness(t *testing.T) {
 	if doc.Completeness == other {
 		other = "complete"
 	}
-	run := f.s.terminalRun
+	run := f.s.terminalHistoryRun
 	var altered *changedArchiveCompletenessDAO
-	f.s.terminalRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalAccess) error) error {
-		return run(ctx, p, project, task, id, archive, func(access *TerminalAccess) error {
+	f.s.terminalHistoryRun = func(ctx context.Context, p model.Principal, project, task, id string, archive bool, work func(*TerminalHistoryAccess) error) error {
+		return run(ctx, p, project, task, id, archive, func(access *TerminalHistoryAccess) error {
 			altered = &changedArchiveCompletenessDAO{SessionDAO: access.tx.dao, t: t, id: m.SessionID, value: other}
 			access.tx.dao = altered
 			return work(access)

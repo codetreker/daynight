@@ -26,6 +26,8 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	})
 	s.Execution = sessioncore.NewExecution(engine, s.browserFor, s.controller, s.archive, s.terminal, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.registerTerminal, s.authorize)
 	s.Execution.SetArchivePreflight(s.archivePreflight)
+	s.Execution.SetTerminalHistoryRunner(s.terminalHistory)
+	s.Execution.SetTerminalDirectoryRunners(s.terminalDirectory, s.taskTerminalDirectory)
 	engine.SetMediaLeaseRecovery(s.recoverMediaLeases)
 	engine.SetMediaLeaseCleanup(func(ctx context.Context, id, lease string) error {
 		return s.write(ctx, func(store.TransactionOutcome) {}, func(scope store.SessionScope) error {
@@ -72,6 +74,20 @@ func (s *Service) write(ctx context.Context, finish func(store.TransactionOutcom
 
 // archivePreflight releases the database scope before the owner gate is taken.
 func (s *Service) archivePreflight(ctx context.Context, principal model.Principal, project, taskID, id string, mode sessioncore.ArchiveMode) (string, error) {
+	if mode == sessioncore.ArchiveV2Read {
+		op, err := s.engine.BeginOperation()
+		if err != nil {
+			return "", err
+		}
+		defer op.Close()
+		var owner string
+		err = s.write(ctx, op.Finish, func(scope store.SessionScope) error {
+			var e error
+			owner, e = op.ArchivePreflight(ctx, scope, principal, project, taskID, id, mode)
+			return e
+		})
+		return owner, err
+	}
 	return s.archivePreflightWithRecovery(ctx, principal, project, taskID, id, mode, s.recoverMediaLeases, (*sessioncore.Operation).ArchivePreflight)
 }
 

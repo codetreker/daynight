@@ -8,7 +8,7 @@ import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/
 import { writeDurableJson } from "../../../platform/durable-json.js";
 import { runRepositoryGit } from "../../../repository/git.js";
 import { startOwnedRepositoryGit } from "../../../repository/git-owned.js";
-import { decodeStrictSessionJson } from "../../../session/v2/values.js";
+import { decodeStrictJson } from "../../../strict-json.js";
 import { sameResourceOwner } from "../resource-owner.js";
 import { parseWebTaskV1 } from "../backends/web-record.js";
 import type { LocalTask as WebTask } from "../backends/web-types.js";
@@ -60,7 +60,7 @@ const ownerOf = (value: ResourceOwner): ResourceOwner => {
 };
 const markerOwner = (marker: string): ResourceOwner => {
   if (!marker.startsWith(prefix)) throw new Error("Not a Worker ownership marker.");
-  const value: unknown = decodeStrictSessionJson(Buffer.from(marker.slice(prefix.length)), 32768);
+  const value: unknown = decodeStrictJson(Buffer.from(marker.slice(prefix.length)), 32768);
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid Worker ownership marker.");
   return ownerOf(value as ResourceOwner);
 };
@@ -101,7 +101,7 @@ const inspectSidecar = async (admin: string, owner: ResourceOwner, marker: strin
       || after.mtimeNs !== before.mtimeNs || current.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || current.ctimeNs !== before.ctimeNs) throw new Error("Worktree identity sidecar changed while reading.");
     contents = bytes.toString("utf8");
   } finally { await handle.close(); }
-  const value: unknown = decodeStrictSessionJson(Buffer.from(contents), 32768);
+  const value: unknown = decodeStrictJson(Buffer.from(contents), 32768);
   if (!exactObject(value, ["version", "owner", "markerSha256", "directories"]) || value.version !== 1
     || !exactObject(value.owner, fields) || !sameResourceOwner(ownerOf(value.owner as ResourceOwner), owner)
     || typeof value.markerSha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.markerSha256)
@@ -149,7 +149,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino) throw new Error("Worktree format changed during read.");
-      const value = decodeStrictSessionJson(readFileSync(fd), 16384);
+      const value = decodeStrictJson(readFileSync(fd), 16384);
       if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 1 || (value as Record<string, unknown>).version !== 1) throw new Error("Unknown worktree format.");
       if (durable) fsyncSync(fd);
     } finally { closeSync(fd); }

@@ -2,6 +2,7 @@ package task_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -98,6 +99,7 @@ func TestTaskDAOStore(t *testing.T) {
 	suite.run(t, "ReaderListsGraphsSyncAndAssignees", testReaderListsGraphsSyncAndAssignees)
 	suite.run(t, "StepDAOWritesReadbackAndMissingErrors", testStepDAOWritesReadbackAndMissingErrors)
 	suite.run(t, "WorkerInventoryFilteringAndThreadSource", testWorkerInventoryFilteringAndThreadSource)
+	suite.run(t, "StoredWorkerRoundTrip", testStoredWorkerRoundTrip)
 }
 
 func testWriterPersistenceDependenciesAndDeletion(t *testing.T, database *postgres.Store) {
@@ -424,5 +426,60 @@ func testWorkerInventoryFilteringAndThreadSource(t *testing.T, database *postgre
 	mustOK(t, e)
 	if decoded.ClaimID != worker.ClaimID || decoded.State != model.WorkerActive {
 		t.Fatalf("thread source worker: %+v", decoded)
+	}
+}
+
+// Persisted worker documents may predate the current admission contract.
+func testStoredWorkerRoundTrip(t *testing.T, database *postgres.Store) {
+	f := newFixtureWithStore(t, database)
+	ctx := t.Context()
+	w := task.NewWriter(f.tx, f.project)
+	want := make(map[string]model.WorkerClaim)
+	for _, mode := range []model.WorkerAgentControlMode{model.AgentControlModeWeb, model.AgentControlModeHerdr} {
+		claim := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: f.user, WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "machine 中文"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: mode, WorktreeID: uuid.NewString(), Phase: model.WorkerExecuting, State: model.WorkerActive, ClaimedAt: time.Now().UTC()}
+		if mode == model.AgentControlModeHerdr {
+			claim.Herdr = &model.WorkerHerdr{Session: "会话\n&", WorkspaceID: "workspace", PaneID: "pane"}
+		}
+		raw, err := taskproperties.EncodeWorker(&claim)
+		mustOK(t, err)
+		if mode == model.AgentControlModeWeb {
+			var doc map[string]json.RawMessage
+			mustOK(t, json.Unmarshal(raw, &doc))
+			delete(doc, "herdr")
+			raw, err = json.Marshal(doc)
+			mustOK(t, err)
+		}
+		item := mustTask(t, w, store.TaskWrite{Title: "stored worker"})
+		want[item.ID] = claim
+		_, err = f.tx.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, item.ID, string(raw))
+		mustOK(t, err)
+		loaded, err := w.Task(ctx, item.ID)
+		mustOK(t, err)
+		got, err := taskproperties.Worker(loaded.Properties)
+		mustOK(t, err)
+		if got.AgentControlMode != mode || !reflect.DeepEqual(got.Herdr, claim.Herdr) {
+			t.Fatalf("stored %s worker: %+v", mode, got)
+		}
+		updated, err := w.UpdateTask(ctx, item.ID, store.TaskWrite{Title: "updated", Status: model.TaskTodo, Properties: loaded.Properties})
+		mustOK(t, err)
+		got, err = taskproperties.Worker(updated.Properties)
+		mustOK(t, err)
+		if got.AgentControlMode != mode || !reflect.DeepEqual(got.Herdr, claim.Herdr) {
+			t.Fatalf("updated %s worker: %+v", mode, got)
+		}
+	}
+	mustOK(t, f.tx.Commit(ctx))
+	readTx, err := database.Pool.Begin(ctx)
+	mustOK(t, err)
+	defer readTx.Rollback(ctx)
+	r := task.NewReader(readTx)
+	for id, claim := range want {
+		loaded, err := r.Task(ctx, f.project, id)
+		mustOK(t, err)
+		got, err := taskproperties.Worker(loaded.Properties)
+		mustOK(t, err)
+		if got.ClaimID != claim.ClaimID || got.AgentControlMode != claim.AgentControlMode || !reflect.DeepEqual(got.Herdr, claim.Herdr) {
+			t.Fatalf("committed worker: %+v", got)
+		}
 	}
 }

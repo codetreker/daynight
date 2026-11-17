@@ -122,6 +122,12 @@ recording_not_enabled。每代证据独立核对。
 回执。正文 SHA-256、来源摘要、日志摘要与 dispositionDigest 各自具有明确对象，
 不能互相替代。
 
+历史目录、归档状态与正文读取只解码持久 `terminal_state` 中的 envelope、owner、
+运行账本、录制证据和 finalization 身份；未使用的在线控制字段不进入只读记录。
+读取沿用原权限作用域、归档驻留许可和正文完整性校验，不调用注册、控制或恢复。
+旧 JSON 和归档字节不迁移。普通 Task 属性的持久化解码独立于新 claim 准入：
+旧 Herdr 资源保留，Web 的 `herdr:null` 与省略字段均可识别。
+
 普通附件的替换/删除只能操作 task-attachments，不能改变权威归档。历史分页按
 created_at/id 稳定排序，不依赖当前 claim。成员撤销后拒绝读取；任务删除后拒绝
 页面和内容访问，仍具项目权限的原 PAT owner 可按原身份完成历史收尾。

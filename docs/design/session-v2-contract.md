@@ -8,9 +8,11 @@
 Go 的 [`core/session/protocol/v2/`](../../packages/daynight-server/internal/core/session/protocol/v2/)
 为独立包。v1 模块保留原类型和解析规则，不通过放宽旧 parser 接收新内容。
 
-TS `values.ts` 拥有版本、限额、原始 JSON 解码、基本值和规范序列化；`types.ts`
-拥有公共类型；`protocol.ts` 拥有消息判别与跨字段约束；`archive.ts` 拥有归档
-引用和完整性。共享原始字节向量位于
+TS 的 `strict-json.ts` 拥有通用严格 JSON 解码；`session/v2/values.ts` 提供
+版本、限额、基本值、规范序列化和 v2 错误映射。`recording-types.ts` 与
+`recording.ts` 拥有归档所需记录、帧及解析，`archive.ts` 拥有归档引用和完整性；
+历史播放器只依赖这些纯模块。`types.ts` 与 `protocol.ts` 保留在线消息类型、
+判别与跨字段约束。共享原始字节向量位于
 [`fixtures/v2/`](../../packages/daynight/test/session/fixtures/v2/)，由两种语言直接读取。
 文件入口和测试清单一起构成可执行交换契约，不能各自在服务端、Worker、Web
 复制另一套字段。
