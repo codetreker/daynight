@@ -2438,6 +2438,10 @@ its local asset references and ordinary files, prepares a complete staged copy,
 and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed validation
 or publication fails the build; a failed swap attempts to restore previous assets
 and reports both causes if rollback also fails.
+The shared decorative `BrandMark` uses the actual light or dark surface palette;
+its parent owns its name and navigation. The matching favicon is emitted as a
+hashed SVG in `/assets/` and adapts to the browser color scheme. See the
+[brand rules](../../docs/ui-design.md#brand-mark).
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean production server builds require this explicit build first.
 The Go module check uses its own unit-test Web resource overlay; see the

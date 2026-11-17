@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { decideDeviceAuthorization, inspectDeviceAuthorization } from "../../api/auth";
 import { normalizeDeviceUserCode } from "../../api/auth-parse";
@@ -76,7 +77,7 @@ export const DeviceAuthorizationPage = ({ user, initialCode, onSwitchAccount, on
   const errorMessage = (error: unknown) => error instanceof ApiError && error.status === 429 ? m.rateLimited : m.loadError;
   const requestId = "error" in state && state.error instanceof ApiError ? state.error.requestId : null;
   return <div className="invite-page device-page">
-    <a className="brand" href="/projects" aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
+    <a className="brand" href="/projects" aria-label={app.projectHome}><BrandMark className="brand-mark" surface="light" />daynight</a>
     <main className="invite-card device-card"><LanguageSelector /><p className="eyebrow">{m.eyebrow}</p>
       <h1>{terminal === null ? unavailable ? m.unavailable : m.title : completed ? m.approved : terminal === "denied" ? m.denied : m.expired}</h1>
       {state.kind === "entry" && <><p className="subtitle">{m.subtitle}</p><form className="device-code-form" onSubmit={(event) => {

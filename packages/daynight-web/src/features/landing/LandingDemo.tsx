@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { blockedBy, demoTasks, documentIds, receiptIds, sceneIds, taskIds, taskState } from "./demo";
@@ -43,7 +44,7 @@ export const LandingDemo = () => {
     <div className="wrap">
       <div className="demo-intro"><div><p className="eyebrow">{m.eyebrow}</p><h2 className="section-heading" id="demo-heading">{m.title[0]}<br />{m.title[1]}</h2></div><p>{m.intro}</p></div>
       <div className="demo-shell">
-        <div className="demo-top"><span className="mark" aria-hidden="true" /><strong>{m.project}</strong><span className="example-label">{m.example}</span><span className="demo-breadcrumb">{m.breadcrumb}</span></div>
+        <div className="demo-top"><BrandMark className="mark" surface="light" /><strong>{m.project}</strong><span className="example-label">{m.example}</span><span className="demo-breadcrumb">{m.breadcrumb}</span></div>
         <div className="scene-tabs" role="tablist" aria-label={m.sceneLabel}>
           {sceneIds.map((id, index) => <button key={id} className="scene-tab" type="button" role="tab" aria-label={m.scenes[id].label} id={`tab-${id}`} aria-controls={`scene-${id}`} aria-selected={scene === id} tabIndex={scene === id ? 0 : -1}
             ref={(element) => { if (element === null) delete sceneButtons.current[id]; else sceneButtons.current[id] = element; }}

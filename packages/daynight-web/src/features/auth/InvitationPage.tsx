@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useEffect, useRef, useState } from "react";
 import { acceptInvitation, getProjectAccess, inspectInvitation } from "../../api/auth";
 import type { CurrentUser, InvitationInspection } from "../../api/auth-types";
@@ -85,7 +86,7 @@ export const InvitationPage = ({ invitation, lifetime, user, onComplete, onCance
     }).finally(() => { if (active.current === controller) active.current = null; if (!signal.aborted) setAccepting(false); });
   };
   const unavailable = state.status === "error" && (state.error === null || invitationUnavailable(state.error));
-  return <div className="invite-page"><a className="brand" href="/projects" onClick={(event) => { event.preventDefault(); onCancel(); }} aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a><main className="invite-card"><LanguageSelector />
+  return <div className="invite-page"><a className="brand" href="/projects" onClick={(event) => { event.preventDefault(); onCancel(); }} aria-label={app.projectHome}><BrandMark className="brand-mark" surface="light" />daynight</a><main className="invite-card"><LanguageSelector />
     {state.status === "loading" && <div role="status"><span className="spinner" aria-hidden="true" /><h1>{m.loading}</h1></div>}
     {state.status === "error" && <><h1>{unavailable ? m.unavailable : m.loadError}</h1><p className="subtitle">{unavailable ? m.unavailableDetail : m.loadErrorDetail}</p>{!unavailable && <button className="button primary" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button>}<div className="invite-footer"><button className="button" type="button" onClick={onCancel}>{m.returnToProjects}</button></div></>}
     {state.status === "ready" && <><h1>{state.inspection.directGrant === null ? m.invited : m.alreadyMember}</h1><p className="subtitle">{state.inspection.directGrant === null ? m.invitedDetail : m.alreadyMemberDetail}</p><section className="invited-project"><h2>{state.inspection.projectName}</h2><p>{state.inspection.directGrant === null ? m.memberRole : `${m.currentDirectRole}: ${roles[state.inspection.directGrant.role]}`}</p>{state.inspection.directGrant !== null && <p>{m.preserveDirect}</p>}{state.inspection.directGrant === null && state.inspection.access?.teamRole === "admin" && <p>{m.inheritedAdmin}</p>}<ul className="permission-list">{m.permissions.map((permission) => <li key={permission}>{permission}</li>)}</ul></section>

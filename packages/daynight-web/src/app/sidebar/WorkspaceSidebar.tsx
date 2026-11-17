@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from "react";
 import { tabbable } from "tabbable";
 import { useI18n } from "../../i18n/LocaleProvider";
@@ -107,7 +108,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, route, team, w
     {active && <button className="sidebar-backdrop" type="button" tabIndex={-1} aria-label={m.sidebar.close} onClick={closeDrawer} />}
     <aside ref={sidebar} id="workspace-sidebar" className={`sidebar${active ? " sidebar-drawer-open" : ""}`} aria-label={app.workspaceNavigation} role={active ? "dialog" : undefined} aria-modal={active ? true : undefined} tabIndex={-1}>
       <div className="sidebar-main">
-        <a className="brand" href="/projects" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><span className="brand-mark" aria-hidden="true" /><span className="brand-name">daynight</span></a>
+        <a className="brand" href="/projects" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><BrandMark className="brand-mark" surface="dark" /><span className="brand-name">daynight</span></a>
         <WorkspaceNavigation route={route} team={team} expanded={expanded} webhooksAvailable={webhooksAvailable} follow={follow} onNavigate={onNavigate} {...(onCreateTeam ? { onCreateTeam: () => { if (narrow) toggle.current?.focus(); setDrawer(null); onCreateTeam(); } } : {})} />
       </div>
       <div className="sidebar-bottom">

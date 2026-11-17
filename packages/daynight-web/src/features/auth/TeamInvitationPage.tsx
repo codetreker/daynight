@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useEffect, useRef, useState } from "react";
 import { acceptTeamInvitation, inspectTeamInvitation } from "../../api/auth";
 import type { CurrentUser, TeamInvitationAcceptance, TeamInvitationInspection } from "../../api/auth-types";
@@ -70,7 +71,7 @@ export const TeamInvitationPage = ({ invitation, lifetime, user, onAccepted, onO
     }).finally(() => { if (active.current === controller) active.current = null; if (!signal.aborted) setBusy(false); });
   };
   const isUnavailable = state.kind === "error" && (state.error === null || unavailable(state.error));
-  return <div className="invite-page"><a className="brand" href="/projects" onClick={(event) => { event.preventDefault(); if (!busy) onCancel(); }} aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a><main className="invite-card"><LanguageSelector />
+  return <div className="invite-page"><a className="brand" href="/projects" onClick={(event) => { event.preventDefault(); if (!busy) onCancel(); }} aria-label={app.projectHome}><BrandMark className="brand-mark" surface="light" />daynight</a><main className="invite-card"><LanguageSelector />
     {state.kind === "loading" && <div role="status"><span className="spinner" aria-hidden="true" /><h1>{team.loading}</h1></div>}
     {state.kind === "error" && <><h1>{isUnavailable ? m.unavailable : m.loadError}</h1><p className="subtitle">{isUnavailable ? team.unavailableDetail : m.loadErrorDetail}</p>{!isUnavailable && <button className="button primary" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button>}<div className="invite-footer"><button className="button" type="button" onClick={onCancel}>{m.returnToProjects}</button></div></>}
     {state.kind === "success" && <><h1>{state.receipt.joined ? team.joined : team.alreadyJoined}</h1><section className="invited-project"><h2>{state.receipt.team.name}</h2><p>{team.teamId}: {state.receipt.team.id}</p><p>{team.currentRole}: {roles[state.receipt.membership.role]}</p><p>{user.name ?? shell.currentAccount} · {user.email ?? m.noEmail}</p></section><div className="invite-footer"><a className="button primary" href={`/teams/${state.receipt.team.id}`} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenTeam(state.receipt.team.id); }}>{team.open}</a></div></>}
