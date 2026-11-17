@@ -1966,6 +1966,9 @@ When the URL is unset, the runner owns a fresh PostgreSQL 18.6 container. An
 explicit `DAYNIGHT_TEST_DATABASE_URL` must refer to the invoking test
 environment's isolated instance, such as its fresh CI service or local validation
 container. It must not select a development, shared or production database.
+Every run also owns a fresh Redis container for monitoring, bound to a random
+loopback port. The runner supplies its URL to the Server configuration; it does
+not use an external or shared Redis instance.
 
 `scripts/integration.sh` builds the production `cmd/daynight-server` and the
 CLI image validator from the current source, requiring Node 24 and the installed
@@ -1983,6 +1986,8 @@ resources. Task groups run sequentially with separate projects: lifecycle,
 search pagination and dependency graph, property and Sync readback, Step
 operations, Thread replies, Attachment bytes, personal Worker prompt
 synchronization, and Worker claim/Agent discussion.
+The Worker readonly flow registers a Worker and reads an absent monitoring
+snapshot through the real Redis-backed Server.
 
 The application flows obtain a real S2S grant for the existing native user and
 use API Bearer requests for profile, Team/member, Project, Goal/Task, Step,
@@ -2022,8 +2027,8 @@ or Web test suites and contains no business boundary or fault matrices.
 Startup, build and test execution have deadlines. Owned process cleanup stops
 the Server before releasing its schema and storage and confirms authentication
 process termination. The shell EXIT handler uses `integration-runtime.mts` to
-reconcile owned process identities and the run's resources, including its local
-database container. Failed termination or cleanup remains a failure and retains
+reconcile owned process identities and the run's resources, including its Redis
+and any local database container. Failed termination or cleanup remains a failure and retains
 the affected run directory; successful cleanup cannot erase a test failure.
 
 After interruption, run the independent reconciliation command from this module:
