@@ -60,6 +60,33 @@ for (const width of [1440, 800, 390, 320]) test(`production project navigation, 
   expect(state.unexpected).toEqual([]);
 });
 
+for (const width of [1440, 800, 390, 320]) test(`connection label follows language and fits ${width}px`, async ({ page }) => {
+  const state = await installPrList(page);
+  await page.setViewportSize({ width, height: 900 });
+  await open(page);
+  const label = page.locator('.pr-connected'), heading = page.locator('.pr-title-line h2'), refresh = page.locator('.pr-heading button');
+  for (const [locale, text, title] of [['en', 'Connected', 'Pull requests'], ['zh-CN', '已连接', 'PR 列表'], ['en', 'Connected', 'Pull requests']] as const) {
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await expect(label).toHaveText(text);
+    await expect(heading).toHaveText(title);
+    await expect(page.locator('.pr-sync-status .pr-connected')).toHaveCount(0);
+    const geometry = await label.evaluate(element => {
+      const label = element.getBoundingClientRect(), title = element.parentElement!.querySelector('h2')!.getBoundingClientRect();
+      const button = element.closest('.pr-heading')!.querySelector('button')!.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return { label: { left: label.left, right: label.right, top: label.top, bottom: label.bottom }, title: { left: title.left, right: title.right, top: title.top, bottom: title.bottom }, button: { left: button.left, right: button.right, top: button.top, bottom: button.bottom }, color: style.color, overflow: element.scrollWidth > element.clientWidth };
+    });
+    expect(geometry.color).toBe('rgb(37, 106, 72)');
+    expect(geometry.overflow).toBe(false);
+    for (const other of [geometry.title, geometry.button]) {
+      expect(geometry.label.right <= other.left || geometry.label.left >= other.right || geometry.label.bottom <= other.top || geometry.label.top >= other.bottom).toBe(true);
+    }
+    await expect(refresh).toBeVisible();
+    await assertFits(page);
+  }
+  expect(state.unexpected).toEqual([]);
+});
+
 test('all 48 summaries are reachable with server cursors, filters and page state survive section history', async ({ page }) => {
   const state = await installPrList(page);
   await open(page);
@@ -141,7 +168,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) 
     const refresh = heading.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' });
     await expect(refresh).toBeVisible();
     await expect(heading.locator('p')).toHaveCount(0);
-    const titleBox = await heading.locator('h2').boundingBox(), refreshBox = await refresh.boundingBox();
+    const titleBox = await heading.locator('.pr-title-line').boundingBox(), refreshBox = await refresh.boundingBox();
     expect(Math.abs(titleBox!.y + titleBox!.height / 2 - refreshBox!.y - refreshBox!.height / 2)).toBeLessThanOrEqual(1);
     const notice = page.locator('.pr-sync-status .pr-status-note');
     await expect(notice).toHaveCount(1);
@@ -170,6 +197,13 @@ test('a background sync status change preserves filtering, pagination and the op
   await expect(page.locator('.pr-row')).toHaveCount(6);
   await panel.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  const language = page.getByRole('combobox', { name: '语言 / Language' });
+  await language.selectOption('zh-CN');
+  await expect(panel.locator('.pr-connected')).toHaveText('已连接');
+  await expect(filter).toHaveValue('all'); await expect(search).toHaveValue('Pull request');
+  await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  await language.selectOption('en');
+  await expect(panel.locator('.pr-connected')).toHaveText('Connected');
   await page.locator('.pr-row').first().click();
   const dialog = page.getByRole('dialog'), raw = dialog.getByRole('checkbox', { name: 'Raw Markdown' });
   await raw.check();
@@ -182,6 +216,13 @@ test('a background sync status change preserves filtering, pagination and the op
   await page.clock.fastForward(15_100);
   await expect.poll(() => state.statusReads).toBeGreaterThan(reads);
   await expect(panel.locator('.pr-sync-status .pr-status-note')).toContainText('Sync is off.');
+  await expect(panel.locator('.pr-connected')).toHaveText('Connected');
+  state.scene = 'disconnected'; state.revision++;
+  await page.clock.fastForward(15_100);
+  await expect(panel.locator('.pr-connected')).toHaveCount(0);
+  state.scene = 'populated'; state.revision++;
+  await page.clock.fastForward(15_100);
+  await expect(panel.locator('.pr-connected')).toHaveText('Connected');
   await expect(dialog).toHaveAttribute('data-reading-witness', 'retained');
   await expect(raw).toBeChecked(); await expect(raw).toBeFocused();
   expect(await body.evaluate(element => element.scrollTop)).toBe(position);
