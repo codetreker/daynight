@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import type { WorkerConfigurationResource } from '../../api/worker-configuration';
-import type { Tool, ToolContext, ToolPathActual, ToolPathChoice, ToolPathObservation, ToolPathTelemetry } from '../../api/worker-tool-paths';
+import type { Tool, ToolPathActual, ToolPathChoice, ToolPathObservation, ToolPathTelemetry } from '../../api/worker-tool-paths';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { CopyButton } from '../../ui/copy-button/CopyButton';
 import { WorkerTimestamp } from './presentation';
-import { toolPathApplicationState, toolPathContexts, type ToolPathApplicationState } from './tool-path-presentation';
+import { toolPathApplicationState, type ToolPathApplicationState } from './tool-path-presentation';
 import './tool-paths.css';
 
-type Props = { readonly tool: Tool; readonly telemetry?: ToolPathTelemetry; readonly desired?: WorkerConfigurationResource['desired']; readonly online: boolean | null; readonly primaryContext?: ToolContext };
+type Props = { readonly tool: Exclude<Tool, 'herdr'>; readonly telemetry?: ToolPathTelemetry; readonly desired?: WorkerConfigurationResource['desired']; readonly online: boolean | null };
 
 const PathValue = ({ label, value }: { readonly label: string; readonly value: string }) => {
   const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
@@ -43,14 +43,14 @@ const StateBadge = ({ state }: { readonly state: ToolPathApplicationState }) => 
   return <span className={`worker-tool-state ${state}`}>{m.state[state]}</span>;
 };
 
-const ContextDetails = ({ tool, context, entry, desired, online }: { readonly tool: Tool; readonly context: ToolContext; readonly entry: ToolPathObservation | undefined; readonly desired: Props['desired']; readonly online: boolean | null }) => {
+const ContextDetails = ({ tool, entry, desired, online }: { readonly tool: Exclude<Tool, 'herdr'>; readonly entry: ToolPathObservation | undefined; readonly desired: Props['desired']; readonly online: boolean | null }) => {
   const { messages: { workers: { configuration: { toolPaths: m } } }, format } = useI18n();
   const state = toolPathApplicationState(entry, desired, online);
   const currentTarget = desired?.value.toolPaths?.[tool];
   const target = currentTarget === undefined ? entry?.target : currentTarget;
   const count = (value: number | null) => value === null ? m.unknownCount : format.number(value);
-  return <section className="worker-tool-context" data-context={context} aria-label={`${tool === 'codex' ? 'Codex' : tool === 'copilot' ? 'Copilot' : 'Herdr'} ${context === 'web' ? 'Web' : 'Herdr'}`}>
-    <div className="worker-tool-context-heading"><span>{context === 'web' ? 'Web' : 'Herdr'}</span><StateBadge state={state} /></div>
+  return <section className="worker-tool-context" data-context="web" aria-label={tool === 'codex' ? 'Codex' : 'Copilot'}>
+    <div className="worker-tool-context-heading"><StateBadge state={state} /></div>
     {target !== undefined && <ChoiceValue choice={target} label={currentTarget === undefined ? m.reportedTarget : m.target} />}
     {entry !== undefined && <>
       <p className="worker-tool-source">{m.configurationSource[entry.configurationSource]}</p>
@@ -71,16 +71,12 @@ const ContextDetails = ({ tool, context, entry, desired, online }: { readonly to
   </section>;
 };
 
-export const WorkerToolPathDetails = ({ tool, telemetry, desired, online, primaryContext }: Props) => {
+export const WorkerToolPathDetails = ({ tool, telemetry, desired, online }: Props) => {
   const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
-  const contexts = toolPathContexts(tool, primaryContext);
+  const entry = telemetry?.entries.find(item => item.tool === tool && item.context === 'web');
   return <div className="worker-tool-path-details" data-tool={tool}>
     {telemetry === undefined ? <p className="worker-tool-empty">{m.unsupportedWorker}</p> : <>
-      {contexts.map((context, index) => {
-        const entry = telemetry.entries.find(item => item.tool === tool && item.context === context);
-        const content = <ContextDetails tool={tool} context={context} entry={entry} desired={desired} online={online} />;
-        return index === 0 ? <div key={context}>{content}</div> : <details className="worker-tool-other-context" key={context}><summary>{m.otherContext}: {context === 'web' ? 'Web' : 'Herdr'}</summary>{content}</details>;
-      })}
+      <ContextDetails tool={tool} entry={entry} desired={desired} online={online} />
       <p className="worker-tool-time">{m.reportedAt}: <WorkerTimestamp value={telemetry.observedAt} /></p>
     </>}
   </div>;

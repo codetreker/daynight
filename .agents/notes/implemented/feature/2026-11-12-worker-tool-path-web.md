@@ -40,12 +40,11 @@ separate. Current application requires matching cloud revision and choice,
 verified actual selection and an online observation. Missing or older facts
 remain readable without implying that the new target has applied. Bounded active
 groups expose incomplete inventory independently of target application.
-The software summary omits an unchecked context only when it has no actual,
+The software summary omits an unchecked Web observation only when it has no actual,
 candidate, reason, error or active selections and the zero-count inventory is
-complete and error-free. Other contexts retain their reported state and actual
+complete and error-free. Other Web observations retain their reported state and actual
 version; checking, pending and error remain visible beside an older actual.
-An empty summary uses one tool-level not-checked label. Details still consume
-the complete snapshot, and a missing tool report uses the legacy probe.
+An empty summary uses one tool-level not-checked label. Details select the Web observation from the complete snapshot, and a missing tool report uses the legacy probe. The [native-only presentation decision](../simplification/2026-11-17-worker-native-tool-presentation.md) records the display boundary.
 
 Tool states use the shared semantic palette: successful application, active
 checking, waiting and failure retain distinct labels and readable contrast.

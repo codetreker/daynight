@@ -54,33 +54,30 @@ describe('Worker software summary', () => {
   const row = (tool: string) => document.querySelector(`.worker-software-tool-paths[data-tool="${tool}"]`)!;
   const lines = (tool: string) => Array.from(row(tool).querySelectorAll('.worker-tool-version'), element => element.textContent);
 
-  it('omits empty contexts in either direction, retains both real versions and keeps full details', () => {
-    detailState = shown(withTools([toolPathObservation(), empty('codex', 'herdr'), empty('copilot', 'web'), toolPathObservation('copilot', 'herdr', { actual: toolPathActual('copilot', { version: '2.0' }) }), empty('herdr', 'herdr')]));
-    const view = showDetail();
-    expect(lines('codex')).toEqual(['Web · 1.2.3']); expect(lines('copilot')).toEqual(['Herdr · 2.0']);
-    expect(lines('herdr')).toEqual([]); expect(row('herdr')).toHaveTextContent('Not checked');
+  it('shows only native Web observations and never substitutes legacy versions', () => {
+    detailState = shown(withTools([toolPathObservation(), empty('copilot', 'web'), toolPathObservation('copilot', 'herdr', { actual: toolPathActual('copilot', { version: 'legacy' }) }), toolPathObservation('herdr', 'herdr')]));
+    showDetail();
+    expect(lines('codex')).toEqual(['1.2.3']);
+    expect(row('copilot')).toHaveTextContent('Not checked');
+    expect(document.querySelector('[data-tool="herdr"]')).toBeNull();
     fireEvent.click(within(row('codex') as HTMLElement).getByText('View actual paths'));
-    expect(row('codex').querySelector('[data-context="herdr"]')).not.toBeNull();
-    detailState = shown(withTools([toolPathObservation(), toolPathObservation('codex', 'herdr', { actual: toolPathActual('codex', { version: '2.0' }) })]));
-    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
-    expect(lines('codex')).toEqual(['Web · 1.2.3', 'Herdr · 2.0']);
-    expect(lines('copilot')).toEqual([]); expect(row('copilot')).toHaveTextContent('Not checked');
+    expect(row('codex').querySelector('[data-context="herdr"]')).toBeNull();
+    expect(screen.queryByText('legacy')).toBeNull();
   });
 
-  it.each(['checking', 'pending', 'error'] as const)('shows %s with or without an actual version in both languages', state => {
+  it.each(['checking', 'pending', 'error'] as const)('shows %s beside the actual version in both languages', state => {
     const failure = state === 'error' ? { code: 'not_found' as const, occurredAt: report } : null;
-    detailState = shown(withTools([toolPathObservation('codex', 'web', { state, error: failure }), toolPathObservation('codex', 'herdr', { state, actual: null, error: failure, candidate: toolPathActual('codex', { version: 'candidate' }) })]));
+    detailState = shown(withTools([toolPathObservation('codex', 'web', { state, error: failure })]));
     const view = showDetail();
     const labels = { checking: ['Checking', '正在检查'], pending: ['Awaiting application', '等待应用'], error: ['Application failed', '应用失败'] }[state];
-    expect(lines('codex')).toEqual([`Web · 1.2.3 ${labels[0]}`, `Herdr · ${labels[0]}`]);
-    expect(row('codex').querySelectorAll(`.worker-tool-state.${state}`)).toHaveLength(2);
-    view.setLocale('zh-CN'); expect(lines('codex')).toEqual([`Web · 1.2.3 ${labels[1]}`, `Herdr · ${labels[1]}`]);
+    expect(lines('codex')).toEqual([`1.2.3 ${labels[0]}`]);
+    view.setLocale('zh-CN'); expect(lines('codex')).toEqual([`1.2.3 ${labels[1]}`]);
   });
 
-  it('retains uncertain inventory and active-only contexts without claiming an actual version', () => {
+  it('retains uncertain native inventory without claiming an actual version', () => {
     const active = toolPathActual('codex', { version: 'active-only' });
-    detailState = shown(withTools([empty('codex', 'web'), { ...empty('codex', 'herdr'), activeSelectionCount: null, activeSelectionsComplete: false, activeObservationError: 'inventory_unavailable', activeSelections: [{ actual: active, executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] }]));
-    showDetail(); expect(lines('codex')).toEqual(['Herdr · Not checked']);
+    detailState = shown(withTools([{ ...empty('codex', 'web'), activeSelectionCount: null, activeSelectionsComplete: false, activeObservationError: 'inventory_unavailable', activeSelections: [{ actual: active, executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] }]));
+    showDetail(); expect(lines('codex')).toEqual(['Not checked']);
     fireEvent.click(within(row('codex') as HTMLElement).getByText('View actual paths'));
     expect(row('codex')).toHaveTextContent('active-only'); expect(row('codex')).toHaveTextContent('inventory');
   });
@@ -214,7 +211,7 @@ describe('Worker detail presentation', () => {
   it('shows real resource scope, native versions, source times and current task anchors', () => {
     showDetail(); expect(screen.getByRole('heading', { name: 'worker-1' })).toBeInTheDocument();
     expect(screen.getByText('/srv/workspaces/runtime')).toBeInTheDocument(); expect(screen.getAllByText(/32 logical processors/)).toHaveLength(2);
-    expect(screen.getByText('#1 SMP PREEMPT')).toBeInTheDocument(); expect(screen.getByText('x86_64')).toBeInTheDocument(); expect(screen.getByText('0.9.9-private')).toBeInTheDocument(); expect(screen.getByText('Not installed')).toBeInTheDocument();
+    expect(screen.getByText('#1 SMP PREEMPT')).toBeInTheDocument(); expect(screen.getByText('x86_64')).toBeInTheDocument(); expect(screen.queryByText('0.9.9-private')).toBeNull(); expect(screen.getByText('Not installed')).toBeInTheDocument();
     expect(screen.getAllByRole('meter')).toHaveLength(3); expect(screen.getByRole('meter', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '34.25');
     expect(screen.getByRole('meter', { name: 'Working directory filesystem' })).toHaveClass('high');
     const link = screen.getByRole('link', { name: 'Build reliable workers' }); expect(link).toHaveAttribute('href', taskDetailUrl(id(2), id(3), { tab: 'overview', path: null }));
@@ -243,7 +240,7 @@ describe('Worker detail presentation', () => {
       cpu: { state: 'error', checkedAt: report, code: 'invalid_sample' }, memory: { state: 'error', checkedAt: report, code: 'permission_denied' }, disk: { state: 'error', checkedAt: report, code: 'timeout' }, os: { state: 'error', checkedAt: report, code: 'io_error' },
       versions: { ...worker.telemetry.versions, herdr: { state: 'not_running', checkedAt: report }, codex: { state: 'error', checkedAt: report, code: 'command_failed' } },
     } });
-    showDetail(); expect(screen.getByText('Not running')).toBeInTheDocument(); expect(screen.getByText('Not installed')).toBeInTheDocument(); expect(screen.getByText('Detection failed')).toBeInTheDocument(); expect(screen.getAllByText('Collection failed')).toHaveLength(6); expect(screen.queryByRole('meter')).toBeNull();
+    showDetail(); expect(screen.getByText('Not installed')).toBeInTheDocument(); expect(screen.getByText('Detection failed')).toBeInTheDocument(); expect(screen.getAllByText('Collection failed')).toHaveLength(6); expect(screen.queryByRole('meter')).toBeNull();
     expect(screen.getByText('The version command failed.')).toBeInTheDocument(); expect(screen.queryByText(/logical processors/)).toBeNull();
   });
 

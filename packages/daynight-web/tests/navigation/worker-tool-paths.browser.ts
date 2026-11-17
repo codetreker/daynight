@@ -136,34 +136,6 @@ test('errors retain the old actual record without combining the new target and o
   await expect(actual).toContainText('0.166.0'); await expect(actual).toContainText('/opt/installed/bin/codex'); await expect(actual).not.toContainText('/missing/new-codex');
 });
 
-test('shared Herdr waiting shows the old instance separately from the verified candidate', async ({ page }) => {
-  const choice = pathChoice('/opt/herdr-new/bin/herdr'), old = toolActual('herdr', 'herdr');
-  const candidate = toolActual('herdr', 'herdr', { selection: choice, selectionKey: '4'.repeat(64), source: 'explicit', entryPath: choice.path, executablePath: choice.path, version: '0.10.0' });
-  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { ...toolPaths, herdr: choice } }) });
-  state.detail = reportedDetail(toolReport([toolObservation('herdr', 'herdr', { target: choice, state: 'pending', reason: 'active_instance', candidate,
-    activeSelectionCount: 1, activeSelections: [{ actual: old, executionCount: 2, instanceCount: 1, unconfirmedCount: 0 }] })]));
-  await openToolConfiguration(page); await expandTools(page);
-  const context = facts(page, 'herdr', 'herdr');
-  await expect(context).toContainText('等待应用'); await expect(context.locator('[data-selection-role="candidate"]')).toContainText('0.10.0');
-  await expect(context.locator('[data-selection-role="active"]')).toContainText('0.9.5');
-  await expect(context.locator('[data-selection-role="active"]')).not.toContainText('/opt/herdr-new');
-});
-
-test('macOS running selections remain distinct and incomplete inventories stay explicit', async ({ page }) => {
-  const current = toolActual('herdr', 'herdr'), older = toolActual('herdr', 'herdr', { selectionKey: '4'.repeat(64), entryPath: '/opt/herdr-old/bin/herdr', executablePath: '/opt/herdr-old/bin/herdr', version: '0.8.0' });
-  const state = await installTools(page), detail = reportedDetail(toolReport([toolObservation('herdr', 'herdr', {
-    activeSelectionCount: 3, activeSelectionsComplete: false, activeSelections: [
-      { actual: current, executionCount: 1, instanceCount: 1, unconfirmedCount: 0 },
-      { actual: older, executionCount: 1, instanceCount: 1, unconfirmedCount: 1 },
-    ],
-  })]));
-  state.detail = { ...detail, worker: { ...detail.worker, platform: 'macos', telemetry: { ...detail.worker.telemetry, platform: 'macos' } } };
-  await openToolConfiguration(page); await expandTools(page);
-  const context = facts(page, 'herdr', 'herdr'), groups = context.locator('[data-selection-role="active"]');
-  await expect(groups).toHaveCount(2); await expect(groups.nth(0)).toContainText('0.9.5'); await expect(groups.nth(1)).toContainText('0.8.0');
-  await expect(context).toContainText('仍有未展示的运行选择'); await expect(context).toContainText('已应用');
-});
-
 test('older report revisions and unchecked contexts cannot make all configuration applied', async ({ page }) => {
   const state = await installTools(page, { resource: observedConfiguration('2') });
   state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web', { targetRevision: '2', state: 'not_checked', actual: null })]));
@@ -172,7 +144,7 @@ test('older report revisions and unchecked contexts cannot make all configuratio
   await expect(page.locator('.configuration-summary')).not.toContainText('已生效');
 });
 
-for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details share reported paths and keep Web and Herdr Copilot versions separate`, async ({ page }) => {
+for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details share reported paths and show only native Copilot observations`, async ({ page }) => {
   const state = await installTools(page, { locale });
   state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web'), toolObservation('copilot', 'herdr', {
     actual: toolActual('copilot', 'herdr', { version: '1.0.099' }),
@@ -180,11 +152,10 @@ for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details 
   await page.goto(`/workers/${targetWorker}`);
   const software = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
   await software.locator('summary').filter({ hasText: locale === 'zh-CN' ? '查看实际路径' : 'View actual paths' }).click();
-  const web = software.locator('[data-context="web"]'), herdr = software.locator('[data-context="herdr"]');
+  const web = software.locator('[data-context="web"]');
   await expect(web).toContainText('1.0.105'); await expect(web).toContainText('/opt/daynight/runtime/copilot');
-  await software.locator('summary').filter({ hasText: locale === 'zh-CN' ? '其他执行模式' : 'Other execution mode' }).click();
-  await expect(herdr).toContainText('1.0.099'); await expect(herdr).toContainText('/opt/installed/bin/copilot');
-  await expect(herdr).not.toContainText('/opt/daynight/runtime');
+  await expect(software).not.toContainText('1.0.099');
+  await expect(software.locator('[data-context="herdr"]')).toHaveCount(0);
   await page.locator('[data-worker-tab="configuration"]:visible').click(); await configuration(page).locator('.configuration-tool-paths > summary').click();
   await expect(field(page, 'copilot')).toHaveAttribute('placeholder', locale === 'zh-CN' ? '自动' : 'Automatic');
   await expect(facts(page, 'copilot')).toContainText('1.0.105');
@@ -210,30 +181,27 @@ for (const width of [1440, 390, 320]) test(`software summary and full details su
   await page.goto(`/workers/${targetWorker}`);
   const codex = page.locator('.worker-software-tool-paths[data-tool="codex"]');
   const copilot = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
-  await expect(codex.locator('.worker-tool-version')).toHaveText(['Web · 0.166.0']);
-  await expect(copilot.locator('.worker-tool-version')).toHaveText(['Web · 1.0.105']);
-  await expect(page.locator('.worker-software-tool-paths[data-tool="herdr"]')).toContainText('等待检查');
+  await expect(codex.locator('.worker-tool-version')).toHaveText(['0.166.0']);
+  await expect(copilot.locator('.worker-tool-version')).toHaveText(['1.0.105']);
+  await expect(page.locator('.worker-software-tool-paths[data-tool="herdr"]')).toHaveCount(0);
   const details = codex.locator('.worker-tool-software-details'), summary = details.locator(':scope > summary');
   await summary.focus(); await page.keyboard.press('Enter'); await expect(details).toHaveAttribute('open', '');
-  const other = codex.locator('.worker-tool-other-context > summary');
-  await other.focus(); await page.keyboard.press('Enter'); await expect(other.locator('..')).toHaveAttribute('open', '');
-  await expect(codex.locator('[data-context="herdr"]')).toContainText('近期状态未确认');
+  await expect(codex.locator('[data-context="herdr"]')).toHaveCount(0);
   const path = codex.locator('[data-context="web"] [data-selection-role="actual"] .worker-tool-path-value').first();
   await path.locator(':scope > summary').click(); await expect(path).toContainText(longPath);
-  await other.focus();
-  const anchorTop = await other.evaluate(element => element.getBoundingClientRect().top);
+  const focus = path.locator(':scope > summary'); await focus.focus();
+  const anchorTop = await focus.evaluate(element => element.getBoundingClientRect().top);
   const gate = deferredRead(); state.workerGate = gate;
   const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.request().method() === 'GET');
   await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
   await gate.observed;
-  try { await expect(other).toBeFocused(); await expect(details).toHaveAttribute('open', ''); await noOverflow(page); }
+  try { await expect(focus).toBeFocused(); await expect(details).toHaveAttribute('open', ''); await noOverflow(page); }
   finally { gate.release(); state.workerGate = null; await response; }
-  await expect(other).toBeFocused(); await expect(path).toHaveAttribute('open', '');
-  expect(Math.abs(await other.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
+  await expect(focus).toBeFocused(); await expect(path).toHaveAttribute('open', '');
+  expect(Math.abs(await focus.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
   await page.locator('.locale-control select').selectOption('en');
   await expect(details).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', '');
-  await expect(codex.locator('summary').filter({ hasText: 'Other execution mode' })).toBeFocused();
-  expect(Math.abs(await other.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
+  await expect(focus).toBeFocused();
   await noOverflow(page);
   await info.attach('software-summary', { body: JSON.stringify({ width, codex: await codex.locator('.worker-tool-version').allTextContents(), copilot: await copilot.locator('.worker-tool-version').allTextContents(), scrollWidth: await page.evaluate(() => document.documentElement.scrollWidth) }), contentType: 'application/json' });
 });
@@ -247,7 +215,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const state = await installTools(page, { locale });
     state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { actual }), toolObservation('copilot', 'web'), toolObservation('herdr', 'herdr')]));
     await page.goto(`/workers/${targetWorker}`);
-    for (const tool of ['codex', 'copilot', 'herdr']) {
+    for (const tool of ['codex', 'copilot']) {
       const row = page.locator(`.worker-software-tool-paths[data-tool="${tool}"]`);
       const details = row.locator('.worker-tool-software-details');
       await details.locator(':scope > summary').focus(); await page.keyboard.press('Enter');
@@ -305,8 +273,6 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     const state = await installTools(page, { locale: sample.locale }); await page.goto(`/workers/${targetWorker}`);
     const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
     const expanded = row.locator('.worker-tool-software-details'); await expanded.locator(':scope > summary').click();
-    const other = row.locator('.worker-tool-other-context');
-    await other.locator(':scope > summary').focus(); await page.keyboard.press('Enter');
     const path = row.locator('[data-context="web"] [data-selection-role="actual"] .worker-tool-path-value').first();
     const focus = path.locator(':scope > summary'); await focus.click(); await focus.focus();
     const selected = await path.locator('code').evaluate(element => {
@@ -316,7 +282,7 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     });
     await row.evaluate(element => {
       const owner = window as unknown as { toolSoftwareNodes: Element[] };
-      owner.toolSoftwareNodes = [element, element.closest('.worker-panel')!, element.querySelector('.worker-tool-software-details')!, element.querySelector('.worker-tool-path-value')!, element.querySelector('.worker-tool-other-context')!];
+      owner.toolSoftwareNodes = [element, element.closest('.worker-panel')!, element.querySelector('.worker-tool-software-details')!, element.querySelector('.worker-tool-path-value')!];
     });
     const measure = () => row.evaluate(element => {
       const software = element.closest('.worker-panel')!.getBoundingClientRect();
@@ -326,11 +292,11 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     const before = await measure(), gate = deferredRead(); state.workerGate = gate;
     const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.request().method() === 'GET');
     const check = async () => {
-      await expect(focus).toBeFocused(); await expect(expanded).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', ''); await expect(other).toHaveAttribute('open', '');
+      await expect(focus).toBeFocused(); await expect(expanded).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', '');
       expect(await page.evaluate(() => window.getSelection()!.toString())).toBe(selected);
       expect(await row.evaluate(element => {
         const nodes = (window as unknown as { toolSoftwareNodes: Element[] }).toolSoftwareNodes;
-        return [element, element.closest('.worker-panel'), element.querySelector('.worker-tool-software-details'), element.querySelector('.worker-tool-path-value'), element.querySelector('.worker-tool-other-context')].every((node, index) => node === nodes[index]);
+        return [element, element.closest('.worker-panel'), element.querySelector('.worker-tool-software-details'), element.querySelector('.worker-tool-path-value')].every((node, index) => node === nodes[index]);
       })).toBe(true);
       const current = await measure();
       expect(current.softwareHeight).toBeCloseTo(before.softwareHeight, 4);

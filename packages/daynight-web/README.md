@@ -589,8 +589,7 @@ of the startup working directory's filesystem. Capacity readings use localized
 IEC units while the API retains exact byte values. The directory is explicit; there
 is no inferred physical core count or fabricated device label. Zero capacity is
 valid data and does not produce a division-based meter. Software rows distinguish
-an installed version, unavailable detection, Codex/Copilot not installed and
-private Herdr not running. `checkedAt`, `sampledAt` and server `lastReportedAt`
+an installed version, unavailable detection and Codex/Copilot not installed. `checkedAt`, `sampledAt` and server `lastReportedAt`
 retain their different meanings. Version text is displayed without adding a
 minimum-version or semantic-version check.
 
