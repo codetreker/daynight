@@ -10,14 +10,14 @@ change capable of rejecting persisted application, provenance and removal facts.
 
 ## Decision
 
-The storage decoder owns the deployed schemas 1–8, including their mode and
+The storage decoder owns the deployed schemas 1–10, including their mode and
 three-tool fields, raw source projection, references and validation. It does not
 import active network configuration types or parsers. The outer cache owner
 converts newly recognized sudo and archive targets into application facts using
 the existing state transition, after validating the historical structure. The
-current schema 9 writer retains original source strings and converts the
+current schema 10 writer retains original source strings and converts the
 historical ledger as described by the
-[Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md).
+[Web mode adoption decision](2026-11-18-worker-web-mode-adoption.md).
 
 The [unknown configuration decision](2026-11-17-worker-unknown-configuration-preservation.md)
 retains the source and application responsibilities that this boundary protects.

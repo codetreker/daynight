@@ -32,7 +32,11 @@ try {
   await manager.stop();
   manager = undefined;
   const persisted = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(persisted.schemaVersion, 9);
+  assert.equal(persisted.schemaVersion, 10);
+  const mode = persisted.currentItems.find(item => item.value.key.kind === "agentControlMode");
+  assert.equal(mode.value.state, "applied");
+  assert.equal(mode.value.appliedValue, "web");
+  assert.equal(mode.actualSource.recordId, mode.recordId);
   assert.equal(persisted.authority.desiredJson, desiredJson);
   assert.deepEqual(persisted.remoteObservation, { observationRevision: "1", json: observationJson });
   manager = await createWorkerConfigurationManager(options);
@@ -43,6 +47,7 @@ try {
   const report = manager.report();
   assert.equal(report.observation.desiredRevision, "1");
   assert.ok(report.observation.items.length > 0);
+  assert.ok(report.observation.items.some(item => item.key.kind === "agentControlMode" && item.state === "applied" && item.appliedValue === "web"));
   assert.ok(report.observation.items.every(item => item.key.kind !== "future"));
   const reopened = JSON.parse(await readFile(file, "utf8"));
   assert.equal(reopened.authority.desiredJson, desiredJson);

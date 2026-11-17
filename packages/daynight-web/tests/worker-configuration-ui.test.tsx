@@ -660,6 +660,57 @@ describe('Worker detail configuration integration', () => {
 
 
 describe('Worker control mode form', () => {
+  it('waits for the current observation before reusing an equal adopted mode', async () => {
+    const value = { ...configurationValue(), agentControlMode: 'web' as const };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'web')]);
+    resource = { ...resource, desired: { ...resource.desired!, revision: '2' } };
+    const fetch = install(() => controlModeResponse(resource));
+    mount(); await flush();
+    const feedback = document.getElementById('feedback-agentControlMode')!;
+    expect(feedback).toHaveTextContent('Awaiting application');
+    expect(feedback).toHaveTextContent('Actual: web');
+    expect(document.querySelector('.configuration-summary .status-chip')).toHaveTextContent('Awaiting application');
+    resource = observed('2', value, [...globals(value), item({ kind: 'agentControlMode' }, 'web')], '2');
+    await advance();
+    expect(feedback).toHaveTextContent('Applied');
+    expect(feedback).toHaveTextContent('Target version 1');
+    expect(document.querySelector('.configuration-summary .status-chip')).toHaveTextContent('Applied');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+  });
+
+  it('adopts a missing mode report without saving and preserves an unrelated draft', async () => {
+    const value = { ...configurationValue(), agentControlMode: 'web' as const, toolPaths: automaticToolPaths() };
+    let resource = observed('1', value, globals(value));
+    const fetch = install(() => { const response = controlModeResponse(resource); response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response; });
+    mount({ toolPaths: toolPathTelemetry() }); await flush();
+    const feedback = document.getElementById('feedback-agentControlMode')!;
+    const summary = document.querySelector('.configuration-summary .status-chip')!;
+    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: Not confirmed');
+    expect(summary).toHaveTextContent('Awaiting application');
+    change('Automatic recovery limit', '7');
+    resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'web')], '2');
+    await advance();
+    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: web');
+    expect(summary).toHaveTextContent('Applied');
+    expect(input('Automatic recovery limit')).toHaveValue('7');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    fireEvent.click(within(document.querySelector('.configuration-form') as HTMLElement).getByRole('button', { name: 'Discard changes' }));
+    expect(input('Automatic recovery limit')).toHaveValue('3');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+
+  it.each(['no-report', 'pending', 'old-mode', 'unadopted-target', 'failed'] as const)('does not infer successful web adoption from %s', async scenario => {
+    const value = { ...configurationValue(), agentControlMode: scenario === 'unadopted-target' ? null : 'web' as const };
+    const failure = { code: 'invalid_configuration' as const, category: 'agent' as const, phase: 'validate' as const, occurredAt: WORKER_TIME };
+    const mode: WorkerConfigurationOutcome = { ...item({ kind: 'agentControlMode' }, scenario === 'old-mode' ? 'herdr' : scenario === 'pending' ? null : 'web'),
+      state: scenario === 'pending' ? 'pending' : scenario === 'failed' ? 'error' : 'applied', error: scenario === 'failed' ? failure : null };
+    const resource = scenario === 'no-report' ? configurationResource('1', value) : observed('1', value, [...globals(value), mode]);
+    install(() => controlModeResponse(resource)); mount(); await flush();
+    expect(document.querySelector('#feedback-agentControlMode .status-chip')).toHaveTextContent(scenario === 'failed' ? 'Failed' : 'Awaiting application');
+    expect(document.querySelector('.configuration-summary .status-chip')).toHaveTextContent(scenario === 'failed' ? 'Partially applied' : 'Awaiting application');
+  });
+
   it('saves a mode change, retains the actual old mode and includes mode in overall application', async () => {
     const value = { ...configurationValue(), agentControlMode: 'herdr' as const };
     let resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'herdr')]);

@@ -8,6 +8,7 @@ export const configurationOutcome = (resource: WorkerConfigurationResource, kind
 export const configurationOutcomeState = (resource: WorkerConfigurationResource, item: WorkerConfigurationOutcome | undefined, expected: WorkerConfigurationOutcome['appliedValue']): WorkerConfigurationOutcome['state'] => {
   if (item === undefined) return 'pending';
   if (item.key.kind === 'projectRemoval') return item.state;
+  if (item.key.kind === 'agentControlMode' && resource.desired !== null && resource.observation !== null && BigInt(resource.observation.desiredRevision) < BigInt(resource.desired.revision)) return 'pending';
   if ('projectId' in item.key) {
     const projectId = item.key.projectId;
     const removal = configurationOutcome(resource, 'projectRemoval', projectId);

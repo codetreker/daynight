@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import type { WorkerConfigurationOutcome, WorkerConfigurationResource, WorkerConfigurationValue } from '../../src/api/worker-configuration';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerId } from '../helpers/workers';
 import { configurationResource, configurationValue } from '../helpers/worker-configuration';
+import { automaticToolPaths, toolPathTelemetry } from '../helpers/worker-tool-paths';
 
 const target = workerId(1), personal = { id: workerId(90), kind: 'personal', name: null };
 const item = (kind: WorkerConfigurationOutcome['key']['kind'], appliedValue: WorkerConfigurationOutcome['appliedValue'], revision: string): WorkerConfigurationOutcome => ({ key: { kind } as WorkerConfigurationOutcome['key'], appliedValue, targetRevision: revision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null });
@@ -13,15 +14,18 @@ const observed = (resource: WorkerConfigurationResource, mode: 'herdr' | 'web' |
   const observationRevision = String(BigInt(resource.observationRevision) + 1n);
   return { ...resource, observationRevision, observation: { baseRevision: resource.observationRevision, desiredRevision: revision, reportedAt: WORKER_TIME, items } };
 };
-const install = async (page: Page, supported = true) => {
-  const state = { resource: configurationResource('1', { ...configurationValue(), ...(supported ? { agentControlMode: null } : {}) }), writes: [] as { revision: string; value: WorkerConfigurationValue }[], unknown: false };
+const install = async (page: Page, supported = true, withTools = false) => {
+  const state = { resource: configurationResource('1', { ...configurationValue(), ...(supported ? { agentControlMode: withTools ? 'web' as const : null } : {}), ...(withTools ? { toolPaths: automaticToolPaths() } : {}) }), writes: [] as { revision: string; value: WorkerConfigurationValue }[], unknown: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200, headers: Record<string, string> = {}) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': WORKER_USER, ...headers } });
     if (path === '/api/v1/me') return send({ id: WORKER_USER, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects' || path === '/api/v1/teams') return send({ items: [], nextCursor: null });
-    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
+    if (path === `/api/v1/me/workers/${target}`) {
+      const detail = workerDetail();
+      return send(withTools ? { ...detail, worker: { ...detail.worker, telemetry: { ...detail.worker.telemetry, toolPaths: toolPathTelemetry() } } } : detail, 200, withTools ? { 'Daynight-Worker-Tool-Paths': '1' } : {});
+    }
     if (path === `/api/v1/me/workers/${target}/prompt`) return send({ scope: 'worker', scopeId: target, revision: '0', text: '', updatedAt: null });
     if (path === `/api/v1/me/workers/${target}/configuration`) {
       if (request.method() === 'PUT') {
@@ -29,7 +33,7 @@ const install = async (page: Page, supported = true) => {
         if (state.unknown) return route.abort('failed');
         state.resource = { ...state.resource, desired: { revision: String(BigInt(state.resource.desired!.revision) + 1n), value: request.postDataJSON().value, updatedAt: WORKER_TIME } };
       } else if (state.unknown) return route.abort('failed');
-      return send(state.resource, 200, { 'Daynight-Worker-Configuration': '1', ...(supported ? { 'Daynight-Worker-Control-Mode': '1' } : {}) });
+      return send(state.resource, 200, { 'Daynight-Worker-Configuration': '1', ...(supported ? { 'Daynight-Worker-Control-Mode': '1' } : {}), ...(withTools ? { 'Daynight-Worker-Tool-Paths': '1' } : {}) });
     }
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'control-mode' } }, 404);
   });
@@ -107,3 +111,31 @@ test('unknown mode saves reconcile by reading without a second write', async ({ 
   await expect(page.locator('.config-save-bar').getByRole('status')).toHaveText('没有修改');
   await expect(page.getByRole('combobox', { name: '托管模式' })).toHaveValue('web'); expect(state.writes).toHaveLength(1);
 });
+
+for (const width of [1440, 320]) {
+  test(`${width}px a report confirms web adoption without saving or losing the draft`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    const state = await install(page, true, true);
+    const value = { ...state.resource.desired!.value, agentControlMode: 'web' as const };
+    state.resource = observed(configurationResource('1', value), 'web');
+    state.resource = { ...state.resource, observation: { ...state.resource.observation!, items: state.resource.observation!.items.filter(entry => entry.key.kind !== 'agentControlMode') } };
+    await page.locator('.configuration-toolbar button').click();
+    const feedback = page.locator('#feedback-agentControlMode'), summary = page.locator('.configuration-summary .status-chip');
+    await expect(feedback).toContainText('等待生效'); await expect(feedback).toContainText('实际: 尚未确认');
+    await expect(summary).toHaveText('等待生效');
+    await page.locator('#config-recoveryLimit').fill('7');
+    state.resource = observed(state.resource, 'web');
+    await page.locator('.configuration-toolbar button').click();
+    await expect(feedback).toContainText('已生效'); await expect(feedback).toContainText('实际: web');
+    await expect(summary).toHaveText('已生效');
+    await expect(page.locator('#config-recoveryLimit')).toHaveValue('7');
+    await expect(page.locator('.config-save-bar').getByRole('status')).toHaveText('未保存的修改');
+    expect(state.writes).toHaveLength(0);
+    await page.getByRole('combobox', { name: '托管模式' }).focus();
+    await unobscured(page); await noOverflow(page);
+    await page.screenshot({ path: info.outputPath(`web-adoption-${width}.png`), fullPage: true });
+    await page.locator('.config-save-bar').getByRole('button', { name: '取消修改' }).click();
+    await expect(page.locator('#config-recoveryLimit')).toHaveValue('3');
+    await expect(feedback).toContainText('已生效');
+  });
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { projectWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudItemKey, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
 import type { WorkerReport } from "../../../src/api/types.js";
 import { prepareWorkerReport, WORKER_CONFIGURATION_REPORT_BYTES } from "../../../src/api/worker-report.js";
@@ -10,7 +11,7 @@ const id = (value: number): string => `00000000-0000-4000-8000-${value.toString(
 const native: WorkerCloudNative = { agent: "codex", model: "original", args: [] };
 const desired: WorkerCloudDesired = { revision: "1", updatedAt: "2026-11-12T00:00:00Z", value: { agentControlMode: "web", maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: [] } };
 const tracked = (number: number, key: WorkerCloudItemKey, appliedValue: TrackedConfigurationItem["value"]["appliedValue"] = null): TrackedConfigurationItem => ({ recordId: id(number), origin: { generation: id(8000), targetRevision: "1", source: "application" }, value: { key, targetRevision: "1", appliedValue, state: appliedValue === null ? "pending" : "applied", error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, started: false, actualSource: appliedValue === null ? null : { kind: "observed", recordId: id(number), generation: id(8000), targetRevision: "1" }, blockedByRemovalId: null });
-const cache = (currentItems: readonly TrackedConfigurationItem[]): WorkerConfigurationCache => ({ schemaVersion: 9, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: JSON.stringify(desired), applicationRevision: "1", observationRevision: "0", pendingApplication: false }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems, retainedItems: [] });
+const cache = (currentItems: readonly TrackedConfigurationItem[]): WorkerConfigurationCache => ({ schemaVersion: 10, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: JSON.stringify(desired), applicationRevision: "1", observationRevision: "0", pendingApplication: false }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems, retainedItems: [] });
 const options = { synchronized: true, localTools: { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } }, bootstrap: null };
 
 describe("Worker configuration bounded report projection", () => {
@@ -28,15 +29,22 @@ describe("Worker configuration bounded report projection", () => {
     expect(reopened.currentItems).toHaveLength(1100);
   });
 
-  it("retains sudo and archive slots alongside 1025 ordinary items without inventing a mode item", () => {
+  it.each([false, true])("reserves capability slots alongside 1025 ordinary items with observed mode=%s", observedMode => {
     const removals = Array.from({ length: 1100 }, (_, index) => tracked(index + 1, { kind: "projectRemoval", projectId: id(3000 + index) }));
-    const original = { ...cache([...removals, tracked(2001, { kind: "enableSudoCleanup" }, false), tracked(2002, { kind: "archiveSessions" }, false)]),
+    const original = { ...cache([...removals, ...(observedMode ? [tracked(2000, { kind: "agentControlMode" }, "web")] : []), tracked(2001, { kind: "enableSudoCleanup" }, false), tracked(2002, { kind: "archiveSessions" }, false)]),
       authority: { ...cache([]).authority, desiredJson: JSON.stringify({ ...desired, value: { ...desired.value, enableSudoCleanup: false, archiveSessions: false } }) }, projectionCursor: id(1100) };
     const projected = projectConfigurationReport(original, options);
-    expect(projected.report.observation!.items).toHaveLength(1027);
+    expect(projected.report.observation!.items).toHaveLength(observedMode ? 1028 : 1027);
     expect(projected.report.observation!.items.filter(item => item.key.kind === "projectRemoval")).toHaveLength(1025);
     for (const kind of ["enableSudoCleanup", "archiveSessions"]) expect(projected.report.observation!.items.some(item => item.key.kind === kind)).toBe(true);
-    expect(projected.report.observation!.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+    expect(projected.report.observation!.items.some(item => item.key.kind === "agentControlMode")).toBe(observedMode);
+    const legacy = projectWorkerCloudReport(projected.report, { controlMode: false, toolPaths: false, archiveSessions: true });
+    expect(legacy.observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+    if (observedMode) {
+      const index = projected.report.observation!.items.findIndex(item => item.key.kind === "agentControlMode");
+      expect(projected.recordIds[index]).toBe(id(2000));
+      expect(projected.report.observation!.items[index]).toMatchObject({ state: "applied", appliedValue: "web", targetRevision: "1" });
+    }
     expect(projected.report.controlModeBootstrap).toBe("web");
   });
 

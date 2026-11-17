@@ -46,7 +46,7 @@ path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控�
 
 Worker 对配置 GET、普通报告回执及 prompts 联合回执使用配置专用源文本载体，完整保留 desired 与外层未知元数据，持久目标只保存 desired 原始 JSON。native、projects、nativeOverrides 与 toolPaths 已知对象中的未知兄弟同样保留。未知数字不经普通 number 解码后回写；合法负数、小数、指数和超安全整数保持数据含义。字符串、boolean/null、数组顺序和对象成员均保持，空白排版不构成保证。重复解码键、深度和原有字节边界继续有效。
 
-known 仅从已知路径投影并按当前合同严格验证。目标 JSON 结构合法但已知字段的类型或值不受当前 Worker 支持时，Worker 保留完整原文、真实 revision 和时间，记录不可应用状态，不推断默认值、不生成部分 known 目标，也不将其当作 desired:null 发起首次导入；合法新目标到达后再按正常规则协调。schema 9 持久记录 pendingApplication，以区分尚未协调的目标与已协调的 Web 目标；该标志不表示各项应用成功，恢复时不能把不支持目标之前的账本直接视为新目标已应用。目标和回执外壳、revision、时间、重复解码键、深度、观察版本关系及能力协商边界仍严格校验；违例明确拒绝。未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
+known 仅从已知路径投影并按当前合同严格验证。目标 JSON 结构合法但已知字段的类型或值不受当前 Worker 支持时，Worker 保留完整原文、真实 revision 和时间，记录不可应用状态，不推断默认值、不生成部分 known 目标，也不将其当作 desired:null 发起首次导入；合法新目标到达后再按正常规则协调。schema 10 持久记录 pendingApplication，以区分尚未协调的目标与已协调的 Web 目标；该标志不表示各项应用成功，恢复时不能把不支持目标之前的账本直接视为新目标已应用。目标和回执外壳、revision、时间、重复解码键、深度、观察版本关系及能力协商边界仍严格校验；违例明确拒绝。未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
 
 可应用目标中仅未知字段、更高 revision 或 updatedAt 变化时，Worker 更新完整目标并保持已知应用身份、applicationRevision 与在途工作；已知目标变化才正常应用。报告 observation.desiredRevision 使用最新收到版本，item.targetRevision 仍为真实应用目标版本。同 revision 的 desired 必须在双方可见内容上 JSON 语义相等：对象成员顺序无关，数组顺序有关，等值十进制数字写法相等且不经浮点舍入。既有能力协商可使 agentControlMode 或 toolPaths 仅在一方出现；双方均可见时仍完整比较，包括未知子树。支持归档能力的客户端应对 archiveSessions 使用相同的同版本投影规则。此前收到、因同版本投影被隐藏的字段保留为历史源事实，不作为当前目标或应用证据；同版本再次出现时核对该事实，版本变化或权威重置不得将旧事实当作新目标。其他语义差异为协议错误。投影变化按当前收到的目标重新协调已知项。迟到较低回执不回退目标；回执暴露较低目标或观测计数时 Worker 重新执行认证 GET，以确认并恢复服务状态。缓存格式、应用版本消费者和恢复由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#云端接收与本机提交)拥有。
 
@@ -117,7 +117,7 @@ Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2�
 | projectPreparation | true 表示已准备；没有可确认结果时为 null |
 | projectRemoval | true 表示已移除/停止；没有可确认结果时为 null |
 
-null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false、enableSudoCleanup:false 和 archiveSessions:false 分别表示对应设置已应用关闭，不能解释为缺少结果。服务不会因保存或初始化目标而生成应用观察；不认识这些字段的兼容 Worker 不报告对应项。当前 Web 配置状态机不合成 agentControlMode 应用项；部分 observation 合法，缺失模式项不得解释为已应用。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
+null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false、enableSudoCleanup:false 和 archiveSessions:false 分别表示对应设置已应用关闭，不能解释为缺少结果。服务不会因保存或初始化目标而生成应用观察；不认识这些字段的兼容 Worker 不报告对应项。当前 Web 配置状态机为可应用的 Web 目标建立 agentControlMode 核验项；只有本进程同步并采用 web、成功持久化实际值和来源后，才报告 applied。采用确认不依赖 Herdr、任务领取或原生任务启动。schema 1–9 升级只建立 pending/null 模式项；schema 9 目标未变化时也自动补项，无需用户重新保存。重启、目标变化与权威重置须重新确认当前采用；等值新 revision 可保留原 item.targetRevision，报告 desiredRevision 使用当前目标。部分 observation 合法，缺失模式项、旧目标报告或未同步不能解释为当前已应用。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
 
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 

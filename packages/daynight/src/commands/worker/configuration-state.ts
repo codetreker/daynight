@@ -153,6 +153,7 @@ export const transitionConfigurationDesired = (
       backoffStep: 0, failureId: null, started: false,
       actualSource: reset ? null : previous?.actualSource ?? null, blockedByRemovalId: blocker?.recordId ?? null });
   };
+  add({ kind: "agentControlMode" }, true);
   for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"] as const) add({ kind });
   if (desired.value.archiveSessions !== undefined) add({ kind: "archiveSessions" });
   if (desired.value.enableSudoCleanup !== undefined) add({ kind: "enableSudoCleanup" });
@@ -204,9 +205,10 @@ export const configurationSnapshot = (
   const projects = selectedProjects !== null ? selectedProjects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
     ready: current.get(configurationKey({ kind: "projectPreparation", projectId: project.projectId }))?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !unfinishedRemovals.has(project.projectId) })) : [];
   const globalNative = native({ kind: "native" });
+  const mode = current.get(configurationKey({ kind: "agentControlMode" }));
   return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, desiredRevision: configurationDesiredRevision(cache), selectedProjects, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null, retainedArchiveSessions,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: synchronized ? configurationToolTargets(cache, localTools) : null, effective: {
-      agentControlMode: synchronized && desired?.value.agentControlMode === "web" ? "web" : null,
+      agentControlMode: synchronized && mode?.value.state === "applied" && mode.value.appliedValue === "web" && mode.actualSource?.kind === "observed" ? "web" : null,
       maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,
       archiveSessions: synchronized && desired !== null ? retainedArchiveSessions : null,
       native: globalNative, projects,

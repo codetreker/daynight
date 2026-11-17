@@ -16,7 +16,7 @@ const future = '{"boolean":true,"nil":null,"array":[-1.25,1e10000000000000000000
 const desired = (revision: string, extra = future) => receiveWorkerDesired(`{"revision":"${revision}","updatedAt":"2026-11-17T00:00:00Z","value":{"agentControlMode":"web","maxConcurrent":2,"pollIntervalMs":1200,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[],"future":${extra}},"projects":[{"projectId":"${projectId}","nativeOverrides":{"future":${extra}},"future":${extra}}],"toolPaths":{"codex":{"kind":"auto","future":${extra}},"copilot":{"kind":"auto"},"herdr":{"kind":"auto"},"future":${extra}},"future":${extra}},"future":${extra}}`);
 const legacyCheckpoint = (cache: WorkerConfigurationCache) => {
   const recordId = "99999999-9999-4999-8999-999999999999", revision = cache.authority.applicationRevision!;
-  const items = (entries: WorkerConfigurationCache["currentItems"]) => entries.map(item => ({ ...item, nativeMode: (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && item.value.appliedValue !== null ? "web" : null }));
+  const items = (entries: WorkerConfigurationCache["currentItems"]) => entries.filter(item => item.value.key.kind !== "agentControlMode").map(item => ({ ...item, nativeMode: (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && item.value.appliedValue !== null ? "web" : null }));
   const mode = { recordId, origin: { generation: cache.authority.generation, targetRevision: revision, source: "application" },
     value: { key: { kind: "agentControlMode" }, targetRevision: revision, appliedValue: "web", state: "applied", error: null, lastFailure: null, nextAttemptAt: null },
     backoffStep: 0, failureId: null, started: false, nativeMode: null,
@@ -112,7 +112,7 @@ describe("Worker future configuration persistence", () => {
     expect(second.manager.readCleanupPolicy()).toBeNull();
     expect(second.manager.current().retainedArchiveSessions).toBe(false);
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(9);
+    expect(migrated.schemaVersion).toBe(10);
     expect(migrated.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")?.value).toMatchObject({ state: "pending", appliedValue: null });
     await second.manager.receive(target, "0"); await second.manager.settle();
     expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "1" });
@@ -128,14 +128,15 @@ describe("Worker future configuration persistence", () => {
     await writeFile(first.file, JSON.stringify(source));
     const second = await fixture({ file: first.file });
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(9);
+    expect(migrated.schemaVersion).toBe(10);
     expect(migrated.authority.applicationRevision).toBe("2");
     expect(migrated.authority.generation).not.toBe(old.authority.generation);
-    expect(migrated.retainedItems).toEqual(expect.arrayContaining([...old.currentItems]));
+    expect(migrated.retainedItems).toEqual(expect.arrayContaining(old.currentItems.filter(item => item.value.key.kind !== "agentControlMode")));
+    expect(migrated.currentItems.find(item => item.value.key.kind === "agentControlMode")).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
     const sudo = migrated.currentItems.find(item => item.value.key.kind === "enableSudoCleanup");
     expect(sudo?.value).toMatchObject({ state: "pending", appliedValue: null, targetRevision: "2" });
     expect(second.manager.readCleanupPolicy()).toBeNull();
-    for (const original of old.currentItems.filter(item => item.value.appliedValue !== null)) {
+    for (const original of old.currentItems.filter(item => item.value.key.kind !== "agentControlMode" && item.value.appliedValue !== null)) {
       const current = migrated.currentItems.find(item => JSON.stringify(item.value.key) === JSON.stringify(original.value.key));
       expect(current?.value.appliedValue).toEqual(original.value.appliedValue);
       expect(current?.actualSource).toEqual(original.actualSource);
