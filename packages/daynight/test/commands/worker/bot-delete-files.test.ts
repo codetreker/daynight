@@ -9,7 +9,7 @@ import { captureBotDeletionFiles, removeBotDeletionFile, type BotDeletionTarget 
 import { controllerExecutionDirectory, controllerTicketPath, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import type { BotExecution } from "../../../src/commands/worker/bots/execution-store.js";
-import { removeHerdrSourceDirectory } from "../../../src/commands/worker/resource-disposal.js";
+import { removeOwnedSourceDirectory } from "../../../src/commands/worker/owned-source-directory.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
 
 vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>() }));
@@ -323,7 +323,7 @@ describe("Bot private file deletion", () => {
 
   it("requires the captured inode inside the shared restricted directory remover", async () => {
     const f = await fixture();
-    await expect(removeHerdrSourceDirectory(path.dirname(f.directory), f.directory, undefined, { rootIdentity: await metadata(path.dirname(f.directory)), sourceIdentity: "0:0" })).rejects.toThrow(/identity/);
+    await expect(removeOwnedSourceDirectory(path.dirname(f.directory), f.directory, undefined, { rootIdentity: await metadata(path.dirname(f.directory)), sourceIdentity: "0:0" })).rejects.toThrow(/identity/);
     expect(await readFile(path.join(f.directory, "journal.sqlite"), "utf8")).toBe("private");
   });
 
