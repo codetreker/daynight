@@ -10,7 +10,7 @@ import { configurationDraftsEqual, draftFromValue, mergeConfigurationResources, 
 
 export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
 export type ConfigurationDraftUpdate = ConfigurationDraft | ((draft: ConfigurationDraft) => ConfigurationDraft);
-type Submission = { readonly value: WorkerConfigurationValue; readonly source: ConfigurationSubmission; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly archiveSessionsSupported: boolean; readonly archiveSessionsChanged: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
+type Submission = { readonly value: WorkerConfigurationValue; readonly source: ConfigurationSubmission; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly archiveSessionsSupported: boolean; readonly archiveSessionsChanged: boolean; readonly sudoCleanupChanged: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
 type State = {
   readonly scope: TaskCacheScope; readonly workerId: string; readonly resource: WorkerConfigurationResource | null;
   readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null; readonly baseline: ConfigurationBaseline | null;
@@ -28,7 +28,7 @@ const submittedBaseline = (state: State, submission: Submission): ConfigurationD
   const { toolPaths: _tools, archiveSessions: _archive, ...draft } = submission.draft;
   const toolPaths = submission.toolPathsSupported ? submission.draft.toolPaths : state.baselineDraft?.toolPaths;
   const archive = submission.archiveSessionsSupported ? submission.value.archiveSessions : state.baselineDraft?.archiveSessions;
-  return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }), ...(archive === undefined ? {} : { archiveSessions: archive }) };
+  return { ...draft, enableSudoCleanup: submission.value.enableSudoCleanup, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }), ...(archive === undefined ? {} : { archiveSessions: archive }) };
 };
 const confirmedDrafts = (state: State, submission: Submission, receipt: ConfigurationBaseline | null, observed: ConfigurationBaseline | null) => {
   const baseline = receipt === null ? null : enrichConfigurationBaseline(receipt, observed);
@@ -275,10 +275,12 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       const archiveSessionsSupported = old.resource.archiveSessionsSupported === true && old.baseline.known.archiveSessions !== undefined;
       const archiveSessionsEditable = archiveSessionsSupported && old.resource.observation?.items.some(item => item.key.kind === 'archiveSessions') === true;
       const archiveDraft = archiveSessionsEditable || old.baseline.known.archiveSessions === undefined ? old.draft : { ...old.draft, archiveSessions: old.baseline.known.archiveSessions };
-      const parsed = parseConfigurationDraft(archiveDraft, controlModeSupported, { toolPathsSupported, archiveSessionsSupported, ...(toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
-      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported, toolPathsSupported, archiveSessionsEditable)) return;
-      const submitted: Submission = { value: parsed.value, source: mergeConfigurationDraft(old.baseline, parsed.value), revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, archiveSessionsSupported, archiveSessionsChanged: archiveSessionsEditable && old.draft.archiveSessions !== old.baselineDraft?.archiveSessions, draftRevision, dispatched: false, receipt: null, rejection: null };
-      const toolsAdmitted = () => (!submitted.toolPathsSupported || toolAccess.current.editable && currentState().resource?.toolPathsSupported === true) && (!submitted.archiveSessionsSupported || currentState().resource?.archiveSessionsSupported === true) && (!submitted.archiveSessionsChanged || currentState().resource?.observation?.items.some(item => item.key.kind === 'archiveSessions') === true);
+      const sudoEditable = old.baseline.known.enableSudoCleanup !== undefined && (toolAccess.current.platform === 'linux' || toolAccess.current.platform === 'macos');
+      const saveDraft = sudoEditable ? archiveDraft : { ...archiveDraft, enableSudoCleanup: old.baseline.known.enableSudoCleanup };
+      const parsed = parseConfigurationDraft(saveDraft, controlModeSupported, { toolPathsSupported, archiveSessionsSupported, ...(toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
+      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported, toolPathsSupported, archiveSessionsEditable, sudoEditable)) return;
+      const submitted: Submission = { value: parsed.value, source: mergeConfigurationDraft(old.baseline, parsed.value), revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, archiveSessionsSupported, archiveSessionsChanged: archiveSessionsEditable && old.draft.archiveSessions !== old.baselineDraft?.archiveSessions, sudoCleanupChanged: sudoEditable && old.draft.enableSudoCleanup !== old.baselineDraft?.enableSudoCleanup, draftRevision, dispatched: false, receipt: null, rejection: null };
+      const toolsAdmitted = () => (!submitted.toolPathsSupported || toolAccess.current.editable && currentState().resource?.toolPathsSupported === true) && (!submitted.archiveSessionsSupported || currentState().resource?.archiveSessionsSupported === true) && (!submitted.archiveSessionsChanged || currentState().resource?.observation?.items.some(item => item.key.kind === 'archiveSessions') === true) && (!submitted.sudoCleanupChanged || toolAccess.current.platform === 'linux' || toolAccess.current.platform === 'macos');
       publication?.abort(); publication = null;
       const controller = new AbortController(); write = controller;
       const signal = AbortSignal.any([controller.signal, scope.signal]);
@@ -408,7 +410,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
     dirty, publicationPending: !current.pending && !current.uncertain && current.submission !== null,
-    saveableDirty: !current.baselineInvalid && dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, controlAdmitted, toolsAdmitted && toolPathsEditable, archiveEditable),
+    saveableDirty: !current.baselineInvalid && dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, controlAdmitted, toolsAdmitted && toolPathsEditable, archiveEditable, current.baseline?.known.enableSudoCleanup !== undefined && (platform === 'linux' || platform === 'macos')),
     conflict,
     setDraft, refresh, loadLatest, save, discard: loadLatest, abandon,
   };

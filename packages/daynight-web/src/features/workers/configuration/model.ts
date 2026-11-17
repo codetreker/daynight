@@ -12,6 +12,7 @@ export type ConfigurationDraft = {
   readonly maxConcurrent: string; readonly pollIntervalMs: string; readonly recoveryLimit: string; readonly preferPlatformSpecificTasks: boolean; readonly native: NativeDraft;
   readonly agentControlMode?: WorkerConfigurationValue['agentControlMode'];
   readonly archiveSessions?: boolean;
+  readonly enableSudoCleanup?: boolean | undefined;
   readonly toolPaths?: WorkerCloudToolPaths;
   readonly projects: readonly { readonly projectId: string; readonly native: ProjectNativeDraft }[];
 };
@@ -25,6 +26,7 @@ export const draftFromValue = (value: WorkerConfigurationValue): ConfigurationDr
   maxConcurrent: String(value.maxConcurrent), pollIntervalMs: String(value.pollIntervalMs), recoveryLimit: String(value.recoveryLimit), preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
   ...(value.agentControlMode === undefined ? {} : { agentControlMode: value.agentControlMode }),
   ...(value.archiveSessions === undefined ? {} : { archiveSessions: value.archiveSessions }),
+  ...(value.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: value.enableSudoCleanup }),
   ...(value.toolPaths === undefined ? {} : { toolPaths: structuredClone(value.toolPaths) }),
   native: { agent: value.native.agent, model: value.native.model === null ? '' : value.native.model, args: JSON.stringify(value.native.args) },
   projects: value.projects.map(project => ({ projectId: project.projectId, native: {
@@ -81,16 +83,16 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft, controlModeSu
     return { projectId: project.projectId, nativeOverrides };
   });
   return { value: Object.keys(errors).length === 0 ? parseWorkerConfigurationValue({ maxConcurrent, pollIntervalMs, recoveryLimit, preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks,
-    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), ...(archiveSessionsSupported ? { archiveSessions: draft.archiveSessions } : {}), native, projects }) : null, errors };
+    ...(controlModeSupported ? { agentControlMode: draft.agentControlMode } : {}), ...(toolPathsSupported ? { toolPaths: draft.toolPaths } : {}), ...(archiveSessionsSupported ? { archiveSessions: draft.archiveSessions } : {}), ...(draft.enableSudoCleanup === undefined ? {} : { enableSudoCleanup: draft.enableSudoCleanup }), native, projects }) : null, errors };
 };
-const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode']; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean }>(source: T, includeControlMode: boolean, includeToolPaths: boolean, includeArchiveSessions: boolean) => {
-  const { agentControlMode, toolPaths, archiveSessions, ...rest } = source;
-  return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}), ...(includeArchiveSessions && archiveSessions !== undefined ? { archiveSessions } : {}) };
+const projectedFields = <T extends { readonly agentControlMode?: WorkerConfigurationValue['agentControlMode']; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly enableSudoCleanup?: boolean | undefined }>(source: T, includeControlMode: boolean, includeToolPaths: boolean, includeArchiveSessions: boolean, includeSudoCleanup: boolean) => {
+  const { agentControlMode, toolPaths, archiveSessions, enableSudoCleanup, ...rest } = source;
+  return { ...rest, ...(includeControlMode && agentControlMode !== undefined ? { agentControlMode } : {}), ...(includeToolPaths && toolPaths !== undefined ? { toolPaths } : {}), ...(includeArchiveSessions && archiveSessions !== undefined ? { archiveSessions } : {}), ...(includeSudoCleanup && enableSudoCleanup !== undefined ? { enableSudoCleanup } : {}) };
 };
-export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true): boolean =>
-  JSON.stringify(parseWorkerConfigurationValue(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions))) === JSON.stringify(parseWorkerConfigurationValue(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions)));
-export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true): boolean =>
-  JSON.stringify(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions)) === JSON.stringify(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions));
+export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true): boolean =>
+  JSON.stringify(parseWorkerConfigurationValue(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup))) === JSON.stringify(parseWorkerConfigurationValue(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup)));
+export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft, includeControlMode = true, includeToolPaths = true, includeArchiveSessions = true, includeSudoCleanup = true): boolean =>
+  JSON.stringify(projectedFields(left, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup)) === JSON.stringify(projectedFields(right, includeControlMode, includeToolPaths, includeArchiveSessions, includeSudoCleanup));
 export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
   // Isolate each native tuple so an unrelated invalid field cannot hide its saved state.
   const baseline = { ...draftFromValue(desired), projects: [] };
@@ -102,6 +104,7 @@ export const configurationFieldChanges = (draft: ConfigurationDraft, desired: Wo
     recoveryLimit: errors.recoveryLimit !== undefined || Number(draft.recoveryLimit) !== desired.recoveryLimit,
     preferPlatformSpecificTasks: draft.preferPlatformSpecificTasks !== desired.preferPlatformSpecificTasks,
     archiveSessions: draft.archiveSessions !== desired.archiveSessions,
+    enableSudoCleanup: draft.enableSudoCleanup !== desired.enableSudoCleanup,
     agentControlMode: errors.agentControlMode !== undefined || draft.agentControlMode !== desired.agentControlMode,
     toolPaths: Object.fromEntries(tools.map(tool => [tool, errors[`toolPaths.${tool}`] !== undefined || JSON.stringify(draft.toolPaths?.[tool]) !== JSON.stringify(desired.toolPaths?.[tool])])) as Readonly<Record<Tool, boolean>>,
     native: native === undefined || JSON.stringify(native) !== JSON.stringify(desired.native),

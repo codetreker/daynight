@@ -102,7 +102,7 @@ export const enrichConfigurationBaseline = (baseline: ConfigurationBaseline, obs
 
 export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: WorkerConfigurationValue): ConfigurationSubmission => {
   const root = sourceObject(baseline.valueSource);
-  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions'] as const) setKnown(root, key, known[key]);
+  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup'] as const) setKnown(root, key, known[key]);
   root.set('native', mergeMembers(root.get('native')!, known.native, ['agent', 'model', 'args']));
   const projects = new Map(jsonContainerSources(root.get('projects')!).map(source => [projectId(source), source]));
   root.set('projects', arraySource(known.projects.map(project => {
