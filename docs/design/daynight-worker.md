@@ -153,7 +153,8 @@ configuration.json 使用 schemaVersion=8，保持单个 JSON 对象、原路径
 | --- | --- |
 | configuration-model.ts | 缓存、记录与捕获的完整类型、从原始目标派生的 known 视图及共用值规则 |
 | api/worker-configuration-source.ts | 配置专用源文本载体、已知路径投影、完整资源/回执解析与无损 JSON 语义比较 |
-| configuration-cache.ts | schema 8 严格校验、旧版本显式升级与冻结编码 factory |
+| configuration-storage-{types,wire,source,decoder}.ts | 已部署 schema 1–8 的磁盘结构、来源和严格解码，不依赖活动网络 DTO 或解析器 |
+| configuration-cache.ts | 解码后的旧应用事实转换、冻结与编码 factory |
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
 | configuration-persistence.ts | 初始化读取、串行冻结检查点、存储 readiness、I/O 重试及关闭所有权 |

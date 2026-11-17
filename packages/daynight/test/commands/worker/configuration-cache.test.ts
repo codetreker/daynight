@@ -139,6 +139,29 @@ describe("Worker configuration cache", () => {
     expect(parseConfigurationCache(upgraded, identity)).toEqual({ cache: upgraded, migrated: false });
   });
 
+  it.each([5, 6, 7, 8])("reads historical mode and all three tool choices from schema %i", version => {
+    const original = cache();
+    const historical = { ...desired, value: { ...desired.value, agentControlMode: "herdr", toolPaths: {
+      codex: { kind: "path", path: "/opt/codex" }, copilot: null, herdr: { kind: "auto" },
+    } } };
+    const items = original.currentItems.map(item => item.value.key.kind === "agentControlMode"
+      ? { ...item, value: { ...item.value, appliedValue: "herdr" } }
+      : item.value.key.kind === "native" || item.value.key.kind === "projectNative" ? { ...item, nativeMode: "herdr" } : item);
+    const { remoteObservation: _remote, authority: _authority, ...ledger } = original;
+    const source = version === 5
+      ? { ...ledger, schemaVersion: 5, authority: { generation, desired: historical, observationRevision: "9" }, currentItems: items }
+      : { ...original, schemaVersion: version, authority: { ...original.authority, desiredJson: JSON.stringify(historical) }, currentItems: items };
+    const parsed = parseConfigurationCache(source, identity).cache;
+    expect(JSON.parse(parsed.authority.desiredJson!)).toEqual(historical);
+    expect(parsed.currentItems.find(item => item.value.key.kind === "agentControlMode")?.value.appliedValue).toBe("herdr");
+    expect(parsed.currentItems.find(item => item.value.key.kind === "native")?.nativeMode).toBe("herdr");
+    const invalid = { ...historical, value: { ...historical.value, toolPaths: { ...historical.value.toolPaths, herdr: { kind: "path", path: "relative" } } } };
+    const malformed = version === 5
+      ? { ...source, authority: { generation, desired: invalid, observationRevision: "9" } }
+      : { ...source, authority: { ...original.authority, desiredJson: JSON.stringify(invalid) } };
+    expect(() => parseConfigurationCache(malformed, identity)).toThrow();
+  });
+
   it("rejects a schema 8 target whose application item is missing", () => {
     const source = cache();
     expect(() => parseConfigurationCache({ ...source, authority: { ...source.authority, desiredJson: JSON.stringify({ ...desired, value: { ...desired.value, enableSudoCleanup: true } }) } }, identity)).toThrow(/missing target/);
