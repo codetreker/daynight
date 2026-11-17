@@ -343,6 +343,8 @@ func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls i
 	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
 	want.PreserveAgentControlMode = true
 	want.PreserveToolPaths = true
+	_, present := body["value"].(map[string]any)["enableSudoCleanup"]
+	want.PreserveSudoCleanup = !present
 	revision := body["revision"].(string)
 	used := 0
 	f.operations.put = func(ctx context.Context, principal model.Principal, worker, actualRevision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
@@ -569,7 +571,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		for i := range items {
 			items[i] = map[string]any{"key": map[string]any{"kind": "projectPreparation", "projectId": uuid.NewString()}, "targetRevision": "1", "appliedValue": nil, "state": "pending", "error": nil, "lastFailure": nil, "nextAttemptAt": nil}
 		}
-		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems-1]}
+		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems-2]}
 		body := configurationHTTPReportBody(nil, obs)
 		want := configurationHTTPReceipt{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: model.WorkerConfigurationReceipt{
 			Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationAccepted: true, ObservationRevision: "1",

@@ -25,6 +25,7 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 	normalized, err := ParseWorkerConfiguration(raw)
 	normalized.PreserveAgentControlMode = value.PreserveAgentControlMode
 	normalized.PreserveToolPaths = value.PreserveToolPaths
+	normalized.PreserveSudoCleanup = value.PreserveSudoCleanup
 	return normalized, err
 }
 
@@ -89,6 +90,10 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 		value.PreserveToolPaths = false
 	} else if clearsToolPaths(current.Desired.Value.ToolPaths, value.ToolPaths) {
 		return model.WorkerConfigurationResource{}, invalidInput("Adopted tool paths cannot be cleared.")
+	}
+	if value.PreserveSudoCleanup {
+		value.EnableSudoCleanup = current.Desired.Value.EnableSudoCleanup
+		value.PreserveSudoCleanup = false
 	}
 	value, err = NormalizeConfiguration(value)
 	if err != nil {
