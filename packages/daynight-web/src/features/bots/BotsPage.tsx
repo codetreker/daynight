@@ -114,6 +114,7 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
     return () => observer.disconnect();
   }, [captureReading]);
   const selectedDeletion = deletions.find(record => record.id === botId);
+  const visibleDeletions = deletions.filter(record => record.phase !== 'completed');
   const visibleBots = (list.value ?? []).filter(item => !blocked(item.id));
   const items = visibleBots.filter(item => item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const worker = (id: string) => defaults.value?.workers.find(item => item.workerId === id);
@@ -121,7 +122,7 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
   const detailsUnavailable = botId === null || blocked(botId) || denied || deleted || scope.isInvalidated;
   useEffect(() => { if (detailsUnavailable) setDetailsOpen(false); }, [detailsUnavailable]);
   const selectedName = !denied && !deleted && botId !== null && !blocked(botId) ? visibleBots.find(item => item.id === botId)?.name : null;
-  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detailStale, name: bot?.name ?? selectedName ?? (selectedDeletion?.name || m.loading), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => changeDetails(!detailsOpen), follow };
+  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detailStale, name: bot?.name ?? selectedName ?? (selectedDeletion?.name || (selectedDeletion?.phase === 'completed' ? m.title : m.loading)), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => changeDetails(!detailsOpen), follow };
   const refreshed = () => { list.refresh(); defaults.refresh(); detail.refresh(); };
   const deleteDialog = deleteTarget && !scope.isInvalidated && !targetUnavailable ? <div className="bot-details-confirmation" onKeyDown={event => {
     // Native dialog cancel and Tab own this layer before fullscreen handles keys.
@@ -139,7 +140,7 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
       {list.value !== null && items.length === 0 ? <p className="bot-empty" role="status">{visibleBots.length === 0 ? m.empty : m.noMatches}</p> : null}
       <ul className="bot-list" aria-label={m.yourAssistants}>{items.map(item => <BotListItem key={item.id} bot={item} selected={botId === item.id} disabled={scope.isInvalidated} worker={worker(item.workerId)} stale={defaults.stale} follow={follow} onDelete={(bot, opener) => setDeleteTarget({ scope, bot, opener })} />)}</ul>
       <AssistantTaskSection tasks={assistantTasks.value} bots={visibleBots} selectedId={taskId} search={search} error={assistantTasks.error} busy={assistantTasks.busy} onRefresh={assistantTasks.refresh} onCreate={() => setTaskCreating('ordinary')} onWatchdog={() => { const task = assistantTasks.value?.find(t => t.application === 'watchdog'); if(task) navigate(assistantTaskUrl(task.id)); else setTaskCreating('watchdog'); }} follow={follow} />
-      <div className="bot-deletions">{deletions.filter(record => record.id !== botId).map(record => <BotDeletionStatus key={record.id} record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} />)}</div>
+      <div className="bot-deletions">{visibleDeletions.filter(record => record.id !== botId).map(record => <BotDeletionStatus key={record.id} record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} />)}</div>
     </aside>
     <div className="bot-conversation" ref={conversation} tabIndex={-1} onKeyDown={event => {
       if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented && showDetails && !deleteDialog) {
@@ -150,8 +151,9 @@ export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual"
       {taskId ? <AssistantTaskDetail key={`${scope.userId}:${taskId}`} taskId={taskId} tab={taskTab} {...(eventId ? {eventId} : {})} {...(recordId ? {recordId} : {})} enabled={readEnabled} bots={visibleBots} onChanged={assistantTasks.refresh} /> : null}
       <div className="bot-conversation-body" hidden={taskId !== null}><div className="bot-conversation-content">
       {attentionSeenError !== null ? <ReadError label={m.attentionSeenError} error={attentionSeenError} retry={() => { list.refresh(); detail.refresh(); }} /> : null}
-      {botId !== null && denied && detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
-      {botId !== null && deletions.filter(record => record.id === botId).map(record => <div className="bot-selected-deletion" key={record.id}><BotDeletionStatus record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} /></div>)}
+      {botId !== null && denied && detail.error !== null && selectedDeletion?.phase !== 'completed' ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
+      {botId !== null && visibleDeletions.filter(record => record.id === botId).map(record => <div className="bot-selected-deletion" key={record.id}><BotDeletionStatus record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} /></div>)}
+      {selectedDeletion?.phase === 'completed' ? <p className="bot-empty" role="status">{m.deleted}</p> : null}
       {bot && bot.sessionId === null ? <p className="bot-empty" role="status">{bot.startupResult.code ? m.reason(bot.startupResult.code) : m[bot.startupResult.state]}</p> : null}
       <div className="bot-conversation-session" hidden={botId === null}><BotSessionHost cache={cache} botId={botId} botName={bot?.name ?? selectedName ?? null} displayBinding={binding} actionBinding={actionBinding} confirmedNoSession={confirmedNoSession} active={botId !== null && !blocked(botId) && !denied && !deleted} error={detail.error !== null ? m.detailError : null} onRetry={detail.refresh} fullscreenBoundary={conversation} presentation={{ variant: 'assistant', composer: { renderAttachments: slot => botId ? <AssistantTaskPendingStrip botId={botId} tasks={assistantTasks.value ?? []} enabled={readEnabled && slot.active && !slot.authPaused} /> : null }, renderHeader: session => <BotConversationHeader target={headerTarget} session={session} />, renderUnavailable: () => detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null }} /></div>
       </div>
