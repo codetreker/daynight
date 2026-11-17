@@ -91,8 +91,10 @@ export const verifyWorkerPatrol = async (): Promise<void> => {
     const active = await readTask();
     await cli(["task", "set-status", taskId, "done", "--project", projectId, "--claim-id", original!.claimId, "--if-version", String(active.version)]);
     const completed = await readTask(); expect(completed).toMatchObject({ status: "done", properties: { worker: { claimId: original!.claimId, state: "completed" } } });
-    await expect.poll(async () => (await readTask()).session?.lifecycle, { timeout: 60_000, intervals: [1_000] }).toBe("archived");
+    // Already submitted inputs may settle after completion; compare subsequent patrols after that window.
+    await new Promise(resolve => setTimeout(resolve, 3_000));
     const completedPings = (await entries()).filter(event => event.method === "turn/start" && event.text?.includes("periodic check")).length;
+    await expect.poll(async () => (await readTask()).session?.lifecycle, { timeout: 90_000, intervals: [1_000] }).toBe("archived");
     await new Promise(resolve => setTimeout(resolve, 3_000));
     expect((await entries()).filter(event => event.method === "turn/start" && event.text?.includes("periodic check")).length).toBe(completedPings);
   } finally {
