@@ -34,4 +34,5 @@ retained behavior and conflate separate responsibilities.
 Uploaded recordings keep their identity, access checks and original-byte integrity;
 unuploaded recordings remain unavailable. Old Worker clients cannot resume or
 upload through these endpoints. Removing HTTP assembly does not itself remove the
-remaining internal terminal operations.
+remaining internal terminal operations. The [terminal control removal](2026-11-18-remove-terminal-control-relay.md)
+removes the now-unreferenced control use cases and transient bodies.

@@ -81,10 +81,6 @@ type projectFrameTicket struct {
 	id    string
 	value *terminalFrameWrite
 }
-type projectBodyTicket struct {
-	session, id string
-	value       *terminalBodyWrite
-}
 
 // ProjectRetirementTicket holds only objects already resident in this engine.
 type ProjectRetirementTicket struct {
@@ -92,7 +88,6 @@ type ProjectRetirementTicket struct {
 	live    []projectLiveTicket
 	content []projectContentTicket
 	frames  []projectFrameTicket
-	bodies  []projectBodyTicket
 }
 
 // CaptureProjectRetirement must run before commit while all Task locks remain held.
@@ -124,13 +119,6 @@ func (s *Engine) CaptureProjectRetirement(project string) *ProjectRetirementTick
 	for id, p := range s.terminalFrameWrites {
 		if p.projectID == project {
 			t.frames = append(t.frames, projectFrameTicket{id, p})
-		}
-	}
-	for id, entries := range s.terminalPending {
-		for key, p := range entries {
-			if p.projectID == project {
-				t.bodies = append(t.bodies, projectBodyTicket{id, key, p})
-			}
 		}
 	}
 	s.terminalMutex.Unlock()
@@ -173,14 +161,6 @@ func (t *ProjectRetirementTicket) Retire() {
 		}
 		if s.terminalFrameWrites[item.id] == item.value {
 			delete(s.terminalFrameWrites, item.id)
-		}
-	}
-	for _, item := range t.bodies {
-		if s.terminalPending[item.session][item.id] == item.value {
-			delete(s.terminalPending[item.session], item.id)
-			if len(s.terminalPending[item.session]) == 0 {
-				delete(s.terminalPending, item.session)
-			}
 		}
 	}
 	s.terminalMutex.Unlock()

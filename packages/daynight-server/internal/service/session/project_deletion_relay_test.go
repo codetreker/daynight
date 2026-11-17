@@ -130,9 +130,6 @@ func TestDeletedProjectRetiresTerminalRelay(t *testing.T) {
 	if _, err := f.service.RegisterTerminal(ctx, f.owner, f.project, f.task, m); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.PollTerminal(ctx, f.owner, f.project, f.task, m.SessionID, m.Envelope, "1"); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := f.service.TerminalState(ctx, f.owner, f.project, f.task, m.SessionID); err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +140,6 @@ func TestDeletedProjectRetiresTerminalRelay(t *testing.T) {
 	if err != nil || !receipt.Deleted {
 		t.Fatalf("delete: %+v %v", receipt, err)
 	}
-	_, err = f.service.PollTerminal(ctx, f.owner, f.project, f.task, m.SessionID, m.Envelope, "1")
-	requireServiceError(t, err, "not_found")
 	_, err = f.service.TerminalState(ctx, f.owner, f.project, f.task, m.SessionID)
 	requireServiceError(t, err, "not_found")
 }

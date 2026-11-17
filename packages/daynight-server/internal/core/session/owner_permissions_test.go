@@ -3,12 +3,10 @@ package session
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
-	"github.com/google/uuid"
 )
 
 func TestBrowserBindingUsesRecordedSessionOwner(t *testing.T) {
@@ -173,64 +171,17 @@ func TestPersistedNonOwnerNativeOperationsCannotResumeExecution(t *testing.T) {
 func TestTerminalSessionOwnerPermissionsPreserveReadersAndMemberOwner(t *testing.T) {
 	f := terminalControlSetup(t)
 	ctx := context.Background()
-	lease := f.acquire(t)
 	for _, reader := range sessionReaders(t, f.fixture) {
 		for _, current := range []bool{false, true} {
-			var view map[string]any
-			var err error
-			if current {
-				view, err = permissionTerminalRead(f.fixture, ctx, reader, f.message.SessionID, true, true)
-			} else {
-				view, err = permissionTerminalRead(f.fixture, ctx, reader, f.message.SessionID, false, true)
-			}
+			view, err := permissionTerminalRead(f.fixture, ctx, reader, f.message.SessionID, current, false)
 			if err != nil || view["connected"] != true || len(view["control"].(*v2.ControlState).AvailableActions) != 0 {
 				t.Fatal("non-owner lacked terminal read access or retained control actions", view, err)
 			}
 		}
-		req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: lease.ControlEpoch, Action: "acquire_control", BrowserClientID: f.browser}
-		for _, message := range []v2.Message{f.msg("control_request", req), f.input(lease, "1", "non-owner input")} {
-			_, err := permissionTerminalSubmit(f.fixture, ctx, reader, f.message.SessionID, f.browser, message, false)
-			assertCommandAuthorization(t, err, "forbidden", nil)
-		}
 	}
 	fixtureMemberOwner(t, f.fixture)
-	input := f.input(lease, "1", "member owner input")
-	f.submit(t, input)
-	if offers := f.poll(t, "1"); len(offers) != 1 || f.control(t).Lease == nil {
-		t.Fatal("owner role demotion suspended its lease or blocked input", offers)
-	}
-}
-
-func TestPersistedNonOwnerTerminalOperationsCannotAcquireControl(t *testing.T) {
-	for _, phase := range []string{"queued", "dispatched"} {
-		t.Run(phase, func(t *testing.T) {
-			f := terminalControlSetup(t)
-			ctx := context.Background()
-			req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
-			f.submit(t, f.msg("control_request", req))
-			if phase == "dispatched" {
-				f.poll(t, "1")
-			}
-			actor := terminalOtherActor(t, f)
-			f.operations.operation(req.OperationID).Actor = actor
-			_, err := permissionTerminalSubmit(f.fixture, ctx, f.p, f.message.SessionID, f.browser, f.msg("control_request", req), true)
-			assertCommandAuthorization(t, err, "forbidden", nil)
-			if phase == "queued" {
-				if offers := f.pollWith(t, "1", 0); len(offers) != 0 {
-					t.Fatal("retained non-owner control request was forwarded")
-				}
-			} else {
-				digest, err := v2.ControlRequestDigest(actor.UserID, req)
-				if err != nil {
-					t.Fatal(err)
-				}
-				lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: actor.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
-				state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste"}}
-				f.workerWith(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: digest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}), map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 2})
-			}
-			if f.control(t).Lease != nil {
-				t.Fatal("retained non-owner operation established a lease")
-			}
-		})
+	view, err := permissionTerminalRead(f.fixture, ctx, f.p, f.message.SessionID, false, false)
+	if err != nil || len(view["control"].(*v2.ControlState).AvailableActions) == 0 {
+		t.Fatal("owner role demotion lost terminal read actions", view, err)
 	}
 }

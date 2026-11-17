@@ -76,13 +76,8 @@ type fixtureDAO struct {
 	FindTerminalRegistrationFn          func(context.Context, string, string, string, string, string) (string, error)
 	InsertTerminalFn                    func(context.Context, store.TerminalRegistration) error
 	InsertRecordingEvidenceFn           func(context.Context, string, int64, string, int64, string) error
-	TerminalOperationFn                 func(context.Context, string, string) (store.TerminalOperation, error)
-	InsertTerminalOperationFn           func(context.Context, store.TerminalOperation) error
-	SetTerminalOperationResultFn        func(context.Context, string, v2.OperationResult) error
 	InvalidateTerminalOperationsFn      func(context.Context, string) error
 	ExpireTerminalOperationsFn          func(context.Context, string, time.Time) error
-	QueuedTerminalOperationFn           func(context.Context, string) ([]string, error)
-	TerminalViewerOperationPendingFn    func(context.Context, string, string, string) (bool, error)
 	TerminalArchiveFn                   func(context.Context, string) (v2.ArchiveStatus, *v2.Receipt, string, error)
 	SaveTerminalReceiptFn               func(context.Context, string, v2.Receipt, *string) error
 	SaveTerminalArchiveStatusFn         func(context.Context, string, v2.ArchiveStatus) error
@@ -471,21 +466,6 @@ func (d *fixtureDAO) InsertRecordingEvidence(a0 context.Context, a1 string, a2 i
 	return d.InsertRecordingEvidenceFn(a0, a1, a2, a3, a4, a5)
 }
 
-func (d *fixtureDAO) TerminalOperation(a0 context.Context, a1 string, a2 string) (store.TerminalOperation, error) {
-	d.invoke(a0, "TerminalOperation", d.TerminalOperationFn != nil)
-	return d.TerminalOperationFn(a0, a1, a2)
-}
-
-func (d *fixtureDAO) InsertTerminalOperation(a0 context.Context, a1 store.TerminalOperation) error {
-	d.invoke(a0, "InsertTerminalOperation", d.InsertTerminalOperationFn != nil)
-	return d.InsertTerminalOperationFn(a0, a1)
-}
-
-func (d *fixtureDAO) SetTerminalOperationResult(a0 context.Context, a1 string, a2 v2.OperationResult) error {
-	d.invoke(a0, "SetTerminalOperationResult", d.SetTerminalOperationResultFn != nil)
-	return d.SetTerminalOperationResultFn(a0, a1, a2)
-}
-
 func (d *fixtureDAO) InvalidateTerminalOperations(a0 context.Context, a1 string) error {
 	d.invoke(a0, "InvalidateTerminalOperations", d.InvalidateTerminalOperationsFn != nil)
 	return d.InvalidateTerminalOperationsFn(a0, a1)
@@ -494,16 +474,6 @@ func (d *fixtureDAO) InvalidateTerminalOperations(a0 context.Context, a1 string)
 func (d *fixtureDAO) ExpireTerminalOperations(a0 context.Context, a1 string, a2 time.Time) error {
 	d.invoke(a0, "ExpireTerminalOperations", d.ExpireTerminalOperationsFn != nil)
 	return d.ExpireTerminalOperationsFn(a0, a1, a2)
-}
-
-func (d *fixtureDAO) QueuedTerminalOperation(a0 context.Context, a1 string) ([]string, error) {
-	d.invoke(a0, "QueuedTerminalOperation", d.QueuedTerminalOperationFn != nil)
-	return d.QueuedTerminalOperationFn(a0, a1)
-}
-
-func (d *fixtureDAO) TerminalViewerOperationPending(a0 context.Context, a1 string, a2 string, a3 string) (bool, error) {
-	d.invoke(a0, "TerminalViewerOperationPending", d.TerminalViewerOperationPendingFn != nil)
-	return d.TerminalViewerOperationPendingFn(a0, a1, a2, a3)
 }
 
 func (d *fixtureDAO) TerminalArchive(a0 context.Context, a1 string) (v2.ArchiveStatus, *v2.Receipt, string, error) {

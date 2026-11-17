@@ -58,16 +58,6 @@ func permissionTerminalRead(f fixture, ctx context.Context, principal model.Prin
 	return f.s.TerminalState(phase, principal, f.project, f.task, id)
 }
 
-func permissionTerminalSubmit(f fixture, ctx context.Context, principal model.Principal, id, browser string, message v2.Message, retained bool) (v2.Message, error) {
-	work := map[string]int{}
-	if retained {
-		work["TerminalOperation"] = 1
-	}
-	phase := f.TerminalPhase(ctx, false, work)
-	defer f.dao.FinishContext(phase)
-	return f.s.SubmitTerminal(phase, principal, f.project, f.task, id, browser, message)
-}
-
 func makeRelayOwnerInheritedOnly(t *testing.T, f fixture) {
 	t.Helper()
 	previous := f.dao.ProjectAccessFn
