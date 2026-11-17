@@ -644,7 +644,7 @@ test('ordinary Task description URL normalizes without trapping browser Back', a
   await expect(task.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(task.getByRole('tab', { name: 'Description', exact: true })).toHaveCount(0);
   await page.goBack();
-  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}$`));
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=(overview|tasks|prs|tags)$`));
 });
 
 test('Goal tabs stay visible during keyboard navigation in a short phone viewport', async ({ page }) => {
@@ -940,7 +940,7 @@ test('standalone Goal external Expand enters an unowned chain through the projec
   await restoreGoalGraph(page, sourceGoal);
   const sourceGraph = page.locator('.task-chain-dialog');
   await sourceGraph.locator(`[data-id="${outsideId}"]`).getByRole('button', { name: 'Expand Outside chain in its task or Goal' }).click();
-  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}$`));
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=tasks$`));
   await expect(page.getByRole('tab', { name: /^Task chains/ })).toHaveAttribute('aria-selected', 'true');
   const targetGraph = page.locator('.task-chain-dialog');
   await expect(targetGraph).toHaveAccessibleName('Outside chain');

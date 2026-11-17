@@ -738,7 +738,7 @@ describe("project dashboard", () => {
     expect(detail().getByTestId('selected-task')).toHaveTextContent(A);
     expect(detail().getByTestId('detail-tab')).toHaveTextContent('session');
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
-    expect(window.location.search).toBe('');
+    expect(window.location.search).toBe('?tab=tasks');
     fireEvent.click(detail().getByRole('button', { name: '关闭详情' }));
     await waitFor(() => expect(screen.queryByLabelText('详情测试外壳')).toBeNull());
     expect(shortcut).toHaveFocus();
