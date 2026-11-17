@@ -20,6 +20,87 @@ const assertFits = async (page: Page) => {
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
 };
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 390, 320]) {
+  test(`PR cards retain geometry and readable long content at ${width}px in ${locale}`, async ({ page }, info) => {
+    const state = await installPrList(page, locale);
+    state.longContent = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    const list = page.locator('.pr-list'), row = page.locator('.pr-row').first();
+    const geometry = await row.evaluate(element => {
+      const style = getComputedStyle(element), list = element.closest('.pr-list')!, listStyle = getComputedStyle(list);
+      const title = getComputedStyle(element.querySelector('.pr-row-title')!), meta = getComputedStyle(element.querySelector('.pr-row-meta')!);
+      const boxes = [...list.querySelectorAll('.pr-row')].map(item => item.getBoundingClientRect());
+      const content = [...element.querySelectorAll('.pr-row-title, .pr-row-meta > span, .pr-row-branch')].map(item => {
+        const box = item.getBoundingClientRect(), main = element.querySelector('.pr-row-main')!.getBoundingClientRect();
+        return box.left >= main.left - 1 && box.right <= main.right + 1 && item.scrollWidth <= item.clientWidth + 1;
+      });
+      return { listWidth: list.getBoundingClientRect().width, gap: boxes[1]!.top - boxes[0]!.bottom, listBorder: listStyle.borderTopWidth, listOverflow: listStyle.overflow,
+        padding: style.padding, rowGap: style.columnGap, border: style.borderTop, radius: style.borderRadius, background: style.backgroundColor,
+        title: [title.fontSize, title.fontWeight, title.lineHeight, title.color], meta: [meta.fontSize, meta.lineHeight, meta.marginTop, meta.rowGap, meta.columnGap, meta.color], content };
+    });
+    const compact = geometry.listWidth <= 650;
+    expect(geometry.gap).toBe(7);
+    expect([geometry.listBorder, geometry.listOverflow]).toEqual(['0px', 'visible']);
+    expect([geometry.padding, geometry.rowGap]).toEqual(compact ? ['9px 11px', '6px'] : ['10px 15px', '12px']);
+    expect([geometry.border, geometry.radius, geometry.background]).toEqual(['1px solid rgb(213, 220, 229)', '8px', 'rgb(250, 251, 252)']);
+    expect(geometry.title).toEqual(['13px', '650', '19.5px', 'rgb(23, 33, 50)']);
+    expect(geometry.meta).toEqual(['11px', '16.5px', '2px', '3px', '8px', 'rgb(85, 97, 118)']);
+    expect(geometry.content.every(Boolean)).toBe(true);
+    const badge = page.locator('.pr-row-badge.draft').first();
+    await expect(badge).toHaveCSS('color', 'rgb(85, 97, 118)');
+    await expect(badge).toHaveCSS('background-color', 'rgb(240, 241, 245)');
+    await assertFits(page);
+    await row.hover();
+    await expect(row).toHaveCSS('background-color', 'rgb(240, 243, 247)');
+    await page.keyboard.press('Tab');
+    await row.focus();
+    await expect(row).toHaveCSS('outline-color', 'rgb(52, 64, 84)');
+    await expect(row).toHaveCSS('outline-width', '3px');
+    await capture(page, info, `pr-cards-${locale}-${width}`);
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(row).toBeFocused();
+    expect(state.unexpected).toEqual([]);
+  });
+}
+
+test('PR card density follows the list container at the 650px boundary', async ({ page }) => {
+  await installPrList(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  const list = page.locator('.pr-list'), row = page.locator('.pr-row').first();
+  for (const [width, padding] of [[651, '10px 15px'], [650, '9px 11px']] as const) {
+    await list.evaluate((element, value) => { (element as HTMLElement).style.width = `${value}px`; }, width);
+    await expect(row).toHaveCSS('padding', padding);
+    await expect(page.locator('.pr-row-time').first()).toBeVisible();
+  }
+});
+
+test('PR card opens by Space and touch and restores focus without scrolling', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 600 }, hasTouch: true });
+  try {
+    const page = await context.newPage(), state = await installPrList(page);
+    await open(page);
+    const row = page.locator('.pr-row').last();
+    await row.scrollIntoViewIfNeeded();
+    await row.focus();
+    for (const action of ['Space', 'touch'] as const) {
+      const position = await page.evaluate(() => scrollY);
+      if (action === 'Space') await page.keyboard.press('Space');
+      else await row.tap();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(row).toBeFocused();
+      expect(await page.evaluate(() => scrollY)).toBe(position);
+    }
+    expect(state.unexpected).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
 for (const width of [1440, 800, 390, 320]) test(`production project navigation, list and detail fit ${width}px`, async ({ page }, info) => {
   const state = await installPrList(page);
   state.graphFailure = true;
