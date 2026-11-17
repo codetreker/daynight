@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { configurationJsonSourcesEqual, decodeWorkerConfigurationSource, parseReceivedWorkerConfigurationResource, parseReceivedWorkerConfigurationReportReceipt, receiveWorkerDesired, validateWorkerRemoteObservation } from "../../src/api/worker-configuration-source.js";
+import { configurationDesiredSourcesComparable, configurationJsonSourcesEqual, decodeWorkerConfigurationSource, parseReceivedWorkerConfigurationResource, parseReceivedWorkerConfigurationReportReceipt, receiveWorkerDesired, validateWorkerRemoteObservation } from "../../src/api/worker-configuration-source.js";
 
 const time = "2026-11-04T00:00:00Z";
 const value = { maxConcurrent: 2, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] };
@@ -77,5 +77,14 @@ describe("Worker configuration source documents", () => {
     expect(configurationJsonSourcesEqual('{"a":9007199254740993}', '{"a":9007199254740992}')).toBe(false);
     expect(configurationJsonSourcesEqual('{"a":[1,2]}', '{"a":[2,1]}')).toBe(false);
     expect(configurationJsonSourcesEqual('{"__proto__":1,"text":"a"}', '{"text":"\\u0061","__proto__":1.0}')).toBe(true);
+  });
+  it("compares only common negotiated fields while retaining strict unknown comparison", () => {
+    const mode = expanded.replace('"value":{', '"value":{"agentControlMode":"web",');
+    const tools = mode.replace('"value":{', '"value":{"toolPaths":{"codex":null,"copilot":null,"herdr":null,"future":9007199254740993},');
+    expect(configurationDesiredSourcesComparable(expanded, mode)).toBe(true);
+    expect(configurationDesiredSourcesComparable(mode, tools)).toBe(true);
+    expect(configurationDesiredSourcesComparable(tools, mode)).toBe(true);
+    expect(configurationDesiredSourcesComparable(tools, tools.replace("9007199254740993", "9007199254740992"))).toBe(false);
+    expect(configurationDesiredSourcesComparable(expanded, mode.replace('"negative":-2', '"negative":-3'))).toBe(false);
   });
 });

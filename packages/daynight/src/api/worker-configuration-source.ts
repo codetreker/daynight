@@ -123,3 +123,32 @@ export const configurationJsonSourcesEqual = (left: string, right: string): bool
   jsonContainerSources(left); jsonContainerSources(right);
   return semanticKey(left) === semanticKey(right);
 };
+
+export type WorkerCapabilityKey = "agentControlMode" | "toolPaths";
+export const workerCapabilityKeys: readonly WorkerCapabilityKey[] = ["agentControlMode", "toolPaths"];
+
+export const desiredCapabilitySources = (json: string): ReadonlyMap<string, string> => {
+  const value = jsonObjectSources(json).get("value");
+  if (value === undefined) return malformed();
+  return jsonObjectSources(value);
+};
+
+// Only the two established negotiated projections may hide a whole member.
+export const configurationDesiredSourcesComparable = (left: string, right: string): boolean => {
+  const leftRoot = jsonObjectSources(left), rightRoot = jsonObjectSources(right);
+  const leftValue = desiredCapabilitySources(left), rightValue = desiredCapabilitySources(right);
+  const hidden = new Set(workerCapabilityKeys.filter(key => leftValue.has(key) !== rightValue.has(key)));
+  const comparable = (root: ReadonlyMap<string, string>, value: ReadonlyMap<string, string>): string => objectSource(
+    [...root].map(([key, source]) => [key, key === "value" ? objectSource([...value].filter(([name]) => !hidden.has(name as WorkerCapabilityKey))) : source]),
+  );
+  return configurationJsonSourcesEqual(comparable(leftRoot, leftValue), comparable(rightRoot, rightValue));
+};
+
+export const validateHiddenCapabilitySource = (desired: string, key: WorkerCapabilityKey, source: string): void => {
+  const root = jsonObjectSources(desired), value = desiredCapabilitySources(desired);
+  if (value.has(key)) return malformed();
+  receiveWorkerDesired(objectSource([...root].map(([name, part]) => [name, name === "value" ? objectSource([...value, [key, source]]) : part])));
+};
+
+export const configurationSourceFragmentsEqual = (left: string, right: string): boolean =>
+  configurationJsonSourcesEqual(objectSource([["value", left]]), objectSource([["value", right]]));

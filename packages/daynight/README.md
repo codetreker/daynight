@@ -2079,8 +2079,9 @@ Worker identity, and optional
 configuration GET installs the complete current cloud target and observation
 baseline, including lower counters or an uninitialized target. Matching report
 receipts retain a newer target when an older response arrives. Desired content
-under the same revision must be semantically equal; conflicting content fails as
-a protocol error. Known target changes and authority rollback renew the local
+under the same revision must be semantically equal wherever both negotiated
+projections expose it. Existing mode and tool fields may be absent from one
+projection; conflicting visible content still fails as a protocol error. Known target changes and authority rollback renew the local
 generation. Changes confined to unknown fields, a newer revision or update time
 preserve application records, jobs and `applicationRevision`. An unsupported
 known target remains visible as authority with new admission closed until a valid
@@ -2450,6 +2451,11 @@ explicit GET's complete observation and revision, including unknown item kinds;
 receipts do not import those remote facts into the execution ledger. A service
 rollback or null reset retains that independent snapshot under its original
 counters; it is not evidence about the restored current authority.
+When existing mode or tool negotiation hides a previously received field at the
+same revision, `hiddenCapabilitySources` retains its raw source as a historical
+fact. It is not executed or reported as the current target; the Worker compares
+it if that field becomes visible again at the same revision. Older schema 6
+checkpoints without this optional field remain readable.
 
 Current records describe the known target's application and verification;
 retained records preserve original work, stops, unknown outcomes, unacknowledged
@@ -2462,8 +2468,8 @@ upgrades to schema 6 with its complete ledger, identities, provenance, reference
 mode and retry facts preserved. Its old target becomes `desiredJson`, its revision
 becomes `applicationRevision`, and `remoteObservation` starts null. Version 1
 retains its platform-preference migration. Migration publishes only after atomic
-save; failed saves retain the original file and error. Current-format missing
-fields, invalid scope and corrupt data remain failures. Genuine file I/O failures
+save; failed saves retain the original file and error. Missing required fields,
+invalid scope and corrupt data remain failures. Genuine file I/O failures
 recover in the original storage scope. Reads and atomic writes process the outer
 cache in chunks using pinned `@discoveryjs/json-ext` and its cache-specific syntax
 guard; raw documents remain ordinary strings, so unknown values require no change

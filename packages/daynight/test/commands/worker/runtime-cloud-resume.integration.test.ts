@@ -137,7 +137,7 @@ it("keeps cloud configuration current for new sessions and resumes the same nati
     expect(resumed).toContain("--search");
   });
   await runWorker({ ...f, signal: firstCancel.signal });
-  remote.configuration.mockResolvedValue(resource(target("current-cloud-model")));
+  remote.configuration.mockResolvedValue(resource({ ...target("current-cloud-model"), revision: "2" }));
   const restartedCancel = new AbortController(); cancellations.add(restartedCancel);
   finishAtTick(restartedCancel, options => {
     const configuration = options.repositories[0]!.configuration;

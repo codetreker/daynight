@@ -86,7 +86,7 @@ it("retains identity and request order through two-project inventory, claim and 
   const operation = operations.createOperation();
   try {
     expect(await remote.currentUserId(signal())).toBe(worker.userId);
-    await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired });
+    await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired: { known: desired } });
     await remote.project(projectId, signal()); await remote.project(second, signal());
     const inventory = await remote.ownInventory([{ projectId }, { projectId: second }], workerId, signal());
     expect(inventory).toEqual({ tasks: [], coveredProjectIds: [projectId, second], unavailableProjectIds: [] });

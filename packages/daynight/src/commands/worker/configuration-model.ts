@@ -26,6 +26,7 @@ export type WorkerConfigurationCache = {
   readonly identity: WorkerConfigurationIdentity;
   readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;
+  readonly hiddenCapabilitySources?: Readonly<Partial<Record<"agentControlMode" | "toolPaths", { readonly revision: string; readonly json: string }>>>;
   readonly nextFailureId: number;
   readonly projectionCursor: string | null;
   readonly currentItems: readonly TrackedConfigurationItem[];

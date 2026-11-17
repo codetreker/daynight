@@ -165,7 +165,7 @@ authority 保存本机 generation UUID、完整 desiredJson、applicationRevisio
 
 读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；未知目标与远端观测位于普通 JSON 字符串内部，guard 不解释其中的任意数字或键。真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
 
-当前 origin、principal 与 workerId 验证通过的 GET 完整安装服务端 desired 与 observationRevision，包括较低计数与 null，回退建立围栏并保留原资源责任。同 revision 的完整目标按无损 JSON 语义比较，不同则报协议错误。匹配捕获的 receipt 可更新目标，较低 desired revision 只结算其捕获而不回退新目标。仅未知字段、更高 revision 或 updatedAt 变化更新源文本，保留 applicationRevision、generation、记录身份和 job；已知目标变化或认证权威回退才重新协调。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威并关闭新准入。job 的适用性核对原 recordId、内容和证明。
+当前 origin、principal 与 workerId 验证通过的 GET 完整安装服务端 desired 与 observationRevision，包括较低计数与 null，回退建立围栏并保留原资源责任。同 revision 的目标按无损 JSON 语义比较双方可见内容；既有 mode/tool 能力投影在一方省略字段时不比较该字段，双方均提供时连同未知子树完整比较。缓存单独保留同版本被隐藏的已收字段源片段，不将其派生为当前应用；字段同版本重新出现时与该历史事实比较，版本变化或权威重置不能将其当作新目标。其他差异报协议错误。当前收到的源文本仍是权威，投影变化引起的已知目标变化正常重新协调。匹配捕获的 receipt 可更新目标，较低 desired revision 只结算其捕获而不回退新目标。仅未知字段、更高 revision 或 updatedAt 变化更新源文本，保留 applicationRevision、generation、记录身份和 job；已知目标变化或认证权威回退才重新协调。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威并关闭新准入。job 的适用性核对原 recordId、内容和证明。
 
 配置 GET、普通 report receipt 及 prompts 联合 receipt 使用显式 Received 包装；完整 JSON 先经既有源工具校验语法、重复解码键和深度，再只提取已知路径调用原严格解析器。未知数字不进入普通 number；native/projects/overrides/toolPaths 中的未知兄弟留在 desired 原文。远端未知 observation kind 留在 observationJson，不进入本机账本或上报。对象比较忽略成员顺序，数组保留顺序，数字按符号、有效数字串及 BigInt 十进制指数比较，不展开巨大指数。该配置局部机制不修改全局 API serializer。
 

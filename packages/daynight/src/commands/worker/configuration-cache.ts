@@ -3,13 +3,13 @@ import { open } from "node:fs/promises";
 import { canonicalId } from "../../api/parse.js";
 import { parseWorkerCloudItem, parseWorkerCloudRevision } from "../../api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey } from "../../api/worker-configuration.js";
-import { receiveWorkerDesired, validateWorkerRemoteObservation } from "../../api/worker-configuration-source.js";
+import { receiveWorkerDesired, validateHiddenCapabilitySource, validateWorkerRemoteObservation, workerCapabilityKeys } from "../../api/worker-configuration-source.js";
 import type { AgentControlMode } from "../../api/types.js";
 import { configurationJsonChunks, parseConfigurationJson } from "./configuration-json.js";
 import { configurationKey, configurationRetryDelays, configurationSupportsMode, freezeConfiguration, parseConfigurationDesired } from "./configuration-model.js";
 import type { TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity } from "./configuration-model.js";
 
-type Cache5 = Omit<WorkerConfigurationCache, "schemaVersion" | "authority" | "remoteObservation"> & {
+type Cache5 = Omit<WorkerConfigurationCache, "schemaVersion" | "authority" | "remoteObservation" | "hiddenCapabilitySources"> & {
   readonly schemaVersion: 5;
   readonly authority: { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string };
 };
@@ -208,7 +208,7 @@ const upgradeSchema5 = (cache: Cache5): WorkerConfigurationCache => ({
 });
 
 const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity): WorkerConfigurationCache => {
-  const data = exact(source, ["schemaVersion", "identity", "authority", "remoteObservation", "nextFailureId", "projectionCursor", "currentItems", "retainedItems"]);
+  const data = exact(source, ["schemaVersion", "identity", "authority", "remoteObservation", "nextFailureId", "projectionCursor", "currentItems", "retainedItems", ...(Object.hasOwn(source, "hiddenCapabilitySources") ? ["hiddenCapabilitySources"] : [])]);
   identityMatches(data.identity, identity);
   const authority = exact(data.authority, ["generation", "desiredJson", "applicationRevision", "observationRevision"]);
   if (authority.desiredJson !== null && typeof authority.desiredJson !== "string") throw new TypeError("Worker configuration cache has an invalid desired source.");
@@ -230,10 +230,26 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
     validateWorkerRemoteObservation(remote.json, observationRevision);
     remoteObservation = { observationRevision, json: remote.json };
   }
+  let hiddenCapabilitySources: WorkerConfigurationCache["hiddenCapabilitySources"];
+  if (Object.hasOwn(data, "hiddenCapabilitySources")) {
+    if (desired === null || typeof data.hiddenCapabilitySources !== "object" || data.hiddenCapabilitySources === null || Array.isArray(data.hiddenCapabilitySources)) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
+    const sources = data.hiddenCapabilitySources as Record<string, unknown>;
+    if (Object.keys(sources).length === 0 || Object.keys(sources).some(key => !workerCapabilityKeys.includes(key as typeof workerCapabilityKeys[number]))) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
+    const parsed: NonNullable<WorkerConfigurationCache["hiddenCapabilitySources"]> = {};
+    for (const key of workerCapabilityKeys) {
+      if (!Object.hasOwn(sources, key)) continue;
+      const source = exact(sources[key], ["revision", "json"]), revision = parseWorkerCloudRevision(source.revision);
+      if (typeof source.json !== "string" || BigInt(revision) > BigInt(desired.revision)) throw new TypeError("Worker configuration cache has an invalid hidden capability source.");
+      validateHiddenCapabilitySource(authority.desiredJson as string, key, source.json);
+      Object.assign(parsed, { [key]: { revision, json: source.json } });
+    }
+    hiddenCapabilitySources = parsed;
+  }
   return {
     ...checked, schemaVersion: 6,
     authority: { generation: checked.authority.generation, desiredJson: authority.desiredJson, applicationRevision, observationRevision: checked.authority.observationRevision },
     remoteObservation,
+    ...(hiddenCapabilitySources === undefined ? {} : { hiddenCapabilitySources }),
   };
 };
 

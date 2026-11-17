@@ -2,8 +2,10 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseReceivedWorkerConfigurationReceipt, parseReceivedWorkerConfigurationResource, receiveWorkerDesired } from "../../../src/api/worker-configuration.js";
+import { desiredCapabilitySources } from "../../../src/api/worker-configuration-source.js";
 import { createWorkerConfigurationManager, type WorkerConfigurationManager, type WorkerConfigurationManagerOptions } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationCache } from "../../../src/commands/worker/configuration-model.js";
+import { replaceFileAtomicallyFromChunks } from "../../../src/platform/files.js";
 
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
 const projectId = "11111111-1111-4111-8111-111111111111";
@@ -24,6 +26,92 @@ const fixture = async (options: Partial<WorkerConfigurationManagerOptions> = {})
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.stop(); for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe("Worker future configuration persistence", () => {
+  it("retains a hidden negotiated projection across restart without executing it", async () => {
+    const first = await fixture(), rich = receiveWorkerDesired(desired("1").json.replace('"value":{', '"value":{"agentControlMode":"web",'));
+    const tools = desiredCapabilitySources(rich.json).get("toolPaths")!;
+    const legacy = receiveWorkerDesired(rich.json.replace(`,"toolPaths":${tools}`, "").replace('"agentControlMode":"web",', ""));
+    await first.manager.receive(rich, "0"); await first.manager.settle();
+    await first.manager.receive(legacy, "0"); await first.manager.settle();
+    const saved = await first.read();
+    expect(saved.authority.desiredJson).toBe(legacy.json);
+    expect(saved.hiddenCapabilitySources).toEqual({ agentControlMode: { revision: "1", json: '"web"' }, toolPaths: { revision: "1", json: tools } });
+    expect(first.manager.current().desired!.value.toolPaths).toBeUndefined();
+    expect(first.manager.current().desired!.value.agentControlMode).toBeUndefined();
+    expect(JSON.stringify(first.manager.report())).not.toContain("future");
+    expect(first.manager.report().observation!.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+    await first.manager.stop();
+    const second = await fixture({ file: first.file });
+    expect((await second.read()).hiddenCapabilitySources).toEqual(saved.hiddenCapabilitySources);
+    await second.manager.receive(legacy, "0"); await second.manager.settle();
+    expect(second.manager.current().desired!.value.toolPaths).toBeUndefined();
+    await second.manager.receive(rich, "0"); await second.manager.settle();
+    const restored = await second.read();
+    expect(restored.authority.desiredJson).toBe(rich.json);
+    expect(restored.hiddenCapabilitySources).toBeUndefined();
+    expect(second.manager.current().desired!.value.toolPaths).toEqual(rich.known.value.toolPaths);
+    expect(second.manager.current().desired!.value.agentControlMode).toBe("web");
+  });
+
+  it("streams a large hidden future subtree through the checkpoint", async () => {
+    const first = await fixture(), base = desired("1"), initialTools = desiredCapabilitySources(base.json).get("toolPaths")!;
+    const largeTools = initialTools.replace(`"future":${future}`, `"future":{"payload":"${"x".repeat(131_072)}"}`);
+    const rich = receiveWorkerDesired(base.json.replace(initialTools, largeTools));
+    const legacy = receiveWorkerDesired(rich.json.replace(`,"toolPaths":${largeTools}`, ""));
+    await first.manager.receive(rich, "0"); await first.manager.settle();
+    await first.manager.receive(legacy, "0"); await first.manager.settle();
+    await first.manager.stop();
+    const second = await fixture({ file: first.file });
+    expect((await second.read()).hiddenCapabilitySources?.toolPaths?.json).toBe(largeTools);
+    await second.manager.receive(legacy, "0"); await second.manager.receive(rich, "0");
+    expect(second.manager.current().desired!.value.toolPaths).toEqual(rich.known.value.toolPaths);
+  });
+
+  it("rejects changes to a previously hidden subtree at the same revision", async () => {
+    const first = await fixture(), rich = desired("1"), tools = desiredCapabilitySources(rich.json).get("toolPaths")!;
+    const legacy = receiveWorkerDesired(rich.json.replace(`,"toolPaths":${tools}`, ""));
+    await first.manager.receive(rich, "0"); await first.manager.settle();
+    await first.manager.receive(legacy, "0"); await first.manager.settle();
+    const before = await first.read();
+    const changed = receiveWorkerDesired(rich.json.replace(tools, tools.replace("900719925474099312345", "900719925474099312346")));
+    await expect(first.manager.receive(changed, "0")).rejects.toThrow();
+    expect(await first.read()).toEqual(before);
+    managers.splice(managers.indexOf(first.manager), 1);
+    await expect(first.manager.stop()).rejects.toThrow();
+  });
+
+  it("keeps the original source and error when a hidden projection cannot be persisted", async () => {
+    let armed = false;
+    const failure = new Error("hidden projection checkpoint failed");
+    const first = await fixture({ persist: async (file, chunks) => {
+      if (armed) throw failure;
+      await replaceFileAtomicallyFromChunks(file, chunks(), 0o600);
+    } });
+    const rich = desired("1"), tools = desiredCapabilitySources(rich.json).get("toolPaths")!;
+    const legacy = receiveWorkerDesired(rich.json.replace(`,"toolPaths":${tools}`, ""));
+    await first.manager.receive(rich, "0"); await first.manager.settle();
+    const before = await first.read(); armed = true;
+    await expect(first.manager.receive(legacy, "0")).rejects.toBe(failure);
+    expect(await first.read()).toEqual(before);
+    expect(first.manager.current().desired!.value.toolPaths).toEqual(rich.known.value.toolPaths);
+    managers.splice(managers.indexOf(first.manager), 1);
+    await expect(first.manager.stop()).rejects.toBe(failure);
+  });
+
+  it("does not assign a hidden old revision to a newer or reset authority", async () => {
+    const first = await fixture(), rich = desired("1"), tools = desiredCapabilitySources(rich.json).get("toolPaths")!;
+    const legacy = receiveWorkerDesired(rich.json.replace(`,"toolPaths":${tools}`, ""));
+    await first.manager.receive(rich, "0"); await first.manager.settle();
+    await first.manager.receive(legacy, "0"); await first.manager.settle();
+    const legacyNewer = receiveWorkerDesired(legacy.json.replace('"revision":"1"', '"revision":"2"'));
+    await first.manager.receive(legacyNewer, "0"); await first.manager.settle();
+    expect((await first.read()).hiddenCapabilitySources?.toolPaths).toEqual({ revision: "1", json: tools });
+    const newer = receiveWorkerDesired(rich.json.replace('"revision":"1"', '"revision":"2"').replace(tools, tools.replace("900719925474099312345", "900719925474099312346")));
+    await first.manager.receive(newer, "0"); await first.manager.settle();
+    expect((await first.read()).hiddenCapabilitySources).toBeUndefined();
+    expect(first.manager.current().desired!.revision).toBe("2");
+    await first.manager.receive(legacy, "0"); await first.manager.settle();
+    expect((await first.read()).hiddenCapabilitySources).toBeUndefined();
+  });
   it("retains future desired and remote observations through manager shutdown and restart without reporting them", async () => {
     const first = await fixture(), target = desired("1");
     const observation = `{"baseRevision":"3","desiredRevision":"1","reportedAt":"2026-11-17T00:00:00Z","items":[{"key":{"kind":"future"},"appliedValue":${future},"future":-3e-200}]}`;

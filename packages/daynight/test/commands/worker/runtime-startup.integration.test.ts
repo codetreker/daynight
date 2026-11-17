@@ -785,7 +785,9 @@ describe("worker cloud-first startup", () => {
         await vi.waitFor(() => expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(2)}\"`) && event.message.includes('"state":"error"'))).toBe(true), { timeout: 5000, interval: 10 });
         secondAvailable = true;
         await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false }), operation);
-        await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        // An unchanged known target preserves the failed preparation's five-second retry deadline.
+        await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 9000, interval: 10 });
+        expect(remote.project.mock.calls.filter(([id]: [string]) => id === uuid(2)).length).toBeGreaterThanOrEqual(2);
         await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
@@ -793,7 +795,7 @@ describe("worker cloud-first startup", () => {
     }));
     await runWorker({ ...f, signal: controller.signal });
     if (assertionFailure !== undefined) throw assertionFailure;
-  }, 12_000);
+  }, 16_000);
 
   it("registers every successfully prepared cloud project mapping on an empty database", async () => {
     const f = await fixture(), controller = new AbortController(); cancellations.add(controller);

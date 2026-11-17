@@ -43,8 +43,12 @@ the outer incremental cache guard unchanged.
 
 This decision partially supersedes the [canonical authority decision](2026-11-12-worker-configuration-canonical-authority.md).
 Authenticated GET still restores lower service state or null. Equal-revision
-content must now be semantically identical; conflicting content is a protocol
-error. A late lower receipt settles only its captured observation and cannot
+content must be semantically identical wherever both projections expose it;
+existing mode and tool negotiation may omit their fields without changing the
+stored revision. When both expose a field, its unknown subtree is compared too.
+The cache retains same-revision hidden source fragments as historical facts,
+not executable targets, and checks them when that revision exposes them again.
+Other conflicting content is a protocol error. A late lower receipt settles only its captured observation and cannot
 replace a newer desired document. Known target changes or authority rollback
 renew generation; ordinary receipt and unknown-only installation do not.
 The [Worker design](../../../../docs/design/daynight-worker.md#云端接收与本机提交)

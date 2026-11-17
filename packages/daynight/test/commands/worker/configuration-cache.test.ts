@@ -104,6 +104,21 @@ describe("Worker configuration cache", () => {
     expect(reopened.cache.retainedItems).toEqual([]);
   });
 
+  it("validates optional hidden capability facts without changing older schema 6 caches", () => {
+    const original = cache(), json = '{"codex":{"kind":"auto","future":[-1.25,900719925474099312345]},"copilot":null,"herdr":null}';
+    const source = { ...original, hiddenCapabilitySources: { toolPaths: { revision: "10", json } } };
+    expect(parseConfigurationCache(original, identity)).toEqual({ cache: original, migrated: false });
+    expect(parseConfigurationCache(source, identity)).toEqual({ cache: source, migrated: false });
+    for (const invalid of [
+      { toolPaths: { revision: "11", json } },
+      { toolPaths: { revision: "10", json: '{"codex":null,"codex":null,"copilot":null,"herdr":null}' } },
+      { toolPaths: { revision: "10", json: '{"codex":false,"copilot":null,"herdr":null}' } },
+      { agentControlMode: { revision: "10", json: '"web"' } },
+      { future: { revision: "10", json } },
+      {},
+    ]) expect(() => parseConfigurationCache({ ...original, hiddenCapabilitySources: invalid }, identity)).toThrow();
+  });
+
   it("retains the independent remote snapshot across lower or null authority recovery", () => {
     const remoteObservation = { observationRevision: "12", json: '{"baseRevision":"11","desiredRevision":"20","reportedAt":"2026-11-04T02:00:00Z","items":[]}' };
     const restored = { ...cache(), remoteObservation };

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { stringifyApiJson } from "../../api/json.js";
-import { configurationJsonSourcesEqual, type ReceivedWorkerDesired, parseWorkerCloudItem, parseWorkerCloudValue } from "../../api/worker-configuration.js";
+import { type ReceivedWorkerDesired, parseWorkerCloudItem, parseWorkerCloudValue } from "../../api/worker-configuration.js";
+import { configurationDesiredSourcesComparable, configurationSourceFragmentsEqual, desiredCapabilitySources, workerCapabilityKeys } from "../../api/worker-configuration-source.js";
 import { ProtocolError } from "../../api/validation.js";
 import { prepareWorkerReport, WORKER_CONFIGURATION_REPORT_BYTES } from "../../api/worker-report.js";
 import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
@@ -85,15 +86,33 @@ export const transitionConfigurationDesired = (
   runningRecordIds: ReadonlySet<string>, newId: () => string,
 ): WorkerConfigurationCache => {
   const previousDesired = configurationDesired(cache), desired = received?.known ?? null;
+  let hidden = cache.hiddenCapabilitySources;
   if (previousDesired !== null && desired !== null) {
-    if (desired.revision === previousDesired.revision && !configurationJsonSourcesEqual(cache.authority.desiredJson!, received!.json)) throw new ProtocolError();
-  }
+    const previous = desiredCapabilitySources(cache.authority.desiredJson!), current = desiredCapabilitySources(received!.json);
+    if (desired.revision === previousDesired.revision && !configurationDesiredSourcesComparable(cache.authority.desiredJson!, received!.json)) throw new ProtocolError();
+    if (BigInt(desired.revision) < BigInt(previousDesired.revision)) hidden = undefined;
+    else {
+      const entries = { ...hidden };
+      for (const key of workerCapabilityKeys) {
+        const before = previous.get(key), after = current.get(key), saved = entries[key];
+        if (after !== undefined) {
+          if (before === undefined && saved?.revision === desired.revision && !configurationSourceFragmentsEqual(saved.json, after)) throw new ProtocolError();
+          delete entries[key];
+        } else if (before !== undefined) entries[key] = { revision: previousDesired.revision, json: before };
+      }
+      hidden = Object.keys(entries).length === 0 ? undefined : entries;
+    }
+  } else hidden = undefined;
+  const withHidden = (value: WorkerConfigurationCache): WorkerConfigurationCache => {
+    const { hiddenCapabilitySources: _previous, ...rest } = value;
+    return hidden === undefined ? rest : { ...rest, hiddenCapabilitySources: hidden };
+  };
   if (sameConfigurationValue(previousDesired?.value ?? null, desired?.value ?? null) && !(previousDesired !== null && desired !== null && BigInt(desired.revision) < BigInt(previousDesired.revision))) {
     if (cache.authority.desiredJson === (received?.json ?? null)) return cache;
-    return { ...cache, authority: { ...cache.authority, desiredJson: received?.json ?? null } };
+    return withHidden({ ...cache, authority: { ...cache.authority, desiredJson: received?.json ?? null } });
   }
   const generation = newId();
-  const next: WorkerConfigurationCache = { ...cache, authority: { ...cache.authority, generation, desiredJson: received?.json ?? null, applicationRevision: desired?.revision ?? null }, currentItems: [], retainedItems: [...cache.retainedItems, ...cache.currentItems] };
+  const next = withHidden({ ...cache, authority: { ...cache.authority, generation, desiredJson: received?.json ?? null, applicationRevision: desired?.revision ?? null }, currentItems: [], retainedItems: [...cache.retainedItems, ...cache.currentItems] });
   if (desired === null) return pruneConfigurationRetained({ ...next, authority: { ...next.authority, observationRevision: "0" } }, runningRecordIds);
   const previousSelected = new Set(previousDesired?.value.projects.map(project => project.projectId));
   const selected = new Set(desired.value.projects.map(project => project.projectId));

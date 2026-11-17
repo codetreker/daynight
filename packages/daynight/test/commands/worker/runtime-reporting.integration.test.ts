@@ -243,12 +243,13 @@ describe("worker runtime configuration reporting", () => {
 
   it.each(["lower", "same-revision"] as const)("reconciles a restarted %s target and cursor from the authenticated service", async scenario => {
     const f = await fixture();
-    const cached: WorkerCloudDesired = { ...target, revision: "10", value: { ...target.value, projects: [], maxConcurrent: 8, native: { ...target.value.native, model: "cached-model" } } };
+    const canonical: WorkerCloudDesired = { ...target, revision: scenario === "lower" ? "5" : "10", value: { ...target.value, projects: [], maxConcurrent: 3, native: { ...target.value.native, model: "canonical-model" }, agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const cached: WorkerCloudDesired = scenario === "same-revision" ? canonical : { ...canonical, revision: "10", value: { ...canonical.value, maxConcurrent: 8, native: { ...canonical.value.native, model: "cached-model" } } };
     const { createWorkerConfigurationManager } = await vi.importActual<typeof import("../../../src/commands/worker/configuration.js")>("../../../src/commands/worker/configuration.js");
     await mkdir(f.paths.workerDirectory, { recursive: true });
     const previous = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity: { serverOrigin: "https://daynight.example", userId: uuid(6), workerId: uuid(4) }, signal: new AbortController().signal, applyNative: async () => {} });
     await previous.receive(receivedDesired(cached), "10"); await previous.settle(); await previous.stop();
-    target = { ...cached, revision: scenario === "lower" ? "5" : "10", value: { ...cached.value, maxConcurrent: 3, native: { ...cached.value.native, model: "canonical-model" }, agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    target = canonical;
     observationRevision = 5n;
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: "5", observation: null })));
@@ -754,7 +755,7 @@ describe("worker runtime configuration reporting", () => {
       expect(fourth.source).toMatchObject({ generation: manager.current().generation, desiredRevision: "2", observationRevision: "7" });
       expect(fourth.report).toMatchObject({ reportId: expect.any(String), generation: fourth.source!.generation, baseRevision: "7" });
       if (scenario === "stale-generation") {
-        await manager.receive(receivedDesired(target), "7");
+        await manager.receive(receivedDesired({ ...target, revision: "3", value: { ...target.value, maxConcurrent: 5 } }), "7");
         expect(manager.current().generation).not.toBe(fourth.source!.generation);
       }
       releaseFourth.resolve();
@@ -792,7 +793,7 @@ describe("worker runtime configuration reporting", () => {
         expect({ checkpoint, stages: stages() }, evidence()).toMatchObject({ checkpoint: { state: "completed" }, stages: expect.arrayContaining([expect.objectContaining({ phase: "receipt-accept", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted", source: fourth.source, report: fourth.report })]) });
       });
       expect(mocks.emit, evidence()).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-stage", configuration: expect.objectContaining({ phase: "receipt-accept", status: "succeeded", syncId: fourth.syncId, reportId: fourth.report!.reportId, remote: "confirmed", local: "persisted", observationAccepted: true, received: { desiredRevision: "2", observationRevision: "8" } }) }));
-      expect(checkpoint!.generation).not.toBe(fourth.source!.generation);
+      expect(checkpoint!.generation).toBe(fourth.source!.generation);
       expect(manager.current().generation).toBe(checkpoint!.generation);
       expect(checkpointAttempts).toEqual(scenario === "io-retry" ? [checkpoint!.text, checkpoint!.text] : [checkpoint!.text]);
       expect(await readFile(f.paths.configurationFile, "utf8")).toBe(checkpoint!.text);
