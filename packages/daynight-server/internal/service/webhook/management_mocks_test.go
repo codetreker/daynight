@@ -176,6 +176,7 @@ type mgmtTeamDAO struct {
 	TeamsFn                func(context.Context, string, store.Page) (store.TeamPage, error)
 	TeamMembersFn          func(context.Context, string) ([]model.TeamMemberProfile, error)
 	TeamMembersPageFn      func(context.Context, string, store.Page) (store.TeamMemberPage, error)
+	MemberCandidatesFn     func(context.Context, store.TeamMemberCandidateQuery) (store.TeamMemberCandidatePage, error)
 	TeamInvitationFn       func(context.Context, []byte) (model.TeamInvitation, error)
 	TeamInvitationsFn      func(context.Context, string, time.Time) ([]model.TeamInvitation, error)
 	TeamInvitationPageFn   func(context.Context, string, time.Time, store.Page) (store.TeamInvitationPage, error)
@@ -202,6 +203,10 @@ func (m *mgmtTeamDAO) TeamMembers(p0 context.Context, p1 string) ([]model.TeamMe
 func (m *mgmtTeamDAO) TeamMembersPage(p0 context.Context, p1 string, p2 store.Page) (store.TeamMemberPage, error) {
 	m.need("TeamMembersPage", m.TeamMembersPageFn != nil)
 	return m.TeamMembersPageFn(p0, p1, p2)
+}
+func (m *mgmtTeamDAO) MemberCandidates(p0 context.Context, p1 store.TeamMemberCandidateQuery) (store.TeamMemberCandidatePage, error) {
+	m.need("MemberCandidates", m.MemberCandidatesFn != nil)
+	return m.MemberCandidatesFn(p0, p1)
 }
 func (m *mgmtTeamDAO) TeamInvitation(p0 context.Context, p1 []byte) (model.TeamInvitation, error) {
 	m.need("TeamInvitation", m.TeamInvitationFn != nil)
