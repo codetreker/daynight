@@ -1126,3 +1126,27 @@ func TestCompleteReplacementPersistsLegacyNullAndMissingFields(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyModeReplacementPreservesAbsentSudo(t *testing.T) {
+	d := checkedConfigurationScope(t, configuredDAO("7"))
+	archive := false
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":null,"copilot":null},"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+	value := configurationFixture()
+	value.PreserveSudoCleanup = true
+	value.PreserveArchiveSessions = true
+	got, err := PutConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", 7, value)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("replacement: %+v writes=%d archive=%v error=%v", got, d.desiredWrites, d.rawArchive, err)
+	}
+	var saved map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := saved["agentControlMode"]; present {
+		t.Fatalf("old mode retained: %s", d.rawWritten)
+	}
+	if _, present := saved["enableSudoCleanup"]; present {
+		t.Fatalf("absent sudo choice invented: %s", d.rawWritten)
+	}
+}
