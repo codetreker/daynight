@@ -11,7 +11,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
@@ -153,46 +152,6 @@ func TestNativeSessionHTTPAndBrowserEncodeSuppliedReaderPermissions(t *testing.T
 			location := path + "/operations/" + expectedCommand.OperationID
 			if !reflect.DeepEqual(accepted.Operation, commandResult) || accepted.OperationURL != location || response.Header().Get("Location") != location {
 				t.Fatal("HTTP changed the supplied accepted operation or its URL", accepted)
-			}
-		})
-	}
-}
-
-func TestTerminalSessionHTTPEncodesReaderState(t *testing.T) {
-	for _, role := range []string{"member", "admin"} {
-		t.Run(role, func(t *testing.T) {
-			f := terminalHTTPSetup(t)
-			reader := sessionReaderHandler(t, f.h)
-			marker := uuid.NewString()
-			supplied := f.knownState("1")
-			supplied["control"] = v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{}}
-			want := routeCopy(supplied)
-			scope := func(ctx context.Context, principal model.Principal, project, task, session string) {
-				t.Helper()
-				owner := f.message.Payload.(v2.Registration).Owner
-				if ctx.Err() != nil || ctx.Value(ownerPermissionContextKey{}) != marker || principal != reader.principal || project != owner.ProjectID || task != owner.TaskID || session != f.message.SessionID {
-					t.Errorf("terminal reader scope changed: actor=%+v project=%s task=%s session=%s context=%v", principal, project, task, session, ctx.Err())
-				}
-			}
-			f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
-				calls.CurrentTerminal = func(ctx context.Context, principal model.Principal, project, task string) (map[string]any, error) {
-					scope(ctx, principal, project, task, f.message.SessionID)
-					return routeCopy(want), nil
-				}
-				calls.TerminalState = func(ctx context.Context, principal model.Principal, project, task, session string) (map[string]any, error) {
-					scope(ctx, principal, project, task, session)
-					return routeCopy(want), nil
-				}
-			})
-			f.calls.ExpectCalls("CurrentTerminal", 1)
-			f.calls.ExpectCalls("TerminalState", 1)
-			headers := http.Header{v2.ProtocolHeader: {v2.Protocol}}
-			for _, path := range []string{f.base + "/current", f.base + "/" + f.message.SessionID + "/state"} {
-				response := ownerPermissionRequest(t, reader, http.MethodGet, path, "", marker, headers)
-				view := decodeResponse[map[string]any](t, response, http.StatusOK)
-				if !reflect.DeepEqual(view, want) {
-					t.Fatal("HTTP changed the supplied terminal reader state", view)
-				}
 			}
 		})
 	}

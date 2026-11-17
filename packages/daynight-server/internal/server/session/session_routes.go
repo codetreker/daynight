@@ -80,8 +80,8 @@ func (h *Routes) RegisterRoutes(mux *http.ServeMux) {
 			h.Failure(w, r, err)
 			return
 		}
-		if protocol == v2.Protocol {
-			httpx.WriteJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": v2.Protocol, "schemaVersion": 2, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "backends": []string{"herdr"}, "recordingResponsibilityVersion": 1, "controlDispatchVersion": 1, "workerCapabilitiesRequired": true})
+		if protocol != sp.Protocol {
+			h.Failure(w, r, terminalFault("unsupported_protocol", "Session capabilities require daynight.session.v1."))
 			return
 		}
 		httpx.WriteJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": sp.Protocol, "schemaVersion": 1, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "startupReportVersion": 1})
@@ -505,11 +505,7 @@ func relayWrite(ctx context.Context, conn *websocket.Conn, value any) error {
 	if err != nil {
 		return err
 	}
-	limit := sp.MaxFrameBytes
-	if conn != nil && conn.Subprotocol() == v2.Protocol {
-		limit = 4 * 1024 * 1024
-	}
-	if len(data) > limit {
+	if len(data) > sp.MaxFrameBytes {
 		return &model.Fault{Code: "payload_too_large", Message: "Session frame exceeds the negotiated protocol limit."}
 	}
 	write, cancel := context.WithTimeout(ctx, relayWriteTimeout)

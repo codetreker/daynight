@@ -376,8 +376,7 @@ and finalization retain their original credential requirements. Persisted
 operation Actors retain their original access UUID and are reauthorized for the
 actual operation before dispatch; refreshed access can query an authorized receipt
 without replacing that Actor or replaying the command. Public REST authentication
-admits fixed API OAuth tokens alongside PATs and browser Cookies. Task user WebSockets (v1/v2) and Test user
-WebSockets (v1) accept one actual Session subprotocol with one
+admits fixed API OAuth tokens alongside PATs and browser Cookies. Task and Test user WebSockets (v1) accept one actual Session subprotocol with one
 `daynight.authorization.<accessToken>` marker. They authenticate the fixed API
 family against the exact configured application Origin, echo only the Session
 protocol, and bind the connection to its effective expiry. A malformed marker
@@ -387,10 +386,10 @@ replace its Actor. The [authentication design](../../docs/design/daynight-auth.m
 owns error classification, best-effort close frames and the original connection
 cleanup stages.
 
-Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
-Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)
-defines routes, Worker capability gates, durable recording evidence and control
-ACKs. These server APIs do not establish native Worker or browser readiness.
+Historical Herdr Task Sessions use explicit `daynight.session.v2` selection for
+read-only history, archive status and content. The [terminal server design](../../docs/design/terminal-session-server.md)
+defines their authorization and integrity checks. Live Worker terminal and archive
+write endpoints are not exposed; native Web/Controller v1 behavior remains available.
 
 ## CLI device authorization
 
@@ -2496,15 +2495,16 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
-New Session archives use `internal/core/model/sessionarchive.Namespace` for project/user
-and Session UUID directories. Task Web/Herdr objects use
+Session archives use `internal/core/model/sessionarchive.Namespace` for project/user
+and Session UUID directories. Task Web and historical Herdr objects use
 `session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
 independent Test/Bot objects use
 `session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
 PostgreSQL retains the object path, length, digest and archive status or receipt.
 Readers continue to open the persisted `object_path` and apply the existing
 length/digest/structure checks. Existing files and metadata stay in place;
-read behavior, same-hash ready upload retries and public URLs remain unchanged.
+historical read behavior and public URLs remain unchanged. Web archive uploads retain
+their existing retry semantics.
 Archive uploads and content reads acquire one nonblocking slot per application
 instance and one per original owner across instances sharing a storage root.
 The lease spans body reading, validation, storage readback, encoding and response

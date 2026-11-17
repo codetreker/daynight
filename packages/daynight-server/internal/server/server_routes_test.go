@@ -2725,13 +2725,13 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	add("GET POST", task+"/sessions")
 	add("GET", task+"/sessions/current")
 	add("POST", session+"/controller-grant")
-	for _, op := range []string{"timeline", "channel", "state", "worker-channel", "inspection", "messages", "message-content", "archive/receipt", "archive/state"} {
+	for _, op := range []string{"timeline", "channel", "inspection", "messages", "message-content"} {
 		add("GET", session+"/"+op)
 	}
-	for _, op := range []string{"commands", "worker-messages"} {
+	for _, op := range []string{"commands"} {
 		add("POST", session+"/"+op)
 	}
-	for _, op := range []string{"operations/{operationId}", "resources/{resourceId}/content", "recording-evidence/{evidenceId}", "automation-recovery/{recoveryId}"} {
+	for _, op := range []string{"operations/{operationId}", "resources/{resourceId}/content"} {
 		add("GET", session+"/"+op)
 	}
 	add("GET POST", "/api/v1/test-sessions")
@@ -2808,7 +2808,6 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 	}
 	for _, suffix := range []string{
 		"/controller-grant", "/timeline", "/commands", "/operations/{operationId}", "/resources/{resourceId}/content", "/channel",
-		"/state", "/worker-messages", "/worker-channel", "/archive/receipt", "/archive/state", "/recording-evidence/{evidenceId}", "/automation-recovery/{recoveryId}",
 		"/inspection", "/messages", "/message-content",
 	} {
 		addPlain("TRACE", session+suffix)
@@ -2856,9 +2855,6 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 			route.path == task+"/sessions/current"
 		for _, suffix := range []string{"/timeline", "/channel", "/operations/{operationId}", "/resources/{resourceId}/content"} {
 			explicit = explicit || route.path == session+suffix || route.path == testSession+suffix
-		}
-		for _, suffix := range []string{"/worker-channel", "/archive/receipt", "/archive/state", "/recording-evidence/{evidenceId}", "/automation-recovery/{recoveryId}"} {
-			explicit = explicit || route.path == session+suffix
 		}
 		for _, base := range []string{session, testSession} {
 			explicit = explicit || route.path == base+"/archive" || route.path == base+"/archive/content"

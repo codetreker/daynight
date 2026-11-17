@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	"github.com/google/uuid"
 )
@@ -110,76 +108,6 @@ func TestDeletedProjectClosesWebSessionChannels(t *testing.T) {
 	}
 	if controllerRefusals.Load() == 0 || browserRefusals.Load() == 0 || f.backend.Called("Disconnect") != 1 {
 		t.Fatal("closure did not follow both missing-Project replies and one cleanup")
-	}
-}
-
-func TestTerminalWorkerClosesAfterCompletion(t *testing.T) {
-	f := terminalHTTPSetup(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
-	defer cancel()
-	path := f.base + "/" + f.message.SessionID
-	acknowledgement := f.ack("1")
-	f.calls.AllowRepeated("PollTerminal")
-	f.calls.Configure(func(c *sessionhttp.ServiceCallsForTest) {
-		c.RegisterTerminal = func(ctx context.Context, p model.Principal, project, task string, message v2.Message) (v2.Message, error) {
-			f.scope(t, ctx, p, project, task, message.SessionID)
-			if !reflect.DeepEqual(message, f.message) {
-				t.Error("worker registration frame changed")
-			}
-			return acknowledgement, nil
-		}
-		c.BindTerminalConnection = func(ctx context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) error {
-			f.scope(t, ctx, p, project, task, id)
-			if fence != f.message.Envelope || epoch != "1" {
-				t.Error("worker bind fence/epoch changed")
-			}
-			return nil
-		}
-		c.PollTerminal = func(ctx context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) ([]v2.Message, error) {
-			f.scope(t, ctx, p, project, task, id)
-			if fence != f.message.Envelope || epoch != "1" {
-				t.Error("worker Poll fence/epoch changed")
-			}
-			return []v2.Message{}, nil
-		}
-		c.DisconnectTerminal = func(ctx context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) error {
-			f.scope(t, ctx, p, project, task, id)
-			_, bounded := ctx.Deadline()
-			if !bounded || fence != f.message.Envelope || epoch != "1" {
-				t.Error("worker cleanup fence/epoch/deadline changed")
-			}
-			return nil
-		}
-	})
-	f.authentication.ExpectCalls(1)
-	worker, _, err := websocket.Dial(ctx, f.server.URL+path+"/worker-channel", &websocket.DialOptions{HTTPHeader: f.workerHeaders(), Subprotocols: []string{v2.Protocol}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.CloseNow()
-	if got := f.handshake(t, worker); !reflect.DeepEqual(got, acknowledgement) {
-		t.Fatal("worker ACK changed supplied usecase result")
-	}
-	workerClosed := watchDeletedChannel(ctx, worker)
-	if err = worker.Ping(ctx); err != nil {
-		t.Fatal("worker unavailable before completion reply", err)
-	}
-	completed := &model.Fault{Code: "session_conflict", Message: "Worker execution ended."}
-	var completionReplies atomic.Int32
-	f.calls.Configure(func(c *sessionhttp.ServiceCallsForTest) {
-		c.PollTerminal = func(ctx context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) ([]v2.Message, error) {
-			f.scope(t, ctx, p, project, task, id)
-			if fence != f.message.Envelope || epoch != "1" {
-				t.Error("completed worker Poll scope changed")
-			}
-			completionReplies.Add(1)
-			return nil, completed
-		}
-	})
-	requireDeletedChannelClosed(t, ctx, workerClosed)
-	f.waitConnections(t, 0)
-	if completionReplies.Load() == 0 || f.calls.Called("DisconnectTerminal") != 1 {
-		t.Fatal("worker closure did not follow completion reply and one cleanup")
 	}
 }
 
