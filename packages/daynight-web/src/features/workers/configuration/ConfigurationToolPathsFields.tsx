@@ -5,8 +5,8 @@ import { useI18n } from '../../../i18n/LocaleProvider';
 import { WorkerToolPathDetails } from '../WorkerToolPathDetails';
 import type { ConfigurationDraft, ParsedConfigurationDraft } from './model';
 
-const tools: readonly Tool[] = ['codex', 'copilot', 'herdr'];
-const names = { codex: 'Codex', copilot: 'Copilot', herdr: 'Herdr' };
+const tools: readonly Tool[] = ['codex', 'copilot'];
+const names = { codex: 'Codex', copilot: 'Copilot' };
 
 export const ConfigurationToolPathsFields = ({ resource, value, telemetry, online, disabled, changed, errors, onRevealToolPaths, onChange }: {
   readonly onRevealToolPaths?: () => void;
@@ -33,7 +33,7 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
     summary.scrollIntoView({ block: 'start', behavior: 'instant' });
     onRevealToolPaths();
   }, [onRevealToolPaths]);
-  const unavailable = resource.toolPathsSupported !== true ? m.unsupportedService : telemetry === undefined ? m.unsupportedWorker : null;
+  const unavailable = resource.toolPathsSupported !== true ? m.unsupportedService : null;
   return <details ref={detailsRef} className="panel config-panel configuration-tool-paths">
     <summary>{m.title}</summary>
     <div className="panel-body">
@@ -53,8 +53,7 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
           </div>
           {error !== undefined && <p className="field-error" id={`${id}-error`}>{m.invalidPath}</p>}
           {changed[tool] && <p className="application-feedback"><span className="status-chip unsaved">{m.unsaved}</span></p>}
-          <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online}
-            {...(resource.desired?.value.agentControlMode == null ? {} : { primaryContext: resource.desired.value.agentControlMode })} />
+          <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online} />
         </div>;
       })}
     </div>

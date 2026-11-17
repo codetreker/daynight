@@ -73,14 +73,11 @@ const mergeMembers = (source: string, value: object, keys: readonly string[]): s
   return objectSource(result);
 };
 const projectId = (source: string): string => String(JSON.parse(jsonObjectSources(source).get('projectId')!)).toLowerCase();
-const tools = ['codex', 'copilot', 'herdr'] as const;
+const tools = ['codex', 'copilot'] as const;
 
 export const configurationBaselinesCompatible = (baseline: ConfigurationBaseline, observed: ConfigurationBaseline | null): boolean => {
   if (observed === null || baseline.revision !== observed.revision) return true;
-  return configurationValueSourcesEqual(baseline.valueSource, observed.valueSource, {
-    controlMode: baseline.known.agentControlMode !== undefined && observed.known.agentControlMode !== undefined,
-    toolPaths: baseline.known.toolPaths !== undefined && observed.known.toolPaths !== undefined,
-  });
+  return configurationValueSourcesEqual(baseline.valueSource, observed.valueSource);
 };
 
 // Negotiated projections can reveal omitted fields without changing the target.
@@ -89,7 +86,7 @@ export const enrichConfigurationBaseline = (baseline: ConfigurationBaseline, obs
   if (observed === null || baseline.revision !== observed.revision || !configurationBaselinesCompatible(baseline, observed)) return baseline;
   const original = sourceObject(baseline.valueSource), incoming = sourceObject(observed.valueSource);
   let known = baseline.known;
-  for (const key of ['agentControlMode', 'toolPaths'] as const) {
+  for (const key of ['toolPaths'] as const) {
     const source = incoming.get(key);
     if (!original.has(key) && source !== undefined && observed.known[key] !== undefined) {
       original.set(key, source);
@@ -101,7 +98,8 @@ export const enrichConfigurationBaseline = (baseline: ConfigurationBaseline, obs
 
 export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: WorkerConfigurationValue): ConfigurationSubmission => {
   const root = sourceObject(baseline.valueSource);
-  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode'] as const) setKnown(root, key, known[key]);
+  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks'] as const) setKnown(root, key, known[key]);
+  root.delete('agentControlMode');
   root.set('native', mergeMembers(root.get('native')!, known.native, ['agent', 'model', 'args']));
   const projects = new Map(jsonContainerSources(root.get('projects')!).map(source => [projectId(source), source]));
   root.set('projects', arraySource(known.projects.map(project => {
@@ -115,7 +113,8 @@ export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: 
   if (known.toolPaths === undefined) root.delete('toolPaths');
   else {
     const source = root.get('toolPaths');
-    const result = source === undefined ? new Map<string, string>() : sourceObject(source);
+    const result = source === undefined || !source.trim().startsWith('{') ? new Map<string, string>() : sourceObject(source);
+    result.delete('herdr');
     for (const tool of tools) {
       const next = known.toolPaths[tool], old = result.get(tool);
       if (next === null || old === undefined || old.trim() === 'null') { result.set(tool, JSON.stringify(next)); continue; }
@@ -166,12 +165,11 @@ const equivalent = (left: string, right: string, projects = false, projectEntity
   if (/^-?\d/.test(left) && /^-?\d/.test(right)) return numberTuple(left) === numberTuple(right);
   return JSON.parse(left) === JSON.parse(right);
 };
-export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly controlMode?: boolean; readonly toolPaths?: boolean }): boolean => {
+export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly toolPaths?: boolean }): boolean => {
   validateConfigurationSource(left); validateConfigurationSource(right);
   if (options !== undefined) {
     const project = (source: string): string => {
       const fields = sourceObject(source);
-      if (options.controlMode === false) fields.delete('agentControlMode');
       if (options.toolPaths === false) fields.delete('toolPaths');
       return objectSource(fields);
     };

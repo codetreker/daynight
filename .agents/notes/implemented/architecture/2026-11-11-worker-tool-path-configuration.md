@@ -13,6 +13,8 @@ admits new work or which older selections still own running processes.
 
 ## Decision
 
+The [Web-only Worker decision](../simplification/2026-11-17-web-only-worker.md) replaces the Herdr execution and mode-specific portions of this decision. The following records the original design and rationale.
+
 The existing desired resource stores one nullable choice per tool. Null means
 unadopted; explicit auto is a durable choice that never reimports an old local
 path. A complete local bootstrap fills only null entries under the Worker lock.

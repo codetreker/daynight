@@ -33,7 +33,7 @@ const (
 )
 
 func (mode WorkerAgentControlMode) Supports(agent WorkerAgent) bool {
-	return (mode == AgentControlModeHerdr || mode == AgentControlModeWeb) && agent.Valid()
+	return mode == AgentControlModeWeb && agent.Valid()
 }
 
 type WorkerPhase string

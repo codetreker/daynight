@@ -221,7 +221,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 	response := f.reportRequest(body, 1, workerservice.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: configurationReceipt()}, nil, "1")
 	receipt := decodeResponse[configurationHTTPReceipt](t, response, http.StatusOK)
 	wantReceipt := configurationHTTPReceipt{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: *configurationReceipt()}
-	if response.Header().Get(workerConfigurationHeader) != "1" || !reflect.DeepEqual(receipt, wantReceipt) {
+	if response.Header().Get(workerConfigurationHeader) != "1" || !reflect.DeepEqual(receipt, capacityDecode[configurationHTTPReceipt](t, wantReceipt)) {
 		t.Fatalf("combined report did not negotiate bootstrap: %s", response.Body)
 	}
 	detail := decodeResponse[api.WorkerDetailResponse](t, f.getRequest(workerservice.WorkerDetailResult{ObservedAt: capacityObservedAt, Worker: capacityExpectedSnapshot(t, f.handler.principal.UserID, f.worker, body)}), http.StatusOK)
@@ -229,7 +229,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 		t.Fatalf("configuration exchange changed assistant host: %+v", detail.Worker.Telemetry.AssistantHost)
 	}
 	readConfiguration := decodeResponse[model.WorkerConfigurationResource](t, f.configurationRequest(configuration()), http.StatusOK)
-	if !reflect.DeepEqual(readConfiguration, configuration()) {
+	if !reflect.DeepEqual(readConfiguration, capacityDecode[model.WorkerConfigurationResource](t, configuration())) {
 		t.Fatalf("combined report configuration differs: %+v", readConfiguration)
 	}
 	rejectedHost := assistantHostBody()
@@ -243,7 +243,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 		t.Fatalf("refused exchange response changed: %+v", after.Worker)
 	}
 	afterConfiguration := decodeResponse[model.WorkerConfigurationResource](t, f.configurationRequest(configuration()), http.StatusOK)
-	if !reflect.DeepEqual(afterConfiguration, configuration()) {
+	if !reflect.DeepEqual(afterConfiguration, capacityDecode[model.WorkerConfigurationResource](t, configuration())) {
 		t.Fatal("refused exchange configuration response changed")
 	}
 	delete(body, "assistantHost")
@@ -258,7 +258,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 		t.Fatal("legacy replacement retained obsolete assistant capability")
 	}
 	retained := decodeResponse[model.WorkerConfigurationResource](t, f.configurationRequest(configuration()), http.StatusOK)
-	if !reflect.DeepEqual(retained, configuration()) {
+	if !reflect.DeepEqual(retained, capacityDecode[model.WorkerConfigurationResource](t, configuration())) {
 		t.Fatal("legacy heartbeat configuration response changed")
 	}
 }

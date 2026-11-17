@@ -12,7 +12,6 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
-	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
 
 func TestSudoCleanupConfigurationTransactionContract(t *testing.T) {
@@ -23,13 +22,13 @@ func TestSudoCleanupConfigurationTransactionContract(t *testing.T) {
 	principal := model.Principal{UserID: userID}
 	testutil.PutWorkerSnapshot(t, database, testutil.WorkerSnapshotFixture(userID, workerID, time.Now().UTC()))
 
-	const oldValue = `{"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`
-	const editedValue = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`
-	const enableValue = `{"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"enableSudoCleanup":true,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`
-	const disableValue = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"enableSudoCleanup":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`
+	const oldValue = `{"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"toolPaths":{"codex":null,"copilot":null}}`
+	const editedValue = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"toolPaths":{"codex":null,"copilot":null}}`
+	const enableValue = `{"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"enableSudoCleanup":true,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"toolPaths":{"codex":null,"copilot":null}}`
+	const disableValue = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"enableSudoCleanup":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"toolPaths":{"codex":null,"copilot":null}}`
 	parse := func(raw string) model.WorkerConfiguration {
 		t.Helper()
-		value, err := workercore.ParseWorkerConfigurationProtocol(json.RawMessage(raw), workerprotocol.Capabilities{})
+		value, err := workercore.ParseWorkerConfigurationProtocol(json.RawMessage(raw))
 		if err != nil {
 			t.Fatal(err)
 		}

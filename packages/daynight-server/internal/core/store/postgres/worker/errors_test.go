@@ -129,7 +129,7 @@ func TestWorkerConfigurationStoredDecodeErrors(t *testing.T) {
 	if _, err := scanWorkerConfiguration(workerSnapshotRow(func(...any) error { return sentinel })); !errors.Is(err, sentinel) {
 		t.Fatalf("scan error lost: %v", err)
 	}
-	for _, test := range []struct{ desired, observation string }{{`{"native":"bad"}`, `null`}, {`{}`, `{"items":"bad"}`}} {
+	for _, test := range []struct{ desired, observation string }{{`[]`, `null`}, {`{}`, `{"items":"bad"}`}} {
 		_, err := scanWorkerConfiguration(workerSnapshotRow(func(destinations ...any) error {
 			revision := int64(1)
 			stamp := time.Now().UTC()

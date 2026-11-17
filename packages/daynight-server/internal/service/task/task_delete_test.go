@@ -25,7 +25,7 @@ func taskDeletionWorker(t *testing.T, state model.WorkerState) model.TaskPropert
 	t.Helper()
 	_, target, principal := taskMockModels()
 	descriptor := workerDescriptor()
-	return testWithWorker(t, target.Properties, &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: state, UserID: principal.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: target.CreatedAt})
+	return testWithWorker(t, target.Properties, &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: state, UserID: principal.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: target.CreatedAt})
 }
 
 func taskDeletionService(t *testing.T, f *taskFailureFixture, target model.Task, expectedCaptures int) *taskservice.Tasks {

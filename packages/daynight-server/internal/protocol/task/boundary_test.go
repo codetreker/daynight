@@ -42,7 +42,7 @@ func TestMaximumTaskFieldsFitResponseBudgets(t *testing.T) {
 		t.Fatal("fixture cannot reach property boundary")
 	}
 	native := strings.Repeat("<", taskproperty.MaxWorkerNativeSessionIDBytes)
-	claim := &model.WorkerClaim{ClaimID: id, State: model.WorkerActive, UserID: id, WorkerID: id, Machine: model.WorkerMachine{ID: id, Name: strings.Repeat("<", taskproperty.MaxWorkerMachineNameBytes)}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: id, Phase: model.WorkerExecuting, Herdr: &model.WorkerHerdr{Session: strings.Repeat("<", taskproperty.MaxWorkerHerdrFieldBytes), WorkspaceID: strings.Repeat("<", taskproperty.MaxWorkerHerdrFieldBytes), PaneID: strings.Repeat("<", taskproperty.MaxWorkerHerdrFieldBytes)}, NativeSessionID: &native, ClaimedAt: now}
+	claim := &model.WorkerClaim{ClaimID: id, State: model.WorkerActive, UserID: id, WorkerID: id, Machine: model.WorkerMachine{ID: id, Name: strings.Repeat("<", taskproperty.MaxWorkerMachineNameBytes)}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: id, Phase: model.WorkerExecuting, NativeSessionID: &native, ClaimedAt: now}
 	rawWorker, err := taskproperty.EncodeWorker(claim)
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestMaximumWorkerFieldsFitCompleteBudgets(t *testing.T) {
 	cpu := model.WorkerCPU{Model: strings.Repeat("c", workercore.MaxCPUModelBytes), LogicalProcessors: 1}
 	memory := model.WorkerMemory{UsedBytes: 1, TotalBytes: 2}
 	disk := model.WorkerDisk{AvailableBytes: 1, TotalBytes: 2}
-	tele := model.WorkerTelemetry{Machine: model.WorkerMachine{ID: id, Name: strings.Repeat("m", workercore.MaxMachineNameBytes)}, Platform: model.PlatformLinux, WorkingDirectory: "/" + strings.Repeat("d", workercore.MaxWorkingDirectoryBytes-1), SampledAt: now, AssistantHost: host, OS: model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: now, Value: &os}, CPU: model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: &cpu}, Memory: model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: &memory}, Disk: model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: &disk}, Versions: model.WorkerVersions{Daynight: version, Herdr: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}, Codex: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}, Copilot: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}}}
+	tele := model.WorkerTelemetry{Machine: model.WorkerMachine{ID: id, Name: strings.Repeat("m", workercore.MaxMachineNameBytes)}, Platform: model.PlatformLinux, WorkingDirectory: "/" + strings.Repeat("d", workercore.MaxWorkingDirectoryBytes-1), SampledAt: now, AssistantHost: host, OS: model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: now, Value: &os}, CPU: model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: &cpu}, Memory: model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: &memory}, Disk: model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: &disk}, Versions: model.WorkerVersions{Daynight: version, Codex: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}, Copilot: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: &version}}}
 	claims := make([]model.WorkerTaskReference, workercore.MaxInventoryClaims)
 	items := make([]model.WorkerObservedTask, len(claims))
 	for i := range claims {

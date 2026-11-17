@@ -68,23 +68,7 @@ func TestWorkerProtocolLegacyAndExtendedResponses(t *testing.T) {
 			}
 		})
 	}
-	t.Run("legacy claim", func(t *testing.T) {
-		h := newHTTPFixture(t, io.Discard)
-		returned, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
-		h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
-			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			assertWorkerProtocolContext(t, ctx, false)
-			if input.AgentControlMode != model.AgentControlModeHerdr {
-				t.Fatal("legacy claim lost default mode")
-			}
-			return returned, nil
-		}
-		response := protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, workerClaimBody(returned.Version-1)), "")
-		decodeResponse[api.Task](t, response, http.StatusOK)
-		if strings.Contains(response.Body.String(), "agentControlMode") {
-			t.Fatal("legacy claim received extended schema")
-		}
-	})
+
 }
 
 func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaims(t *testing.T) {
@@ -130,6 +114,9 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 				}
 				assertProjectError(t, protocolRequest(h, http.MethodGet, taskCollection(testProjectID)+"?workerId="+worker.WorkerID, "", ""), http.StatusConflict, "invalid_transition")
 			})
+			if configuration.mode == model.AgentControlModeHerdr {
+				return
+			}
 			for _, operation := range []string{"claim", "update", "release", "withdraw", "complete", "metadata", "delete"} {
 				for _, protocol := range []string{"", "2"} {
 					t.Run(operation+"/"+protocol, func(t *testing.T) {

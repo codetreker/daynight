@@ -11,7 +11,6 @@ import { useI18n } from '../../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../../task-cache/TaskCacheProvider';
 import { WorkerTimestamp } from '../presentation';
 import { ConfigurationFeedback, configurationOutcome, configurationOutcomeState } from './ConfigurationFeedback';
-import { ConfigurationControlModeField } from './ConfigurationControlModeField';
 import { ConfigurationToolPathsFields } from './ConfigurationToolPathsFields';
 import { toolPathSummaryStates } from '../tool-path-presentation';
 import { ConfigurationFieldError, ConfigurationNativeFields, ConfigurationProjectNativeFields } from './ConfigurationNativeFields';
@@ -53,7 +52,6 @@ const applicationStates = (resource: WorkerConfigurationResource): readonly Work
   if (resource.desired === null) return [];
   const { value } = resource.desired;
   const states = [...globalFields, 'preferPlatformSpecificTasks' as const, 'native' as const].map(kind => configurationOutcomeState(resource, configurationOutcome(resource, kind), value[kind]));
-  if (resource.controlModeSupported === true) states.push(configurationOutcomeState(resource, configurationOutcome(resource, 'agentControlMode'), value.agentControlMode ?? null));
   for (const project of value.projects) {
     states.push(configurationOutcomeState(resource, configurationOutcome(resource, 'projectPreparation', project.projectId), true));
     states.push(configurationOutcomeState(resource, configurationOutcome(resource, 'projectNative', project.projectId), resolvedProjectNative(value.native, project.nativeOverrides)));
@@ -68,7 +66,7 @@ const applicationStates = (resource: WorkerConfigurationResource): readonly Work
 
 const ConfigurationSummary = ({ resource, online, toolPaths }: { readonly resource: WorkerConfigurationResource; readonly online: boolean | null; readonly toolPaths: ToolPathTelemetry | undefined }) => {
   const { messages: { workers: { configuration: m } } } = useI18n();
-  const states = useMemo(() => applicationStates(resource), [resource.desired, resource.observation, resource.controlModeSupported]);
+  const states = useMemo(() => applicationStates(resource), [resource.desired, resource.observation]);
   const failed = states.includes('error');
   const tools = toolPathSummaryStates(resource, toolPaths, online);
   const toolsApplied = resource.toolPathsSupported !== true || tools.length > 0 && tools.every(state => state === 'applied');
@@ -84,8 +82,9 @@ const ConfigurationSummary = ({ resource, online, toolPaths }: { readonly resour
 };
 
 const ConfigurationError = ({ error, write, retained }: { readonly error: unknown; readonly write: boolean; readonly retained: boolean }) => {
-  const { messages: { workers: { configuration: m }, common } } = useI18n();
-  const detail = error instanceof ApiError ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError : error.status === 403 ? m.permissionError : retained ? m.retainedDraft : null : retained ? m.retainedDraft : null;
+  const { messages: { workers: { configuration: m }, common }, locale } = useI18n();
+  const upgrade = error instanceof ApiError && (error.code === 'worker_tool_protocol' || error.status === 400 && error.code === 'invalid_input');
+  const detail = upgrade ? (locale === 'zh-CN' ? '请升级服务，然后重试。' : 'Upgrade the service and try again.') : error instanceof ApiError ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError : error.status === 403 ? m.permissionError : retained ? m.retainedDraft : null : retained ? m.retainedDraft : null;
   return <><p className="notice-heading">{write ? m.saveFailed : m.readFailed}</p>{detail !== null && <p>{detail}</p>}
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
@@ -102,9 +101,8 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   readonly state: ReturnType<typeof useWorkerConfiguration>;
   readonly confirming: boolean;
 }) => {
-  const toolPathsEditable = toolPaths !== undefined;
   const choices = useConfigurationProjects(readEnabled);
-  const { messages: { workers: { configuration: m }, workers, platform: platformMessages }, format } = useI18n();
+  const { messages: { workers: { configuration: m }, workers, platform: platformMessages }, format, locale } = useI18n();
   const scope = useTaskCacheScope();
   const [dialog, setDialog] = useState<'projects' | 'removal' | null>(null);
   useLayoutEffect(() => { if (confirming) setDialog(null); }, [confirming]);
@@ -120,7 +118,7 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   if (state.unavailable) return shell(<section className="state-box" role="status"><h2>{m.unavailable}</h2><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button></section>);
   if (resource === null) return shell(<section className="state-box" role={state.error === null ? 'status' : 'alert'}>{state.loading ? <><span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2></> : <ConfigurationError error={state.error} write={false} retained={false} />}{state.error !== null && <button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button>}</section>);
   if (resource.desired === null || draft === null) return shell(<section className="state-box" role="status"><h2>{m.uninitialized}</h2><p>{m.uninitializedDetail}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></section>);
-  const desired = resource.desired, parsed = parseConfigurationDraft(draft, resource.controlModeSupported === true, { toolPathsSupported: resource.toolPathsSupported === true && toolPathsEditable, ...(platform === undefined ? {} : { platform }) }), changed = configurationFieldChanges(draft, state.comparisonValue ?? desired.value, parsed.errors);
+  const desired = resource.desired, parsed = parseConfigurationDraft(draft, { toolPathsSupported: true, ...(platform === undefined ? {} : { platform }) }), changed = configurationFieldChanges(draft, state.comparisonValue ?? desired.value, parsed.errors);
   const removed = desired.value.projects.filter(project => !draft.projects.some(selected => selected.projectId === project.projectId)).map(project => ({ projectId: project.projectId, name: metadata.get(project.projectId)?.name ?? project.projectId }));
   const removals = resource.observation?.items.filter(item => item.key.kind === 'projectRemoval') ?? [];
   const updateProject = (projectId: string, value: ConfigurationDraft['projects'][number]['native']) => state.setDraft(old => ({ ...old, projects: old.projects.map(project => project.projectId === projectId ? { ...project, native: value } : project) }));
@@ -133,6 +131,11 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
   const chooseProjects = () => { choices.refresh(); setDialog('projects'); };
   return shell(<>
     <div className="configuration-toolbar"><button className="button" type="button" disabled={!readEnabled || state.refreshing || state.pending} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></div>
+    {!!desired.unsupportedFields?.length && <div className="notice warning configuration-notice" role="alert">
+      <p className="notice-heading">{locale === 'zh-CN' ? '旧配置待修正' : 'Configuration needs correction'}</p>
+      <p>{locale === 'zh-CN' ? '不支持的字段：' : 'Unsupported fields: '}{desired.unsupportedFields.join(', ')}</p>
+      <details><summary>{locale === 'zh-CN' ? '查看原始配置' : 'View original configuration'}</summary><pre>{workerConfigurationBaseline(resource)?.valueSource}</pre></details>
+    </div>}
     {online === false && <div className="notice warning configuration-notice" role="status">{m.offlineNotice}</div>}
     {state.conflict || state.notice === 'conflict' ? <div className="notice warning configuration-notice" role="alert"><p className="notice-heading">{m.conflict}</p><p>{m.retainedDraft}</p><details><summary>{m.viewLatest}</summary><pre>{JSON.stringify(desired.value, null, 2)}</pre></details><div className="notice-actions"><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || state.publicationPending || state.notice === 'conflict' && !state.conflict} onClick={state.loadLatest}>{m.loadLatest}</button></div></div> : null}
     {state.uncertain && <div className="notice warning configuration-notice" role="alert"><p>{m.uncertain}</p><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{m.verifySave}</button></div>}
@@ -140,10 +143,10 @@ export const WorkerConfigurationPanel = ({ workerId, platform, visible, readEnab
     {choices.error !== null && <div className="notice error configuration-notice" role="alert"><p>{choices.error instanceof TaskCacheError ? workers.cacheStorageError : m.projectsFailed}</p><button className="button" type="button" disabled={!readEnabled || choices.loading} onClick={choices.refresh}>{workers.retry}</button></div>}
     {state.notice === 'saved' || state.notice === 'reconciled' || state.notice === 'notSaved' ? <div className={`notice ${state.notice === 'notSaved' ? 'warning' : 'success'} configuration-notice`} role="status">{m[state.notice]}</div> : null}
     <div className="configuration-layout"><div className="configuration-main"><form ref={formRef} className={state.dirty ? 'configuration-form is-dirty' : 'configuration-form'} onSubmit={save} noValidate aria-label={m.configuration}>
-      <section className="panel config-panel"><header className="panel-heading"><h2>{m.settings}</h2></header><div className="panel-body config-grid">{globalFields.map(key => <div className="field" key={key}><label htmlFor={`config-${key}`}>{m[key]}</label><div className="field-unit"><input id={`config-${key}`} type="text" inputMode="numeric" value={draft[key]} disabled={disabled} aria-invalid={parsed.errors[key] !== undefined} aria-describedby={`feedback-${key}${parsed.errors[key] === undefined ? '' : ` config-${key}-error`}`} onChange={event => state.setDraft(old => ({ ...old, [key]: event.target.value }))} />{key === 'pollIntervalMs' && <span>{m.milliseconds}</span>}</div><ConfigurationFieldError issue={parsed.errors[key]} id={`config-${key}-error`} range={{ minimum: key === 'recoveryLimit' ? 0 : 1, maximum: key === 'pollIntervalMs' ? 2_147_483_647 : Number.MAX_SAFE_INTEGER }} /><ConfigurationFeedback id={`feedback-${key}`} resource={resource} kind={key} expected={desired.value[key]} changed={changed[key]} /></div>)}<ConfigurationControlModeField resource={resource} value={draft.agentControlMode} changed={changed.agentControlMode} disabled={disabled} onChange={agentControlMode => state.setDraft(old => ({ ...old, agentControlMode }))} /><div className="field full"><label className="configuration-toggle" htmlFor="config-preferPlatformSpecificTasks"><input id="config-preferPlatformSpecificTasks" type="checkbox" checked={draft.preferPlatformSpecificTasks} disabled={disabled} aria-describedby="platform-preference-detail feedback-preferPlatformSpecificTasks" onChange={event => state.setDraft(old => ({ ...old, preferPlatformSpecificTasks: event.target.checked }))} /><span>{platform === undefined ? m.preferPlatformSpecificTasks : m.preferPlatformTasks({ platform: platformMessages.names[platform] })}</span></label><p className="configuration-toggle-detail" id="platform-preference-detail">{m.platformPreferenceDetail}</p><ConfigurationFeedback id="feedback-preferPlatformSpecificTasks" resource={resource} kind="preferPlatformSpecificTasks" expected={desired.value.preferPlatformSpecificTasks} changed={changed.preferPlatformSpecificTasks} /></div></div></section>
+      <section className="panel config-panel"><header className="panel-heading"><h2>{m.settings}</h2></header><div className="panel-body config-grid">{globalFields.map(key => <div className="field" key={key}><label htmlFor={`config-${key}`}>{m[key]}</label><div className="field-unit"><input id={`config-${key}`} type="text" inputMode="numeric" value={draft[key]} disabled={disabled} aria-invalid={parsed.errors[key] !== undefined} aria-describedby={`feedback-${key}${parsed.errors[key] === undefined ? '' : ` config-${key}-error`}`} onChange={event => state.setDraft(old => ({ ...old, [key]: event.target.value }))} />{key === 'pollIntervalMs' && <span>{m.milliseconds}</span>}</div><ConfigurationFieldError issue={parsed.errors[key]} id={`config-${key}-error`} range={{ minimum: key === 'recoveryLimit' ? 0 : 1, maximum: key === 'pollIntervalMs' ? 2_147_483_647 : Number.MAX_SAFE_INTEGER }} /><ConfigurationFeedback id={`feedback-${key}`} resource={resource} kind={key} expected={desired.value[key]} changed={changed[key]} /></div>)}<div className="field full"><label className="configuration-toggle" htmlFor="config-preferPlatformSpecificTasks"><input id="config-preferPlatformSpecificTasks" type="checkbox" checked={draft.preferPlatformSpecificTasks} disabled={disabled} aria-describedby="platform-preference-detail feedback-preferPlatformSpecificTasks" onChange={event => state.setDraft(old => ({ ...old, preferPlatformSpecificTasks: event.target.checked }))} /><span>{platform === undefined ? m.preferPlatformSpecificTasks : m.preferPlatformTasks({ platform: platformMessages.names[platform] })}</span></label><p className="configuration-toggle-detail" id="platform-preference-detail">{m.platformPreferenceDetail}</p><ConfigurationFeedback id="feedback-preferPlatformSpecificTasks" resource={resource} kind="preferPlatformSpecificTasks" expected={desired.value.preferPlatformSpecificTasks} changed={changed.preferPlatformSpecificTasks} /></div></div></section>
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.defaultNative}</h2></header><div className="panel-body config-grid"><ConfigurationNativeFields value={draft.native} onChange={native => state.setDraft(old => ({ ...old, native }))} disabled={disabled} errors={parsed.errors} /><div className="native-summary"><ConfigurationFeedback resource={resource} kind="native" expected={desired.value.native} changed={changed.native} /></div></div></section>
       <ConfigurationToolPathsFields key={workerId} {...(onRevealToolPaths === undefined ? {} : { onRevealToolPaths })} resource={resource} value={draft.toolPaths} telemetry={toolPaths} online={online} disabled={disabled} changed={changed.toolPaths} errors={parsed.errors}
-        onChange={(tool, choice) => state.setDraft(old => ({ ...old, toolPaths: { codex: null, copilot: null, herdr: null, ...old.toolPaths, [tool]: choice } }))} />
+        onChange={(tool, choice) => state.setDraft(old => ({ ...old, toolPaths: { codex: null, copilot: null, ...old.toolPaths, [tool]: choice } }))} />
       <section className="panel config-panel"><header className="panel-heading"><h2>{m.projects} <span className="worker-count-badge">{format.number(draft.projects.length)}</span></h2><button className="button" type="button" disabled={disabled} onClick={chooseProjects}>＋ {m.chooseProjects}</button></header>
         {draft.projects.length === 0 ? <div className="empty-projects"><p>{m.noProjects}</p><button className="button" type="button" disabled={disabled} onClick={chooseProjects}>{m.chooseProjects}</button></div> : <div className="project-config-list">{draft.projects.map(project => {
           const meta = metadata.get(project.projectId), name = meta?.name ?? project.projectId;

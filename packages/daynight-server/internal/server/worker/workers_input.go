@@ -62,15 +62,11 @@ func workerReportInput(fields map[string]json.RawMessage) (model.WorkerReport, e
 	if err != nil {
 		return input, err
 	}
-	versions, err := workerObject(fields["versions"], "versions", "daynight", "herdr", "codex", "copilot")
+	versions, err := workerObject(fields["versions"], "versions", "daynight", "codex", "copilot")
 	if err != nil {
 		return input, err
 	}
 	input.Telemetry.Versions.Daynight, err = httpx.RequiredString(versions, "daynight")
-	if err != nil {
-		return input, err
-	}
-	input.Telemetry.Versions.Herdr, err = workerProbeInput(versions["herdr"], "herdr", "not_running", workerVersionInput)
 	if err != nil {
 		return input, err
 	}

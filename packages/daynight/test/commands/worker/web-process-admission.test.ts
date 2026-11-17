@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { ConfigurationAdmissionWaiting } from "../../../src/commands/worker/configuration-admission.js";
+import * as controllerProcess from "../../../src/commands/worker/backends/controller-process.js";
+import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
@@ -53,4 +55,15 @@ it("does not mark submission or spawn after readiness changes during launch gran
   await expect(launcher.launch(f.store.getTask(f.task)!, ticket, signal, () => complete)).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
   expect(f.store.getTask(f.task)!.webExecution).toMatchObject({ launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [] });
   expect(f.store.getTask(f.task)!.webExecution!.startupReport).toBeUndefined();
+});
+
+it("starts the Web controller with the worker configuration directory for alias loading", async () => {
+  const f = await fixture();
+  const launcher = createWebControllerLauncher({ homeDirectory: f.directory, packageDirectory: f.directory, store: f.store, sessionApi: f.sessionApi, now: Date.now });
+  const signal = new AbortController().signal;
+  const ticket = await launcher.prepare(f.task, "assignment", signal);
+  const stopped = new Error("fixture observes the spawn boundary");
+  const launch = vi.spyOn(controllerProcess, "launchControllerProcess").mockRejectedValue(stopped);
+  await expect(launcher.launch(f.store.getTask(f.task)!, ticket, signal)).rejects.toBe(stopped);
+  expect(launch).toHaveBeenCalledWith(expect.objectContaining({ env: expect.objectContaining({ DN_CONFIG_DIR: resolveConfigurationPaths(f.directory).stateDirectory }) }));
 });

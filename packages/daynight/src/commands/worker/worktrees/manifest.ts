@@ -12,6 +12,7 @@ export type WorktreeManifestStore = {
   list(): WorktreeManifest[];
   findClaim(identity: ClaimIdentity): WorktreeManifest | null;
   publish(manifest: WorktreeManifest): WorktreeManifest;
+  publishKnown(manifest: WorktreeManifest): WorktreeManifest;
   remove(expected: WorktreeManifest): void;
 };
 
@@ -67,10 +68,29 @@ export const createWorktreeManifestStore = (commonDirectory: string): WorktreeMa
   };
   const read = (worktreeId: string): WorktreeManifest | null => {
     canonicalWorktreeId(worktreeId);
-    return list().find(value => value.worktreeId === worktreeId) ?? null;
+    if (!hasDirectory()) return null;
+    const file = manifestPath(commonDirectory, worktreeId);
+    let value: WorktreeManifest;
+    try { value = readFile(file, false); } catch (error) { if (missing(error)) return null; throw error; }
+    if (value.worktreeId !== worktreeId) throw new Error("Worktree manifest filename does not match its owner.");
+    return value;
   };
   return {
     read, list,
+    publishKnown: input => {
+      const value = parse(input);
+      ensureDurableDirectory(parent); ensureDurableDirectory(directory);
+      const existing = read(value.worktreeId);
+      if (existing !== null) {
+        if (!same(existing, value)) throw new Error("Conflicting worktree manifest.");
+        const observed = readFile(manifestPath(commonDirectory, value.worktreeId), true);
+        if (!same(observed, value)) throw new Error("Worktree manifest changed during publication.");
+        syncDurableDirectory(directory);
+        return observed;
+      }
+      writeDurableJson(manifestPath(commonDirectory, value.worktreeId), value);
+      return value;
+    },
     findClaim: identity => { const key = claimKey(identity); return list().find(value => claimKey(value) === key) ?? null; },
     publish: input => {
       const value = parse(input);

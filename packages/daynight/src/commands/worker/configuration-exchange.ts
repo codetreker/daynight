@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
 import type { Operation } from "../../api/operation.js";
 import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
-import type { WorkerCloudDesired, ReceivedWorkerDesired, ReceivedWorkerConfigurationReceipt, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerCloudValue, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
+import type { WorkerRawDesired, ReceivedWorkerDesired, ReceivedWorkerConfigurationReceipt, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerCloudValue, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import type { WorkerReport } from "../../api/types.js";
 import type { WorkerPromptSource } from "./prompt-source.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
@@ -49,7 +49,7 @@ export type WorkerConfigurationExchange = {
 };
 
 type ExchangeManager = {
-  current(): { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly synchronized: boolean };
+  current(): { readonly generation: string; readonly desired: WorkerRawDesired | null; readonly observationRevision: string; readonly synchronized: boolean };
   hasAuthority(): boolean;
   waitReady(signal?: AbortSignal): Promise<void>;
   receive(desired: ReceivedWorkerDesired | null, revision?: string, signal?: AbortSignal, syncId?: string, remoteObservation?: { readonly observationRevision: string; readonly json: string } | null): Promise<void>;
@@ -176,7 +176,6 @@ export const createWorkerConfigurationExchange = (options: {
         bootstrap = null;
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
       }
-      if (current.desired?.value.agentControlMode === undefined || current.desired?.value.toolPaths === undefined) needsRead = true;
       return outcome;
     },
     acceptanceOutcome: sent => acknowledgements.get(sent),
@@ -230,7 +229,7 @@ export const syncWorkerConfigurationOnce = async (options: {
     const captured = configuration.capture(report);
     capturedContext = configuration.reportContext?.(captured);
     let sent: WorkerCloudReport;
-    try { sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") })); }
+    try { sent = immutable(parseWorkerCloudReport(captured)); }
     catch (error) { configuration.markNeedsRead?.(); throw error; }
     emit("succeeded");
     if (configuration.isCurrent?.(captured) === false) return dropped();

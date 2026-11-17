@@ -177,8 +177,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     if (identity.projectId !== uuid(project.projectId, "Project ID")) throw new Error("The resource owner does not belong to this project.");
     const store = createWorktreeManifestStore(repository.commonDirectory);
     const manifest = store.read(identity.worktreeId);
-    const claim = store.findClaim(identity);
-    if (manifest !== null && !sameResourceOwner(manifest, identity) || claim !== null && !sameResourceOwner(claim, identity)) throw new WorktreeValidationError("The worktree manifest belongs to another original resource.");
+    if (manifest !== null && !sameResourceOwner(manifest, identity)) throw new WorktreeValidationError("The worktree manifest belongs to another original resource.");
     return manifest;
   };
   // Old Worker lock parsing is confined to the one-time migration.
@@ -331,7 +330,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (before?.registration !== null && before?.registration !== undefined) {
         if (existing === null && originalCwd === undefined && before.leaf !== null) throw new Error("The existing worktree registration has no original binding.");
         operation.check();
-        store.publish(manifest);
+        store.publishKnown(manifest);
         if (before.leaf !== null) return before.binding;
         // The exact original registration points to an absent checkout. Remove
         // only that registration before restoring the retained branch.
@@ -344,7 +343,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const reserved = await directory(binding.worktreePath);
       if (reserved === null || (await readdir(binding.worktreePath)).length > 0) throw new Error("The unregistered worktree reservation is not empty.");
       operation.check();
-      store.publish(manifest);
+      store.publishKnown(manifest);
       operation.check();
       const baseRef = `refs/daynight/worker-bases/${identity.worktreeId}`;
       let fetchedRef: string | undefined;

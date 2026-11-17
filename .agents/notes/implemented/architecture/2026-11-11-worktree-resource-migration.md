@@ -11,6 +11,8 @@ resources appear ready for the new format.
 
 ## Decision
 
+The [Web-only Worker decision](../simplification/2026-11-17-web-only-worker.md) replaces the Herdr execution and mode-specific portions of this decision. The following records the original design and rationale.
+
 An explicit migration component collects legacy registrations, published
 manifests, cleanup schedules and Web and Herdr bindings, and checks their owner
 and location relationships. It publishes and reads back all manifests before

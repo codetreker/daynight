@@ -15,6 +15,8 @@ treated as an absent write.
 
 ## Decision
 
+The [Web-only Worker decision](../simplification/2026-11-17-web-only-worker.md) replaces the Herdr execution and mode-specific portions of this decision. The following records the original design and rationale.
+
 The configuration persistence owner keeps one FIFO of prepared checkpoints.
 Each head is computed and frozen once from the last committed state; transient
 file I/O failures retry identical state and encoding through a fresh iterator and

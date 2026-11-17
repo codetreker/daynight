@@ -24,7 +24,7 @@ const time = "2026-11-04T00:00:00Z";
 const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
 const user = { id: uuid(1), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(2), kind: "personal", name: null } };
 const native = { agent: "codex" as const, model: "global", args: ["--search"] };
-const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 2000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: [] };
+const value: WorkerCloudValue = { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 2, pollIntervalMs: 2000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: [] };
 const connection = { serverUrl: "https://service.example", serverToken: token };
 const directories: string[] = [];
 const fixture = async (data: Record<string, unknown> = {}) => {
@@ -40,7 +40,7 @@ const fixture = async (data: Record<string, unknown> = {}) => {
   return { directory, paths, source };
 };
 const response = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), {
-  status, headers: { "Content-Type": "application/json", "Daynight-User-ID": user.id, "Daynight-Worker-Configuration": "1" },
+  status, headers: { "Content-Type": "application/json", "Daynight-User-ID": user.id, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2" },
 });
 const cloudFetch = (desired: unknown) => vi.fn<typeof globalThis.fetch>()
   .mockResolvedValueOnce(response(user))
@@ -107,14 +107,26 @@ describe("Worker cloud configuration sources", () => {
     const local = parseWorkerLocalConfiguration(f.source, f.paths);
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
     expect(seed.toolPaths).toEqual(local.toolPaths);
-    expect(seed.toolPaths).toMatchObject({ codex: { kind: "path" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+    expect(seed.toolPaths).toMatchObject({ codex: { kind: "path" }, copilot: { kind: "auto" } });
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
-  it.each([undefined, "web"])("imports the effective local control mode without rewriting YAML: %s", async agentControlMode => {
-    const f = await fixture({ worker: agentControlMode === undefined ? {} : { agentControlMode } });
-    const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
-    expect(seed.agentControlMode).toBe(agentControlMode ?? "herdr");
+  it("accepts an existing Web mode locally without adding it to the cloud candidate", async () => {
+    const f = await fixture({ worker: { agentControlMode: "web" } });
+    const signal = new AbortController().signal;
+    const resolve = async () => ({ id: project.id });
+    const local = parseWorkerLocalConfiguration(f.source, f.paths);
+    expect(local).toEqual({ ...parseWorkerLocalConfiguration(stringify({ ...connection, worker: {} }), f.paths), source: f.source });
+    const seed = await parseWorkerCloudBootstrap(f.source, f.paths, resolve, signal);
+    expect(seed).toEqual(await parseWorkerCloudBootstrap(stringify({ ...connection, worker: {} }), f.paths, resolve, signal));
+    expect(seed).not.toHaveProperty("agentControlMode");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
+
+  it.each(["herdr", "unsupported", null])("rejects unsupported local mode %s without rewriting YAML", async mode => {
+    const f = await fixture({ worker: { agentControlMode: mode } });
+    expect(() => parseWorkerLocalConfiguration(f.source, f.paths)).toThrow("agentControlMode");
+    await expect(parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal)).rejects.toThrow("agentControlMode");
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
@@ -128,9 +140,9 @@ describe("Worker cloud configuration sources", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
   it("reads only local-owned values while obsolete managed values are invalid", async () => {
-    const f = await fixture({ worker: { agent: "unsupported", args: null, maxConcurrent: -1, repositories: "obsolete", repositoryRoot: "../local-repositories", agentControlMode: "web" } });
+    const f = await fixture({ worker: { agent: "unsupported", args: null, maxConcurrent: -1, repositories: "obsolete", repositoryRoot: "../local-repositories" } });
     const local = await readWorkerLocalConfiguration(f.paths);
-    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+    expect(local).toEqual({ ...connection, source: f.source, repositoryRoot: "../local-repositories", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } } });
     expect(() => parseWorkerConfiguration(f.source, f.paths)).toThrow();
     expect(await workerLocalRepositoryForProject(local, f.paths, project)).toBeUndefined();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
@@ -166,7 +178,7 @@ describe("Worker cloud configuration sources", () => {
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, resolve, new AbortController().signal);
     expect(seed).toMatchObject({ maxConcurrent: 4, native: { args: ["--model", "controlled-by-worker"] }, projects: [] });
     expect(resolve).not.toHaveBeenCalled();
-    expect(() => resolveCloudNative(seed.native, "herdr", seed.recoveryLimit)).toThrow();
+    expect(() => resolveCloudNative(seed.native, seed.recoveryLimit)).toThrow();
   });
 
   it("imports the optional platform preference with a false default and strict explicit booleans", async () => {
@@ -207,9 +219,10 @@ describe("Worker cloud configuration sources", () => {
   });
 
   it("preserves inheritance, explicit clears and native-kind changes", () => {
-    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: {} }), "herdr", 7)).toEqual({ ...native, agentControlMode: "herdr", recoveryLimit: 7 });
-    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: { model: null, args: [] } }), "herdr", 7)).toMatchObject({ agent: "codex", model: null, args: [], recoveryLimit: 7 });
-    expect(resolveCloudNative(resolveWorkerCloudProjectNative(native, { projectId: project.id, nativeOverrides: { agent: "claude" } }), "web", 0)).toEqual({ agent: "claude", model: null, args: [], agentControlMode: "web", recoveryLimit: 0 });
+    const webNative = { ...native, args: ["--sandbox", "read-only"] };
+    expect(resolveCloudNative(resolveWorkerCloudProjectNative(webNative, { projectId: project.id, nativeOverrides: {} }), 7)).toEqual({ ...webNative, agentControlMode: "web", recoveryLimit: 7 });
+    expect(resolveCloudNative(resolveWorkerCloudProjectNative(webNative, { projectId: project.id, nativeOverrides: { model: null, args: [] } }), 7)).toMatchObject({ agent: "codex", model: null, args: [], recoveryLimit: 7 });
+    expect(resolveCloudNative(resolveWorkerCloudProjectNative(webNative, { projectId: project.id, nativeOverrides: { agent: "claude" } }), 0)).toEqual({ agent: "claude", model: null, args: [], agentControlMode: "web", recoveryLimit: 0 });
   });
 
   it("checks cloud ownership despite an absent cache and preserves the local file", async () => {

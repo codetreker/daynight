@@ -129,15 +129,5 @@ func TestWorkerStartupReportsAreOwnerBoundOrderedAndIdempotent(t *testing.T) {
 			t.Fatalf("newer startup evidence: %#v %v %v", actual, err, decodeErr)
 		}
 	})
-	t.Run("legacy execution", func(t *testing.T) {
-		legacy := descriptor
-		legacy.AgentControlMode = model.AgentControlModeHerdr
-		current := workerProtocolTask(t, owner, legacy, model.WorkerActive)
-		f := workerMockWrite(t, current, owner)
-		after, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: legacy.ClaimID, StartupReport: &report})
-		requireFault(t, err, "claim_conflict")
-		if !reflect.DeepEqual(after, model.Task{}) {
-			t.Fatal("legacy execution accepted startup evidence")
-		}
-	})
+
 }

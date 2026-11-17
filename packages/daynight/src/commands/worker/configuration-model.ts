@@ -1,12 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
+import { ProtocolError } from "../../api/validation.js";
 import { receiveWorkerDesired, parseWorkerCloudDesired } from "../../api/worker-configuration.js";
-import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
-import type { AgentControlMode, WorkerReport } from "../../api/types.js";
+import type { WorkerCloudDesired, WorkerRawDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
+import type { WorkerReport } from "../../api/types.js";
 import type { Tool, ToolPathChoice, ToolPaths } from "../../platform/tool-path-choice.js";
 
 export type WorkerConfigurationIdentity = { readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
 export type WorkerConfigurationToolTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: ToolPaths };
-export type WorkerNativeProof = { readonly mode: AgentControlMode; readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
+export type WorkerNativeProof = { readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
 export type TrackedConfigurationItem = {
   readonly recordId: string;
   readonly origin: { readonly generation: string; readonly targetRevision: string; readonly source: "application" | "schema4" };
@@ -14,7 +15,6 @@ export type TrackedConfigurationItem = {
   readonly backoffStep: number;
   readonly failureId: number | null;
   readonly started: boolean;
-  readonly nativeMode: AgentControlMode | null;
   readonly actualSource:
     | { readonly kind: "observed"; readonly recordId: string; readonly generation: string; readonly targetRevision: string }
     | { readonly kind: "schema4"; readonly successRevision: null }
@@ -23,6 +23,7 @@ export type TrackedConfigurationItem = {
 };
 export type WorkerConfigurationCache = {
   readonly schemaVersion: 6;
+  readonly format: "web";
   readonly identity: WorkerConfigurationIdentity;
   readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;
@@ -35,14 +36,15 @@ export type WorkerConfigurationCache = {
 export type WorkerConfigurationSnapshot = {
   readonly generation: string;
   readonly synchronized: boolean;
-  readonly desired: WorkerCloudDesired | null;
+  readonly desired: WorkerRawDesired | null;
+  readonly validatedDesired: WorkerCloudDesired | null;
   readonly applicationRevision: string | null;
   readonly observationRevision: string;
   readonly retainedRecoveryLimit: number | null;
+  readonly projects: { readonly selected: readonly string[] | null; readonly tracked: readonly string[] };
   readonly items: readonly WorkerCloudItem[];
   readonly toolTargets: WorkerConfigurationToolTargets | null;
   readonly effective: {
-    readonly agentControlMode: AgentControlMode | null;
     readonly maxConcurrent: number | null;
     readonly pollIntervalMs: number | null;
     readonly recoveryLimit: number | null;
@@ -77,7 +79,6 @@ export type ConfigurationProjection = {
 };
 export type ConfigurationProjectionOptions = {
   readonly synchronized: boolean;
-  readonly localMode: AgentControlMode;
   readonly localTools: ToolPaths;
   readonly bootstrap: WorkerCloudValue | null;
   readonly telemetry?: WorkerReport;
@@ -86,9 +87,7 @@ export type ConfigurationProjectionOptions = {
 export const configurationRetryDelays = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
 export const configurationKey = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
 export const sameConfigurationValue = (first: unknown, second: unknown): boolean => isDeepStrictEqual(first, second);
-export const configurationSupportsMode = (desired: WorkerCloudDesired | null): boolean => desired !== null && Object.hasOwn(desired.value, "agentControlMode");
-export const configurationCapabilities = (value: WorkerCloudValue | undefined) => ({ controlMode: value !== undefined && Object.hasOwn(value, "agentControlMode"), toolPaths: value !== undefined && Object.hasOwn(value, "toolPaths") });
-export const parseConfigurationDesired = (value: WorkerCloudDesired, limits = true): WorkerCloudDesired => parseWorkerCloudDesired(value, limits, configurationCapabilities(value.value));
+export const parseConfigurationDesired = (value: WorkerRawDesired, limits = true): WorkerCloudDesired => parseWorkerCloudDesired(value, limits);
 export const freezeConfiguration = <T>(value: T): T => {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
     for (const item of Object.values(value)) freezeConfiguration(item);
@@ -97,8 +96,19 @@ export const freezeConfiguration = <T>(value: T): T => {
   return value;
 };
 
-const derivedDesired = new WeakMap<WorkerConfigurationCache["authority"], WorkerCloudDesired | null>();
-export const configurationDesired = (cache: WorkerConfigurationCache): WorkerCloudDesired | null => {
+const derivedDesired = new WeakMap<WorkerConfigurationCache["authority"], WorkerRawDesired | null>();
+export const configurationDesired = (cache: WorkerConfigurationCache): WorkerRawDesired | null => {
   if (!derivedDesired.has(cache.authority)) derivedDesired.set(cache.authority, cache.authority.desiredJson === null ? null : freezeConfiguration(receiveWorkerDesired(cache.authority.desiredJson).known));
   return derivedDesired.get(cache.authority)!;
+};
+
+const derivedActiveDesired = new WeakMap<WorkerConfigurationCache["authority"], WorkerCloudDesired | null>();
+export const configurationActiveDesired = (cache: WorkerConfigurationCache): WorkerCloudDesired | null => {
+  if (!derivedActiveDesired.has(cache.authority)) {
+    const desired = configurationDesired(cache);
+    let active: WorkerCloudDesired | null = null;
+    if (desired !== null) try { active = freezeConfiguration(parseConfigurationDesired(desired)); } catch (error) { if (!(error instanceof ProtocolError)) throw error; }
+    derivedActiveDesired.set(cache.authority, active);
+  }
+  return derivedActiveDesired.get(cache.authority)!;
 };

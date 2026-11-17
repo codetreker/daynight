@@ -13,8 +13,8 @@ import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-tele
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
-const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
-const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
+const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: uuid(6) };
+const worker: WorkerClaim = { ...descriptor,  userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({ type: "task", parentId: null,
   id, projectId: project, title: "Task", description: "", tags: [], status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
@@ -27,7 +27,7 @@ const project = (id = projectId, repoUrl = "https://github.com/example/repo.git"
 const accessSources = { projectId, ownerTeam: { id: uuid(90), kind: "ordinary", name: "Team" }, ownership: { teamId: uuid(90), version: 9_007_199_254_740_995n }, teamRole: null, canTransfer: false };
 const cleanup: (() => void | Promise<void>)[] = [];
 const respond = (response: ServerResponse, value: unknown, status = 200): void => {
-  response.writeHead(status, { "Content-Type": "application/json" });
+  response.writeHead(status, { "Content-Type": "application/json", "Daynight-Worker-Tool-Paths": "2" });
   response.end(stringifyApiJson(value));
 };
 const listen = async (handler: (request: IncomingMessage, response: ServerResponse, body: unknown) => void, options: { userId?: string; identity?: boolean } = {}): Promise<string> => {
@@ -65,7 +65,7 @@ afterEach(async () => {
 
 it("retains identity and request order through two-project inventory, claim and report", async () => {
   const second = uuid(8), token = "fixture-worker-token";
-  const desired: WorkerCloudDesired = { revision: "1", updatedAt: time, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })) } };
+  const desired: WorkerCloudDesired = { revision: "1", updatedAt: time, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: "current-model", args: [] }, projects: [projectId, second].map(projectId => ({ projectId, nativeOverrides: {} })), toolPaths: { codex: null, copilot: null } } };
   const account = { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(90), kind: "personal" as const, name: null } };
   const candidate = { ...task(), assignedTo: worker.userId };
   const claimed = { ...task(taskId, worker), assignedTo: worker.userId, version: 2n };

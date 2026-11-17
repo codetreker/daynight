@@ -2,24 +2,22 @@ import { describe, expect, it } from "vitest";
 import { parseWorkerCloudValue, parseWorkerCloudReport } from "../../src/api/worker-configuration.js";
 
 const value = { maxConcurrent: 2, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] };
-const paths = { codex: { kind: "path", path: "/opt/工具 codex" }, copilot: { kind: "auto" }, herdr: null };
-const capabilities = { controlMode: false, toolPaths: true };
+const paths = { codex: { kind: "path", path: "/opt/工具 codex" }, copilot: null };
 
-describe("negotiated Worker tool choices", () => {
+describe("Worker tool choices", () => {
   it("retains independent unadopted, automatic and explicit choices", () => {
-    expect(parseWorkerCloudValue({ ...value, toolPaths: paths }, true, capabilities)).toEqual({ ...value, toolPaths: paths });
+    expect(parseWorkerCloudValue({ ...value, toolPaths: paths })).toEqual({ ...value, toolPaths: paths });
   });
-  it("requires all negotiated choices and rejects extensions without negotiation", () => {
-    expect(() => parseWorkerCloudValue({ ...value, toolPaths: paths })).toThrow();
-    expect(() => parseWorkerCloudValue(value, true, capabilities)).toThrow();
-    expect(() => parseWorkerCloudValue({ ...value, toolPaths: { ...paths, extra: null } }, true, capabilities)).toThrow();
-    expect(() => parseWorkerCloudValue({ ...value, toolPaths: { codex: paths.codex, copilot: paths.copilot } }, true, capabilities)).toThrow();
+  it("requires both choices and rejects extensions", () => {
+    expect(() => parseWorkerCloudValue(value)).toThrow();
+    expect(() => parseWorkerCloudValue({ ...value, toolPaths: { ...paths, extra: null } })).toThrow();
+    expect(() => parseWorkerCloudValue({ ...value, toolPaths: { codex: paths.codex } })).toThrow();
   });
   it("accepts full bootstrap choices but never an unadopted bootstrap tool", () => {
-    const bootstrap = { ...paths, herdr: { kind: "auto" } };
+    const bootstrap = { ...paths, copilot: { kind: "auto" } };
     const report = { bootstrap: null, observation: null, toolPathsBootstrap: bootstrap };
-    expect(parseWorkerCloudReport(report, capabilities)).toEqual(report);
-    expect(() => parseWorkerCloudReport({ ...report, toolPathsBootstrap: paths }, capabilities)).toThrow();
+    expect(parseWorkerCloudReport(report)).toEqual(report);
+    expect(() => parseWorkerCloudReport({ ...report, toolPathsBootstrap: paths })).toThrow();
   });
 });
 
@@ -41,7 +39,7 @@ describe("tool facts and report capacity", () => {
   });
   it("rejects malformed, contradictory and secret-bearing tool observations", () => {
     for (const invalid of [
-      {...entry(),context:"unknown"}, {...entry(),tool:"herdr",context:"web"}, {...entry(),targetRevision:"0"}, {...entry(),configurationSource:"local"},
+      {...entry(),context:"unknown"}, {...entry(),tool:"unsupported",context:"web"}, {...entry(),targetRevision:"0"}, {...entry(),configurationSource:"local"},
       {...entry(),state:"not_checked"}, {...entry(),state:"error"}, {...entry(),reason:"active_instance"}, {...entry(),actual:null},
       {...entry(),target:{kind:"auto"}}, {...entry(),activeSelectionCount:null}, {...entry(),activeObservationError:"inventory_unavailable"},
       {...entry(),actual:{...actual(),argv:["secret"]}}, {...entry(),actual:{...actual(),selectionKey:"A".repeat(64)}},
@@ -78,23 +76,21 @@ describe("tool facts and report capacity", () => {
   });
 });
 
-describe("independent tool negotiation", () => {
+describe("tool protocol 2", () => {
   const user = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", worker = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-  it("requires authenticated configuration confirmation before sending extensions", async () => {
+  it("sends and validates the tool protocol on configuration and reports", async () => {
     const calls: RequestInit[] = [], operation = createOperation();
-    const desired = {revision:"1",updatedAt:time,value:{...value,toolPaths:paths}};
-    const api = createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async (_url, init)=>{
+    const desired = { revision: "1", updatedAt: time, value: { ...value, toolPaths: paths } };
+    const api = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: user, operation, fetch: async (_url, init) => {
       calls.push(init!); const get = init!.method === "GET";
-      return new Response(JSON.stringify(get ? {desired,observationRevision:"0",observation:null} : {observedAt:time,lastReportedAt:time,configuration:{desired,observationRevision:"0",observationAccepted:false}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":"1"}});
-    }});
+      return new Response(JSON.stringify(get ? { desired, observationRevision: "0", observation: null } : { observedAt: time, lastReportedAt: time, configuration: { desired, observationRevision: "0", observationAccepted: false } }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2" } });
+    } });
     try {
       await api.getWorkerConfiguration(worker);
-      await api.reportWorkerConfiguration(worker,{...workerTelemetry,toolPaths:telemetry(),taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:{codex:{kind:"auto"},copilot:{kind:"auto"},herdr:{kind:"auto"}}});
-      expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("1");
-      expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("1");
+      await api.reportWorkerConfiguration(worker, { ...workerTelemetry, toolPaths: telemetry(), taskInventory: null }, { bootstrap: null, observation: null, toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" } } });
+      expect(calls.map(call => new Headers(call.headers).get("Daynight-Worker-Tool-Paths"))).toEqual(["2", "2"]);
       expect(JSON.parse(calls[1]!.body as string).toolPaths).toEqual(telemetry());
-      expect(JSON.parse(calls[1]!.body as string).configuration.toolPathsBootstrap).toBeDefined();
-    } finally {operation.dispose();}
+    } finally { operation.dispose(); }
   });
 });
 
@@ -106,48 +102,11 @@ it("uses the server JSON escaping budget for symbol-bearing paths", () => {
   expect(bounded.entries[0]!.activeSelectionsComplete).toBe(false);
 });
 
-describe("configuration capability combinations and admission",()=>{
-  const user="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", worker="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-  const tools={codex:{kind:"auto" as const},copilot:{kind:"auto" as const},herdr:{kind:"auto" as const}};
-  it.each([false,true].flatMap(controlMode=>[false,true].flatMap(toolPaths=>[false,true].map(prompts=>({controlMode,toolPaths,prompts})))))
-    ("projects mode=$controlMode tools=$toolPaths independently of prompts=$prompts",async ({controlMode,toolPaths,prompts})=>{
-      const operation=createOperation(),calls:RequestInit[]=[];
-      const desired={revision:"1",updatedAt:time,value:{...value,...(controlMode?{agentControlMode:"web"}:{}),...(toolPaths?{toolPaths:paths}:{})}};
-      const api=createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async (_url,init)=>{
-        calls.push(init!);const get=init!.method==="GET";
-        return new Response(JSON.stringify(get?{desired,observationRevision:"0",observation:null}:{observedAt:time,lastReportedAt:time,configuration:{desired,observationRevision:"0",observationAccepted:false,...(prompts?{prompts:[]}: {})}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":get||!prompts?"1":"2",...(controlMode?{"Daynight-Worker-Control-Mode":"1"}:{}),...(toolPaths?{"Daynight-Worker-Tool-Paths":"1"}:{})}});
-      }});
-      try {
-        await api.getWorkerConfiguration(worker);
-        await api.reportWorkerConfiguration(worker,{...workerTelemetry,toolPaths:telemetry(),taskInventory:null},{bootstrap:null,observation:null,controlModeBootstrap:"web",toolPathsBootstrap:tools},prompts?[]:undefined);
-        const body=JSON.parse(calls[1]!.body as string),headers=new Headers(calls[1]!.headers);
-        expect(headers.get("Daynight-Worker-Control-Mode")).toBe(controlMode?"1":null);
-        expect(headers.get("Daynight-Worker-Tool-Paths")).toBe(toolPaths?"1":null);
-        expect(headers.get("Daynight-Worker-Configuration")).toBe(prompts?"2":"1");
-        expect(Object.hasOwn(body,"toolPaths")).toBe(toolPaths);
-        expect(Object.hasOwn(body.configuration,"toolPathsBootstrap")).toBe(toolPaths);
-        expect(Object.hasOwn(body.configuration,"controlModeBootstrap")).toBe(controlMode);
-      } finally {operation.dispose();}
-    });
-  it.each(["http://localhost:8788", "http://localhost:8787"])("does not reuse tool capability across an origin or principal change (%s)",async origin=>{
-    const operation=createOperation(),calls:RequestInit[]=[];
-    const cache={supported:true,serverOrigin:"http://localhost:8787",userId:origin.endsWith("8787")?worker:user};
-    const api=createApiClient({serverUrl:origin,expectedUserId:user,workerToolPaths:cache,operation,fetch:async (_url,init)=>{
-      calls.push(init!);return new Response(JSON.stringify({observedAt:time,lastReportedAt:time,configuration:{desired:null,observationRevision:"0",observationAccepted:false}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1"}});
-    }});
-    try { await api.reportWorkerConfiguration(worker,{...workerTelemetry,taskInventory:null,toolPaths:telemetry()},{bootstrap:null,observation:null,toolPathsBootstrap:tools});
-      expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Tool-Paths")).toBeNull();
-      expect(JSON.parse(calls[0]!.body as string)).not.toHaveProperty("toolPaths");
-    } finally {operation.dispose();}
-  });
-  it("keeps a missing report capability acknowledgement as an unconfirmed write",async()=>{
-    const operation=createOperation();let calls=0;
-    const api=createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async ()=>{
-      calls++;return new Response(JSON.stringify(calls===1?{desired:null,observationRevision:"0",observation:null}:{observedAt:time,lastReportedAt:time,configuration:{desired:null,observationRevision:"0",observationAccepted:false}}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1",...(calls===1?{"Daynight-Worker-Tool-Paths":"1"}:{})}});
-    }});
-    try {await api.getWorkerConfiguration(worker);await expect(api.reportWorkerConfiguration(worker,{...workerTelemetry,taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:tools})).rejects.toMatchObject({phase:"protocol",outcomeUnconfirmed:true});expect(calls).toBe(2);}
-    finally {operation.dispose();}
-  });
+it("keeps a missing report protocol acknowledgement as an unconfirmed write", async () => {
+  const operation = createOperation(), user = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", worker = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const api = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: user, operation, fetch: async () => new Response(JSON.stringify({ observedAt: time, lastReportedAt: time, configuration: { desired: null, observationRevision: "0", observationAccepted: false } }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": "1" } }) });
+  try { await expect(api.reportWorkerConfiguration(worker, { ...workerTelemetry, taskInventory: null }, { bootstrap: null, observation: null, toolPathsBootstrap: null })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true }); }
+  finally { operation.dispose(); }
 });
 
 it("retains a local budget result when even the target fallback cannot fit", () => {
@@ -158,27 +117,18 @@ it("retains a local budget result when even the target fallback cannot fit", () 
   expect(body.value.taskInventory).toBeNull();
 });
 
-it("retains tool capability from an authenticated missing configuration across clients", async () => {
-  const user="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",worker="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", operation=createOperation();
-  const cache={supported:false},calls:RequestInit[]=[];
-  const fetch:typeof globalThis.fetch=async (_url,init)=>{calls.push(init!);return new Response(JSON.stringify(calls.length===1?{error:{code:"not_found",message:"missing",requestId:worker}}:{observedAt:time,lastReportedAt:time,configuration:{desired:null,observationRevision:"0",observationAccepted:false}}),{status:calls.length===1?404:200,headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":"1"}});};
-  const client=()=>createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,workerToolPaths:cache,operation,fetch});
-  try {await expect(client().getWorkerConfiguration(worker)).rejects.toMatchObject({status:404});await client().reportWorkerConfiguration(worker,{...workerTelemetry,taskInventory:null},{bootstrap:null,observation:null,toolPathsBootstrap:null});expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Tool-Paths")).toBe("1");}
-  finally {operation.dispose();}
-});
-
-it.each(["2","1, 1",""])("rejects malformed response capability %j",async header=>{
-  const operation=createOperation(),user="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-  const client=createApiClient({serverUrl:"http://localhost:8787",expectedUserId:user,operation,fetch:async()=>new Response(JSON.stringify({desired:null,observationRevision:"0",observation:null}),{headers:{"Content-Type":"application/json","Daynight-User-ID":user,"Daynight-Worker-Configuration":"1","Daynight-Worker-Tool-Paths":header}})});
-  try {await expect(client.getWorkerConfiguration("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).rejects.toMatchObject({phase:"protocol",outcomeUnconfirmed:false});} finally {operation.dispose();}
+it.each(["1", "2, 2", ""]) ("rejects malformed response capability %j", async header => {
+  const operation = createOperation(), user = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const client = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: user, operation, fetch: async () => new Response(JSON.stringify({ desired: null, observationRevision: "0", observation: null }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": header } }) });
+  try { await expect(client.getWorkerConfiguration("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false }); } finally { operation.dispose(); }
 });
 
 import path from "node:path";
 import { parseLocalToolPaths } from "../../src/platform/tool-path-choice.js";
 it.each([String.raw`\\?\C:\tools\codex.exe`, String.raw`\\.\C:\tools\codex.exe`])("round-trips an adopted Windows namespace path through cloud and telemetry: %s", selectedPath => {
   const local = parseLocalToolPaths({ codex: selectedPath }, path.win32);
-  expect(parseWorkerCloudValue({ ...value, toolPaths: local }, true, capabilities).toolPaths).toEqual(local);
-  expect(parseWorkerCloudReport({ bootstrap: null, observation: null, toolPathsBootstrap: local }, capabilities).toolPathsBootstrap).toEqual(local);
+  expect(parseWorkerCloudValue({ ...value, toolPaths: local }).toolPaths).toEqual(local);
+  expect(parseWorkerCloudReport({ bootstrap: null, observation: null, toolPathsBootstrap: local }).toolPathsBootstrap).toEqual(local);
   const selected = actual("a".repeat(64), selectedPath);
   const report = telemetry([{ ...entry(), target: local.codex, actual: selected }]);
   expect(parseToolPathTelemetry(report, "windows")).toEqual(report);
@@ -189,7 +139,7 @@ it("retains a rejected foreign-platform desired target without accepting foreign
   const failure = { ...entry(), target, state: "error" as const, error: { code: "invalid_path" as const, occurredAt: time }, actual: null };
   const report = telemetry([failure]);
   expect(parseToolPathTelemetry(report, "linux")).toEqual(report);
-  expect(parseWorkerCloudValue({ ...value, toolPaths: { ...paths, codex: target } }, true, capabilities).toolPaths?.codex).toEqual(target);
+  expect(parseWorkerCloudValue({ ...value, toolPaths: { ...paths, codex: target } }).toolPaths?.codex).toEqual(target);
   const foreign = actual("a".repeat(64), target.path);
   for (const invalid of [{ ...failure, actual: foreign }, { ...failure, candidate: foreign }, { ...failure, activeSelectionCount: 1, activeSelections: [{ actual: foreign, executionCount: 1, instanceCount: null, unconfirmedCount: 0 }] }]) {
     expect(() => parseToolPathTelemetry(telemetry([invalid]), "linux")).toThrow();

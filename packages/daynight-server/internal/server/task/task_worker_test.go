@@ -25,12 +25,12 @@ const (
 
 func workerClaimBody(version int64) map[string]any {
 	return map[string]any{"version": version, "claimId": workerHTTPClaimID, "workerId": workerHTTPWorkerID,
-		"machine": map[string]any{"id": workerHTTPMachineID, "name": "Worker machine"}, "platform": "linux", "agent": "codex", "worktreeId": workerHTTPWorktreeID}
+		"machine": map[string]any{"id": workerHTTPMachineID, "name": "Worker machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": workerHTTPWorktreeID}
 }
 
 func workerHTTPDescriptor(body map[string]any) taskcore.WorkerDescriptor {
 	machine := body["machine"].(map[string]any)
-	mode := model.AgentControlModeHerdr
+	mode := model.AgentControlModeWeb
 	if value, present := body["agentControlMode"]; present {
 		mode = model.WorkerAgentControlMode(value.(string))
 	}
@@ -86,7 +86,8 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	t.Run("claim", func(t *testing.T) {
 		var logs bytes.Buffer
 		h := newHTTPFixture(t, &logs)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		body := workerClaimBody(returned.Version - 1)
 		want := taskcore.ClaimWorker{Version: returned.Version - 1, WorkerDescriptor: workerHTTPDescriptor(body)}
 		h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
@@ -108,37 +109,38 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	})
 	t.Run("session update", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		worker.Phase = model.WorkerExecuting
-		worker.Herdr = &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "pane"}
 		native := "native-session"
 		worker.NativeSessionID = &native
 		returned.Properties["pullRequests"] = rawProperty(t, []api.PullRequestProperty{{URL: "opaque\x00", Title: "Existing evidence"}})
 		returned = workerHTTPResult(t, returned, worker)
 		h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != worker.Phase || input.Herdr == nil || !reflect.DeepEqual(*input.Herdr, worker.Herdr) || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native || input.StartupReport != nil {
+			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != worker.Phase || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native || input.StartupReport != nil {
 				t.Fatalf("session update input: %+v", input)
 			}
 			return returned, nil
 		}
-		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "pane"}, "nativeSessionId": native})), http.StatusOK)
+		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "nativeSessionId": native})), http.StatusOK)
 		claim := apiWorker(t, got.Properties)
-		if claim.Herdr == nil || claim.Herdr.PaneID != "pane" || claim.NativeSessionID == nil || *claim.NativeSessionID != native || claim.Phase != "executing" || !reflect.DeepEqual(apiPullRequests(t, got.Properties), apiPullRequests(t, api.TaskProperties(returned.Properties))) || !reflect.DeepEqual(got.StartedAt, returned.StartedAt) {
+		if claim.NativeSessionID == nil || *claim.NativeSessionID != native || claim.Phase != "executing" || !reflect.DeepEqual(apiPullRequests(t, got.Properties), apiPullRequests(t, api.TaskProperties(returned.Properties))) || !reflect.DeepEqual(got.StartedAt, returned.StartedAt) {
 			t.Fatal("worker response lost sessions, task timing or unrelated properties")
 		}
 	})
 	t.Run("explicit null", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Herdr == nil || *input.Herdr != nil || input.NativeSessionID == nil || *input.NativeSessionID != nil || input.Phase != nil {
+			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.NativeSessionID == nil || *input.NativeSessionID != nil || input.Phase != nil {
 				t.Fatalf("null patch collapsed into omission: %+v", input)
 			}
 			return returned, nil
 		}
-		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "herdr": nil, "nativeSessionId": nil})), http.StatusOK)
+		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "nativeSessionId": nil})), http.StatusOK)
 		claim := apiWorker(t, got.Properties)
 		if claim.Herdr != nil || claim.NativeSessionID != nil {
 			t.Fatal("service null sessions were not preserved")
@@ -146,7 +148,8 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	})
 	t.Run("completion", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerCompleted)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerCompleted)
 		h.Tasks.SetStatusFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.SetTaskStatus) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 			if input.Version != returned.Version-1 || input.Status != model.TaskDone || input.ClaimID == nil || *input.ClaimID != worker.ClaimID {
@@ -174,6 +177,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	} {
 		t.Run("claim/"+tc.key+"/"+jsonBody(t, tc.value), func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			body := workerClaimBody(9007199254740993)
 			body[tc.key] = tc.value
 			if tc.service {
@@ -195,6 +199,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	for _, body := range []string{`null`, `{}`, `{"version":1,"version":1}`, `{"ClaimId":"x"}`, `{"version":1.0}`, `{"version":9223372036854775808}`} {
 		t.Run("JSON/"+body, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			assertProjectError(t, projectRequest(h, http.MethodPost, workerHTTPPath(), body), http.StatusBadRequest, "invalid_input")
 			if h.Tasks.TotalCalls() != 0 {
 				t.Fatal("malformed JSON invoked service")
@@ -204,6 +209,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	for _, path := range []string{"", "/release", "/withdraw"} {
 		t.Run("method/"+path, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			response := projectRequest(h, http.MethodGet, workerHTTPPath()+path, "")
 			allow := "POST"
 			if path == "" {
@@ -231,6 +237,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	} {
 		t.Run("update/"+jsonBody(t, tc.body), func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			if tc.service {
 				h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 					assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
@@ -252,6 +259,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	for _, body := range []string{`{}`, `{"version":null,"claimId":"` + workerHTTPClaimID + `"}`, `{"version":1}`, `{"version":1,"claimId":null}`, `{"version":1,"claimId":"` + workerHTTPClaimID + `","stoppedConfirmed":true}`, `{"version":1,"version":1,"claimId":"` + workerHTTPClaimID + `"}`} {
 		t.Run("withdraw/"+body, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			assertProjectError(t, projectRequest(h, http.MethodPost, workerHTTPPath()+"/withdraw", body), http.StatusBadRequest, "invalid_input")
 			if h.Tasks.TotalCalls() != 0 {
 				t.Fatal("withdraw protocol rejection invoked service")
@@ -261,6 +269,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	for _, suffix := range []string{"", "/release", "/withdraw"} {
 		t.Run("query/"+suffix, func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			for _, q := range []string{"?", "?unexpected=1"} {
 				assertProjectError(t, projectRequest(h, http.MethodPost, workerHTTPPath()+suffix+q, jsonBody(t, workerClaimBody(1))), http.StatusBadRequest, "invalid_input")
 			}
@@ -278,6 +287,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	} {
 		t.Run("missing action field/"+tc.suffix+jsonBody(t, tc.body), func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			assertProjectError(t, projectRequest(h, http.MethodPost, workerHTTPPath()+tc.suffix, jsonBody(t, tc.body)), http.StatusBadRequest, "invalid_input")
 			if h.Tasks.TotalCalls() != 0 {
 				t.Fatal("incomplete worker action reached service")
@@ -286,6 +296,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	}
 	t.Run("invalid withdrawal claim", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
+		extendedWorkerTestHandler(h)
 		h.Tasks.WithdrawWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.WithdrawWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 			if input.Version != 1 || input.ClaimID != "invalid" {
@@ -297,6 +308,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	})
 	t.Run("removed transfer", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
+		extendedWorkerTestHandler(h)
 		if response := projectRequest(h, http.MethodPost, workerHTTPPath()+"/transfer", `{}`); response.Code != http.StatusNotFound || h.Tasks.TotalCalls() != 0 {
 			t.Fatalf("removed worker action still routed: %d", response.Code)
 		}
@@ -307,6 +319,7 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	for _, confirmation := range []any{nil, "true", false} {
 		t.Run("confirmation/"+jsonBody(t, confirmation), func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
+			extendedWorkerTestHandler(h)
 			if confirmation == false {
 				h.Tasks.ReleaseWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ReleaseWorker) (model.Task, error) {
 					assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
@@ -321,7 +334,8 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	}
 	t.Run("release", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		returned.Status = model.TaskTodo
 		returned.StartedAt, returned.CompletedAt = nil, nil
 		returned.Properties = workerHTTPProperties(t, returned.Properties, nil)
@@ -344,6 +358,7 @@ func TestWorkerHTTPRejectsDeprecatedContinuityInputs(t *testing.T) {
 		for _, value := range []any{nil, false, true, "true"} {
 			t.Run(suffix+"/"+jsonBody(t, value), func(t *testing.T) {
 				h := newHTTPFixture(t, io.Discard)
+				extendedWorkerTestHandler(h)
 				body := workerClaimBody(1)
 				body["previousClaimId"] = workerHTTPClaimID
 				body["continuityConfirmed"] = value
@@ -361,6 +376,7 @@ func TestWorkerHTTPWithdrawalReturnsClearedClaim(t *testing.T) {
 		t.Run("outcome/"+code, func(t *testing.T) {
 			var logs bytes.Buffer
 			h := newHTTPFixture(t, &logs)
+			extendedWorkerTestHandler(h)
 			returned := testTask("withdrawal private content")
 			returned.Version = 9007199254740993
 			returned.AllowAgents = false
@@ -392,6 +408,7 @@ func TestWorkerHTTPWithdrawalReturnsClearedClaim(t *testing.T) {
 
 func TestWorkerHTTPResumeRouteRemoved(t *testing.T) {
 	h := newHTTPFixture(t, io.Discard)
+	extendedWorkerTestHandler(h)
 	response := projectRequest(h, http.MethodPost, workerHTTPPath()+"/resume", jsonBody(t, workerClaimBody(1)))
 	if response.Code != http.StatusNotFound || h.Tasks.TotalCalls() != 0 {
 		t.Fatalf("removed route: status=%d calls=%d", response.Code, h.Tasks.TotalCalls())

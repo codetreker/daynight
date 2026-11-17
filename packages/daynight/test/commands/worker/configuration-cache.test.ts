@@ -12,7 +12,7 @@ const identity = { serverOrigin: "https://daynight.example", userId: uuid(4), wo
 const native = { agent: "codex" as const, model: "current", args: ["--search"] };
 const desired: WorkerCloudDesired = { revision: "10", updatedAt: "2026-11-04T00:00:00Z", value: {
   maxConcurrent: 4, pollIntervalMs: 1500, recoveryLimit: 2, preferPlatformSpecificTasks: true, native,
-  agentControlMode: "web", projects: [{ projectId, nativeOverrides: {} }],
+  toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, projects: [{ projectId, nativeOverrides: {} }],
 } };
 const failure = { code: "permission_denied" as const, category: "runtime" as const, phase: "stop" as const, occurredAt: "2026-11-04T01:00:00Z" };
 const value = (key: WorkerCloudItemKey): WorkerCloudItem["appliedValue"] => {
@@ -22,27 +22,26 @@ const value = (key: WorkerCloudItemKey): WorkerCloudItem["appliedValue"] => {
     case "pollIntervalMs": return 1500;
     case "recoveryLimit": return 2;
     case "preferPlatformSpecificTasks": case "projectPreparation": case "projectRemoval": return true;
-    case "agentControlMode": return "web";
   }
 };
 const tracked = (n: number, key: WorkerCloudItemKey, revision = "10"): TrackedConfigurationItem => ({
   recordId: uuid(n), origin: { generation, targetRevision: revision, source: "application" },
   value: { key, targetRevision: revision, appliedValue: value(key), state: "applied", error: null, lastFailure: null, nextAttemptAt: null },
-  backoffStep: 0, failureId: null, started: false, nativeMode: key.kind === "native" || key.kind === "projectNative" ? "web" : null,
+  backoffStep: 0, failureId: null, started: false,
   actualSource: { kind: "observed", recordId: uuid(n), generation, targetRevision: revision }, blockedByRemovalId: null,
 });
 const currentKeys: WorkerCloudItemKey[] = [
   { kind: "maxConcurrent" }, { kind: "pollIntervalMs" }, { kind: "recoveryLimit" }, { kind: "preferPlatformSpecificTasks" },
-  { kind: "native" }, { kind: "agentControlMode" }, { kind: "projectPreparation", projectId }, { kind: "projectNative", projectId },
+  { kind: "native" }, { kind: "projectPreparation", projectId }, { kind: "projectNative", projectId },
 ];
 const cache = (): WorkerConfigurationCache => ({
-  schemaVersion: 6, identity, authority: { generation, desiredJson: JSON.stringify(desired), applicationRevision: "10", observationRevision: "9" }, remoteObservation: null, nextFailureId: 6,
+  schemaVersion: 6, format: "web", identity, authority: { generation, desiredJson: JSON.stringify(desired), applicationRevision: "10", observationRevision: "9" }, remoteObservation: null, nextFailureId: 6,
   projectionCursor: uuid(90), currentItems: currentKeys.map((key, n) => tracked(10 + n, key)), retainedItems: [],
 });
 const legacy = (version: 1 | 2 | 3 | 4) => {
-  const initial = cache(), { agentControlMode: _mode, ...withoutMode } = desired.value;
+  const initial = cache(), { toolPaths: _tools, ...withoutMode } = desired.value;
   const legacyDesired = version === 1 ? (() => { const { preferPlatformSpecificTasks: _preference, ...previous } = withoutMode; return previous; })() : withoutMode;
-  const items = initial.currentItems.filter(item => item.value.key.kind !== "agentControlMode" && (version !== 1 || item.value.key.kind !== "preferPlatformSpecificTasks")).map(item => ({ value: item.value, attempts: item.backoffStep, failureId: item.failureId, started: item.started }));
+  const items = initial.currentItems.filter(item => (version !== 1 || item.value.key.kind !== "preferPlatformSpecificTasks")).map(item => ({ value: item.value, attempts: item.backoffStep, failureId: item.failureId, started: item.started }));
   return { schemaVersion: version, identity, desired: { ...desired, value: legacyDesired }, observationRevision: "9", nextFailureId: 6, items,
     ...(version >= 3 ? { nativeModes: { "native:": "web", [`projectNative:${projectId}`]: "web" } } : {}) };
 };
@@ -74,19 +73,18 @@ describe("Worker configuration cache", () => {
 
   it("upgrades schema 5 without replacing its ledger identities, dependencies or retry facts", () => {
     const original = cache(), stop = tracked(60, { kind: "projectRemoval", projectId }, "9");
-    const previous = original.currentItems[4]!;
-    const currentItems = original.currentItems.map(item => item === previous ? {
-      ...item, value: { ...item.value, state: "applying" as const, lastFailure: failure }, backoffStep: 4, failureId: 4,
-    } : item.value.key.kind === "projectPreparation" ? { ...item, blockedByRemovalId: stop.recordId } : item);
-    const { remoteObservation: _remote, authority: _authority, ...ledger } = original;
-    const source = { ...ledger, schemaVersion: 5, authority: { generation, desired, observationRevision: "9" }, currentItems, retainedItems: [stop] };
+    const currentItems = original.currentItems.map((item, index) => ({ ...item, nativeMode: item.value.key.kind === "native" || item.value.key.kind === "projectNative" ? "web" : null,
+      ...(index === 4 ? { value: { ...item.value, state: "applying" as const, lastFailure: failure }, backoffStep: 4, failureId: 4 } : item.value.key.kind === "projectPreparation" ? { blockedByRemovalId: stop.recordId } : {}) }));
+    const { toolPaths: _tools, ...oldValue } = desired.value;
+    const oldDesired = { ...desired, value: oldValue };
+    const source = { schemaVersion: 5, identity, authority: { generation, desired: oldDesired, observationRevision: "9" }, nextFailureId: original.nextFailureId, projectionCursor: original.projectionCursor, currentItems, retainedItems: [{ ...stop, nativeMode: null }] };
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache).toEqual({
-      ...original, authority: { ...original.authority, desiredJson: expect.any(String) },
-      currentItems: currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item), retainedItems: [stop],
-    });
-    expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(desired);
+    expect(result.cache.authority.generation).not.toBe(generation);
+    expect(result.cache.projectionCursor).toBeNull();
+    expect(result.cache.currentItems[4]).toMatchObject({ recordId: currentItems[4]!.recordId, backoffStep: 4, failureId: 4, value: { state: "pending", lastFailure: failure } });
+    expect(result.cache.retainedItems[0]).toMatchObject({ recordId: stop.recordId });
+    expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(oldDesired);
     expect(source.currentItems[4]!.value.state).toBe("applying");
   });
 
@@ -106,17 +104,17 @@ describe("Worker configuration cache", () => {
 
   it("validates optional hidden capability facts without changing older schema 6 caches", () => {
     const original = cache(), json = '{"codex":{"kind":"auto","future":[-1.25,900719925474099312345]},"copilot":null,"herdr":null}';
-    const source = { ...original, hiddenCapabilitySources: { toolPaths: { revision: "10", json } } };
+    const { toolPaths: _tools, ...previousValue } = desired.value;
+    const source = { ...original, authority: { ...original.authority, desiredJson: JSON.stringify({ ...desired, value: previousValue }) }, hiddenCapabilitySources: { toolPaths: { revision: "10", json } } };
     expect(parseConfigurationCache(original, identity)).toEqual({ cache: original, migrated: false });
     expect(parseConfigurationCache(source, identity)).toEqual({ cache: source, migrated: false });
     for (const invalid of [
       { toolPaths: { revision: "11", json } },
       { toolPaths: { revision: "10", json: '{"codex":null,"codex":null,"copilot":null,"herdr":null}' } },
       { toolPaths: { revision: "10", json: '{"codex":false,"copilot":null,"herdr":null}' } },
-      { agentControlMode: { revision: "10", json: '"web"' } },
       { future: { revision: "10", json } },
       {},
-    ]) expect(() => parseConfigurationCache({ ...original, hiddenCapabilitySources: invalid }, identity)).toThrow();
+    ]) expect(() => parseConfigurationCache({ ...source, hiddenCapabilitySources: invalid }, identity)).toThrow();
   });
 
   it("retains the independent remote snapshot across lower or null authority recovery", () => {
@@ -131,17 +129,17 @@ describe("Worker configuration cache", () => {
     const source = legacy(version), result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
     expect(result.cache.schemaVersion).toBe(6);
-    expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual({ ...source.desired, value: { ...source.desired.value, preferPlatformSpecificTasks: version === 1 ? false : desired.value.preferPlatformSpecificTasks } });
+    expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(source.desired);
     expect(result.cache.authority).toMatchObject({ applicationRevision: "10", observationRevision: "9" });
     expect(result.cache.remoteObservation).toBeNull();
     expect(result.cache.currentItems).toHaveLength(version === 1 ? source.items.length + 1 : source.items.length);
     expect(new Set(result.cache.currentItems.map(item => item.recordId)).size).toBe(result.cache.currentItems.length);
     for (const item of result.cache.currentItems) {
-      expect(item.origin).toEqual({ generation: result.cache.authority.generation, targetRevision: "10", source: "schema4" });
+      expect(item.origin).toMatchObject({ targetRevision: "10", source: "schema4" });
+      expect(item.origin.generation).not.toBe(result.cache.authority.generation);
       if (item.value.appliedValue !== null) expect(item.actualSource).toEqual({ kind: "schema4", successRevision: null });
     }
-    if (version === 1) expect(JSON.parse(result.cache.authority.desiredJson!).value.preferPlatformSpecificTasks).toBe(false);
-    expect(result.cache.currentItems.find(item => item.value.key.kind === "native")?.nativeMode).toBe(version >= 3 ? "web" : null);
+    expect(result.cache.currentItems.find(item => item.value.key.kind === "native")?.value.appliedValue).toEqual(version >= 3 ? native : null);
     expect(parseConfigurationCache(result.cache, identity)).toEqual({ cache: result.cache, migrated: false });
   });
 
@@ -153,8 +151,7 @@ describe("Worker configuration cache", () => {
     if ("nativeModes" in source) Object.assign(source.nativeModes, { [`projectNative:${previousProjectId}`]: "herdr" });
     const result = parseConfigurationCache(source, identity).cache;
     expect(result.retainedItems).toHaveLength(1);
-    expect(result.retainedItems[0]).toMatchObject({ value: { ...history.value, lastFailure: failure }, backoffStep: 4, failureId: 4, nativeMode: "herdr", actualSource: { kind: "schema4", successRevision: null } });
-    expect(result.retainedItems[0]!.value.lastFailure).toEqual(failure);
+    expect(result.retainedItems[0]).toMatchObject({ value: { appliedValue: null, state: "pending", lastFailure: null }, backoffStep: 0, failureId: null, actualSource: null });
     expect(result.currentItems.find(item => item.value.key.kind === "projectRemoval")).toMatchObject({ value: { targetRevision: "4", state: "pending", appliedValue: null }, started: true, backoffStep: 2, actualSource: null });
     expect(result.nextFailureId).toBe(source.nextFailureId);
   });

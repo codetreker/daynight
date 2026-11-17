@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"time"
@@ -28,10 +29,16 @@ func scanWorkerConfiguration(row pgx.Row) (model.WorkerConfigurationResource, er
 	resource.ObservationRevision = strconv.FormatInt(observationRevision, 10)
 	if revision != nil {
 		resource.Desired = &model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(*revision, 10), UpdatedAt: updatedAt.UTC()}
-		// Historical JSONB omits agentControlMode and toolPaths. Nil choices mean not adopted;
-		// neither storage reads nor observation reads supply a default or evidence.
+		// Preserve the raw desired object independently of the current write schema.
+		resource.Desired.RawValue = append(json.RawMessage(nil), value...)
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(value, &object); err != nil || object == nil {
+			return resource, fmt.Errorf("stored Worker configuration must be a JSON object")
+		}
+		// This projection is only a best-effort aid to project comparison; raw
+		// storage remains authoritative even if a future shape is unsupported.
 		if err := json.Unmarshal(value, &resource.Desired.Value); err != nil {
-			return resource, err
+			resource.Desired.Value = model.WorkerConfiguration{}
 		}
 	}
 	if observation != nil {
@@ -70,7 +77,7 @@ func (w *Writer) SetWorkerConfiguration(ctx context.Context, userID, workerID st
 	if err != nil {
 		return model.WorkerDesiredConfiguration{}, pg.QueryError("encode worker configuration", err)
 	}
-	desired := model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(revision, 10), Value: value}
+	desired := model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(revision, 10), Value: value, RawValue: encoded}
 	err = w.tx.QueryRow(ctx, `UPDATE workers SET configuration_revision=$3,configuration_updated_at=statement_timestamp(),desired_configuration=$4 WHERE user_id=$1 AND worker_id=$2 RETURNING configuration_updated_at`, userID, workerID, revision, encoded).Scan(&desired.UpdatedAt)
 	if err != nil {
 		return model.WorkerDesiredConfiguration{}, pg.QueryError("save worker configuration", err)

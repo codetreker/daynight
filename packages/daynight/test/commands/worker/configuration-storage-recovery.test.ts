@@ -22,7 +22,7 @@ const id = (value: number): string => `00000000-0000-4000-8000-${String(value).p
 const identity = { serverOrigin: "https://daynight.example", userId: id(1), workerId: id(2) };
 const root = fileURLToPath(new URL("../../../../../.tmp/configuration-storage-recovery/", import.meta.url));
 const desired = (revision = "1", model = "original"): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: {
-  maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false,
+  toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false,
   native: { agent: "codex", model, args: [] }, projects: [],
 } });
 const deferred = <T = void>() => {

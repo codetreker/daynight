@@ -16,18 +16,15 @@ export const toolPathApplicationState = (entry: ToolPathObservation | undefined,
 export const toolPathSummaryStates = (resource: WorkerConfigurationResource, telemetry: ToolPathTelemetry | undefined, online: boolean | null): readonly ToolPathApplicationState[] => {
   if (resource.toolPathsSupported !== true || telemetry === undefined || resource.desired === null) return ['not_checked'];
   const { desired } = resource;
-  const mode = desired.value.agentControlMode;
-  const contexts: readonly ToolContext[] = mode === 'herdr' ? ['web', 'herdr'] : ['web'];
-  return (['codex', 'copilot', 'herdr'] as const).flatMap(tool => (tool === 'herdr' ? ['herdr' as const] : contexts).map(context => {
-    const entry = telemetry.entries.find(item => item.tool === tool && item.context === context);
+  return (['codex', 'copilot'] as const).map(tool => {
+    const entry = telemetry.entries.find(item => item.tool === tool && item.context === 'web');
     const state = toolPathApplicationState(entry, desired, online);
-    // An unused automatic tool can fail discovery without making other tools unusable.
-    const required = desired.value.toolPaths?.[tool]?.kind === 'path' || tool === desired.value.native.agent && context === mode || tool === 'herdr' && mode === 'herdr';
+    const required = desired.value.toolPaths?.[tool]?.kind === 'path' || tool === desired.value.native.agent;
     return state === 'error' && !required ? 'not_checked' : state;
-  }));
+  });
 };
 
-export const toolPathContexts = (tool: Tool, primary: ToolContext = 'web'): readonly ToolContext[] => tool === 'herdr' ? ['herdr'] : [primary, primary === 'web' ? 'herdr' : 'web'];
+export const toolPathContexts = (_tool: Tool, _primary: ToolContext = 'web'): readonly ToolContext[] => ['web'];
 
 export const toolSoftwareEntries = (telemetry: ToolPathTelemetry, tool: Tool): readonly ToolPathObservation[] => telemetry.entries.filter(entry => entry.tool === tool && !(
   entry.state === 'not_checked' && entry.actual === null && entry.candidate === null && entry.reason === null && entry.error === null

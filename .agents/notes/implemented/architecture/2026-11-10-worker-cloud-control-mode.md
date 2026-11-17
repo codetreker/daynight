@@ -13,6 +13,8 @@ valid under the other mode.
 
 ## Decision
 
+The [Web-only Worker decision](../simplification/2026-11-17-web-only-worker.md) replaces the Herdr execution and mode-specific portions of this decision. The following records the original design and rationale.
+
 The Worker configuration resource owns the global `agentControlMode` after
 explicit capability negotiation and first adoption. New local configurations
 default to `herdr`; an existing local `web` configuration remains `web` when its

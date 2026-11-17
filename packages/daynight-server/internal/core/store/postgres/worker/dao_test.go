@@ -160,7 +160,7 @@ func TestWorkerDAOConfigurationRoundtripAndAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := reader.WorkerConfiguration(ctx, user, id)
-	if err != nil || got.Desired == nil || !reflect.DeepEqual(*got.Desired, desired) || got.ObservationRevision != "5" || got.Observation == nil || got.Observation.ReportedAt.IsZero() {
+	if err != nil || got.Desired == nil || !configurationJSONEqual(*got.Desired, desired) || got.ObservationRevision != "5" || got.Observation == nil || got.Observation.ReportedAt.IsZero() {
 		t.Fatalf("configuration roundtrip: %+v %v", got, err)
 	}
 	var applied bytes.Buffer

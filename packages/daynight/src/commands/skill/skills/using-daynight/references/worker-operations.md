@@ -12,7 +12,7 @@ Worker. A monitoring failure does not establish that execution or cleanup stoppe
 
 ## Tool path configuration
 
-Worker-level choices cover `codex`, `copilot` and `herdr`; they do not configure
+Worker-level choices cover `codex` and `copilot`; they do not configure
 independent Controllers, other Workers or the Agent's own command aliases.
 Identify the intended Worker, machine and service before changing a path.
 
@@ -25,7 +25,6 @@ worker:
   toolPaths:
     codex: /Users/example/.nvm/versions/node/v24.22.1/bin/codex
     copilot: null
-    herdr: /opt/homebrew/bin/herdr
 ```
 
 Each value is an absolute file path on the Worker machine, or `null` for automatic
@@ -35,16 +34,19 @@ not expand `~` or environment variables, execute shell text or accept appended
 arguments. Windows requires a drive-qualified or complete UNC path; use YAML
 single quotes for backslash paths. Native arguments keep their existing settings.
 
-The first tool-path-capable cloud exchange imports each unadopted local choice;
-an explicit choice already saved in the cloud wins. Afterwards use **My Workers →
+An uninitialized cloud target imports a complete local candidate; an existing
+cloud target wins. Afterwards use **My Workers →
 the intended Worker → Configuration → Tool paths**. Expand the section, edit a
 path and use the panel's normal Save or Cancel action. **Restore automatic** is
 explicit: clearing the input is not a reset. Cloud automatic discovery does not
 reactivate an old local path. Editing local YAML after adoption does not replace
-the cloud target. An older service without this capability retains local choices.
+the cloud target. The Worker requires tool-path protocol version 2; upgrade an
+older service rather than falling back to an older contract. Unsupported old
+cloud targets remain readable but cannot admit new work until explicitly saved
+as a complete valid configuration. Existing local `worker.agentControlMode: web` is accepted;
+remove unsupported mode values and tool fields before importing a local candidate.
 
-Tool paths are editable only when the service and Worker report support. A
-previously supported Worker may be offline while a cloud target is saved; it has
+A Worker may be offline while a cloud target is saved; it has
 not applied that target yet. Preserve unrelated drafts. On a conflict, read the
 current configuration and reconsider the edit. For an unknown save result, use
 the panel's result query before deciding on another write; do not replay Save.
@@ -54,10 +56,8 @@ There is no `daynight config` or `daynight worker config` command for this edit.
 
 | Tool and execution mode | Automatic source |
 | --- | --- |
-| Codex, Web or Herdr | Captured Worker command environment (`PATH`) |
-| Copilot, Web Tasks and Worker assistants | Runtime bundled with this Daynight installation |
-| Copilot, Herdr | Captured Worker command environment (`PATH`) |
-| Herdr | Captured Worker command environment (`PATH`) |
+| Codex | Captured Worker command environment (`PATH`) |
+| Copilot, Tasks and Worker assistants | Runtime bundled with this Daynight installation |
 
 An explicit path selects that installation and never silently falls back to
 `PATH` or the bundled runtime. Version/capability checks and execution use the
@@ -85,7 +85,7 @@ daynight worker show <worker-id> --json
 These commands read the configured service; they do not start or attach to a
 Worker. Confirm its machine/platform and report time. In the JSON result inspect
 `worker.telemetry.toolPaths.entries`, selecting both `tool` and `context`
-(`web` or `herdr`). The same facts appear in the configuration panel and software
+(`web`). The same facts appear in the configuration panel and software
 details, where complete paths can be expanded and copied.
 
 | Report field | Meaning |
@@ -101,7 +101,7 @@ For each actual selection compare `selection`, `entryPath`, `executablePath`,
 `interpreterPath`, `source`, `version` and `checkedAt`. Source is `explicit`,
 `path` or `bundled`. Confirm the correct tool/context, current cloud target and
 revision, matching `actual.selection` and `state=applied` before describing a
-target as applied. Offline/stale reports, missing capability, `not_checked`, a
+target as applied. Offline/stale reports, `not_checked`, a
 candidate or a standalone version result are insufficient. Keep the saved target
 and last reported actual path/version separate.
 
@@ -112,22 +112,20 @@ and last reported actual path/version separate.
 | `unsupported_launcher` | Select a supported native/Node entry instead of an arbitrary shell, batch or PowerShell wrapper |
 | `unrecognized_output`, `incompatible_runtime` | Verify this installation's tool identity, version and required protocol; a filename alone is not proof |
 | `probe_timeout`, `cleanup_unknown` | Preserve the original probe/process responsibility; inspect its error and stopping evidence before another attempt |
-| `pending` with `active_instance` or `cleanup_unconfirmed` | Inspect the old Herdr instance and its remaining responsibilities; do not kill it merely to apply a target |
-| Missing `toolPaths` | Check service/Worker support and report freshness; do not infer an automatic path |
+| `pending` with `cleanup_unconfirmed` | Inspect the original process and remaining responsibilities before another attempt |
+| Missing `toolPaths` | Check service/Worker version and report freshness; do not infer an automatic path |
 
 A failed explicit target blocks new executions needing that tool; it does not
 authorize fallback or stopping healthy old executions. Changing paths cannot
-erase unconfirmed cleanup. On macOS, Herdr's per-run instances can keep old and
-new selections concurrently. Linux/Windows shared instances wait until the old
-daemon, endpoints and process responsibilities are confirmed closed before
-switching. Verify actual groups rather than assuming one topology on every OS.
+erase unconfirmed cleanup. Inspect actual active selections and their original
+process identities before deciding how to proceed.
 
 ### Existing execution and recovery
 
 New executions freeze their selected files and interpreter, including automatic
 choices. Target/PATH edits affect later executions; they do not restart an old
-Session, release its claim or replace its worktree. Recovery, retry and attach
-keep the original selection and identity. Replacing a file or symlink can produce
+Session, release its claim or replace its worktree. Recovery and retry keep the
+original selection and identity. Replacing a file or symlink can produce
 `tool_identity_changed`: restore the matching installation if recovery is needed;
 the new configured path cannot substitute for it. Daynight does not archive every
 old installed binary. Existing live-process input, stop and archive operations
@@ -176,9 +174,9 @@ manifest before another attempt.
 Missing journals, a successor claim or another Worker never authorize adoption.
 Restore the original Worker and Controller journals from backup; a completed Task,
 missing process or Git marker cannot replace them. Unfinished Web executions use
-normal Worker reconciliation after their original evidence is restored. Herdr
-recording recovery retains `worker resources list`, `retry` and `dispose` with
-their original Session and stop-evidence requirements. Successful observation
+normal Worker reconciliation after their original evidence is restored. Existing
+Herdr tasks, claims, processes and resources require their owner to handle them;
+this Worker does not migrate, recover or clean them up. Successful observation
 clears repaired monitoring failures; recovery does not create a new execution.
 
 ## Repair stopped Markdown image projections

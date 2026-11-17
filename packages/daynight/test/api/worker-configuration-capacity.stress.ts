@@ -10,15 +10,15 @@ import { workerTelemetry } from "../fixtures/worker-telemetry.js";
 
 const workerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", userId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const time = "2026-11-04T00:00:00.123456789Z";
-const value: WorkerCloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] };
+const value: WorkerCloudValue = { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] };
 const desired = { revision: "1", updatedAt: time, value };
 const item: WorkerCloudItem = { key: { kind: "maxConcurrent" }, targetRevision: "1", appliedValue: 2, state: "applied", error: null, lastFailure: null, nextAttemptAt: null };
-const configuration: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [item] } };
+const configuration: WorkerCloudReport = { toolPathsBootstrap: null, bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [item] } };
 const report = { ...workerTelemetry, taskInventory: null };
 const receipt = { observedAt: time, lastReportedAt: time, configuration: { desired, observationRevision: "1", observationAccepted: true } };
 const operations: Operation[] = [];
 const api = (fetch: typeof globalThis.fetch) => { const operation = createOperation(); operations.push(operation); return createApiClient({ serverUrl: "http://localhost:8787", serverToken: "fixture-token", expectedUserId: userId, operation, fetch }); };
-const response = (body: unknown) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1" } });
+const response = (body: unknown) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2" } });
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); vi.restoreAllMocks(); });
 
 const actual = (): ToolPathActual => ({ selection: { kind: "path", path: "/opt/codex" }, selectionKey: "a".repeat(64), entryPath: "/opt/codex", executablePath: "/opt/codex", interpreterPath: null, source: "explicit", version: "1.2.3", checkedAt: time });
@@ -29,7 +29,7 @@ describe("Worker configuration report body capacity", () => {
   it("sends a complete legal escaped native result larger than the old limit", async () => {
     const native = { agent: "codex" as const, model: null, args: Array(128).fill("\\".repeat(4096)) };
     const applied = { ...item, key: { kind: "native" as const }, appliedValue: native };
-    const input: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [applied] } };
+    const input: WorkerCloudReport = { toolPathsBootstrap: null, bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [applied] } };
     expect(Buffer.byteLength(stringifyApiJson(applied))).toBeGreaterThan(1_048_576);
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
     await expect(api(fetch).reportWorkerConfiguration(workerId, report, input)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), known: receipt.configuration.desired } } });
@@ -37,7 +37,7 @@ describe("Worker configuration report body capacity", () => {
   });
   it("rejects an oversized complete observation at the body envelope without dropping applied values", async () => {
     const native = { agent: "codex" as const, model: null, args: Array(128).fill("x".repeat(4096)) };
-    const input: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: Array.from({ length: 19 }, (_, n) => ({ ...item, key: { kind: "projectNative" as const, projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, appliedValue: native })) } };
+    const input: WorkerCloudReport = { toolPathsBootstrap: null, bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: Array.from({ length: 19 }, (_, n) => ({ ...item, key: { kind: "projectNative" as const, projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, appliedValue: native })) } };
     const before = JSON.stringify(input), fetch = vi.fn<typeof globalThis.fetch>();
     await expect(api(fetch).reportWorkerConfiguration(workerId, report, input)).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "request_limit" } });
     expect(fetch).not.toHaveBeenCalled();
@@ -46,7 +46,7 @@ describe("Worker configuration report body capacity", () => {
   it("preserves a large legal observation and runtime source under the new budget", async () => {
     const projectIds = Array.from({ length: 512 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
     const native = { agent: "codex" as const, model: "gpt-6-astra", args: ["--add-dir", "/" + "a".repeat(1580)] };
-    const observation: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: projectIds.flatMap(projectId => [
+    const observation: WorkerCloudReport = { toolPathsBootstrap: null, bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: projectIds.flatMap(projectId => [
       { ...item, key: { kind: "projectNative" as const, projectId }, appliedValue: native },
       { ...item, key: { kind: "projectPreparation" as const, projectId }, appliedValue: true },
     ]) } };
@@ -111,7 +111,7 @@ it.each([{ omitted: true, fail: false, asynchronous: false }, { omitted: false, 
     fetch: async (_url, init) => {
       requests.push(init!); const get = init!.method === "GET";
       if (!get && fail) throw new Error("transport failed");
-      return new Response(JSON.stringify(get ? { desired: null, observationRevision: "0", observation: null } : { observedAt: time, lastReportedAt: time, configuration: { desired: null, observationRevision: "0", observationAccepted: false } }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "1" } });
+      return new Response(JSON.stringify(get ? { desired: null, observationRevision: "0", observation: null } : { observedAt: time, lastReportedAt: time, configuration: { desired: null, observationRevision: "0", observationAccepted: false } }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": user, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2" } });
     },
   });
   try {

@@ -5,7 +5,6 @@ import type { OperationLimits } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseWorkerCloudValue } from "../../api/worker-configuration.js";
 import type { WorkerCloudNative, WorkerCloudValue } from "../../api/worker-configuration.js";
-import type { AgentControlMode } from "../../api/types.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
@@ -27,7 +26,6 @@ export type WorkerLocalConfiguration = ServerConfiguration & WorkerLocalNativeOv
   readonly source: string | undefined;
   readonly repositoryRoot: string;
   readonly toolPaths: ToolPaths;
-  readonly agentControlMode: AgentControlMode;
 };
 
 export type WorkerLocalRepository = { readonly remote: string; readonly path: string; readonly projectId: string };
@@ -67,12 +65,11 @@ const readSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<str
 
 export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths, pathApi: PathApi = path): WorkerLocalConfiguration => validateSource(() => {
   const worker = workerMapping(sourceMapping(source, paths));
-  const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
-  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
+  if (Object.hasOwn(worker, "agentControlMode") && worker.agentControlMode !== "web") throw new TypeError("worker.agentControlMode is no longer supported; remove the old setting to use Web execution.");
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
-  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), agentControlMode, ...parseWorkerLocalNativeOverrides(worker) };
+  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), ...parseWorkerLocalNativeOverrides(worker) };
 });
 
 export const readWorkerLocalConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerLocalConfiguration> => {
@@ -205,6 +202,7 @@ export const parseWorkerCloudBootstrap = async (
 ): Promise<WorkerCloudValue> => {
   signal.throwIfAborted();
   const worker = workerMapping(sourceMapping(source, paths));
+  if (Object.hasOwn(worker, "agentControlMode") && worker.agentControlMode !== "web") throw new TypeError("worker.agentControlMode is no longer supported; remove the old setting to use Web execution.");
   const repositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(repositories)) throw new TypeError("worker.repositories must be a sequence.");
   if (repositories.length > 128) throw new RangeError("worker.repositories must contain at most 128 Projects.");
@@ -222,7 +220,6 @@ export const parseWorkerCloudBootstrap = async (
   }
   signal.throwIfAborted();
   return parseWorkerCloudValue({
-    agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr",
     toolPaths: parseLocalToolPaths(worker.toolPaths),
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
@@ -230,7 +227,7 @@ export const parseWorkerCloudBootstrap = async (
     preferPlatformSpecificTasks: Object.hasOwn(worker, "preferPlatformSpecificTasks") ? worker.preferPlatformSpecificTasks : workerConfigurationDefaults.preferPlatformSpecificTasks,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
-  }, true, { controlMode: true, toolPaths: true });
+  });
 };
 
 export const readWorkerCloudBootstrap = async (paths: WorkerPaths, resolveProject: WorkerBootstrapProjectResolver, signal: AbortSignal): Promise<WorkerCloudValue> =>

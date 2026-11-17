@@ -17,11 +17,7 @@ type WorkerProjectConfiguration struct {
 }
 
 type WorkerConfiguration struct {
-	AgentControlMode  *WorkerAgentControlMode `json:"agentControlMode"`
-	ToolPaths         WorkerToolPaths         `json:"toolPaths"`
-	PreserveToolPaths bool                    `json:"-"`
-	// Legacy replacements retain the locked cloud mode without synthesizing a default.
-	PreserveAgentControlMode    bool                         `json:"-"`
+	ToolPaths                   WorkerToolPaths              `json:"toolPaths"`
 	PreserveSudoCleanup         bool                         `json:"-"`
 	EnableSudoCleanup           bool                         `json:"enableSudoCleanup"`
 	PreferPlatformSpecificTasks bool                         `json:"preferPlatformSpecificTasks"`
@@ -35,7 +31,8 @@ type WorkerConfiguration struct {
 type WorkerDesiredConfiguration struct {
 	Revision  string              `json:"revision"`
 	UpdatedAt time.Time           `json:"updatedAt"`
-	Value     WorkerConfiguration `json:"value"`
+	Value     WorkerConfiguration `json:"-"`
+	RawValue  json.RawMessage     `json:"-"`
 }
 
 type WorkerConfigurationItemKey struct {
@@ -72,10 +69,9 @@ type WorkerConfigurationReportedObservation struct {
 }
 
 type WorkerConfigurationExchange struct {
-	ToolPathsBootstrap   *WorkerToolPaths                `json:"toolPathsBootstrap,omitempty"`
-	ControlModeBootstrap *WorkerAgentControlMode         `json:"controlModeBootstrap,omitempty"`
-	Bootstrap            *WorkerConfiguration            `json:"bootstrap"`
-	Observation          *WorkerConfigurationObservation `json:"observation"`
+	ToolPathsBootstrap *WorkerToolPaths                `json:"toolPathsBootstrap,omitempty"`
+	Bootstrap          *WorkerConfiguration            `json:"bootstrap"`
+	Observation        *WorkerConfigurationObservation `json:"observation"`
 }
 
 type WorkerConfigurationResource struct {
@@ -88,4 +84,38 @@ type WorkerConfigurationReceipt struct {
 	Desired             *WorkerDesiredConfiguration `json:"desired"`
 	ObservationRevision string                      `json:"observationRevision"`
 	ObservationAccepted bool                        `json:"observationAccepted"`
+}
+
+// MarshalJSON retains the exact stored target, including fields unsupported by
+// the current write schema, until a user explicitly replaces it.
+func (d WorkerDesiredConfiguration) MarshalJSON() ([]byte, error) {
+	value := d.RawValue
+	if value == nil {
+		var err error
+		value, err = json.Marshal(d.Value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(struct {
+		Revision  string          `json:"revision"`
+		UpdatedAt time.Time       `json:"updatedAt"`
+		Value     json.RawMessage `json:"value"`
+	}{d.Revision, d.UpdatedAt, value})
+}
+
+func (d *WorkerDesiredConfiguration) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Revision  string          `json:"revision"`
+		UpdatedAt time.Time       `json:"updatedAt"`
+		Value     json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	d.Revision, d.UpdatedAt, d.RawValue = wire.Revision, wire.UpdatedAt, append(json.RawMessage(nil), wire.Value...)
+	if err := json.Unmarshal(wire.Value, &d.Value); err != nil {
+		d.Value = WorkerConfiguration{}
+	}
+	return nil
 }

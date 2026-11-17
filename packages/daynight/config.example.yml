@@ -49,13 +49,13 @@ review:
 # Worker local settings and first-import seed. Optional daynight worker setup
 # inspects prerequisites and selects an agent and existing Projects before the
 # first connection. The complete seed is imported only when the cloud target is absent.
-# Afterwards, My Workers owns concurrency, polling/recovery limits, control mode,
+# Afterwards, My Workers owns concurrency, polling/recovery limits,
 # platform preference, Project selection and global/per-Project agent/model/args. Local
 # managed values cannot overwrite that target. Normal worker run accepts an empty
 # selection and does not open a Project picker.
 # Paths, identity, service credentials and the optional
 # agentModel/agentReasoningEffort overrides remain local. Native
-# credentials and the official Herdr integration must be configured explicitly.
+# credentials must be configured explicitly.
 # Every fresh/resumed native agent uses fixed full access and task-folder trust;
 # args cannot lower that policy or re-enable permission prompts. The fixed launch
 # policy does not edit provider global settings.
@@ -63,8 +63,8 @@ worker:
   # Root for new Worker repository paths; independent of review's root.
   # Changing it does not relocate an existing local binding.
   repositoryRoot: ~/daynights
-  # Optional tool selections are parsed locally but are not yet connected to
-  # Worker launches, probes or cloud configuration. Saving them does not apply them.
+  # Optional tool selections supply the initial cloud target. Once enrolled,
+  # manage tool paths in My Workers; saving alone does not confirm application.
   # Omit a tool or use null for auto; empty/blank strings are invalid. Explicit
   # values are complete absolute file paths for this machine, at most 4096 UTF-8
   # bytes, without control characters. No trimming, arguments or expansion of ~
@@ -73,7 +73,6 @@ worker:
   # toolPaths:
   #   codex: /Users/example/.nvm/versions/node/v24.22.1/bin/codex
   #   copilot: null
-  #   herdr: /opt/homebrew/bin/herdr
   # Initial cloud values. maxConcurrent and pollIntervalMs are positive integers;
   # pollIntervalMs uses milliseconds, and recoveryLimit is nonnegative.
   maxConcurrent: 1
@@ -82,9 +81,6 @@ worker:
   # Initial acquisition policy; later edits belong to this Worker in My Workers.
   # Prefer tasks requiring this host platform across all selected Projects.
   preferPlatformSpecificTasks: false
-  # Initial mode; adopted once by a supporting service, then managed in My Workers.
-  # Older services continue using this local value. Existing claims retain their mode.
-  agentControlMode: herdr
   # Initial global native values. Later changes belong in My Workers.
   agent: copilot
   model: null
@@ -97,7 +93,7 @@ worker:
   # agentReasoningEffort: high
   # Initial Project selection and native overrides become cloud configuration.
   # Local transports/paths remain bindings; they do not choose the cloud scope.
-  # New claims freeze their native configuration for Web and Herdr recovery.
+  # New claims freeze their native configuration for Web recovery.
   # Local or cloud default changes apply only to subsequent new executions.
   repositories:
     - remote: https://github.com/OWNER/REPO.git

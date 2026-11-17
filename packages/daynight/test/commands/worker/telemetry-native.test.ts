@@ -4,7 +4,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
-import type { TaskPlatform, WorkerExecutableProbe, WorkerHerdrProbe } from "../../../src/api/types.js";
+import type { TaskPlatform, WorkerExecutableProbe } from "../../../src/api/types.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
 
@@ -14,7 +14,7 @@ const platform = (): TaskPlatform => {
   if (process.platform === "win32") return "windows";
   throw new Error("Native telemetry qualification requires a supported Worker platform.");
 };
-const versionSummary = (probe: WorkerExecutableProbe | WorkerHerdrProbe) => probe.state === "ok"
+const versionSummary = (probe: WorkerExecutableProbe) => probe.state === "ok"
   ? { state: probe.state, version: probe.value }
   : probe.state === "error" ? { state: probe.state, code: probe.code } : { state: probe.state };
 
@@ -34,12 +34,11 @@ it("qualifies resource and pure software probes on the native operating system",
     const elapsed = performance.now() - began;
     process.stdout.write(`${JSON.stringify({ kind: "worker_telemetry_native", platform: telemetry.platform,
       resources: { os: telemetry.os.state, cpu: telemetry.cpu.state, memory: telemetry.memory.state, disk: telemetry.disk.state },
-      versions: { daynight: telemetry.versions.daynight, herdr: versionSummary(telemetry.versions.herdr), codex: versionSummary(telemetry.versions.codex), copilot: versionSummary(telemetry.versions.copilot) } })}\n`);
+      versions: { daynight: telemetry.versions.daynight, codex: versionSummary(telemetry.versions.codex), copilot: versionSummary(telemetry.versions.copilot) } })}\n`);
     expect(elapsed).toBeGreaterThanOrEqual(180); expect(elapsed).toBeLessThan(5_500);
     expect(telemetry.workingDirectory === startup).toBe(true);
     expect(telemetry.os.state).toBe("ok"); expect(telemetry.cpu.state).toBe("ok");
     expect(telemetry.memory.state).toBe("ok"); expect(telemetry.disk.state).toBe("ok");
-    expect(telemetry.versions.herdr.state).toBe("not_running");
     if (telemetry.os.state === "ok") {
       expect(telemetry.os.value).toEqual({ type: os.type(), release: os.release(), version: os.version(), arch: os.arch() });
     }

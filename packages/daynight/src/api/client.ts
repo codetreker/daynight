@@ -2,7 +2,7 @@ import { normalizeTaskTagFilter } from "./task-tag-filter.js";
 import { confirmTaskTagIds, normalizeTaskTagIds } from "./task-tags.js";
 import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
 import type { Tag, TagDeletionReceipt, TagListQuery, TagPage } from "./tags.js";
-import { projectWorkerCloudReport, decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseReceivedWorkerConfigurationReportReceipt, parseReceivedWorkerConfigurationResource } from "./worker-configuration.js";
+import { decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseReceivedWorkerConfigurationReportReceipt, parseReceivedWorkerConfigurationResource } from "./worker-configuration.js";
 import { parseObservedTask, parseObservedTaskGraph, parseTaskSessionObservation, taskObservationPartial, unsupportedSessionObservation } from "./task-observation.js";
 import type { ObservedTask, ObservedTaskGraph, TaskObservationList } from "./task-observation.js";
 import { createTaskSessionClient } from "./task-session.js";
@@ -37,10 +37,9 @@ import { validateServerToken, validateTokenTransport } from "../config/server-to
 import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseProjectDeletionPreview, parseProjectDeletionReceipt, parseProjectDeletionError, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
-import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
+import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly promptSelectors?: string };
-export type WorkerToolPathsCapability = { supported: boolean; serverOrigin?: string; userId?: string };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true; readonly workerToolPaths?: true; readonly promptSelectors?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
 export class ApiError extends Error {
@@ -266,8 +265,6 @@ export const createApiClient = (options: {
   readonly expectedUserId?: string;
   readonly operation: Operation;
   readonly fetch?: typeof globalThis.fetch;
-  readonly workerControlMode?: { supported: boolean };
-  readonly workerToolPaths?: WorkerToolPathsCapability;
   readonly onToolPathsBudget?: (result: NonNullable<ToolPathsReportBudget>) => void | Promise<void>;
 }): ApiClient => {
   const origin = new URL(options.serverUrl);
@@ -276,21 +273,8 @@ export const createApiClient = (options: {
   const expectedUserId = options.expectedUserId === undefined ? undefined : resourceId(options.expectedUserId);
   if (serverToken !== undefined) validateTokenTransport(origin.origin);
   const operation = options.operation;
-  const workerControlMode = options.workerControlMode ?? { supported: false };
-  const workerToolPaths = options.workerToolPaths ?? { supported: false };
-  let toolPathsPrincipal = expectedUserId;
-  if (workerToolPaths.serverOrigin !== origin.origin || expectedUserId !== undefined && workerToolPaths.userId !== expectedUserId) workerToolPaths.supported = false;
-  const toolPathsSupported = () => workerToolPaths.supported && workerToolPaths.serverOrigin === origin.origin && toolPathsPrincipal !== undefined && workerToolPaths.userId === toolPathsPrincipal;
-  const confirmToolPaths = (header: string | null, principal: string | undefined) => {
-    if (header !== null && header !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
-    if (principal === undefined) { workerToolPaths.supported = false; return; }
-    toolPathsPrincipal = principal;
-    Object.assign(workerToolPaths, { supported: header === "1", serverOrigin: origin.origin, userId: principal });
-  };
-  const projectToolReport = (input: WorkerReport, supported: boolean): WorkerReport => {
-    if (supported) return input;
-    const { toolPaths: _toolPaths, ...legacy } = input;
-    return legacy;
+  const confirmToolPaths = (header: string | null): void => {
+    if (header !== "2") throw new ProtocolError("Upgrade the Daynight service to support Worker tool paths protocol 2.");
   };
   const reportBody = (input: Parameters<typeof workerReportBody>[0], maxBytes?: number) => {
     const body = workerReportBody(input, maxBytes);
@@ -420,7 +404,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerControlMode === true ? { "Daynight-Worker-Control-Mode": "1" } : {}), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -512,8 +496,7 @@ export const createApiClient = (options: {
           const safeCodes = ["unauthenticated", "forbidden", "invalid_input", "identity_mismatch", "invitation_unavailable", "write_outcome_unknown", "internal_error"];
           serverError = { code: safeCodes.includes(serverError.code) ? serverError.code : "server_error", message: "Invitation request failed.", requestId: canonicalId(serverError.requestId) === serverError.requestId ? serverError.requestId : "unavailable" };
         }
-        if (context.operation === "worker.configuration" && status === 404 && principalId !== undefined) confirmToolPaths(responseContext.toolPathsHeader, principalId);
-        if (context.workerControlMode === true && status === 404 && principalId !== undefined) workerControlMode.supported = responseContext.controlModeHeader === "1";
+        if (context.workerToolPaths === true && (status === 400 || status === 404) && responseContext.toolPathsHeader !== "2") confirmToolPaths(responseContext.toolPathsHeader);
         const confirmedRefusal = mode.kind === "json" && mode.classifyRefusal !== undefined ? mode.classifyRefusal(status, serverError, responseRequestId) : status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
@@ -679,8 +662,7 @@ export const createApiClient = (options: {
     (error.code === "unsupported" || error.code === "upgrade_required") && (error.status === 400 || error.status === 404 || error.status === 501)
     || error.code === "invalid_input" && error.status === 400 && /unknown.*(?:query|parameter)|(?:query|parameter).*unknown|include.*(?:unsupported|not supported)/i.test(error.serverMessage ?? "")
   );
-  const herdrMatches = (actual: WorkerHerdr | null, expected: WorkerHerdr | null): boolean => actual === null || expected === null ? actual === expected : actual.session === expected.session && actual.workspaceId === expected.workspaceId && actual.paneId === expected.paneId;
-  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === (descriptor.agentControlMode ?? "herdr") && worker.worktreeId === canonicalId(descriptor.worktreeId);
+  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === descriptor.agentControlMode && worker.worktreeId === canonicalId(descriptor.worktreeId);
   const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim | undefined) => boolean, sameValue = false): Promise<Task> => {
     if (Object.hasOwn(input, "continuityConfirmed")) throw new Error("continuityConfirmed is no longer accepted. New executions require fresh claim and worktree IDs.");
     const project = resourceId(projectId), task = resourceId(taskId);
@@ -877,9 +859,8 @@ export const createApiClient = (options: {
     listWorkers: async () => {
       const principal = accountPrincipal();
       let observedAt: string | undefined;
-      const items = await list<WorkerSummary>({ operation: "worker.list", workerToolPaths: true }, "/me/workers", (value, metadata) => {
+      const items = await list<WorkerSummary>({ operation: "worker.list" }, "/me/workers", (value, metadata) => {
         principal(metadata);
-        if (metadata.toolPathsHeader !== null && metadata.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
         const page = parseWorkerPage(value);
         observedAt = page.observedAt;
         return page;
@@ -888,7 +869,7 @@ export const createApiClient = (options: {
     },
     getWorker: (workerId) => {
       const target = resourceId(workerId), principal = accountPrincipal();
-      return exchange({ operation: "worker.show", workerToolPaths: true }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); if (metadata.toolPathsHeader !== null && metadata.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability."); return parseWorkerDetail(value, target, metadata.toolPathsHeader === "1"); } }, [200]);
+      return exchange({ operation: "worker.show", workerToolPaths: true }, `/me/workers/${target}`, "GET", { kind: "json", requirePrincipal: true, parse: (value, metadata) => { principal(metadata); if (metadata.toolPathsHeader !== "2") throw new ProtocolError("Upgrade the Daynight service to support Worker tool paths protocol 2."); return parseWorkerDetail(value, target, true); } }, [200]);
     },
     listTaskSteps: (projectId, taskId, options) => {
       const project = resourceId(projectId), task = resourceId(taskId);
@@ -1238,7 +1219,7 @@ export const createApiClient = (options: {
     },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], reportBody(projectToolReport(input, false)), true);
+      return exchange({ operation: "worker.report", workerToolPaths: true }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: (value, response) => { if (response.toolPathsHeader !== "2") throw new ProtocolError("Upgrade the Daynight service to support Worker tool paths protocol 2."); return parseWorkerReportReceipt(value); } }, [200], reportBody(input), true);
     },
     writeWorkerMonitoring: (workerId, observation, requestId) => {
       const worker = resourceId(workerId);
@@ -1251,34 +1232,31 @@ export const createApiClient = (options: {
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerControlMode: true, workerToolPaths: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
+      return exchange({ operation: "worker.configuration", workerConfiguration: true, workerToolPaths: true }, `/me/workers/${encodeURIComponent(worker)}/configuration`, "GET", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         decodeJsonSource: (source, response) => response.success ? decodeWorkerCloudJsonSource(source) : parseApiJson(source),
         parse: (value, response) => {
           if (response.configurationHeader !== "1") throw new ProtocolError("The server does not support Worker configuration exchange version 1.");
-          if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
-          const resource = parseReceivedWorkerConfigurationResource(value, { controlMode: response.controlModeHeader === "1", toolPaths: response.toolPathsHeader === "1" });
-          confirmToolPaths(response.toolPathsHeader, response.principalId);
-          workerControlMode.supported = response.controlModeHeader === "1";
+          if (response.toolPathsHeader !== "2") throw new ProtocolError("Upgrade the Daynight service to support Worker tool paths protocol 2.");
+          const resource = parseReceivedWorkerConfigurationResource(value);
+          confirmToolPaths(response.toolPathsHeader);
           return resource;
         },
       }, [200], undefined, true);
     },
     reportWorkerConfiguration: (workerId, input, configuration, selectors) => {
-      const worker = resourceId(workerId), supported = workerControlMode.supported, toolsSupported = toolPathsSupported();
-      const capabilities = { controlMode: supported, toolPaths: toolsSupported };
-      const parsed = parseWorkerCloudReport(projectWorkerCloudReport(configuration, capabilities), capabilities);
+      const worker = resourceId(workerId);
+      const parsed = parseWorkerCloudReport(configuration);
       const promptSelectors = selectors === undefined ? undefined : parseWorkerPromptSelectors(selectors);
-      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, ...(supported ? { workerControlMode: true as const } : {}), ...(toolsSupported ? { workerToolPaths: true as const } : {}), ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
+      return exchange({ operation: "worker.configuration.report", workerConfiguration: true, workerToolPaths: true, ...(promptSelectors === undefined ? {} : { promptSelectors: JSON.stringify(promptSelectors) }) }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         ...(promptSelectors === undefined ? {} : { responseBytes: 48 * 1_048_576 }),
         decodeJsonSource: (source, response) => !response.success ? parseApiJson(source) : promptSelectors === undefined ? decodeWorkerCloudJsonSource(source) : decodeWorkerCloudSyncSource(source),
         parse: (value, response) => {
           if (response.configurationHeader !== (promptSelectors === undefined ? "1" : "2")) throw new ProtocolError("The server does not support the requested Worker configuration exchange version.");
           const sync = promptSelectors === undefined ? undefined : value as { native: unknown; promptSource: string | undefined };
-          if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1" || toolsSupported && response.toolPathsHeader !== "1") { workerToolPaths.supported = false; throw new ProtocolError("The server did not confirm the requested Worker tool paths capability."); }
-          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: supported && response.controlModeHeader === "1", toolPaths: toolsSupported && response.toolPathsHeader === "1" });
-          workerControlMode.supported = supported && response.controlModeHeader === "1";
+          confirmToolPaths(response.toolPathsHeader);
+          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native);
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.known.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           if (sync === undefined || promptSelectors === undefined) return receipt;
           let prompts: WorkerPromptResults;
@@ -1289,7 +1267,7 @@ export const createApiClient = (options: {
           } catch { prompts = { ok: false }; }
           return { ...receipt, prompts };
         },
-      }, [200], reportBody({ ...projectToolReport(input, toolsSupported), configuration: parsed }, WORKER_CONFIGURATION_REPORT_BYTES), true);
+      }, [200], reportBody({ ...input, configuration: parsed }, WORKER_CONFIGURATION_REPORT_BYTES), true);
     },
     createProject: (input, requestId) => {
       const expected = resourceId(input.expectedUserId);
@@ -1605,7 +1583,7 @@ export const createApiClient = (options: {
       } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
     },
     claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
-    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId) && (input.startupReport === undefined || sameStartupReport(readSessionStartupReport(task.properties), input.startupReport)), true),
+    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId) && (input.startupReport === undefined || sameStartupReport(readSessionStartupReport(task.properties), input.startupReport)), true),
     completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => worker !== undefined && task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
     releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => canonicalId(input.claimId) !== null && worker === undefined && !Object.hasOwn(task.properties, "sessionStartup") && task.status === "todo" && task.startedAt === null && task.completedAt === null),
     withdrawWorkerClaim: (projectId, taskId, input) => {

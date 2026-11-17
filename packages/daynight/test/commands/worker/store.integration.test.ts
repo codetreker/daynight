@@ -16,7 +16,7 @@ const stores = new Set<WorkerStore>();
 const connections = new Set<Database.Database>();
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const claim: ClaimIdentity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3) };
-const open = (file: string): WorkerStore => { const store = openWorkerStore(file, { onMigration: () => {} }); stores.add(store); return store; };
+const open = (file: string): WorkerStore => { const store = openWorkerStore(file, { onMigration: () => {}, isWebCleanupOwner: () => true }); stores.add(store); return store; };
 const close = (store: WorkerStore): void => { store.close(); stores.delete(store); };
 const connect = (file: string): Database.Database => { const database = new Database(file); connections.add(database); return database; };
 const fixture = () => {
@@ -180,7 +180,7 @@ describe("worker claim and native session index", () => {
   it("retains a known native identity and rejects a different observed session", () => {
     const { file, store, project } = fixture();
     store.registerProject(project);
-    expect(store.registerPending({ ...claim, agent: "copilot", agentControlMode: "herdr" as const, sessionId: uuid(8) }).sessionId).toBe(uuid(8));
+    expect(store.registerPending({ ...claim, agent: "copilot", agentControlMode: "web" as const, sessionId: uuid(8) }).sessionId).toBe(uuid(8));
     const concurrent = open(file);
     expect(store.setSessionId(claim, uuid(8)).sessionId).toBe(uuid(8));
     expect(() => concurrent.setSessionId(claim, uuid(9))).toThrow("different native session");
@@ -201,8 +201,8 @@ describe("worker claim and native session index", () => {
     store.completeTask(claim);
     expect(concurrent.activateTask(newer).status).toBe("active");
     expect(store.listTasks()).toEqual([
-      { ...claim, status: "done", agent: "codex", agentControlMode: "herdr" as const, sessionId: null },
-      { ...newer, status: "active", agentControlMode: "herdr", sessionId: null },
+      { ...claim, status: "done", agent: "codex", agentControlMode: "web" as const, sessionId: null },
+      { ...newer, status: "active", agentControlMode: "web", sessionId: null },
     ]);
   });
 
@@ -214,7 +214,7 @@ describe("worker claim and native session index", () => {
     close(store);
     const recovered = open(file);
     expect(recovered.getProject(project)).toEqual(project);
-    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(8) });
+    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "web" as const, sessionId: uuid(8) });
     expect(Object.keys(recovered.getTask(claim)!)).toEqual(["projectId", "taskId", "claimId", "status", "agent", "agentControlMode", "sessionId"]);
   });
 });
@@ -224,7 +224,7 @@ it("freezes the selected Web routing mode across reopen and later configuration 
   f.store.registerPending({ ...claim, agent: "claude", agentControlMode: "web" }); close(f.store);
   const reopened = open(f.file);
   expect(reopened.getTask(claim)).toMatchObject({ agent: "claude", agentControlMode: "web" });
-  expect(() => reopened.registerPending({ ...claim, agent: "claude", agentControlMode: "herdr" })).toThrow();
+  expect(() => reopened.registerPending({ ...claim, agent: "codex", agentControlMode: "web" })).toThrow();
 });
 
 const legacyFixture = () => {
@@ -272,7 +272,7 @@ it("restores the entire unversioned index when rebuilding the baseline fails", (
     if (sql.includes("agent_control_mode") && tasksStart !== -1) { exec.call(this, sql.slice(0, tasksStart)); throw new Error("baseline failed"); }
     return exec.call(this, sql);
   });
-  expect(() => openWorkerStore(file, { onMigration: () => {} })).toThrow("migration-failed");
+  expect(() => openWorkerStore(file, { onMigration: () => {}, isWebCleanupOwner: () => true })).toThrow("migration-failed");
   expect(db.pragma("user_version", { simple: true })).toBe(0);
   expect(db.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
   expect(db.prepare("SELECT * FROM projects").all()).toEqual(projects);

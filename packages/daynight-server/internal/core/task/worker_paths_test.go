@@ -12,7 +12,7 @@ import (
 )
 
 func validDescriptor() WorkerDescriptor {
-	return WorkerDescriptor{ClaimID: "00000000-0000-4000-8000-000000000001", WorkerID: "00000000-0000-4000-8000-000000000002", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000003", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000004"}
+	return WorkerDescriptor{ClaimID: "00000000-0000-4000-8000-000000000001", WorkerID: "00000000-0000-4000-8000-000000000002", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000003", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: "00000000-0000-4000-8000-000000000004"}
 }
 func activeFixture(t *testing.T) (model.Task, *model.WorkerClaim) {
 	t.Helper()
@@ -26,12 +26,16 @@ func activeFixture(t *testing.T) (model.Task, *model.WorkerClaim) {
 }
 func TestWorkerClaimLifecycle(t *testing.T) {
 	d := validDescriptor()
-	d.AgentControlMode = ""
 	normal, err := CanonicalWorkerDescriptor(d)
-	if err != nil || normal.AgentControlMode != model.AgentControlModeHerdr {
+	if err != nil || normal.AgentControlMode != model.AgentControlModeWeb {
 		t.Fatal(normal, err)
 	}
 	bad := d
+	bad.AgentControlMode = ""
+	if _, err = CanonicalWorkerDescriptor(bad); err == nil {
+		t.Fatal("missing mode")
+	}
+	bad = d
 	bad.WorkerID = "bad"
 	if _, err = CanonicalWorkerDescriptor(bad); err == nil {
 		t.Fatal("bad id")
@@ -80,10 +84,9 @@ func TestWorkerUpdatesValidateAndProtectOwner(t *testing.T) {
 	current, worker := activeFixture(t)
 	claim := worker.ClaimID
 	invalidPhase := model.WorkerPhase("bad")
-	herdr := &model.WorkerHerdr{}
 	native := " "
 	badReport := &sp.StartupReport{}
-	for _, in := range []UpdateWorker{{ClaimID: "bad"}, {ClaimID: claim}, {ClaimID: claim, Phase: &invalidPhase}, {ClaimID: claim, Herdr: &herdr}, {ClaimID: claim, NativeSessionID: ptr(&native)}, {ClaimID: claim, StartupReport: badReport}} {
+	for _, in := range []UpdateWorker{{ClaimID: "bad"}, {ClaimID: claim}, {ClaimID: claim, Phase: &invalidPhase}, {ClaimID: claim, NativeSessionID: ptr(&native)}, {ClaimID: claim, StartupReport: badReport}} {
 		if _, err := ValidateWorkerUpdate(in); err == nil {
 			t.Fatalf("accepted %+v", in)
 		}
@@ -103,10 +106,6 @@ func TestWorkerUpdatesValidateAndProtectOwner(t *testing.T) {
 	}
 	web := *worker
 	web.AgentControlMode = model.AgentControlModeWeb
-	herdr = &model.WorkerHerdr{Session: "s", WorkspaceID: "w", PaneID: "p"}
-	if err := WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{Herdr: &herdr}); err == nil {
-		t.Fatal("web herdr")
-	}
 	faultCode(t, WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{StartupReport: &sp.StartupReport{ClaimID: "other"}}), "claim_conflict")
 	if err := WorkerUpdateAdmission(&web, web.UserID, claim, UpdateWorker{}); err != nil {
 		t.Fatal(err)
@@ -194,7 +193,7 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 		t.Fatal("active worker accepted")
 	}
 	current, worker = activeFixture(t)
-	input := UpdateWorker{Herdr: ptr(&model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}), NativeSessionID: ptr(ptr("native"))}
+	input := UpdateWorker{NativeSessionID: ptr(ptr("native"))}
 	values, changed, err := WorkerUpdateCandidate(current, worker, worker.ClaimID, input)
 	if err != nil || !changed {
 		t.Fatal(values, changed, err)

@@ -56,7 +56,7 @@ func createAssistantBots(t *testing.T, f *fixture) (string, string) {
 		"cpu":           probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 1}),
 		"memory":        probe(map[string]any{"usedBytes": 4, "totalBytes": 8}),
 		"disk":          probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
-		"versions":      map[string]any{"daynight": "1.0.0", "herdr": probe("1.0.0"), "codex": probe("1.0.0"), "copilot": probe("1.0.0")},
+		"versions":      map[string]any{"daynight": "1.0.0", "codex": probe("1.0.0"), "copilot": probe("1.0.0")},
 		"taskInventory": nil,
 		"assistantHost": map[string]any{"protocolVersion": 1, "observedAt": now, "defaultCwd": "/workspace", "defaultProvider": "codex", "providers": []any{
 			map[string]any{"provider": "codex", "available": true, "reason": nil, "model": nil, "args": []any{}},

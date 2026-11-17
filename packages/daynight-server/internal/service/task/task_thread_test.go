@@ -113,7 +113,7 @@ func threadActiveTask(t *testing.T, target model.Task, userID string) (model.Tas
 	claim := model.WorkerClaim{
 		ClaimID: "66666666-6666-4666-8666-666666666666", State: model.WorkerActive, UserID: userID,
 		WorkerID: "77777777-7777-4777-8777-777777777777", Machine: model.WorkerMachine{ID: "88888888-8888-4888-8888-888888888888", Name: "machine"},
-		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr,
+		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb,
 		WorktreeID: "99999999-9999-4999-8999-999999999999", Phase: model.WorkerExecuting, ClaimedAt: target.CreatedAt,
 	}
 	encoded, err := taskproperty.EncodeWorker(&claim)

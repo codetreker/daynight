@@ -21,7 +21,7 @@ const telemetry: WorkerTelemetry = {
   cpu: { state: "ok", checkedAt: timestamp, value: { model: "CPU", logicalProcessors: 4, usagePercent: 12 } },
   memory: { state: "ok", checkedAt: timestamp, value: { usedBytes: 100, totalBytes: 200 } },
   disk: { state: "ok", checkedAt: timestamp, value: { availableBytes: 300, totalBytes: 400 } },
-  versions: { daynight: "0.26.1", herdr: { state: "not_running", checkedAt: timestamp }, codex: { state: "not_installed", checkedAt: timestamp }, copilot: { state: "not_installed", checkedAt: timestamp } },
+  versions: { daynight: "0.26.1", codex: { state: "not_installed", checkedAt: timestamp }, copilot: { state: "not_installed", checkedAt: timestamp } },
 };
 const deferred = <T>() => {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
@@ -177,7 +177,7 @@ it.each(["codex", "assistantHost_codex", "assistantHost_claude", "assistantHost_
 it.each([false, true])("identifies a configuration report capacity failure while preserving uncertainty (%s)", async outcomeUnconfirmed => {
   const f = fixture();
   const error = new ApiError({ operation: "worker.configuration.report" }, "protocol", { status: 413, outcomeUnconfirmed, cause: new Error("private proxy response") });
-  const configuration = { capture: () => ({ bootstrap: null, observation: null }), send: vi.fn().mockRejectedValue(error), accept: vi.fn() };
+  const configuration = { capture: () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null }), send: vi.fn().mockRejectedValue(error), accept: vi.fn() };
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration });
   await settle();
   expect(f.emit.mock.calls[0]![0].message).toContain(`"category":"configuration_report_capacity_413${outcomeUnconfirmed ? "_outcome_unconfirmed" : ""}"`);
@@ -428,7 +428,7 @@ it("starts no work when its root signal is already cancelled", async () => {
   expect(f.collect).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
 });
 
-const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [], toolPaths: { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } } };
 const cloudDesired = { revision: "1", updatedAt: timestamp, value: cloudValue };
 
 it("drains a finite prompt cycle on the same reporter and stops after unchanged values", async () => {
@@ -445,7 +445,7 @@ it("drains a finite prompt cycle on the same reporter and stops after unchanged 
       : { key: selector.key, status: "unchanged" as const, revision: selector.knownRevision }) },
   }));
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
-    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
+    configuration: { capture: () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
   await settle();
   expect(send.mock.calls.map(call => call[3]!.length)).toEqual([3, 2]);
   expect(source.current(projects[0]!)?.project.revision).toBe("0");
@@ -466,7 +466,7 @@ it("ends prompt catchup on a global read failure while retaining the native ackn
     prompts: { ok: true as const, results: selectors!.map(selector => ({ key: selector.key, status: "error" as const, error: "timeout" as const })) },
   }));
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
-    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept, prompts: source } });
+    configuration: { capture: () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null }), send, accept, prompts: source } });
   await settle(); expect(send).toHaveBeenCalledOnce(); expect(accept).toHaveBeenCalledOnce();
   await vi.advanceTimersByTimeAsync(29_999); expect(send).toHaveBeenCalledOnce();
   await vi.advanceTimersByTimeAsync(1); expect(send).toHaveBeenCalledTimes(2);
@@ -479,7 +479,7 @@ it("does not retry a failed prompt batch when a new demand arrived in flight", a
   const blocked = deferred<ReceivedWorkerConfigurationReportReceipt>();
   const send = vi.fn((_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => blocked.promise);
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
-    configuration: { capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
+    configuration: { capture: () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null }), send, accept: async () => {}, prompts: source } });
   await settle();
   source.setDemand(["33333333-3333-4333-8333-333333333333"]); reporter.demandChanged();
   blocked.reject(new Error("network")); await settle();
@@ -493,7 +493,7 @@ it("does not retry a failed prompt batch when a new demand arrived in flight", a
 it("uses the latest inventory after a delayed cloud configuration preparation", async () => {
   const f = fixture(), preparation = deferred<void>();
   const prepare = vi.fn().mockImplementationOnce(() => preparation.promise).mockResolvedValue(undefined);
-  const capture = () => ({ bootstrap: null, observation: null });
+  const capture = () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null });
   const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { prepare, capture, send, accept: async () => {} } });
@@ -513,7 +513,7 @@ it("keeps partial inventory invalidated while a timed-out probe is confirmed dur
   const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
-    configuration: { prepare, capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {} } });
+    configuration: { prepare, capture: () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null }), send, accept: async () => {} } });
   reporter.publishInventory({ observedAt: timestamp, claims: [claim("old")] });
   await settle();
   reporter.publishInventory(null);
@@ -533,7 +533,7 @@ it("exchanges cloud configuration without a task inventory and acknowledges only
   const pending = deferred<ReceivedWorkerConfigurationReportReceipt>();
   const failure = { code: "unavailable" as const, category: "agent" as const, phase: "validate" as const, occurredAt: timestamp };
   const captureValue = {
-    bootstrap: null,
+    toolPathsBootstrap: null, bootstrap: null,
     observation: { baseRevision: "0", desiredRevision: "1", items: [{ key: { kind: "maxConcurrent" as const }, targetRevision: "1", appliedValue: null, state: "error" as const, error: failure, lastFailure: failure, nextAttemptAt: timestamp }] },
   };
   const capture = vi.fn(() => captureValue);
@@ -559,7 +559,7 @@ it("exchanges cloud configuration without a task inventory and acknowledges only
 it("captures current configuration after an unknown send outcome instead of replaying the old observation", async () => {
   const f = fixture();
   let revision = "1";
-  const capture = vi.fn(() => ({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: revision, items: [] } }));
+  const capture = vi.fn(() => ({ toolPathsBootstrap: null, bootstrap: null, observation: { baseRevision: "0", desiredRevision: revision, items: [] } }));
   const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   send.mockRejectedValueOnce(new Error("unknown cloud mutation outcome"));
@@ -577,8 +577,8 @@ it("captures current configuration after an unknown send outcome instead of repl
 
 it("keeps bootstrap reporting independent of runtime application and joins receipt commits on shutdown", async () => {
   const f = fixture(), committed = deferred<void>();
-  const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
-  const capture = vi.fn(() => ({ bootstrap, observation: null }));
+  const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [], toolPaths: { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } } };
+  const capture = vi.fn(() => ({ toolPathsBootstrap: null, bootstrap, observation: null }));
   const receipt = receivedReceipt({ desired: { revision: "1", updatedAt: timestamp, value: bootstrap }, observationRevision: "0", observationAccepted: false });
   const send = vi.fn(async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   const accept = vi.fn(() => committed.promise);
@@ -600,8 +600,8 @@ it("reconciles an unknown import before capturing a fresh report within the same
     targetPresent = true; needsReconciliation = false;
   });
   const capture = vi.fn((): WorkerCloudReport => targetPresent
-    ? { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } }
-    : { bootstrap: cloudValue, observation: null });
+    ? { toolPathsBootstrap: null, bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } }
+    : { toolPathsBootstrap: null, bootstrap: cloudValue, observation: null });
   const receipt = receivedReceipt({ desired: cloudDesired, observationRevision: "1", observationAccepted: false });
   const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
   send.mockImplementationOnce(async () => { needsReconciliation = true; throw new Error("Import response lost"); });
@@ -615,8 +615,8 @@ it("reconciles an unknown import before capturing a fresh report within the same
   reconciled.resolve(); await settle();
   expect(prepare.mock.calls[1]![0]).toBe(f.collect.mock.calls[1]![0]);
   expect(send).toHaveBeenCalledTimes(2);
-  expect(send.mock.calls[0]![1]).toEqual({ bootstrap: cloudValue, observation: null });
-  expect(send.mock.calls[1]![1]).toEqual({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } });
+  expect(send.mock.calls[0]![1]).toEqual({ toolPathsBootstrap: null, bootstrap: cloudValue, observation: null });
+  expect(send.mock.calls[1]![1]).toEqual({ toolPathsBootstrap: null, bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } });
   expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
   await reporter.stop();
 });
@@ -648,7 +648,7 @@ it("summarizes the same failure every five minutes with actual occurrences despi
 it("keeps successful configuration exchange independent of a failing observer and reports that failure at stop", async () => {
   const f = fixture(), observerFailure = new Error("observer failed"), accept = vi.fn(async () => "persisted" as const);
   const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
-    configuration: { capture: () => ({ bootstrap: null, observation: null }),
+    configuration: { capture: () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null }),
       send: async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }) }),
       accept, observe: () => { throw observerFailure; } } });
   await settle();

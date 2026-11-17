@@ -163,7 +163,7 @@ describe("Worker configuration persistence", () => {
 
   it("retains the original schema 5 file and error when its atomic migration cannot be saved", async () => {
     const { file } = await fixture(), original = createConfigurationCache(identity);
-    const { remoteObservation: _remote, authority, ...rest } = original;
+    const { remoteObservation: _remote, format: _format, authority, ...rest } = original;
     const source = JSON.stringify({ ...rest, schemaVersion: 5, authority: { generation: authority.generation, desired: null, observationRevision: "0" } });
     await writeFile(file, source);
     const failure = new TypeError("Migration encoding failed");

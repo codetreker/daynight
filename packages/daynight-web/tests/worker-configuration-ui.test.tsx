@@ -10,7 +10,7 @@ import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskCacheError } from '../src/features/task-cache/database';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
+import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerResponse } from './helpers/workers';
 import { automaticToolPaths, toolPathTelemetry } from './helpers/worker-tool-paths';
@@ -41,26 +41,14 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
-  it.each(['mode-first', 'tools-first'] as const)('compares same-revision partial projections without false unsaved feedback: %s', async order => {
-    const mode = () => controlModeResponse(configurationResource('1', { ...configurationValue(), agentControlMode: 'web' }));
-    const tools = () => { const response = configurationResponse(configurationResource('1', { ...configurationValue(), toolPaths: automaticToolPaths() })); response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response; };
-    const responses = order === 'mode-first' ? [mode(), tools()] : [tools(), mode()];
-    install(() => responses.shift()!);
-    mount({ toolPaths: toolPathTelemetry() }); await flush(); await advance();
-    expect(document.getElementById('feedback-agentControlMode')).not.toHaveTextContent('Unsaved');
-    expect(document.querySelectorAll('.configuration-tool-field .status-chip.unsaved')).toHaveLength(0);
-    expect(screen.getByRole('combobox', { name: 'Control mode' })).toHaveProperty('disabled', order === 'mode-first');
-    expect((document.getElementById('config-toolPaths-codex') as HTMLInputElement).disabled).toBe(order === 'tools-first');
-    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
-  });
   it.each(['known', 'future'] as const)('rejects same-revision partial projections when common %s values disagree', async mismatch => {
-    const raw = (mode: boolean, maximum: number, future: string) => {
-      const value = { ...configurationValue(), maxConcurrent: maximum, future: 'FUTURE', ...(mode ? { agentControlMode: 'web' as const } : { toolPaths: automaticToolPaths() }) };
+    const raw = (maximum: number, future: string) => {
+      const value = { ...configurationValue(), maxConcurrent: maximum, future: 'FUTURE', toolPaths: automaticToolPaths() };
       const body = JSON.stringify(configurationResource('1', value)).replace('"FUTURE"', future);
-      return new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', ...(mode ? { 'Daynight-Worker-Control-Mode': '1' } : { 'Daynight-Worker-Tool-Paths': '1' }) } });
+      return new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
     };
-    const first = raw(true, 2, '900719925474099312345');
-    const second = raw(false, mismatch === 'known' ? 3 : 2, mismatch === 'future' ? '900719925474099312346' : '900719925474099312345');
+    const first = raw(2, '900719925474099312345');
+    const second = raw(mismatch === 'known' ? 3 : 2, mismatch === 'future' ? '900719925474099312346' : '900719925474099312345');
     const responses = [first, second]; install(() => responses.shift()!);
     mount({ toolPaths: toolPathTelemetry() }); await flush(); change('Concurrent task limit', '4'); await advance();
     expect(input()).toHaveValue('4'); expect(screen.getByRole('alert')).toHaveTextContent('invalid configuration response');
@@ -219,7 +207,7 @@ describe('Worker configuration form', () => {
     expect(input()).toHaveValue('-'); expect(screen.getByText('Enter a JSON array of nonempty strings without control characters.')).toBeInTheDocument();
   });
   it('shows preparation errors, removed Project stop results and recovered last failures together', async () => {
-    const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
     const preparation = { code: 'permission_denied' as const, category: 'repository' as const, phase: 'prepare' as const, occurredAt: WORKER_TIME };
     const stopping = { code: 'command_failed' as const, category: 'runtime' as const, phase: 'stop' as const, occurredAt: WORKER_TIME };
     let resource = observed('2', value, [...globals(value, '2'),
@@ -227,7 +215,7 @@ describe('Worker configuration form', () => {
       item({ kind: 'projectNative', projectId: workerId(3) }, value.native, '2'),
       { ...item({ kind: 'projectRemoval', projectId: workerId(9) }, null, '1'), state: 'error', error: stopping, lastFailure: stopping, nextAttemptAt: WORKER_TIME },
     ], '2');
-    install(() => configurationResponse(resource), [project(3), project(9)]); mount(); await flush();
+    install(() => configurationResponse(resource), [project(3), project(9)]); mount({ toolPaths: { ...toolPathTelemetry(), entries: toolPathTelemetry().entries.map(entry => ({ ...entry, targetRevision: '2' })) } }); await flush();
     expect(screen.getByText('Partially applied')).toBeInTheDocument();
     const removed = screen.getByRole('heading', { name: 'Project 9' }).closest('article')!;
     expect(within(removed).getByText('Stop project execution')).toBeInTheDocument(); expect(within(removed).getByText(/Stopping · Command failed/)).toBeInTheDocument();
@@ -239,7 +227,7 @@ describe('Worker configuration form', () => {
     ], '3'); await advance();
     expect(screen.getByText(/Last failure: Preparation · Permission denied/)).toBeInTheDocument(); expect(screen.getByText(/Last failure: Stopping · Command failed/)).toBeInTheDocument();
     const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
-    expect(within(summary).getByText('Applied')).toBeInTheDocument();
+    expect(within(summary).getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
   });
   it.each(['target', 'native', 'project', 'override', 'observation', 'observationKey', 'observationValue', 'observationField'] as const)('does not claim full application for unknown %s data', async kind => {
     const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
@@ -267,31 +255,31 @@ describe('Worker configuration form', () => {
     expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Applied')).toBeInTheDocument();
   });
   it('does not let unknown tools or choice members imply full application', async () => {
-    const value = { ...configurationValue(), agentControlMode: 'web' as const, toolPaths: automaticToolPaths() };
-    const resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'web')]);
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths() };
+    const resource = observed('1', value, globals(value));
     const raw = { ...resource, desired: { ...resource.desired!, value: { ...value, toolPaths: { ...value.toolPaths, codex: { kind: 'auto', futureChoice: 1 }, futureTool: { kind: 'future' } } } } };
-    install(() => { const response = configurationResponse(raw); response.headers.set('Daynight-Worker-Control-Mode', '1'); response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response; });
+    install(() => { const response = configurationResponse(raw); response.headers.set('Daynight-Worker-Tool-Paths', '2'); return response; });
     mount({ toolPaths: toolPathTelemetry() }); await flush();
     const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
     expect(within(summary).getByText('Awaiting application')).toBeInTheDocument();
     expect(within(summary).queryByText('Applied', { selector: '.status-chip' })).toBeNull();
   });
   it('does not treat unknown response metadata as an unapplied target', async () => {
-    const value = configurationValue(), resource = observed('1', value, globals(value));
-    install(() => configurationResponse({ ...resource, futureMetadata: { valid: true } })); mount(); await flush();
+    const value = { ...configurationValue(), toolPaths: automaticToolPaths() }, resource = observed('1', value, globals(value));
+    install(() => configurationResponse({ ...resource, futureMetadata: { valid: true } })); mount({ toolPaths: toolPathTelemetry() }); await flush();
     const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
-    expect(within(summary).getByText('Applied')).toBeInTheDocument();
+    expect(within(summary).getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
   });
   it('treats a known Project ID case change as the same observation', async () => {
-    const projectId = workerId(10), value = { ...configurationValue(), projects: [{ projectId, nativeOverrides: {} }] };
+    const projectId = workerId(10), value = { ...configurationValue(), toolPaths: automaticToolPaths(), projects: [{ projectId, nativeOverrides: {} }] };
     const resource = observed('1', value, [...globals(value), item({ kind: 'projectPreparation', projectId }, true), item({ kind: 'projectNative', projectId }, value.native)]);
     const raw = { ...resource,
       desired: { ...resource.desired!, value: { ...value, projects: [{ projectId: projectId.toUpperCase(), nativeOverrides: {} }] } },
       observation: { ...resource.observation!, items: resource.observation!.items.map(entry => 'projectId' in entry.key ? { ...entry, key: { ...entry.key, projectId: projectId.toUpperCase() } } : entry) },
     };
-    install(() => configurationResponse(raw), [project(10)]); mount(); await flush();
+    install(() => configurationResponse(raw), [project(10)]); mount({ toolPaths: toolPathTelemetry() }); await flush();
     const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
-    expect(within(summary).getByText('Applied')).toBeInTheDocument();
+    expect(within(summary).getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
   });
   it('keeps new Project targets pending and shows an unfinished removal after that Project is reselected', async () => {
     const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
@@ -497,111 +485,5 @@ describe('Worker detail configuration integration', () => {
     change('Startup arguments', '[still private'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
     actor = nextUser; view.rerender(ui(second, true)); expect(screen.queryByDisplayValue('[still private')).toBeNull(); await flush();
     expect(input()).toHaveValue('8'); expect(input('Startup arguments')).toHaveValue('[]');
-  });
-});
-
-
-describe('Worker control mode form', () => {
-  it('saves a mode change, retains the actual old mode and includes mode in overall application', async () => {
-    const value = { ...configurationValue(), agentControlMode: 'herdr' as const };
-    let resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'herdr')]);
-    const writes: unknown[] = [];
-    install((_url, init) => {
-      if (init.method === 'PUT') {
-        const body = JSON.parse(String(init.body)) as { revision: string; value: WorkerConfigurationValue };
-        writes.push(body);
-        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
-      }
-      return controlModeResponse(resource);
-    });
-    mount(); await flush();
-    const mode = screen.getByRole('combobox', { name: 'Control mode' });
-    expect(within(mode).getAllByRole('option').map(option => option.textContent)).toEqual(['herdr', 'web']);
-    const feedback = document.getElementById('feedback-agentControlMode')!;
-    expect(mode).toHaveValue('herdr'); expect(feedback).toHaveTextContent('Actual: herdr');
-    fireEvent.change(mode, { target: { value: 'web' } }); expect(feedback).toHaveTextContent('Unsaved');
-    save(); await flush();
-    expect(writes).toEqual([{ revision: '1', value: { ...value, agentControlMode: 'web' } }]);
-    expect(feedback).toHaveTextContent('Awaiting application'); expect(feedback).toHaveTextContent('Actual: herdr');
-    const target = resource.desired!.value;
-    resource = observed('2', target, globals(target, '2'), '2'); await advance();
-    expect(document.querySelector('.configuration-summary')).toHaveTextContent('Awaiting application');
-    expect(feedback).toHaveTextContent('Actual: Not confirmed');
-    const error = { code: 'invalid_configuration' as const, category: 'agent' as const, phase: 'validate' as const, occurredAt: WORKER_TIME };
-    resource = observed('2', target, [...globals(target, '2'), { ...item({ kind: 'agentControlMode' }, 'herdr', '2'), state: 'error', error }], '3'); await advance();
-    expect(feedback).toHaveTextContent('Failed'); expect(feedback).toHaveTextContent('Actual: herdr'); expect(feedback).toHaveTextContent('Validation · Invalid configuration');
-    expect(document.querySelector('.configuration-summary')).toHaveTextContent('Partially applied');
-    resource = observed('2', target, [...globals(target, '2'), item({ kind: 'agentControlMode' }, 'web', '2')], '4'); await advance();
-    expect(feedback).toHaveTextContent('Applied'); expect(feedback).toHaveTextContent('Actual: web');
-    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
-  });
-  it('leaves unadopted mode unselected and protects an explicit choice from late adoption', async () => {
-    let resource = configurationResource('1', { ...configurationValue(), agentControlMode: null });
-    const fetch = install(() => controlModeResponse(resource));
-    mount(); await flush();
-    const mode = screen.getByRole('combobox', { name: 'Control mode' }) as HTMLSelectElement;
-    expect(mode.selectedIndex).toBe(-1); expect(mode.options).toHaveLength(2);
-    expect(document.getElementById('feedback-agentControlMode')).toHaveTextContent('Actual: Not confirmed');
-    fireEvent.change(mode, { target: { value: 'herdr' } }); mode.focus();
-    resource = configurationResource('2', { ...configurationValue(), agentControlMode: 'web' }); await advance();
-    expect(screen.getByRole('combobox', { name: 'Control mode' })).toBe(mode);
-    expect(mode).toHaveValue('herdr'); expect(mode).toHaveFocus();
-    expect(screen.getByText('The cloud configuration changed in another page.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Load latest configuration' }));
-    expect(mode).toHaveValue('web');
-    fireEvent.change(mode, { target: { value: 'herdr' } });
-    fireEvent.click(within(document.querySelector('.configuration-form') as HTMLElement).getByRole('button', { name: 'Discard changes' }));
-    expect(mode).toHaveValue('web');
-    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
-  });
-  it('disables only mode on an old service while saving other fields', async () => {
-    let resource = configurationResource();
-    const writes: Record<string, unknown>[] = [];
-    install((_url, init) => {
-      if (init.method === 'PUT') {
-        const body = JSON.parse(String(init.body)); writes.push(body.value);
-        resource = configurationResource('2', body.value);
-      }
-      return configurationResponse(resource);
-    });
-    mount(); await flush();
-    expect(screen.getByRole('combobox', { name: 'Control mode' })).toBeDisabled();
-    expect(screen.getByText('Upgrade the service to configure control mode.')).toBeInTheDocument();
-    change('Automatic recovery limit', '8'); save(); await flush();
-    expect(writes).toHaveLength(1); expect(writes[0]).not.toHaveProperty('agentControlMode');
-    expect(writes[0]!.recoveryLimit).toBe(8); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
-  });
-});
-
-describe('control mode capability downgrade', () => {
-  it.each(['saved', 'unknown'] as const)('keeps unsent mode edits while other settings are %s through the legacy contract', async result => {
-    let supported = true;
-    let resource = configurationResource('1', { ...configurationValue(), agentControlMode: 'herdr' as const });
-    const writes: WorkerConfigurationValue[] = [];
-    install((_url, init) => {
-      if (init.method === 'PUT') {
-        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
-        writes.push(body.value);
-        resource = configurationResource(String(BigInt(resource.desired!.revision) + 1n), { ...resource.desired!.value, ...body.value });
-        if (result === 'unknown' && !supported) return Promise.reject(new TypeError('response lost'));
-      }
-      if (supported) return controlModeResponse(resource);
-      const { agentControlMode: _mode, ...legacy } = resource.desired!.value;
-      return configurationResponse(configurationResource(resource.desired!.revision, legacy));
-    });
-    mount(); await flush();
-    const mode = screen.getByRole('combobox', { name: 'Control mode' });
-    fireEvent.change(mode, { target: { value: 'web' } }); supported = false; await advance();
-    expect(mode).toBeDisabled(); expect(mode).toHaveValue('web');
-    const saveButton = screen.getByRole('button', { name: 'Save configuration' });
-    expect(saveButton).toBeDisabled();
-    change('Automatic recovery limit', '8'); expect(saveButton).toBeEnabled(); save(); await flush();
-    expect(writes).toHaveLength(1); expect(writes[0]).not.toHaveProperty('agentControlMode'); expect(writes[0]!.recoveryLimit).toBe(8);
-    expect(mode).toHaveValue('web'); expect(document.querySelector('.draft-summary')).toHaveTextContent('Unsaved changes');
-    expect(saveButton).toBeDisabled();
-    supported = true; await advance(); expect(mode).toBeEnabled(); expect(mode).toHaveValue('web'); expect(saveButton).toBeEnabled();
-    save(); await flush(); expect(writes).toHaveLength(2); expect(writes[1]!.agentControlMode).toBe('web');
-    expect(saveButton).toBeDisabled(); expect(document.querySelector('.draft-summary')).toHaveTextContent('No changes');
   });
 });

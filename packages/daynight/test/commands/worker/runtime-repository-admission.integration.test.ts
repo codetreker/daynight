@@ -67,7 +67,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   await mkdir(worktreePath, { recursive: true }); await writeFile(ownedFile, "retained unfinished work\n");
   const selectedProject = { projectId: selectedProjectId, repoUrl: "https://git.example/team/selected.git", localPath: path.join(worktreePath, "nested-repository") };
   const source = stringify({ serverUrl: serverOrigin, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId, worker: {
-    agentControlMode: "web", agent: "invalid-stale-local-agent", maxConcurrent: 0, args: false,
+    agent: "invalid-stale-local-agent", maxConcurrent: 0, args: false,
     repositories: [{ projectId: selectedProjectId, remote: selectedProject.repoUrl, path: selectedProject.localPath }],
   } });
   await writeFile(paths.configFile, source);
@@ -83,7 +83,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(8), name: "original" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const originalClaim = readWorkerClaim(task.properties);
-  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false,
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { toolPaths: { codex: null, copilot: null }, maxConcurrent: 4, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false,
     native: { agent: "codex", model: "cloud-model", args: [] }, projects: [{ projectId: selectedProjectId, nativeOverrides: {} }] } };
   let observationRevision = 0n;
   const report = vi.fn(async (_workerId: string, _body: unknown, configuration: WorkerCloudReport) => {
@@ -94,13 +94,13 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const remote = {
     serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "0", observation: null }))), reportConfiguration: report, report: vi.fn(),
     project: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selectedProject.repoUrl })), resolveProject: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selectedProject.repoUrl })),
-    ownInventory: vi.fn(async () => [task]), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
+    ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [retainedProjectId, selectedProjectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
   mocks.remote.mockReturnValue(remote);
-  const prepareRepository = vi.fn(async () => {}), dispose = vi.fn(async () => {});
+  const prepareRepository = vi.fn(async (_project: typeof retainedProject) => {}), dispose = vi.fn(async () => {});
   mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
-  mocks.backend.mockReturnValue({ advance, cleanup });
+  mocks.backend.mockReturnValue({ advance, cleanup, observeExecutionStop: async () => ({ kind: "unknown" }) });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
@@ -113,7 +113,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
       expect.objectContaining({ key: { kind: "projectPreparation", projectId: selectedProjectId }, targetRevision: "2", appliedValue: null, state: "error", error: expect.objectContaining({ category: "repository", phase: "prepare" }) }),
     ]));
   }, { timeout: 3500, interval: 10 });
-  expect(store.getProject({ projectId: selectedProjectId })).toBeNull(); expect(prepareRepository).not.toHaveBeenCalled();
+  expect(store.getProject({ projectId: selectedProjectId })).toBeNull(); expect(prepareRepository.mock.calls.some(([project]) => project.projectId === selectedProjectId)).toBe(false);
   expect(store.listProjects()).toEqual([retainedProject]); expect(store.getTask(localTask)).toEqual(localTask);
   expect(webStore.getTask(localTask)).toEqual(frozen); expect(await readFile(ownedFile, "utf8")).toBe("retained unfinished work\n");
   expect(task.status).toBe("in_progress"); expect(readWorkerClaim(task.properties)).toEqual(originalClaim);

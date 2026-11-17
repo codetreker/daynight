@@ -12,7 +12,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 let root: string;
 beforeEach(async () => { const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(scratch, { recursive: true }); root = await mkdtemp(path.join(scratch, "host-")); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
-const configuration: ExecutionConfiguration = { agent: "copilot", agentControlMode: "herdr", model: "configured-model", args: ["--effort", "high"], recoveryLimit: 3 };
+const configuration: ExecutionConfiguration = { agent: "copilot", agentControlMode: "web", model: "configured-model", args: ["--effort", "high"], recoveryLimit: 3 };
 const output = async (command: OwnedCommand): Promise<OwnedCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
   ? command.file === "codex" ? "codex-cli 0.1.0" : command.file === "claude" ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
   : command.file === "codex" ? "Usage: codex app-server --stdio" : command.file === "claude" ? "--input-format --output-format --permission-prompt-tool --include-partial-messages" : "--headless --no-auto-update" });

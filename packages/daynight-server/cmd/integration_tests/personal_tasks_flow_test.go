@@ -45,7 +45,7 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	workerTask := createTask(t, f, personal, "Worker inventory", map[string]any{"assignedTo": f.userID, "status": "todo", "requiredPlatform": "linux", "tagIds": []string{tag.ID}})
 	workerTask = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(workerTask), map[string]any{"version": workerTask.Version, "allowAgents": true}, http.StatusOK)
 	claimID, workerID, machineID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim", map[string]any{"version": workerTask.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Inventory machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
+	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim", map[string]any{"version": workerTask.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Inventory machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString()}, http.StatusOK)
 	// Leave a Team after creating a direct grant, so this project is readable only through sharing.
 	sharedTeam := requestJSON[api.Team](t, f, http.MethodPost, "/api/v1/teams", api.CreateTeamRequest{Name: "Shared inventory Team", ExpectedUserID: f.userID}, http.StatusCreated)
 	shared := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Shared inventory project", RepoURL: "https://github.com/example/inventory-shared", TeamID: &sharedTeam.ID, ExpectedUserID: f.userID}, http.StatusCreated)
@@ -117,7 +117,7 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	}
 	workerTask = setStatus(t, f, workerTask, "todo", nil)
 	newClaimID := uuid.NewString()
-	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim", map[string]any{"version": workerTask.Version, "claimId": newClaimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Inventory machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
+	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim", map[string]any{"version": workerTask.Version, "claimId": newClaimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Inventory machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString()}, http.StatusOK)
 	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim/release", map[string]any{"version": workerTask.Version, "claimId": newClaimID, "stoppedConfirmed": true}, http.StatusOK)
 	workerTask = setStatus(t, f, workerTask, "in_progress", nil)
 	page = requestJSON[protocol.PersonalTaskPage](t, f, http.MethodGet, "/api/v1/me/in-progress-tasks", nil, http.StatusOK)

@@ -43,7 +43,7 @@ export const submitWorkerControl = async (options: {
   const exactVersion = (): void => {
     if (request.kind !== "retry" && observed.version !== request.version) throw new Error("The explicit task version no longer matches; make a new decision with the observed version.");
   };
-  if (worker === undefined || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent || worker.agentControlMode !== (source.agentControlMode ?? "herdr")) throw new Error("The source claim is no longer the exact active execution on this worker.");
+  if (worker === undefined || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent || worker.agentControlMode !== "web") throw new Error("The source claim is no longer the exact active execution on this worker.");
   await remote.authorizeControl(projectId, worker.userId, signal);
   if (request.kind === "retry") {
     if (principal !== worker.userId) throw new Error("Retry requires the original authenticated execution owner.");

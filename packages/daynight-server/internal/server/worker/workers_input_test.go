@@ -33,7 +33,7 @@ func workerSnapshotReportBody() map[string]any {
 		"os":     probe(map[string]any{"type": "Linux", "release": "6.8", "version": "kernel", "arch": "x64"}),
 		"cpu":    probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 12.5}),
 		"memory": probe(map[string]any{"usedBytes": 4, "totalBytes": 8}), "disk": probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
-		"versions":      map[string]any{"daynight": "1.0.0", "herdr": probe("0.9.5"), "codex": map[string]any{"state": "not_installed", "checkedAt": now}, "copilot": map[string]any{"state": "error", "checkedAt": now, "code": "timeout"}},
+		"versions":      map[string]any{"daynight": "1.0.0", "codex": map[string]any{"state": "not_installed", "checkedAt": now}, "copilot": map[string]any{"state": "error", "checkedAt": now, "code": "timeout"}},
 		"taskInventory": map[string]any{"observedAt": now, "claims": []any{}}}
 }
 
@@ -341,8 +341,6 @@ func (f *capacityReportOperationFixture) dispatchRaw(method, path, body, protoco
 func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls int, result model.WorkerConfigurationResource) *httptest.ResponseRecorder {
 	f.t.Helper()
 	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
-	want.PreserveAgentControlMode = true
-	want.PreserveToolPaths = true
 	_, present := body["value"].(map[string]any)["enableSudoCleanup"]
 	want.PreserveSudoCleanup = !present
 	revision := body["revision"].(string)
@@ -451,9 +449,7 @@ func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		{"machine", 256, func(b map[string]any, s string) { b["machine"].(map[string]any)["name"] = s }},
 		{"cwd", 4096, func(b map[string]any, s string) { b["workingDirectory"] = s }},
 		{"daynight", 256, func(b map[string]any, s string) { b["versions"].(map[string]any)["daynight"] = s }},
-		{"herdr", 256, func(b map[string]any, s string) {
-			b["versions"].(map[string]any)["herdr"].(map[string]any)["value"] = s
-		}},
+
 		{"codex", 256, func(b map[string]any, s string) {
 			b["versions"].(map[string]any)["codex"] = map[string]any{"state": "ok", "checkedAt": "2026-10-29T00:00:00Z", "value": s}
 		}},
@@ -542,7 +538,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 				saved.Desired.UpdatedAt = capacityObservedAt.Add(1)
 			}
 			got := decodeResponse[model.WorkerConfigurationResource](t, f.putRequest(map[string]any{"revision": "1", "value": value}, 1, saved), http.StatusOK)
-			if !reflect.DeepEqual(got, saved) {
+			if !reflect.DeepEqual(got, capacityDecode[model.WorkerConfigurationResource](t, saved)) {
 				t.Fatalf("configuration boundary response differs: %+v", got)
 			}
 			tc.set(value, tc.invalid)
@@ -559,7 +555,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		value["projects"] = projects[:128]
 		current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, value), UpdatedAt: capacityObservedAt}, ObservationRevision: "0"}
 		got := decodeResponse[model.WorkerConfigurationResource](t, f.putRequest(map[string]any{"revision": "1", "value": value}, 1, current), http.StatusOK)
-		if !reflect.DeepEqual(got, current) {
+		if !reflect.DeepEqual(got, capacityDecode[model.WorkerConfigurationResource](t, current)) {
 			t.Fatal("equal configuration response changed revision or content")
 		}
 		value["projects"] = projects
@@ -567,11 +563,11 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 	})
 	t.Run("observation.items", func(t *testing.T) {
 		f := newCapacityReportOperationFixture(t, uuid.NewString())
-		items := make([]any, coreworker.MaxObservationItems)
+		items := make([]any, coreworker.MaxObservationItems+1)
 		for i := range items {
 			items[i] = map[string]any{"key": map[string]any{"kind": "projectPreparation", "projectId": uuid.NewString()}, "targetRevision": "1", "appliedValue": nil, "state": "pending", "error": nil, "lastFailure": nil, "nextAttemptAt": nil}
 		}
-		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems-2]}
+		obs := map[string]any{"baseRevision": "0", "desiredRevision": "1", "items": items[:coreworker.MaxObservationItems]}
 		body := configurationHTTPReportBody(nil, obs)
 		want := configurationHTTPReceipt{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: model.WorkerConfigurationReceipt{
 			Desired: &model.WorkerDesiredConfiguration{Revision: "1", Value: capacityDecode[model.WorkerConfiguration](t, configurationHTTPValue()), UpdatedAt: capacityObservedAt}, ObservationAccepted: true, ObservationRevision: "1",
@@ -582,7 +578,7 @@ func TestWorkerConfigurationCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 			t.Fatal("configuration report lacks its protocol header")
 		}
 		receipt := decodeResponse[configurationHTTPReceipt](t, response, http.StatusOK)
-		if !reflect.DeepEqual(receipt, want) {
+		if !reflect.DeepEqual(receipt, capacityDecode[configurationHTTPReceipt](t, want)) {
 			t.Fatalf("maximum item observation receipt differs: %+v", receipt)
 		}
 		obs["baseRevision"] = "1"

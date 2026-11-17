@@ -12,8 +12,8 @@ import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-tele
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
-const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
-const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
+const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId: uuid(6) };
+const worker: WorkerClaim = { ...descriptor,  userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({ type: "task", parentId: null,
   id, projectId: project, title: "Task", description: "", tags: [], status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
@@ -26,7 +26,7 @@ const project = (id = projectId, repoUrl = "https://github.com/example/repo.git"
 const accessSources = { projectId, ownerTeam: { id: uuid(90), kind: "ordinary", name: "Team" }, ownership: { teamId: uuid(90), version: 9_007_199_254_740_995n }, teamRole: null, canTransfer: false };
 const cleanup: (() => void | Promise<void>)[] = [];
 const respond = (response: ServerResponse, value: unknown, status = 200): void => {
-  response.writeHead(status, { "Content-Type": "application/json" });
+  response.writeHead(status, { "Content-Type": "application/json", "Daynight-Worker-Tool-Paths": "2" });
   response.end(stringifyApiJson(value));
 };
 const listen = async (handler: (request: IncomingMessage, response: ServerResponse, body: unknown) => void, options: { userId?: string; identity?: boolean } = {}): Promise<string> => {
@@ -81,21 +81,21 @@ describe("worker remote API", () => {
     const remote = createWorkerRemote({ serverUrl, serverToken: token });
     expect(await remote.currentUserId(signal())).toBe(worker.userId);
     const observed = await remote.readTask(projectId, taskId, signal());
-    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report }, signal())).resolves.toEqual(updated);
+    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, startupReport: report }, signal())).resolves.toEqual(updated);
     await expect(remote.readTask(projectId, taskId, signal())).resolves.toEqual(updated);
     const taskPath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
     expect(requests.map(({ method, url }) => [method, url])).toEqual([["GET", "/api/v1/me"], ["GET", taskPath], ["PATCH", `${taskPath}/worker-claim`], ["GET", taskPath]]);
     expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
     expect(requests.slice(1).map(({ protocol }) => protocol)).toEqual(["2", "2", "2"]);
-    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report });
+    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, startupReport: report });
     expect(JSON.stringify(report)).not.toContain(token);
   });
 
   it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
     const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
-    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [], toolPaths: { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } } };
     const desired = { revision: "1", updatedAt: time, value };
-    const configuration = { bootstrap: value, observation: null };
+    const configuration = { bootstrap: value, observation: null, toolPathsBootstrap: null };
     const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
     const serverUrl = await listen((request, response, body) => {
       const capability = request.headers["daynight-worker-configuration"] as string | undefined;
@@ -114,43 +114,6 @@ describe("worker remote API", () => {
       expect(requests.map(({ method, capability }) => ({ method, capability }))).toEqual([{ method: "GET", capability: "1" }, { method: "POST", capability: "1" }, { method: "POST", capability: undefined }]);
       expect(requests[1]!.body).toMatchObject({ configuration, taskInventory: null });
       expect(requests[2]!.body).not.toHaveProperty("configuration");
-    } finally { operation.dispose(); }
-  });
-
-  it("enables tool bootstrap only after authenticated configuration rediscovery on a mode-capable server", async () => {
-    const requests: { method: string | undefined; url: string | undefined; authorization: string | undefined; mode: string | string[] | undefined; tools: string | string[] | undefined; body: unknown }[] = [];
-    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, agentControlMode: "web" as const, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
-    const tools = { codex: { kind: "path" as const, path: "/opt/codex" }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
-    const configuration = { bootstrap: null, observation: null, controlModeBootstrap: "web" as const, toolPathsBootstrap: tools };
-    let upgraded = false;
-    const serverUrl = await listen((request, response, body) => {
-      requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization, mode: request.headers["daynight-worker-control-mode"], tools: request.headers["daynight-worker-tool-paths"], body });
-      const selected = upgraded && request.headers["daynight-worker-tool-paths"] === "1";
-      response.setHeader("Daynight-Worker-Configuration", "1");
-      response.setHeader("Daynight-Worker-Control-Mode", "1");
-      if (selected) response.setHeader("Daynight-Worker-Tool-Paths", "1");
-      const desired = { revision: "1", updatedAt: time, value: { ...value, ...(selected ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
-      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null }
-        : { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false } });
-    });
-    const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", remote = createWorkerRemote({ serverUrl, serverToken: token });
-    await remote.currentUserId(signal());
-    const operation = operations.createOperation();
-    try {
-      await remote.configuration(workerId, signal());
-      upgraded = true;
-      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
-      await remote.configuration(workerId, operation.signal, operation);
-      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
-      expect(requests.map(({ method, mode, tools }) => ({ method, mode, tools }))).toEqual([
-        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: undefined },
-        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: "1" },
-      ]);
-      expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
-      expect(requests.map(({ url }) => url)).toEqual(["configuration", "report", "configuration", "report"].map(suffix => `/api/v1/me/workers/${workerId}/${suffix}`));
-      expect(requests[1]!.body).toMatchObject({ configuration: { bootstrap: null, observation: null, controlModeBootstrap: "web" } });
-      expect(requests[1]!.body).not.toHaveProperty("configuration.toolPathsBootstrap");
-      expect(requests[3]!.body).toMatchObject({ configuration });
     } finally { operation.dispose(); }
   });
 

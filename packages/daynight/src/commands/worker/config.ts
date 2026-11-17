@@ -11,10 +11,8 @@ import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
 import { parseLocalToolPaths, type ToolPaths } from "../../platform/tool-path-choice.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
-import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { WorkerPaths } from "./paths.js";
 import type { ExecutionConfiguration } from "./types.js";
-import type { AgentControlMode } from "../../api/types.js";
 import type { WorkerCloudNative } from "../../api/worker-configuration.js";
 import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
 import { normalizeWorkerNative } from "./native-overrides.js";
@@ -92,11 +90,10 @@ const agentConfiguration = (value: Record<string, unknown>, field: string, inher
     });
   } else args = sameKind ? [...inherited.args] : [];
   if (local !== undefined && (local.agentModel !== undefined || local.agentReasoningEffort !== undefined)) {
-    return { ...normalizeWorkerNative({ agent, model, args }, inherited.agentControlMode ?? "herdr", local).native, validateNativeSelection: true, agentControlMode: inherited.agentControlMode ?? "herdr", recoveryLimit: inherited.recoveryLimit };
+    return { ...normalizeWorkerNative({ agent, model, args }, local).native, validateNativeSelection: true, agentControlMode: "web", recoveryLimit: inherited.recoveryLimit };
   }
-  if (inherited.agentControlMode === "web") parseProviderArguments(agent, args);
-  else validateHerdrAgentArguments(agent, args);
-  return { agent, agentControlMode: inherited.agentControlMode ?? "herdr", model, args, recoveryLimit: inherited.recoveryLimit };
+  parseProviderArguments(agent, args);
+  return { agent, agentControlMode: "web", model, args, recoveryLimit: inherited.recoveryLimit };
 };
 
 export const resolveWorkerRepositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathApi: PathApi): string => {
@@ -114,8 +111,8 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
-  const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
-  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
+  if (Object.hasOwn(worker, "agentControlMode") && worker.agentControlMode !== "web") throw new TypeError("worker.agentControlMode is no longer supported; remove the old setting to use Web execution.");
+  const agentControlMode = "web";
   const local = parseWorkerLocalNativeOverrides(worker);
   const effective = agentConfiguration(worker, "worker", {
     agent: workerConfigurationDefaults.agent, agentControlMode, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
@@ -216,5 +213,5 @@ export const validateWorkerConfigurationSource = async (source: string, paths: W
   return configuration;
 };
 
-export const resolveCloudNative = (native: WorkerCloudNative, agentControlMode: AgentControlMode, recoveryLimit: number): ExecutionConfiguration =>
-  agentConfiguration({ ...native }, "worker.native", { ...native, agentControlMode, recoveryLimit });
+export const resolveCloudNative = (native: WorkerCloudNative, recoveryLimit: number): ExecutionConfiguration =>
+  agentConfiguration({ ...native }, "worker.native", { ...native, agentControlMode: "web", recoveryLimit });

@@ -56,14 +56,10 @@ func TestWorkerControlModeRestrictsNativeAdapterEligibility(t *testing.T) {
 		agent     WorkerAgent
 		supported bool
 	}{
-		{AgentControlModeHerdr, AgentCodex, true},
-		{AgentControlModeHerdr, AgentClaude, true},
-		{AgentControlModeHerdr, AgentCopilot, true},
 		{AgentControlModeWeb, AgentCodex, true},
 		{AgentControlModeWeb, AgentClaude, true},
 		{AgentControlModeWeb, AgentCopilot, true},
 		{AgentControlModeWeb, "unknown", false},
-		{AgentControlModeHerdr, "", false},
 		{"", AgentCodex, false},
 		{"WEB", AgentCodex, false},
 		{"web ", AgentClaude, false},

@@ -23,7 +23,7 @@ const reportedAt = '2026-10-29T10:59:40Z';
 let focused = true;
 let principal = owner;
 const user = (id = owner) => ({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id, name: id === owner ? 'Alice' : 'Bob', email: id === owner ? 'alice@example.com' : 'bob@example.com', emailVerified: true, avatarUrl: null });
-const json = (body: unknown, status = 200, viewer = principal) => new Response(JSON.stringify(body), { status, headers: viewerHeaders(viewer, { 'Content-Type': 'application/json' }) });
+const json = (body: unknown, status = 200, viewer = principal) => new Response(JSON.stringify(body), { status, headers: viewerHeaders(viewer, { 'Content-Type': 'application/json', 'Daynight-Worker-Tool-Paths': '2' }) });
 const summary = (workerId = firstWorker, name = 'Alice worker') => ({ workerId, machine: { id: workerId, name }, platform: 'linux', lastReportedAt: reportedAt, taskObservationState: 'unavailable', taskObservedAt: null, activeTaskCount: null });
 const list = (name = 'Alice worker', viewer = principal) => json({ observedAt, items: [summary(firstWorker, name)], nextCursor: null }, 200, viewer);
 const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principal, observation = { observedAt, reportedAt, cpu: 34 }) => {
@@ -34,7 +34,7 @@ const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principa
     cpu: { state: 'ok', checkedAt: observation.observedAt, value: { model: 'Example CPU', logicalProcessors: 8, usagePercent: observation.cpu } },
     memory: { state: 'ok', checkedAt: observedAt, value: { usedBytes: 4 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 } },
     disk: { state: 'ok', checkedAt: observedAt, value: { availableBytes: 32 * 1024 ** 3, totalBytes: 64 * 1024 ** 3 } },
-    versions: { daynight: '0.27.1', herdr: { state: 'not_running', checkedAt: observedAt }, codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
+    versions: { daynight: '0.27.1', codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
   } } }, 200, viewer);
 };
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);

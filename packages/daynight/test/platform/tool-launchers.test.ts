@@ -56,7 +56,7 @@ describe("static tool launchers", () => {
   it("keeps native symlink entry identity without requiring Node", async () => {
     const directory = await root(), target = await native(path.join(directory, "native"));
     const entry = path.join(directory, "entry"); await symlink(target, entry);
-    const result = await identifyToolLauncher(entry, "herdr", operation(), host);
+    const result = await identifyToolLauncher(entry, "codex", operation(), host);
     expect(result.executablePath).toBe(target);
     expect(result.interpreterRequired).toBe(false);
     expect(result.artifacts).toContainEqual(expect.objectContaining({ role: "entry", path: entry }));
@@ -65,13 +65,13 @@ describe("static tool launchers", () => {
 
   it.each(["script.js", "script.cjs", "script.mjs", "script"])("recognizes a single Node entry %s without running it", async name => {
     const entry = await put(path.join(await root(), name), "#!/usr/bin/env node\nthrow new Error('never execute');\n");
-    const result = await identifyToolLauncher(entry, "herdr", operation(), host);
+    const result = await identifyToolLauncher(entry, "codex", operation(), host);
     expect(result.executablePath).toBe(entry); expect(result.interpreterRequired).toBe(true);
   });
 
   it.each(["#!/usr/bin/env node --experimental-transform-types", "#!/usr/bin/env -S node", "#!/usr/bin/env FLAG=1 node", "#!/bin/sh"])("refuses unsupported shebang %s", async shebang => {
     const entry = await put(path.join(await root(), "script.js"), `${shebang}\n`);
-    await expect(identifyToolLauncher(entry, "herdr", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
+    await expect(identifyToolLauncher(entry, "codex", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
   });
 
   it("selects Copilot's native in the entry installation and records both manifests", async () => {
@@ -162,7 +162,7 @@ describe("static tool launchers", () => {
     if (tool === "codex") template = template.replace("node_modules\\@github\\copilot\\npm-loader.js", "node_modules\\@openai\\codex\\custom\\loader.js");
     await put(path.join(directory, `${tool}.cmd`), template);
     const environment = { ...process.env, PATH: directory, PATHEXT: ".CMD" };
-    const launch = await resolveToolLaunch({ tool, context: "herdr", choice: { kind: "auto" }, cwd: directory, environment, workerNode: process.execPath }, operation());
+    const launch = await resolveToolLaunch({ tool, context: "web", choice: { kind: "path", path: path.join(directory, `${tool}.cmd`) }, cwd: directory, environment, workerNode: process.execPath }, operation());
     expect(launch.entryPath.endsWith(".CMD")).toBe(true);
     const expectedArtifact = tool === "codex" ? await realpath(path.join(directory, "node_modules/@openai/codex/custom/loader.js")) : runtime;
     expect(launch.artifacts.some(item => item.role === (tool === "codex" ? "entry" : "runtime") && item.realPath === expectedArtifact)).toBe(true);
@@ -217,13 +217,13 @@ describe("static tool launchers", () => {
 
   it("refuses a truncated Node shebang instead of ignoring flags beyond the prefix limit", async () => {
     const entry = await put(path.join(await root(), "script.js"), `#!/usr/bin/env node${" ".repeat(4096)}--trace-warnings\n`);
-    await expect(identifyToolLauncher(entry, "herdr", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
+    await expect(identifyToolLauncher(entry, "codex", operation(), host)).rejects.toMatchObject({ code: "unsupported_launcher" });
   });
 
   it("honors cancellation before reading an entry", async () => {
     const entry = await native(path.join(await root(), "native"));
     const controller = new AbortController(); controller.abort();
     const budget = createOperation({ signal: controller.signal }); operations.push(budget);
-    await expect(identifyToolLauncher(entry, "herdr", budget, host)).rejects.toMatchObject({ kind: "cancelled" });
+    await expect(identifyToolLauncher(entry, "codex", budget, host)).rejects.toMatchObject({ kind: "cancelled" });
   });
 });

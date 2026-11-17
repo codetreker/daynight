@@ -6,12 +6,13 @@ import { afterEach, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
+import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 
 const roots: string[] = [];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))) }).trim();
 const worktreePaths = (cwd: string): string[] => git(cwd, "worktree", "list", "--porcelain", "-z").split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
-const emptySources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+const emptySources = { listSchedules: () => [], listWebTasks: () => [] };
 const fixture = async () => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/current-worktrees");
   await mkdir(scratch, { recursive: true });
@@ -66,7 +67,9 @@ it("uses a migrated taskId directory without rewriting the existing checkout", a
     const before = await readFile(path.join(old, ".git"));
     const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-migration"), prepareFormat: async (_project, repo, op) => {
       await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
-        sources: { ...emptySources, listSchedules: () => [f.owner] } });
+        sources: { ...emptySources, listSchedules: () => [f.owner], listWebTasks: (): WebTask[] => [{ ...f.owner, serverOrigin: "https://daynight.example", workerId: f.owner.projectId, userId: f.owner.claimId, status: "active", repoUrl: f.project.repoUrl, repositoryPath: repo.root,
+          configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, resources: { mode: "web", worktree: { repositoryPath: repo.root, commonDirectory: repo.commonDirectory, worktreePath: old, branch: `daynight/${f.owner.taskId}` }, herdr: null, nativeSession: null },
+          recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, webExecution: null, nativeExecution: null, createdAt: 1, updatedAt: 1 }] } });
     } });
     try {
       await adapter.prepareRepository(f.project, operation);

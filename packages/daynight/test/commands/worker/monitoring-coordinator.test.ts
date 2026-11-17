@@ -9,14 +9,15 @@ import { createMonitoringObserver } from "../../../src/commands/worker/monitorin
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { Task } from "../../../src/api/types.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
+import type { CleanupTarget } from "../../../src/commands/worker/execution-stop.js";
 import type { ResourceOwner } from "../../../src/commands/worker/types.js";
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 let project = { projectId: uuid(10), repoUrl: "https://example.test/a/b.git", localPath: "" };
 const owner: ResourceOwner = { projectId: uuid(10), taskId: uuid(20), claimId: uuid(30), worktreeId: uuid(40) };
-const stores: ReturnType<typeof openWorkerStore>[] = [];
+const stores: { close(): void }[] = [];
 const roots: string[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
@@ -28,14 +29,19 @@ const fixture = (settings: { retained?: boolean; pending?: boolean; prepareProje
   const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   let clock = 1_000;
   const monitor = createMonitoringObserver({ now: () => clock, reservationKey: new Uint8Array(32) });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), listWorktreeManifests: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), resolveWorktreeBinding: vi.fn(async () => binding) } as unknown as WorkerGitManager;
-  const tasks = { pendingStops: vi.fn(() => settings.pending ? [{ context: { ...owner, cwd: binding.worktreePath }, binding: {} }] : []), listResources: vi.fn(async () => settings.retained ? [{ owner, workspaceId: "workspace", panes: [] }] : []) };
-  const herdr = { tasks, ensureInstance: vi.fn(async () => {}) } as unknown as WorkerHerdrAdapter;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), listWorktreeManifests: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), resolveWorktreeBinding: vi.fn(async () => binding), findWorktree: vi.fn(async () => binding) } as unknown as WorkerGitManager;
+  const webStore = openWebExecutionStore(createMemoryDatabase()); stores.push(webStore);
+  if (settings.retained) {
+    const record = webStore.register({ ...owner, project, serverOrigin: "https://example.test", workerId: uuid(1), userId: uuid(2), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }, clock);
+    webStore.bindWorktree(record, binding, clock);
+    if (settings.pending) store.activateTask(store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  }
+  const webBackend = { advance: vi.fn(), cleanup: vi.fn(async () => { throw new Error("cleanup unavailable"); }), observeExecutionStop: vi.fn(async (target: CleanupTarget) => ({ kind: "unknown" as const, target, error: new Error("stop unobserved"), observedAt: clock })) };
   const ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [project.projectId], unavailableProjectIds: [] as string[] }));
   const candidates = vi.fn(async function* (): AsyncGenerator<Task> { /* Full successful search has no candidates. */ });
   const claim = vi.fn();
   const remote = { serverOrigin: "https://example.test", currentUserId: vi.fn(async () => uuid(2)), ownInventory, candidates, claim } as unknown as WorkerRemote;
-  const coordinator = createWorkerCoordinator({ store, git, herdr, remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, preferPlatformSpecificTasks: false, buildPrompt: () => "", emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
+  const coordinator = createWorkerCoordinator({ store, git, webStore, webBackend, userId: uuid(2), remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, preferPlatformSpecificTasks: false, buildPrompt: () => "", emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
   return { coordinator, monitor, ownInventory, candidates, claim, clock: (value: number) => { clock = value; } };
 };
 
@@ -52,13 +58,13 @@ describe("coordinator monitoring", () => {
     await vi.waitFor(() => expect(f.monitor.capture().currentFailures).toHaveLength(1));
   });
 
-  it("does not double count the same pending stop and cleanup responsibility", async () => {
+  it("does not double count the same active task and cleanup responsibility", async () => {
     const f = fixture({ retained: true, pending: true });
     await f.coordinator.tick();
     const snapshot = f.monitor.capture();
     expect(snapshot.capacity).toMatchObject({ occupied: 1, available: 0 });
     expect(snapshot.reservations).toHaveLength(1);
-    expect(snapshot.reservations[0]!.roles).toEqual(expect.arrayContaining(["resource-owner", "cleanup", "pending-stop"]));
+    expect(snapshot.reservations[0]!.roles).toEqual(expect.arrayContaining(["active-task", "resource-owner", "cleanup"]));
     expect(f.candidates).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(f.monitor.capture().currentFailures).toHaveLength(1));
   });

@@ -90,7 +90,7 @@ export const createWorkerReadOnlyConfiguration = (options: {
   modelConfiguration: () => {
     const snapshot = options.current(), native = snapshot.effective.native;
     if (native === null) throw new WorkerModelDiscoveryError("capability_error");
-    return { ...normalizeWorkerNative(native, "web", options.local, false), toolTargets: snapshot.toolTargets,
+    return { ...normalizeWorkerNative(native, options.local, false), toolTargets: snapshot.toolTargets,
       toolSelections: [options.selection("codex") ?? null, options.selection("copilot") ?? null] };
   },
 });

@@ -33,6 +33,7 @@ func (f *configurationHTTPFixture) request(method, path, body string, versions .
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header = f.headers.Clone()
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(workerToolPathsHeader, "2")
 	request.Header.Set("X-Request-ID", "project-test")
 	for _, version := range versions {
 		request.Header.Add(workerConfigurationHeader, version)
@@ -58,14 +59,12 @@ func configurationHTTPModel(t *testing.T, value any) model.WorkerConfiguration {
 	return result
 }
 
-func configurationHTTPLegacyValue(t *testing.T, value model.WorkerConfiguration) map[string]any {
+func configurationHTTPWireValue(t *testing.T, value model.WorkerConfiguration) map[string]any {
 	t.Helper()
 	var result map[string]any
 	if err := json.Unmarshal([]byte(jsonBody(t, value)), &result); err != nil {
 		t.Fatal(err)
 	}
-	delete(result, "agentControlMode")
-	delete(result, "toolPaths")
 	return result
 }
 
@@ -142,7 +141,7 @@ func (f *configurationHTTPFixture) get(t *testing.T, current model.WorkerConfigu
 	t.Helper()
 	response := f.read(t, current, nil, func() *httptest.ResponseRecorder { return f.request(http.MethodGet, f.path(), "") })
 	result := decodeResponse[model.WorkerConfigurationResource](t, response, http.StatusOK)
-	configurationHTTPCheck(t, result, current)
+	configurationHTTPCheck(t, result, configurationHTTPCopy(t, current))
 	return result
 }
 
@@ -187,7 +186,7 @@ func (f *configurationHTTPFixture) put(t *testing.T, current model.WorkerConfigu
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}
-	legacyValue := configurationHTTPLegacyValue(t, value)
+	legacyValue := configurationHTTPWireValue(t, value)
 	response := f.request(http.MethodPut, f.path(), jsonBody(t, map[string]any{"revision": revision, "value": legacyValue}))
 	verify()
 	f.tx.WriteWorkerCall = nil
@@ -339,7 +338,7 @@ func configurationHTTPValue() map[string]any {
 	return map[string]any{
 		"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "preferPlatformSpecificTasks": false,
 		"native":   map[string]any{"agent": "codex", "model": nil, "args": []any{}},
-		"projects": []any{},
+		"projects": []any{}, "toolPaths": map[string]any{"codex": map[string]any{"kind": "auto"}, "copilot": map[string]any{"kind": "auto"}},
 	}
 }
 
@@ -347,6 +346,7 @@ func configurationHTTPRequest(handler http.Handler, method, path, body string, v
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(workerToolPathsHeader, "2")
 	request.Header.Set("X-Request-ID", "project-test")
 	for _, version := range versions {
 		request.Header.Add(workerConfigurationHeader, version)
@@ -359,7 +359,7 @@ func configurationHTTPRequest(handler http.Handler, method, path, body string, v
 func configurationHTTPReportBody(bootstrap, observation any) map[string]any {
 	body := workerSnapshotReportBody()
 	body["taskInventory"] = nil
-	body["configuration"] = map[string]any{"bootstrap": bootstrap, "observation": observation}
+	body["configuration"] = map[string]any{"bootstrap": bootstrap, "observation": observation, "toolPathsBootstrap": nil}
 	return body
 }
 
@@ -402,7 +402,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	exchange := &model.WorkerConfigurationExchange{Bootstrap: &canonical}
 	body := configurationHTTPReportBody(value, nil)
 	receipt := f.report(t, uninitialized, body, exchange, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
-	if !reflect.DeepEqual(receipt.Configuration.Desired, &initial) || receipt.Configuration.ObservationRevision != "0" || receipt.Configuration.ObservationAccepted {
+	if !reflect.DeepEqual(receipt.Configuration.Desired, capacityDecode[*model.WorkerDesiredConfiguration](t, &initial)) || receipt.Configuration.ObservationRevision != "0" || receipt.Configuration.ObservationAccepted {
 		t.Fatalf("bootstrap receipt: %+v", receipt)
 	}
 	overrides := receipt.Configuration.Desired.Value.Projects[0].NativeOverrides
@@ -416,12 +416,12 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	changed.Projects[0].ProjectID = projectID
 	saved := model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: f.now.Add(time.Second), Value: changed}
 	resource = f.put(t, current, changed, "1", &saved, nil, nil, http.StatusOK, "")
-	if !reflect.DeepEqual(resource.Desired, &saved) || !resource.Desired.UpdatedAt.After(initial.UpdatedAt) {
+	if !reflect.DeepEqual(resource.Desired, capacityDecode[*model.WorkerDesiredConfiguration](t, &saved)) || !resource.Desired.UpdatedAt.After(initial.UpdatedAt) {
 		t.Fatalf("target change did not advance revision: %+v", resource.Desired)
 	}
 	current = model.WorkerConfigurationResource{Desired: &saved, ObservationRevision: "0"}
 	resource = f.put(t, current, changed, "2", nil, nil, nil, http.StatusOK, "")
-	if !reflect.DeepEqual(resource, current) {
+	if !reflect.DeepEqual(resource, configurationHTTPCopy(t, current)) {
 		t.Fatal("equal canonical configuration changed its revision or timestamp")
 	}
 	f.put(t, current, changed, "1", nil, nil, nil, http.StatusConflict, "version_conflict")
@@ -429,7 +429,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	staleBootstrap["maxConcurrent"] = 9
 	stale := configurationHTTPModel(t, staleBootstrap)
 	receipt = f.report(t, current, configurationHTTPReportBody(staleBootstrap, nil), &model.WorkerConfigurationExchange{Bootstrap: &stale}, nil, nil, nil, nil, http.StatusOK, "")
-	if !reflect.DeepEqual(receipt.Configuration.Desired, &saved) {
+	if !reflect.DeepEqual(receipt.Configuration.Desired, capacityDecode[*model.WorkerDesiredConfiguration](t, &saved)) {
 		t.Fatal("repeated bootstrap overwrote the cloud target")
 	}
 	f.report(t, current, workerSnapshotReportBody(), nil, nil, nil, nil, nil, http.StatusOK, "")
@@ -501,7 +501,7 @@ func TestWorkerConfigurationHTTPObservationCASAndHeartbeatIndependence(t *testin
 	current = model.WorkerConfigurationResource{Desired: &desired, ObservationRevision: "1", Observation: accepted.Observation}
 	stale := configurationHTTPObservation(configurationHTTPItem("maxConcurrent", 1))
 	receipt = f.report(t, current, configurationHTTPReportBody(nil, stale), configurationHTTPExchange(t, map[string]any{"bootstrap": nil, "observation": stale}), nil, nil, nil, nil, http.StatusOK, "")
-	if receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" || !reflect.DeepEqual(receipt.Configuration.Desired, &desired) {
+	if receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" || !reflect.DeepEqual(receipt.Configuration.Desired, capacityDecode[*model.WorkerDesiredConfiguration](t, &desired)) {
 		t.Fatalf("stale observation did not return current target and CAS: %+v", receipt.Configuration)
 	}
 	f.report(t, current, workerSnapshotReportBody(), nil, nil, nil, nil, nil, http.StatusOK, "")
@@ -564,7 +564,7 @@ func TestWorkerConfigurationHTTPStrictInputAndNegotiation(t *testing.T) {
 	for _, versions := range [][]string{{""}, {"0"}, {"2"}, {"1, 1"}, {"1", "1"}} {
 		assertProjectError(t, configurationHTTPRequest(handler, http.MethodPost, path+"/report", base, versions...), http.StatusBadRequest, "invalid_input")
 	}
-	for _, body := range []string{jsonBody(t, workerSnapshotReportBody()), strings.Replace(base, `"configuration":{"bootstrap":null,"observation":null}`, `"configuration":null`, 1), strings.Replace(base, `"bootstrap":null`, `"bootstrap":null,"supported":true`, 1)} {
+	for _, body := range []string{jsonBody(t, workerSnapshotReportBody()), strings.Replace(base, `"configuration":{"bootstrap":null,"observation":null,"toolPathsBootstrap":null}`, `"configuration":null`, 1), strings.Replace(base, `"bootstrap":null`, `"bootstrap":null,"supported":true`, 1)} {
 		assertProjectError(t, configurationHTTPRequest(handler, http.MethodPost, path+"/report", body, "1"), http.StatusBadRequest, "invalid_input")
 	}
 	observation := configurationHTTPObservation(configurationHTTPItem("maxConcurrent", 3))
@@ -600,6 +600,7 @@ func TestWorkerConfigurationHTTPResourceAdmission(t *testing.T) {
 	f.readScope(t, current, nil, func() {
 		request := httptest.NewRequest(http.MethodHead, server.URL+f.path(), nil)
 		request.RequestURI = ""
+		request.Header.Set(workerToolPathsHeader, "2")
 		authorizeResourceRequest(f.handler, request)
 		var err error
 		head, err = server.Client().Do(request)
@@ -632,7 +633,7 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	origin := workerTestOrigin
 	value := configurationHTTPModel(t, configurationHTTPValue())
 	putBody := func(revision string) string {
-		return jsonBody(t, map[string]any{"revision": revision, "value": configurationHTTPLegacyValue(t, value)})
+		return jsonBody(t, map[string]any{"revision": revision, "value": configurationHTTPWireValue(t, value)})
 	}
 	f.headers = http.Header{}
 	f.handler.authenticate = false
@@ -651,10 +652,10 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	projectID := "d4444444-4444-4444-8444-444444444444"
 	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: projectID, NativeOverrides: map[string]json.RawMessage{}}}
 	bootstrap := &model.WorkerConfigurationExchange{Bootstrap: &value}
-	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, nil, []string{projectID}, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPWireValue(t, value), nil), bootstrap, nil, []string{projectID}, model.ErrNotFound, nil, http.StatusNotFound, "not_found")
 	f.get(t, uninitialized)
 	initial := model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Value: value}
-	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPLegacyValue(t, value), nil), bootstrap, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
+	f.report(t, uninitialized, configurationHTTPReportBody(configurationHTTPWireValue(t, value), nil), bootstrap, &initial, []string{projectID}, nil, nil, http.StatusOK, "")
 	current := model.WorkerConfigurationResource{Desired: &initial, ObservationRevision: "0"}
 	f.actor(t, bob, cookieHeaders(origin))
 	for _, method := range []string{http.MethodGet, http.MethodPut} {

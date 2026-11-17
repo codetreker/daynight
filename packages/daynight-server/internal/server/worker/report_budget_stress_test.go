@@ -27,7 +27,7 @@ func TestStressWorkerReportBodyLimits(t *testing.T) {
 			t.Run(tc.name+map[int]string{0: "/at_limit", 1: "/over_limit"}[extra], func(t *testing.T) {
 				f := newCapacityReportOperationFixture(t, "11111111-1111-4111-8111-111111111111")
 				body := workerSnapshotReportBody()
-				headers := http.Header{}
+				headers := http.Header{workerToolPathsHeader: {"2"}}
 				if tc.protocol != "" {
 					body["configuration"] = map[string]any{"bootstrap": nil, "observation": nil}
 					headers.Set(workerConfigurationHeader, tc.protocol)
@@ -53,7 +53,7 @@ func TestStressWorkerReportBodyLimits(t *testing.T) {
 					result, err := report(ctx, principal, worker, input)
 					return service.ConfigurationSyncResult{Native: result, Prompts: []model.PromptResult{}}, err
 				}
-				response := controlModeRequest(t, f, http.MethodPost, "/report", encoded, headers)
+				response := workerProtocolRequest(t, f, http.MethodPost, "/report", encoded, headers)
 				wantStatus, wantCalls := http.StatusOK, 1
 				if extra != 0 {
 					wantStatus, wantCalls = http.StatusRequestEntityTooLarge, 0
@@ -95,7 +95,7 @@ func TestStressWorkerReportLargeNativeApplication(t *testing.T) {
 		}
 		return service.WorkerReportResult{ObservedAt: capacityObservedAt, LastReportedAt: capacityObservedAt, Configuration: &model.WorkerConfigurationReceipt{ObservationRevision: "0"}}, nil
 	}
-	response := controlModeRequest(t, f, http.MethodPost, "/report", body, http.Header{workerConfigurationHeader: {"1"}})
+	response := workerProtocolRequest(t, f, http.MethodPost, "/report", body, http.Header{workerConfigurationHeader: {"1"}, workerToolPathsHeader: {"2"}})
 	if response.Code != http.StatusOK || calls != 1 {
 		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls, response.Body)
 	}

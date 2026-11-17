@@ -8,8 +8,6 @@ import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerCPU, WorkerDisk, WorkerExecutableProbe, WorkerMachine, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
 import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandDeadlineError, OwnedCommandError, runOwnedCommand, spawnOwnedProcess } from "./owned-command.js";
-import { createHerdrNativeEnvironment } from "./herdr/instance.js";
-import { createHerdrRuntimeVersionObserver, HerdrVersionUnavailableError } from "./herdr/runtime-version.js";
 import { NativeVersionOutputError, probeNativeAgentVersion } from "./native-version.js";
 import type { WorkerPaths } from "./paths.js";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "./codex-probe-owner.js";
@@ -17,7 +15,7 @@ import type { CodexProbeOwner } from "./codex-probe-owner.js";
 import type { AssistantHostSample } from "./bots/host-capabilities.js";
 
 export type WorkerTelemetryIssue = {
-  component: "toolPaths" | "os" | "cpu" | "memory" | "disk" | "herdr" | "codex" | "copilot" | "assistantHost_codex" | "assistantHost_claude" | "assistantHost_copilot";
+  component: "toolPaths" | "os" | "cpu" | "memory" | "disk" | "codex" | "copilot" | "assistantHost_codex" | "assistantHost_claude" | "assistantHost_copilot";
   code: WorkerProbeCode;
   error: unknown;
 };
@@ -27,7 +25,6 @@ class SampleError extends Error {
   constructor(readonly code: WorkerProbeCode, message: string, options?: ErrorOptions) { super(message, options); this.name = "WorkerSampleError"; }
 }
 const codeOf = (error: unknown): WorkerProbeCode => {
-  if (error instanceof HerdrVersionUnavailableError) return "unavailable";
   if (error instanceof SampleError) return error.code;
   if (error instanceof OperationError || error instanceof OwnedCommandDeadlineError) return "timeout";
   if (error instanceof NativeVersionOutputError) return "invalid_output";
@@ -125,8 +122,7 @@ export const createWorkerTelemetryCollector = (options: {
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
   if (Buffer.byteLength(options.workingDirectory) > 4096 || Buffer.byteLength(options.machine.name) > 256 || Buffer.byteLength(options.version) > 256) throw new RangeError("Worker identity, directory or version exceeds its UTF-8 byte limit.");
-  const environment = createHerdrNativeEnvironment(options.paths, process.env);
-  const herdr = createHerdrRuntimeVersionObserver(options);
+  const environment = process.env;
   const codexEnvironment = captureCodexProbeEnvironment(environment);
   const cache = new Map<"codex" | "copilot", { started: number; probe: WorkerExecutableProbe; issue?: WorkerTelemetryIssue; cleanupUncertain: boolean }>();
   const codexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory, () => { cache.delete("codex"); });
@@ -208,12 +204,12 @@ export const createWorkerTelemetryCollector = (options: {
       try {
         // The assistant collector owns its five-second budget. Capture rejection so ordinary probes still finish their process cleanup.
         const assistantPending = Promise.resolve().then(() => options.assistantHost?.collect(operation, codexProbes)).then(value => ({ value }), (error: unknown) => ({ error }));
-        const [system, cpu, memory, filesystem, daemon, codex, copilot, assistantOutcome] = await Promise.all([
+        const [system, cpu, memory, filesystem, codex, copilot, assistantOutcome] = await Promise.all([
           probe("os", () => ({ type: text(os.type(), 64), release: text(os.release(), 256), version: text(os.version(), 1024), arch: text(os.arch(), 64) })),
           probe("cpu", () => sampleCPU(collection)),
           probe("memory", () => { const totalBytes = integer(os.totalmem()); const free = integer(os.freemem()); if (totalBytes <= 0 || free > totalBytes) throw new SampleError("invalid_sample", "Available memory must fit its positive total capacity."); return { totalBytes, usedBytes: totalBytes - free }; }),
           probe("disk", () => disk(collection)),
-          probe("herdr", async () => { const result = await observe(herdr.observe(collection), collection); return result === null ? null : text(result, 256); }), options.toolPaths === undefined ? version("codex") : selectedVersion("codex"), options.toolPaths === undefined ? version("copilot") : selectedVersion("copilot"),
+          options.toolPaths === undefined ? version("codex") : selectedVersion("codex"), options.toolPaths === undefined ? version("copilot") : selectedVersion("copilot"),
           assistantPending,
         ]);
         const assistant = "value" in assistantOutcome ? assistantOutcome.value : undefined;
@@ -229,7 +225,7 @@ export const createWorkerTelemetryCollector = (options: {
         }
         return { telemetry: { ...(toolPaths === undefined ? {} : { toolPaths }), machine: { ...options.machine }, platform: options.platform, workingDirectory: options.workingDirectory, sampledAt, os: system, cpu, memory, disk: filesystem,
           ...(assistant === undefined ? {} : { assistantHost: assistant.assistantHost }),
-          versions: { daynight: options.version, codex, copilot, herdr: daemon.state === "error" ? daemon : daemon.value === null ? { state: "not_running", checkedAt: daemon.checkedAt } : { state: "ok", checkedAt: daemon.checkedAt, value: daemon.value } } }, issues };
+          versions: { daynight: options.version, codex, copilot } }, issues };
       } finally { collection.dispose(); }
     },
   };

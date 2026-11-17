@@ -8,14 +8,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openWorkerStore, type WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ClaimIdentity, WorkerProject } from "../../../src/commands/worker/types.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
-import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 
 const stores = new Set<WorkerStore>();
 const connections = new Set<Database.Database>();
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const claim: ClaimIdentity = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3) };
 const memory = () => { const database = createMemoryDatabase(); connections.add(database); return database; };
-const open = (database: Database.Database): WorkerStore => { const store = openWorkerStore(database, { onMigration: () => {} }); stores.add(store); return store; };
+const open = (database: Database.Database): WorkerStore => { const store = openWorkerStore(database, { onMigration: () => {}, isWebCleanupOwner: () => true }); stores.add(store); return store; };
 const identityFixture = () => {
   const directory = path.resolve(".tmp", "worker-store-fixture");
   const project: WorkerProject = { projectId: claim.projectId, repoUrl: "https://github.com/owner/repo.git", localPath: path.join(directory, "repo") };
@@ -86,14 +86,14 @@ describe("worker project mappings", () => {
 });
 
 describe("worker claim and native session index", () => {
-  it("keeps both Herdr and native recipes across reopening without adopting a replacement", () => {
+  it("keeps native recipes across reopening without adopting a replacement", () => {
     const { store, database, register } = fixture(); register();
-    const tools = recordedHerdrTools();
-    const configuration = { agent: "codex" as const, model: null, args: [], toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation };
+    const toolLaunch = frozenToolLaunch();
+    const configuration = { agent: "codex" as const, model: null, args: [], toolLaunch, toolObservation: { version: "1.0.0", checkedAt: "2026-01-01T00:00:00Z" } };
     store.freezeNativeConfiguration(claim, configuration);
     const reopened = open(database);
     expect(reopened.getNativeConfiguration(claim)).toEqual(configuration);
-    expect(() => reopened.freezeNativeConfiguration(claim, { ...configuration, herdrLaunch: { ...tools.herdr, source: "path" } })).toThrow("frozen");
+    expect(() => reopened.freezeNativeConfiguration(claim, { ...configuration, model: "replacement" })).toThrow("frozen");
   });
   it("persists the original native tuple and rejects a replacement after reopening", () => {
     const { store, database, register } = fixture();
@@ -115,10 +115,10 @@ describe("worker claim and native session index", () => {
 
   it("materializes a pending claim without a session and preserves repeated registration", () => {
     const { store, register } = fixture();
-    expect(register()).toEqual({ ...claim, status: "pending", agent: "codex", agentControlMode: "herdr" as const, sessionId: null });
+    expect(register()).toEqual({ ...claim, status: "pending", agent: "codex", agentControlMode: "web" as const, sessionId: null });
     store.activateTask(claim);
     store.setSessionId(claim, uuid(8));
-    expect(store.registerPending({ ...claim, agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(9) })).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(8) });
+    expect(store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" as const, sessionId: uuid(9) })).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "web" as const, sessionId: uuid(8) });
     expect(() => store.registerPending({ ...claim, agent: "copilot" })).toThrow("different agent");
   });
 
@@ -155,7 +155,7 @@ describe("worker claim and native session index", () => {
     register();
     expect(() => store.getTask({ ...claim, taskId: "bad" })).toThrow("UUID");
     expect(() => store.registerPending({ ...claim, claimId: "bad", agent: "codex" })).toThrow("UUID");
-    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "herdr" as const, sessionId: "bad" })).toThrow("UUID");
+    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" as const, sessionId: "bad" })).toThrow("UUID");
   });
 });
 
@@ -183,10 +183,10 @@ it("upgrades version 15 without inventing claim reservations or changing frozen 
   const db = memory(), steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
   for (const step of steps.filter(step => step.version <= 15)) db.exec(step.sql);
   db.pragma("user_version = 15");
-  const { project } = identityFixture(), tools = recordedHerdrTools();
-  const configuration = JSON.stringify({ agent: "codex", model: "original", args: ["--original"], toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation });
+  const { project } = identityFixture();
+  const configuration = JSON.stringify({ agent: "codex", model: "original", args: ["--original"], toolLaunch: frozenToolLaunch(), toolObservation: { version: "1.0.0", checkedAt: "2026-01-01T00:00:00Z" } });
   db.prepare("INSERT INTO projects(project_id, repo_url, local_path) VALUES (@projectId, @repoUrl, @localPath)").run(project);
-  db.prepare("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode) VALUES (@projectId, @taskId, @claimId, 'active', 'codex', NULL, 'herdr')").run(claim);
+  db.prepare("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode) VALUES (@projectId, @taskId, @claimId, 'active', 'codex', NULL, 'web')").run(claim);
   db.prepare("INSERT INTO claim_native_configurations(project_id, task_id, claim_id, configuration) VALUES (@projectId, @taskId, @claimId, @configuration)").run({ ...claim, configuration });
   const upgraded = open(db);
   expect(upgraded.listClaimToolReservations()).toEqual([]);
@@ -227,6 +227,19 @@ describe("worker cleanup schedules", () => {
     expect(f.store.registerProject({ ...f.project, localPath: path.join(f.directory, "replacement") }).localPath).toContain("replacement");
   });
 
+  it("preserves schedules without a matching Web worktree when accepting another owner", () => {
+    const db = memory(), f = identityFixture();
+    const store = openWorkerStore(db, { onMigration: () => {}, isWebCleanupOwner: value => value.worktreeId === owner.worktreeId }); stores.add(store);
+    store.registerProject(f.project);
+    db.prepare("INSERT INTO cleanup_schedules(project_id, task_id, claim_id, worktree_id, deadline, failures, next_attempt_at, stage, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(owner.projectId, owner.taskId, owner.claimId, uuid(71), schedule.deadline, schedule.failures, schedule.nextAttemptAt, schedule.stage, schedule.lastError);
+    const before = db.prepare("SELECT * FROM cleanup_schedules").all();
+    expect(store.getCleanupSchedule(owner)).toBeNull();
+    expect(store.listCleanupSchedules()).toEqual([]);
+    expect(() => store.saveCleanupSchedule(owner, schedule)).toThrow("unsupported cleanup schedule");
+    store.deleteCleanupSchedule(owner);
+    expect(db.prepare("SELECT * FROM cleanup_schedules").all()).toEqual(before);
+  });
+
   it("enforces scheduler bounds in SQLite and rejects corrupt schedules on read", () => {
     const f = fixture(); f.register(); f.store.saveCleanupSchedule(owner, schedule);
     const db = f.database;
@@ -242,7 +255,7 @@ describe("worker cleanup schedules", () => {
     for (const filename of ["005-baseline.sql", "006-cleanup-schedules.sql"]) db.exec(readFileSync(new URL(`../../../src/commands/worker/sqlite/${filename}`, import.meta.url), "utf8"));
     db.pragma("user_version = 6");
     db.prepare("INSERT INTO projects VALUES (?, ?, ?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
-    db.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', ?, 'herdr')").run(claim.projectId, claim.taskId, claim.claimId, uuid(75));
+    db.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', ?, 'web')").run(claim.projectId, claim.taskId, claim.claimId, uuid(75));
     db.prepare("INSERT INTO cleanup_schedules VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)").run(owner.projectId, owner.taskId, owner.claimId, owner.worktreeId, schedule.deadline, schedule.failures, schedule.nextAttemptAt, schedule.stage, schedule.lastError);
     const recovered = open(db);
     expect(recovered.getCleanupSchedule(owner)).toEqual({ ...owner, ...schedule });
@@ -257,7 +270,7 @@ describe("worker cleanup schedules", () => {
     db.exec(readFileSync(new URL("../../../src/commands/worker/sqlite/005-baseline.sql", import.meta.url), "utf8"));
     db.pragma("user_version = 5");
     db.prepare("INSERT INTO projects VALUES (?, ?, ?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
-    db.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', ?, 'herdr')").run(claim.projectId, claim.taskId, claim.claimId, uuid(75));
+    db.prepare("INSERT INTO tasks VALUES (?, ?, ?, 'active', 'codex', ?, 'web')").run(claim.projectId, claim.taskId, claim.claimId, uuid(75));
     const recovered = open(db);
     expect(recovered.getProject(claim)).toEqual(f.project);
     expect(recovered.getTask(claim)).toMatchObject({ ...claim, status: "active", sessionId: uuid(75) });

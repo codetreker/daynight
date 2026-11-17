@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { configurationDesiredSourcesComparable, configurationJsonSourcesEqual, decodeWorkerConfigurationSource, parseReceivedWorkerConfigurationResource, parseReceivedWorkerConfigurationReportReceipt, receiveWorkerDesired, validateWorkerRemoteObservation } from "../../src/api/worker-configuration-source.js";
+import { parseWorkerCloudDesired } from "../../src/api/worker-configuration.js";
+import { configurationJsonSourcesEqual, decodeWorkerConfigurationSource, parseReceivedWorkerConfigurationResource, parseReceivedWorkerConfigurationReportReceipt, receiveWorkerDesired, validateWorkerRemoteObservation } from "../../src/api/worker-configuration-source.js";
 
 const time = "2026-11-04T00:00:00Z";
-const value = { maxConcurrent: 2, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] };
+const value = { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 2, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] };
 const desired = JSON.stringify({ revision: "1", updatedAt: time, value });
 const future = '{"negative":-2,"fraction":1.25,"exponent":1e999999999999999999,"integer":9007199254740993,"array":[true,null,{"__proto__":{"x":1}}]}';
 const expanded = desired.replace('"value":{', `"future":${future},"value":{"future":${future},`).replace('"agent":"codex"', `"agent":"codex","future":${future}`);
 
 describe("Worker configuration source documents", () => {
-  it("retains complete desired source while deriving a strict nested known view", () => {
-    expect(receiveWorkerDesired(expanded)).toEqual({ json: expanded, known: JSON.parse(desired) });
+  it("retains complete desired source while keeping the raw nested value", () => {
+    expect(receiveWorkerDesired(expanded)).toEqual({ json: expanded, known: { revision: "1", updatedAt: time, value: JSON.parse(expanded).value } });
     const resource = `{"future":${future},"desired":${expanded},"observationRevision":"0","observation":null}`;
-    expect(parseReceivedWorkerConfigurationResource(decodeWorkerConfigurationSource(resource))).toEqual({ json: resource, desired: { json: expanded, known: JSON.parse(desired) }, observationRevision: "0", observationJson: null });
+    expect(parseReceivedWorkerConfigurationResource(decodeWorkerConfigurationSource(resource))).toEqual({ json: resource, desired: { json: expanded, known: { revision: "1", updatedAt: time, value: JSON.parse(expanded).value } }, observationRevision: "0", observationJson: null });
   });
   it("decodes large known configuration trees within bounded JSON operations", () => {
     const large = { revision: "1", updatedAt: time, value: { ...value, native: { ...value.native, args: Array.from({ length: 100 }, () => "x".repeat(4096)) } } };
@@ -31,19 +32,12 @@ describe("Worker configuration source documents", () => {
     } finally { JSON.parse = parse; JSON.stringify = stringify; }
     expect(received).toEqual({ json: source, known: large });
   });
-  it("projects unknown native overrides, tools and choice members without admitting invalid known fields", () => {
-    const source = JSON.stringify({ revision: "1", updatedAt: time, value: { ...value, native: { ...value.native, future: true }, projects: [{ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", nativeOverrides: { model: null, future: -2 }, future: [] }], toolPaths: { codex: { kind: "auto", future: true }, copilot: null, herdr: { kind: "path", path: "/bin/herdr", future: {} }, future: false } } });
+  it("retains unsupported nested fields without accepting them as active configuration", () => {
+    const source = JSON.stringify({ revision: "1", updatedAt: time, value: { ...value, native: { ...value.native, future: true }, projects: [{ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", nativeOverrides: { model: null, future: -2 }, future: [] }], toolPaths: { codex: { kind: "auto", future: true }, copilot: null, extra: false } } });
     const result = receiveWorkerDesired(source);
-    expect(result.known.value.toolPaths).toEqual({ codex: { kind: "auto" }, copilot: null, herdr: { kind: "path", path: "/bin/herdr" } });
-    expect(result.known.value.projects[0]!.nativeOverrides).toEqual({ model: null });
-    expect(() => receiveWorkerDesired(source.replace('"agent":"codex"', '"agent":"unknown"'))).toThrow();
-    expect(() => receiveWorkerDesired(source.replace('"maxConcurrent":2', '"maxConcurrent":2.0'))).toThrow();
-    expect(() => receiveWorkerDesired(source.replace('"path":"/bin/herdr"', '"path":true'))).toThrow();
-    expect(() => receiveWorkerDesired(source.replace('"kind":"auto"', '"kind":"auto","path":"/bin/x"'))).toThrow();
-    expect(() => receiveWorkerDesired(source, false)).toThrow();
-    const mode = desired.replace('"value":{', '"value":{"agentControlMode":"web",');
-    expect(receiveWorkerDesired(mode).known.value.agentControlMode).toBe("web");
-    expect(() => receiveWorkerDesired(mode, false)).toThrow();
+    expect(result.known.value).toEqual(JSON.parse(source).value);
+    expect(() => parseWorkerCloudDesired(result.known)).toThrow();
+    expect(() => receiveWorkerDesired(source.replace('"revision":"1"', '"revision":"0"'))).toThrow();
   });
   it("retains remote unknown observation kinds without importing them into a local report", () => {
     const observation = `{"baseRevision":"0","desiredRevision":"1","reportedAt":"${time}","items":[{"key":{"kind":"future"},"appliedValue":${future},"future":true}]}`;
@@ -52,7 +46,7 @@ describe("Worker configuration source documents", () => {
     const malformed = observation.replace('"kind":"future"', '"kind":"maxConcurrent"');
     expect(() => parseReceivedWorkerConfigurationResource({ json: source.replace(observation, malformed) })).toThrow();
     expect(() => parseReceivedWorkerConfigurationResource({ json: source.replace('"observationRevision":"1"', '"observationRevision":"2"') })).toThrow();
-    expect(() => parseReceivedWorkerConfigurationResource({ json: source.replace('"kind":"future"', '"kind":"agentControlMode"') }, false)).toThrow();
+    expect(parseReceivedWorkerConfigurationResource({ json: source.replace('"kind":"future"', '"kind":"agentControlMode"') }).observationJson).toContain("agentControlMode");
   });
   it("preserves source in ordinary report receipts", () => {
     const configuration = `{"future":${future},"desired":${expanded},"observationRevision":"0","observationAccepted":false}`;
@@ -77,14 +71,5 @@ describe("Worker configuration source documents", () => {
     expect(configurationJsonSourcesEqual('{"a":9007199254740993}', '{"a":9007199254740992}')).toBe(false);
     expect(configurationJsonSourcesEqual('{"a":[1,2]}', '{"a":[2,1]}')).toBe(false);
     expect(configurationJsonSourcesEqual('{"__proto__":1,"text":"a"}', '{"text":"\\u0061","__proto__":1.0}')).toBe(true);
-  });
-  it("compares only common negotiated fields while retaining strict unknown comparison", () => {
-    const mode = expanded.replace('"value":{', '"value":{"agentControlMode":"web",');
-    const tools = mode.replace('"value":{', '"value":{"toolPaths":{"codex":null,"copilot":null,"herdr":null,"future":9007199254740993},');
-    expect(configurationDesiredSourcesComparable(expanded, mode)).toBe(true);
-    expect(configurationDesiredSourcesComparable(mode, tools)).toBe(true);
-    expect(configurationDesiredSourcesComparable(tools, mode)).toBe(true);
-    expect(configurationDesiredSourcesComparable(tools, tools.replace("9007199254740993", "9007199254740992"))).toBe(false);
-    expect(configurationDesiredSourcesComparable(expanded, mode.replace('"negative":-2', '"negative":-3'))).toBe(false);
   });
 });

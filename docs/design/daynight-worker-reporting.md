@@ -16,11 +16,11 @@ flowchart LR
   A --> S[账号 Worker 快照 API]
 ```
 
-`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 取得实例锁、稳定身份、日志及认证账号，再尝试读取云端目标并建立配置模块与 collector/reporter；此时仓库准备、业务 backend 初始化与任务 tick 尚未开始。身份临时读取失败在原锁下退避恢复，配置 GET 临时失败保留未读取状态，由报告准备重新读取；认证与协议错误不变成空目标。runtime 将固定的 workerId 与 serverOrigin 交给 collector，供其筛选 durable daemon 归属。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
+`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 取得实例锁、稳定身份、日志及认证账号，再尝试读取云端目标并建立配置模块与 collector/reporter；此时仓库准备、业务 backend 初始化与任务 tick 尚未开始。身份临时读取失败在原锁下退避恢复，配置 GET 临时失败保留未读取状态，由报告准备重新读取；认证与协议错误不变成空目标。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
 
 `telemetry.ts` 只读采集运行环境，返回完整 telemetry 和私有 issue 列表。`reporter.ts` 拥有周期、触发合并、最新清单、尝试 Operation 和清洗诊断；`configuration-exchange.ts` 组织共享配置交换的实际阶段，foreground 与需要配置的管理路径复用该顺序。`remote.ts` 使用固定服务凭据及 expectedUserId 将报告转交 typed ApiClient；调用者拥有 Operation 的取消及释放。配置报告采用独立 typed 方法，对该请求设置配置能力标记并验证完整回执，普通报告保留精确两字段回执。API 对 mutable POST 使用精确 200 准入，不套用通用创建操作的 201 语义。
 
-reporter 不拥有执行 backend，不调用 task/claim 更新。Herdr 观察器直接读取私有 API 端点，不经过 runtime 的 lazyHerdr；纯 Web 执行保持对 Herdr 的延迟初始化。
+reporter 不拥有执行 backend，不调用 task/claim 更新。
 
 ## 独立调度与生命周期
 
@@ -38,7 +38,7 @@ reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发�
 
 配置持久化与诊断文件 sink 的真实 I/O 故障通过既有 runtime failure 观察呈现阶段、retryState 和 nextAttemptAt，恢复退休同一运行内的故障身份。监控不读 JSONL、不将日志当作恢复输入，也不从最近成功配置或报告推断当前存储准入；isReady/canAdmitNewExecution 仍由本机执行所有者判定。固定诊断类别沿原内容准入，不上传原始错误或增加快照字段。
 
-取得实例锁后建立本次运行的内存观测器。Coordinator 在实际调度、执行、等待与清理边界同步更新状态；容量与领取准入共享责任投影，详情截断不改变总数。观测器不读取日志或额外发现资源。失败按受控类型映射为固定摘要：实际 Herdr 命令错误的明确非零安全整数退出、Git 命令错误的明确正安全整数退出为 command-failed；Git 启动失败的负 errno、仅信号退出或未知退出结果保持 unknown。清理阶段仅拆开已知 WorkerCleanupError 包装，不检查任意错误链或从消息猜测；原始错误仍由本机诊断处理。claim 异常的工作区位置从原操作选定的项目 checkout 与工作树绑定计算，不读文件系统或解析错误文本；Web 历史归档使用冻结的绑定，Herdr 使用生命周期 cwd 和受保护的项目绑定。没有可信配对时省略字段。快照深拷贝位置，预算不足时优先将最大编码路径改为明确超限，保留原始内存记录。共享字段与编码预算由[运行监控规范](../spec/daynight-worker-monitoring.md)持有。
+取得实例锁后建立本次运行的内存观测器。Coordinator 在实际调度、执行、等待与清理边界同步更新状态；容量与领取准入共享责任投影，详情截断不改变总数。观测器不读取日志或额外发现资源。失败按受控类型映射为固定摘要：受控命令错误的明确非零安全整数退出、Git 命令错误的明确正安全整数退出为 command-failed；Git 启动失败的负 errno、仅信号退出或未知退出结果保持 unknown。清理阶段仅拆开已知 WorkerCleanupError 包装，不检查任意错误链或从消息猜测；原始错误仍由本机诊断处理。claim 异常的工作区位置从原操作选定的项目 checkout 与工作树绑定计算，不读文件系统或解析错误文本；Web 历史归档使用冻结的绑定。没有可信配对时省略字段。快照深拷贝位置，预算不足时优先将最大编码路径改为明确超限，保留原始内存记录。共享字段与编码预算由[运行监控规范](../spec/daynight-worker-monitoring.md)持有。
 
 独立发送器立即捕获并直接 POST 当前状态，最多一个请求在途；成功或首次失败后等待 30 秒，连续失败后等待 60 秒，每次重新捕获。单次尝试最多 5 秒，不读取旧监控、不对账或重放旧正文；服务不支持直接入口时报告监控错误。停止期间发送器继续运行，执行和清理收尾后捕获 stopped，在总共 5 秒内等待在途尝试并至多发送一次最终快照。该通道不控制原有报告、任务或资源生命周期。
 
@@ -48,7 +48,7 @@ reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发�
 
 启动、未知写入结果、400/协议失败与能力重发现安排下一次认证 GET；正常已同步周期不增加读取。desired:null 的每轮准备先查服务端，再加入 root 拥有的当前文件候选；已存在目标取消并 drain 候选。报告十五秒 Operation 只取消等待者，完整候选 pass 自有六十秒预算，生命周期由[Worker 配置设计](daynight-worker.md#本地配置与首次候选)拥有。同步仍使用原单飞与触发合并，不保存旧请求正文或无限追赶。
 
-本批同时受 1025 个非 mode 项、协商后的 1026 个总项、Go 编码加存储包装余量的 4 MiB 和整包 9 MiB 约束；固定一项真实未完成或失败移除，其余连续轮转。最近同 key 失败可以来自保留记录，捕获保存其准确 sourceRecordId/failureId，而不复制失败所有权或历史成功出处。服务端整体替换本批观察，不合并各批历史；本机记录不因本次遗漏而被删除。
+本批同时受 1025 个总项、Go 编码加存储包装余量的 4 MiB 和整包 9 MiB 约束；固定一项真实未完成或失败移除，其余连续轮转。最近同 key 失败可以来自保留记录，捕获保存其准确 sourceRecordId/failureId，而不复制失败所有权或历史成功出处。服务端整体替换本批观察，不合并各批历史；本机记录不因本次遗漏而被删除。
 
 成功回执交给原捕获的确认处理，并在 manager 的串行提交内核对 generation。当前捕获 observationAccepted=true 才确认实际发送且身份仍匹配的失败与游标；飞行期间的新失败保留，恢复不提前丢弃 lastFailure。当前捕获的合法回执安装 observationRevision 与可接纳的 desired，包括 null；迟到的较低 desired revision 不回退最新原始目标，同 revision 的完整目标语义冲突明确拒绝；非空 observation 的 false 不确认应用，下一轮基于准确状态生成新报告，空 observation 的 false 是正常未提交观察。旧 generation 的任何回执均不更新当前目标、基线、失败或游标，已知远端成功不能因本地等待取消而改称未知。未知或无合法规范回执时先读，不让出未确认报告槽或重放。完成移除还须满足原执行结束、准确本批确认及本机保留责任的收敛条件。完整投影与状态表示由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。
 
@@ -74,14 +74,6 @@ OS、内存和 CPU 使用 Node OS API。CPU 每次先读取逻辑处理器 times
 
 独立原生探测复用任务原生环境构造：保留调用方 XDG 及 provider 认证位置，不使用 daemon 的隔离 XDG 替代。它不运行 agent、hook、安装或登录。Codex/Copilot 结果在 collector 中按单调时钟缓存，年龄不足 60 秒才复用，checkedAt 保留原值；失败也缓存，到期失败覆盖旧成功。ENOENT 还需核对 cwd 及可执行搜索路径，只有确证不存在才为 not_installed。接入工具管理器时，版本报告只读其选择快照，不另起版本探测。
 
-`herdr/runtime-version.ts` 拥有平台与 durable/legacy 观察路径选择。非 macOS 平台直接使用 `createHerdrVersionObserver`；macOS 先检查 journal 是否存在，只有不存在时沿用共享端点以兼容遗留安装。存在 journal 时复用 `readHerdrLifecycleRecords` 的只读、当前格式事务；不调用可写 store、recover、迁移或 lazyHerdr。SQLite 可使用 WAL 协调文件，但不修改持久化执行记录或控制状态。无候选项时不构造原生进程观察器，纯 Web 保持 Herdr 延迟边界。
-
-观察器按固定 workerId 与 serverOrigin 筛选，读取每项当前未确认停止的 run，以及已捕获 daemon 或已请求启动的 preparation。stopped_confirmed 不参与；原始 daemon 的 exited 结果表示它已不再运行，忽略该候选。stop_unknown 不阻止只读观察，但观察结果不能解除控制不确定性。缺失、changed 或 unknown 身份产生 `HerdrVersionUnavailableError`，映射到现有 unavailable code。观察器仅使用原生边界的 observe/peer，不请求信号、停止或执行资源初始化。
-
-每个候选项通过原始进程身份检查后，解析记录中的 run 端点，在 ping 前后核对 peer 的 pid、bootId、birthToken 和 auditToken。`createHerdrVersionObserver` 仅发送 ping 并校验 pong/version。存活进程缺少端点或 peer 不一致为 unavailable；权限、协议、journal 或其它 I/O 故障保留字段错误。所有存活 daemon 的版本必须完全一致，否则单值字段返回 unavailable；无存活候选返回 not_running，不使用共享 daemon 填补 durable 结果。无版本缓存、ensure、实例启动、integration 修复或执行资源快照。
-
-collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后检查同一 collection Operation。采集超时返回 timeout，根取消仍使整体采集失败；未完成的只读调用不被宣称已取消，其完成后不能发起后续 peer 或 RPC。原始 journal、run 路径、进程与 claim 身份仅用于本机判断，不加入 wire schema 或诊断正文。
-
 命令 runner 用 `OwnedCommandCleanupError` 标记该次命令曾未能确认清理，`hasOwnedCommandCleanupFailure` 保留这一历史分类。私有 `WeakMap` 将错误关联到原始 `ChildProcess` 既有 `close` 监听的状态；确认依赖该命令对象及其输出流关闭，不使用可复用 PID、全局 Provider 标记或另一探测的结果。仅等待 `close` 超时且终止调用未失败的错误可以在晚到 `close` 后得到确认。只有 `exit`、leader 消失、终止失败后 `close`，以及其它清理 owner 或旧构造产生的无确认句柄错误，都不能据此解除阻塞。
 
 `hasUnconfirmedOwnedCommandCleanup` 单独查询当前责任，递归检查 `Error.cause` 和 `AggregateError.errors`；任何一项尚未确认，整个对应探测仍受屏障保护。普通聚合错误没有清理标记时不产生清理屏障。`versions` 为 Codex/Copilot 分别保留原失败及 `cleanupUncertain`，未确认时继续返回 unavailable，不因 60 秒缓存到期启动替代进程。原责任全部确认后，下一轮正常采集先删除该工具的旧失败缓存，再执行版本命令；新探测结果使用本轮 `checkedAt`，成功才发布新版本，失败保留实际错误；未确认时返回的 unavailable 也带本轮检查时间，该时间不是成功证据。确认事件本身不产生成功报告、额外调度、轮询进程、重复监听或更长预算。历史取舍与不能以时间或缓存替代清理证据的原因见[探测恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-06-native-probe-cleanup-recovery.md)。
@@ -90,7 +82,7 @@ collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后
 
 `worker/bots/host-capabilities.ts` 拥有独立的助手预检采集器，`telemetry.ts` 通过可选采集器接入同一次报告。runtime 将 Bot 管理组合的 `collect` 接入 `assistantHost`，使用当前有效的全局原生配置；组合与配置生效规则由[助手设计](assistant.md#产品组合)拥有。缺字段的旧 Worker 消费行为与[快照协议](../spec/daynight-worker-snapshots.md#助手托管预检)一致；此接入点不是用户配置开关。
 
-预检读取 Worker 启动时的真实绝对目录与全局执行配置，不选择项目或创建目录。全局 Provider 保留自己的 model/args，其它 Provider 使用 null/[]，避免切换后继承错误的模型或参数。需要预检的配置按 Web 适配器参数解析器检查，任务的 Herdr/Web 模式不改变 Bot 的 Web 规则。不支持的配置只返回闭合错误码并清空参数，不将原始错误或敏感参数带入 wire。
+预检读取 Worker 启动时的真实绝对目录与全局执行配置，不选择项目或创建目录。全局 Provider 保留自己的 model/args，其它 Provider 使用 null/[]，避免切换后继承错误的模型或参数。需要预检的配置按 Web 适配器参数解析器检查，任务和 Bot 使用 Web 规则。不支持的配置只返回闭合错误码并清空参数，不将原始错误或敏感参数带入 wire。
 
 Copilot 后台需求来自当前有效全局配置、已解析继承的项目配置及本 Worker 的非删除 Bot 定义。没有需求且没有现成成功 Web selection 证明时，采集器在传播目录或参数错误前返回 unavailable 条目，不创建 Copilot issue，也不解析工具或启动探测。已有 selection 与 inspection proof 可纯读取；缺少证明不能伪造可用。需求存在时保留正常检查和真实错误，明确模型发现及执行请求仍按需准备。已有原生执行与未确认清理责任继续由原 owner 处理。
 
@@ -112,13 +104,13 @@ owner 在等待前登记后续调用，join 前一链后检查取消和原始清
 
 ## 工具观察接缝
 
-collector 通过可选快照输入接收工具管理器的 ToolPathTelemetry，不在普通心跳内解析路径、哈希文件或执行另一份探测。actual、candidate 和 activeSelections 共用该管理器的事实；接入时 Codex/Copilot 的旧 versions 来自指定上下文的同一 actual。Herdr 的旧 versions 继续只读已归属运行实例，不能把新准入 CLI 版本当作已运行 daemon 版本。默认未接入时省略扩展，旧 versions 继续原严格形状，不能把 bare 版本文本补成已验证路径。工具报告合同由[快照协议](../spec/daynight-worker-snapshots.md#工具路径观察)拥有。
+collector 通过可选快照输入接收工具管理器的 ToolPathTelemetry，不在普通心跳内解析路径、哈希文件或执行另一份探测。actual、candidate 和 activeSelections 共用该管理器的事实；接入时 Codex/Copilot 的旧 versions 来自指定上下文的同一 actual。默认未接入时省略扩展，versions 保持新严格形状，不能把 bare 版本文本补成已验证路径。工具报告合同由[快照协议](../spec/daynight-worker-snapshots.md#工具路径观察)拥有。
 
-API 在认证配置读取确认 Daynight-Worker-Tool-Paths 能力后才发送扩展；能力绑定 origin 和 principal，旧服务按原报告结构发送。工具投影先按 selectionKey 固定排序和完整组裁减，再执行 256 KiB 子预算及所选请求预算（配置报告 9 MiB，普通报告 1 MiB）。`prepareWorkerReport` 和 `workerReportBody` 按选定预算计量实际 UTF-8 JSON，`runtimeConfiguration` 同样按该预算整体省略；必需清单和配置结果不截断，编码超限在请求派发前失败。Operation 默认总量保持不变。不足时明确 report_budget_exceeded 和集合不完整，不截断路径、不删除普通心跳的必需字段。prepareWorkerReport 返回本地预算结果，ApiClient 的可选预算回调在实际请求准备时接收同一结果，回调失败不能改变报告提交或结果。连完整目标降级也无法容纳时省略可选工具观察，保留稳定错误码和 omitted 标志。无能力、未检查、目标错误和运行集合未知是不同事实；工具错误不得携带完整命令、环境或私有 cause。
+配置、报告与详情使用 `Daynight-Worker-Tool-Paths: 2`，客户端校验响应回显。工具投影按 selectionKey 固定排序和完整组裁减，再执行 256 KiB 子预算及所选请求预算；必需清单和配置结果不截断。预算不足时明确 report_budget_exceeded 和集合不完整，不截断路径或删除必需字段。工具错误不得携带完整命令、环境或私有 cause。
 
 ## 失败与可观察性
 
-`configuration-diagnostics.ts` 接收拥有事实的 exchange、manager 与持久化边界事件，保存本次运行的失败分组与实际次数。首次失败、固定原因或相关目标变化、对应操作恢复立即输出；持续同因失败由现有调用周期每五分钟最多输出一条 summary，不新增操作重试。签名包含组件、实际阶段、key、固定原因与相关目标身份，排除 requestId、syncId、generation、时间、次数、backoffStep 和 nextAttemptAt。native/projectNative 的相关目标采用当次捕获的完整验证配方：native 元组、当次验证模式，以及相关工具的配置选择；同一规范版本下切换模式或工具选择也形成不同目标。只有相同配方的真实成功才能恢复对应失败，新的模式成功不能把仍保留的旧模式失败标为已恢复。动态 generation 与 selectionKey 不属于该配方。配方只供本机比较，原生参数、工具选择正文及原始目标不进入 JSONL。occurrences 记录真实失败发生次数，backoffStep 仅说明封顶退避档位。普通采集字段和 report 子系统分别保留故障及恢复；诊断状态不承担执行、重放或恢复职责。
+`configuration-diagnostics.ts` 接收拥有事实的 exchange、manager 与持久化边界事件，保存本次运行的失败分组与实际次数。首次失败、固定原因或相关目标变化、对应操作恢复立即输出；持续同因失败由现有调用周期每五分钟最多输出一条 summary，不新增操作重试。签名包含组件、实际阶段、key、固定原因与相关目标身份，排除 requestId、syncId、generation、时间、次数、backoffStep 和 nextAttemptAt。native/projectNative 的相关目标采用当次捕获的完整验证配方：native 元组及相关工具的配置选择；同一规范版本下工具选择变化形成不同目标。只有相同配方的真实成功才能恢复对应失败。动态 generation 与 selectionKey 不属于该配方。配方只供本机比较，原生参数、工具选择正文及原始目标不进入 JSONL。occurrences 记录真实失败发生次数，backoffStep 仅说明封顶退避档位。普通采集字段和 report 子系统分别保留故障及恢复；诊断状态不承担执行、重放或恢复职责。
 
 `configuration-failure.ts` 从 ToolSelectionError、OperationError、本地来源校验和受控文件操作生成固定原因。工具类型以 reason 保留原闭合 code，并保留有限 tool/context/stage；Operation 保留 kind，文件边界保留经过识别的 systemCode。`configuration-source.ts` 在实际解析与纯校验边界构造 WorkerConfigurationSourceError，将非法 YAML、顶层结构和本地字段归为 invalid_configuration，保留原有纠错消息与 cause。重新读取文件中的新凭据不进入诊断。读取器的受控文件包装单独指认其已知原始文件错误，同时保留外层可操作错误链；项目准备仅将具有数值 errno、字符串 syscall 且可识别系统 code 的真实 Node 文件错误交给该包装。任意对象属性、裸 .code 和错误消息不参与分类。云端应用观测继续使用既有 code/category/phase，monitoring 映射到其固定英文摘要，本机允许的结构化细节不进入公开 DTO。采集与传输日志仍重新构造安全类别及 cause 结构，不带命令、输出或凭据。formatter 与通知错误单独保留原链，不把已成功应用改为失败，也不确认或丢弃 lastFailure。
 
@@ -147,8 +139,8 @@ jq -c --arg request "$REQUEST_ID" 'select(.configuration.requestId == $request)'
 
 reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。配置诊断以受控时钟核对首次、原因变化、五分钟 summary、真实次数与恢复，动态关联字段不能破坏分组。真实 JSONL 与 segment 读回验证字段投影、原项/当前权威分别关联、凭据脱敏、部分 append 不重放及错误链。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次，并核对实际失败阶段与远端/本地确定性。配置测试核对不可变 token、GET 较低/null 恢复、同版本语义冲突拒绝、迟到低版本回执与未知-only 应用版本锚点、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
 
-collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。
+collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate 和严格命令清理。
 
-runtime/coordinator 测试验证认证后的启动顺序、完整清单发布点、确认 claim、长 tick、纯 Web 的 Herdr 延迟边界，以及报告 join 延后时全部 job 的同步取消与未完成资源保留；typed API 测试验证精确状态、响应和账号准入。
+runtime/coordinator 测试验证认证后的启动顺序、完整清单发布点、确认 claim、长 tick、Web 原身份边界，以及报告 join 延后时全部 job 的同步取消与未完成资源保留；typed API 测试验证精确状态、响应和账号准入。
 
 原生采集测试在实际平台运行 OS、CPU、内存、statfs 和版本命令，仅报告环境及 Probe 状态。各平台通过自己的实际运行结果建立能力依据；mock 结果不推断为该平台已通过。完整任务执行与恢复另由[整体架构](daynight-worker.md#验证边界)规定。

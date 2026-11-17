@@ -18,11 +18,11 @@ export const workerDetail = (value = 1): Mutable<WorkerDetailResponse> => ({
       cpu: { state: 'ok', checkedAt: WORKER_TIME, value: { model: 'CPU model', logicalProcessors: 8, usagePercent: 33.25 } },
       memory: { state: 'ok', checkedAt: WORKER_TIME, value: { usedBytes: 16_000, totalBytes: 32_000 } },
       disk: { state: 'ok', checkedAt: WORKER_TIME, value: { availableBytes: 100_000, totalBytes: 200_000 } },
-      versions: { daynight: '0.27.1', herdr: { state: 'not_running', checkedAt: WORKER_TIME }, codex: { state: 'ok', checkedAt: WORKER_TIME, value: '0.1.0' }, copilot: { state: 'not_installed', checkedAt: WORKER_TIME } },
+      versions: { daynight: '0.27.1', codex: { state: 'ok', checkedAt: WORKER_TIME, value: '0.1.0' }, copilot: { state: 'not_installed', checkedAt: WORKER_TIME } },
     },
     tasks: [{ projectId: workerId(value + 300), taskId: workerId(value + 200), claimId: workerId(value + 400), title: 'Snapshot task', projectName: 'Project', status: 'in_progress', phase: 'executing', agent: 'codex' }],
   },
 });
 export const workerPage = (items: readonly WorkerSummary[] = [workerSummary()], nextCursor: string | null = null, observedAt = WORKER_TIME): WorkerPage => ({ observedAt, items, nextCursor });
-export const workerResponse = (value: unknown, userId = WORKER_USER, status = 200): Response => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+export const workerResponse = (value: unknown, userId = WORKER_USER, status = 200): Response => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId, 'Daynight-Worker-Tool-Paths': '2' } });
 export const workerError = (status: number, userId = WORKER_USER): Response => workerResponse({ error: { code: status === 404 ? 'not_found' : 'internal', message: 'Resource error', requestId: 'worker-request' } }, userId, status);

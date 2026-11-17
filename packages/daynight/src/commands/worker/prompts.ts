@@ -4,7 +4,6 @@ import { retainedWorktreePathInScope } from "./worktrees/paths.js";
 import { canonicalId } from "../../api/parse.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
-import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, WorktreeBinding } from "./types.js";
 import type { WorkerPromptTuple } from "./prompt-source.js";
 import { assignmentInstruction, autonomousExecutionInstruction, humanInterventionInstruction, ongoingWaitInstruction, completionInstruction } from "./execution-contract.js";
@@ -26,8 +25,7 @@ export const buildWorkerPrompt = (task: ManagedAssignment, platform: TaskPlatfor
   const { configuration, worktree } = task;
   if (!path.isAbsolute(worktree.repositoryPath) || !retainedWorktreePathInScope(worktree.repositoryPath, task, worktree.worktreePath) || worktree.branch !== `daynight/${task.taskId}`) throw new Error("The managed assignment must use the task's fixed worktree and branch.");
   if (configuration.agent !== task.agent) throw new Error("The managed assignment configuration must use its recorded agent.");
-  if (configuration.agentControlMode === "web") parseProviderArguments(task.agent, configuration.args);
-  else validateHerdrAgentArguments(task.agent, configuration.args);
+  parseProviderArguments(task.agent, configuration.args);
   if (task.sessionId !== null && canonicalId(task.sessionId) !== task.sessionId) throw new Error("The native reference must be an exact session UUID.");
   const assignment = {
     serverOrigin: normalizeServerUrl(task.serverOrigin), projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,

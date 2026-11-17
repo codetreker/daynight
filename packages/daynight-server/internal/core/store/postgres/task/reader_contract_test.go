@@ -323,7 +323,7 @@ func testWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 	for number := 10; number < 14; number++ {
 		readerTask(t, database, project.ID, number, model.TaskInProgress)
 		claim := &model.WorkerClaim{ClaimID: readerID(number + 100), State: model.WorkerActive, UserID: owner, WorkerID: workerID,
-			Machine: model.WorkerMachine{ID: readerID(4), Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: readerID(number + 200), Phase: model.WorkerPreparing, ClaimedAt: time.Now().UTC()}
+			Machine: model.WorkerMachine{ID: readerID(4), Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: readerID(number + 200), Phase: model.WorkerPreparing, ClaimedAt: time.Now().UTC()}
 		if number < 12 {
 			claim.UserID = readerID(5)
 		}
@@ -789,7 +789,7 @@ func testAutomaticCandidatesFilterBeforePagination(t *testing.T, database *postg
 	owner, workerID := readerID(100), readerID(101)
 	for _, index := range []int{0, 1, 4} {
 		claim := &model.WorkerClaim{ClaimID: readerID(110 + index), State: model.WorkerActive, UserID: owner, WorkerID: workerID,
-			Machine: model.WorkerMachine{ID: readerID(102), Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: readerID(120 + index), Phase: model.WorkerPreparing, ClaimedAt: instant}
+			Machine: model.WorkerMachine{ID: readerID(102), Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: readerID(120 + index), Phase: model.WorkerPreparing, ClaimedAt: instant}
 		readerPutProperty(t, database, children[index].ID, "worker", readerTaskProperties(t, claim)["worker"])
 	}
 	if err := database.ReadSnapshot(context.Background(), func(scope SnapshotScope) error {

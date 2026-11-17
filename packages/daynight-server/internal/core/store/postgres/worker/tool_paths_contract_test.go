@@ -97,7 +97,6 @@ func TestWorkerToolPathsJSONBRoundtripLegacyAndRollback(t *testing.T) {
 			return err
 		}
 		bad := value
-		bad.ToolPaths.Herdr = toolChoice("/local/herdr")
 		bad.Projects = []model.WorkerProjectConfiguration{{ProjectID: testutil.QueryID(4), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}}}
 		_, err := s.WorkerDAO().SetWorkerConfiguration(ctx, user, id, 9, bad)
 		return err
@@ -111,7 +110,7 @@ func TestWorkerToolPathsJSONBRoundtripLegacyAndRollback(t *testing.T) {
 	}
 	if err := database.ReadSnapshot(ctx, func(s store.SnapshotScope) error {
 		got, err := s.WorkerDAO().WorkerConfiguration(ctx, user, id)
-		if err == nil && (got.Desired.Revision != "8" || got.Desired.Value.ToolPaths.Herdr != nil) {
+		if err == nil && (got.Desired.Revision != "8") {
 			t.Fatalf("encoding failure partially adopted paths: %+v", got)
 		}
 		return err
@@ -168,7 +167,7 @@ func TestWorkerToolPathsLockedReadBothAdoptionOrders(t *testing.T) {
 			if webFirst {
 				chosen.ToolPaths.Codex = toolChoice("/cloud/codex")
 			} else {
-				chosen.ToolPaths = model.WorkerToolPaths{Codex: toolChoice("/local/codex"), Copilot: toolChoice("/local/copilot"), Herdr: &model.ToolPathChoice{Kind: "auto"}}
+				chosen.ToolPaths = model.WorkerToolPaths{Codex: toolChoice("/local/codex"), Copilot: toolChoice("/local/copilot")}
 			}
 			if _, err := firstDAO.SetWorkerConfiguration(ctx, user, id, 8, chosen); err != nil {
 				t.Fatal(err)
@@ -189,7 +188,6 @@ func TestWorkerToolPathsLockedReadBothAdoptionOrders(t *testing.T) {
 				// The Core adoption test owns the merge decision; this write proves its complete result persists under the same lock.
 				final := chosen
 				final.ToolPaths.Copilot = toolChoice("/local/copilot")
-				final.ToolPaths.Herdr = &model.ToolPathChoice{Kind: "auto"}
 				if _, err := pgworker.NewWriter(second).SetWorkerConfiguration(ctx, user, id, 9, final); err != nil {
 					t.Fatal(err)
 				}

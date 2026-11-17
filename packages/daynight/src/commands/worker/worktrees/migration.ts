@@ -2,7 +2,6 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFi
 import { lstat, open, readFile, readdir, realpath, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import type { Operation } from "../../../api/operation.js";
 import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
@@ -12,11 +11,7 @@ import { decodeStrictJson } from "../../../strict-json.js";
 import { sameResourceOwner } from "../resource-owner.js";
 import { parseWebTaskV1 } from "../backends/web-record.js";
 import type { LocalTask as WebTask } from "../backends/web-types.js";
-import { isHerdrNeverStarted, parseHerdrLifecycleRecord } from "../herdr/lifecycle-store.js";
-import type { HerdrLifecycleRecord } from "../herdr/lifecycle-types.js";
-import type { HerdrRetainedResource } from "../herdr/resource-types.js";
-import { hasConfirmedHerdrResourceDeletion } from "../resource-disposal.js";
-import { readRegistrationIndex } from "../worktree-scan.js";
+import { readRegistrationIndex, registrationsFor } from "../worktree-scan.js";
 import { ambiguousMissingGitTargets, resolveGitDirectory, resolveGitFile } from "../worktree-paths.js";
 import type { ResourceOwner } from "../types.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./manifest.js";
@@ -27,19 +22,7 @@ export type MigrationSources = {
   listSchedules(): Promise<readonly ResourceOwner[]> | readonly ResourceOwner[];
   /** Complete validated Web records from both unfinished and completed store listings. */
   listWebTasks(): Promise<readonly WebTask[]> | readonly WebTask[];
-  /** Complete original Herdr lifecycles from the lifecycle store. */
-  listHerdrLifecycles(): Promise<readonly HerdrLifecycleRecord[]> | readonly HerdrLifecycleRecord[];
-  /**
-   * Bindings from every workspace pane in tasks.listResources(operation) and
-   * every pendingStops().context.cwd. An unavailable or partial observation,
-   * workspace without panes, missing cwd, or inconsistent cwd must throw. An
-   * adapter's error fallback to an empty list is not a complete observation.
-   */
-  listHerdrBindings(): Promise<readonly { owner: ResourceOwner; cwd: string }[]> | readonly { owner: ResourceOwner; cwd: string }[];
-  /** Verified never-started retirements from the same lifecycle store's listRetired(). */
-  listHerdrRetired(): Promise<readonly HerdrLifecycleRecord[]> | readonly HerdrLifecycleRecord[];
-  /** Complete retained-resource projections from the original Herdr archive. */
-  listHerdrResources(): Promise<readonly HerdrRetainedResource[]> | readonly HerdrRetainedResource[];
+
 };
 export type MigrationCheckpoint = "manifest-published" | "unlocked" | "sidecar-removed" | "format-published";
 export type MigrationOptions = {
@@ -156,7 +139,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     if (durable) syncDurableDirectory(manifestDir);
     return true;
   };
-  const activeFormat = readFormat(false);
+  readFormat(false);
   if (namespaceExists) {
     // The durable writer may be interrupted before rename. Only its private,
     // single-link format temporaries can be retired; they are not owner evidence.
@@ -168,11 +151,6 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     for (const name of temporary) await unlink(path.join(manifestDir, name));
     // Also retry the barrier when a prior unlink succeeded but its sync failed.
     syncDurableDirectory(manifestDir);
-  }
-  if (activeFormat) {
-    ensureDurableDirectory(parent); ensureDurableDirectory(manifestDir);
-    readFormat(true);
-    return store.list();
   }
   const repo = { root, commonDirectory: common, rootIdentity, commonIdentity };
   const readers = { directory, ordinaryFile, markerOwner };
@@ -201,9 +179,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
   };
   const collect = async () => {
     operation.check();
-    const [schedules, rawWeb, rawHerdr, legacyHerdr, rawRetired, resources] = await Promise.all([
-      sources.listSchedules(), sources.listWebTasks(), sources.listHerdrLifecycles(), sources.listHerdrBindings(), sources.listHerdrRetired(), sources.listHerdrResources(),
-    ]);
+    const [schedules, rawWeb] = await Promise.all([sources.listSchedules(), sources.listWebTasks()]);
     const values: WorktreeManifest[] = [];
     const identities = new Map<string, ResourceOwner>(), worktreeIds = new Map<string, ResourceOwner>();
     const observe = (input: ResourceOwner): ResourceOwner => {
@@ -236,9 +212,6 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
       values.push({ schemaVersion: 1, ...owner, directoryName });
     };
     const web = rawWeb.map(task => parseWebTaskV1(structuredClone(task)));
-    const herdr = rawHerdr.map(record => parseHerdrLifecycleRecord(structuredClone(record)));
-    const retired = rawRetired.map(record => parseHerdrLifecycleRecord(structuredClone(record)));
-    const lifecycleOwners = new Map<string, { owner: ResourceOwner; record: HerdrLifecycleRecord }>();
     for (const task of web) {
       const owner = observe(task); recordBackend(owner);
       const binding = task.resources.worktree;
@@ -263,52 +236,15 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
         add(owner, await targetName(binding.worktreePath));
       }
     }
-    for (const record of herdr) {
-      const owner = observe({ ...record.owner, claimId: record.claimId });
-      canonicalWorktreeId(record.sessionId); recordBackend(owner);
-      lifecycleOwners.set(claim(owner), { owner, record });
-    }
-    const retiredKeys = new Set<string>();
-    for (const evidence of retired) {
-      const owner = observe({ ...evidence.owner, claimId: evidence.claimId }), original = lifecycleOwners.get(claim(owner));
-      if (!original || !sameResourceOwner(original.owner, owner) || !isDeepStrictEqual(original.record, evidence) || !isHerdrNeverStarted(evidence) || retiredKeys.has(claim(owner))) throw new Error("Herdr retirement does not match the original lifecycle.");
-      retiredKeys.add(claim(owner));
-    }
-    const resourceKeys = new Set<string>();
-    for (const resource of resources) {
-      const owner = observe(resource.owner), original = lifecycleOwners.get(claim(owner));
-      canonicalWorktreeId(resource.sessionId);
-      if (!original || !sameResourceOwner(original.owner, owner) || resource.sessionId !== original.record.sessionId || resource.worktreePath !== original.record.cwd || resourceKeys.has(claim(owner))) throw new Error("Herdr resource does not match its original lifecycle.");
-      if (retiredKeys.has(claim(owner))) throw new Error("Never-started retirement conflicts with a retained Herdr resource.");
-      resourceKeys.add(claim(owner));
-      if (resource.worktreeDeleted) {
-        if (!hasConfirmedHerdrResourceDeletion(resource)) throw new Error("Herdr resource deletion lacks confirmed original evidence.");
-        retiredKeys.add(claim(owner));
-      }
-    }
-    for (const { owner, record } of lifecycleOwners.values()) {
-      if (retiredKeys.has(claim(owner))) await retire(owner, record.cwd);
-      else add(owner, await targetName(record.cwd));
-    }
-    const legacy = new Map<string, { owner: ResourceOwner; cwd: string }>();
-    for (const binding of legacyHerdr) {
-      const owner = observe(binding.owner), original = lifecycleOwners.get(claim(owner)), prior = legacy.get(claim(owner));
-      if (retiredOwners.has(claim(owner)) || backendClaims.has(claim(owner)) && !original
-        || original && original.record.cwd !== binding.cwd || prior && (!sameResourceOwner(prior.owner, owner) || prior.cwd !== binding.cwd)) throw new Error("Legacy Herdr binding conflicts with original execution evidence.");
-      legacy.set(claim(owner), { owner, cwd: binding.cwd });
-      add(owner, await targetName(binding.cwd));
-    }
-    for (const value of store.list()) add(value, value.directoryName);
     const index = await readRegistrationIndex(repo, readers, operation);
-    for (const entry of index.entries) {
-      if (entry.errors.length) throw entry.errors[0];
-      if (!entry.managed) continue;
-      if (entry.owner === null || entry.physicalPointer === null || entry.common === null) throw new Error("Incomplete Worker Git registration.");
-      const expected = await resolveGitFile(path.join(namespace, entry.owner.taskId), ".git");
-      if (entry.physicalPointer.path !== expected.path || await realpath(entry.common) !== canonicalCommon) throw new Error("Worker registration points outside its original repository or task path.");
-      add(entry.owner, entry.owner.taskId);
+    for (const { owner } of retiredOwners.values()) {
+      const manifest = store.read(owner.worktreeId);
+      if (manifest !== null && sameResourceOwner(manifest, owner)) throw new Error("Completed Web execution still has its original manifest.");
+      if (index.entries.some(entry => entry.owner !== null && sameResourceOwner(entry.owner, owner))) throw new Error("Completed Web execution still has its original Git lock.");
     }
     for (const input of schedules) {
+      const matching = web.find(task => sameResourceOwner(task, input));
+      if (!matching) continue;
       const owner = observe(input);
       if (retiredOwners.has(claim(owner))) continue;
       const found = values.find(value => value.worktreeId === owner.worktreeId || claim(value) === claim(owner));
@@ -321,6 +257,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     for (const manifest of values) {
       operation.check();
       const leaf = path.join(namespace, manifest.directoryName);
+      await registrationsFor(index, leaf, readers);
       const leafIdentity = checkNamespace === null ? null : await directory(leaf);
       const pointer = await resolveGitFile(leaf, ".git");
       if (index.entries.some(entry => entry.physicalPointer && ambiguousMissingGitTargets(pointer, entry.physicalPointer))) throw new Error("Ambiguous missing Git registration targets.");
@@ -330,6 +267,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
       if (entry === null) {
         if (leafIdentity !== null && (await readdir(leaf)).length) throw new Error("Nonempty worktree has no associated Git registration.");
       } else {
+        if (entry.errors.length) throw entry.errors[0];
         if (entry.marker !== null && (!entry.managed || entry.owner === null || !sameResourceOwner(entry.owner, manifest))) throw new Error("Worktree has a foreign Git lock.");
         const commonPointer = entry.common ?? await ordinaryFile(path.join(entry.directory, "commondir"));
         if (commonPointer === null) throw new Error("Git registration has no common directory.");
@@ -356,7 +294,7 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
   const initial = await collect();
   ensureDurableDirectory(parent); ensureDurableDirectory(manifestDir);
   for (const { manifest } of initial) {
-    operation.check(); store.publish(manifest); await options.checkpoint?.("manifest-published", manifest);
+    operation.check(); store.publishKnown(manifest); await options.checkpoint?.("manifest-published", manifest);
   }
   for (const { manifest } of initial) {
     const found = store.read(manifest.worktreeId);
@@ -412,5 +350,5 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
   writeDurableJson(format, { version: 1 });
   await options.checkpoint?.("format-published");
   if (!readFormat(true)) throw new Error("Worktree format did not read back.");
-  return store.list();
+  return final.map(({ manifest }) => manifest);
 };

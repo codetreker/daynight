@@ -20,7 +20,7 @@ const missing = (error: unknown) => error instanceof Error && "code" in error &&
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const metadataLimit = 1024 * 1024;
 const prefixLimit = 4096;
-type Tool = "codex" | "copilot" | "herdr";
+type Tool = "codex" | "copilot";
 type Package = { root: string; manifestPath: string; value: Record<string, unknown>; artifact: LauncherArtifact };
 
 const read = async (file: string, operation: Operation, prefix = false): Promise<Buffer> => {

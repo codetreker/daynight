@@ -9,26 +9,24 @@ import type { WorkerReadAdmission } from './workers';
 
 export type WorkerConfigurationNative = { readonly agent: WorkerAgent; readonly model: string | null; readonly args: readonly string[] };
 export type WorkerConfigurationOverrides = { readonly agent?: WorkerAgent; readonly model?: string | null; readonly args?: readonly string[] };
-export type WorkerControlMode = 'herdr' | 'web';
 export type WorkerConfigurationValue = {
   readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean;
-  readonly agentControlMode?: WorkerControlMode | null;
   readonly toolPaths?: WorkerCloudToolPaths;
   readonly native: WorkerConfigurationNative;
   readonly projects: readonly { readonly projectId: string; readonly nativeOverrides: WorkerConfigurationOverrides }[];
 };
-export type WorkerConfigurationDesired = { readonly revision: string; readonly updatedAt: string; readonly value: WorkerConfigurationValue; readonly document?: ConfigurationDocument };
+export type WorkerConfigurationDesired = { readonly revision: string; readonly updatedAt: string; readonly value: WorkerConfigurationValue; readonly document?: ConfigurationDocument; readonly unsupportedFields?: readonly string[] };
 export type WorkerConfigurationFailure = {
   readonly code: 'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'invalid_configuration' | 'io_error' | 'unavailable';
   readonly category: 'validation' | 'repository' | 'agent' | 'runtime' | 'storage';
   readonly phase: 'validate' | 'prepare' | 'apply' | 'stop' | 'persist'; readonly occurredAt: string;
 };
 export type WorkerConfigurationKey =
-  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'agentControlMode' | 'native' }
+  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'native' }
   | { readonly kind: 'projectPreparation' | 'projectRemoval' | 'projectNative'; readonly projectId: string };
 export type WorkerConfigurationOutcome = {
   readonly key: WorkerConfigurationKey; readonly targetRevision: string;
-  readonly appliedValue: number | WorkerConfigurationNative | WorkerControlMode | boolean | null;
+  readonly appliedValue: number | WorkerConfigurationNative | boolean | null;
   readonly state: 'pending' | 'applying' | 'applied' | 'error';
   readonly error: WorkerConfigurationFailure | null; readonly lastFailure: WorkerConfigurationFailure | null; readonly nextAttemptAt: string | null;
 };
@@ -39,7 +37,6 @@ export type WorkerConfigurationObservation = {
 export type WorkerConfigurationResource = {
   readonly desired: WorkerConfigurationDesired | null; readonly observationRevision: string; readonly observation: WorkerConfigurationObservation | null;
   readonly document?: ConfigurationDocument;
-  readonly controlModeSupported?: boolean;
   readonly toolPathsSupported?: boolean;
 };
 
@@ -50,7 +47,7 @@ const fields = (value: unknown, names: readonly string[], optional = false, allo
 };
 const knownToolPaths = (value: unknown): unknown => {
   const data = record(value);
-  return Object.fromEntries(['codex', 'copilot', 'herdr'].filter(key => Object.hasOwn(data, key)).map(key => {
+  return Object.fromEntries(['codex', 'copilot'].filter(key => Object.hasOwn(data, key)).map(key => {
     const raw = data[key];
     if (raw === null) return [key, null];
     const choice = record(raw);
@@ -86,10 +83,9 @@ const overrides = (value: unknown): WorkerConfigurationOverrides => {
     ...(Object.hasOwn(data, 'args') ? { args: array(data.args, text) } : {}),
   };
 };
-export const parseWorkerConfigurationValue = (value: unknown, options: WorkerConfigurationCapabilityInput = { controlMode: Object.hasOwn(record(value), 'agentControlMode'), toolPaths: Object.hasOwn(record(value), 'toolPaths') }): WorkerConfigurationValue => {
-  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported } = workerConfigurationCapabilities(options);
-  const data = fields(value, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'projects', ...(controlModeSupported ? ['agentControlMode'] : []), ...(toolPathsSupported ? ['toolPaths'] : [])], false, true);
-  if (!controlModeSupported && Object.hasOwn(data, 'agentControlMode') || !toolPathsSupported && Object.hasOwn(data, 'toolPaths')) return malformed();
+export const parseWorkerConfigurationValue = (value: unknown, options: WorkerConfigurationCapabilityInput = { toolPaths: Object.hasOwn(record(value), 'toolPaths') }): WorkerConfigurationValue => {
+  const { toolPaths: toolPathsSupported } = workerConfigurationCapabilities(options);
+  const data = fields(value, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'projects', ...(toolPathsSupported ? ['toolPaths'] : [])], false, true);
   const projects = array(data.projects, value => {
     const project = fields(value, ['projectId', 'nativeOverrides'], false, true);
     return { projectId: id(project.projectId), nativeOverrides: overrides(project.nativeOverrides) };
@@ -97,7 +93,6 @@ export const parseWorkerConfigurationValue = (value: unknown, options: WorkerCon
   if (new Set(projects.map(project => project.projectId)).size !== projects.length) return malformed();
   return { maxConcurrent: integer(data.maxConcurrent, 1), pollIntervalMs: integer(data.pollIntervalMs, 1, 2_147_483_647), recoveryLimit: integer(data.recoveryLimit, 0), preferPlatformSpecificTasks: boolean(data.preferPlatformSpecificTasks),
     ...(toolPathsSupported ? { toolPaths: parseWorkerCloudToolPaths(knownToolPaths(data.toolPaths)) } : {}),
-    ...(controlModeSupported ? { agentControlMode: data.agentControlMode === null ? null : choice(data.agentControlMode, ['herdr', 'web'] as const) } : {}),
     native: parseConfigurationNative(data.native), projects };
 };
 const failure = (value: unknown): WorkerConfigurationFailure | null => {
@@ -106,7 +101,7 @@ const failure = (value: unknown): WorkerConfigurationFailure | null => {
   return { code: choice(data.code, ['not_found', 'permission_denied', 'timeout', 'command_failed', 'invalid_output', 'invalid_configuration', 'io_error', 'unavailable']),
     category: choice(data.category, ['validation', 'repository', 'agent', 'runtime', 'storage']), phase: choice(data.phase, ['validate', 'prepare', 'apply', 'stop', 'persist']), occurredAt: configurationTimestamp(data.occurredAt) };
 };
-const outcome = (value: unknown, controlModeSupported: boolean): WorkerConfigurationOutcome => {
+const outcome = (value: unknown): WorkerConfigurationOutcome => {
   const data = fields(value, ['key', 'targetRevision', 'appliedValue', 'state', 'error', 'lastFailure', 'nextAttemptAt'], false, true);
   const rawKey = record(data.key);
   const projectKind = rawKey.kind === 'projectPreparation' || rawKey.kind === 'projectRemoval' || rawKey.kind === 'projectNative';
@@ -114,7 +109,7 @@ const outcome = (value: unknown, controlModeSupported: boolean): WorkerConfigura
   if (!projectKind && Object.hasOwn(rawKey, 'projectId')) return malformed();
   const key: WorkerConfigurationKey = projectKind
     ? { kind: choice(rawKey.kind, ['projectPreparation', 'projectRemoval', 'projectNative']), projectId: id(rawKey.projectId) }
-    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', ...(controlModeSupported ? ['agentControlMode' as const] : [])]) };
+    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native']) };
   let appliedValue: WorkerConfigurationOutcome['appliedValue'] = null;
   if (data.appliedValue !== null) {
     switch (key.kind) {
@@ -122,7 +117,6 @@ const outcome = (value: unknown, controlModeSupported: boolean): WorkerConfigura
       case 'pollIntervalMs': appliedValue = integer(data.appliedValue, 1, 2_147_483_647); break;
       case 'recoveryLimit': appliedValue = integer(data.appliedValue, 0); break;
       case 'preferPlatformSpecificTasks': appliedValue = boolean(data.appliedValue); break;
-      case 'agentControlMode': appliedValue = choice(data.appliedValue, ['herdr', 'web'] as const); break;
       case 'native': case 'projectNative': appliedValue = parseConfigurationNative(data.appliedValue); break;
       case 'projectPreparation': case 'projectRemoval': if (data.appliedValue !== true) return malformed(); appliedValue = true;
     }
@@ -133,34 +127,42 @@ const outcome = (value: unknown, controlModeSupported: boolean): WorkerConfigura
   return { key, targetRevision: parseConfigurationRevision(data.targetRevision), appliedValue, state, error, lastFailure: failure(data.lastFailure), nextAttemptAt };
 };
 export const parseWorkerConfiguration = (value: unknown, options: WorkerConfigurationCapabilityInput = false): WorkerConfigurationResource => {
-  const { controlMode: controlModeSupported, toolPaths: toolPathsSupported } = workerConfigurationCapabilities(options);
+  const { toolPaths: toolPathsSupported } = workerConfigurationCapabilities(options);
   const data = fields(value, ['desired', 'observationRevision', 'observation'], false, true);
   const observationRevision = parseConfigurationRevision(data.observationRevision, true);
   let desired: WorkerConfigurationDesired | null = null, observation: WorkerConfigurationObservation | null = null;
   if (data.desired !== null) {
     const raw = fields(data.desired, ['revision', 'updatedAt', 'value'], false, true);
-    desired = { revision: parseConfigurationRevision(raw.revision), updatedAt: configurationTimestamp(raw.updatedAt), value: parseWorkerConfigurationValue(raw.value, options) };
+    const target = record(raw.value), unsupportedFields: string[] = [];
+    if (Object.hasOwn(target, 'agentControlMode')) unsupportedFields.push('agentControlMode');
+    const rawPaths = target.toolPaths;
+    const validPaths = rawPaths !== null && typeof rawPaths === 'object' && !Array.isArray(rawPaths);
+    const paths = validPaths ? record(rawPaths) : {};
+    if (!validPaths) unsupportedFields.push('toolPaths');
+    else for (const key of ['codex', 'copilot']) if (!Object.hasOwn(paths, key)) unsupportedFields.push(`toolPaths.${key}`);
+    for (const key of Object.keys(paths)) if (key !== 'codex' && key !== 'copilot') unsupportedFields.push(`toolPaths.${key}`);
+    const editable = { ...target, toolPaths: { codex: paths.codex ?? null, copilot: paths.copilot ?? null } };
+    desired = { revision: parseConfigurationRevision(raw.revision), updatedAt: configurationTimestamp(raw.updatedAt), value: parseWorkerConfigurationValue(editable, { toolPaths: true }), ...(unsupportedFields.length ? { unsupportedFields } : {}) };
   }
   if (data.observation !== null) {
     const raw = fields(data.observation, ['baseRevision', 'desiredRevision', 'items', 'reportedAt'], false, true);
-    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode', 'projectPreparation', 'projectRemoval', 'projectNative'];
+    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'projectPreparation', 'projectRemoval', 'projectNative'];
     const desiredRevision = parseConfigurationRevision(raw.desiredRevision);
     const items = array(raw.items, item => {
       const entry = record(item), key = record(entry.key);
       if (typeof key.kind !== 'string') return malformed();
       if (BigInt(parseConfigurationRevision(entry.targetRevision)) > BigInt(desiredRevision)) return malformed();
-      if (key.kind === 'agentControlMode' && !controlModeSupported) return malformed();
-      return kinds.includes(key.kind) ? outcome(item, controlModeSupported) : null;
+      return kinds.includes(key.kind) ? outcome(item) : null;
     }).filter((item): item is WorkerConfigurationOutcome => item !== null);
     if (new Set(items.map(item => `${item.key.kind}/${'projectId' in item.key ? item.key.projectId : ''}`)).size !== items.length || items.some(item => BigInt(item.targetRevision) > BigInt(desiredRevision))) return malformed();
     observation = { baseRevision: parseConfigurationRevision(raw.baseRevision, true), desiredRevision, items, reportedAt: configurationTimestamp(raw.reportedAt) };
     if (desired === null || BigInt(desiredRevision) > BigInt(desired.revision) || BigInt(observation.baseRevision) + 1n !== BigInt(observationRevision)) return malformed();
   }
   if ((observationRevision === '0') !== (observation === null) || desired === null && observation !== null) return malformed();
-  return { desired, observationRevision, observation, ...(controlModeSupported ? { controlModeSupported: true } : {}), ...(toolPathsSupported ? { toolPathsSupported: true } : {}) };
+  return { desired, observationRevision, observation, ...(toolPathsSupported ? { toolPathsSupported: true } : {}) };
 };
 
-export type WorkerConfigurationWriteAdmission = WorkerReadAdmission & { readonly onDispatch?: () => void; readonly onConfirmed?: (resource: WorkerConfigurationResource) => void; readonly onRejected?: (error: ApiError) => void; readonly controlModeSupported?: boolean; readonly toolPathsSupported?: boolean };
+export type WorkerConfigurationWriteAdmission = WorkerReadAdmission & { readonly onDispatch?: () => void; readonly onConfirmed?: (resource: WorkerConfigurationResource) => void; readonly onRejected?: (error: ApiError) => void; readonly toolPathsSupported?: boolean };
 export const workerConfigurationBaseline = (resource: WorkerConfigurationResource): ConfigurationBaseline | null => resource.desired?.document === undefined ? null : configurationBaseline(resource.desired.document);
 const rememberDocument = (document: ConfigurationDocument): WorkerConfigurationResource => {
   return { ...document.known, document, desired: document.known.desired === null ? null : { ...document.known.desired, document }, observation: document.known.observation === null ? null : { ...document.known.observation, document } };
@@ -172,34 +174,32 @@ const decoder = (options: WorkerConfigurationCapabilityInput) => async (response
 const url = (workerId: string) => `/api/v1/me/workers/${requestId(workerId)}/configuration`;
 export const getWorkerConfiguration = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission & { readonly toolPathsSupported?: boolean }): Promise<WorkerConfigurationResource> => {
   const userId = requestId(admission.userId);
-  const response = await request(url(workerId), signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Control-Mode': '1', ...(admission.toolPathsSupported === true ? { 'Daynight-Worker-Tool-Paths': '1' } : {}) } });
+  const response = await request(url(workerId), signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '2' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, data => {
     if (response.status !== 200 || response.headers.get('Daynight-Worker-Configuration') !== '1') throw new ApiError('protocol', response.status);
     const toolHeader = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (toolHeader !== null && toolHeader !== '1') throw new ApiError('protocol', response.status);
+    if (toolHeader !== '2') throw new ApiError('protocol', response.status, 'worker_tool_protocol');
     return rememberDocument(data as ConfigurationDocument);
-  }, decoder({ controlMode: response.headers.get('Daynight-Worker-Control-Mode') === '1', toolPaths: admission.toolPathsSupported === true && response.headers.get('Daynight-Worker-Tool-Paths') === '1' }));
+  }, decoder({ toolPaths: true }));
 };
 export const saveWorkerConfiguration = async (workerId: string, revision: string, value: WorkerConfigurationValue | ConfigurationSubmission, signal: AbortSignal, admission: WorkerConfigurationWriteAdmission): Promise<WorkerConfigurationResource> => {
-  const supported = admission.controlModeSupported === true, toolsSupported = admission.toolPathsSupported === true;
   const userId = requestId(admission.userId), expected = parseConfigurationRevision(revision);
   const input = 'valueSource' in value ? value.known : value;
-  const validated = parseWorkerConfigurationValue(toolsSupported ? input : Object.fromEntries(Object.entries(input).filter(([key]) => key !== "toolPaths")), { controlMode: supported, toolPaths: toolsSupported });
+  const validated = parseWorkerConfigurationValue(input, { toolPaths: true });
   const submission: ConfigurationSubmission = 'valueSource' in value ? value : { baseline: { revision: expected, valueSource: JSON.stringify(validated), known: validated }, valueSource: JSON.stringify(validated), known: validated };
   if (submission.baseline.revision !== expected) throw new ApiError('protocol');
-  const response = await request(url(workerId), signal, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(supported ? { 'Daynight-Worker-Control-Mode': '1' } : {}), ...(toolsSupported ? { 'Daynight-Worker-Tool-Paths': '1' } : {}) }, body: encodeConfigurationPut(submission) }, admission.onDispatch);
+  const response = await request(url(workerId), signal, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Tool-Paths': '2' }, body: encodeConfigurationPut(submission) }, admission.onDispatch);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, data => {
     if (response.status !== 200 || response.headers.get('Daynight-Worker-Configuration') !== '1') throw new ApiError('protocol', response.status);
-    if (supported && response.headers.get('Daynight-Worker-Control-Mode') !== '1') throw new ApiError('protocol', response.status);
     const toolHeader = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (toolHeader !== null && toolHeader !== '1' || toolsSupported && toolHeader !== '1') throw new ApiError('protocol', response.status);
+    if (toolHeader !== '2') throw new ApiError('protocol', response.status, 'worker_tool_protocol');
     const resource = rememberDocument(data as ConfigurationDocument), baseline = workerConfigurationBaseline(resource);
-    if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource, { controlMode: supported, toolPaths: toolsSupported })) throw new ApiError('protocol', response.status);
+    if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource)) throw new ApiError('protocol', response.status);
     admission.onConfirmed?.(resource);
     return resource;
-  }, decoder({ controlMode: response.headers.get('Daynight-Worker-Control-Mode') === '1', toolPaths: toolsSupported && response.headers.get('Daynight-Worker-Tool-Paths') === '1' }), false, admission.onRejected);
+  }, decoder({ toolPaths: true }), false, admission.onRejected);
 };
 export const listWorkerConfigurationProjects = async (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission: WorkerReadAdmission): Promise<ProjectPage> => {
   const userId = requestId(admission.userId), parameters = new URLSearchParams();

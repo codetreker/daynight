@@ -4,39 +4,27 @@ import { getWorker, parseWorkerDetail } from '../src/api/workers';
 import { invalidateAuthRequests } from '../src/api/client';
 import { configurationResource, configurationValue, configurationResponse } from './helpers/worker-configuration';
 import { WORKER_USER, workerId, workerDetail, workerResponse } from './helpers/workers';
-const paths = {codex:{kind:'path' as const,path:'/opt/codex'},copilot:{kind:'auto' as const},herdr:null};
+const paths = {codex:{kind:'path' as const,path:'/opt/codex'},copilot:{kind:'auto' as const}};
 const admission = () => ({userId:WORKER_USER,onPrincipalMismatch:vi.fn()});
 afterEach(()=>{invalidateAuthRequests();vi.unstubAllGlobals();});
 
 describe('explicit tool API capability',()=>{
-  it('parses the tool extension independently from control mode',()=>{
+  it('uses the v2 tool contract for configuration reads and saves', async()=>{
     const resource = configurationResource('1',{...configurationValue(),toolPaths:paths});
-    expect(parseWorkerConfiguration(resource,{controlMode:false,toolPaths:true}).desired?.value.toolPaths).toEqual(paths);
-    expect(()=>parseWorkerConfiguration(resource)).toThrow();
-  });
-  it('keeps existing forms on the legacy projection and enables tools only for admitted callers',async()=>{
-    const response = configurationResponse(configurationResource('1',{...configurationValue(),toolPaths:paths}));
-    response.headers.set('Daynight-Worker-Tool-Paths','1');
-    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource())).mockResolvedValueOnce(response);
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(resource)).mockResolvedValueOnce(configurationResponse(configurationResource('2',{...configurationValue(),toolPaths:paths})));
     vi.stubGlobal('fetch',fetch);const signal=new AbortController().signal;
-    await getWorkerConfiguration(workerId(1),signal,admission());
-    const result=await getWorkerConfiguration(workerId(1),signal,{...admission(),toolPathsSupported:true});
-    expect(new Headers(fetch.mock.calls[0]![1].headers).has('Daynight-Worker-Tool-Paths')).toBe(false);
-    expect(new Headers(fetch.mock.calls[1]![1].headers).get('Daynight-Worker-Tool-Paths')).toBe('1');
-    expect(result.toolPathsSupported).toBe(true);
-  });
-  it('projects an old save without clearing cloud tools or sending their extension',async()=>{
-    const fetch=vi.fn().mockResolvedValue(configurationResponse(configurationResource('2')));vi.stubGlobal('fetch',fetch);
-    await saveWorkerConfiguration(workerId(1),'1',{...configurationValue(),toolPaths:paths},new AbortController().signal,admission());
-    expect(JSON.parse(fetch.mock.calls[0]![1].body).value).not.toHaveProperty('toolPaths');
-    expect(new Headers(fetch.mock.calls[0]![1].headers).has('Daynight-Worker-Tool-Paths')).toBe(false);
+    const result=await getWorkerConfiguration(workerId(1),signal,admission());
+    expect(result.desired?.value.toolPaths).toEqual(paths);
+    await saveWorkerConfiguration(workerId(1),'1',result.desired!.value,signal,admission());
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).value.toolPaths).toEqual(paths);
+    for (const [,init] of fetch.mock.calls) expect(new Headers(init.headers).get('Daynight-Worker-Tool-Paths')).toBe('2');
   });
   it('reads tool observations only after the detail response confirms capability',async()=>{
     const facts={schemaVersion:1,observedAt:'2026-11-11T00:00:00Z',entries:[]};
     const detail=workerDetail();const current={...detail,worker:{...detail.worker,telemetry:{...detail.worker.telemetry,toolPaths:facts}}};
     expect(()=>parseWorkerDetail(current,workerId(1))).toThrow();
     expect(parseWorkerDetail(current,workerId(1),true).worker.telemetry.toolPaths).toEqual(facts);
-    const response=workerResponse(current);response.headers.set('Daynight-Worker-Tool-Paths','1');
+    const response=workerResponse(current);response.headers.set('Daynight-Worker-Tool-Paths','2');
     vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response));
     expect((await getWorker(workerId(1),new AbortController().signal,admission())).worker.telemetry.toolPaths).toEqual(facts);
   });
@@ -56,9 +44,9 @@ it('validates public tool facts and rejects secret fields and inconsistent evide
 });
 
 it.each([String.raw`\\?\C:\tools\codex.exe`, String.raw`\\.\C:\tools\codex.exe`])('accepts adopted Windows namespace choices in configuration and telemetry: %s',path=>{
-  const adopted={codex:{kind:'path' as const,path},copilot:{kind:'auto' as const},herdr:{kind:'auto' as const}};
+  const adopted={codex:{kind:'path' as const,path},copilot:{kind:'auto' as const}};
   const resource=configurationResource('1',{...configurationValue(),toolPaths:adopted});
-  expect(parseWorkerConfiguration(resource,{controlMode:false,toolPaths:true}).desired?.value.toolPaths).toEqual(adopted);
+  expect(parseWorkerConfiguration(resource,{toolPaths:true}).desired?.value.toolPaths).toEqual(adopted);
   const time='2026-11-11T00:00:00Z';
   const actual={selection:adopted.codex,selectionKey:'a'.repeat(64),entryPath:path,executablePath:path,interpreterPath:null,source:'explicit',version:'1.2.3',checkedAt:time};
   const entry={tool:'codex',context:'web',configurationSource:'cloud',targetRevision:'1',target:adopted.codex,state:'applied',reason:null,actual,candidate:null,activeSelectionCount:0,activeSelectionsComplete:true,activeObservationError:null,activeSelections:[],error:null};

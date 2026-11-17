@@ -58,16 +58,14 @@ afterEach(async () => {
 });
 
 describe("Worker configuration bootstrap preparation", () => {
-  it("keeps current-file mode and tools in the wire bootstrap when a legacy target wins the import race", async () => {
-    const f = await fixture({ worker: { agentControlMode: "herdr" } });
+  it("keeps current-file tools in the wire bootstrap when another target wins the import race", async () => {
+    const f = await fixture();
     const manager = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity, signal: f.root.signal, applyNative: async () => {} });
     const codexPath = path.join(path.parse(process.cwd()).root, "current-tools", "codex");
-    const currentTools = { codex: { kind: "path" as const, path: codexPath }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
-    await f.write({ worker: { agentControlMode: "web", toolPaths: { codex: codexPath }, maxConcurrent: 9 } });
+    const currentTools = { codex: { kind: "path" as const, path: codexPath }, copilot: { kind: "auto" as const } };
+    await f.write({ worker: { toolPaths: { codex: codexPath }, maxConcurrent: 9 } });
     await manager.receive(null, "0");
-    // A competing target keeps its selected values; missing mode and tools adopt the independent wrappers.
-    // https://github.com/codetreker/daynight/blob/87afe5e477774b612f272c44689a8f359fd5844f/packages/daynight-server/internal/core/worker/configuration.go#L124-L143
-    const adopted: WorkerCloudDesired = { revision: "8", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", toolPaths: currentTools,
+    const adopted: WorkerCloudDesired = { revision: "8", updatedAt: workerTelemetryTime, value: { toolPaths: currentTools,
       maxConcurrent: 3, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] } };
     let wire: WorkerCloudReport | undefined;
     const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
@@ -75,20 +73,19 @@ describe("Worker configuration bootstrap preparation", () => {
       return new Response(JSON.stringify({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime,
         configuration: { desired: adopted, observationRevision: "0", observationAccepted: false } }), {
         headers: { "Content-Type": "application/json", "Daynight-User-ID": identity.userId, "Daynight-Worker-Configuration": "1",
-          "Daynight-Worker-Control-Mode": "1", "Daynight-Worker-Tool-Paths": "1" },
+          "Daynight-Worker-Tool-Paths": "2" },
       });
     });
     const exchange = createWorkerConfigurationExchange({ manager, bootstrap: f.provider,
       read: async () => receivedResource({ desired: null, observationRevision: "0", observation: null }),
       send: (report, captured, current) => createApiClient({ serverUrl: identity.serverOrigin, expectedUserId: identity.userId, operation: current, fetch,
-        workerControlMode: { supported: true }, workerToolPaths: { supported: true, serverOrigin: identity.serverOrigin, userId: identity.userId },
       }).reportWorkerConfiguration(identity.workerId, report, captured),
     });
     try {
       await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: () => ({ ...workerTelemetry, taskInventory: null }) });
       expect(fetch).toHaveBeenCalledOnce();
-      expect(wire).toMatchObject({ bootstrap: { agentControlMode: "web", toolPaths: currentTools, maxConcurrent: 9 },
-        controlModeBootstrap: "web", toolPathsBootstrap: currentTools, observation: null });
+      expect(wire).toMatchObject({ bootstrap: { toolPaths: currentTools, maxConcurrent: 9 },
+        toolPathsBootstrap: currentTools, observation: null });
       expect(manager.current().desired).toEqual(adopted);
       expect(manager.current().desired!.value.maxConcurrent).toBe(3);
     } finally { await exchange.close(); await manager.stop(); }
@@ -97,15 +94,15 @@ describe("Worker configuration bootstrap preparation", () => {
   it("uses one current-file snapshot for the complete candidate and rereads the next pass", async () => {
     const entered = deferred(), release = deferred();
     const resolve = vi.fn<WorkerBootstrapProjectResolver>(async input => { entered.resolve(); await release.promise; return { id: input.projectId! }; });
-    const original = { agentControlMode: "web", agent: "codex", model: "original", args: ["--original"], maxConcurrent: 3,
+    const original = { agent: "codex", model: "original", args: ["--original"], maxConcurrent: 3,
       toolPaths: { codex: path.join(path.parse(process.cwd()).root, "original", "codex") }, repositories: [repository(3)] };
     const f = await fixture({ worker: original }, resolve); f.entry.release.push(release.resolve);
     const first = f.provider.prepare(operation()); await entered.promise;
-    await f.write({ worker: { agentControlMode: "herdr", agent: "claude", model: "replacement", maxConcurrent: 7, repositories: [] } });
+    await f.write({ worker: { agent: "claude", model: "replacement", maxConcurrent: 7, repositories: [] } });
     release.resolve();
-    expect(await first).toMatchObject({ agentControlMode: "web", maxConcurrent: 3, native: { agent: "codex", model: "original", args: ["--original"] },
+    expect(await first).toMatchObject({ maxConcurrent: 3, native: { agent: "codex", model: "original", args: ["--original"] },
       projects: [{ projectId: id(3) }], toolPaths: { codex: { kind: "path", path: original.toolPaths.codex } } });
-    expect(await f.provider.prepare(operation())).toMatchObject({ agentControlMode: "herdr", maxConcurrent: 7, native: { agent: "claude", model: "replacement" }, projects: [] });
+    expect(await f.provider.prepare(operation())).toMatchObject({ maxConcurrent: 7, native: { agent: "claude", model: "replacement" }, projects: [] });
     expect(resolve).toHaveBeenCalledOnce(); expect(f.errors).toEqual([]);
   });
 

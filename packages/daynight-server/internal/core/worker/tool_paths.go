@@ -43,11 +43,11 @@ func parseToolPathChoice(raw json.RawMessage) (*model.ToolPathChoice, error) {
 
 func parseToolPaths(raw json.RawMessage, allowNull bool) (model.WorkerToolPaths, error) {
 	var value model.WorkerToolPaths
-	fields, err := configurationObject(raw, "toolPaths", false, "codex", "copilot", "herdr")
+	fields, err := configurationObject(raw, "toolPaths", false, "codex", "copilot")
 	if err != nil {
 		return value, err
 	}
-	for tool, target := range map[string]**model.ToolPathChoice{"codex": &value.Codex, "copilot": &value.Copilot, "herdr": &value.Herdr} {
+	for tool, target := range map[string]**model.ToolPathChoice{"codex": &value.Codex, "copilot": &value.Copilot} {
 		if allowNull && configurationNull(fields[tool]) {
 			continue
 		}
@@ -66,12 +66,9 @@ func adoptToolPaths(value, bootstrap model.WorkerToolPaths) model.WorkerToolPath
 	if value.Copilot == nil {
 		value.Copilot = bootstrap.Copilot
 	}
-	if value.Herdr == nil {
-		value.Herdr = bootstrap.Herdr
-	}
 	return value
 }
 
 func clearsToolPaths(current, value model.WorkerToolPaths) bool {
-	return current.Codex != nil && value.Codex == nil || current.Copilot != nil && value.Copilot == nil || current.Herdr != nil && value.Herdr == nil
+	return current.Codex != nil && value.Codex == nil || current.Copilot != nil && value.Copilot == nil
 }

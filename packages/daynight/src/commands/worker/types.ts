@@ -1,5 +1,5 @@
 import type { ArchiveRepairCode } from "../controller/archive-error.js";
-import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
+import type { WorkerAgent } from "../../api/types.js";
 import type { ResolvedToolLaunch } from "../../platform/tool-executables.js";
 
 export type ProjectIdentity = { projectId: string };
@@ -8,21 +8,19 @@ export type ClaimIdentity = ProjectIdentity & { taskId: string; claimId: string 
 export type LocalTask = ClaimIdentity & {
   status: "pending" | "active" | "done";
   agent: WorkerAgent;
-  agentControlMode?: AgentControlMode;
+  agentControlMode?: "web";
   sessionId: string | null;
 };
 export type FrozenToolObservation = { version: string; checkedAt: string };
 export type ExecutionConfiguration = {
   agent: WorkerAgent;
-  agentControlMode?: AgentControlMode;
+  agentControlMode?: "web";
   model: string | null;
   args: readonly string[];
   recoveryLimit: number;
   validateNativeSelection?: true;
   toolLaunch?: ResolvedToolLaunch;
   toolObservation?: FrozenToolObservation;
-  herdrLaunch?: ResolvedToolLaunch;
-  herdrObservation?: FrozenToolObservation;
 };
 export type ResourceOwner = ClaimIdentity & { worktreeId: string };
 export type CleanupSchedule = {

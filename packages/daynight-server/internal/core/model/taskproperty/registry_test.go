@@ -73,11 +73,11 @@ func TestSchemaMatchesKnownValueStructures(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := workerJSON(t)
-	if worker.Type != "object" || worker.AdditionalProperties || len(worker.Required) != len(fixture) || len(worker.Properties) != len(fixture) || len(worker.AllOf) != 1 {
+	if worker.Type != "object" || worker.AdditionalProperties || len(worker.Required) != len(fixture)-1 || len(worker.Properties) != len(fixture) || len(worker.AllOf) != 2 {
 		t.Fatalf("worker schema and native object contract diverged: %#v", worker)
 	}
 	for name := range fixture {
-		if !slices.Contains(worker.Required, name) || worker.Properties[name] == nil {
+		if (name != "herdr" && !slices.Contains(worker.Required, name)) || worker.Properties[name] == nil {
 			t.Fatalf("schema omitted required worker.%s", name)
 		}
 	}

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readdir } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { WorktreeValidationError } from "./worktree-errors.js";
 import { createWorktreeManifestStore } from "./worktrees/manifest.js";
@@ -71,8 +71,21 @@ export const readRegistrationIndex = async (repository: WorkerRepository, reader
 export const registrationsFor = async (index: RegistrationIndex, target: string, readers: Readers): Promise<Registration[]> => {
   const pointer = await resolveGitFile(target, ".git");
   const result: Registration[] = [];
+  const reverse = await readers.ordinaryFile(path.join(target, ".git"));
+  const reverseDirectory = reverse?.startsWith("gitdir: ") ? await resolveGitDirectory(target, reverse.slice(8)) : null;
   for (const entry of index.entries) {
-    if (entry.physicalPointer === null && entry.errors.length > 0) throw entry.errors[0];
+    if (entry.errors.length > 0 && reverseDirectory !== null && await resolveGitDirectory(entry.directory, ".") === reverseDirectory) throw entry.errors[0];
+    if (entry.errors.length > 0 && entry.pointer !== null) {
+      const candidate = path.isAbsolute(entry.pointer) ? entry.pointer : path.join(entry.directory, entry.pointer);
+      try {
+        if (await realpath(candidate) === await realpath(path.join(target, ".git"))) throw entry.errors[0];
+      } catch (error) {
+        if (error === entry.errors[0]) throw error;
+        // A missing path with the same final worktree name can still alias the
+        // selected target through a later filesystem change.
+        if (path.basename(path.dirname(entry.pointer)) === path.basename(target)) throw entry.errors[0];
+      }
+    }
     if (entry.physicalPointer !== null && ambiguousMissingGitTargets(entry.physicalPointer, pointer)) throw new Error("Missing Git registration targets have ambiguous case spellings.");
     if (entry.physicalPointer?.path !== pointer.path) continue;
     if (entry.errors.length > 0) throw entry.errors[0];

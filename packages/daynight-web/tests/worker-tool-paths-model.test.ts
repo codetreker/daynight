@@ -3,7 +3,7 @@ import type { WorkerCloudToolPaths } from '../src/api/worker-tool-paths';
 import { configurationDraftsEqual, configurationFieldChanges, configurationValuesEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft } from '../src/features/workers/configuration/model';
 import { configurationResource, configurationValue } from './helpers/worker-configuration';
 
-const choices: WorkerCloudToolPaths = { codex: { kind: 'path', path: '/opt/工具 installation/codex ' }, copilot: { kind: 'auto' }, herdr: null };
+const choices: WorkerCloudToolPaths = { codex: { kind: 'path', path: '/opt/工具 installation/codex ' }, copilot: { kind: 'auto' } };
 const value = () => ({ ...configurationValue(), toolPaths: choices });
 
 describe('Worker tool path drafts', () => {
@@ -11,7 +11,7 @@ describe('Worker tool path drafts', () => {
     const draft = draftFromValue(value());
     expect(draft.toolPaths).toEqual(choices);
     expect(parseConfigurationDraft(draft).value).toEqual(value());
-    expect(draftFromValue(configurationValue()).toolPaths).toBeUndefined();
+    expect(draftFromValue(configurationValue()).toolPaths).toEqual({ codex: null, copilot: null });
   });
 
   it.each(['', ' ', '~/codex', './codex', '$TOOLS/codex', '/opt/codex\n', '/opt/\ud800', `/${'界'.repeat(1366)}`])('retains invalid raw input and rejects saving %j', path => {
@@ -24,29 +24,30 @@ describe('Worker tool path drafts', () => {
 
   it('checks remote platform syntax and preserves an explicit reset as distinct from an empty path', () => {
     const windows = { ...draftFromValue(value()), toolPaths: { ...choices, codex: { kind: 'path' as const, path: String.raw`C:\Tools\Codex.exe` } } };
-    expect(parseConfigurationDraft(windows, false, { platform: 'windows' }).value?.toolPaths?.codex).toEqual(windows.toolPaths.codex);
-    expect(parseConfigurationDraft(windows, false, { platform: 'linux' }).errors).toHaveProperty('toolPaths.codex', 'toolPath');
+    expect(parseConfigurationDraft(windows, { platform: 'windows' }).value?.toolPaths?.codex).toEqual(windows.toolPaths.codex);
+    expect(parseConfigurationDraft(windows, { platform: 'linux' }).errors).toHaveProperty('toolPaths.codex', 'toolPath');
     const reset = { ...windows, toolPaths: { ...choices, codex: { kind: 'auto' as const } } };
-    expect(parseConfigurationDraft(reset, false, { platform: 'linux' }).value?.toolPaths).toEqual({ codex: { kind: 'auto' }, copilot: { kind: 'auto' }, herdr: null });
+    expect(parseConfigurationDraft(reset, { platform: 'linux' }).value?.toolPaths).toEqual({ codex: { kind: 'auto' }, copilot: { kind: 'auto' } });
   });
 
   it('excludes unavailable tool edits from a legacy submission without changing the retained draft', () => {
     const draft = { ...draftFromValue(value()), toolPaths: { ...choices, codex: { kind: 'path' as const, path: '' } } };
-    expect(parseConfigurationDraft(draft, false, { toolPathsSupported: false })).toEqual({ value: configurationValue(), errors: {} });
+    const { toolPaths: _tools, ...rest } = configurationValue();
+    expect(parseConfigurationDraft(draft, { toolPathsSupported: false })).toEqual({ value: rest, errors: {} });
     expect(draft.toolPaths.codex.path).toBe('');
   });
 
   it('compares tool edits independently from unrelated invalid native fields', () => {
     const baseline = draftFromValue(value());
-    const draft = { ...baseline, native: { ...baseline.native, args: '[invalid' }, toolPaths: { ...choices, herdr: { kind: 'auto' as const } } };
+    const draft = { ...baseline, native: { ...baseline.native, args: '[invalid' }, toolPaths: { ...choices, copilot: { kind: 'path' as const, path: '/opt/copilot' } } };
     const changed = configurationFieldChanges(draft, value(), parseConfigurationDraft(draft).errors);
-    expect(changed.toolPaths).toEqual({ codex: false, copilot: false, herdr: true });
+    expect(changed.toolPaths).toEqual({ codex: false, copilot: true });
     expect(changed.native).toBe(true);
     expect(configurationDraftsEqual(baseline, draft)).toBe(false);
-    const changedTools = { ...value(), toolPaths: { ...choices, herdr: { kind: 'auto' as const } } };
+    const changedTools = { ...value(), toolPaths: { ...choices, copilot: { kind: 'path' as const, path: '/opt/copilot' } } };
     expect(configurationValuesEqual(value(), changedTools)).toBe(false);
-    expect(configurationValuesEqual(value(), changedTools, true, false)).toBe(true);
-    expect(configurationDraftsEqual(baseline, draftFromValue(changedTools), true, false)).toBe(true);
+    expect(configurationValuesEqual(value(), changedTools, false)).toBe(true);
+    expect(configurationDraftsEqual(baseline, draftFromValue(changedTools), false)).toBe(true);
   });
 
   it('retains the highest desired revision while tracking current tool capability separately', () => {

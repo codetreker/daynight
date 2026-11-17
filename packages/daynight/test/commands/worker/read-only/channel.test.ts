@@ -156,9 +156,9 @@ const modelChannel = () => {
   const tools = new ToolSelectionManager({ cwd: process.cwd(), environment: {}, readActiveSelections: () => [],
     resolve: async input => ({ ...frozenToolLaunch(input.tool === "copilot" ? "copilot" : "codex"), source: "path" }),
     verify: async () => {}, probe: { check, cacheToken: () => token, close: async () => {} } });
-  let effective: WorkerConfigurationSnapshot["effective"] = { native: { agent: "codex", model: null, args: [] }, projects: [], agentControlMode: "web",
+  let effective: WorkerConfigurationSnapshot["effective"] = { native: { agent: "codex", model: null, args: [] }, projects: [],
     maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false };
-  let toolTargets: WorkerConfigurationToolTargets = { source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } };
+  let toolTargets: WorkerConfigurationToolTargets = { source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" } } };
   const configuration = createWorkerReadOnlyConfiguration({ current: () => ({ effective, toolTargets }), local: {}, selection: tool => {
     const launch = tools.currentSelection(tool, "web");
     return launch === undefined ? undefined : { selectionKey: launch.selectionKey, revision: token };

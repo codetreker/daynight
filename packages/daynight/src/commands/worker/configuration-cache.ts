@@ -1,18 +1,27 @@
 import { randomUUID } from "node:crypto";
+import { ProtocolError } from "../../api/validation.js";
+import { parseWorkerCloudDesired as parseActiveDesired } from "../../api/worker-configuration.js";
 import { open } from "node:fs/promises";
 import { canonicalId } from "../../api/parse.js";
-import { parseWorkerCloudItem, parseWorkerCloudRevision } from "../../api/worker-configuration.js";
-import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey } from "../../api/worker-configuration.js";
-import { receiveWorkerDesired, validateHiddenCapabilitySource, validateWorkerRemoteObservation, workerCapabilityKeys } from "../../api/worker-configuration-source.js";
+import { parseWorkerCloudItem, parseWorkerCloudRevision, parseWorkerCloudDesired } from "./configuration-legacy-wire.js";
+import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey } from "./configuration-legacy-wire.js";
+import { receiveWorkerDesired, validateWorkerRemoteObservation } from "../../api/worker-configuration-source.js";
+import { receiveLegacyWorkerDesired, validateLegacyHiddenCapability, legacyCapabilityKeys as workerCapabilityKeys } from "./configuration-legacy-source.js";
 import type { AgentControlMode } from "../../api/types.js";
 import { configurationJsonChunks, parseConfigurationJson } from "./configuration-json.js";
-import { configurationKey, configurationRetryDelays, configurationSupportsMode, freezeConfiguration, parseConfigurationDesired } from "./configuration-model.js";
+import { configurationRetryDelays, freezeConfiguration } from "./configuration-model.js";
 import type { TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity } from "./configuration-model.js";
 
-type Cache5 = Omit<WorkerConfigurationCache, "schemaVersion" | "authority" | "remoteObservation" | "hiddenCapabilitySources"> & {
+type LegacyTracked = Omit<TrackedConfigurationItem, "value"> & { readonly value: WorkerCloudItem; readonly nativeMode: AgentControlMode | null };
+type Cache5 = Omit<WorkerConfigurationCache, "schemaVersion" | "format" | "authority" | "remoteObservation" | "hiddenCapabilitySources" | "currentItems" | "retainedItems"> & {
+  readonly currentItems: readonly LegacyTracked[];
+  readonly retainedItems: readonly LegacyTracked[];
   readonly schemaVersion: 5;
   readonly authority: { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string };
 };
+const configurationKey = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
+const configurationSupportsMode = (desired: WorkerCloudDesired | null): boolean => desired !== null && Object.hasOwn(desired.value, "agentControlMode");
+const parseConfigurationDesired = (desired: WorkerCloudDesired, limits = true): WorkerCloudDesired => parseWorkerCloudDesired(desired, limits, { controlMode: Object.hasOwn(desired.value, "agentControlMode"), toolPaths: Object.hasOwn(desired.value, "toolPaths") });
 type CacheRead = { readonly cache: WorkerConfigurationCache; readonly migrated: boolean };
 type LegacyItem = { readonly value: WorkerCloudItem; readonly attempts: number; readonly failureId: number | null; readonly started: boolean };
 type LegacyCache = {
@@ -108,9 +117,9 @@ const parseLegacy = (source: Record<string, unknown>, identity: WorkerConfigurat
 
 const upgradeLegacy = (legacy: LegacyCache, identity: WorkerConfigurationIdentity): Cache5 => {
   const generation = randomUUID(), current = new Set(legacy.desired === null ? [] : requiredKeys(legacy.desired).map(configurationKey));
-  const currentItems: TrackedConfigurationItem[] = [], retainedItems: TrackedConfigurationItem[] = [];
+  const currentItems: LegacyTracked[] = [], retainedItems: LegacyTracked[] = [];
   for (const item of legacy.items) {
-    const key = configurationKey(item.value.key), tracked: TrackedConfigurationItem = {
+    const key = configurationKey(item.value.key), tracked: LegacyTracked = {
       recordId: randomUUID(), origin: { generation, targetRevision: item.value.targetRevision, source: "schema4" }, value: item.value,
       backoffStep: item.attempts, failureId: item.failureId, started: item.started,
       nativeMode: legacy.nativeModes[key] ?? null,
@@ -134,7 +143,7 @@ const actualSource = (value: unknown): TrackedConfigurationItem["actualSource"] 
   if (kind !== "observed") throw new TypeError("Worker configuration cache has invalid actual-value provenance.");
   return { kind, recordId: uuid(source.recordId), generation: uuid(source.generation), targetRevision: parseWorkerCloudRevision(source.targetRevision) };
 };
-const parseTracked = (source: unknown, controlMode: boolean): TrackedConfigurationItem => {
+const parseTracked = (source: unknown, controlMode: boolean): LegacyTracked => {
   const data = exact(source, ["recordId", "origin", "value", "backoffStep", "failureId", "started", "nativeMode", "actualSource", "blockedByRemovalId"]);
   const origin = exact(data.origin, ["generation", "targetRevision", "source"]), value = parseWorkerCloudItem(data.value, false, controlMode);
   const revision = parseWorkerCloudRevision(origin.targetRevision), backoffStep = counter(data.backoffStep, 0), failureId = data.failureId === null ? null : counter(data.failureId, 1);
@@ -149,8 +158,8 @@ const parseTracked = (source: unknown, controlMode: boolean): TrackedConfigurati
     actualSource: provenance, blockedByRemovalId: data.blockedByRemovalId === null ? null : uuid(data.blockedByRemovalId),
   };
 };
-const requireReferences = (items: readonly TrackedConfigurationItem[]): void => {
-  const byId = new Map<string, TrackedConfigurationItem>();
+const requireReferences = (items: readonly LegacyTracked[]): void => {
+  const byId = new Map<string, LegacyTracked>();
   for (const item of items) {
     if (byId.has(item.recordId)) throw new TypeError("Worker configuration cache repeats a record identity.");
     byId.set(item.recordId, item);
@@ -163,7 +172,7 @@ const requireReferences = (items: readonly TrackedConfigurationItem[]): void => 
   const complete = new Set<string>();
   for (const item of items) {
     const path = new Set<string>();
-    let current: TrackedConfigurationItem | undefined = item;
+    let current: LegacyTracked | undefined = item;
     while (current !== undefined && !complete.has(current.recordId)) {
       if (path.has(current.recordId)) throw new TypeError("Worker configuration cache removal dependencies contain a cycle.");
       path.add(current.recordId);
@@ -195,7 +204,7 @@ const parseSchema5 = (source: Record<string, unknown>, identity: WorkerConfigura
     projectionCursor: data.projectionCursor === null ? null : uuid(data.projectionCursor), currentItems, retainedItems };
 };
 
-const upgradeSchema5 = (cache: Cache5): WorkerConfigurationCache => ({
+const upgradeSchema5 = (cache: Cache5): LegacyCache6 => ({
   ...cache,
   schemaVersion: 6,
   authority: {
@@ -207,12 +216,13 @@ const upgradeSchema5 = (cache: Cache5): WorkerConfigurationCache => ({
   remoteObservation: null,
 });
 
-const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity): WorkerConfigurationCache => {
+type LegacyCache6 = Omit<WorkerConfigurationCache, "format" | "currentItems" | "retainedItems"> & { readonly currentItems: readonly LegacyTracked[]; readonly retainedItems: readonly LegacyTracked[] };
+const parseOld6 = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity): LegacyCache6 => {
   const data = exact(source, ["schemaVersion", "identity", "authority", "remoteObservation", "nextFailureId", "projectionCursor", "currentItems", "retainedItems", ...(Object.hasOwn(source, "hiddenCapabilitySources") ? ["hiddenCapabilitySources"] : [])]);
   identityMatches(data.identity, identity);
   const authority = exact(data.authority, ["generation", "desiredJson", "applicationRevision", "observationRevision"]);
   if (authority.desiredJson !== null && typeof authority.desiredJson !== "string") throw new TypeError("Worker configuration cache has an invalid desired source.");
-  const desired = authority.desiredJson === null ? null : receiveWorkerDesired(authority.desiredJson).known;
+  const desired = authority.desiredJson === null ? null : receiveLegacyWorkerDesired(authority.desiredJson).known;
   const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
   if ((desired === null) !== (applicationRevision === null) || desired !== null && BigInt(applicationRevision!) > BigInt(desired.revision)) throw new TypeError("Worker configuration cache has an invalid application revision.");
   // The execution ledger belongs to the last known target change, even when a
@@ -240,7 +250,7 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
       if (!Object.hasOwn(sources, key)) continue;
       const source = exact(sources[key], ["revision", "json"]), revision = parseWorkerCloudRevision(source.revision);
       if (typeof source.json !== "string" || BigInt(revision) > BigInt(desired.revision)) throw new TypeError("Worker configuration cache has an invalid hidden capability source.");
-      validateHiddenCapabilitySource(authority.desiredJson as string, key, source.json);
+      validateLegacyHiddenCapability(authority.desiredJson as string, key, source.json);
       Object.assign(parsed, { [key]: { revision, json: source.json } });
     }
     hiddenCapabilitySources = parsed;
@@ -253,17 +263,102 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   };
 };
 
+// Two deployed structures use version 6. The explicit format marker makes the
+// new representation unambiguous, including when both item arrays are empty.
+const parseWeb6 = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity): WorkerConfigurationCache => {
+  const data = exact(source, ["schemaVersion", "format", "identity", "authority", "remoteObservation", "nextFailureId", "projectionCursor", "currentItems", "retainedItems", ...(Object.hasOwn(source, "hiddenCapabilitySources") ? ["hiddenCapabilitySources"] : [])]);
+  identityMatches(data.identity, identity);
+  const authority = exact(data.authority, ["generation", "desiredJson", "applicationRevision", "observationRevision"]);
+  if (authority.desiredJson !== null && typeof authority.desiredJson !== "string") throw new TypeError("Worker configuration cache has an invalid desired source.");
+  const rawDesired = authority.desiredJson === null ? null : receiveWorkerDesired(authority.desiredJson);
+  const revision = rawDesired?.known.revision ?? null;
+  const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
+  if (applicationRevision !== null && (revision === null || BigInt(applicationRevision) > BigInt(revision))) throw new TypeError("Worker configuration cache has an invalid application revision.");
+  if (!Array.isArray(data.currentItems) || !Array.isArray(data.retainedItems)) throw new TypeError("Worker configuration cache items must be arrays.");
+  const parseItem = (source: unknown): TrackedConfigurationItem => {
+    const entry = exact(source, ["recordId", "origin", "value", "backoffStep", "failureId", "started", "actualSource", "blockedByRemovalId"]);
+    const item = parseTracked({ ...entry, nativeMode: null }, false);
+    const { nativeMode: _mode, ...rest } = item;
+    return rest as TrackedConfigurationItem;
+  };
+  const currentItems = data.currentItems.map(parseItem), retainedItems = data.retainedItems.map(parseItem);
+  const keys = new Set<string>();
+  for (const item of currentItems) {
+    const key = configurationKey(item.value.key);
+    if (keys.has(key) || revision === null || BigInt(item.value.targetRevision) > BigInt(revision)) throw new TypeError("Worker configuration cache has inconsistent current application results.");
+    keys.add(key);
+  }
+  if (revision === null && (applicationRevision !== null || currentItems.length !== 0)) throw new TypeError("Worker configuration cache has application results without a target.");
+  if (authority.desiredJson !== null) {
+    let desired: ReturnType<typeof parseActiveDesired> | null = null;
+    try { desired = parseActiveDesired(rawDesired!.known); } catch (error) { if (!(error instanceof ProtocolError)) throw error; }
+    if (desired !== null) {
+      if (applicationRevision !== revision) throw new TypeError("Worker configuration cache has an invalid application revision.");
+      const required = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"].map(kind => `${kind}:`);
+      const selected = new Set(desired.value.projects.map(project => project.projectId));
+      for (const projectId of selected) required.push(`projectPreparation:${projectId}`, `projectNative:${projectId}`);
+      const indexed = new Map(currentItems.map(item => [configurationKey(item.value.key), item]));
+      if (required.some(key => indexed.get(key)?.value.targetRevision !== applicationRevision) || currentItems.some(item => (item.value.key.kind === "projectPreparation" || item.value.key.kind === "projectNative") && !selected.has(item.value.key.projectId))) throw new TypeError("Worker configuration cache is missing target application results.");
+    }
+  }
+  const all = [...currentItems, ...retainedItems];
+  requireReferences(all as LegacyTracked[]);
+  const nextFailureId = counter(data.nextFailureId, 1);
+  requireFailureSequence(all, nextFailureId);
+  let remoteObservation: WorkerConfigurationCache["remoteObservation"] = null;
+  if (data.remoteObservation !== null) {
+    const remote = exact(data.remoteObservation, ["observationRevision", "json"]);
+    const observed = parseWorkerCloudRevision(remote.observationRevision);
+    if (typeof remote.json !== "string") throw new TypeError("Worker configuration cache has an invalid remote observation.");
+    validateWorkerRemoteObservation(remote.json, observed);
+    remoteObservation = { observationRevision: observed, json: remote.json };
+  }
+  if (Object.hasOwn(data, "hiddenCapabilitySources")) {
+    if (authority.desiredJson === null || typeof data.hiddenCapabilitySources !== "object" || data.hiddenCapabilitySources === null || Array.isArray(data.hiddenCapabilitySources)) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
+    const sources = data.hiddenCapabilitySources as Record<string, unknown>;
+    if (Object.keys(sources).length === 0 || Object.keys(sources).some(key => !workerCapabilityKeys.includes(key as typeof workerCapabilityKeys[number]))) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
+    for (const key of workerCapabilityKeys) {
+      if (!Object.hasOwn(sources, key)) continue;
+      const saved = exact(sources[key], ["revision", "json"]), savedRevision = parseWorkerCloudRevision(saved.revision);
+      if (typeof saved.json !== "string" || revision === null || BigInt(savedRevision) > BigInt(revision)) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
+      validateLegacyHiddenCapability(authority.desiredJson, key, saved.json);
+    }
+  }
+  return { schemaVersion: 6, format: "web", identity: { ...identity }, authority: { generation: uuid(authority.generation), desiredJson: authority.desiredJson, applicationRevision, observationRevision: parseWorkerCloudRevision(authority.observationRevision, true) }, remoteObservation, nextFailureId, projectionCursor: data.projectionCursor === null ? null : uuid(data.projectionCursor), currentItems, retainedItems, ...(Object.hasOwn(data, "hiddenCapabilitySources") ? { hiddenCapabilitySources: data.hiddenCapabilitySources as NonNullable<WorkerConfigurationCache["hiddenCapabilitySources"]> } : {}) };
+};
+
+const upgradeOld = (old: LegacyCache6, desiredJson: string | null = old.authority.desiredJson): WorkerConfigurationCache => {
+  const convert = (items: readonly LegacyTracked[]): TrackedConfigurationItem[] => items.flatMap(item => {
+    if (item.value.key.kind === "agentControlMode") return [];
+    const { nativeMode, ...rest } = item;
+    if ((item.value.key.kind === "native" || item.value.key.kind === "projectNative") && nativeMode !== "web") {
+      return [{ ...rest, value: { ...item.value, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null }, actualSource: null, failureId: null, backoffStep: 0 } as TrackedConfigurationItem];
+    }
+    return [rest as TrackedConfigurationItem];
+  });
+  return { ...old, format: "web", authority: { ...old.authority, generation: randomUUID(), desiredJson }, projectionCursor: null, currentItems: convert(old.currentItems), retainedItems: convert(old.retainedItems) };
+};
+
 export const createConfigurationCache = (identity: WorkerConfigurationIdentity): WorkerConfigurationCache => freezeConfiguration({
-  schemaVersion: 6, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null,
+  schemaVersion: 6, format: "web", identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null,
   nextFailureId: 1, projectionCursor: null, currentItems: [], retainedItems: [],
 });
 export const parseConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): CacheRead => {
   if (typeof source !== "object" || source === null || Array.isArray(source)) throw new TypeError("Worker configuration cache has an invalid structure.");
-  const data = source as Record<string, unknown>, migrated = data.schemaVersion !== 6;
-  const cache = migrated
-    ? upgradeSchema5(parseSchema5(data.schemaVersion === 5 ? data : upgradeLegacy(parseLegacy(data, identity), identity) as unknown as Record<string, unknown>, identity))
-    : parseCurrent(data, identity);
-  return { cache: freezeConfiguration(cache), migrated };
+  const data = source as Record<string, unknown>;
+  if (data.schemaVersion === 6 && data.format === "web") return { cache: freezeConfiguration(parseWeb6(data, identity)), migrated: false };
+  if (Object.hasOwn(data, "format")) throw new TypeError("Worker configuration cache has an invalid format.");
+  let old: LegacyCache6;
+  let raw: string | null;
+  if (data.schemaVersion === 6) {
+    old = parseOld6(data, identity);
+    raw = old.authority.desiredJson;
+  } else {
+    const sourceDesired = data.schemaVersion === 5 ? (data.authority as Record<string, unknown>)?.desired : data.desired;
+    raw = sourceDesired === null ? null : [...configurationJsonChunks(sourceDesired)].join("");
+    old = upgradeSchema5(parseSchema5(data.schemaVersion === 5 ? data : upgradeLegacy(parseLegacy(data, identity), identity) as unknown as Record<string, unknown>, identity));
+  }
+  return { cache: freezeConfiguration(upgradeOld(old, raw)), migrated: true };
 };
 export const readConfigurationCache = async (file: string, identity: WorkerConfigurationIdentity, signal: AbortSignal): Promise<CacheRead> => {
   signal.throwIfAborted();

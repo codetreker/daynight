@@ -27,18 +27,17 @@ describe('tool path application evidence', () => {
   it('includes missing contexts in the configuration summary without promoting unused auto failures to Worker failure', () => {
     const resource = toolPathConfiguration();
     const failing = toolPathObservation('copilot', 'web', { state: 'error', error: { code: 'not_found', occurredAt: '2026-10-25T10:00:00Z' } });
-    expect(toolPathSummaryStates(resource, toolPathTelemetry(), true)).toEqual(['applied', 'applied', 'applied']);
-    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation()]), true)).toEqual(['applied', 'not_checked', 'not_checked']);
-    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation(), failing, toolPathObservation('herdr')]), true)).not.toContain('error');
+    expect(toolPathSummaryStates(resource, toolPathTelemetry(), true)).toEqual(['applied', 'applied']);
+    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation()]), true)).toEqual(['applied', 'not_checked']);
+    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation(), failing]), true)).not.toContain('error');
     expect(toolPathSummaryStates({ ...resource, desired: { ...resource.desired!, value: { ...resource.desired!.value, native: { agent: 'copilot', model: null, args: [] } } } }, toolPathTelemetry([failing]), true)).toContain('error');
     expect(toolPathSummaryStates(resource, undefined, true)).toEqual(['not_checked']);
-    expect(toolPathSummaryStates({ ...resource, desired: { ...resource.desired!, value: { ...resource.desired!.value, agentControlMode: 'herdr' } } }, toolPathTelemetry(), true)).toEqual(['applied', 'not_checked', 'applied', 'not_checked', 'applied']);
   });
 });
 
 describe('software summary entries', () => {
   it('omits only a completely empty unchecked context and preserves order and tool identity', () => {
-    const empty = toolPathObservation('codex', 'herdr', { state: 'not_checked', actual: null });
+    const empty = toolPathObservation('codex', 'web', { state: 'not_checked', actual: null });
     const actual = toolPathActual();
     const informative = [
       { ...empty, state: 'checking' as const }, { ...empty, actual }, { ...empty, candidate: actual },
@@ -51,6 +50,6 @@ describe('software summary entries', () => {
     expect(toolSoftwareEntries(toolPathTelemetry([empty, web, toolPathObservation('copilot')]), 'codex')).toEqual([web]);
     for (const entry of informative) expect(toolSoftwareEntries(toolPathTelemetry([entry]), 'codex')).toEqual([entry]);
     expect(toolSoftwareEntries(toolPathTelemetry([empty]), 'codex')).toEqual([]);
-    expect(toolSoftwareEntries(toolPathTelemetry([]), 'herdr')).toEqual([]);
+    expect(toolSoftwareEntries(toolPathTelemetry([]), 'copilot')).toEqual([]);
   });
 });

@@ -13,8 +13,8 @@ const worktreeId = "66666666-6666-6666-6666-666666666666";
 const userId = "77777777-7777-7777-7777-777777777777";
 const newClaimId = "88888888-8888-8888-8888-888888888888";
 const time = "2026-10-24T12:34:56.123456789Z";
-const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
-const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
+const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId } as const;
+const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
 const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({ type: "task", parentId: null,
   id: taskId, projectId, title: "Claimed task", description: "", tags: [], properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
@@ -53,15 +53,15 @@ afterEach(async () => {
 });
 
 describe("worker protocol negotiation", () => {
-  it("advertises the extended schema for current Herdr read and claim responses", async () => {
+  it("keeps historical reads while advertising the Web claim protocol", async () => {
     const headers: (string | string[] | undefined)[] = [];
     const origin = await listen((request, response) => {
       headers.push(request.headers["daynight-worker-protocol"]);
-      respond(response, task(claim()));
+      respond(response, task(request.method === "GET" ? { ...claim(), agentControlMode: "herdr" } : claim()));
     });
     const client = api(origin);
     await expect(client.getTask(projectId, taskId)).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
-    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "web" } } });
     expect(headers).toEqual(["2", "2"]);
   });
 });
@@ -85,7 +85,7 @@ describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
-    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
+    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", nativeSessionId: "native" }), task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
     const origin = await listen((request, response, body) => {
       requests.push({ method: request.method!, path: request.url!, body });
       const result = responses.shift();
@@ -95,7 +95,7 @@ describe("in-process worker task API", () => {
     const client = api(origin);
     const initial: ClaimWorkerTaskInput = { ...descriptor, version: max - 1n };
     await expect(client.claimWorkerTask(projectId, taskId, initial)).resolves.toMatchObject({ version: max, properties: { worker: claim() } });
-    const update = { version: 1n, claimId, phase: "executing", herdr: { paneId: "p", session: "w", workspaceId: "ws" }, nativeSessionId: "native" } as const;
+    const update = { version: 1n, claimId, phase: "executing", nativeSessionId: "native" } as const;
     await client.updateWorkerClaim(projectId, taskId, update);
     await client.completeWorkerTask(projectId, taskId, { version: 1n, claimId });
     await client.releaseWorkerClaim(projectId, taskId, { version: 1n, claimId, stoppedConfirmed: true });

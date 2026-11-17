@@ -13,7 +13,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
     executionCount: ({ count }) => `执行数：${count}`, instanceCount: ({ count }) => `实例数：${count}`, unconfirmedCount: ({ count }) => `停止未确认：${count}`,
     state: { not_checked: '等待检查', checking: '正在检查', pending: '等待应用', applied: '已应用', error: '应用失败', offline: '离线前记录', unconfirmed: '近期状态未确认' },
     source: { explicit: '显式指定', path: '自动发现', bundled: '内置运行时' }, configurationSource: { local: '本机配置', cloud: '云端配置' },
-    reason: { active_instance: '共享 Herdr 实例仍有原执行依赖，等待安全切换。', cleanup_unconfirmed: '等待确认进程清理完成。', configuration_unavailable: '当前配置尚无法检查。', report_budget_exceeded: '工具信息超出报告容量，此报告不完整。' },
+    reason: { active_instance: '等待活动执行结束。', cleanup_unconfirmed: '等待确认进程清理完成。', configuration_unavailable: '当前配置尚无法检查。', report_budget_exceeded: '工具信息超出报告容量，此报告不完整。' },
     activeError: { legacy_tool_identity_missing: '旧执行未记录工具身份。', cleanup_unknown: '部分进程的停止结果尚未确认。', inventory_unavailable: '尚无法取得完整的运行选择清单。' },
     error: { not_found: '工具文件不存在。', permission_denied: '没有访问或执行工具的权限。', not_executable: '所选文件不可执行。', invalid_path: '指定路径无效。', unsupported_launcher: '不支持此启动入口或软件包布局。', unrecognized_output: '无法识别工具版本。', incompatible_runtime: '工具不支持所需协议或能力。', probe_timeout: '工具检查超时。', cleanup_unknown: '进程清理结果尚未确认。', tool_identity_changed: '已记录的工具身份发生变化。', legacy_tool_identity_missing: '原执行未记录工具身份。', io_error: '工具文件或存储操作失败。', unavailable: '工具当前不可用。' },
   },

@@ -130,7 +130,7 @@ export const resolveToolLaunch = async (input: {
   const { tool, context } = input;
   try {
     operation.check();
-    if (!["codex", "copilot", "herdr"].includes(tool) || !["web", "herdr"].includes(context) || tool === "herdr" && context !== "herdr") throw new TypeError("Unsupported tool context.");
+    if (!["codex", "copilot"].includes(tool) || context !== "web") throw new TypeError("Unsupported tool context.");
     validateToolPath(input.cwd, "tool cwd");
     const environment = captureToolEnvironment(input.environment);
     let entryPath: string, source: ResolvedToolLaunch["source"];

@@ -47,7 +47,7 @@ sessionStartup 存在时必须是绑定当前执行身份的合法启动报告�
 
 paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
 
-paused:true 抑制 Herdr 周期 continuation ping；macOS Herdr 还在首次、待递交及恢复后的自动输入与 cleanup 提示的最终边界检查暂停。Linux/Windows legacy 的首次及待递交 assignment、恢复和 cleanup 不使用周期门禁。标记不停止已运行的 agent，不改变任务领取资格、Task/worker phase、观察、人工交互或原运行停止。解除暂停后，原生观察未改变也能重新适用正常输入条件；人工控制与显式交还仍遵守各自的协议。Web backend 当前没有周期 continuation ping。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。
+`paused:true` 表示独立暂停。Web backend 没有周期 continuation ping；该标记不停止已运行的 agent，也不改变领取资格、Task/worker phase 或人工交互。解除暂停沿用普通 Task PATCH 与版本检查。具体执行边界由[Worker 需求](daynight-worker.md)拥有，展示和解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有。
 
 ## 属性 HTTP 资源
 

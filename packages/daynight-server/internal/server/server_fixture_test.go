@@ -2375,7 +2375,7 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 	report["startup"] = map[string]any{"state": "failed", "reasonCode": "native_rejected"}
 	body := jsonBody(t, map[string]any{
 		"version": f.task.Version, "claimId": f.snapshot.ClaimID, "phase": "waiting",
-		"nativeSessionId": nil, "herdr": nil, "startupReport": report,
+		"nativeSessionId": nil, "startupReport": report,
 	})
 	currentTask := startupTaskModel(f.task)
 	value := startupReportValue(t, report)

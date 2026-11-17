@@ -19,7 +19,6 @@ import { resolveWorkerPaths } from "./paths.js";
 import { tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { openWorkerStore } from "./store.js";
 import { workerStoreFormat } from "./store-format.js";
-import { readHerdrLifecycleRecords } from "./herdr/lifecycle-store.js";
 import { createWorkerRemote } from "./remote.js";
 import { createWorkerGitManager } from "./worktrees.js";
 import type { WorktreeBinding } from "./types.js";
@@ -79,13 +78,8 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
     // Recovery cannot migrate or reset the records that establish its authority.
     currentEvidence(paths.databaseFile, workerStoreFormat);
     currentEvidence(webFile, webExecutionStoreFormat);
-    store = openWorkerStore(paths.databaseFile);
     web = openWebExecutionStore(webFile);
-    const herdrFile = path.join(paths.workerDirectory, "herdr-executions.sqlite");
-    let hasHerdr = false;
-    try { await ordinaryFile(herdrFile); hasHerdr = true; }
-    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
-    if (hasHerdr && readHerdrLifecycleRecords(herdrFile).some(record => record.owner.projectId === options.request.projectId && record.owner.taskId === options.request.taskId && record.claimId === options.request.claimId)) throw new Error("The original claim has conflicting Herdr and Web execution evidence; recovery is prohibited.");
+    store = openWorkerStore(paths.databaseFile);
     const project = store.getProject(options.request);
     if (project === null) throw new Error("Restore the original Project repository mapping before resource recovery.");
     const root = await lstat(project.localPath);

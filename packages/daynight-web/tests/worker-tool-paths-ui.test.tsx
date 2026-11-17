@@ -19,10 +19,10 @@ const setup = (initial = toolPathConfiguration()) => {
       writes.push(body.value);
       resource = { ...resource, desired: { ...resource.desired!, revision: '2', value: body.value } };
     }
-    const { controlModeSupported: _mode, toolPathsSupported: _tools, ...wire } = resource;
+    const { toolPathsSupported: _tools, ...wire } = resource;
     const response = configurationResponse(wire);
-    response.headers.set('Daynight-Worker-Control-Mode', '1');
-    response.headers.set('Daynight-Worker-Tool-Paths', '1');
+
+    response.headers.set('Daynight-Worker-Tool-Paths', '2');
     return response;
   }));
   return writes;
@@ -37,8 +37,23 @@ const expand = () => {
 };
 
 describe('Worker tool path configuration fields', () => {
+  it('shows the original unsupported target and replaces it only when the user saves', async () => {
+    const initial = toolPathConfiguration();
+    const old = { ...initial, desired: { ...initial.desired!, value: { ...initial.desired!.value, agentControlMode: 'herdr', toolPaths: { ...initial.desired!.value.toolPaths!, herdr: { kind: 'auto' } } } } };
+    const writes = setup(old); mount(); await flush();
+    expect(screen.getByText('Configuration needs correction')).toBeInTheDocument();
+    expect(screen.getByText(/Unsupported fields:/)).toHaveTextContent('agentControlMode, toolPaths.herdr');
+    expect(screen.getByText('View original configuration')).toBeInTheDocument();
+    expect(screen.getByText(/"agentControlMode":"herdr"/)).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Control mode' })).toBeNull();
+    expect(writes).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Save configuration' })); await flush();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).not.toHaveProperty('agentControlMode');
+    expect(writes[0]!.toolPaths).toEqual({ codex: { kind: 'auto' }, copilot: { kind: 'auto' } });
+  });
   it('starts collapsed, preserves unadopted tools and saves an explicit path through the existing form', async () => {
-    const writes = setup(toolPathConfiguration('1', { codex: null, copilot: null, herdr: null }));
+    const writes = setup(toolPathConfiguration('1', { codex: null, copilot: null }));
     mount(); await flush();
     expect(screen.getByText('Tool paths', { selector: 'summary' }).closest('details')).not.toHaveAttribute('open');
     const fields = expand();
@@ -46,7 +61,7 @@ describe('Worker tool path configuration fields', () => {
     fireEvent.change(fields.getByRole('textbox', { name: 'Codex' }), { target: { value: '/opt/My Tools/工具/codex' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save configuration' })); await flush();
     expect(writes).toHaveLength(1);
-    expect(writes[0]!.toolPaths).toEqual({ codex: { kind: 'path', path: '/opt/My Tools/工具/codex' }, copilot: null, herdr: null });
+    expect(writes[0]!.toolPaths).toEqual({ codex: { kind: 'path', path: '/opt/My Tools/工具/codex' }, copilot: null });
     expect(fields.queryByText('Applied', { selector: '.status-chip' })).not.toBeInTheDocument();
   });
   it('requires an explicit reset for auto and keeps an emptied path invalid until cancelled', async () => {
@@ -64,9 +79,9 @@ describe('Worker tool path configuration fields', () => {
     expect(input).toHaveValue('');
     expect(input.closest('details')).toHaveAttribute('open');
   });
-  it('disables path editing when the Worker has not reported the capability', async () => {
+  it('keeps target paths editable before the Worker reports telemetry', async () => {
     setup(); mount(false); await flush(); const fields = expand();
-    for (const name of ['Codex', 'Copilot', 'Herdr']) expect(fields.getByRole('textbox', { name })).toBeDisabled();
+    for (const name of ['Codex', 'Copilot']) expect(fields.getByRole('textbox', { name })).toBeEnabled();
     expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toBeEnabled();
   });
 });

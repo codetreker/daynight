@@ -1,28 +1,26 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { stringify } from "yaml";
-import { projectWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import { parseWorkerCloudBootstrap, parseWorkerLocalConfiguration } from "../../../src/commands/worker/configuration-source.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 const paths = resolveWorkerPaths("/home/worker", path.posix);
-const automatic = { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } };
+const automatic = { codex: { kind: "auto" }, copilot: { kind: "auto" } };
 
 describe.each([
   ["runtime", (source: string) => parseWorkerConfiguration(source, paths, path.posix)],
   ["local source", (source: string) => parseWorkerLocalConfiguration(source, paths, path.posix)],
 ] as const)("%s tool path configuration", (_name, parse) => {
-  it.each([undefined, {}, { codex: null, copilot: null, herdr: null }])("fills all omitted or null choices with auto: %j", toolPaths => {
+  it.each([undefined, {}, { codex: null, copilot: null }])("fills all omitted or null choices with auto: %j", toolPaths => {
     expect(parse(stringify({ worker: { toolPaths } })).toolPaths).toEqual(automatic);
     expect(parse("{}").toolPaths).toEqual(automatic);
   });
 
   it("preserves every path byte without trimming, splitting, expansion or filesystem lookup", () => {
     const codex = "/missing tools/工具 $(printf x) '$HOME'/codex ";
-    const herdr = "/missing/../$HOME/~herdr";
-    expect(parse(stringify({ worker: { toolPaths: { codex, copilot: null, herdr } } })).toolPaths).toEqual({
-      codex: { kind: "path", path: codex }, copilot: { kind: "auto" }, herdr: { kind: "path", path: herdr },
+    expect(parse(stringify({ worker: { toolPaths: { codex, copilot: null } } })).toolPaths).toEqual({
+      codex: { kind: "path", path: codex }, copilot: { kind: "auto" },
     });
   });
 
@@ -61,16 +59,12 @@ describe.each([
   });
 });
 
-it("imports local choices while preserving the legacy cloud report projection", async () => {
+it("imports local choices into the cloud bootstrap", async () => {
   const codex = path.resolve("/tools/codex");
   const source = stringify({ worker: { toolPaths: { codex } } });
   const bootstrap = await parseWorkerCloudBootstrap(source, paths, async () => { throw new Error("No Projects configured."); }, new AbortController().signal);
-  const legacy = {
-    agentControlMode: "herdr", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
+  const legacy = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
     preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [],
   };
   expect(bootstrap).toEqual({ ...legacy, toolPaths: { ...automatic, codex: { kind: "path", path: codex } } });
-  expect(projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: true, toolPaths: false })).toEqual({
-    bootstrap: legacy, observation: null, controlModeBootstrap: null,
-  });
 });

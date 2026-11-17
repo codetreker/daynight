@@ -18,12 +18,11 @@ func validWorkerReportForValidation() model.WorkerReport {
 	now := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
 	return model.WorkerReport{Telemetry: model.WorkerTelemetry{
 		Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "test machine"}, Platform: model.PlatformLinux, WorkingDirectory: "/work", SampledAt: now,
-		OS:     model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: now, Value: &model.WorkerOS{Type: "Linux", Release: "6.8", Version: "kernel", Arch: "x64"}},
-		CPU:    model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: &model.WorkerCPU{Model: "CPU", LogicalProcessors: 4, UsagePercent: 12.5}},
-		Memory: model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: &model.WorkerMemory{UsedBytes: 4, TotalBytes: 8}},
-		Disk:   model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: &model.WorkerDisk{AvailableBytes: 8, TotalBytes: 16}},
-		Versions: model.WorkerVersions{Daynight: "1.0.0", Herdr: model.WorkerProbe[string]{State: "ok", CheckedAt: now, Value: workerValidationValue("0.9.5")},
-			Codex: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}, Copilot: model.WorkerProbe[string]{State: "error", CheckedAt: now, Code: workerValidationValue("timeout")}},
+		OS:       model.WorkerProbe[model.WorkerOS]{State: "ok", CheckedAt: now, Value: &model.WorkerOS{Type: "Linux", Release: "6.8", Version: "kernel", Arch: "x64"}},
+		CPU:      model.WorkerProbe[model.WorkerCPU]{State: "ok", CheckedAt: now, Value: &model.WorkerCPU{Model: "CPU", LogicalProcessors: 4, UsagePercent: 12.5}},
+		Memory:   model.WorkerProbe[model.WorkerMemory]{State: "ok", CheckedAt: now, Value: &model.WorkerMemory{UsedBytes: 4, TotalBytes: 8}},
+		Disk:     model.WorkerProbe[model.WorkerDisk]{State: "ok", CheckedAt: now, Value: &model.WorkerDisk{AvailableBytes: 8, TotalBytes: 16}},
+		Versions: model.WorkerVersions{Daynight: "1.0.0", Codex: model.WorkerProbe[string]{State: "not_installed", CheckedAt: now}, Copilot: model.WorkerProbe[string]{State: "error", CheckedAt: now, Code: workerValidationValue("timeout")}},
 	}, TaskInventory: &model.WorkerTaskInventory{ObservedAt: now, Claims: []model.WorkerTaskReference{}}}
 }
 
@@ -44,7 +43,6 @@ func TestWorkerReportValidationCanonicalCopyAndExplicitInventory(t *testing.T) {
 		t.Fatal("unknown inventory was changed or rejected", err)
 	}
 	input = validWorkerReportForValidation()
-	input.Telemetry.Versions.Herdr = model.WorkerProbe[string]{State: "not_running", CheckedAt: input.Telemetry.SampledAt}
 	input.Telemetry.OS = model.WorkerProbe[model.WorkerOS]{State: "error", CheckedAt: input.Telemetry.SampledAt, Code: workerValidationValue("io_error")}
 	if _, err := ValidateReport(input); err != nil {
 		t.Fatal("truthful collection states were rejected", err)
@@ -81,7 +79,6 @@ func TestWorkerReportValidationRejectsInvalidDomainValues(t *testing.T) {
 		"error missing code":         func(r *model.WorkerReport) { r.Telemetry.Versions.Copilot.Code = nil },
 		"error value":                func(r *model.WorkerReport) { r.Telemetry.Versions.Copilot.Value = workerValidationValue("version") },
 		"missing installation value": func(r *model.WorkerReport) { r.Telemetry.Versions.Codex.Value = workerValidationValue("version") },
-		"installed blank version":    func(r *model.WorkerReport) { r.Telemetry.Versions.Herdr.Value = workerValidationValue(" ") },
 		"inventory time":             func(r *model.WorkerReport) { r.TaskInventory.ObservedAt = time.Time{} },
 		"null claims":                func(r *model.WorkerReport) { r.TaskInventory.Claims = nil },
 		"reference project": func(r *model.WorkerReport) {
@@ -160,7 +157,6 @@ func TestWorkerReportCapacityValidationAndSnapshot(t *testing.T) {
 		{"machine", 256, func(v *model.WorkerTelemetry, s string) { v.Machine.Name = s }},
 		{"cwd", 4096, func(v *model.WorkerTelemetry, s string) { v.WorkingDirectory = s }},
 		{"daynight", 256, func(v *model.WorkerTelemetry, s string) { v.Versions.Daynight = s }},
-		{"herdr", 256, func(v *model.WorkerTelemetry, s string) { v.Versions.Herdr.Value = workerValidationValue(s) }},
 		{"codex", 256, func(v *model.WorkerTelemetry, s string) {
 			v.Versions.Codex = model.WorkerProbe[string]{State: "ok", CheckedAt: v.SampledAt, Value: workerValidationValue(s)}
 		}},

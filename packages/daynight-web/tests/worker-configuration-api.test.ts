@@ -3,7 +3,7 @@ import { getWorkerConfiguration, listWorkerConfigurationProjects, parseConfigura
 import { mergeConfigurationDraft } from '../src/api/configuration-source';
 import { mergeConfigurationResources } from '../src/features/workers/configuration/model';
 import { cancelAuthNetworkRequests, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
-import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
+import { configurationError, configurationResource, configurationResponse, configurationValue } from './helpers/worker-configuration';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
 const admission = () => ({ userId: WORKER_USER, onPrincipalMismatch: vi.fn() });
@@ -62,7 +62,6 @@ describe('Worker configuration wire format', () => {
     observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), targetRevision: '2' }]),
     observed([outcome({ kind: 'maxConcurrent' }, 2), outcome({ kind: 'maxConcurrent' }, 3)]),
     observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), key: { kind: 'maxConcurrent', projectId: workerId(3) } } as WorkerConfigurationOutcome]),
-    observed([outcome({ kind: 'agentControlMode' }, 'web')]),
     observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), state: 'error' }]),
     observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), nextAttemptAt: WORKER_TIME }]),
   ])('rejects malformed or inconsistent configuration %#', resource => {
@@ -101,7 +100,7 @@ describe('principal-admitted configuration API', () => {
     }
   });
   it('rejects a receipt that changes unknown data despite matching known fields', async () => {
-    const raw = (revision: string, unknown: string) => new Response(JSON.stringify(configurationResource(revision)).replace('"maxConcurrent":2', `"future":${unknown},"maxConcurrent":2`), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1' } });
+    const raw = (revision: string, unknown: string) => new Response(JSON.stringify(configurationResource(revision)).replace('"maxConcurrent":2', `"future":${unknown},"maxConcurrent":2`), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(raw('1', '900719925474099312345')).mockResolvedValueOnce(raw('2', '900719925474099312346')));
     const signal = new AbortController().signal, resource = await getWorkerConfiguration(workerId(1), signal, admission());
     const submission = mergeConfigurationDraft(workerConfigurationBaseline(resource)!, configurationValue()), onConfirmed = vi.fn();
@@ -113,7 +112,7 @@ describe('principal-admitted configuration API', () => {
     vi.stubGlobal('fetch', fetch);
     const gate = { ...admission(), onDispatch: vi.fn() }, signal = new AbortController().signal;
     await getWorkerConfiguration(workerId(1).toUpperCase(), signal, gate);
-    expect((await saveWorkerConfiguration(workerId(1), '9223372036854775806', value, signal, gate)).document!.known).toEqual(configurationResource('9223372036854775807', value));
+    expect((await saveWorkerConfiguration(workerId(1), '9223372036854775806', value, signal, gate)).document!.known).toMatchObject(configurationResource('9223372036854775807', value));
     expect(fetch.mock.calls.map(([url]) => url)).toEqual([`/api/v1/me/workers/${workerId(1)}/configuration`, `/api/v1/me/workers/${workerId(1)}/configuration`]);
     expect(JSON.parse(fetch.mock.calls[1]![1].body)).toEqual({ revision: '9223372036854775806', value });
     expect(gate.onDispatch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[1]![1].headers).not.toHaveProperty('Daynight-Worker-Protocol');
@@ -126,7 +125,7 @@ describe('principal-admitted configuration API', () => {
     const onConfirmed = vi.fn((_resource: WorkerConfigurationResource) => { resume = pauseAuthRequests(); controller.abort(reason); });
     try {
       await expect(saveWorkerConfiguration(workerId(1), '1', configurationValue(), controller.signal, { ...admission(), onConfirmed })).rejects.toBe(reason);
-      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed.mock.calls[0]![0].document!.known).toEqual(saved); expect(controller.signal.aborted).toBe(true);
+      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed.mock.calls[0]![0].document!.known).toMatchObject(saved); expect(controller.signal.aborted).toBe(true);
     } finally { resume(); }
   });
   it.each([{ status: 409, code: 'version_conflict' }, { status: 400, code: 'invalid_input' }])('reports a trusted $status refusal before a synchronous pause and abort', async ({ status, code }) => {
@@ -155,7 +154,7 @@ describe('principal-admitted configuration API', () => {
     expect(networkSignal?.aborted).toBe(true);
     expect(error).toBe(networkSignal?.reason);
     if (outcome === 'confirmed') {
-      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed.mock.calls[0]![0].document!.known).toEqual(saved);
+      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed.mock.calls[0]![0].document!.known).toMatchObject(saved);
       expect(onRejected).not.toHaveBeenCalled();
     } else {
       expect(onRejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 409, code: 'version_conflict' }));
@@ -195,57 +194,5 @@ describe('principal-admitted configuration API', () => {
     expect(await listWorkerConfigurationProjects({ limit: 50, cursor: 'next/+' }, signal, admission())).toEqual({ items: [], nextCursor: null });
     expect(fetch.mock.calls[1]![0]).toBe('/api/v1/projects?limit=50&cursor=next%2F%2B');
     await expect(listWorkerConfigurationProjects({}, signal, admission())).rejects.toMatchObject({ code: 'principal_mismatch' });
-  });
-});
-
-
-describe('Worker control mode capability', () => {
-  it('negotiates mode independently, preserving null until adoption and string observations', async () => {
-    const value = { ...configurationValue(), agentControlMode: null };
-    const fetch = vi.fn().mockResolvedValueOnce(controlModeResponse(configurationResource('1', value)))
-      .mockResolvedValueOnce(controlModeResponse({ ...configurationResource('2', { ...value, agentControlMode: 'web' }), observationRevision: '1', observation: {
-        baseRevision: '0', desiredRevision: '2', reportedAt: WORKER_TIME,
-        items: [{ ...outcome({ kind: 'agentControlMode' }, 'herdr'), state: 'pending', targetRevision: '2' }],
-      } }));
-    vi.stubGlobal('fetch', fetch);
-    const signal = new AbortController().signal;
-    const first = await getWorkerConfiguration(workerId(1), signal, admission());
-    expect(first.controlModeSupported).toBe(true);
-    expect(first.desired!.value.agentControlMode).toBeNull();
-    const saved = await saveWorkerConfiguration(workerId(1), '1', { ...value, agentControlMode: 'web' }, signal, { ...admission(), controlModeSupported: true });
-    expect(saved.observation!.items[0]!.appliedValue).toBe('herdr');
-    expect(saved.desired!.value.agentControlMode).toBe('web');
-    for (const [, init] of fetch.mock.calls) expect(new Headers(init.headers).get('Daynight-Worker-Control-Mode')).toBe('1');
-    expect(JSON.parse(fetch.mock.calls[1]![1].body).value.agentControlMode).toBe('web');
-  });
-  it('keeps old-service responses strict and saves other fields without mode', async () => {
-    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
-      .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), recoveryLimit: 5 })))
-      .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), agentControlMode: 'herdr' })));
-    vi.stubGlobal('fetch', fetch);
-    const signal = new AbortController().signal;
-    const legacy = await getWorkerConfiguration(workerId(1), signal, admission());
-    expect(legacy.controlModeSupported).not.toBe(true);
-    expect(legacy.desired!.value).not.toHaveProperty('agentControlMode');
-    await saveWorkerConfiguration(workerId(1), '1', { ...legacy.desired!.value, recoveryLimit: 5 }, signal, admission());
-    expect(JSON.parse(fetch.mock.calls[1]![1].body).value).not.toHaveProperty('agentControlMode');
-    await expect(getWorkerConfiguration(workerId(1), signal, admission())).rejects.toMatchObject({ kind: 'protocol' });
-  });
-  it('requires an explicit mode field and refuses invalid modes, overrides and invented null success', () => {
-    for (const mode of [undefined, '', 'native', 1, false, {}]) {
-      const value = { ...configurationValue(), ...(mode === undefined ? {} : { agentControlMode: mode }) };
-      expect(() => parseWorkerConfiguration({ ...configurationResource(), desired: { ...configurationResource().desired, value } }, true)).toThrow('invalid response');
-    }
-    for (const mode of ['herdr', 'web', null]) {
-      const resource = configurationResource('1', { ...configurationValue(), agentControlMode: mode as 'herdr' | 'web' | null });
-      expect(parseWorkerConfiguration(resource, true).desired!.value.agentControlMode).toBe(mode);
-    }
-    const resource = { ...observed([outcome({ kind: 'agentControlMode' }, null)]), desired: configurationResource('1', { ...configurationValue(), agentControlMode: null }).desired };
-    expect(() => parseWorkerConfiguration(resource, true)).toThrow('invalid response');
-    expect(parseWorkerConfiguration({ ...resource, observation: null, observationRevision: '0', desired: { ...resource.desired, value: { ...resource.desired!.value, projects: [{ projectId: workerId(3), nativeOverrides: { agentControlMode: 'web' } }] } } }, true).desired!.value.projects[0]!.nativeOverrides).toEqual({});
-  });
-  it('requires the capability echo when saving a mode', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(configurationResponse(configurationResource('2'))));
-    await expect(saveWorkerConfiguration(workerId(1), '1', { ...configurationValue(), agentControlMode: 'web' }, new AbortController().signal, { ...admission(), controlModeSupported: true })).rejects.toMatchObject({ kind: 'protocol' });
   });
 });

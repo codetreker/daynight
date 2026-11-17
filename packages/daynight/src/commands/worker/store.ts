@@ -4,34 +4,31 @@ import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { workerStoreFormat } from "./store-format.js";
 import { canonicalId } from "../../api/parse.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
-import type { AgentControlMode, Task, WorkerAgent } from "../../api/types.js";
+import type { Task, WorkerAgent } from "../../api/types.js";
 import type { ArchiveBackfillIdentity, ArchiveBackfillSchedule, ArchiveBackfillScheduleRecord, ClaimIdentity, CleanupSchedule, CleanupScheduleRecord, LocalTask, ProjectIdentity, ResourceOwner, WorkerProject } from "./types.js";
 import { parseWorkerCloudNative, type WorkerCloudNative } from "../../api/worker-configuration.js";
 import { parseResolvedToolLaunch } from "../../platform/tool-launch-record.js";
 import type { ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { parseFrozenToolObservation } from "./tool-observation.js";
 import type { FrozenToolObservation } from "./types.js";
-export type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation; herdrLaunch?: ResolvedToolLaunch; herdrObservation?: FrozenToolObservation };
+export type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation };
 const parseFrozenNative = (value: unknown): FrozenNativeConfiguration => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid frozen native configuration.");
   const data = value as Record<string, unknown>, selection = Object.hasOwn(data, "validateNativeSelection");
   if (selection && data.validateNativeSelection !== true) throw new Error("Invalid frozen native validation policy.");
-  const { validateNativeSelection: _selection, toolLaunch, toolObservation, herdrLaunch, herdrObservation, ...native } = data;
+  const { validateNativeSelection: _selection, toolLaunch, toolObservation, ...native } = data;
   const configuration = parseWorkerCloudNative(native);
   if (Object.hasOwn(data, "toolLaunch") && configuration.agent === "claude") throw new Error("Claude cannot acquire a Worker tool launch.");
   if (Object.hasOwn(data, "toolObservation") && !Object.hasOwn(data, "toolLaunch")) throw new Error("Frozen tool observation requires its original recipe.");
-  if (Object.hasOwn(data, "herdrObservation") && !Object.hasOwn(data, "herdrLaunch")) throw new Error("Frozen Herdr observation requires its original recipe.");
   return { ...configuration, ...(selection ? { validateNativeSelection: true as const } : {}),
     ...(Object.hasOwn(data, "toolLaunch") ? { toolLaunch: parseResolvedToolLaunch(toolLaunch, { tool: configuration.agent as "codex" | "copilot" }) } : {}),
-    ...(Object.hasOwn(data, "toolObservation") ? { toolObservation: parseFrozenToolObservation(toolObservation) } : {}),
-    ...(Object.hasOwn(data, "herdrLaunch") ? { herdrLaunch: parseResolvedToolLaunch(herdrLaunch, { tool: "herdr", context: "herdr" }) } : {}),
-    ...(Object.hasOwn(data, "herdrObservation") ? { herdrObservation: parseFrozenToolObservation(herdrObservation) } : {}) };
+    ...(Object.hasOwn(data, "toolObservation") ? { toolObservation: parseFrozenToolObservation(toolObservation) } : {}) };
 };
 
 export type ClaimToolReservation = ResourceOwner & {
   workerId: string;
   version: bigint;
-  agentControlMode: AgentControlMode;
+  agentControlMode: "web";
   nativeConfiguration: FrozenNativeConfiguration;
 };
 // Recovery policy remains live; only the native selection belongs to a claim.
@@ -40,8 +37,6 @@ const canonicalFrozenNative = (input: FrozenNativeConfiguration): FrozenNativeCo
   ...(input.validateNativeSelection === undefined ? {} : { validateNativeSelection: input.validateNativeSelection }),
   ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }),
   ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }),
-  ...(input.herdrLaunch === undefined ? {} : { herdrLaunch: input.herdrLaunch }),
-  ...(input.herdrObservation === undefined ? {} : { herdrObservation: input.herdrObservation }),
 });
 
 const text = (value: unknown, name: string): string => {
@@ -62,7 +57,7 @@ const agent = (value: unknown): WorkerAgent => {
   if (value !== "copilot" && value !== "codex" && value !== "claude") throw new TypeError("Worker agent must be copilot, codex or claude.");
   return value;
 };
-const mode = (value: unknown): AgentControlMode => { if (value === undefined || value === "herdr") return "herdr"; if (value === "web") return "web"; throw new TypeError("Worker control mode must be herdr or web."); };
+const mode = (value: unknown): "web" => { if (value === undefined || value === "web") return "web"; throw new TypeError("Worker control mode must be web."); };
 const projectKey = (value: ProjectIdentity): ProjectIdentity => ({ projectId: id(value.projectId, "Project ID") });
 const claimKey = (value: ClaimIdentity): ClaimIdentity => ({ ...projectKey(value), taskId: id(value.taskId, "Task ID"), claimId: id(value.claimId, "Claim ID") });
 const projectColumns = "project_id AS projectId, repo_url AS repoUrl, local_path AS localPath";
@@ -104,7 +99,6 @@ const taskVersion = (value: unknown): bigint => {
 const asClaimToolReservation = (input: ClaimToolReservation): ClaimToolReservation => {
   const configuration = canonicalFrozenNative(input.nativeConfiguration), controlMode = mode(input.agentControlMode);
   if (configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== controlMode) throw new Error("Reserved native tools differ from the requested control mode.");
-  if (configuration.herdrLaunch !== undefined && controlMode !== "herdr") throw new Error("Web claim reservations cannot acquire a Herdr launch.");
   return { ...claimKey(input), worktreeId: id(input.worktreeId, "Worktree ID"), workerId: id(input.workerId, "Worker ID"), version: taskVersion(input.version), agentControlMode: controlMode, nativeConfiguration: configuration };
 };
 const sameClaimToolReservation = (left: ClaimToolReservation, right: ClaimToolReservation): boolean =>
@@ -118,7 +112,7 @@ const asReservationRow = (row: ReservationRow): ClaimToolReservation => {
   return asClaimToolReservation({ ...row, version: BigInt(row.version), nativeConfiguration: parseFrozenNative(JSON.parse(row.configuration)) });
 };
 
-export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
+export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter; isWebCleanupOwner?: (owner: ResourceOwner) => boolean } = {}) => {
   if (typeof databaseFile === "string") absolutePath(databaseFile, "The SQLite database path");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > 60_000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
@@ -146,12 +140,13 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     return row === undefined ? null : asProject(row);
   });
   const getTask = (identity: ClaimIdentity): LocalTask | null => read(() => {
-    const row = db.prepare(`SELECT ${taskColumns} FROM tasks WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as LocalTask | undefined;
+    const row = db.prepare(`SELECT ${taskColumns} FROM tasks WHERE agent_control_mode = 'web' AND project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as LocalTask | undefined;
     return row === undefined ? null : asTask(row);
   });
   const getCleanupSchedule = (identity: ClaimIdentity): CleanupScheduleRecord | null => read(() => {
     const row = db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as CleanupScheduleRecord | undefined;
-    return row === undefined ? null : asCleanupRecord(row);
+    if (row === undefined) return null;
+    return options.isWebCleanupOwner?.(row) === true ? asCleanupRecord(row) : null;
   });
   const getArchiveBackfillSchedule = (identity: ArchiveBackfillIdentity): ArchiveBackfillScheduleRecord | null => read(() => {
     const row = db.prepare(`SELECT server_origin AS serverOrigin, execution_id AS executionId, execution_generation AS executionGeneration,
@@ -163,6 +158,7 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     if (Object.entries(owner).some(([key, value]) => row[key as keyof ArchiveBackfillIdentity] !== value)) throw new Error("Archive backfill schedule identity changed.");
     return { ...owner, ...asArchiveBackfillSchedule(row) };
   });
+  const listCleanupSchedules = (): CleanupScheduleRecord[] => read(() => (db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules ORDER BY project_id, task_id, claim_id`).all() as CleanupScheduleRecord[]).filter(owner => options.isWebCleanupOwner?.(owner) === true).map(asCleanupRecord));
   const needTask = (identity: ClaimIdentity): LocalTask => {
     const task = getTask(identity);
     if (task === null) throw new Error("The claimed task is not registered.");
@@ -173,14 +169,12 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     if (row === undefined) return null;
     const configuration = parseFrozenNative(JSON.parse(row.configuration)), task = needTask(identity);
     if (configuration.agent !== task.agent || configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== mode(task.agentControlMode)) throw new Error("Frozen native configuration differs from its original claim.");
-    if (configuration.herdrLaunch !== undefined && mode(task.agentControlMode) !== "herdr") throw new Error("Web claims cannot acquire a Herdr launch.");
     return configuration;
   });
   const freezeNativeConfiguration = (identity: ClaimIdentity, input: FrozenNativeConfiguration): FrozenNativeConfiguration => atomic(() => {
     const task = needTask(identity), configuration = canonicalFrozenNative(input), previous = getNativeConfiguration(identity);
     if (task.agent !== configuration.agent) throw new Error("Frozen configuration does not match the claimed agent.");
     if (configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== mode(task.agentControlMode)) throw new Error("Frozen tool launch does not match the claimed control mode.");
-    if (configuration.herdrLaunch !== undefined && mode(task.agentControlMode) !== "herdr") throw new Error("Web claims cannot acquire a Herdr launch.");
     if (previous !== null) {
       if (JSON.stringify(previous) !== JSON.stringify(configuration)) throw new Error("The claim's native configuration is already frozen.");
       return previous;
@@ -191,7 +185,7 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     return configuration;
   });
   const reservationForTask = (identity: { projectId: string; taskId: string }): ClaimToolReservation | null => read(() => {
-    const row = db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE project_id = @projectId AND task_id = @taskId`)
+    const row = db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE agent_control_mode = 'web' AND project_id = @projectId AND task_id = @taskId`)
       .get({ ...projectKey(identity), taskId: id(identity.taskId, "Task ID") }) as ReservationRow | undefined;
     return row === undefined ? null : asReservationRow(row);
   });
@@ -200,7 +194,7 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     if (reservation !== null && reservation.claimId !== key.claimId) throw new Error("The task has an unresolved reservation for another claim.");
     return reservation;
   });
-  const registerPending = (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null; nativeConfiguration?: FrozenNativeConfiguration }): LocalTask => atomic(() => {
+  const registerPending = (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: "web"; sessionId?: string | null; nativeConfiguration?: FrozenNativeConfiguration }): LocalTask => atomic(() => {
     const key = claimKey(input), tool = agent(input.agent);
     const sessionId = input.sessionId === undefined || input.sessionId === null ? null : id(input.sessionId, "Native session ID");
     if (getProject(key) === null) throw new Error("The project repository binding must be registered before its claimed tasks.");
@@ -221,7 +215,7 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
   return {
     close: (): void => { closeSqliteDatabase(db, { file: typeof databaseFile === "string" ? databaseFile : databaseFile.name, format: workerStoreFormat }); },
     getClaimToolReservation,
-    listClaimToolReservations: (): ClaimToolReservation[] => read(() => (db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations ORDER BY project_id, task_id`).all() as ReservationRow[]).map(asReservationRow)),
+    listClaimToolReservations: (): ClaimToolReservation[] => read(() => (db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE agent_control_mode = 'web' ORDER BY project_id, task_id`).all() as ReservationRow[]).map(asReservationRow)),
     reserveClaimTools: (input: ClaimToolReservation): ClaimToolReservation => atomic(() => {
       const reservation = asClaimToolReservation(input), previous = reservationForTask(reservation);
       if (previous !== null) {
@@ -262,10 +256,10 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
       const project = asProject(input);
       const existing = getProject(project);
       if (existing !== null && (existing.repoUrl !== project.repoUrl || existing.localPath !== project.localPath)) {
-        const unfinished = db.prepare("SELECT 1 FROM tasks WHERE project_id = @projectId AND status <> 'done' LIMIT 1").get(project);
+        const unfinished = db.prepare("SELECT 1 FROM tasks WHERE agent_control_mode = 'web' AND project_id = @projectId AND status <> 'done' LIMIT 1").get(project);
         if (unfinished !== undefined) throw new Error("An unfinished execution prevents changing its project repository binding.");
-        if (db.prepare("SELECT 1 FROM claim_tool_reservations WHERE project_id = @projectId LIMIT 1").get(project) !== undefined) throw new Error("An unresolved claim request prevents changing its project repository binding.");
-        if (db.prepare("SELECT 1 FROM cleanup_schedules WHERE project_id = @projectId LIMIT 1").get(project) !== undefined) throw new Error("Outstanding cleanup prevents changing its project repository binding.");
+        if (db.prepare("SELECT 1 FROM claim_tool_reservations WHERE agent_control_mode = 'web' AND project_id = @projectId LIMIT 1").get(project) !== undefined) throw new Error("An unresolved claim request prevents changing its project repository binding.");
+        if (listCleanupSchedules().some(schedule => schedule.projectId === project.projectId)) throw new Error("Outstanding cleanup prevents changing its project repository binding.");
       }
       db.prepare(`INSERT INTO projects(project_id, repo_url, local_path) VALUES (@projectId, @repoUrl, @localPath)
         ON CONFLICT(project_id) DO UPDATE SET repo_url = excluded.repo_url, local_path = excluded.local_path`).run(project);
@@ -284,10 +278,13 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
       db.prepare("DELETE FROM archive_backfill_schedules WHERE server_origin = @serverOrigin AND execution_id = @executionId").run(archiveBackfillKey(identity));
     }),
     getCleanupSchedule,
-    listCleanupSchedules: (): CleanupScheduleRecord[] => read(() => (db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules ORDER BY project_id, task_id, claim_id`).all() as CleanupScheduleRecord[]).map(asCleanupRecord)),
+    listCleanupSchedules,
     saveCleanupSchedule: (owner: ResourceOwner, state: CleanupSchedule): CleanupScheduleRecord => atomic(() => {
       const record = { ...claimKey(owner), worktreeId: id(owner.worktreeId, "Worktree ID"), ...asCleanupState(state) };
       if (getProject(record) === null) throw new Error("The project repository binding must be registered before cleanup.");
+      if (options.isWebCleanupOwner?.(record) !== true) throw new Error("Cleanup requires matching original Web execution evidence.");
+      const raw = db.prepare(`SELECT ${cleanupColumns} FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(record)) as CleanupScheduleRecord | undefined;
+      if (raw !== undefined && options.isWebCleanupOwner?.(raw) !== true) throw new Error("An unsupported cleanup schedule already owns this claim.");
       const previous = getCleanupSchedule(record);
       if (previous !== null) {
         if (previous.worktreeId !== record.worktreeId) throw new Error("The cleanup claim is already bound to a different worktree.");
@@ -300,13 +297,14 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
       return getCleanupSchedule(record)!;
     }),
     deleteCleanupSchedule: (identity: ClaimIdentity): void => atomic(() => {
+      if (getCleanupSchedule(identity) === null) return;
       db.prepare("DELETE FROM cleanup_schedules WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId").run(claimKey(identity));
     }),
     getTask,
     getNativeConfiguration,
     freezeNativeConfiguration,
-    listTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
-    listUnfinishedTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
+    listTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE agent_control_mode = 'web' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
+    listUnfinishedTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE agent_control_mode = 'web' AND status <> 'done' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
     registerPending,
     activateTask: (identity: ClaimIdentity): LocalTask => atomic(() => {
       const task = needTask(identity);

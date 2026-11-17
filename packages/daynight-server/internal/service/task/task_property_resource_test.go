@@ -293,7 +293,7 @@ func propertyActiveTask(t *testing.T) model.Task {
 	target.StartedAt = pointer(target.UpdatedAt)
 	target.AllowAgents = true
 	descriptor := workerDescriptor()
-	descriptor.AgentControlMode = model.AgentControlModeHerdr
+	descriptor.AgentControlMode = model.AgentControlModeWeb
 	claim := &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: model.WorkerActive, UserID: principal.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: target.UpdatedAt}
 	target.Properties = testWithWorker(t, target.Properties, claim)
 	return target

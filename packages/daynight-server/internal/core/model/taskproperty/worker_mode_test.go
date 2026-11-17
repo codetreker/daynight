@@ -2,6 +2,7 @@ package taskproperty_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -71,7 +72,7 @@ func TestWorkerModeCodecRejectsInvalidModesAndWebHerdrBindings(t *testing.T) {
 	}
 }
 
-func TestStoredWorkerAcceptsWebWithoutHerdrWithoutChangingAdmission(t *testing.T) {
+func TestStoredWorkerAcceptsWebWithoutHerdr(t *testing.T) {
 	worker := workerJSON(t)
 	worker["agentControlMode"] = json.RawMessage(`"web"`)
 	delete(worker, "herdr")
@@ -96,8 +97,9 @@ func TestStoredWorkerAcceptsWebWithoutHerdrWithoutChangingAdmission(t *testing.T
 		t.Fatalf("worker changed on round trip: %#v, %v", claim, err)
 	}
 	raw, _ := json.Marshal(worker)
-	if _, err := taskproperty.NormalizeValue("worker", raw); err == nil {
-		t.Fatal("new worker admission accepted omitted herdr")
+	value, err := taskproperty.NormalizeValue("worker", raw)
+	if err != nil || strings.Contains(string(value), `"herdr"`) {
+		t.Fatalf("new Web claim retained a retired field: %s %v", value, err)
 	}
 	worker["herdr"] = json.RawMessage(`{"session":"s","workspaceId":"w","paneId":"p"}`)
 	if _, err := taskproperty.Decode(workerPropertiesJSON(t, worker)); err == nil {

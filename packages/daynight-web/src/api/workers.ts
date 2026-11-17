@@ -9,7 +9,6 @@ export type WorkerProbe<T> =
   | { readonly state: 'ok'; readonly checkedAt: string; readonly value: T }
   | { readonly state: 'error'; readonly checkedAt: string; readonly code: WorkerProbeCode };
 export type WorkerExecutableProbe = WorkerProbe<string> | { readonly state: 'not_installed'; readonly checkedAt: string };
-export type WorkerHerdrProbe = WorkerProbe<string> | { readonly state: 'not_running'; readonly checkedAt: string };
 export type WorkerMachine = { readonly id: string; readonly name: string };
 export type WorkerAssistantHostReason = 'unsupported_arguments' | 'invalid_cwd' | 'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'unavailable';
 export type WorkerAssistantHost = {
@@ -37,7 +36,6 @@ export type WorkerTelemetry = {
   readonly disk: WorkerProbe<{ readonly availableBytes: number; readonly totalBytes: number }>;
   readonly versions: {
     readonly daynight: string;
-    readonly herdr: WorkerHerdrProbe;
     readonly codex: WorkerExecutableProbe;
     readonly copilot: WorkerExecutableProbe;
   };
@@ -136,7 +134,7 @@ const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssis
 };
 const telemetry = (value: unknown, toolPathsSupported: boolean): WorkerTelemetry => {
   const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...['assistantHost', 'runtimeConfiguration', ...(toolPathsSupported ? ['toolPaths'] : [])].filter(key => Object.hasOwn(record(value), key))]);
-  const versions = fields(data.versions, ['daynight', 'herdr', 'codex', 'copilot']);
+  const versions = fields(data.versions, ['daynight', 'codex', 'copilot']);
   return {
     ...(Object.hasOwn(data, 'toolPaths') ? { toolPaths: parseToolPathTelemetry(data.toolPaths, executionPlatform(data.platform)) } : {}),
     ...(Object.hasOwn(data, 'assistantHost') ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
@@ -164,7 +162,7 @@ const telemetry = (value: unknown, toolPathsSupported: boolean): WorkerTelemetry
       if (availableBytes > totalBytes) return malformed();
       return { availableBytes, totalBytes };
     }),
-    versions: { daynight: text(versions.daynight), herdr: software(versions.herdr, 'not_running'), codex: software(versions.codex, 'not_installed'), copilot: software(versions.copilot, 'not_installed') },
+    versions: { daynight: text(versions.daynight), codex: software(versions.codex, 'not_installed'), copilot: software(versions.copilot, 'not_installed') },
   };
 };
 const summaryFields = ['workerId', 'machine', 'platform', 'lastReportedAt', 'taskObservationState', 'taskObservedAt', 'activeTaskCount'] as const;
@@ -213,23 +211,21 @@ export const listWorkers = async (query: { readonly limit?: number; readonly cur
     cursor(query.cursor);
     parameters.set('cursor', query.cursor);
   }
-  const response = await request(`/api/v1/me/workers${parameters.size === 0 ? '' : `?${parameters}`}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '1' } });
+  const response = await request(`/api/v1/me/workers${parameters.size === 0 ? '' : `?${parameters}`}`, signal, { headers: { Accept: 'application/json' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
-    const tools = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (tools !== null && tools !== '1') throw new ApiError('protocol', response.status);
     return parseWorkerPage(value);
   });
 };
 export const getWorker = async (workerId: string, signal: AbortSignal, admission: WorkerReadAdmission): Promise<WorkerDetailResponse> => {
   const userId = requestId(admission.userId), canonicalWorkerId = requestId(workerId);
-  const response = await request(`/api/v1/me/workers/${canonicalWorkerId}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '1' } });
+  const response = await request(`/api/v1/me/workers/${canonicalWorkerId}`, signal, { headers: { Accept: 'application/json', 'Daynight-Worker-Tool-Paths': '2' } });
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);
   return json(response, signal, value => {
     if (response.status !== 200) throw new ApiError('protocol', response.status);
     const tools = response.headers.get('Daynight-Worker-Tool-Paths');
-    if (tools !== null && tools !== '1') throw new ApiError('protocol', response.status);
-    return parseWorkerDetail(value, canonicalWorkerId, tools === '1');
+    if (tools !== '2') throw new ApiError('protocol', response.status, 'worker_tool_protocol');
+    return parseWorkerDetail(value, canonicalWorkerId, tools === '2');
   });
 };

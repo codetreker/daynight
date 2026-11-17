@@ -49,8 +49,8 @@ const ContextDetails = ({ tool, context, entry, desired, online }: { readonly to
   const currentTarget = desired?.value.toolPaths?.[tool];
   const target = currentTarget === undefined ? entry?.target : currentTarget;
   const count = (value: number | null) => value === null ? m.unknownCount : format.number(value);
-  return <section className="worker-tool-context" data-context={context} aria-label={`${tool === 'codex' ? 'Codex' : tool === 'copilot' ? 'Copilot' : 'Herdr'} ${context === 'web' ? 'Web' : 'Herdr'}`}>
-    <div className="worker-tool-context-heading"><span>{context === 'web' ? 'Web' : 'Herdr'}</span><StateBadge state={state} /></div>
+  return <section className="worker-tool-context" data-context={context} aria-label={`${tool === 'codex' ? 'Codex' : 'Copilot'} ${'Web'}`}>
+    <div className="worker-tool-context-heading"><span>{'Web'}</span><StateBadge state={state} /></div>
     {target !== undefined && <ChoiceValue choice={target} label={currentTarget === undefined ? m.reportedTarget : m.target} />}
     {entry !== undefined && <>
       <p className="worker-tool-source">{m.configurationSource[entry.configurationSource]}</p>
@@ -79,7 +79,7 @@ export const WorkerToolPathDetails = ({ tool, telemetry, desired, online, primar
       {contexts.map((context, index) => {
         const entry = telemetry.entries.find(item => item.tool === tool && item.context === context);
         const content = <ContextDetails tool={tool} context={context} entry={entry} desired={desired} online={online} />;
-        return index === 0 ? <div key={context}>{content}</div> : <details className="worker-tool-other-context" key={context}><summary>{m.otherContext}: {context === 'web' ? 'Web' : 'Herdr'}</summary>{content}</details>;
+        return index === 0 ? <div key={context}>{content}</div> : <details className="worker-tool-other-context" key={context}><summary>{m.otherContext}: {'Web'}</summary>{content}</details>;
       })}
       <p className="worker-tool-time">{m.reportedAt}: <WorkerTimestamp value={telemetry.observedAt} /></p>
     </>}

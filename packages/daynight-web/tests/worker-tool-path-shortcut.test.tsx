@@ -24,16 +24,16 @@ const mount = async ({ delayed = false, supported = true, telemetry = true } = {
     if (url.startsWith('/api/v1/projects?')) return workerResponse({ items: [], nextCursor: null });
     if (url.endsWith('/configuration')) {
       if (url.includes(target) && delayed) { requested = true; await gate.promise; }
-      const { toolPathsSupported: _tools, controlModeSupported: _mode, ...resource } = supported ? toolPathConfiguration() : configurationResource();
+      const { toolPathsSupported: _tools, ...resource } = supported ? toolPathConfiguration() : configurationResource();
       const response = configurationResponse(resource);
-      if (supported) { response.headers.set('Daynight-Worker-Tool-Paths', '1'); response.headers.set('Daynight-Worker-Control-Mode', '1'); }
+      if (supported) { response.headers.set('Daynight-Worker-Tool-Paths', '2'); }
       return response;
     }
     if (url.endsWith('/prompt')) return workerResponse({ scope: 'worker', scopeId: target, revision: '0', text: '', updatedAt: null });
     if (url.endsWith('/monitoring/query')) return workerResponse({ observedAt: workerDetail().observedAt, items: [] });
     const detail = workerDetail(url.includes(other) ? 2 : 1);
     if (telemetry) detail.worker.telemetry.toolPaths = toolPathTelemetry();
-    const response = workerResponse(detail); response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response;
+    const response = workerResponse(detail); response.headers.set('Daynight-Worker-Tool-Paths', '2'); return response;
   }));
   const scope = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   const view = (id: string, active = true) => <StrictMode><TaskCacheProvider scope={scope}><WorkerDetailPage workerId={id} userId={WORKER_USER} readEnabled active={active} /></TaskCacheProvider></StrictMode>;
@@ -83,8 +83,7 @@ describe('Worker software tool path shortcut', () => {
     const state = await mount(options); fireEvent.click(shortcut()); await flush();
     const details = summary().closest('details')!;
     expect(details).toHaveAttribute('open');
-    expect(details.querySelector('#config-tool-paths-unavailable')).toBeVisible();
-    expect(within(details).getByRole('textbox', { name: 'Codex' })).toBeDisabled();
+    expect(within(details).getByRole('textbox', { name: 'Codex' })).toBeEnabled();
     expect(state.writes).toEqual([]);
   });
 

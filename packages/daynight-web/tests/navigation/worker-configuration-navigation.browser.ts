@@ -26,11 +26,12 @@ const install = async (page: Page) => {
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [project], nextCursor: null });
     if (path === '/api/v1/me/workers') return send(workerPage());
-    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
+    if (path === `/api/v1/me/workers/${target}`) { expect(request.headers()['daynight-worker-tool-paths']).toBe('2'); return send(workerDetail(), 200, { 'Daynight-Worker-Tool-Paths': '2' }); }
     if (path === `/api/v1/me/workers/${target}/configuration`) {
+      expect(request.headers()['daynight-worker-tool-paths']).toBe('2');
       if (state.unavailable) return missing();
       if (request.method() === 'PUT') state.resource = configurationResource(String(BigInt(state.resource.desired!.revision) + 1n), request.postDataJSON().value as WorkerConfigurationValue);
-      return send(state.resource, 200, { 'Daynight-Worker-Configuration': '1' });
+      return send(state.resource, 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     }
     return missing();
   });
@@ -212,8 +213,8 @@ test('320px keyboard save preserves unknown configuration and isolates the next 
   const bob = workerId(88), number = '9007199254740993123456789', fraction = '-1.2500e+42';
   let actor = WORKER_USER;
   const revisions = new Map([[WORKER_USER, '1'], [bob, '1']]);
-  let value = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[],"futureNative":{"amount":${number}}},"projects":[],"future":{"negative":${fraction},"nested":[null,{"large":${number}}]}}`;
-  let bobValue = '{"maxConcurrent":8,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"future":1234567890123456789012345}';
+  let value = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"toolPaths":{"codex":null,"copilot":null},"native":{"agent":"codex","model":null,"args":[],"futureNative":{"amount":${number}}},"projects":[],"future":{"negative":${fraction},"nested":[null,{"large":${number}}]}}`;
+  let bobValue = '{"maxConcurrent":8,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"toolPaths":{"codex":null,"copilot":null},"native":{"agent":"codex","model":null,"args":[]},"projects":[],"future":1234567890123456789012345}';
   const writes: { actor: string; body: string }[] = [];
   await context.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname, current = actor;
@@ -223,8 +224,9 @@ test('320px keyboard save preserves unknown configuration and isolates the next 
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
+    if (path === `/api/v1/me/workers/${target}`) { expect(request.headers()['daynight-worker-tool-paths']).toBe('2'); return send(workerDetail(), 200, { 'Daynight-Worker-Tool-Paths': '2' }); }
     if (path === `/api/v1/me/workers/${target}/configuration`) {
+      expect(request.headers()['daynight-worker-tool-paths']).toBe('2');
       if (request.method() === 'PUT') {
         const body = request.postData()!; writes.push({ actor: current, body });
         const prefix = body.match(/"value"\s*:\s*/);
@@ -236,7 +238,7 @@ test('320px keyboard save preserves unknown configuration and isolates the next 
       const revision = revisions.get(current)!;
       const currentValue = current === WORKER_USER ? value : bobValue;
       const body = `{"desired":{"revision":"${revision}","updatedAt":"${WORKER_TIME}","value":${currentValue}},"observationRevision":"1","observation":{"baseRevision":"0","desiredRevision":"${revision}","reportedAt":"${WORKER_TIME}","items":[{"key":{"kind":"futureSetting"},"targetRevision":"${revision}","appliedValue":true,"state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}}`;
-      return route.fulfill({ body, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': current, 'Daynight-Worker-Configuration': '1' } });
+      return route.fulfill({ body, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': current, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
     }
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });

@@ -4,8 +4,7 @@ Daynight is a project and task workspace for people and coding agents. It keeps
 work, dependencies, required inputs and resulting artifacts together, with a
 browser dashboard for understanding progress and a command-line client for
 managing tasks. A foreground worker runs automatically claimed tasks through
-Codex, Claude Code or Copilot in private Herdr workspaces or browser-controlled
-Task Sessions. The same Worker hosts named assistants in ordinary directories,
+Codex, Claude Code or Copilot in browser-controlled Task Sessions. The same Worker hosts named assistants in ordinary directories,
 with shared browser conversations and Daynight CLI access. The CLI also provides automated
 GitHub pull request review through Copilot CLI.
 
@@ -53,7 +52,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   targets remain distinct from applied results, and configuration is independent
   of the recent-report window.
 - **Read and control task sessions in the browser.** Project members can view
-  Session content. With `worker.agentControlMode: web`, the Session owner can send
+  Session content. The Session owner can send
   text, stop a turn, and answer supported approvals, questions and forms; other
   administrators and members are read-only.
 - **Keep an assistant available.** Open Assistants in the workspace and create one
@@ -199,8 +198,7 @@ for input, authentication and lifecycle limits.
 
 ## Worker configuration and startup
 
-Before the first cloud enrollment, use interactive setup to inspect prerequisites,
-choose a provider, and select existing Daynight Projects:
+Sign in, inspect prerequisites and select existing Projects before the first run:
 
 ```bash
 daynight login
@@ -208,95 +206,29 @@ daynight worker setup
 daynight worker run
 ```
 
-Setup reports missing tools or integration settings with repair instructions.
-It previews the selected Projects, paths and native-setting resets before saving
-the agent and complete selection together. Existing Projects are preselected on
-repeat setup before enrollment. Missing native prerequisites can be repaired after
-saving; the command explicitly reports when the environment still needs attention.
+The foreground Worker runs tasks in dedicated worktrees through Web/Controller
+Sessions. Configure native provider credentials before execution. Setup checks
+local prerequisites but does not prove provider authentication or a future task
+launch. Ctrl+C stops owned executions while preserving unfinished claims,
+worktrees and native history; an unconfirmed stop retains responsibility.
 
-The first run imports local managed settings only when no cloud target exists.
-After enrollment the cloud configuration resource owns concurrency, Project
-selection, global and Project-level Agent/model/args, control mode, polling and recovery limits.
-Local setup and repository edits direct managed changes to cloud management;
-repository paths, credentials and Worker identity remain local. Control mode is
-adopted once from the local setting, preserving existing `web` Workers; subsequent
-changes use the cloud target after capability negotiation.
-Startup checks the cloud before normal scheduling. Heartbeats receive targets
-and report actual application outcomes independently of task polling; settings
-apply separately, and failed items retain errors for the next accepted report.
-Running native processes keep their launch arguments. The
-[configuration contract](docs/spec/daynight-worker-configuration.md) and
-[worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-define ownership, retries and recovery boundaries.
+The first run imports local settings only when no cloud target exists. Thereafter
+My Workers owns concurrency, Project selection, Agent settings, polling and
+recovery limits. Repository paths, credentials and Worker identity remain local.
+The saved target and the Worker's actual application are separate observations.
+Existing processes retain their frozen launch selections. A Worker using an old
+configuration with unsupported fields reports the problem; inspect the original
+value and explicitly save a valid configuration to replace it.
 
-The default `herdr` execution mode requires Git, Herdr 0.9.5 or newer with the supported API, and
-the selected native CLI. Configure provider credentials before execution. Before
-starting a native agent, runtime preflight installs or updates its official Herdr
-integration through the private daemon when needed, then verifies the current
-integration and effective hook configuration. Codex installation first checks
-that the supported Herdr installer preserves configuration semantics; unsafe
-layouts fail before installation. Setup remains read-only. Local setup checks do
-not qualify real native execution, provider login or task delivery.
+The service and Worker must support Worker tool protocol 2. Clients relying on
+removed configuration or reporting fields need an upgrade. Existing Herdr tasks,
+claims and resources are not migrated or cleaned up; users handle them separately.
+Uploaded terminal recordings remain available as read-only history.
 
-Select `web` under My Workers → Configuration → Control mode to use Daynight's
-Task Session page with Codex, Claude Code or Copilot. Web execution uses a private
-Controller and the Daynight relay, with no Herdr dependency. Each claim retains
-its original mode; a configuration change applies only to new claims. Herdr
-continues to own terminal sessions in the default mode. Before enrollment,
-`worker.agentControlMode` supplies the initial mode and defaults to `herdr`.
-Upgrade both the service and CLI to enable cloud mode application; older services
-retain local mode, and a saved target is not an application confirmation.
-
-Before enrollment, `repo add` lists accessible Projects for multiselection. Use
-`--project PROJECT_UUID` for an explicit noninteractive registration;
-`worker repo list` and `worker repo remove` inspect or change local registrations.
-Normal `worker run` does not open a Project picker. An empty cloud selection keeps
-heartbeats active and does not create fictitious Task resources. Existing claims,
-cleanup responsibilities and local mappings remain available for reconciliation;
-only selected Projects with confirmed local preparation become eligible for
-execution. A Project without a prepared binding remains pending.
-
-New registrations use `worker.repositoryRoot`, defaulting to `~/daynights`, and
-keep existing paths when the root changes. Review's clone-root setting is
-independent. Projects must already exist, and their tasks need automatic
-execution permission before the worker can acquire them.
-
-The worker runs in the foreground with one execution slot by default and stores
-state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). On macOS,
-each Herdr run owns a separate daemon. A durable lifecycle journal binds the
-original claim, worktree, Session, terminal and process birth identities before
-automatic input is allowed. Linux and Windows retain the shared private Herdr
-path. Each workspace shows its task title and stable ownership suffix.
-
-Use `daynight worker attach` in another terminal for human input, including for
-paused tasks. On macOS it selects a recorded runtime and verifies the original
-daemon before connecting. Detaching leaves execution running. Ctrl+C cancels
-and joins Worker jobs, then stops the original execution while preserving
-claims, worktrees, native history and unfinished local rows. It sends no cleanup
-prompt and does not wait for a cleanup turn. Unconfirmed stopping retains
-responsibility and blocks replacement; external temporary resources may remain.
-
-Herdr fresh and resumed Copilot/Codex processes use fixed full access and
-task-folder trust settings; business delivery remains bounded by task
-authorization. Linux and Windows retain process-local Herdr business recovery:
-a NULL native ID permits a fresh conversation, while a known ID selects resume.
-On macOS, durable launch, input and stop evidence protect the original runtime;
-a missing native ID after a possible launch cannot authorize another conversation.
-Session registration advertises no preview, control or archive capability, and
-stopped worktrees remain until archive finalization is available.
-
-Terminal cleanup preserves its original resource identity, deadline and retry
-schedule across restarts; current resource observations determine completion.
-Web retains its original execution evidence and recovery pause across restarts.
-An exhausted or paused Web execution keeps its claim and slot, reports waiting,
-and requires explicit retry with the original native identity and complete stop
-proof. See the [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-and [Herdr lifecycle design](docs/design/herdr-worker-lifecycle.md) for platform,
-recovery and retention boundaries.
-
-Stop the runner before `worker retry/release`; the commands use
-its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
-explains version checks, remote-result handling and resource cleanup.
+Stop `worker run` before `worker retry` or `worker release`. Completed Web
+resources can be verified and recovered using `worker resources recover`; see
+the [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+for identity, recovery and retention rules.
 
 ## Review configuration and startup
 

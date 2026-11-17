@@ -20,6 +20,20 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Compare JSON semantically because PostgreSQL JSONB may reorder object keys.
+func configurationJSONEqual(left, right any) bool {
+	a, err := json.Marshal(left)
+	if err != nil {
+		return false
+	}
+	b, err := json.Marshal(right)
+	if err != nil {
+		return false
+	}
+	var x, y any
+	return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && reflect.DeepEqual(x, y)
+}
+
 func workerStorage(t *testing.T) *postgres.Store {
 	t.Helper()
 	return testutil.OpenStore(t, postgres.Open)
@@ -43,7 +57,7 @@ func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	}
 	check := func(got, want model.WorkerConfigurationResource) {
 		t.Helper()
-		if !reflect.DeepEqual(got, want) {
+		if !configurationJSONEqual(got, want) {
 			t.Errorf("configuration: got=%+v want=%+v", got, want)
 		}
 	}
@@ -91,7 +105,7 @@ func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	if err != nil || completion.Outcome != TransactionCommitted || initial.UpdatedAt.IsZero() || initial.UpdatedAt.Location() != time.UTC {
 		t.Fatalf("initial configuration: completion=%+v result=%+v err=%v", completion, initial, err)
 	}
-	if !reflect.DeepEqual(initial, *expected("1", initial.UpdatedAt, 2).Desired) {
+	if !configurationJSONEqual(initial, *expected("1", initial.UpdatedAt, 2).Desired) {
 		t.Fatalf("initial setter result: %+v", initial)
 	}
 	read(expected("1", initial.UpdatedAt, 2))
@@ -109,7 +123,7 @@ func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	if err != nil || completion.Outcome != TransactionCommitted || updated.UpdatedAt.IsZero() || updated.UpdatedAt.Location() != time.UTC {
 		t.Fatalf("updated configuration: completion=%+v result=%+v err=%v", completion, updated, err)
 	}
-	if !reflect.DeepEqual(updated, *expected("2", updated.UpdatedAt, 7).Desired) {
+	if !configurationJSONEqual(updated, *expected("2", updated.UpdatedAt, 7).Desired) {
 		t.Fatalf("updated setter result: %+v", updated)
 	}
 	read(expected("2", updated.UpdatedAt, 7))
@@ -245,7 +259,7 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	}
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		current, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)
-		if err == nil && !reflect.DeepEqual(current, stored) {
+		if err == nil && !configurationJSONEqual(current, stored) {
 			t.Fatal("legacy heartbeat changed committed configuration or observation state")
 		}
 		return err
@@ -281,7 +295,7 @@ func TestWorkerHistoricalConfigurationStoreReadback(t *testing.T) {
 	}
 	check := func(got, want model.WorkerConfigurationResource) {
 		t.Helper()
-		if !reflect.DeepEqual(got, want) {
+		if !configurationJSONEqual(got, want) {
 			t.Errorf("stored historical configuration: got=%+v want=%+v", got, want)
 		}
 		if want.Desired.UpdatedAt.IsZero() {
@@ -401,7 +415,7 @@ func TestWorkerConfigurationStoreRemainsIndependentOfTasks(t *testing.T) {
 		t.Helper()
 		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
 			got, err := scope.WorkerDAO().WorkerConfiguration(ctx, owner, workerID)
-			if err == nil && !reflect.DeepEqual(got, want) {
+			if err == nil && !configurationJSONEqual(got, want) {
 				t.Errorf("stored configuration: got=%+v want=%+v", got, want)
 			}
 			return err
@@ -422,7 +436,7 @@ func TestWorkerConfigurationStoreRemainsIndependentOfTasks(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(current, original) {
+		if !configurationJSONEqual(current, original) {
 			t.Errorf("configuration changed with Task storage unavailable: got=%+v want=%+v", current, original)
 		}
 		updated, err = dao.SetWorkerConfiguration(ctx, owner, workerID, 2, value)
@@ -555,7 +569,7 @@ CREATE TRIGGER refuse_config_observation BEFORE UPDATE ON workers FOR EACH ROW E
 	}
 	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
 		after, err := scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
-		if err == nil && (after.Desired == nil || !reflect.DeepEqual(after.Desired, before.Desired) || after.ObservationRevision != "0" || !reflect.DeepEqual(after.Observation, before.Observation)) {
+		if err == nil && (after.Desired == nil || !configurationJSONEqual(after.Desired, before.Desired) || after.ObservationRevision != "0" || !reflect.DeepEqual(after.Observation, before.Observation)) {
 			t.Errorf("observation failure changed committed configuration: before=%+v after=%+v", before, after)
 		}
 		return err

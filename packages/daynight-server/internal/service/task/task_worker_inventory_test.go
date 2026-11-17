@@ -47,7 +47,7 @@ func workerInventoryTask(t *testing.T, principal model.Principal, workerID strin
 	task.CreatedAt = task.CreatedAt.Add(time.Duration(ordinal) * time.Second)
 	task.UpdatedAt, task.Status, task.Ready = task.CreatedAt, model.TaskInProgress, false
 	descriptor := workerDescriptor()
-	worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: workerID, UserID: principal.UserID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: task.CreatedAt}
+	worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: workerID, UserID: principal.UserID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: task.CreatedAt}
 	task.Properties = testWithWorker(t, task.Properties, worker)
 	return task
 }

@@ -16,8 +16,7 @@ const hash = (value: unknown): string => typeof value === "string" && /^[a-f0-9]
 export const parseResolvedToolLaunch = (value: unknown, expected: { tool?: Tool; context?: ToolContext } = {}): ResolvedToolLaunch => {
   const profilePresent = !!value && typeof value === "object" && "runtimeProfile" in value;
   const row = object(value, [...(profilePresent ? ["runtimeProfile"] : []), "schemaVersion", "tool", "context", "source", "entryPath", "canonicalEntryPath", "executablePath", "interpreterPath", "command", "artifacts", "selectionKey"]);
-  if (row.schemaVersion !== 1 || !["codex", "copilot", "herdr"].includes(String(row.tool)) || !["web", "herdr"].includes(String(row.context))
-    || row.tool === "herdr" && row.context !== "herdr" || !["path", "bundled", "explicit"].includes(String(row.source))
+  if (row.schemaVersion !== 1 || !["codex", "copilot"].includes(String(row.tool)) || row.context !== "web" || !["path", "bundled", "explicit"].includes(String(row.source))
     || row.source === "bundled" && (row.tool !== "copilot" || row.context !== "web")
     || expected.tool !== undefined && expected.tool !== row.tool || expected.context !== undefined && expected.context !== row.context) invalid();
   for (const key of ["entryPath", "canonicalEntryPath", "executablePath"]) validateToolPath(row[key]);

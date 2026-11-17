@@ -26,7 +26,7 @@ func WorkerStoredUTF8(size int) string {
 func WorkerClaim(number int, userID, workerID string, state model.WorkerState) *model.WorkerClaim {
 	return &model.WorkerClaim{ClaimID: QueryID(number + 100), State: state, UserID: userID, WorkerID: workerID,
 		Machine: model.WorkerMachine{ID: QueryID(4), Name: "Build"}, Platform: model.PlatformLinux,
-		Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: QueryID(number + 200), Phase: model.WorkerPreparing, ClaimedAt: time.Now().UTC()}
+		Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: QueryID(number + 200), Phase: model.WorkerPreparing, ClaimedAt: time.Now().UTC()}
 }
 
 func WorkerConfiguration() model.WorkerConfiguration {

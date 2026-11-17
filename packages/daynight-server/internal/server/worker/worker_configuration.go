@@ -11,6 +11,11 @@ import (
 const workerConfigurationHeader = "Daynight-Worker-Configuration"
 
 func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+	if err := requireToolProtocol(request.Header); err != nil {
+		httpx.WriteError(w, request, h.logger.With("user_id", principal.UserID), "worker_configuration", "validate", err)
+		return
+	}
+	writeToolProtocol(w.Header())
 	id, logger, err := h.resource(request, principal)
 	if err == nil && (request.URL.RawQuery != "" || request.URL.ForceQuery) {
 		err = httpx.InvalidInput("worker configuration does not accept query parameters")
@@ -19,12 +24,6 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 		httpx.WriteError(w, request, logger, "worker_configuration", "validate", err)
 		return
 	}
-	capabilities, err := workerCapabilities(request.Header)
-	if err != nil {
-		httpx.WriteError(w, request, logger, "worker_configuration", "validate", err)
-		return
-	}
-	writeWorkerCapabilities(w.Header(), capabilities)
 	var result model.WorkerConfigurationResource
 	if request.Method == http.MethodPut {
 		fields, decodeErr := httpx.DecodeObject(w, request, "revision", "value")
@@ -35,7 +34,7 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 			if revisionErr != nil {
 				err = revisionErr
 			} else {
-				value, valueErr := workercore.ParseWorkerConfigurationProtocol(fields["value"], capabilities)
+				value, valueErr := workercore.ParseWorkerConfigurationProtocol(fields["value"])
 				if valueErr != nil {
 					err = valueErr
 				} else {
@@ -51,5 +50,5 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	w.Header().Set(workerConfigurationHeader, "1")
-	httpx.WriteJSON(w, request, logger, http.StatusOK, projectConfiguration(result, capabilities))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, result)
 }

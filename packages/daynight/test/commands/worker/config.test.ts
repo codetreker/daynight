@@ -11,7 +11,7 @@ const paths = resolveWorkerPaths("/home/worker-user", path.posix);
 const remote = "https://git.example/team/project.git";
 const repo = { remote, path: "../checkout" };
 const parse = (worker: Record<string, unknown>) => parseWorkerConfiguration(stringify({ worker: { repositories: [repo], ...worker } }), paths, path.posix);
-const defaults = { repositoryRoot: "~/daynights", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 60_000, preferPlatformSpecificTasks: false, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [], repositories: [] };
+const defaults = { repositoryRoot: "~/daynights", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 60_000, preferPlatformSpecificTasks: false, recoveryLimit: 3, agent: "copilot", agentControlMode: "web", model: null, args: [], repositories: [] };
 const directories: string[] = [];
 const fixture = async (prefix: string) => {
   const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
@@ -29,7 +29,7 @@ describe("worker configuration", () => {
   it("uses a separate namespace and resolves paths relative to the config file", () => {
     expect(parse({})).toEqual({
       ...defaults,
-      repositories: [{ ...repo, path: "/home/worker-user/checkout", agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }],
+      repositories: [{ ...repo, path: "/home/worker-user/checkout", agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }],
     });
     expect(parseServerConfiguration(stringify({ worker: { repositories: "not validated by server commands" } }), paths)).toEqual({ serverUrl: "https://daynight.cc" });
     expect(parseWorkerConfiguration(stringify({ review: { repositories: "review-owned", copilotModel: null }, worker: { repositories: [] } }), paths).repositories).toEqual([]);
@@ -59,26 +59,26 @@ describe("worker configuration", () => {
   });
 
   it("merges same-kind overrides field by field and permits explicit reset to native model defaults", () => {
-    const configuration = parse({ agent: "codex", agentControlMode: "herdr", model: "global-model", args: ["--search"], recoveryLimit: 0, repositories: [
+    const configuration = parse({ agent: "codex", agentControlMode: "web", model: "global-model", args: ["--effort", "high"], recoveryLimit: 0, repositories: [
       { ...repo, agent: "codex", args: [] },
       { remote: "git@elsewhere.example:team/second.git", path: "/absolute/repository", model: null },
     ] });
     expect(configuration.recoveryLimit).toBe(0);
     expect(configuration.repositories).toEqual([
-      { ...repo, path: "/home/worker-user/checkout", agent: "codex", agentControlMode: "herdr", model: "global-model", args: [], recoveryLimit: 0 },
-      { remote: "git@elsewhere.example:team/second.git", path: "/absolute/repository", agent: "codex", agentControlMode: "herdr", model: null, args: ["--search"], recoveryLimit: 0 },
+      { ...repo, path: "/home/worker-user/checkout", agent: "codex", agentControlMode: "web", model: "global-model", args: [], recoveryLimit: 0 },
+      { remote: "git@elsewhere.example:team/second.git", path: "/absolute/repository", agent: "codex", agentControlMode: "web", model: null, args: ["--effort", "high"], recoveryLimit: 0 },
     ]);
   });
 
   it("drops model and args inheritance when the repository switches native agent kind", () => {
-    const configuration = parse({ agent: "codex", agentControlMode: "herdr", model: "codex-model", args: ["--search"], repositories: [
+    const configuration = parse({ agent: "codex", agentControlMode: "web", model: "codex-model", args: ["--effort", "high"], repositories: [
       { ...repo, agent: "copilot" },
-      { remote: "ssh://git@other.example/team/r", path: "/second", agent: "copilot", agentControlMode: "herdr", model: "copilot-model", args: ["--reasoning-effort", "high"] },
+      { remote: "ssh://git@other.example/team/r", path: "/second", agent: "copilot", agentControlMode: "web", model: "copilot-model", args: ["--effort", "high"] },
     ] });
-    expect(configuration.repositories[0]).toMatchObject({ agent: "copilot", agentControlMode: "herdr", model: null, args: [] });
-    expect(configuration.repositories[1]).toMatchObject({ agent: "copilot", agentControlMode: "herdr", model: "copilot-model", args: ["--reasoning-effort", "high"] });
-    expect(parse({ agent: "copilot", agentControlMode: "herdr", model: "copilot-model", args: ["--allow-all"], repositories: [{ ...repo, agent: "codex" }] }).repositories[0])
-      .toMatchObject({ agent: "codex", agentControlMode: "herdr", model: null, args: [] });
+    expect(configuration.repositories[0]).toMatchObject({ agent: "copilot", agentControlMode: "web", model: null, args: [] });
+    expect(configuration.repositories[1]).toMatchObject({ agent: "copilot", agentControlMode: "web", model: "copilot-model", args: ["--effort", "high"] });
+    expect(parse({ agent: "copilot", agentControlMode: "web", model: "copilot-model", args: ["--effort", "high"], repositories: [{ ...repo, agent: "codex" }] }).repositories[0])
+      .toMatchObject({ agent: "codex", agentControlMode: "web", model: null, args: [] });
   });
 
   it("normalizes configured project IDs and preserves generic SSH repository identities", () => {
@@ -126,9 +126,9 @@ describe("worker configuration", () => {
 
   it("preserves configured worker fields when repositories are omitted", () => {
     expect(parseWorkerConfiguration(stringify({ worker: {
-      agent: "codex", agentControlMode: "herdr", model: "configured-model", args: ["--search"], maxConcurrent: 4, recoveryLimit: 0,
+      agent: "codex", agentControlMode: "web", model: "configured-model", args: ["--effort", "high"], maxConcurrent: 4, recoveryLimit: 0,
     } }), paths)).toEqual({
-      ...defaults, agent: "codex", agentControlMode: "herdr", model: "configured-model", args: ["--search"], maxConcurrent: 4, recoveryLimit: 0,
+      ...defaults, agent: "codex", agentControlMode: "web", model: "configured-model", args: ["--effort", "high"], maxConcurrent: 4, recoveryLimit: 0,
     });
   });
 
@@ -251,7 +251,7 @@ describe("worker configuration", () => {
 });
 
 it("selects Web globally while preserving defaults and ignoring unrelated future fields", () => {
-  const value = parse({ agentControlMode: "web", agent: "claude", future: true, repositories: [{ ...repo, agentControlMode: "herdr" }] });
+  const value = parse({ agentControlMode: "web", agent: "claude", future: true, repositories: [{ ...repo, future: true }] });
   expect(value).toMatchObject({ agent: "claude", agentControlMode: "web", maxConcurrent: 1 });
   expect(value.repositories[0]?.agentControlMode).toBe("web");
   expect(() => parse({ agentControlMode: "both" })).toThrow("agentControlMode");

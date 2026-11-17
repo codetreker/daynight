@@ -30,7 +30,6 @@ func Detail(worker model.WorkerSnapshot) WorkerDetail {
 			Memory: probeResponse(telemetry.Memory, func(value model.WorkerMemory) WorkerMemory { return WorkerMemory(value) }),
 			Disk:   probeResponse(telemetry.Disk, func(value model.WorkerDisk) WorkerDisk { return WorkerDisk(value) }),
 			Versions: WorkerVersions{Daynight: telemetry.Versions.Daynight,
-				Herdr:   probeResponse(telemetry.Versions.Herdr, func(value string) string { return value }),
 				Codex:   probeResponse(telemetry.Versions.Codex, func(value string) string { return value }),
 				Copilot: probeResponse(telemetry.Versions.Copilot, func(value string) string { return value })}}}
 

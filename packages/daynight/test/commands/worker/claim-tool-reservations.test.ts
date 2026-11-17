@@ -5,19 +5,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Task, WorkerClaim } from "../../../src/api/types.js";
 import { openWorkerStore, type WorkerStore } from "../../../src/commands/worker/store.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
-import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const connections = new Set<Database.Database>(), stores = new Set<WorkerStore>(), directories = new Set<string>();
 const open = (db: Database.Database): WorkerStore => { const store = openWorkerStore(db, { onMigration: () => {} }); stores.add(store); return store; };
 const fixture = () => {
   const db = createMemoryDatabase(); connections.add(db);
-  const store = open(db), tools = recordedHerdrTools();
-  const reservation = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), workerId: uuid(5), version: 9_007_199_254_740_993n, agentControlMode: "herdr" as const,
-    nativeConfiguration: { agent: "codex" as const, model: "original", args: ["--original"], validateNativeSelection: true as const, toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation } };
+  const store = open(db), toolLaunch = frozenToolLaunch();
+  const reservation = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), workerId: uuid(5), version: 9_007_199_254_740_993n, agentControlMode: "web" as const,
+    nativeConfiguration: { agent: "codex" as const, model: "original", args: ["--original"], validateNativeSelection: true as const, toolLaunch, toolObservation: { version: "1.0.0", checkedAt: "2026-01-01T00:00:00Z" } } };
   const project = { projectId: reservation.projectId, repoUrl: "https://github.com/owner/repo.git", localPath: path.resolve(".tmp/reservation-repository") };
   store.registerProject(project);
-  const claim: WorkerClaim = { claimId: reservation.claimId, worktreeId: reservation.worktreeId, workerId: reservation.workerId, userId: uuid(6), machine: { id: uuid(7), name: "fixture" }, platform: "macos", agent: "codex", agentControlMode: "herdr", state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-12T00:00:00.000Z" };
+  const claim: WorkerClaim = { claimId: reservation.claimId, worktreeId: reservation.worktreeId, workerId: reservation.workerId, userId: uuid(6), machine: { id: uuid(7), name: "fixture" }, platform: "macos", agent: "codex", agentControlMode: "web", state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-12T00:00:00.000Z" };
   const granted = (worker: Partial<WorkerClaim> = {}, task: Partial<Task> = {}): Task => ({ id: reservation.taskId, projectId: reservation.projectId, type: "task", parentId: null, title: "Claim fixture", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: null, startedAt: null, completedAt: null, cancelledAt: null, version: reservation.version + 1n,
     properties: { worker: { ...claim, ...worker } }, createdAt: "2026-11-12T00:00:00.000Z", updatedAt: "2026-11-12T00:00:00.000Z", tags: [], dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, ...task });
   return { db, store, reservation, project, granted };
@@ -61,8 +61,8 @@ describe("claim tool reservations", () => {
 
   it.each(["claimId", "worktreeId", "workerId", "version", "agentControlMode", "nativeConfiguration"] as const)("refuses to replace an unknown request's %s", field => {
     const { store, reservation } = fixture(); store.reserveClaimTools(reservation);
-    const changed = { ...reservation, [field]: field === "version" ? reservation.version + 1n : field === "agentControlMode" ? "web" : field === "nativeConfiguration" ? { ...reservation.nativeConfiguration, model: "replacement" } : uuid(99) };
-    expect(() => store.reserveClaimTools(changed)).toThrow();
+    const changed = { ...reservation, [field]: field === "version" ? reservation.version + 1n : field === "agentControlMode" ? "other" : field === "nativeConfiguration" ? { ...reservation.nativeConfiguration, model: "replacement" } : uuid(99) };
+    expect(() => store.reserveClaimTools(changed as typeof reservation)).toThrow();
     expect(store.listClaimToolReservations()).toEqual([reservation]);
     expect(store.getTask(reservation)).toBeNull();
   });
@@ -70,7 +70,7 @@ describe("claim tool reservations", () => {
   it("atomically transfers a matching active grant into pending with the reserved configuration", () => {
     const { db, store, reservation, granted } = fixture(); store.reserveClaimTools(reservation);
     const reopened = open(db), local = reopened.acceptClaimToolReservation(granted(), reservation.workerId);
-    expect(local).toEqual({ projectId: reservation.projectId, taskId: reservation.taskId, claimId: reservation.claimId, status: "pending", agent: "codex", agentControlMode: "herdr", sessionId: null });
+    expect(local).toEqual({ projectId: reservation.projectId, taskId: reservation.taskId, claimId: reservation.claimId, status: "pending", agent: "codex", agentControlMode: "web", sessionId: null });
     expect(reopened.getNativeConfiguration(reservation)).toEqual(reservation.nativeConfiguration);
     expect(reopened.listClaimToolReservations()).toEqual([]);
     expect(reopened.acceptClaimToolReservation(granted(), reservation.workerId)).toBeNull();
@@ -79,7 +79,7 @@ describe("claim tool reservations", () => {
 
   it.each(["claimId", "worktreeId", "workerId", "agent", "agentControlMode", "state"] as const)("retains the original reservation when a grant changes %s", field => {
     const { store, reservation, granted } = fixture(); store.reserveClaimTools(reservation);
-    const value = field === "agent" ? "copilot" : field === "agentControlMode" ? "web" : field === "state" ? "released" : uuid(99);
+    const value = field === "agent" ? "copilot" : field === "agentControlMode" ? "other" : field === "state" ? "released" : uuid(99);
     expect(() => store.acceptClaimToolReservation(granted({ [field]: value }), reservation.workerId)).toThrow();
     expect(store.listClaimToolReservations()).toEqual([reservation]);
     expect(store.listTasks()).toEqual([]);

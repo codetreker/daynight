@@ -1,6 +1,5 @@
 import { receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
-import { buildHerdrAgentArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +19,7 @@ import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coor
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
   createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
 }));
@@ -28,7 +27,6 @@ vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAs
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
@@ -51,7 +49,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {
@@ -103,7 +101,6 @@ beforeEach(() => {
     reportConfiguration: vi.fn(), report: vi.fn(),
   });
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
-  mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
   mocks.probe.mockResolvedValue("0.164.0");
   mocks.coordinator.mockReturnValue(coordinator(async () => {}));
@@ -116,25 +113,19 @@ afterEach(async () => {
 });
 
 
-it("keeps cloud configuration current for new sessions and resumes the same native session after a Worker restart", async () => {
+it("keeps cloud configuration current for new sessions after a Worker restart", async () => {
   const f = await fixture();
-  const document = { ...f.document, worker: { ...f.document.worker, agent: "codex", model: "stale-local-model", args: ["--search"] } };
+  const document = { ...f.document, worker: { ...f.document.worker, agent: "codex", model: "stale-local-model", args: ["--sandbox", "read-only"] } };
   const source = stringify(document);
   await writeFile(f.paths.configFile, source);
   const remote = mocks.remote(); mocks.remote.mockClear();
-  const target = (model: string): WorkerCloudDesired => ({ ...desired(), value: { ...desired().value, native: { agent: "codex", model, args: ["--search"] } } });
+  const target = (model: string): WorkerCloudDesired => ({ ...desired(), value: { ...desired().value, native: { agent: "codex", model, args: ["--sandbox", "read-only"] } } });
   remote.configuration.mockResolvedValue(resource(target("previous-cloud-model")));
-  const savedSession = uuid(800);
-  const cwd = path.join(f.repository.path, ".worktrees", "daynight", uuid(801));
   const firstCancel = new AbortController(); cancellations.add(firstCancel);
   finishAtTick(firstCancel, options => {
     const configuration = options.repositories[0]!.configuration;
     expect(configuration.model).toBe("previous-cloud-model");
-    const fresh = buildHerdrAgentArguments(configuration, cwd);
-    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "previous-cloud-model", "--search"]);
-    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
-    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
-    expect(resumed).toContain("--search");
+    expect(configuration.args).toEqual(["--sandbox", "read-only"]);
   });
   await runWorker({ ...f, signal: firstCancel.signal });
   remote.configuration.mockResolvedValue(resource({ ...target("current-cloud-model"), revision: "2" }));
@@ -142,13 +133,7 @@ it("keeps cloud configuration current for new sessions and resumes the same nati
   finishAtTick(restartedCancel, options => {
     const configuration = options.repositories[0]!.configuration;
     expect(configuration.model).toBe("current-cloud-model");
-    const fresh = buildHerdrAgentArguments(configuration, cwd);
-    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "current-cloud-model", "--search"]);
-    expect(fresh).not.toContain("stale-local-model");
-    expect(fresh).not.toContain("previous-cloud-model");
-    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
-    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
-    expect(resumed).toContain("--search");
+    expect(configuration.args).toEqual(["--sandbox", "read-only"]);
   });
   await runWorker({ ...f, signal: restartedCancel.signal });
   expect(remote.configuration).toHaveBeenCalledTimes(2);

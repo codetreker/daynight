@@ -489,6 +489,8 @@ type tokenTransport struct {
 func (r tokenTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	copy := request.Clone(request.Context())
 	copy.Header.Set("Authorization", "Bearer "+r.token)
+	copy.Header.Set("Daynight-Worker-Protocol", "2")
+	copy.Header.Set("Daynight-Worker-Tool-Paths", "2")
 	return r.next.RoundTrip(copy)
 }
 

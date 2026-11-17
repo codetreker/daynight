@@ -35,9 +35,21 @@ type workerDocument struct {
 	AgentControlMode model.WorkerAgentControlMode `json:"agentControlMode"`
 	WorktreeID       string                       `json:"worktreeId"`
 	Phase            model.WorkerPhase            `json:"phase"`
-	Herdr            *herdrDocument               `json:"herdr"`
+	Herdr            *herdrDocument               `json:"herdr,omitempty"`
 	NativeSessionID  *string                      `json:"nativeSessionId"`
 	ClaimedAt        string                       `json:"claimedAt"`
+}
+
+// Preserve historical Herdr records, while newly encoded Web claims omit the retired field.
+func (value workerDocument) MarshalJSON() ([]byte, error) {
+	type document workerDocument
+	if value.AgentControlMode != model.AgentControlModeHerdr {
+		return json.Marshal(document(value))
+	}
+	return json.Marshal(struct {
+		document
+		Herdr *herdrDocument `json:"herdr"`
+	}{document(value), value.Herdr})
 }
 
 func encodeWorker(worker *model.WorkerClaim) *workerDocument {
@@ -117,7 +129,7 @@ func decodeWorkerDocument(data []byte, stored bool) (*model.WorkerClaim, error) 
 		return nil, fmt.Errorf("properties.worker has invalid state, platform, agent or phase")
 	}
 	herdrRaw, exists := fields["herdr"]
-	if !exists && (!stored || worker.AgentControlMode != model.AgentControlModeWeb) {
+	if !exists && worker.AgentControlMode != model.AgentControlModeWeb {
 		return nil, fmt.Errorf("properties.worker.herdr is required")
 	}
 	if exists && !bytes.Equal(bytes.TrimSpace(herdrRaw), []byte("null")) {

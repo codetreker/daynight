@@ -65,7 +65,6 @@ describe('Worker response contracts', () => {
     value.worker.telemetry.versions.codex = { state: 'ok', checkedAt: '1970-01-01T00:00:00Z', value: 'development build' };
     value.worker.telemetry.memory = { state: 'ok', checkedAt: WORKER_TIME, value: { usedBytes: 0, totalBytes: 0 } };
     value.worker.telemetry.disk = { state: 'ok', checkedAt: WORKER_TIME, value: { availableBytes: 0, totalBytes: 0 } };
-    value.worker.telemetry.versions.herdr = { state: 'ok', checkedAt: WORKER_TIME, value: 'daemon native build' };
     expect(parse(value)).toEqual(value);
   });
   it('distinguishes unavailable, known empty, and stale observations', () => {
@@ -106,7 +105,7 @@ describe('Worker response contracts', () => {
     [['worker', 'telemetry', 'cpu', 'value', 'logicalProcessors'], 0], [['worker', 'telemetry', 'cpu', 'value', 'usagePercent'], Infinity],
     [['worker', 'telemetry', 'cpu', 'value', 'usagePercent'], -1], [['worker', 'telemetry', 'cpu', 'value', 'usagePercent'], 101],
     [['worker', 'telemetry', 'memory', 'value', 'usedBytes'], 32_001], [['worker', 'telemetry', 'disk', 'value', 'availableBytes'], 200_001],
-    [['worker', 'telemetry', 'versions', 'daynight'], ''], [['worker', 'telemetry', 'versions', 'herdr', 'value'], 'extra'],
+    [['worker', 'telemetry', 'versions', 'daynight'], ''],
     [['worker', 'telemetry', 'versions', 'codex', 'code'], 'extra'], [['worker', 'telemetry', 'versions', 'copilot', 'state'], 'not_running'],
     [['worker', 'tasks'], null], [['worker', 'tasks', '0', 'status'], 'ready'], [['worker', 'tasks', '0', 'phase'], 'idle'], [['worker', 'tasks', '0', 'agent'], 'unknown'],
   ] as const)('rejects malformed or inconsistent detail %#', (path, value) => {

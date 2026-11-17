@@ -9,7 +9,7 @@ const controlDetails = "Stop worker run first. The command takes the same exclus
 
 export const workerDefinition: CommandDefinition = {
   name: "worker",
-  description: "Run automatically claimed tasks in dedicated worktrees and Herdr",
+  description: "Run automatically claimed tasks in dedicated worktrees using Web Sessions",
   commands: [{
     name: "list",
     description: "List the signed-in account's recently reported remote Workers",
@@ -25,17 +25,12 @@ export const workerDefinition: CommandDefinition = {
     name: "setup",
     description: "Check prerequisites and prepare the initial local runtime configuration",
     options: [help],
-    details: "Use an interactive terminal to check the environment, choose Copilot, Codex or Claude, and select accessible Projects before the Worker first connects.\nReview the selection before saving agent and repository settings together.\nMissing prerequisites remain visible with repair instructions; setup can save configuration before they are repaired.\nExisting transports, paths and compatible native settings are retained.\nAfter enrollment, edit runtime settings in My Workers. Paths and agentControlMode remain local.",
+    details: "Use an interactive terminal to check the environment, choose Copilot, Codex or Claude, and select accessible Projects before the Worker first connects.\nReview the selection before saving agent and repository settings together.\nMissing prerequisites remain visible with repair instructions; setup can save configuration before they are repaired.\nExisting transports, paths and compatible native settings are retained.\nAfter enrollment, edit runtime settings in My Workers. Paths remain local.",
   }, {
     name: "run",
     description: "Run the foreground task worker until interrupted",
     options: [help],
-    details: "Read local identity, service settings, paths and agentControlMode from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml).\nFetch cloud configuration before scheduling. The first connection imports local runtime settings; later starts always use the cloud target.\nAn empty Project selection keeps heartbeats and configuration synchronization running.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
-  }, {
-    name: "attach",
-    description: "Attach an interactive terminal to an existing task runtime",
-    options: [help],
-    details: "Connect to an existing private Herdr runtime without starting a daemon. On macOS, select a task when multiple recorded runtimes exist; the original daemon identity must be verified. Paused tasks remain available for human input. Installations without a lifecycle journal use the existing shared worker session. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
+    details: "Read local identity, service settings, paths from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml).\nFetch cloud configuration before scheduling. The first connection imports local runtime settings; later starts always use the cloud target.\nAn empty Project selection keeps heartbeats and configuration synchronization running.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
     name: "repo",
     description: "Prepare local repository selections before cloud management",
@@ -57,23 +52,13 @@ export const workerDefinition: CommandDefinition = {
     options: [help],
   }, {
     name: "resources",
-    description: "Inspect, recover or explicitly dispose original retained resources",
+    description: "Recover original retained Web resources",
     options: [help],
-    details: "Stop worker run first. These commands use the original worker lock and never start an Agent. Inspection reports original Session, claim, stop evidence, worktree, source and archive disposition as JSON.",
+    details: "Stop worker run first. These commands use the original worker lock and never start an Agent. Recovery checks original Session, claim, stop evidence, worktree and archive.",
     commands: [{
-      name: "list", description: "Inspect retained original execution resources", options: [help],
-    }, {
       name: "recover", description: "Verify or recover a completed Web execution's retained worktree", arguments: task,
       options: [claim, { ...project, required: true }, { names: ["--worktree-id"], description: "Verify this exact original worktree UUID; omission reads the original journal", value: { name: "worktree-id", kind: "text" } }, { names: ["--confirm"], description: "Remove the verified clean original worktree and retire its manifest" }, help],
       details: "Stop worker run first. Without --confirm, verify original service, owner, Worker, terminal claim, Web journal, native stop, ready archive and preserved Git content without deletion. With --confirm, repeat verification and remove only the matching clean worktree without force; keep its branch and journals. Missing original evidence, successor claims, dirty/untracked/ignored files and commits without an observed remote reference refuse recovery. Restore original evidence from backup; a Git marker or done Task alone is insufficient.",
-    }, {
-      name: "retry", description: "Explicitly retry a stopped original archive after fixing its cause", arguments: task,
-      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],
-      details: "Retain the original owner, source and operation. This schedules archive reconciliation only; it cannot recover an Agent or repair corrupt source.",
-    }, {
-      name: "dispose", description: "Record an explicit abandonment or delete stopped original resources", arguments: task,
-      options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, { names: ["--operation-id"], description: "Stable UUID for this explicit disposal decision", value: { name: "operation-id", kind: "text" }, required: true }, { names: ["--action"], description: "abandon retains files; delete removes the selected worktree and recording source", value: { name: "action", kind: "text" }, required: true }, { names: ["--confirm"], description: "Confirm this exact disposal and its loss of local recording data", required: true }, help],
-      details: "Read resources list first. Only the matching terminal claim with confirmed original stop may be disposed. Abandon stops archive retry and keeps files. Delete removes only the original source and worktree through ownership checks. Neither action manufactures ready/unavailable or changes remote archive history. Reuse the same operation ID to reconcile an interrupted decision.",
     }],
   }, {
     name: "repair-markdown",

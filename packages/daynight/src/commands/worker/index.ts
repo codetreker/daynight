@@ -3,7 +3,8 @@ import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseVersionArgument } from "../../api/json.js";
-import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
+import type { ResourceRecoveryRequest } from "./resource-recovery.js";
+type WorkerResourceCommandRequest = { kind: "recover" } & ResourceRecoveryRequest;
 import type { WorkerControlRequest } from "./control.js";
 import type { WorkerRepositoryCommandRequest } from "./configuration-guide.js";
 import { workerDefinition } from "./definition.js";
@@ -11,7 +12,6 @@ import { workerDefinition } from "./definition.js";
 export type WorkerCommandDependencies = {
   resources: (options: { homeDirectory: string; request: WorkerResourceCommandRequest; output: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
   setup: (context: CliContext) => Promise<void>;
-  attach: (options: { homeDirectory: string }) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
   run: (options: { homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
   manage: (options: { homeDirectory: string; packageDirectory: string; version: string; request: WorkerControlRequest; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
@@ -20,7 +20,6 @@ export type WorkerCommandDependencies = {
 const defaultDependencies: WorkerCommandDependencies = {
   resources: async options => (await import("./runtime.js")).runWorkerResources(options),
   setup: async (context) => (await import("./setup.js")).runWorkerSetup(context),
-  attach: async (options) => (await import("./attach.js")).attachWorker(options),
   repository: async (request, context) => (await import("./configuration-guide.js")).runWorkerRepositoryCommand(request, context),
   run: async (options) => (await import("./runtime.js")).runWorker(options),
   manage: async (options) => (await import("./runtime.js")).runWorkerControl(options),
@@ -34,10 +33,6 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   }
   if (command.command.name === "setup") {
     await dependencies.setup(context);
-    return;
-  }
-  if (command.command.name === "attach") {
-    await dependencies.attach({ homeDirectory: context.homeDirectory() });
     return;
   }
   const runtime = () => ({ homeDirectory: context.homeDirectory(), packageDirectory: context.packageDirectory, log: (message: string) => { context.stderr(message); } });
@@ -65,19 +60,7 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
     return;
   }
   if (command.path.at(-2) === "resources") {
-    let request: WorkerResourceCommandRequest;
-    if (command.command.name === "list") request = { kind: "list" };
-    else if (command.command.name === "recover") request = { kind: "recover", taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), ...(command.options.has("--worktree-id") ? { worktreeId: uuid(option("--worktree-id"), "Worktree ID") } : {}), confirmed: command.options.has("--confirm") };
-    else {
-      const target = { taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), sessionId: uuid(option("--session-id"), "Session ID"), worktreeId: uuid(option("--worktree-id"), "Worktree ID") };
-      if (command.command.name === "retry") request = { ...target, kind: "retry" };
-      else {
-        const action = option("--action");
-        if (action !== "abandon" && action !== "delete") throw new UsageError("Resource action must be abandon or delete.", help);
-        if (!command.options.has("--confirm")) throw new UsageError("Resource disposal requires --confirm.", help);
-        request = { ...target, kind: "dispose", action, operationId: uuid(option("--operation-id"), "Operation ID"), confirmed: true };
-      }
-    }
+    const request: WorkerResourceCommandRequest = { kind: "recover", taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), ...(command.options.has("--worktree-id") ? { worktreeId: uuid(option("--worktree-id"), "Worktree ID") } : {}), confirmed: command.options.has("--confirm") };
     await dependencies.resources({ homeDirectory: context.homeDirectory(), request, output: value => context.stdout(value) });
     return;
   }

@@ -1,6 +1,6 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、强制撤回及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/archived/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
+状态：服务端认领、归属更新、释放、强制撤回及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/archived/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，Web backend 与 Controller 提供原生执行及停止证据；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
 
 ## 资源和属性所有权
 
@@ -17,37 +17,34 @@
   "machine": {"id": "3475decc-e9e4-4615-857f-c5f31a2259e1", "name": "build-machine"},
   "platform": "linux",
   "agent": "codex",
-  "agentControlMode": "herdr",
+  "agentControlMode": "web",
   "worktreeId": "45dd8ec8-a8ea-4ac9-a72d-c2ed98fc66f5",
   "phase": "preparing",
-  "herdr": null,
   "nativeSessionId": null,
   "claimedAt": "2026-10-24T12:00:00Z"
 }
 ```
 
-`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 为 herdr/web，是 claim 创建时冻结的执行模式；Codex、Claude、Copilot 均可使用任一模式，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
+`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。新 claim 必须显式声明 `agentControlMode:web`；phase 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要。新记录不包含 herdr，nativeSessionId 未取得时为 null。
 
 认领的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。completed 保留最后身份、工作区及会话信息，不自动过期；release 的历史由原 Session 和 archive 保存；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
 属性定义注册表将 worker 标记为 readOnly；普通 create/PATCH 以及通用属性设置/删除均拒绝公开写入它，即使值与现值相同。PR 修改保留 worker，worker 操作保留其他完整属性。worker 对象作为 task_properties 的一行 JSON 文本保存，类型读取器在业务使用时校验。历史 016_task_worker.sql 曾插入显式 null；属性行迁移冻结旧格式规范化，把 null 转为无行，保留非 null 记录、版本、时间及 PR 字符语义，不做 PostgreSQL JSON 转换。
 
-## 执行模式兼容
+## 历史属性与执行身份
 
-既有请求协议允许省略 agentControlMode 并按其 Herdr 语义处理；显式 null、空串或未知枚举拒绝。新的存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。强制撤回不创建目标执行，后续认领使用新身份和本次执行模式。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
+新 claim 不接受缺失、null 或非 web 的 agentControlMode，也不接受 herdr 更新。历史 Herdr 属性仅用于普通 Task 读取、历史定位和权限判断，保真解码与重编码不授予运行能力；旧 Web 属性可读取缺失或 null 的 herdr，非空资源拒绝。旧任务和 claim 不被自动改写或释放。
 
-属性行迁移为旧非 null worker 文档补充规范模式，把旧 null worker 转为缺失，保留任务版本、时间及 PR 已解码字符串内容。客户端与服务端共同校验 mode/provider 组合。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
-
-Web 认领前通过认证 session-capabilities 请求核验协议、schema/projection 版本和 provider。Claim 的 herdr 始终为 null，phase/nativeSessionId 是执行摘要，不能证明在线或允许换 writer。Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，完整契约见[Task Session](task-session-protocol.md)。丢失 Web 执行证据的 claim 不因 preparing 或 nativeSessionId=null 变成首次启动；保留原模式并暂停，等待原执行来源证明。
+Web 认领前通过认证 session-capabilities 核验协议、schema/projection 和 provider。phase/nativeSessionId 是执行摘要，不证明在线或允许换 writer；Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，见[会话契约](task-session-protocol.md)。丢失 Web 执行证据时保留原身份并拒绝替代启动。
 
 ## HTTP 操作
 
-以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动认领生成新 ID，稳定 workerId 与项目仓库映射先保存，实际远端授予后才登记本机 pending。冻结 Herdr 的原请求标识、精确版本和工具配置在发送前保存为独立本机预留，原 grant 确认后在单一事务内转入 pending 及冻结配置。未知响应不启动资源或重放请求，通过完整自有清单和原 Task 读回对账；同版本与清单缺席本身不能排除迟到授予。预留与共享实例切换的互斥及解除条件由[Herdr 工具启动设计](herdr-tool-launch.md#共享实例切换与恢复)拥有；其他请求仍不凭未知响应补造授予。人工命令的互斥、停止与本机收尾顺序由[worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
+以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回完整 Task 与 no-store，严格拒绝未知或重复字段。自动认领生成新 claimId/worktreeId；远端授予后登记本机 pending 并冻结原配置。未知响应不启动资源或重放，通过完整自有清单和原 Task 读回对账。人工命令的互斥、停止与本机收尾由[Worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
 | POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、agentControlMode、worktreeId；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
-| PATCH `/worker-claim` | version、claimId，及 phase/herdr/nativeSessionId 中至少一个字段；只更新当前执行摘要。 |
+| PATCH `/worker-claim` | version、claimId，及 phase/nativeSessionId 中至少一个字段；只更新当前执行摘要。 |
 | PUT `/status` | version、status；只有 done 目标可附带 claimId，以完成当前 active 归属。 |
 | POST `/worker-claim/release` | version、claimId、stoppedConfirmed:true；释放已停止的执行，返回 todo。 |
 | POST `/worker-claim/withdraw` | version、claimId；原 owner/admin 强制撤回 active 归属，原子清除 worker、返回 todo、清空起止时间并设置 allowAgents=false。 |

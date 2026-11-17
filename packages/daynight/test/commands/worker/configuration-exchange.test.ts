@@ -10,7 +10,7 @@ import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-so
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 const target = (revision = "1"): WorkerCloudDesired => ({ revision, updatedAt: workerTelemetryTime, value: {
-  agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } },
+  toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } },
   maxConcurrent: 1, pollIntervalMs: 30_000, recoveryLimit: 2, preferPlatformSpecificTasks: false,
   native: { agent: "codex", model: null, args: [] }, projects: [],
 } });
@@ -27,12 +27,12 @@ it("keeps the actual HTTP request ID when a dispatched report response has inval
   const current = operation(), requestId = "configuration-response-1";
   const fetch = vi.fn(async () => new Response("{", { status: 200, headers: {
     "Content-Type": "application/json", "X-Request-ID": requestId,
-    "Daynight-User-ID": "22222222-2222-4222-8222-222222222222", "Daynight-Worker-Configuration": "1",
+    "Daynight-User-ID": "22222222-2222-4222-8222-222222222222", "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2",
   } }));
   const client = createApiClient({ serverUrl: "http://127.0.0.1:19099", operation: current, fetch });
   const events: WorkerConfigurationExchangeEvent[] = [], accept = vi.fn(async () => {});
   await expect(syncWorkerConfigurationOnce({ operation: current, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
-    capture: () => ({ bootstrap: null, observation: null }),
+    capture: () => ({ toolPathsBootstrap: null, bootstrap: null, observation: null }),
     send: (sample, body) => client.reportWorkerConfiguration("33333333-3333-4333-8333-333333333333", sample, body), accept,
     observe: event => { events.push(event); },
   } })).rejects.toMatchObject({ name: "ApiError", phase: "protocol", responseRequestId: requestId, outcomeUnconfirmed: true });
@@ -54,7 +54,7 @@ it("uses actual ApiClient dispatch evidence when root cancellation wins before t
   const fetch = vi.fn(async () => { throw new Error("An undispatched report must not invoke fetch."); });
   const client = createApiClient({ serverUrl: "http://127.0.0.1:19099", operation: current, fetch });
   const events: WorkerConfigurationExchangeEvent[] = [], accept = vi.fn(async () => {});
-  const captured: WorkerCloudReport = { bootstrap: null, observation: null };
+  const captured: WorkerCloudReport = { toolPathsBootstrap: null, bootstrap: null, observation: null };
   await expect(syncWorkerConfigurationOnce({ operation: current, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
     capture: () => captured,
     send: (sample, body) => client.reportWorkerConfiguration("33333333-3333-4333-8333-333333333333", sample, body), accept,
@@ -74,17 +74,17 @@ const fixture = () => {
     current: () => state,
     hasAuthority: () => authorityRead,
     waitReady: vi.fn(async () => { order.push("ready"); }),
-    receive: vi.fn(async (received: ReceivedWorkerDesired | null, revision = "0") => { const desired = received?.known ?? null; authorityRead = true; state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
+    receive: vi.fn(async (received: ReceivedWorkerDesired | null, revision = "0") => { const desired = received?.known as WorkerCloudDesired | undefined ?? null; authorityRead = true; state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
     report: vi.fn((bootstrap: WorkerCloudReport["bootstrap"] = null): WorkerCloudReport => {
       order.push("capture");
-      const report: WorkerCloudReport = { controlModeBootstrap: "web", toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, ...(state.desired === null ? { bootstrap, observation: null } : { bootstrap: null, observation: { baseRevision: state.observationRevision, desiredRevision: state.desired.revision, items: [] } }) };
+      const report: WorkerCloudReport = { toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, ...(state.desired === null ? { bootstrap, observation: null } : { bootstrap: null, observation: { baseRevision: state.observationRevision, desiredRevision: state.desired.revision, items: [] } }) };
       captures.set(report, state.generation);
       contexts.set(report, { reportId: `report-${++nextReportId}`, generation: state.generation, baseRevision: state.observationRevision, recordIds: [], failures: [], items: [] });
       return report;
     }),
     isCurrentReport: (report: WorkerCloudReport) => captures.get(report) === state.generation,
     reportContext: (report: WorkerCloudReport) => contexts.get(report),
-    acknowledge: vi.fn(async (sent: WorkerCloudReport, receipt: ReceivedWorkerConfigurationReceipt): Promise<"persisted" | "ignored"> => { if (captures.get(sent) !== state.generation) return "ignored"; state = { generation: state.generation, desired: receipt.desired?.known ?? null, observationRevision: receipt.observationRevision, synchronized: true }; order.push("accept"); return "persisted"; }),
+    acknowledge: vi.fn(async (sent: WorkerCloudReport, receipt: ReceivedWorkerConfigurationReceipt): Promise<"persisted" | "ignored"> => { if (captures.get(sent) !== state.generation) return "ignored"; state = { generation: state.generation, desired: receipt.desired?.known as WorkerCloudDesired | undefined ?? null, observationRevision: receipt.observationRevision, synchronized: true }; order.push("accept"); return "persisted"; }),
   };
   const read = vi.fn(async (_operation: Operation): Promise<ReceivedWorkerConfigurationResource> => { order.push("read"); return receivedResource({ desired: state.desired, observationRevision: state.observationRevision, observation: null }); });
   const send = vi.fn(async (): Promise<ReceivedWorkerConfigurationReportReceipt> => { order.push("send"); return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: state.desired, observationRevision: String(Number(state.observationRevision) + 1), observationAccepted: state.desired !== null }) }; });

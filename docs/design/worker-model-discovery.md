@@ -4,7 +4,7 @@
 
 `commands/worker/read-only/models.ts` 负责输入校验、有效配置、真实 cwd、默认来源与短期分页；`native-selection.ts` 的共享 verifier 负责探测与停止证据。`native-selection-probe.ts` 在被管理的短命进程内读取各 Provider 能力。`discoverWorkerNativeCapabilities` 允许默认未知，原有 `verifyWorkerNativeSelection` 继续严格核验启动选择。
 
-创建前发现使用实际助手的 Web 上下文：Codex 只读取 `config/read` 和完整 `model/list`，不注入 Herdr 的项目信任覆盖；Claude 使用 SDK 自带可执行文件，通过不持久化且不输入消息的查询读取 `supportedModels` 与有效 settings；Copilot 使用助手同源可执行文件及 SessionFs 读取真实配置、将写入留在内存，通过 `model.list/getCurrent` 读取能力。三者均不借用现有 Session。各模型的 effort 由原生字段映射；没有每模型默认字段时保留未知。Herdr 的既有严格验证仍使用其自己的启动参数和可执行文件。
+创建前发现使用实际助手的 Web 上下文：Codex 只读取 `config/read` 和完整 `model/list`，不注入 Herdr 的项目信任覆盖；Claude 使用 SDK 自带可执行文件，通过不持久化且不输入消息的查询读取 `supportedModels` 与有效 settings；Copilot 使用助手同源可执行文件及 SessionFs 读取真实配置、将写入留在内存，通过 `model.list/getCurrent` 读取能力。三者均不借用现有 Session。各模型的 effort 由原生字段映射；没有每模型默认字段时保留未知。启动选择验证使用同一 Web 上下文，严格检查所选模型与强度。
 
 ## 操作合同
 

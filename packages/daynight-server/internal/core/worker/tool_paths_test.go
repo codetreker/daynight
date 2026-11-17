@@ -11,7 +11,7 @@ import (
 
 func TestToolPathsConfigurationRetainsThreeStates(t *testing.T) {
 	document := configurationInputDocument()
-	document["toolPaths"] = map[string]any{"codex": map[string]any{"kind": "path", "path": `/Applications/工具 $()/codex`}, "copilot": map[string]any{"kind": "auto"}, "herdr": nil}
+	document["toolPaths"] = map[string]any{"codex": map[string]any{"kind": "path", "path": `/Applications/工具 $()/codex`}, "copilot": map[string]any{"kind": "auto"}}
 	value, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
 	if err != nil {
 		t.Fatalf("three-state tool configuration rejected: %v", err)
@@ -24,7 +24,7 @@ func TestToolPathsConfigurationRetainsThreeStates(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if string(got["toolPaths"]) != `{"codex":{"kind":"path","path":"/Applications/工具 $()/codex"},"copilot":{"kind":"auto"},"herdr":null}` {
+	if string(got["toolPaths"]) != `{"codex":{"kind":"path","path":"/Applications/工具 $()/codex"},"copilot":{"kind":"auto"}}` {
 		t.Fatalf("tool choices lost: %s", raw)
 	}
 }
@@ -47,8 +47,8 @@ func TestToolPathsTelemetryRetainsObservation(t *testing.T) {
 	}
 }
 
-func TestToolPathsBootstrapCombinesModeIntoOneWrite(t *testing.T) {
-	document := map[string]any{"bootstrap": configurationInputDocument(), "observation": nil, "controlModeBootstrap": "web", "toolPathsBootstrap": map[string]any{"codex": map[string]any{"kind": "path", "path": "/opt/codex"}, "copilot": map[string]any{"kind": "auto"}, "herdr": map[string]any{"kind": "auto"}}}
+func TestToolPathsBootstrapWritesOneRevision(t *testing.T) {
+	document := map[string]any{"bootstrap": configurationInputDocument(), "observation": nil, "toolPathsBootstrap": map[string]any{"codex": map[string]any{"kind": "path", "path": "/opt/codex"}, "copilot": map[string]any{"kind": "auto"}}}
 	exchange, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, document))
 	if err != nil {
 		t.Fatalf("tool bootstrap rejected: %v", err)
@@ -64,22 +64,19 @@ func TestToolPathsIndependentAdoptionAndLegacyCAS(t *testing.T) {
 	ctx, principal := t.Context(), model.Principal{UserID: "user"}
 	path := func(s string) *model.ToolPathChoice { return &model.ToolPathChoice{Kind: "path", Path: s} }
 	auto := &model.ToolPathChoice{Kind: "auto"}
-	bootstrap := model.WorkerToolPaths{Codex: path("/local/codex"), Copilot: path(`C:\Tools\copilot.exe`), Herdr: auto}
+	bootstrap := model.WorkerToolPaths{Codex: path("/local/codex"), Copilot: path(`C:\Tools\copilot.exe`)}
 	dao := configuredDAO("7")
 	dao.current.Desired.Value.ToolPaths.Codex = path("/cloud/codex")
-	web := model.AgentControlModeWeb
-	receipt, err := ExchangeConfiguration(ctx, dao, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &bootstrap, ControlModeBootstrap: &web})
-	if err != nil || receipt.Desired.Revision != "8" || dao.desiredWrites != 1 || *receipt.Desired.Value.ToolPaths.Codex != *path("/cloud/codex") || *receipt.Desired.Value.ToolPaths.Copilot != *bootstrap.Copilot || receipt.Desired.Value.AgentControlMode == nil {
+	receipt, err := ExchangeConfiguration(ctx, dao, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &bootstrap})
+	if err != nil || receipt.Desired.Revision != "8" || dao.desiredWrites != 1 || *receipt.Desired.Value.ToolPaths.Codex != *path("/cloud/codex") || *receipt.Desired.Value.ToolPaths.Copilot != *bootstrap.Copilot {
 		t.Fatalf("independent adoption: %+v %v writes=%d", receipt, err, dao.desiredWrites)
 	}
 	dao.current.Desired = receipt.Desired
-	value := configurationFixture()
-	value.PreserveToolPaths = true
-	value.PreserveAgentControlMode = true
+	value := receipt.Desired.Value
 	_, err = PutConfiguration(ctx, dao, principal, "worker", 7, value)
 	requireFault(t, err, "version_conflict")
 	result, err := PutConfiguration(ctx, dao, principal, "worker", 8, value)
-	if err != nil || result.Desired.Revision != "8" || dao.desiredWrites != 1 || result.Desired.Value.PreserveToolPaths {
+	if err != nil || result.Desired.Revision != "8" || dao.desiredWrites != 1 {
 		t.Fatalf("legacy noop lost choices: %+v %v", result, err)
 	}
 	value = result.Desired.Value
@@ -110,7 +107,7 @@ func TestToolPathsStrictChoiceSyntax(t *testing.T) {
 			t.Fatalf("invalid choice accepted: %+v", choice)
 		}
 	}
-	for _, raw := range []string{`{"codex":null,"copilot":null}`, `{"codex":null,"copilot":null,"herdr":null,"other":null}`, `{"codex":{"kind":"path","path":"/\ud800"},"copilot":null,"herdr":null}`} {
+	for _, raw := range []string{`{"codex":null}`, `{"codex":null,"copilot":null,"other":null}`, `{"codex":{"kind":"path","path":"/\ud800"},"copilot":null}`} {
 		document := configurationInputDocument()
 		document["toolPaths"] = json.RawMessage(raw)
 		if _, err := ParseWorkerConfiguration(configurationInputJSON(t, document)); err == nil {

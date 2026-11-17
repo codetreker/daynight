@@ -28,9 +28,9 @@ Worker 在确认服务、用户和 Worker 身份后建立仅驻留内存的 sour
 
 回执先验证身份与完整 JSON，再分别处理原生三字段和 prompt 子树。原生结果先应用项目选择，随后按捕获的代际接纳 prompt，避免移除项目的迟到响应恢复其值。`unchanged` 必须对应仍存在的已确认正文；`unavailable` 撤销可用性，临时错误保留最近成功值。同步停止并排空后清除内存。
 
-输入在异步资源准备后同步捕获当前 tuple，纯函数追加完整 builtin、user、project、worker；已固定的投递正文继续由原有机制拥有。Herdr 和 Web 以显式等待结果保留真实资源观察；macOS 已完成首次输入的恢复使用独立恢复 builtin，不重放 assignment。独立 retry 需要新正文时使用同一个单次配置报告原语，没有新 timer 或编辑资源 GET。
+输入在异步资源准备后同步捕获当前 tuple，纯函数追加完整 builtin、user、project、worker；已固定的投递正文继续由原有机制拥有。Web 以显式等待结果保留真实资源观察。独立 retry 需要新正文时使用同一个单次配置报告原语，没有新 timer 或编辑资源 GET。
 
-原生边界分别复用完整 Herdr JSON-RPC 编码、macOS terminal paste 和 Web 完整 ticket 的纯校验。超限是明确未提交的等待，不改变恢复预算；按版本 tuple 和原生配置在内存中去重，变化后重新组合。Web 在身份资源准备完成后捕获正文，验证 raw prompt 和完整 ticket 后才固定 `initialPrompt` 并写入同一 ticket。
+原生边界复用 Web 完整 ticket 的纯校验。超限是明确未提交的等待，不改变恢复预算；按版本 tuple 和原生配置在内存中去重，变化后重新组合。Web 在身份资源准备完成后捕获正文，验证 raw prompt 和完整 ticket 后才固定 `initialPrompt` 并写入同一 ticket。
 
 ## 验证边界
 

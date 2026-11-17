@@ -17,7 +17,6 @@ import { createWebExecutionBackend } from "../../../src/commands/worker/backends
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { StartupObservation } from "../../../src/session/startup.js";
@@ -121,7 +120,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     candidates: async function* () {}, update } as unknown as WorkerRemote;
   const advance = vi.spyOn(backend, "advanceResult");
   const coordinator = createWorkerCoordinator({ store: workerStore, webStore: store, webBackend: { ...backend, cleanup: async input => ({ task: input, complete: true }) },
-    git, herdr: {} as WorkerHerdrAdapter, remote, serverOrigin: project.serverOrigin, workerId: task.workerId, platform: "linux",
+    git, userId: identity.userId, remote, serverOrigin: project.serverOrigin, workerId: task.workerId, platform: "linux",
     machine: { id: randomUUID(), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration,
     maxConcurrent: 1, preferPlatformSpecificTasks: false, buildPrompt: () => "fixture", emit() {}, now: () => clock, verifyWebStartupReporting: async () => true });
   disposals.push(async () => { await coordinator.shutdown(); });

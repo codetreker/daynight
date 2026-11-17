@@ -42,8 +42,9 @@ export const WorkerRefresh = ({ refresh, refreshing, readEnabled }: { readonly r
 };
 
 const WorkerErrorDetail = ({ error }: { readonly error: unknown }) => {
-  const { messages: { workers: m, common } } = useI18n();
-  return <><p>{error instanceof TaskCacheError ? m.cacheStorageError : error instanceof ApiError ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError : m.readError : m.readError}</p>
+  const { messages: { workers: m, common }, locale } = useI18n();
+  const upgrade = error instanceof ApiError && (error.code === 'worker_tool_protocol' || error.status === 400 && error.code === 'invalid_input');
+  return <><p>{upgrade ? (locale === 'zh-CN' ? '请升级服务，然后重试。' : 'Upgrade the service and try again.') : error instanceof TaskCacheError ? m.cacheStorageError : error instanceof ApiError ? error.kind === 'network' ? m.networkError : error.kind === 'protocol' ? m.protocolError : m.readError : m.readError}</p>
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 

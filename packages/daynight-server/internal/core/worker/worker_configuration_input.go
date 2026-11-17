@@ -121,17 +121,6 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 	return parseWorkerConfiguration(raw, true)
 }
 
-func configurationControlMode(raw json.RawMessage) (*model.WorkerAgentControlMode, error) {
-	if configurationNull(raw) {
-		return nil, nil
-	}
-	var mode model.WorkerAgentControlMode
-	if err := configurationDecode(raw, &mode); err != nil || (mode != model.AgentControlModeHerdr && mode != model.AgentControlModeWeb) {
-		return nil, invalidInput("Agent control mode must be herdr or web.")
-	}
-	return &mode, nil
-}
-
 // Stored values need structural normalization for semantic comparisons even
 // when they predate current write limits. Only candidates are admitted.
 func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConfiguration, error) {
@@ -139,7 +128,7 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "agentControlMode", "toolPaths", "enableSudoCleanup")
+	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "toolPaths", "enableSudoCleanup")
 	if err != nil {
 		return value, err
 	}
@@ -150,12 +139,6 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	}
 	if rawPaths, ok := fields["toolPaths"]; ok {
 		value.ToolPaths, err = parseToolPaths(rawPaths, true)
-		if err != nil {
-			return value, err
-		}
-	}
-	if rawMode, ok := fields["agentControlMode"]; ok {
-		value.AgentControlMode, err = configurationControlMode(rawMode)
 		if err != nil {
 			return value, err
 		}
@@ -255,7 +238,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 	if !jsonunicode.Valid(raw) {
 		return nil, invalidInput("Worker configuration exchange must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration exchange", true, "bootstrap", "observation", "controlModeBootstrap", "toolPathsBootstrap")
+	fields, err := configurationObject(raw, "configuration exchange", true, "bootstrap", "observation", "toolPathsBootstrap")
 	if err != nil {
 		return nil, err
 	}
@@ -271,12 +254,6 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, parseErr
 		}
 		exchange.ToolPathsBootstrap = &paths
-	}
-	if candidate, exists := fields["controlModeBootstrap"]; exists {
-		exchange.ControlModeBootstrap, err = configurationControlMode(candidate)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if !configurationNull(fields["bootstrap"]) {
 		value, err := ParseWorkerConfiguration(fields["bootstrap"])
@@ -330,7 +307,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "enableSudoCleanup", "native", "agentControlMode"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "enableSudoCleanup", "native"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -357,8 +334,6 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 		}
 		if !configurationNull(item.AppliedValue) {
 			switch item.Key.Kind {
-			case "agentControlMode":
-				_, err = configurationControlMode(item.AppliedValue)
 			case "preferPlatformSpecificTasks", "enableSudoCleanup":
 				var enabled bool
 				err = configurationDecode(item.AppliedValue, &enabled)

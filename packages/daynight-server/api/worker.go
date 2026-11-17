@@ -25,7 +25,7 @@ type WorkerClaim struct {
 	AgentControlMode string        `json:"agentControlMode,omitempty"`
 	WorktreeID       string        `json:"worktreeId"`
 	Phase            string        `json:"phase"`
-	Herdr            *WorkerHerdr  `json:"herdr"`
+	Herdr            *WorkerHerdr  `json:"herdr,omitempty"`
 	NativeSessionID  *string       `json:"nativeSessionId"`
 	ClaimedAt        time.Time     `json:"claimedAt"`
 }

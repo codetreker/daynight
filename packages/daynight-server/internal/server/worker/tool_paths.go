@@ -3,33 +3,17 @@ package worker
 import (
 	"net/http"
 
-	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 const workerToolPathsHeader = "Daynight-Worker-Tool-Paths"
 
-func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error) {
-	var result workerprotocol.Capabilities
-	var err error
-	result.ControlMode, err = controlModeProtocol(header)
-	if err != nil {
-		return result, err
+func requireToolProtocol(header http.Header) error {
+	values := header.Values(workerToolPathsHeader)
+	if len(values) != 1 || values[0] != "2" {
+		return httpx.InvalidInput("Worker tool protocol version 2 is required; upgrade the Worker or refresh Web.")
 	}
-	if values, exists := header[workerToolPathsHeader]; exists {
-		if len(values) != 1 || values[0] != "1" {
-			return result, httpx.InvalidInput("Unsupported Worker tool paths protocol.")
-		}
-		result.ToolPaths = true
-	}
-	return result, nil
+	return nil
 }
 
-func writeWorkerCapabilities(header http.Header, capabilities workerprotocol.Capabilities) {
-	if capabilities.ControlMode {
-		header.Set(workerControlModeHeader, "1")
-	}
-	if capabilities.ToolPaths {
-		header.Set(workerToolPathsHeader, "1")
-	}
-}
+func writeToolProtocol(header http.Header) { header.Set(workerToolPathsHeader, "2") }
