@@ -420,6 +420,16 @@ export const cleanupAll = async (ownerModule: string, environment: NodeJS.Proces
   for (const entry of entries) {
     if (!entry.isFile() || !/^integration\.[A-Za-z0-9]{8}\.json$/.test(entry.name)) continue;
     const root = join(ownerModule, ".tmp", entry.name.slice(0, -5));
+    const receipt = JSON.parse(await readFile(ownerPath(ownerModule, root), "utf8"));
+    if (receipt.version === 1) {
+      if (environment.GITHUB_RUN_ID !== undefined && (receipt.context?.runId !== environment.GITHUB_RUN_ID || receipt.context?.job !== environment.GITHUB_JOB || receipt.context?.attempt !== environment.GITHUB_RUN_ATTEMPT)) continue;
+      results.push({
+        runId: basename(root), phase: "unknown", commandExitCode: null, testExitCode: null, exitCode: 1,
+        cleanupPhase: "resources", cleanup: "failed", status: "failed",
+        error: "Legacy integration ownership receipt requires cleanup by its original owner",
+      });
+      continue;
+    }
     const ownership = await readOwnership(ownerModule, root);
     if (environment.GITHUB_RUN_ID !== undefined) {
       if (ownership.context.runId !== environment.GITHUB_RUN_ID || ownership.context.job !== environment.GITHUB_JOB || ownership.context.attempt !== environment.GITHUB_RUN_ATTEMPT) continue;

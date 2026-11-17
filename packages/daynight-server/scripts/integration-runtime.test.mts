@@ -246,3 +246,24 @@ test("mismatched Redis identity or unknown role fails before removing any contai
   assert.equal(reconciled.status, "failed");
   assert.deepEqual((await docker.get()).removed, [redis.Id]);
 });
+
+
+test("legacy receipt is reported and preserved while current runs are cleaned", async (t) => {
+  const run = await ownedRun(t);
+  const legacyRoot = join(run.ownerModule, ".tmp", "integration.00000000");
+  const legacyReceipt = join(run.ownerModule, ".tmp/integration-owners", "integration.00000000.json");
+  await mkdir(legacyRoot);
+  const legacyData = JSON.stringify({ version: 1, context: { runId: environment.GITHUB_RUN_ID, job: environment.GITHUB_JOB, attempt: environment.GITHUB_RUN_ATTEMPT } });
+  await writeFile(legacyReceipt, legacyData);
+  await writeFile(join(legacyRoot, "legacy-resource"), "preserve");
+
+  const results = await cleanupAll(run.ownerModule, environment);
+  assert.equal(results.length, 2);
+  const legacy = results.find((result) => result.runId === "integration.00000000")!;
+  assert.equal(legacy.cleanup, "failed");
+  assert.match(legacy.error!, /original owner/);
+  assert.equal(await readFile(legacyReceipt, "utf8"), legacyData);
+  assert.equal(await readFile(join(legacyRoot, "legacy-resource"), "utf8"), "preserve");
+  assert.equal(results.find((result) => result.runId === basename(run.root))!.cleanup, "passed");
+  await assert.rejects(access(run.root), { code: "ENOENT" });
+});

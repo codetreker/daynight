@@ -2037,10 +2037,12 @@ After interruption, run the independent reconciliation command from this module:
 bash scripts/integration.sh --cleanup
 ```
 
-Local reconciliation skips runs with a live runner. In CI it selects only the
+Local reconciliation skips current-version runs with a live runner. In CI it selects only the
 current workflow run, job and attempt, then drains that run's owned children and
 resources. It preserves the original command outcome and reports cleanup
-failures. CI invokes it in an always-run step after API validation.
+failures. Legacy version 1 ownership receipts are reported for cleanup by their
+original runner; they do not prevent reconciliation of current runs. CI invokes
+the command in an always-run step after API validation.
 
 Safe evidence is retained under `.tmp/integration-results/<run-id>/`: `build.json`
 binds source/fingerprint, binary hash, toolchain and race mode; `result.json`
