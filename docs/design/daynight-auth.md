@@ -531,16 +531,16 @@ metadata、last_used_at、Actor 或 nullability，不增加外键。
 
 ### 应用用户 WebSocket
 
-仅 `GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/channel` 的 v1/v2
+仅 `GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/channel` 的 v1
 和 `GET /api/v1/test-sessions/{sessionId}/channel` 的 v1 接受应用浏览器载体。调用者提供一个
 实际支持的 Session subprotocol 和一个唯一授权 marker：
 
 ```javascript
-new WebSocket(url, ["daynight.session.v2", `daynight.authorization.${accessToken}`]);
+new WebSocket(url, ["daynight.session.v1", `daynight.authorization.${accessToken}`]);
 ```
 
 adapter 在 Session 版本选择和 `websocket.Accept` 前解析并剥离 marker，只向协议协商提供实际
-Session subprotocol，响应只回显该协议。重复或竞争 marker、畸形输入、缺少实际支持协议，或同时
+Session subprotocol，响应只回显该协议。v2 选择通过认证后由路由拒绝，不能升级浏览器 channel。重复或竞争 marker、畸形输入、缺少实际支持协议，或同时
 存在明确 `Authorization`，均返回 `400 invalid_input`。无效、过期、撤销或错误 profile 的 token
 返回 `401 unauthenticated`；应用 Origin 缺少、错误、多值或配置为空返回 `403 forbidden`。
 Origin 必须精确等于已验证的 `s2s.allowed_origin`，不从 Host 或请求头推导允许值。

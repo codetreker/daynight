@@ -130,15 +130,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3, a4, a5, a6)
 		},
-		DisconnectTerminalViewer: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 string, a7 string) error {
-			b.mu.Lock()
-			fn := b.Funcs.DisconnectTerminalViewer
-			b.mu.Unlock()
-			if err := b.check("DisconnectTerminalViewer", fn != nil); err != nil {
-				return err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6, a7)
-		},
 		FinalizeTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
 			b.mu.Lock()
 			fn := b.Funcs.FinalizeTerminal
@@ -299,16 +290,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			}
 			return fn(a0, a1, a2, a3, a4, a5)
 		},
-		SubmitTerminal: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string, a6 v2.Message) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.SubmitTerminal
-			b.mu.Unlock()
-			if err := b.check("SubmitTerminal", fn != nil); err != nil {
-				var result0 v2.Message
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5, a6)
-		},
 		TerminalArchiveContentReserved: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 io.Closer) (sessionhttp.ArchiveContentForTest, error) {
 			b.mu.Lock()
 			fn := b.Funcs.TerminalArchiveContentReserved
@@ -355,16 +336,6 @@ func (b *routeBackend) wrappedCalls() sessionhttp.ServiceCallsForTest {
 			b.mu.Unlock()
 			if err := b.check("TerminalHistory", fn != nil); err != nil {
 				var result0 map[string]any
-				return result0, err
-			}
-			return fn(a0, a1, a2, a3, a4, a5)
-		},
-		TerminalOperation: func(a0 context.Context, a1 model.Principal, a2 string, a3 string, a4 string, a5 string) (v2.Message, error) {
-			b.mu.Lock()
-			fn := b.Funcs.TerminalOperation
-			b.mu.Unlock()
-			if err := b.check("TerminalOperation", fn != nil); err != nil {
-				var result0 v2.Message
 				return result0, err
 			}
 			return fn(a0, a1, a2, a3, a4, a5)

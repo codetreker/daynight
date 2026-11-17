@@ -113,16 +113,13 @@ func TestDeletedProjectClosesWebSessionChannels(t *testing.T) {
 	}
 }
 
-func TestDeletedProjectClosesTerminalBrowserAfterWorkerCompletion(t *testing.T) {
+func TestTerminalWorkerClosesAfterCompletion(t *testing.T) {
 	f := terminalHTTPSetup(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	path := f.base + "/" + f.message.SessionID
 	acknowledgement := f.ack("1")
-	state := f.knownState("1")
-	browserID := uuid.NewString()
 	f.calls.AllowRepeated("PollTerminal")
-	f.calls.AllowRepeated("TerminalState")
 	f.calls.Configure(func(c *sessionhttp.ServiceCallsForTest) {
 		c.RegisterTerminal = func(ctx context.Context, p model.Principal, project, task string, message v2.Message) (v2.Message, error) {
 			f.scope(t, ctx, p, project, task, message.SessionID)
@@ -145,23 +142,11 @@ func TestDeletedProjectClosesTerminalBrowserAfterWorkerCompletion(t *testing.T) 
 			}
 			return []v2.Message{}, nil
 		}
-		c.TerminalState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
-			f.scope(t, ctx, p, project, task, id)
-			return routeCopy(state), nil
-		}
 		c.DisconnectTerminal = func(ctx context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) error {
 			f.scope(t, ctx, p, project, task, id)
 			_, bounded := ctx.Deadline()
 			if !bounded || fence != f.message.Envelope || epoch != "1" {
 				t.Error("worker cleanup fence/epoch/deadline changed")
-			}
-			return nil
-		}
-		c.DisconnectTerminalViewer = func(ctx context.Context, p model.Principal, project, task, id, actualBrowser, claim, epoch string) error {
-			f.scope(t, ctx, p, project, task, id)
-			_, bounded := ctx.Deadline()
-			if !bounded || actualBrowser != browserID || claim != f.message.ClaimID || epoch != "1" {
-				t.Error("viewer cleanup browser/claim/epoch/deadline changed")
 			}
 			return nil
 		}
@@ -175,23 +160,11 @@ func TestDeletedProjectClosesTerminalBrowserAfterWorkerCompletion(t *testing.T) 
 	if got := f.handshake(t, worker); !reflect.DeepEqual(got, acknowledgement) {
 		t.Fatal("worker ACK changed supplied usecase result")
 	}
-	f.authentication.ExpectCalls(1)
-	browser, _, err := websocket.Dial(ctx, f.server.URL+path+"/channel?browserClientId="+browserID, &websocket.DialOptions{HTTPHeader: f.viewerHeaders(f.h), Subprotocols: []string{v2.Protocol}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer browser.CloseNow()
-	sessionWSRead(t, browser)
-	workerClosed, browserClosed := watchDeletedChannel(ctx, worker), watchDeletedChannel(ctx, browser)
+	workerClosed := watchDeletedChannel(ctx, worker)
 	if err = worker.Ping(ctx); err != nil {
 		t.Fatal("worker unavailable before completion reply", err)
 	}
-	if err = browser.Ping(ctx); err != nil {
-		t.Fatal("browser unavailable before completion reply", err)
-	}
 	completed := &model.Fault{Code: "session_conflict", Message: "Worker execution ended."}
-	disconnected := routeCopy(state)
-	disconnected["connected"] = false
 	var completionReplies atomic.Int32
 	f.calls.Configure(func(c *sessionhttp.ServiceCallsForTest) {
 		c.PollTerminal = func(ctx context.Context, p model.Principal, project, task, id string, fence v2.Envelope, epoch string) ([]v2.Message, error) {
@@ -202,41 +175,11 @@ func TestDeletedProjectClosesTerminalBrowserAfterWorkerCompletion(t *testing.T) 
 			completionReplies.Add(1)
 			return nil, completed
 		}
-		c.TerminalState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
-			f.scope(t, ctx, p, project, task, id)
-			return routeCopy(disconnected), nil
-		}
 	})
 	requireDeletedChannelClosed(t, ctx, workerClosed)
-	f.waitConnections(t, 1)
+	f.waitConnections(t, 0)
 	if completionReplies.Load() == 0 || f.calls.Called("DisconnectTerminal") != 1 {
 		t.Fatal("worker closure did not follow completion reply and one cleanup")
-	}
-	if err = browser.Ping(ctx); err != nil {
-		t.Fatal("terminal browser closed before missing-Project reply", err)
-	}
-	missing := &model.Fault{Code: "not_found", Message: "Project was not found."}
-	var missingReplies atomic.Int32
-	f.calls.Configure(func(c *sessionhttp.ServiceCallsForTest) {
-		c.TerminalState = func(ctx context.Context, p model.Principal, project, task, id string) (map[string]any, error) {
-			f.scope(t, ctx, p, project, task, id)
-			missingReplies.Add(1)
-			return nil, missing
-		}
-		c.DisconnectTerminalViewer = func(ctx context.Context, p model.Principal, project, task, id, actualBrowser, claim, epoch string) error {
-			f.scope(t, ctx, p, project, task, id)
-			_, bounded := ctx.Deadline()
-			if !bounded || actualBrowser != browserID || claim != f.message.ClaimID || epoch != "1" {
-				t.Error("missing-Project viewer cleanup arguments changed")
-			}
-			return missing
-		}
-	})
-	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "not_found") }
-	requireDeletedChannelClosed(t, ctx, browserClosed)
-	f.waitConnections(t, 0)
-	if missingReplies.Load() == 0 || f.calls.Called("DisconnectTerminalViewer") != 1 {
-		t.Fatal("browser closure did not follow missing-Project reply and one cleanup")
 	}
 }
 
