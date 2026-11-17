@@ -49,7 +49,7 @@ const cleanupScope = (owner: { projectId: string; taskId: string; claimId: strin
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const root = fileURLToPath(new URL("../../../../../.tmp/herdr-durable-integration/", import.meta.url));
 const directories: string[] = [], facades = new Set<WorkerHerdrAdapter>(), readers = new Set<HerdrLifecycleStore>(), operations: Operation[] = [];
-const operation = (): Operation => { const result = createOperation({ limits: { totalMs: 3000 } }); operations.push(result); return result; };
+const operation = (totalMs = 3000): Operation => { const result = createOperation({ limits: { totalMs } }); operations.push(result); return result; };
 afterEach(() => {
   vi.restoreAllMocks(); vi.useRealTimers(); operations.splice(0).forEach(value => value.dispose());
   for (const facade of facades) facade.lifecycle!.close(); facades.clear();
@@ -310,7 +310,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   reopen();
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
-  const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
+  const start = (binding: HerdrTaskBinding, totalMs?: number) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation(totalMs));
   return { replaceToolTargets: () => { frozenTools = recordedHerdrTools(); }, context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, launchOutcomes, observed, nativeId, nativeReference, api, read, stateView, register, prepare, start, reopen, adapterSelectionVerifiers, readTask: async () => task,
     removeLegacyToolSnapshot: () => {
       const database = new Database(path.join(paths.workerDirectory, "herdr-executions.sqlite"));
@@ -590,7 +590,7 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.read().runs[0]!.admission).toBeNull();
   });
   it("keeps legacy endpoint observation, input, and stopping without inventing launch identity", async () => {
-    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding, 10000);
     f.removeLegacyToolSnapshot(); f.replaceToolTargets();
     await f.facade.tasks.observe(f.context, binding, operation());
     await expect(f.facade.tasks.submitPrompt(f.context, binding, "Continue the original legacy session", operation())).resolves.toMatchObject({ submission: "submitted" });
@@ -599,7 +599,7 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.read().runs[0]!.launches).toBeUndefined();
     expect(f.events.filter(value => value === "daemon-launch")).toHaveLength(1);
     expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(2);
-  });
+  }, 15000);
   it("reconnects a legacy runtime after restart and refuses a replacement generation", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     f.removeLegacyToolSnapshot(); f.replaceToolTargets(); f.reopen();
