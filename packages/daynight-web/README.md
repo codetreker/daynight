@@ -7,7 +7,7 @@ request cancellation, runtime API decoding, native browser routing and a pure
 dependency graph model with horizontal and vertical layouts. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
 Project navigation includes Overview, Task list, PR list and Tags. The independent PR
-workspace reads saved summaries in six-item cursor pages, filters by state and
+workspace reads saved summaries in six-item cursor pages, filters by state, creator and
 title/number, and opens the existing PR detail reader. Visible workspaces reconcile
 every 15 seconds; hidden sections retain filters, pages and selections while
 cancelling reads. Task graph errors do not block PR browsing. The
