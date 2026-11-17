@@ -16,7 +16,7 @@ const en = {
   active: 'Active', merged: 'Merged', closed: 'Closed', all: 'All', draft: 'Draft', open: 'Open', unknown: 'Unknown',
   authorMissing: 'Author unavailable', sourceMissing: 'Source repository or branch unavailable', repositoryMissing: 'Repository unavailable', branchMissing: 'Branch unavailable',
   updated: 'Updated', count: 'pull requests', includesDraft: 'Includes Draft', previous: 'Previous', next: 'Next', page: 'Page', of: 'of',
-  settings: 'View sync settings', connected: 'GitHub connected', success: 'Last complete sync', webhook: 'Last webhook update',
+  settings: 'View sync settings', connected: 'Connected', success: 'Last complete sync', webhook: 'Last webhook update',
   syncOff: 'Sync is off. Saved pull requests remain readable but will not be updated.',
   historicalPollError: 'The last polling attempt failed.', historicalWebhookError: 'The last webhook update failed.',
   initializing: 'Initial synchronization is in progress. Saved records remain available.',
@@ -41,7 +41,7 @@ const zh: typeof en = {
   active: '活跃', merged: '已合并', closed: '已关闭', all: '全部', draft: 'Draft', open: 'Open', unknown: '未知',
   authorMissing: '作者不可用', sourceMissing: '来源仓库或分支不可用', repositoryMissing: '仓库不可用', branchMissing: '分支不可用',
   updated: '更新于', count: '个 PR', includesDraft: '包含 Draft', previous: '上一页', next: '下一页', page: '页码', of: '/',
-  settings: '查看同步设置', connected: 'GitHub 已连接', success: '最近完整同步成功', webhook: '最近 Webhook 更新',
+  settings: '查看同步设置', connected: '已连接', success: '最近完整同步成功', webhook: '最近 Webhook 更新',
   syncOff: '同步已关闭，已有 PR 仍可读取，暂不会更新。',
   historicalPollError: '最近一次轮询尝试失败。', historicalWebhookError: '最近一次 Webhook 更新失败。',
   initializing: '正在首次完整同步，已有记录继续保留。', disconnected: 'GitHub 连接已断开，以下为保留的数据。',
@@ -123,11 +123,10 @@ const Workspace = (props: PullRequestWorkspaceProps) => {
   const end = start + BigInt(page?.items.length ?? 0) - 1n;
 
   return <div className="pull-request-workspace" ref={workspace}>
-    <div className="project-section-heading pr-heading"><div><h2>{m.title}</h2><p>{m.subtitle}</p></div><button className="button" type="button" onClick={read.refresh} disabled={loading || !props.canRead} aria-busy={loading}><span aria-hidden="true">↻</span> {loading ? m.refreshing : m.refresh}</button></div>
+    <div className="project-section-heading pr-heading"><div><div className="pr-title-line"><h2>{m.title}</h2>{status?.connection === 'connected' && <span className="pr-connected">{m.connected}</span>}</div><p>{m.subtitle}</p></div><button className="button" type="button" onClick={read.refresh} disabled={loading || !props.canRead} aria-busy={loading}><span aria-hidden="true">↻</span> {loading ? m.refreshing : m.refresh}</button></div>
     <div className="pr-sync-status">
       {notes.map(note => <div className={`pr-status-note${note.danger ? ' danger' : ''}`} role="status" key={note.text}>{note.text} {settingsLink}</div>)}
       {read.statusError !== null && <div className="pr-status-note danger" role="alert">{m.statusError} <button type="button" onClick={read.reconcile}>{m.retry}</button></div>}
-      {status?.connection === 'connected' && <span>{m.connected}</span>}
       {status?.poll.lastSuccessAt != null && <span>{m.success}: <time dateTime={status.poll.lastSuccessAt}>{format.dateTime(status.poll.lastSuccessAt)}</time></span>}
       {status?.webhook.lastSuccessAt != null && <span>{m.webhook}: <time dateTime={status.webhook.lastSuccessAt}>{format.dateTime(status.webhook.lastSuccessAt)}</time></span>}
     </div>
