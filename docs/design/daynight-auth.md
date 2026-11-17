@@ -774,6 +774,12 @@ write_outcome_unknown，确认提交后的响应丢失不重复执行操作。Pe
 独立 Project grant 均保持原规则。[直接成员决策](../../.agents/notes/implemented/feature/2026-11-13-direct-team-members.md)
 拥有三阶段边界与明确角色收敛的取舍。
 
+### 按本地 UUID 添加既有 Team 成员
+
+`POST /api/v1/teams/{teamId}/members/{userId}` 在单个 `WriteTeam` 作用域内锁定当前凭据，核验普通 Team admin，再读取目标账号的真实资料及成员关系。不存在关系时固定插入 member，已有任意角色时返回原关系；目标账号缺失明确返回 `user_not_found`，不调用账号初始化。成员与 webhook eligibility 同事务提交，并在等待后以新鲜时间重验凭据。只有确认提交才返回成员和资料；完成、清理及未知提交错误优先于领域拒绝。Team 预锁使同目标并发操作收敛，独立 Project grant 和 Team 元数据保持原规则。
+
+[既有账号加入决策](../../.agents/notes/implemented/feature/2026-11-17-existing-team-members.md)记录接口取舍；公开合同由[鉴权需求](../spec/daynight-auth.md#team-生命周期)拥有。
+
 ### 按外部身份解析 Team 成员
 
 `POST /api/v1/teams/{teamId}/members/resolve` 复用直接成员的主体和外部身份校验，
@@ -825,6 +831,7 @@ HTTP 认证逐请求读取当前会话/PAT 或固定 API OAuth family 并产生 
 | PATCH /api/v1/me | 当前 Session/PAT/API OAuth 本人，仅提交 name/avatarUrl 的非空 subset；缺省保持、null 清除，确认提交后返回原完整 api.User 与 no-store。 |
 | GET/POST /api/v1/teams | 本人成员资格过滤的 Team 分页；原子创建普通 Team 和创建者 admin。 |
 | GET/PATCH/DELETE /api/v1/teams/{teamId} | 详情含本人真实 membership；当前 admin 按元数据 version 改名或删除空普通 Team，删除另匹配名称原文。 |
+| POST /api/v1/teams/{teamId}/members/{userId} | 普通 Team admin 按本地 UUID 添加既有账号，返回真实成员和资料。 |
 | POST /api/v1/teams/{teamId}/member-candidates/search | 普通 Team admin 按姓名或邮箱片段分页搜索既有账号资料；每页在同一快照重验凭据和权限。 |
 | GET / | 交付同一内嵌页面，显示公开推广页；可取消身份提示只改变导航，不授予私有访问。 |
 | GET /login | 交付同一内嵌页面，显示独立登录或将已有会话替换到有效目标。 |

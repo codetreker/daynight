@@ -33,11 +33,12 @@ type TeamOperations interface {
 }
 
 type teamHandler struct {
-	teams         TeamOperations
-	addMember     func(context.Context, model.Principal, string, coreteam.AddTeamMember) (coreteam.DirectMemberResult, error)
-	resolveMember func(context.Context, model.Principal, string, coreteam.ResolveTeamMember) (*model.TeamMember, error)
-	logger        *slog.Logger
-	origin        string
+	teams             TeamOperations
+	addMember         func(context.Context, model.Principal, string, coreteam.AddTeamMember) (coreteam.DirectMemberResult, error)
+	resolveMember     func(context.Context, model.Principal, string, coreteam.ResolveTeamMember) (*model.TeamMember, error)
+	addExistingMember func(context.Context, model.Principal, string, string, string) (coreteam.ExistingMemberResult, error)
+	logger            *slog.Logger
+	origin            string
 }
 
 func RegisterRoutes(mux *http.ServeMux, teams TeamOperations, auth *authhttp.Authentication, logger *slog.Logger) {
@@ -54,7 +55,7 @@ func RegisterRoutes(mux *http.ServeMux, teams TeamOperations, auth *authhttp.Aut
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.removeMember))
 	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
-		allowed := "PATCH, DELETE"
+		allowed := "POST, PATCH, DELETE"
 		if r.PathValue("userId") == "resolve" {
 			allowed = "POST"
 		}
