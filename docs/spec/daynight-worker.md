@@ -148,7 +148,7 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 - macOS 必须将原生启动与首次输入分离，可靠保存原 daemon/shell/native agent 的 boot、出生标识及资源绑定后才开放输入。新冻结映射的首次输入前还须核实 manifest/nonce、逻辑 argv、launch receipt、原 binding、kind/readiness 和完整 helper/native 归属。nativeSessionId 可在最多一次首次输入后补齐；启动成功前必须取得原官方 integration 向同 pane 报告的正确 kind 与合法 UUID，并复核原进程身份。已知值不可更换；事件缺失或结果未知不重发、不换会话、不人工补报。首次输入 pending/dispatching/transport_completed/unknown 跨重启保存，未知结果阻断自动重放，传输成功不等于业务处理恰好一次。
 - macOS 普通重连保持同一 Session 和 executionGeneration，只提升 connectionEpoch；只有原运行已确认停止、claim 有效、native ID 与首次输入结果可用于恢复，才增加实际运行 generation。每次启动或重连产生段边界并显式记录间断，不推算停机期间录制内容。
 - 新冻结执行保留 Agent 与 Herdr 两份 launch；同 claim retry/resume 沿用原选择与原 Session。macOS 新 execution 可使用新独占实例；Linux/Windows 共享新目标等待全部旧执行、认领请求、probe、启动/停止和进程回收责任清空，确认原 daemon 与两个 endpoint 关闭后才可启动并以真实握手确认 applied。原 claim 只能在全部旧树关闭后用同一冻结选择恢复；已授予的 pending claim 可经当前许可与身份核验恢复原 daemon，Agent 启动仍须满足容量。Windows 新 owned tab 使用系统 PowerShell 5 root command 与 ExternalScript，不启动嵌套常驻 shell，不声明 PowerShell 7 支持；native 环境恢复原 PATH。缺文件、无权限、损坏 manifest 或身份不符均不 fallback，helper 退出不代表 native 已回收。
-- Herdr Session v2 必须沿用原 Worker 身份，不使用 Web Controller ticket。Legacy 的 observe/control/archive 能力均为 false，不宣称网页控制、终端录制或最终归档可用；无冻结映射的启动回执和普通输入基线仍只在当前进程，新映射的持久首次输入 fence 不等于完整输入仲裁。macOS 的 Session 能力及持久输入遵循[输入仲裁设计](../design/herdr-input-arbitration.md)和[录制设计](../design/herdr-recording.md)。
+- Herdr Session v2 必须沿用原 Worker 身份，不使用 Web Controller ticket。Legacy 的 observe/control/archive 能力均为 false，不宣称网页控制、终端录制或最终归档可用；无冻结映射的启动回执和普通输入基线仍只在当前进程，新映射的持久首次输入 fence 不等于完整输入仲裁。这些旧执行能力不再由 Worker 提供；[历史录像](../design/herdr-recording.md)保持只读。
 
 ### W-08：人工介入与强制撤回
 

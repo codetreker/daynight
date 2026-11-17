@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createHerdrSessionApi } from "../../../src/commands/worker/herdr/session-api.js";
 import type { SessionV2Message, SessionV2Run } from "../../../src/session/v2/types.js";
 
@@ -236,20 +235,4 @@ it("registers the implemented combined terminal capabilities without altering th
   });
   const message = registration(origin); message.payload.capabilities = { observe: true, control: true, archive: true };
   await expect(createHerdrSessionApi(origin, "token").register(message)).resolves.toEqual(ack(message));
-});
-
-
-it("reads archive state through the original-owner endpoint after task deletion", async () => {
-  const paths: string[] = [];
-  let original!: Registration;
-  const origin = await listen((req, res) => {
-    paths.push(req.url!);
-    if (!req.url?.endsWith("/archive/state")) { res.statusCode = 410; res.end("deleted"); return; }
-    send(res, state(original));
-  });
-  original = registration(origin);
-  const expected = { owner: original.payload.owner, sessionId: original.sessionId, claimId: original.claimId, executionGeneration: "1" };
-  await expect(createHerdrArchiveApi(origin, "original-token").state(expected)).resolves.toMatchObject({ sessionId: original.sessionId });
-  expect(paths).toEqual([`/api/v1/projects/${uuid(4)}/tasks/${uuid(5)}/sessions/${uuid(1)}/archive/state`]);
-  await expect(createHerdrSessionApi(origin, "original-token").state(expected)).rejects.toMatchObject({ status: 410 });
 });

@@ -16,12 +16,11 @@ historical maintenance. An unknown value does not select deletion or start an
 upload. A false value selects local recording deletion; an existing selection
 survives later configuration changes. Web persists the choice in its terminal
 cleanup record and serializes source readers, repair, upload and removal under
-the original execution's source lock. Herdr uses its existing recording
-serializer and content-only disposition intent and completion. Both delete only
-after the original stop, worktree and local settlement have finished. Previously
-ready cloud content and receipts remain unchanged. The [Worker design](../../../../docs/design/daynight-worker.md)
-and [Herdr recording design](../../../../docs/design/herdr-recording.md) own the
-mechanisms and recovery boundaries.
+the original execution's source lock. Deletion follows the original stop,
+worktree and local settlement. Previously ready cloud content and receipts remain
+unchanged. The [Worker design](../../../../docs/design/daynight-worker.md) owns
+the mechanisms and recovery boundaries. Herdr recording execution has since been
+removed; existing Herdr resources remain the user's responsibility.
 
 This extends the [negotiated configuration decision](../architecture/2026-11-17-worker-archive-configuration.md)
 and the [independent Herdr cleanup decision](../bug-fix/2026-11-16-herdr-cleanup-independent-of-archive.md).

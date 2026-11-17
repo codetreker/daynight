@@ -23,3 +23,9 @@ This supersedes the runtime admission and shared instance ownership in the [Herd
 ## Consequences
 
 Old Herdr resources are neither observed nor managed by this runtime. They are not proven stopped or cleaned up. Web and Bot still require their real tool inspection and cleanup; an unavailable or unconfirmed probe remains a failure rather than a fabricated success.
+
+The uncalled Herdr local recording sampler, store, archive writer and resource
+orchestration are also removed. Uploaded historical recordings retain their
+independent read-only format and integrity checks; existing local resources
+remain the user's responsibility. Input and lifecycle leaves remain until their
+own consumers are removed.

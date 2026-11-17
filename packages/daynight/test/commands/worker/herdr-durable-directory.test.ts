@@ -2,9 +2,6 @@ import { existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, rmSync, fsync
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { ensureDurableDirectory } from "../../../src/platform/durable-directory.js";
-import { openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
-import type { SessionV2Owner } from "../../../src/session/v2/types.js";
-import archive from "../../session/fixtures/v2/valid-archive.json" with { type: "json" };
 vi.mock("node:fs", async importOriginal => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return { ...fs, fsyncSync: vi.fn(fs.fsyncSync) };
@@ -21,11 +18,10 @@ test.skipIf(process.platform === "win32")("syncs every newly created directory e
   ensureDurableDirectory(directory);
   for (const value of [root, path.dirname(path.dirname(directory)), path.dirname(directory), directory]) expect(observed).toContain(lstatSync(value).ino);
 });
-test.skipIf(process.platform === "win32")("rejects recording preparation when its new root cannot be synced into the Worker directory", () => {
-  const root = fixture(), recordings = path.join(root, "recordings"), directory = path.join(recordings, archive.sessionId), parent = lstatSync(root).ino;
+test.skipIf(process.platform === "win32")("rejects a directory when its new entry cannot be synced into its parent", () => {
+  const root = fixture(), recordings = path.join(root, "recordings"), parent = lstatSync(root).ino;
   vi.mocked(fsyncSync).mockImplementation(fd => { if (existsSync(recordings) && fstatSync(fd).ino === parent) throw Object.assign(new Error("parent sync failed"), { code: "EIO" }); });
-  expect(() => openHerdrRecordingStore({ directory, owner: archive.owner as SessionV2Owner, sessionId: archive.sessionId, claimId: archive.claimId })).toThrow("parent sync failed");
-  expect(existsSync(path.join(directory, "manifest.json"))).toBe(false);
+  expect(() => ensureDurableDirectory(recordings)).toThrow("parent sync failed");
   // Retrying an interrupted mkdir must sync the already visible directory entry.
   expect(() => ensureDurableDirectory(recordings)).toThrow("parent sync failed");
 });

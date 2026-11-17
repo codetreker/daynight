@@ -10,7 +10,7 @@
 
 独占 daemon 是停止范围的一部分。Herdr 的普通 workspace 关闭会触发上游自行发现进程并发送信号，不能替代客户端对原进程实例的校验。受控停止先验证并冻结原运行，在确认资源范围后先停止独占 daemon，再停止原 shell、native agent 与已证明归属的后代，避免 daemon 收尾再次使用变化后的 PID。
 
-Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller ticket。macOS Worker 组合持续录制、严格输入与归档消费者后声明 observe/control/archive 能力；源、checkpoint、最终回执及资源处置由[录制设计](herdr-recording.md)拥有。协议能力不替代原生与页面组合验收，也不将其他平台提升为同等支持。
+Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller ticket。此前 macOS Worker 组合持续录制、严格输入与归档消费者后声明 observe/control/archive 能力；本机录制与归档消费者现已删除，[历史录像设计](herdr-recording.md)描述保留的只读能力。协议能力不替代原生与页面组合验收，也不将其他平台提升为同等支持。
 
 ## 身份与存储
 
