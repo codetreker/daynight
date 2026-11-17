@@ -2039,3 +2039,19 @@ func terminalControlInputError(f *terminalControlFixture, phase context.Context,
 	f.operations.resetWrites()
 	return terminalControlError(f.fixture, phase, fn)
 }
+
+func TestTerminalUserControlInvalidatesUnconsumedPermit(t *testing.T) {
+	f := terminalControlSetup(t)
+	r := f.terminal.Record(t)
+	r.AutomationRecoveries = map[string]*terminalAutomationRecovery{
+		"pending":  {},
+		"consumed": {State: v2.AutomationRecoveryState{Consumed: &v2.AutomationRecoveryConsumption{ExecutionGeneration: "2"}}},
+	}
+	f.terminal.SetRecord(t, r)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.submit(t, f.msg("control_request", req))
+	got := f.terminal.Record(t).AutomationRecoveries
+	if !got["pending"].Invalidated || got["consumed"].Invalidated {
+		t.Fatalf("control request changed retained permit evidence incorrectly: %+v", got)
+	}
+}

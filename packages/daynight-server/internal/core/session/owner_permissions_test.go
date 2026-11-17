@@ -222,3 +222,24 @@ func TestPersistedNonOwnerTerminalOperationsCannotAcquireControl(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalBindingRejectsForeignScopeAndDeletedNonOwner(t *testing.T) {
+	op := &Operation{}
+	access := func() *TerminalAccess {
+		return &TerminalAccess{record: &terminalRecord{Owner: v2.Owner{ProjectID: "project", TaskID: "task", OwnerUserID: "owner"}}}
+	}
+	owner := model.Principal{Kind: model.PATCredential, UserID: "owner"}
+	for _, scope := range [][2]string{{"foreign", "task"}, {"project", "foreign"}} {
+		if err := op.BindTerminal(access(), &TaskAccess{}, owner, scope[0], scope[1], false); err == nil {
+			t.Fatal("foreign scope was accepted", scope)
+		}
+	}
+	for _, principal := range []model.Principal{{Kind: model.PATCredential, UserID: "other"}, {Kind: model.SessionCredential, UserID: "owner"}} {
+		if err := op.BindTerminal(access(), &TaskAccess{}, principal, "project", "task", true); err == nil {
+			t.Fatal("deleted Task admitted a non-owner credential", principal)
+		}
+	}
+	if err := op.BindTerminal(access(), &TaskAccess{}, owner, "project", "task", true); err != nil {
+		t.Fatal("original owner rejected", err)
+	}
+}

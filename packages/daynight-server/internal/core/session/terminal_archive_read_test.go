@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strconv"
 	"testing"
@@ -516,4 +517,67 @@ func TestTerminalHistoryPreservesWebAndHerdrContentAcrossClaims(t *testing.T) {
 		t.Fatal("corrupt web history was silently omitted from the mixed result")
 	}
 	f.dao.FinishContext(corruptPhase)
+}
+
+type failedHistoryObject struct {
+	filestorage.Storage
+	failure  error
+	failOpen bool
+	closed   *bool
+}
+
+func (s failedHistoryObject) Open(ctx context.Context, bucket, path string) (filestorage.Object, error) {
+	if s.failOpen {
+		return filestorage.Object{}, s.failure
+	}
+	obj, err := s.Storage.Open(ctx, bucket, path)
+	if err != nil {
+		return obj, err
+	}
+	obj.Body = &failedHistoryBody{ReadCloser: obj.Body, failure: s.failure, closed: s.closed}
+	return obj, nil
+}
+
+type failedHistoryBody struct {
+	io.ReadCloser
+	failure error
+	closed  *bool
+}
+
+func (r *failedHistoryBody) Read([]byte) (int, error) { return 0, r.failure }
+func (r *failedHistoryBody) Close() error             { *r.closed = true; return r.ReadCloser.Close() }
+
+func TestTerminalHistoryMissingStatusAndStorageFailures(t *testing.T) {
+	t.Run("missing archive status", func(t *testing.T) {
+		f, message, doc := historicalArchiveFixture(t)
+		f.dao.TerminalArchiveFn = func(_ context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
+			if id != message.SessionID {
+				t.Fatal("wrong archive")
+			}
+			return v2.ArchiveStatus{}, nil, "", model.ErrNotFound
+		}
+		status, err := f.readStatus(t.Context(), message.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := status.Payload.(v2.ArchiveStatus)
+		if payload.State != "pending" || payload.FinalizationID == nil || *payload.FinalizationID != doc.FinalizationID {
+			t.Fatalf("missing archive status: %+v", payload)
+		}
+	})
+	for _, failOpen := range []bool{true, false} {
+		t.Run(map[bool]string{true: "open", false: "read"}[failOpen], func(t *testing.T) {
+			f, message, _ := historicalArchiveFixture(t)
+			failure := errors.New("historical storage failure")
+			closed := false
+			f.s.files = failedHistoryObject{Storage: f.s.files, failure: failure, failOpen: failOpen, closed: &closed}
+			content, err := f.readContent(t.Context(), message.SessionID)
+			if content != nil || !errors.Is(err, failure) {
+				t.Fatalf("content=%v err=%v", content, err)
+			}
+			if !failOpen && !closed {
+				t.Fatal("failed object read did not close the body")
+			}
+		})
+	}
 }

@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -302,5 +304,38 @@ func TestTerminalArchiveChecksEachRunsCaptureAndZeroContentProof(t *testing.T) {
 	doc.UnavailableRuns[0].Evidence.RecordingEnabled = false
 	if err = verifyTerminalArchiveRecord(r, doc); err != nil {
 		t.Fatal("matching zero-run proof", err)
+	}
+}
+
+func TestTerminalConnectionRejectsMissingOrCorruptStoredState(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		t.Run(map[bool]string{false: "storage failure", true: "corrupt state"}[corrupt], func(t *testing.T) {
+			f, m := terminalFixture(t)
+			failure := errors.New("terminal read failed")
+			f.dao.LockTerminalFn = func(_ context.Context, id string) ([]byte, error) {
+				if id != m.SessionID {
+					t.Fatal("wrong Session")
+				}
+				if corrupt {
+					return []byte(`{`), nil
+				}
+				return nil, failure
+			}
+			phase := f.TerminalPhase(t.Context(), false, nil)
+			defer f.dao.FinishContext(phase)
+			err := f.s.BindTerminalConnection(phase, f.p, f.project, f.task, m.SessionID, m.Envelope, "1")
+			if err == nil {
+				t.Fatal("bad state admitted")
+			}
+			if !corrupt && !errors.Is(err, failure) {
+				t.Fatalf("storage error lost: %v", err)
+			}
+			if corrupt {
+				var invalid *json.SyntaxError
+				if !errors.As(err, &invalid) {
+					t.Fatalf("invalid JSON error lost: %v", err)
+				}
+			}
+		})
 	}
 }
