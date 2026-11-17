@@ -209,3 +209,15 @@ func TestTerminalHistoryReadsPersistedArchiveIndependently(t *testing.T) {
 		t.Fatal("incorrect archive digest accepted")
 	}
 }
+
+func TestTerminalHistoryRejectsInvalidRecordAndMissingScope(t *testing.T) {
+	for _, input := range []string{`{`, `{"Envelope":false}`, `{"Runs":"invalid"}`} {
+		if _, err := decodeTerminalArchiveRecord([]byte(input)); err == nil {
+			t.Fatalf("accepted invalid persisted record %q", input)
+		}
+	}
+	s := &Execution{Engine: NewEngine(nil)}
+	if _, err := s.TerminalArchiveStatus(t.Context(), model.Principal{}, "project", "task", "session"); err == nil || err.Error() != "terminal history scope unavailable" {
+		t.Fatalf("missing history scope: %v", err)
+	}
+}
