@@ -76,7 +76,7 @@ const fixture = async (): Promise<{ provider: Provider; certificate: Buffer; cle
   }
 };
 
-const authorize = async (provider: Provider, certificate: Buffer): Promise<{ code: string; verifier: string; callback: string }> => {
+const authorize = async (provider: Provider, certificate: Buffer, identity = "admin"): Promise<{ code: string; verifier: string; callback: string }> => {
   const verifier = randomBytes(32).toString("base64url");
   const callback = "http://127.0.0.1:12345/auth/callback";
   const state = randomBytes(16).toString("base64url");
@@ -85,7 +85,7 @@ const authorize = async (provider: Provider, certificate: Buffer): Promise<{ cod
   assert.equal(page.status, 200);
   assert.match(page.body, /Authorize local identity/);
   const requestId = page.body.match(/name="request" value="([^"]+)"/)![1]!;
-  const authorization = await request(provider, certificate, "github.com", "/login/oauth/authorize", { method: "POST", body: new URLSearchParams({ request: requestId }).toString() });
+  const authorization = await request(provider, certificate, "github.com", "/login/oauth/authorize", { method: "POST", body: new URLSearchParams({ request: requestId, identity }).toString() });
   assert.equal(authorization.status, 302);
   const location = new URL(authorization.headers.get("location")!);
   assert.equal(location.origin + location.pathname, callback);
@@ -114,6 +114,10 @@ test("local CONNECT and TLS complete OAuth, preserve state and return a verified
     assert.equal(emails.status, 200);
     assert.deepEqual(JSON.parse(emails.body), [{ email: "admin@example.test", primary: true, verified: true }]);
     assert.equal((await exchange(context.provider, context.certificate, authorization)).status, 400);
+    const member = await exchange(context.provider, context.certificate, await authorize(context.provider, context.certificate, "member"));
+    const memberToken = (JSON.parse(member.body) as { access_token: string }).access_token;
+    const memberProfile = await request(context.provider, context.certificate, "api.github.com", "/user", { token: memberToken });
+    assert.deepEqual(JSON.parse(memberProfile.body), { id: 2, login: "e2e-member", email: "member@example.test", name: "E2E Member", avatar_url: null });
   } finally { await context.cleanup(); }
 });
 

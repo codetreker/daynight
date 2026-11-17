@@ -11,9 +11,9 @@ import { ManagementError, SecretDialog } from './feedback';
 type ReadReason = 'initial' | 'background' | 'reconcile';
 type Action = { readonly kind: 'create' } | { readonly kind: 'revoke'; readonly invitation: TeamInvitation };
 
-export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = false, permissionReady = true, permissionRevision = 0, getPermissionRevision, onRoute, editable, actorRole, unavailable, admission, onIdentityMismatch, onPermissionChange, onGuardChange }: {
+export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = false, permissionReady = true, permissionRevision = 0, getPermissionRevision, onRoute, editable, actorRole, unavailable, admission, onIdentityMismatch, onPermissionChange, onGuardChange, canManage }: {
   readonly teamId: string; readonly teamName: string; readonly active: boolean; readonly admissionBlocked?: boolean; readonly permissionReady?: boolean; readonly permissionRevision?: number; readonly getPermissionRevision?: () => number | null; readonly onRoute: boolean; readonly editable: boolean; readonly actorRole: 'admin' | 'member' | null; readonly unavailable: boolean;
-  readonly admission: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onPermissionChange: () => void; readonly onGuardChange: (retain: boolean, lock: boolean) => void;
+  readonly admission: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onPermissionChange: () => void; readonly onGuardChange: (retain: boolean, lock: boolean) => void; readonly canManage?: () => boolean;
 }) => {
   const { locale, messages: { auth: { management: { members: m, common } }, common: globalCommon } } = useI18n();
   const zh = locale === 'zh-CN';
@@ -45,7 +45,7 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   const guard = useRef(onGuardChange); guard.current = onGuardChange;
   const unknown = op.result?.kind === 'unknown';
   const memberWithoutManagement = actorRole === 'member';
-  useEffect(() => { guard.current(op.pending || op.publicationPending || unknown || op.publicationError !== null || issue !== null || uncertain.size > 0 || secret !== null, op.pending || op.publicationError !== null || unknown && !memberWithoutManagement); }, [op.pending, op.publicationPending, unknown, op.publicationError, issue, uncertain.size, secret, memberWithoutManagement]);
+  useEffect(() => { guard.current(op.pending || op.publicationPending || unknown || op.publicationError !== null || issue !== null || uncertain.size > 0 || secret !== null, op.pending || op.publicationPending || op.publicationError !== null || unknown && !memberWithoutManagement); }, [op.pending, op.publicationPending, unknown, op.publicationError, issue, uncertain.size, secret, memberWithoutManagement]);
   useEffect(() => {
     if (memberWithoutManagement) { loaded.current = false; fresh.current = false; setItems(null); if (unknown) setAction(null); }
   }, [unknown, memberWithoutManagement]);
@@ -98,11 +98,11 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   }, [needsRefresh, refreshRevision, canRead, admissionBlocked, permissionReady, load, getPermissionRevision]);
   const check = () => { void load().then((ok) => { if (ok && operation.current.result?.kind === 'unknown') { setIssue(operation.current.result.error); setObserved(true); operation.current.clear(); setAction(null); } }); };
   const open = (next: Action) => {
-    if (!active || !editable || loading || reconciling || op.pending || unknown || op.publicationError !== null || secret !== null || error !== null) return;
+    if (!active || !editable || canManage && !canManage() || loading || reconciling || op.pending || unknown || op.publicationError !== null || secret !== null || error !== null) return;
     operation.current.clear(); setCompletedAction(null); setAction(next); setReceipt(null);
   };
   const submit = () => {
-    if (!action || action === completedAction || secret !== null || !active || !editable || authRequestsPaused() || !permissionReady || getPermissionRevision && getPermissionRevision() !== loadedPermission.current || !fresh.current || loading || reconciling || op.pending || op.publicationPending && op.outcome === 'confirmed' || unknown || op.publicationError !== null || error !== null) return;
+    if (!action || action === completedAction || secret !== null || !active || !editable || canManage && !canManage() || authRequestsPaused() || !permissionReady || getPermissionRevision && getPermissionRevision() !== loadedPermission.current || !fresh.current || loading || reconciling || op.pending || op.publicationPending && op.outcome === 'confirmed' || unknown || op.publicationError !== null || error !== null) return;
     if (action.kind === 'revoke' && uncertain.has(action.invitation.id)) return;
     guard.current(true, true);
     const submitted = action, routeRevision = route.current.revision;

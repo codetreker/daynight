@@ -10,6 +10,7 @@ type Authorization = {
   state: string;
   challenge: string;
 };
+type Identity = "admin" | "member";
 
 export const providerClientId = "product-e2e-github";
 export const providerClientSecret = "product-e2e-github-secret";
@@ -59,8 +60,8 @@ export const startProvider = async (options: {
 }): Promise<Provider> => {
   const [cert, key] = await Promise.all([readFile(options.certificatePath), readFile(options.keyPath)]);
   const requests = new Map<string, Authorization>();
-  const codes = new Map<string, Authorization>();
-  const tokens = new Set<string>();
+  const codes = new Map<string, Authorization & { identity: Identity }>();
+  const tokens = new Map<string, Identity>();
   const sockets = new Set<Socket>();
   let closing = false;
 
@@ -94,7 +95,7 @@ export const startProvider = async (options: {
       }
       const requestId = identifier();
       requests.set(requestId, authorization);
-      respond(response, 200, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Local GitHub authorization</title></head><body><h1>Local GitHub authorization</h1><p>Sign in as admin@example.test</p><form method="post" action="/login/oauth/authorize"><input type="hidden" name="request" value="${requestId}"><button type="submit">Authorize local identity</button></form></body></html>`, "text/html; charset=utf-8");
+      respond(response, 200, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Local GitHub authorization</title></head><body><h1>Local GitHub authorization</h1><form method="post" action="/login/oauth/authorize"><input type="hidden" name="request" value="${requestId}"><button type="submit" name="identity" value="admin">Authorize local identity</button><button type="submit" name="identity" value="member">Authorize member identity</button></form></body></html>`, "text/html; charset=utf-8");
       return;
     }
     if (url.hostname === "github.com" && url.pathname === "/login/oauth/authorize" && request.method === "POST") {
@@ -106,8 +107,10 @@ export const startProvider = async (options: {
         json(response, 400, { error: "invalid_request" });
         return;
       }
+      const identity = parameters.get("identity") ?? "admin";
+      if (identity !== "admin" && identity !== "member") { json(response, 400, { error: "invalid_identity" }); return; }
       const code = identifier();
-      codes.set(code, authorization);
+      codes.set(code, { ...authorization, identity });
       const callback = new URL(authorization.redirectUri);
       callback.searchParams.set("code", code);
       callback.searchParams.set("state", authorization.state);
@@ -126,7 +129,7 @@ export const startProvider = async (options: {
         return;
       }
       const token = identifier();
-      tokens.add(token);
+      tokens.set(token, authorization.identity);
       json(response, 200, { access_token: token, token_type: "Bearer", scope: "read:user user:email" });
       return;
     }
@@ -136,10 +139,12 @@ export const startProvider = async (options: {
         json(response, 401, { message: "Bad credentials" });
         return;
       }
+      const identity = tokens.get(authorization.slice("Bearer ".length))!;
+      const email = identity === "admin" ? "admin@example.test" : "member@example.test";
       if (url.pathname === "/user") {
-        json(response, 200, { id: 1, login: "e2e-admin", email: "admin@example.test", name: "E2E Administrator", avatar_url: null });
+        json(response, 200, { id: identity === "admin" ? 1 : 2, login: `e2e-${identity}`, email, name: identity === "admin" ? "E2E Administrator" : "E2E Member", avatar_url: null });
       } else {
-        json(response, 200, url.searchParams.get("page") === null || url.searchParams.get("page") === "1" ? [{ email: "admin@example.test", primary: true, verified: true }] : []);
+        json(response, 200, url.searchParams.get("page") === null || url.searchParams.get("page") === "1" ? [{ email, primary: true, verified: true }] : []);
       }
       return;
     }
