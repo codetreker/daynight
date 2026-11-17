@@ -15,7 +15,7 @@
 
 ## 目标配置
 
-基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。独立能力协商分别决定 agentControlMode 和 toolPaths 的必需字段。服务端输入拒绝未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON。Worker 对成功响应的未知内容遵循下述保留规则，已知字段校验保持严格。
+基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。非 null 目标在直接配置响应中始终提供 enableSudoCleanup；写入可省略，省略时按下述规则保留或初始化。独立能力协商分别决定 agentControlMode 和 toolPaths 的必需字段。服务端输入拒绝未知、重复、其他必填字段缺失、非法 UTF-8/NUL、错误类型和尾随 JSON。Worker 对成功响应的未知内容遵循下述保留规则，已知字段校验保持严格。
 
 | 字段 | 语义 |
 | --- | --- |
@@ -23,6 +23,7 @@
 | pollIntervalMs | 1000..60000 的整数，单位毫秒 |
 | recoveryLimit | 0..10 的整数 |
 | preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
+| enableSudoCleanup | 布尔值；默认 false，保存目标不代表 Worker 已应用或执行 sudo |
 | agentControlMode | 协商后为 herdr 或 web；已有旧目标尚未采纳时可为 null，不是第三种模式 |
 | toolPaths | 工具能力协商后为固定三键 codex/copilot/herdr，各项为未采纳 null、显式自动或显式路径 |
 | native | 完整 {agent,model,args}，Agent 为 codex、copilot 或 claude |
@@ -50,13 +51,19 @@ known 仅从已知路径投影并按原合同严格验证，未知 observation k
 
 本项未知内容保留不新增能力协商；既有 agentControlMode/toolPaths 的发送准入与服务端严格输入合同继续有效。支持扩展容忍的客户端必须先实际采用，服务随后才能直接增加新字段；未打补丁的旧严格客户端不因此取得兼容能力。
 
+## 兼容基线与上线
+
+服务直接返回 enableSudoCleanup，不为该字段新增能力头或端点。上线前须确认需要持续使用的 Worker 已运行支持未知配置保留的版本，Web 已采用相应兼容版本，仍打开的严格旧页面已刷新。代码合入或发版本身不能证明这些客户端已实际采用；尚未打补丁的严格旧客户端不属于新增字段后的支持基线。若仍需支持它们，服务应保持原格式直到兼容基线就绪。
+
+兼容但尚不认识该字段的 Worker 保留目标，继续处理已知配置，并不把未知目标报告为已应用。兼容 Web 在修改已知字段时保留该值。新服务提供目标不表示 Worker 已具备 sudo 清理实现，也不表示生产环境已经启用它。
+
 ## 首次导入与编辑
 
 完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode。toolPathsBootstrap 是完整三项非 null choice 或整体 null，只填现有目标中对应的 null 项。候选来自同一捕获的本机配置：明确 web 保持 web，未指定模式才为 herdr；省略的本地工具项成为 auto。模式和多个工具的采纳合并为一次最终值持久化，只推进一次 revision；完整首次导入不额外升版，任何编码或容量失败回滚全部采纳。
 
 网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同。网页先明确 Codex 时，随后 bootstrap 只填仍未采纳的 Copilot/Herdr；bootstrap 先提交时，旧 revision 的网页 PUT 冲突，不能自动重放。已保存的非 null choice 不被候选覆盖；恢复 auto 后本地旧路径不再出现。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
 
-PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取时的目标版本，为 1..9223372036854775807 的规范十进制字符串，不接受前导零、符号、小数或指数。版本不符为 409 version_conflict；规范值相同不递增目标版本或修改时间。目标尚未导入时返回 409 configuration_not_initialized，不能通过 PUT 创建它；revision:"0" 不是合法创建操作。达到最大正 int64 后需要真实变化时为 409 version_exhausted，同值 no-op 仍有效。
+PUT 使用 {revision,value} 替换已初始化目标。若 value 省略 enableSudoCleanup，服务在目标版本检查与同一事务内保留当前值；显式 false 是关闭，null 和非布尔值无效。首次 bootstrap 省略该字段时初始化为 false，已有目标不被后续完整 bootstrap 覆盖。revision 是读取时的目标版本，为 1..9223372036854775807 的规范十进制字符串，不接受前导零、符号、小数或指数。版本不符为 409 version_conflict；规范值相同不递增目标版本或修改时间。目标尚未导入时返回 409 configuration_not_initialized，不能通过 PUT 创建它；revision:"0" 不是合法创建操作。达到最大正 int64 后需要真实变化时为 409 version_exhausted，同值 no-op 仍有效。
 
 新增或修改的项目条目必须可访问。原样保留或删除已选但后来失权的条目，不阻塞其他配置编辑；不能获取失权项目的名称或仓库信息。
 
@@ -66,7 +73,7 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 未协商请求仍使用原严格结构：GET 和报告回执省略 agentControlMode，配置资源观测省略同名项。旧 PUT 在目标 CAS 和同一事务锁内保留当前模式，只替换原协议字段。旧存储记录缺失模式通过专用旧格式解码成为未采纳状态；新写入合同不因升级而放宽。
 
-已经持久化 mode 应用观测后，服务回退仍必须提供旧严格客户端可解析的配置响应。旧服务后续报告若替换了模式证据，再次升级时该实际值保持尚未确认，直到新的 Worker 报告，不能重建伪 applied 状态。
+已经持久化 mode 应用观测后，服务回退不得向未协商的客户端回显 mode 项；新增直接字段的兼容基线仍按上述要求执行。旧服务后续报告若替换了模式证据，再次升级时该实际值保持尚未确认，直到新的 Worker 报告，不能重建伪 applied 状态。
 
 新客户端未收到回显时按旧合同解析并继续本机模式，不向旧服务发送新正文。运行中的 Worker 必须继续探测服务升级或回退，并按新读取的能力构造后续报告，不自动重放结果未知的请求。Web 禁用该字段并提供升级说明，其他字段保持可编辑。支持能力的旧目标尚未采纳时显示等待同步，不能将默认 herdr 当作实际已应用。
 
@@ -90,18 +97,19 @@ Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2�
 
 ## 应用观测
 
-每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。未协商托管模式的本批 items 最多 1025 个不同 key；协商后最多 1026 项，其中非 mode 项仍最多 1025 个，应用值遵循目标配置相同的字段与数值限制。
+每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。本批 items 的原非 mode、非 sudo 项最多 1025 个不同 key，enableSudoCleanup 与协商后的 agentControlMode 各有一个独立名额；总数未协商模式时最多 1026 项，协商后最多 1027 项。应用值遵循目标配置相同的字段与数值限制。
 
 | kind | appliedValue |
 | --- | --- |
 | maxConcurrent、pollIntervalMs、recoveryLimit | 对应合法标量或 null |
 | preferPlatformSpecificTasks | true 或 false 表示已应用的优先策略；尚无确认值时为 null |
+| enableSudoCleanup | true 或 false 表示实际应用的清理设置；尚无确认值时为 null |
 | agentControlMode | herdr 或 web 表示已应用模式；尚无确认值时为 null |
 | native、projectNative | 完整 native 元组或 null |
 | projectPreparation | true 表示已准备；没有可确认结果时为 null |
 | projectRemoval | true 表示已移除/停止；没有可确认结果时为 null |
 
-null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false 是已应用关闭，不能解释为缺少结果。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
+null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false 和 enableSudoCleanup:false 分别表示对应设置已应用关闭，不能解释为缺少结果。服务不会因保存或初始化目标而生成应用观察；不认识该字段的兼容 Worker 不报告该项。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
 
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 

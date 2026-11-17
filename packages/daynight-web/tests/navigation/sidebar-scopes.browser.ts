@@ -53,14 +53,20 @@ for (const width of [320, 390, 768, 1360]) {
       const selector = sidebar.locator('.team-switch');
       await expect(selector).toHaveAttribute('title', new RegExp(chinese ? '团队' : 'Team'));
       await expect(selector).toHaveAttribute('title', new RegExp(longName.trim().slice(0, 20)));
+      await expect(selector).toHaveAttribute('aria-label', chinese ? `切换 Team: 团队, ${longName}` : `Switch Team: Team, ${longName}`);
+      await expect(selector.locator('.team-switch-text')).toHaveText(longName);
+      await expect(selector.locator('.team-switch-text > *')).toHaveCount(1);
       const geometry = await selector.evaluate(element => {
         const name = element.querySelector<HTMLElement>('.team-switch-name')!;
+        const avatar = element.querySelector<HTMLElement>('.team-avatar')!;
         const arrow = element.querySelector<HTMLElement>('.team-chevron')!;
-        const parent = element.getBoundingClientRect(), arrowBox = arrow.getBoundingClientRect();
-        return { truncated: name.scrollWidth > name.clientWidth, arrowRight: arrowBox.right, parentRight: parent.right };
+        const parent = element.getBoundingClientRect(), arrowBox = arrow.getBoundingClientRect(), nameBox = name.getBoundingClientRect(), avatarBox = avatar.getBoundingClientRect();
+        return { truncated: name.scrollWidth > name.clientWidth, arrowRight: arrowBox.right, parentRight: parent.right, centerDifference: Math.abs((nameBox.top + nameBox.bottom - avatarBox.top - avatarBox.bottom) / 2), textHeight: element.querySelector<HTMLElement>('.team-switch-text')!.getBoundingClientRect().height, nameHeight: nameBox.height };
       });
       expect(geometry.truncated).toBe(true);
       expect(geometry.arrowRight).toBeLessThanOrEqual(geometry.parentRight);
+      expect(geometry.centerDifference).toBeLessThanOrEqual(1);
+      expect(geometry.textHeight).toBe(geometry.nameHeight);
       const groups = sidebar.locator('.sidebar-group');
       await expect(groups).toHaveCount(3);
       const tasks = sidebar.getByRole('link', { name: chinese ? '进行中的任务' : 'In-progress tasks', exact: true });
@@ -105,6 +111,8 @@ for (const width of [320, 390, 768, 1360]) {
       } else {
         await page.getByRole('button', { name: chinese ? '折叠侧栏' : 'Collapse sidebar' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(68);
+        await expect(selector.locator('.team-switch-text')).toBeHidden();
+        await expect(selector.locator('.team-chevron')).toBeHidden();
         await expect(sidebar.locator('.sidebar-projects')).toBeHidden();
         await expect(tasks).toBeVisible();
       }

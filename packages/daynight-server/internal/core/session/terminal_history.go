@@ -2,10 +2,7 @@ package session
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
@@ -83,99 +80,6 @@ func (s *Execution) CurrentTerminal(ctx context.Context, p model.Principal, proj
 		}
 		out, err = s.terminalState(ctx, tx, r, t, p.UserID == r.Owner.OwnerUserID)
 		return err
-	})
-	return out, err
-}
-
-type terminalHistoryCursor struct{ Project, Task, Created, ID string }
-
-func (s *Execution) TerminalHistory(ctx context.Context, p model.Principal, project, taskID, token string, limit int) (map[string]any, error) {
-	return s.terminalHistory(ctx, p, project, taskID, token, limit, false)
-}
-
-func (s *Execution) terminalHistory(ctx context.Context, p model.Principal, project, taskID, token string, limit int, includeBinding bool) (map[string]any, error) {
-	if limit < 1 || limit > 200 || len(token) > v2.MaxHistoryCursorBytes {
-		return nil, fault("invalid_payload", "Invalid Session history page.")
-	}
-	var position terminalHistoryCursor
-	var before *time.Time
-	var beforeID *string
-	if token != "" {
-		raw, err := base64.RawURLEncoding.DecodeString(token)
-		if err != nil || json.Unmarshal(raw, &position) != nil || position.Project != project || position.Task != taskID {
-			return nil, fault("invalid_payload", "Invalid Session history cursor.")
-		}
-		at, err := time.Parse(time.RFC3339Nano, position.Created)
-		if err != nil {
-			return nil, fault("invalid_payload", "Invalid Session history timestamp.")
-		}
-		if _, err = uuid.Parse(position.ID); err != nil {
-			return nil, fault("invalid_payload", "Invalid Session history identity.")
-		}
-		before = &at
-		beforeID = &position.ID
-	}
-	var out map[string]any
-	err := s.taskRun(ctx, p, project, taskID, func(op *Operation, scope store.SessionScope, task *TaskAccess, _ func(string) (*Access, error)) error {
-		if task.task.Type == model.TaskTypeGoal {
-			out = map[string]any{"items": []map[string]any{}, "nextCursor": (*string)(nil)}
-			return nil
-		}
-		_, tx := op.scoped(scope)
-		rows, err := tx.dao.TerminalHistory(ctx, project, taskID, before, beforeID, limit+1)
-		if err != nil {
-			return err
-		}
-		items := []map[string]any{}
-		var nextCursor *string
-		for _, row := range rows {
-			id, claim, backend, created := row.ID, row.Claim, row.Backend, row.Created
-			snapshot, terminal := row.Snapshot, row.Terminal
-			state, hash, size, completeness := row.State, row.Hash, row.Size, row.Completeness
-			if len(items) == limit {
-				last := items[len(items)-1]
-				value := base64.RawURLEncoding.EncodeToString(encode(terminalHistoryCursor{Project: project, Task: taskID, Created: last["createdAt"].(string), ID: last["sessionId"].(string)}))
-				nextCursor = &value
-				break
-			}
-			content := "native_timeline"
-			generation := ""
-			var ended *string
-			if backend == "herdr" {
-				content = "terminal_recording"
-				var r terminalRecord
-				if err = json.Unmarshal(terminal, &r); err != nil {
-					return err
-				}
-				generation = r.Envelope.ExecutionGeneration
-				if len(r.Runs) > 0 {
-					ended = r.Runs[len(r.Runs)-1].StoppedAt
-				}
-			}
-			if backend == "web" {
-				var v struct {
-					ExecutionGeneration string `json:"executionGeneration"`
-				}
-				if err = json.Unmarshal(snapshot, &v); err != nil {
-					return err
-				}
-				generation = v.ExecutionGeneration
-			}
-			archiveState := "unavailable"
-			if backend == "herdr" {
-				archiveState = "pending"
-			}
-			if state != nil {
-				archiveState = *state
-			}
-			items = append(items, map[string]any{"sessionId": id, "claimId": claim, "executionGeneration": generation, "agentControlMode": backend, "contentKind": content, "createdAt": created.UTC().Format(time.RFC3339Nano), "endedAt": ended, "archive": map[string]any{"state": archiveState, "sha256": hash, "byteLength": size, "completeness": completeness}})
-			if includeBinding {
-				w := task.task.Worker
-				items[len(items)-1]["currentBinding"] = w != nil && w.ClaimID == claim && string(w.AgentControlMode) == backend
-			}
-		}
-		out = map[string]any{"items": items, "nextCursor": nextCursor}
-		return nil
 	})
 	return out, err
 }

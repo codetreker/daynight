@@ -1,5 +1,5 @@
 import { awaitAbortable } from '../../../daynight/src/api/abort';
-import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
+import { decodeStrictJson } from '../../../daynight/src/strict-json';
 import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { id, malformed, record, string, timestamp } from './parse';
 import { parseConfigurationRevision } from './worker-configuration';
@@ -73,7 +73,7 @@ const decodePromptJson = async (response: Response, signal: AbortSignal): Promis
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    return decodeStrictSessionJson(bytes, PROMPT_RESPONSE_BYTES);
+    return decodeStrictJson(bytes, PROMPT_RESPONSE_BYTES);
   } finally {
     signal.removeEventListener('abort', cancel);
     try { if (!cancelled) await awaitAbortable(reader.cancel().catch(() => undefined), signal); }

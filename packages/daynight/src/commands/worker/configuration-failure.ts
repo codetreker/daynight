@@ -2,8 +2,8 @@ import { getSystemErrorMap } from "node:util";
 import { OperationError } from "../../api/operation.js";
 import type { WorkerCloudFailure } from "../../api/worker-configuration.js";
 import { ToolSelectionError, type ToolSelectionCode } from "../../platform/tool-executables.js";
-import { HerdrCommandDeadlineError, HerdrCommandError } from "./herdr/command.js";
-import { NativeVersionOutputError } from "./herdr/version-probe.js";
+import { OwnedCommandDeadlineError, OwnedCommandError } from "./owned-command.js";
+import { NativeVersionOutputError } from "./native-version.js";
 
 export type ConfigurationFileOperation = "read" | "directory" | "persist";
 export type ConfigurationFailureReason = ToolSelectionCode | "timeout" | "operation_limit" | "disposed" | "authentication_required" | "invalid_configuration" | "invalid_output" | "command_failed" | "unavailable";
@@ -78,7 +78,7 @@ export const classifyConfigurationFailure = (error: unknown): ConfigurationFailu
   }
   if (error instanceof WorkerConfigurationSourceError) return { code: "invalid_configuration", reason: "invalid_configuration" };
   if (error instanceof NativeVersionOutputError) return { code: "invalid_output", reason: "invalid_output" };
-  if (error instanceof HerdrCommandDeadlineError) return { code: "timeout", reason: "timeout" };
-  if (error instanceof HerdrCommandError && error.exitCode !== null && Number.isSafeInteger(error.exitCode) && error.exitCode > 0) return { code: "command_failed", reason: "command_failed" };
+  if (error instanceof OwnedCommandDeadlineError) return { code: "timeout", reason: "timeout" };
+  if (error instanceof OwnedCommandError && error.exitCode !== null && Number.isSafeInteger(error.exitCode) && error.exitCode > 0) return { code: "command_failed", reason: "command_failed" };
   return { code: "unavailable", reason: "unavailable" };
 };

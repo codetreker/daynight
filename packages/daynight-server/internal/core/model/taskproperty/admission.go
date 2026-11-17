@@ -53,7 +53,7 @@ func AdmitValue(name string, normalized json.RawMessage) error {
 			}
 		}
 	case "worker":
-		value, err := decodeWorker(normalized)
+		value, err := decodeStoredWorker(normalized)
 		if err != nil {
 			return err
 		}

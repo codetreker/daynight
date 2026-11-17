@@ -40,6 +40,24 @@ const getByScope = (name: string) => {
 beforeEach(() => { focused = true; vi.spyOn(document, "hasFocus").mockImplementation(() => focused); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 
 describe("Team workspace navigation", () => {
+  it.each(["en", "zh-CN"] as const)("shows only the workspace name while retaining its type in %s", async (locale) => {
+    window.history.replaceState(null, "", `/teams/${a}`);
+    install(); createLocaleRender(locale)(<AuthenticatedApp />);
+    const chinese = locale === "zh-CN";
+    const label = chinese ? "切换 Team: 团队,   Alpha  " : "Switch Team: Team,   Alpha  ";
+    const control = await screen.findByRole("button", { name: chinese ? "切换 Team: 团队, Alpha" : "Switch Team: Team, Alpha" }, { timeout: 10000 });
+    expect(control).toHaveAttribute("aria-label", label);
+    expect(control).toHaveAttribute("title", label);
+    expect(control.querySelector(".team-switch-text")?.textContent).toBe("  Alpha  ");
+    expect(control.querySelector(".team-switch-text")?.children).toHaveLength(1);
+
+    act(() => navigate(`/teams/${personal}`));
+    const personalLabel = chinese ? "切换 Team: 个人空间, 个人" : "Switch Team: Personal space, Personal";
+    const personalControl = await screen.findByRole("button", { name: personalLabel }, { timeout: 10000 });
+    expect(personalControl).toHaveAttribute("title", personalLabel);
+    expect(personalControl.querySelector(".team-switch-text")?.textContent).toBe(chinese ? "个人" : "Personal");
+    expect(personalControl.querySelector(".team-switch-text")?.children).toHaveLength(1);
+  });
   it.each([[`/teams/${a}`, a], ["/projects", personal]])("keeps the paginated Team directory independent of shared projects on %s", async (path, teamId) => {
     window.history.replaceState(null, "", path);
     const second = { ...project, id: "00000000-0000-4000-8000-000000000006", name: "Team second", ownership: { teamId, version: 1n } };
@@ -1232,6 +1250,8 @@ describe("Team selection at cold workspace entries", () => {
     render(<AuthenticatedApp />);
     await waitForState(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
     expect(selector()).toHaveAttribute("aria-label", "Switch Team: Loading Teams");
+    expect(selector()?.querySelector(".team-switch-text")?.textContent).toBe("Loading Teams");
+    expect(selector()?.querySelector(".team-switch-text")?.children).toHaveLength(1);
     for (const name of ["Projects", "Team settings"]) {
       const link = within(screen.getByRole("complementary", { name: "Workspace navigation" })).getByRole("link", { name });
       expect(link).toHaveAttribute("aria-disabled", "true"); expect(link).not.toHaveAttribute("href");
@@ -1259,6 +1279,8 @@ describe("Team selection at cold workspace entries", () => {
     expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${a}`))).toBe(false);
     await act(async () => pending.resolve(json({ error: { code: "internal_error", message: "private", requestId: "rq-restore" } }, 500)));
     const notice = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+    expect(selector()?.querySelector(".team-switch-text")?.textContent).toBe("Unable to load Teams");
+    expect(selector()?.querySelector(".team-switch-text")?.children).toHaveLength(1);
     expect(notice).toHaveTextContent("rq-restore"); expect(notice).not.toHaveTextContent("private");
     expect(localStorage.getItem(savedKey)).toBe(a);
     expect(screen.getByRole("heading", { name: "Shared during restoration" })).toBeInTheDocument();

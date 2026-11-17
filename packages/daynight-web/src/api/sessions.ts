@@ -1,7 +1,7 @@
 import { awaitAbortable } from '../../../daynight/src/api/abort';
 import { parseSessionArchive, parseSessionArchiveStatus, parseSessionArchiveManifest, verifySessionArchiveMetadata, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, SESSION_ARCHIVE_TIMELINE_MAX_BYTES, SESSION_ARCHIVE_MANIFEST_MAX_BYTES, type SessionArchive, type SessionArchiveStatus, type SessionArchiveResourceReference } from '../../../daynight/src/session/archive';
 import { createSessionResourceClient, type SessionResourceClient } from '../../../daynight/src/session/resource-client';
-import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
+import { decodeStrictJson } from '../../../daynight/src/strict-json';
 import { STARTUP_REPORT_HEADER } from '../../../daynight/src/session/startup';
 import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId, readAuthRequestGeneration } from './client';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
@@ -114,7 +114,7 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
           const archive = parseSessionArchive(archiveEnvelope(value));
           if (archive.sessionId !== id) throw new ApiError('protocol');
           return archive;
-        }, async () => { rawBytes = await boundedArchiveBytes(response, signal, SESSION_ARCHIVE_MAX_BYTES + 1024); return decodeStrictSessionJson(rawBytes, SESSION_ARCHIVE_MAX_BYTES + 1024); });
+        }, async () => { rawBytes = await boundedArchiveBytes(response, signal, SESSION_ARCHIVE_MAX_BYTES + 1024); return decodeStrictJson(rawBytes, SESSION_ARCHIVE_MAX_BYTES + 1024); });
         assertCurrent();
         if (archive.schemaVersion === 3) {
           if (archive.recordId !== id) throw new ApiError('protocol');

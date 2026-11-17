@@ -21,7 +21,7 @@ import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { mappingFiles } from "../../../src/commands/worker/herdr/tool-launch-protocol.js";
-import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
 
 type Entry = Record<string, unknown>;
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -622,7 +622,7 @@ describe("native argument ownership", () => {
     const { unknownResponse, mismatch, cwdVariant } = input;
     const phaseFailure = "phaseFailure" in input && typeof input.phaseFailure === "string" ? input.phaseFailure : undefined;
     const cancellation = new AbortController();
-    const prerequisiteFailure = phaseFailure?.endsWith("-aborted") ? new HerdrCommandCleanupError([new Error("isolated unconfirmed close")], new Error("isolated command deadline")) : new Error("isolated prerequisite command timeout");
+    const prerequisiteFailure = phaseFailure?.endsWith("-aborted") ? new OwnedCommandCleanupError([new Error("isolated unconfirmed close")], new Error("isolated command deadline")) : new Error("isolated prerequisite command timeout");
     let mapping: HerdrToolLaunchMapping;
     const ready = vi.fn(async (_pid: number) => { if (phaseFailure?.startsWith("readiness")) { if (phaseFailure.endsWith("-aborted")) cancellation.abort(); throw prerequisiteFailure; } });
     const f = await fixture("copilot", { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, undefined, { toolMapping: async () => mapping });

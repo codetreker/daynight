@@ -11,8 +11,8 @@ import { parse as parseToml } from "smol-toml";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { assertCodexIntegrationHome, createHerdrEnvironment, createHerdrInstance, createHerdrNativeEnvironment, createHerdrVersionObserver, resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
-import type { HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
-import { terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
+import type { OwnedSpawn } from "../../../src/commands/worker/owned-command.js";
+import { terminateOwnedProcess } from "../../../src/commands/worker/owned-command.js";
 import { herdrIpcAddress } from "../../../src/commands/worker/herdr/rpc.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { createToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
@@ -72,7 +72,7 @@ const fixture = async (extra: NodeJS.ProcessEnv = {}) => {
   const events = path.join(root, "events.jsonl"); const ready = path.join(root, "ready");
   const worker = { herdrDirectory: root, logsDirectory: path.join(root, "l") };
   const environment: NodeJS.ProcessEnv = { ...process.env, FIXTURE_EVENTS: events, FIXTURE_READY: ready, ...extra };
-  const start: HerdrSpawn = (_file, args, options) => { const child = spawn(process.execPath, [script, ...args], options); children.push(child); return child; };
+  const start: OwnedSpawn = (_file, args, options) => { const child = spawn(process.execPath, [script, ...args], options); children.push(child); return child; };
   const instance = createHerdrInstance({ paths: worker, environment, spawnProcess: start });
   return { root, worker, environment, script, events, ready, start, instance };
 };
@@ -81,7 +81,7 @@ afterEach(async () => {
   operations.splice(0).forEach((op) => op.dispose());
   for (const child of children.splice(0)) {
     if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) continue;
-    terminateOwnedHerdrProcess(child);
+    terminateOwnedProcess(child);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("A private Herdr fixture process remained alive.")), 3_000);
       child.once("close", () => { clearTimeout(timer); resolve(); });

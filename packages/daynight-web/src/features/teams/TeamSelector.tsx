@@ -92,7 +92,7 @@ export const TeamSelector = ({ personalId, selectedId, visibilityTeamId, onNavig
           if (open) { const options = items(); (edge === "last" ? options[options.length - 1] : options[0])?.focus(); }
           else show(edge);
         }
-      }}><span className="team-avatar" aria-hidden="true">{avatar}</span><span className="team-switch-text"><span className="team-switch-type">{type}</span><span className="team-switch-name">{title}</span></span><span className="team-chevron" aria-hidden="true">⌄</span></button>
+      }}><span className="team-avatar" aria-hidden="true">{avatar}</span><span className="team-switch-text"><span className="team-switch-name">{title}</span></span><span className="team-chevron" aria-hidden="true">⌄</span></button>
     {open && <div className="team-options" id={menuId} ref={menu} role="menu" aria-label={m.switchTeam} popover="auto" onKeyDown={(event) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {

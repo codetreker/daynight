@@ -42,7 +42,7 @@ const install = async (page: Page): Promise<State> => {
       if (state.mode === 'github_unavailable' || state.mode === 'github_rate_limited') return error(state.mode, 502);
       if (state.mode === 'unknown') return error('github_write_outcome_unknown', 503);
       if (state.mode === 'conflict') return error('version_conflict', 409);
-      state.app = { ...state.app, version: '5', ...(body.name === undefined ? {} : { name: String(body.name) }) }; return send(state.app);
+      state.app = { ...state.app, version: String(BigInt(state.app.version) + 1n), ...(body.name === undefined ? {} : { name: String(body.name) }) }; return send(state.app);
     }
     if (path === `/api/v1/github/apps/${state.app.id}/removal-preview`) {
       state.impactReads++; if (state.impactDenied) return error('not_found', 404); if (state.holdImpactRecheck && state.projectReads > 0) await state.holdImpactRecheck;
@@ -152,16 +152,50 @@ for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
   });
 }
 
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) {
+  test(`separate credential editors at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await install(page); state.app.version = '9007199254740993';
+    state.app.name = 'Long application name '.repeat(8);
+    state.app.webhookUrl = `https://${'long-host-name.'.repeat(10)}example.test/api/v1/github/apps/${appId}/webhook`;
+    await page.setViewportSize({ width, height: 900 }); await page.goto(`/github-apps/${appId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const names = locale === 'en'
+      ? { key: 'Change private key', secret: 'Change Webhook secret', saveKey: 'Save private key', saveSecret: 'Save Webhook secret', label: 'Private key', cancel: 'Cancel', editName: 'Edit name', name: 'Registration name', saveName: 'Save name' }
+      : { key: '更换私钥', secret: '更换 Webhook secret', saveKey: '保存私钥', saveSecret: '保存 Webhook secret', label: '私钥', cancel: '取消', editName: '修改名称', name: '登记名称', saveName: '保存名称' };
+    const keyOpener = page.getByRole('button', { name: names.key }); await keyOpener.click();
+    let dialog = page.getByRole('dialog'), key = dialog.getByLabel(names.label);
+    await expect(key).toBeFocused(); await expect(dialog.getByLabel('Webhook secret')).toHaveCount(0);
+    await page.keyboard.press('Shift+Tab'); await expect.poll(() => dialog.evaluate(element => element.contains(document.activeElement))).toBe(true);
+    await key.fill(`-----BEGIN PRIVATE KEY-----\n${'A'.repeat(500)}\n-----END PRIVATE KEY-----`);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(keyOpener).toBeFocused();
+    await keyOpener.click(); dialog = page.getByRole('dialog'); key = dialog.getByLabel(names.label); await expect(key).toHaveValue('');
+    await key.fill('new-key'); await dialog.getByRole('button', { name: names.saveKey }).click(); await expect(dialog).toHaveCount(0);
+    expect(state.writes[0]!.body).toEqual({ version: '9007199254740993', expectedUserId: actorId, privateKeyPem: 'new-key' });
+    const secretOpener = page.getByRole('button', { name: names.secret }); await secretOpener.click(); dialog = page.getByRole('dialog');
+    const secret = dialog.getByLabel('Webhook secret'); await expect(secret).toBeFocused(); await expect(dialog.getByLabel(names.label)).toHaveCount(0);
+    await expect(secret).toHaveAttribute('type', 'password'); await expect(secret).toHaveValue('');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await secret.fill(' new-secret '); await dialog.getByRole('button', { name: names.saveSecret }).click(); await expect(dialog).toHaveCount(0);
+    expect(state.writes[1]!.body).toEqual({ version: '9007199254740994', expectedUserId: actorId, webhookSecret: ' new-secret ' });
+    await secretOpener.click(); await expect(page.getByRole('dialog').getByLabel('Webhook secret')).toHaveValue('');
+    await page.getByRole('dialog').getByRole('button', { name: names.cancel, exact: true }).click(); await expect(secretOpener).toBeFocused();
+    await page.getByRole('button', { name: names.editName }).click(); dialog = page.getByRole('dialog');
+    await dialog.getByLabel(names.name).fill('Renamed'); await dialog.getByRole('button', { name: names.saveName }).click(); await expect(dialog).toHaveCount(0);
+    expect(state.writes[2]!.body).toEqual({ version: '9007199254740995', expectedUserId: actorId, name: 'Renamed' });
+  });
+}
+
 test('direct configuration and removal preserve privacy and exact versions', async ({ page }) => {
   const state = await install(page); await page.goto(`/github-apps/${appId}`);
   await expect(page.getByRole('heading', { name: 'Platform App' })).toBeVisible();
   await page.reload(); await expect(page.getByRole('heading', { name: 'App configuration' })).toBeVisible();
-  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  await page.getByRole('button', { name: 'Edit name' }).click();
   const edit = page.getByRole('dialog');
-  await expect(edit.getByLabel('Private key')).toHaveValue('');
-  await expect(edit.getByLabel('Webhook secret')).toHaveValue('');
+  await expect(edit.getByLabel('Private key')).toHaveCount(0);
+  await expect(edit.getByLabel('Webhook secret')).toHaveCount(0);
   await edit.getByLabel('Registration name').fill('Updated App');
-  await edit.getByRole('button', { name: 'Verify and save' }).click();
+  await edit.getByRole('button', { name: 'Save name' }).click();
   await expect(edit).toHaveCount(0);
   expect(state.writes[0]!.body).toEqual({ version: '4', expectedUserId: actorId, name: 'Updated App' });
   await page.getByRole('button', { name: 'Delete App', exact: true }).click();
@@ -180,9 +214,9 @@ test('direct configuration and removal preserve privacy and exact versions', asy
 
 test('conflict keeps the draft and unknown creation is never replayed', async ({ page }) => {
   const state = await install(page); await page.goto(`/github-apps/${appId}`);
-  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  await page.getByRole('button', { name: 'Edit name' }).click();
   const edit = page.getByRole('dialog'); await edit.getByLabel('Registration name').fill('Draft name');
-  state.mode = 'conflict'; await edit.getByRole('button', { name: 'Verify and save' }).click();
+  state.mode = 'conflict'; await edit.getByRole('button', { name: 'Save name' }).click();
   await expect(edit).toContainText('The configuration or impact changed');
   await expect(edit.getByLabel('Registration name')).toHaveValue('Draft name');
   expect(state.writes).toHaveLength(1);
@@ -199,7 +233,7 @@ test('conflict keeps the draft and unknown creation is never replayed', async ({
 
 test('foreground refresh keeps the draft and permission loss clears pending secrets', async ({ page }) => {
   const state = await install(page); await page.goto(`/github-apps/${appId}`);
-  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  await page.getByRole('button', { name: 'Change Webhook secret' }).click();
   const dialog = page.getByRole('dialog'), secret = dialog.getByLabel('Webhook secret');
   await secret.fill('sensitive-draft'); await secret.focus();
   const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
@@ -210,13 +244,14 @@ test('foreground refresh keeps the draft and permission loss clears pending secr
   await expect.poll(() => state.reads).toBeGreaterThan(reads);
   await expect(secret).toHaveValue('sensitive-draft'); await expect(secret).toBeFocused();
   const gate = Promise.withResolvers<void>(); state.holdPatch = gate.promise;
-  await dialog.getByRole('button', { name: 'Verify and save' }).click();
+  await dialog.getByRole('button', { name: 'Save Webhook secret' }).click();
   await expect.poll(() => state.writes.length).toBe(1);
   state.denied = true; await other.bringToFront(); await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
   await page.bringToFront(); await expect(dialog).toHaveCount(0);
   await expect(page.getByText('This App is unavailable or you do not have access.')).toBeVisible();
-  gate.resolve(); state.holdPatch = null;
-  await expect(page.getByText('Configuration saved.')).toBeVisible();
+  const response = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/github/apps/${appId}` && response.request().method() === 'PATCH');
+  gate.resolve(); state.holdPatch = null; await response;
+  await expect(page.getByText('Webhook secret saved.')).toHaveCount(0);
   await expect(page.getByText('sensitive-draft')).toHaveCount(0);
   await other.close();
 });
@@ -224,8 +259,8 @@ test('foreground refresh keeps the draft and permission loss clears pending secr
 test('returning to an App retains its visible draft until access is confirmed lost', async ({ page }) => {
   const state = await install(page); await page.goto('/github-apps');
   await page.getByRole('button', { name: 'Manage' }).click();
-  await page.getByRole('button', { name: 'Edit configuration' }).click();
-  await page.getByLabel('Webhook secret').fill('retained-secret');
+  await page.getByRole('button', { name: 'Change Webhook secret' }).click();
+  await page.getByRole('dialog').getByLabel('Webhook secret').fill('retained-secret');
   await page.goBack();
   await expect(page.getByRole('button', { name: 'Manage' })).toBeVisible();
   const gate = Promise.withResolvers<void>(); state.holdAppRead = gate.promise; state.denied = true;
@@ -233,11 +268,11 @@ test('returning to an App retains its visible draft until access is confirmed lo
   await expect.poll(() => state.reads).toBeGreaterThan(reads);
   await expect(page.getByRole('heading', { name: 'Platform App' })).toBeVisible();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByLabel('Webhook secret')).toHaveValue('retained-secret');
-  await expect(page.getByLabel('Webhook secret')).toBeEditable();
+  await expect(page.getByRole('dialog').getByLabel('Webhook secret')).toHaveValue('retained-secret');
+  await expect(page.getByRole('dialog').getByLabel('Webhook secret')).toBeEditable();
   gate.resolve(); state.holdAppRead = null;
   await expect(page.getByText('This App is unavailable or you do not have access.')).toBeVisible();
-  await expect(page.getByLabel('Webhook secret')).toHaveCount(0);
+  await expect(page.getByRole('dialog').getByLabel('Webhook secret')).toHaveCount(0);
 });
 
 test('loading another project page removes projects whose access was revoked', async ({ page }) => {
@@ -362,27 +397,26 @@ for (const code of ['github_unavailable', 'github_rate_limited'] as const) {
 
   test(`credential replacement ${code} is a definite refusal with a retained draft and explicit retry`, async ({ page }) => {
     const state = await install(page); state.mode = code; await page.goto(`/github-apps/${appId}`);
-    await page.getByRole('button', { name: 'Edit configuration' }).click(); const dialog = page.getByRole('dialog');
-    await dialog.getByLabel('Private key').fill('new-private-key'); await dialog.getByLabel('Webhook secret').fill('new-secret');
-    await dialog.getByRole('button', { name: 'Verify and save' }).click();
+    await page.getByRole('button', { name: 'Change private key' }).click(); const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Private key').fill('new-private-key');
+    await dialog.getByRole('button', { name: 'Save private key' }).click();
     await expect(dialog).toContainText('The operation failed.');
     await expect(dialog.getByLabel('Private key')).toHaveValue('new-private-key');
-    await expect(dialog.getByLabel('Webhook secret')).toHaveValue('new-secret');
-    await expect(dialog.getByRole('button', { name: 'Verify and save' })).toBeEnabled();
+    await expect(dialog.getByRole('button', { name: 'Save private key' })).toBeEnabled();
     await expect(dialog).not.toContainText('The result is unknown'); expect(state.writes).toHaveLength(1);
-    state.mode = 'ok'; await dialog.getByRole('button', { name: 'Verify and save' }).click();
+    state.mode = 'ok'; await dialog.getByRole('button', { name: 'Save private key' }).click();
     await expect(dialog).toHaveCount(0); expect(state.writes).toHaveLength(2);
     expect(state.writes[1]!.body).toEqual(state.writes[0]!.body);
-    await expect(page.getByText('Configuration saved.')).toBeVisible();
+    await expect(page.getByText('Private key saved.')).toBeVisible();
   });
 }
 
 test('unknown credential replacement does not offer replay', async ({ page }) => {
   const state = await install(page); state.mode = 'unknown'; await page.goto(`/github-apps/${appId}`);
-  await page.getByRole('button', { name: 'Edit configuration' }).click(); const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('Webhook secret').fill('uncertain-secret'); await dialog.getByRole('button', { name: 'Verify and save' }).click();
+  await page.getByRole('button', { name: 'Change Webhook secret' }).click(); const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Webhook secret').fill('uncertain-secret'); await dialog.getByRole('button', { name: 'Save Webhook secret' }).click();
   await expect(dialog).toContainText('The result is unknown');
-  await expect(dialog.getByRole('button', { name: 'Verify and save' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Save Webhook secret' })).toHaveCount(0);
   await expect(dialog.getByLabel('Webhook secret')).toHaveValue('uncertain-secret');
   expect(state.writes).toHaveLength(1);
 });
@@ -407,20 +441,20 @@ test('an old metadata response cannot restore access after removal preview denie
   if (metadataResponse !== null) await metadataResponse.finished();
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await expect(page.getByRole('heading', { name: 'Platform App' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Edit configuration' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Change Webhook secret' })).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByText('This App is unavailable or you do not have access.')).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: 'Loading' })).toHaveCount(0);
   state.impactDenied = false;
   await page.getByRole('button', { name: 'Retry' }).click();
   await expect(page.getByRole('heading', { name: 'Platform App' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Edit configuration' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Change Webhook secret' })).toBeEnabled();
   await other.close();
 });
 
 test('foreground metadata checks preserve the open editor, focus and selection throughout the wait', async ({ page }) => {
   const state = await install(page); await page.goto(`/github-apps/${appId}`);
-  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  await page.getByRole('button', { name: 'Change Webhook secret' }).click();
   const dialog = page.getByRole('dialog'), secret = dialog.getByLabel('Webhook secret');
   await secret.fill('editable-secret'); await secret.focus(); await secret.evaluate((input: HTMLInputElement) => input.setSelectionRange(2, 7));
   const original = await secret.elementHandle(), originalDialog = await dialog.elementHandle();
@@ -448,7 +482,7 @@ test('foreground metadata checks preserve the open editor, focus and selection t
 test('returning to an unchanged App retains its editor and focus while metadata is pending', async ({ page }) => {
   const state = await install(page); await page.goto('/github-apps');
   await page.getByRole('button', { name: 'Manage' }).click();
-  const opener = page.getByRole('button', { name: 'Edit configuration' });
+  const opener = page.getByRole('button', { name: 'Change Webhook secret' });
   const originalOpener = await opener.elementHandle(); await opener.click();
   const dialog = page.getByRole('dialog'), secret = dialog.getByLabel('Webhook secret');
   await secret.fill('retained-draft'); await secret.focus(); await secret.evaluate((input: HTMLInputElement) => input.setSelectionRange(2, 6));
@@ -474,7 +508,7 @@ test('returning to an unchanged App retains its editor and focus while metadata 
 
 test('closing an editor during a foreground metadata check retains the resulting admission', async ({ page }) => {
   const state = await install(page); await page.goto(`/github-apps/${appId}`);
-  await page.getByRole('button', { name: 'Edit configuration' }).click(); const dialog = page.getByRole('dialog');
+  await page.getByRole('button', { name: 'Change Webhook secret' }).click(); const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Webhook secret').fill('draft-to-cancel');
   const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
   const other = await page.context().newPage(); await other.goto('/projects');
@@ -485,7 +519,7 @@ test('closing an editor during a foreground metadata check retains the resulting
     const reads = state.reads; await page.bringToFront(); await expect.poll(() => state.reads).toBeGreaterThan(reads);
     await expect(dialog).toBeVisible(); await dialog.getByRole('button', { name: 'Cancel', exact: true }).click(); await expect(dialog).toHaveCount(0);
     gate.resolve(); state.holdAppRead = null;
-    await expect(page.getByRole('button', { name: 'Edit configuration' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Change Webhook secret' })).toBeEnabled();
     await expect(page.getByRole('button', { name: 'Delete App', exact: true })).toBeEnabled();
     expect(state.writes).toHaveLength(0);
   } finally { gate.resolve(); await other.close(); }
@@ -494,12 +528,12 @@ test('closing an editor during a foreground metadata check retains the resulting
 test('returning during a write keeps focus within the retained editor', async ({ page }) => {
   const state = await install(page); await page.goto('/github-apps');
   await page.getByRole('button', { name: 'Manage' }).click();
-  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  await page.getByRole('button', { name: 'Change Webhook secret' }).click();
   const dialog = page.getByRole('dialog'), secret = dialog.getByLabel('Webhook secret');
   await secret.fill('pending-secret'); await secret.focus();
   const gate = Promise.withResolvers<void>(); state.holdPatch = gate.promise;
   try {
-    await dialog.getByRole('button', { name: 'Verify and save' }).click();
+    await dialog.getByRole('button', { name: 'Save Webhook secret' }).click();
     await expect.poll(() => state.writes.length).toBe(1); await expect(secret).toBeDisabled();
     await page.goBack(); await expect(page.getByRole('button', { name: 'Manage' })).toBeVisible();
     await page.getByRole('button', { name: 'Manage' }).click();
@@ -511,7 +545,7 @@ test('returning during a write keeps focus within the retained editor', async ({
         focused.getClientRects().length > 0;
     })).toBe(true);
     gate.resolve(); state.holdPatch = null;
-    await expect(page.getByText('Configuration saved.')).toBeVisible();
+    await expect(page.getByText('Webhook secret saved.')).toBeVisible();
   } finally { gate.resolve(); }
 });
 

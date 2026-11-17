@@ -1,4 +1,4 @@
-import type { SessionV2Archive, SessionV2FrameFile, SessionV2Gap } from '../../../../daynight/src/session/v2/types';
+import type { SessionV2Archive, SessionV2FrameFile, SessionV2Gap } from '../../../../daynight/src/session/v2/recording-types';
 
 export type TerminalPlaybackItem = { readonly kind: 'frame'; readonly time: bigint; readonly file: SessionV2FrameFile }
   | { readonly kind: 'gap'; readonly time: bigint; readonly end: bigint; readonly reason: SessionV2Gap['reason'] };

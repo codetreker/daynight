@@ -3,7 +3,7 @@ import { valid, gte } from "semver";
 import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
-import { runHerdrCommand } from "./herdr/command.js";
+import { runOwnedCommand } from "./owned-command.js";
 import { resolveHerdrInstancePaths } from "./herdr/instance.js";
 import { createNativePrerequisiteChecks, hasNativePrerequisiteCleanupFailure, nativeHookRuntimeChecks } from "./herdr/preflight.js";
 import type { NativePrerequisiteCheck, NativePrerequisiteCommandRunner } from "./herdr/preflight.js";
@@ -77,7 +77,7 @@ export const inspectWorkerEnvironment = async (
   options.signal.throwIfAborted();
   const platform = dependencies.platform === undefined ? process.platform : dependencies.platform;
   const environment = { ...(dependencies.environment === undefined ? process.env : dependencies.environment) };
-  const runCommand = dependencies.runCommand === undefined ? runHerdrCommand : dependencies.runCommand;
+  const runCommand = dependencies.runCommand === undefined ? runOwnedCommand : dependencies.runCommand;
   const operation = createOperation({ signal: options.signal, limits: { totalMs: 30_000, requestMs: 10_000, totalBytes: 4 * 1_048_576 } });
   const launches = new Map<string, Promise<ResolvedToolLaunch>>();
   const select = (tool: "codex" | "copilot" | "herdr", scope: Operation): Promise<ResolvedToolLaunch> => {

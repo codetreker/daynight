@@ -225,3 +225,23 @@ func TestServiceAPIOAuthIndependentAndBotArchiveRetainParentPAT(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskHistoryDirectoryAcceptsCurrentOAuthAndRejectsRevokedAccess(t *testing.T) {
+	f := newServiceFixture(t)
+	for _, api := range []bool{true, false} {
+		issued, actor := issueServiceOAuth(t, f, f.owner.UserID, api)
+		page, err := f.service.TaskDirectory(t.Context(), actor, f.project, f.task, "", 20)
+		if err != nil || len(page.Items) != 0 {
+			t.Fatalf("authorized directory: %+v %v", page, err)
+		}
+		if _, err := f.service.TaskDirectory(t.Context(), actor, uuid.NewString(), f.task, "", 20); err == nil {
+			t.Fatal("OAuth reader accessed another Project")
+		}
+		if _, err := f.db.Pool.Exec(t.Context(), `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, issued.AccessID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.TaskDirectory(t.Context(), actor, f.project, f.task, "", 20); err == nil {
+			t.Fatal("expired OAuth reader accessed directory")
+		}
+	}
+}

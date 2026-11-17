@@ -127,10 +127,37 @@ describe('GitHub App administrators', () => {
     await waitFor(() => expect(accessLost).toHaveBeenCalled()); await act(async () => pending.resolve({ appId, userId, removed: true, actorIsAdmin: false }));
     await waitFor(() => expect(selfRemoved).toHaveBeenCalledOnce()); expect(mocks.remove.mock.calls[0]![2]).toBe('1');
   });
-  it('refuses removal of the last administrator without counting invitations', async () => {
+  it('disables removal of the last administrator without counting invitations', async () => {
     mocks.admins.mockResolvedValue({ items: [member(userId)], nextCursor: null }); mocks.invites.mockResolvedValue({ items: [invitation], nextCursor: null });
-    render(admin()); fireEvent.click(await screen.findByRole('button', { name: 'Remove' })); const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText(/must retain at least one administrator/)).toBeVisible(); expect(within(dialog).queryByRole('button', { name: 'Remove administrator' })).toBeNull(); expect(mocks.remove).not.toHaveBeenCalled();
+    render(admin()); const remove = await screen.findByRole('button', { name: 'Remove' });
+    expect(remove).toBeDisabled(); expect(screen.getByRole('button', { name: 'Invite administrator' })).toBeEnabled();
+    expect(screen.getByText(/At least one App administrator must remain/)).toBeVisible(); fireEvent.click(remove);
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(mocks.remove).not.toHaveBeenCalled();
+  });
+  it('updates removal availability after the roster changes', async () => {
+    mocks.remove.mockImplementation(async (_app, _user, _version, _signal, admission) => {
+      admission.onDispatch(); mocks.admins.mockResolvedValue({ items: [member(userId)], nextCursor: null });
+      return { appId, userId: otherId, removed: true, actorIsAdmin: true };
+    });
+    const view = render(admin()); await screen.findByText('Another User');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!);
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' })); expect(mocks.remove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!);
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove administrator' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove' })).toBeDisabled()); expect(mocks.remove).toHaveBeenCalledOnce();
+    mocks.admins.mockResolvedValue({ items: [member(userId), member(otherId)], nextCursor: null });
+    view.rerender(admin(false)); view.rerender(admin(true));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Remove' })).toHaveLength(2));
+    expect(screen.getAllByRole('button', { name: 'Remove' })[0]).toBeEnabled();
+  });
+  it('does not treat a partially loaded roster as a sole administrator', async () => {
+    mocks.admins.mockImplementation(async (_app, cursor) => cursor === null
+      ? { items: [member(userId)], nextCursor: 'next' }
+      : { items: [member(otherId)], nextCursor: null });
+    render(admin()); expect(await screen.findByRole('button', { name: 'Remove' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Remove' })).toHaveLength(2));
+    expect(screen.getAllByRole('button', { name: 'Remove' })[1]).toBeEnabled();
   });
   it('does not replay an unknown invitation creation after a state check', async () => {
     mocks.create.mockImplementation(async (_id, _signal, admission) => { admission.onDispatch(); throw new ApiError('network'); });

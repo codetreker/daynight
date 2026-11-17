@@ -243,6 +243,9 @@ var githubAppCutoverSQL string
 //go:embed migrations/078_project_pull_requests_author_number.sql
 var projectPullRequestsAuthorNumberSQL string
 
+//go:embed migrations/079_worker_sudo_cleanup.sql
+var workerSudoCleanupSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -329,6 +332,7 @@ var schemaMigrations = []migration{
 	{version: 76, sql: githubAppsSQL},
 	{version: 77, sql: githubAppCutoverSQL},
 	{version: 78, sql: projectPullRequestsAuthorNumberSQL},
+	{version: 79, sql: workerSudoCleanupSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

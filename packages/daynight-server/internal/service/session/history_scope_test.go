@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -23,9 +24,12 @@ func stopHistoryEngine(t *testing.T, engine *core.Engine) {
 }
 
 func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
-	for _, kind := range []string{"query", "content", "archive"} {
-		steps := []string{"task", "credential", "project", "load"}
-		if kind != "query" {
+	for _, kind := range []string{"query", "content", "archive", "directory"} {
+		steps := []string{"task", "credential", "project"}
+		if kind != "directory" {
+			steps = append(steps, "load")
+		}
+		if kind == "content" || kind == "archive" {
 			steps = append(steps, "bind")
 		}
 		steps = append(steps, "work")
@@ -157,6 +161,14 @@ func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
 						err = s.taskContentRead(ctx, actor, "project", "task", "session", core.BrowserAccess, work)
 					case "archive":
 						err = s.taskArchiveRead(ctx, actor, "project", "task", "session", true, work)
+					case "directory":
+						err = s.taskTerminalDirectory(ctx, actor, "project", "task", func(op *core.Operation, transaction store.SessionScope, taskAccess *core.TaskAccess) error {
+							checkScope(op, ctx, transaction)
+							if taskAccess != task {
+								t.Fatal("directory task binding changed")
+							}
+							return step("work")
+						})
 					case "query":
 						err = s.taskReadQuery(ctx, actor, "project", "task", func(op *core.Operation, transaction store.SessionScope, taskAccess *core.TaskAccess, load func(string) (*core.Access, error)) error {
 							checkScope(op, ctx, transaction)
@@ -213,30 +225,40 @@ func TestHistoryScopeCannotAuthorizeTaskSendOrReceipt(t *testing.T) {
 
 func TestHistoryScopeRejectsMissingTaskAndStoppedEngineBeforeTransaction(t *testing.T) {
 	for _, scenario := range []string{"no_project", "no_task", "no_scope", "stopped"} {
-		t.Run(scenario, func(t *testing.T) {
-			engine := core.NewEngine(nil)
-			t.Cleanup(func() { stopHistoryEngine(t, engine) })
-			s := New(archiveCompletionOrderWriter(func(context.Context, func(store.SessionScope) error) (store.Completion, error) {
-				t.Fatal("refused history scope opened a transaction")
-				return store.Completion{}, nil
-			}), engine)
-			project, task := "project", "task"
-			if scenario == "no_project" || scenario == "no_scope" {
-				project = ""
-			}
-			if scenario == "no_task" || scenario == "no_scope" {
-				task = ""
-			}
-			code := "forbidden"
-			if scenario == "stopped" {
-				stopHistoryEngine(t, engine)
-				code = "service_unavailable"
-			}
-			err := s.taskReadQuery(t.Context(), model.Principal{}, project, task, func(*core.Operation, store.SessionScope, *core.TaskAccess, func(string) (*core.Access, error)) error {
-				t.Fatal("refused history scope ran work")
-				return nil
+		for _, directory := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/directory=%v", scenario, directory), func(t *testing.T) {
+				engine := core.NewEngine(nil)
+				t.Cleanup(func() { stopHistoryEngine(t, engine) })
+				s := New(archiveCompletionOrderWriter(func(context.Context, func(store.SessionScope) error) (store.Completion, error) {
+					t.Fatal("refused history scope opened a transaction")
+					return store.Completion{}, nil
+				}), engine)
+				project, task := "project", "task"
+				if scenario == "no_project" || scenario == "no_scope" {
+					project = ""
+				}
+				if scenario == "no_task" || scenario == "no_scope" {
+					task = ""
+				}
+				code := "forbidden"
+				if scenario == "stopped" {
+					stopHistoryEngine(t, engine)
+					code = "service_unavailable"
+				}
+				var err error
+				if directory {
+					err = s.taskTerminalDirectory(t.Context(), model.Principal{}, project, task, func(*core.Operation, store.SessionScope, *core.TaskAccess) error {
+						t.Fatal("refused directory scope ran work")
+						return nil
+					})
+				} else {
+					err = s.taskReadQuery(t.Context(), model.Principal{}, project, task, func(*core.Operation, store.SessionScope, *core.TaskAccess, func(string) (*core.Access, error)) error {
+						t.Fatal("refused history scope ran work")
+						return nil
+					})
+				}
+				requireHistoryFault(t, err, code)
 			})
-			requireHistoryFault(t, err, code)
-		})
+		}
 	}
 }

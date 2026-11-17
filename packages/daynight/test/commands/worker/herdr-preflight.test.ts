@@ -7,8 +7,8 @@ import type { Operation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { createHerdrPreflight, createNativePrerequisiteChecks, nativeHookRuntimeChecks } from "../../../src/commands/worker/herdr/preflight.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
-import * as commands from "../../../src/commands/worker/herdr/command.js";
-import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import * as commands from "../../../src/commands/worker/owned-command.js";
+import type { OwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 
@@ -33,7 +33,7 @@ const fixture = async () => {
   const codexHooks = { hooks: { SessionStart: [{ hooks: [{ type: "command", command: `bash ${quote(codexAsset)} session` }] }] } };
   await writeFile(path.join(codex, "hooks.json"), JSON.stringify(codexHooks));
   const hooks: Record<string, unknown> = { sessionStart: [{ type: "command", bash: `bash ${quote(copilotAsset)}` }] };
-  const runCommand = vi.fn(async (command: HerdrCommand) => {
+  const runCommand = vi.fn(async (command: OwnedCommand) => {
     if (command.file === "bash") return { stdout: "GNU bash, version 5.2.0\n", stderr: "" };
     if (command.file === "python3") return { stdout: "Python 3.12.3\n", stderr: "" };
     if (command.file === "powershell") return { stdout: "5.1.0\n", stderr: "" };
@@ -59,12 +59,12 @@ afterEach(async () => {
 describe("Herdr native prerequisites", () => {
   it.each(["win32", "linux"] as const)("keeps the default %s hook runtime on the original environment and owned command runner", async platform => {
     const f = await fixture(), environment = { PATH: "/frozen/hook/path", CODEX_HOME: f.codex, PSModulePath: "/unchanged/modules" }, original = { ...environment };
-    const runner = commands.runHerdrCommand;
-    const start = vi.spyOn(commands, "spawnHerdrProcess").mockImplementation((_file, _args, options) => {
+    const runner = commands.runOwnedCommand;
+    const start = vi.spyOn(commands, "spawnOwnedProcess").mockImplementation((_file, _args, options) => {
       const output = platform === "win32" ? options.detached === false ? "5.1.26100.7628\n" : "" : "GNU bash, version 5.2.0\n";
       return spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(output)})`], { ...options, detached: true });
     });
-    const run = vi.spyOn(commands, "runHerdrCommand").mockImplementation((command, active, provided, options) => runner(command, active, provided ?? start, options));
+    const run = vi.spyOn(commands, "runOwnedCommand").mockImplementation((command, active, provided, options) => runner(command, active, provided ?? start, options));
     try {
       const checks = createNativePrerequisiteChecks({ homeDirectory: f.home, environment, platform }, f.input("codex"));
       const active = operation({ limits: { totalMs: 2000, requestMs: 1000 } });
@@ -77,7 +77,7 @@ describe("Herdr native prerequisites", () => {
   });
 
   it.each(["", "not-a-runtime"])("keeps unrecognized Windows hook output rejected through a custom runner (%j)", async stdout => {
-    const f = await fixture(), environment = { PATH: "/exact/official/hook/path" }, runCommand = vi.fn(async (_command: HerdrCommand, _active: Operation) => ({ stdout, stderr: "" }));
+    const f = await fixture(), environment = { PATH: "/exact/official/hook/path" }, runCommand = vi.fn(async (_command: OwnedCommand, _active: Operation) => ({ stdout, stderr: "" }));
     const active = operation();
     const checks = createNativePrerequisiteChecks({ homeDirectory: f.home, environment, platform: "win32", runCommand }, f.input("codex"));
     await expect(checks.find(check => check.kind === "runtime")!.verify(active)).rejects.toThrow("Cannot identify the powershell runtime");
@@ -100,7 +100,7 @@ describe("Herdr native prerequisites", () => {
     const f = await fixture(), entry = path.join(f.root, "selected-copilot.cjs");
     await writeFile(entry, "// Isolated Node tool selected by the real resolver.\n");
     const launch = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: entry }, cwd: f.cwd, workerNode: process.execPath, environment: process.env }, operation());
-    const runCommand = vi.fn(async (_command: HerdrCommand) => ({ stdout: probe === "help" ? copilotPermissionFlags.join("\n") : JSON.stringify(f.hooks), stderr: "" }));
+    const runCommand = vi.fn(async (_command: OwnedCommand) => ({ stdout: probe === "help" ? copilotPermissionFlags.join("\n") : JSON.stringify(f.hooks), stderr: "" }));
     const input = { ...f.input("copilot"), configuration: { ...f.input("copilot").configuration, toolLaunch: launch } };
     const checks = createNativePrerequisiteChecks({ homeDirectory: f.home, environment: {}, platform: "linux", runCommand }, input);
     await checks.find(check => check.label === (probe === "help" ? "copilot unattended full access" : "copilot effective SessionStart hook"))!.verify(operation());

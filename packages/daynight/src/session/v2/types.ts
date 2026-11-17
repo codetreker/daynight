@@ -1,20 +1,10 @@
 import type { SessionSnapshot } from "../protocol.js";
 import type { SessionV2ErrorCode, SESSION_V2_PROTOCOL } from "./values.js";
-export type TerminalBinding = { instanceId: string; sessionId: string; workspaceId: string; paneId: string | number; terminalId: string; nativeSessionId: string | null };
-export type SessionV2Owner = { projectId: string; taskId: string; workerId: string; worktreeId: string; ownerUserId: string; serverOrigin: string; provider: "codex" | "claude" | "copilot" };
-export type TerminalStyledRun = { text: string; foreground: string | null; background: string | null; bold: boolean; italic: boolean; underline: boolean; inverse: boolean };
-export type TerminalFrame = { frameSeq: string; capturedAt: string; elapsedMs: string; width: number; height: number; full: true; rows: TerminalStyledRun[][] };
-export type SessionV2ProcessProof = { role: "shell" | "agent"; pid: number; birthToken: string; bootId: string };
-export type SessionV2NativeStopProof = { recordId: string; executionGeneration: string; binding: TerminalBinding; bootId: string; stoppedAt: string; method: "instances_exited" | "boot_changed"; terminalStopped: true; processes: SessionV2ProcessProof[] };
-export type SessionV2PreparedStopProof = Omit<SessionV2NativeStopProof, "processes"> & { nativeLaunch: "not_submitted"; daemon: Omit<SessionV2ProcessProof, "role">; processes: [SessionV2ProcessProof & { role: "shell" }] };
-export type SessionV2StopProof = SessionV2NativeStopProof | SessionV2PreparedStopProof;
-export type SessionV2Run = { executionGeneration: string; owner: SessionV2Owner; binding: TerminalBinding; startedAt: string; stoppedAt: string | null; stopProof: SessionV2StopProof | null; segmentIds: string[] };
+import type { SessionV2Completeness, SessionV2Owner, SessionV2Run, SessionV2UnavailableEvidence, SessionV2UnavailableReason, TerminalBinding, TerminalFrame } from "./recording-types.js";
+export type { SessionV2Archive, SessionV2BoundaryEndpoint, SessionV2BoundaryGap, SessionV2Completeness, SessionV2FrameFile, SessionV2FrameIndex, SessionV2Gap, SessionV2IntervalGap, SessionV2NativeStopProof, SessionV2Owner, SessionV2PreparedStopProof, SessionV2ProcessProof, SessionV2Run, SessionV2Segment, SessionV2StopProof, SessionV2UnavailableEvidence, SessionV2UnavailableReason, SessionV2UnavailableRun, TerminalBinding, TerminalFrame, TerminalStyledRun } from "./recording-types.js";
 export type SessionV2Lease = { leaseId: string; holderUserId: string; browserClientId: string; controlEpoch: string; expiresAt: string };
 export type SessionV2Action = "acquire_control" | "renew_control" | "release_control" | "resolve_initial_assignment" | "resume_automation" | "paste" | "keys";
 export type SessionV2Key = "Enter" | "Escape" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Tab" | "Backspace" | "Delete" | "Home" | "End" | "PageUp" | "PageDown" | "Ctrl+C" | "Ctrl+D" | "Ctrl+U";
-export type SessionV2Completeness = "complete" | "partial";
-export type SessionV2UnavailableReason = "recording_not_enabled" | "ended_before_first_sample";
-export type SessionV2UnavailableEvidence = { recordingEnabled: boolean; selectedFrameCount: string; registeredFrameCount: string; captureError: SessionV2ErrorCode | null };
 export type SessionV2Receipt = { finalizationId: string; disposition: "ready" | "unavailable"; dispositionDigest: string; reason: SessionV2UnavailableReason | null; sha256: string | null; byteLength: string | null; completeness: SessionV2Completeness | null; evidence: SessionV2UnavailableEvidence | null };
 export type SessionV2Payloads = {
   registration: { registrationId: string; mode: "register" | "reconnect"; owner: SessionV2Owner; binding: TerminalBinding; connectionEpoch: string | null; capabilities: { observe: boolean; control: boolean; archive: boolean } };
@@ -39,12 +29,3 @@ export type SessionV2Payloads = {
 };
 export type SessionV2Envelope = { protocol: typeof SESSION_V2_PROTOCOL; schemaVersion: 2; projectionVersion: 1; sessionId: string; claimId: string; executionGeneration: string };
 export type SessionV2Message = { [K in keyof SessionV2Payloads]: SessionV2Envelope & { type: K; payload: SessionV2Payloads[K] } & (K extends "native_snapshot" ? { agentControlMode: "web"; contentKind: "native_timeline" } : { agentControlMode: "herdr"; contentKind: "terminal_recording" }) }[keyof SessionV2Payloads];
-export type SessionV2Segment = { segmentId: string; segmentOrdinal: string; executionGeneration: string; binding: TerminalBinding; startedAt: string; endedAt: string; durationMs: string };
-export type SessionV2FrameFile = { fileId: string; segmentId: string; frameSeq: string; sha256: string; byteLength: string; data: string };
-export type SessionV2FrameIndex = { segmentId: string; frameSeq: string; fileId: string; firstElapsedMs: string; lastElapsedMs: string };
-export type SessionV2IntervalGap = { segmentId: string; reason: "restart" | "read_interrupted" | "recording_limit" | "checkpoint_lost"; startElapsedMs: string; endElapsedMs: string | null };
-export type SessionV2BoundaryEndpoint = { executionGeneration: string; segmentId: string | null };
-export type SessionV2BoundaryGap = { kind: "boundary"; reason: "restart"; from: SessionV2BoundaryEndpoint; to: SessionV2BoundaryEndpoint };
-export type SessionV2Gap = SessionV2IntervalGap | SessionV2BoundaryGap;
-export type SessionV2UnavailableRun = { executionGeneration: string; reason: SessionV2UnavailableReason; evidence: SessionV2UnavailableEvidence };
-export type SessionV2Archive = { schemaVersion: 2; projectionVersion: 1; contentKind: "terminal_recording"; agentControlMode: "herdr"; sessionId: string; claimId: string; executionGeneration: string; owner: SessionV2Owner; finalizationId: string; startedAt: string; endedAt: string; completeness: SessionV2Completeness; policy: { sampleIntervalMs: 350; checkpointIntervalMs: 5000 }; runs: SessionV2Run[]; segments: SessionV2Segment[]; files: SessionV2FrameFile[]; index: SessionV2FrameIndex[]; gaps: SessionV2Gap[]; unavailableRuns: SessionV2UnavailableRun[] };

@@ -6,7 +6,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWindowsQueryCheckpointObserver, decodeWindowsExternalScript, decodeWindowsPlatformJson, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsProcessQuery, decodeWindowsProcessQuery, windowsConsoleQuery, decodeWindowsConsoleQuery, type WindowsQueryObservation } from "./windows-platform-query.fixtures.js";
 
-const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
+const command = await import(new URL("../../../dist/commands/worker/owned-command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/owned-command.js");
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -102,7 +102,7 @@ test("preserves a failed query's exit diagnostics without exposing its command, 
   try {
     const error = await runWindowsPlatformQuery("processes", { file: process.execPath, args: ["-e", `process.stderr.write('${secret}');process.exit(7)`], environment: { PRIVATE_MARKER: secret } }, active, observations).catch(error => error);
     expect(error).toBeInstanceOf(Error); expect(error.message).toContain("processes"); expect(error.message).not.toContain(secret); expect(error.cause).toBeUndefined();
-    expect(observations).toMatchObject([{ stage: "processes", code: 7, stdoutBytes: 0, stderrBytes: 20, closed: true, cleanupConfirmed: true, errorType: "HerdrCommandError" }]);
+    expect(observations).toMatchObject([{ stage: "processes", code: 7, stdoutBytes: 0, stderrBytes: 20, closed: true, cleanupConfirmed: true, errorType: "OwnedCommandError" }]);
     expect(JSON.stringify(observations)).not.toContain(secret);
   } finally { active.dispose(); }
 });
@@ -111,18 +111,18 @@ test("joins a timed out real query before rejecting and records its original dea
   const active = createOperation({ limits: { totalMs: 5000, requestMs: 150 } }), observations: WindowsQueryObservation[] = [];
   try {
     await expect(runWindowsPlatformQuery("console", { file: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], environment: {} }, active, observations)).rejects.toThrow("console");
-    expect(observations).toMatchObject([{ stage: "console", closed: true, cleanupConfirmed: true, errorType: "HerdrCommandDeadlineError" }]);
+    expect(observations).toMatchObject([{ stage: "console", closed: true, cleanupConfirmed: true, errorType: "OwnedCommandDeadlineError" }]);
     expect(observations[0]!.elapsedMs).toBeLessThan(4000);
   } finally { active.dispose(); }
 });
 
 test("keeps cleanup unknown without serializing an unsafe raw error cause", async () => {
   const secret = "private-encoded-command", active = createOperation(), observations: WindowsQueryObservation[] = [];
-  vi.spyOn(command, "runHerdrCommand").mockRejectedValue(new command.HerdrCommandCleanupError([new Error(secret)], new Error(secret)));
+  vi.spyOn(command, "runOwnedCommand").mockRejectedValue(new command.OwnedCommandCleanupError([new Error(secret)], new Error(secret)));
   try {
     const error = await runWindowsPlatformQuery("console", { file: process.execPath, args: [], environment: {} }, active, observations).catch(error => error);
     expect(error.message).not.toContain(secret); expect(error.cause).toBeUndefined();
-    expect(observations).toMatchObject([{ closed: false, cleanupConfirmed: false, errorType: "HerdrCommandCleanupError" }]);
+    expect(observations).toMatchObject([{ closed: false, cleanupConfirmed: false, errorType: "OwnedCommandCleanupError" }]);
   } finally { active.dispose(); }
 });
 
@@ -147,8 +147,8 @@ test.each(["win32", "linux"])("changes only the Windows query console flag and e
   const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!, active = createOperation(), observations: WindowsQueryObservation[] = [];
   const environment = { PRIVATE_MARKER: "not-logged" }, options: SpawnOptions = { env: environment, cwd: "/owned", detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] };
   const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false }) as unknown as ChildProcess;
-  const spawn = vi.spyOn(command, "spawnHerdrProcess").mockReturnValue(child);
-  vi.spyOn(command, "runHerdrCommand").mockImplementation(async (_input, _operation, start) => {
+  const spawn = vi.spyOn(command, "spawnOwnedProcess").mockReturnValue(child);
+  vi.spyOn(command, "runOwnedCommand").mockImplementation(async (_input, _operation, start) => {
     start!("powershell", ["fixed-arguments"], options);
     child.stderr!.emit("data", Buffer.from("DAYNIGHT_QUERY:entry\n"));
     child.emit("close", 0, null);

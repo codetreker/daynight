@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"reflect"
 	"strconv"
 
@@ -19,15 +18,6 @@ func terminalArchive(ctx context.Context, tx *operationTx, r *terminalRecord) (v
 		return v2.ArchiveStatus{State: "pending", FinalizationID: r.FinalizationID}, nil, "", nil
 	}
 	return status, receipt, path, err
-}
-func (s *Execution) TerminalArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (v2.Message, error) {
-	var out v2.Message
-	err := s.terminalAccess(ctx, p, project, taskID, id, true, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
-		status, _, _, err := terminalArchive(ctx, tx, r)
-		out = terminalEnvelope(r, "archive_status", status)
-		return err
-	})
-	return out, err
 }
 func (s *Execution) TerminalReceipt(ctx context.Context, p model.Principal, project, taskID, id string) (v2.Message, error) {
 	var out v2.Message
@@ -57,99 +47,14 @@ func terminalReceipt(r *terminalRecord, payload v2.Receipt) (v2.Message, error) 
 func storeTerminalReceipt(ctx context.Context, tx *operationTx, r *terminalRecord, receipt v2.Receipt, path *string) error {
 	return tx.dao.SaveTerminalReceipt(ctx, r.Envelope.SessionID, receipt, path)
 }
+func archiveRecordFromTerminal(r *terminalRecord) *terminalArchiveRecord {
+	return &terminalArchiveRecord{Envelope: r.Envelope, Owner: r.Owner, Runs: r.Runs, Recording: r.Recording, FinalizationID: r.FinalizationID}
+}
 func closedRecording(r *terminalRecord, generation string) (terminalRecording, error) {
-	rec := r.Recording[generation]
-	if rec.Responsibility == nil || rec.Evidence == nil || !rec.Evidence.Closed {
-		return rec, fault("source_corrupt", "The recording responsibility lacks immutable closed evidence.")
-	}
-	return rec, nil
+	return historyClosedRecording(archiveRecordFromTerminal(r), generation)
 }
 func verifyTerminalArchive(r *terminalRecord, doc v2.Archive) error {
-	if r.FinalizationID == nil || doc.FinalizationID != *r.FinalizationID || doc.SessionID != r.Envelope.SessionID || doc.ClaimID != r.Envelope.ClaimID || doc.ExecutionGeneration != r.Envelope.ExecutionGeneration || doc.Owner != r.Owner || !reflect.DeepEqual(doc.Runs, r.Runs) {
-		return conflict()
-	}
-	for _, run := range r.Runs {
-		rec, err := closedRecording(r, run.ExecutionGeneration)
-		if err != nil {
-			return err
-		}
-		count := 0
-		for _, file := range doc.Files {
-			for _, segment := range run.SegmentIDs {
-				if file.SegmentID == segment {
-					count++
-					break
-				}
-			}
-		}
-		amount := strconv.Itoa(count)
-		if rec.Evidence.SelectedFrameCount != amount || rec.Evidence.RegisteredFrameCount != amount {
-			return fault("source_corrupt", "The archive omits registered or selected recording content.")
-		}
-		digest, err := v2.SourceDigest(doc, run.ExecutionGeneration)
-		if err != nil {
-			return err
-		}
-		if digest != rec.Evidence.SourceSHA256 {
-			return fault("source_corrupt", "The archive differs from the closed recording source.")
-		}
-		if rec.Evidence.CaptureError != nil {
-			covered := false
-			if *rec.Evidence.CaptureError == "recording_limit" && count > 0 && doc.Completeness == "partial" {
-				for _, gap := range doc.Gaps {
-					if gap.Interval == nil || gap.Interval.Reason != "recording_limit" {
-						continue
-					}
-					for _, segment := range run.SegmentIDs {
-						if gap.Interval.SegmentID == segment {
-							covered = true
-						}
-					}
-				}
-			}
-			if !covered {
-				return fault("source_corrupt", "The run's capture failure lacks a matching recording-limit gap.")
-			}
-		}
-		if count == 0 {
-			found := false
-			for _, zero := range doc.UnavailableRuns {
-				if zero.ExecutionGeneration == run.ExecutionGeneration {
-					found = true
-					if zero.Evidence.RecordingEnabled != rec.Responsibility.RecordingEnabled || zero.Evidence.CaptureError != nil {
-						return conflict()
-					}
-				}
-			}
-			if !found {
-				return conflict()
-			}
-		} else if !rec.Responsibility.RecordingEnabled {
-			return conflict()
-		}
-	}
-	return nil
-}
-func (s *Execution) readTerminalObject(ctx context.Context, op *ArchiveOperation, path string, hash string, size string) (data []byte, result error) {
-	if op == nil || op.execution != s || op.closed || (op.mode != ArchiveV2Read && op.mode != ArchiveV2Upload) {
-		return nil, errors.New("invalid archive operation")
-	}
-	if s.files == nil {
-		return nil, fault("archive_pending", "Archive file storage is unavailable.")
-	}
-	obj, err := s.files.Open(ctx, archiveBucket, path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { result = archiveCleanupFailure(result, obj.Body.Close()) }()
-	data, err = io.ReadAll(io.LimitReader(obj.Body, v2.MaxArchiveBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if strconv.Itoa(len(data)) != size || obj.Info.Size != int64(len(data)) || v2.HashBytes(data) != hash {
-		return nil, fault("source_corrupt", "Session archive storage integrity failed.")
-	}
-	return data, nil
+	return verifyTerminalArchiveRecord(archiveRecordFromTerminal(r), doc)
 }
 
 // PutTerminalArchive reads the stored object back before publishing its immutable
@@ -309,61 +214,6 @@ func (s *Execution) UpdateTerminalArchive(ctx context.Context, p model.Principal
 			return err
 		}
 		out = expected
-		return nil
-	})
-	return out, err
-}
-func (s *Execution) TerminalArchiveContent(ctx context.Context, p model.Principal, project, taskID, id string) (*RetainedArchive, error) {
-	reservation, err := s.TryReserveArchivePreflight()
-	if err != nil {
-		return nil, err
-	}
-	return s.TerminalArchiveContentReserved(ctx, p, project, taskID, id, reservation)
-}
-
-func (s *Execution) TerminalArchiveContentReserved(ctx context.Context, p model.Principal, project, taskID, id string, reservation *ArchivePreflightReservation) (*RetainedArchive, error) {
-	op, err := s.BeginArchiveReserved(ctx, p, project, taskID, id, ArchiveV2Read, reservation)
-	if err != nil {
-		return nil, err
-	}
-	op.mu.Lock()
-	data, err := s.terminalArchiveContent(ctx, op)
-	op.mu.Unlock()
-	if err != nil {
-		return nil, errors.Join(err, op.Close())
-	}
-	return &RetainedArchive{Data: data, operation: op}, nil
-}
-
-func (s *Execution) terminalArchiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
-	p, project, taskID, id := op.principal, op.project, op.task, op.id
-	var out json.RawMessage
-	err := s.terminalAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
-		if r.Owner.OwnerUserID != op.owner {
-			return conflict()
-		}
-		status, receipt, path, err := terminalArchive(ctx, tx, r)
-		if err != nil {
-			return err
-		}
-		if status.State != "ready" || receipt == nil || status.SHA256 == nil || status.ByteLength == nil {
-			return fault("archive_pending", "No terminal archive is ready.")
-		}
-		data, err := s.readTerminalObject(ctx, op, path, *status.SHA256, *status.ByteLength)
-		if err != nil {
-			return err
-		}
-		doc, err := v2.DecodeArchive(data)
-		if err != nil {
-			return err
-		}
-		if err = verifyTerminalArchive(r, doc); err != nil {
-			return err
-		}
-		if status.Completeness == nil || doc.Completeness != *status.Completeness {
-			return conflict()
-		}
-		out = data
 		return nil
 	})
 	return out, err

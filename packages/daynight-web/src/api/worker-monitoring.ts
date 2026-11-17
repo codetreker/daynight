@@ -1,4 +1,4 @@
-import { decodeStrictSessionJson } from '../../../daynight/src/session/v2/values';
+import { decodeStrictJson } from '../../../daynight/src/strict-json';
 import { ApiError, assertResponsePrincipal, json, request, responseSignal, requestId } from './client';
 import { array, boolean, count, malformed, record, string, timestamp } from './validation';
 import type { WorkerReadAdmission } from './workers';
@@ -260,7 +260,7 @@ const decodeMonitoringJson = async (response: Response, signal: AbortSignal, lim
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    const value = decodeStrictSessionJson(bytes, limit);
+    const value = decodeStrictJson(bytes, limit);
     if (response.ok) validateMonitoringNumbers(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
     return value;
   } finally {
