@@ -1,3 +1,4 @@
+import '../task-detail/description-card.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import type { TaskDetail, TaskStatus } from '../../api/types';
 import { ApiError, attachmentPreviewRoot, authRequestsPaused } from '../../api/client';

@@ -1,8 +1,8 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownContent } from '../src/features/task-detail/MarkdownContent';
-import { MermaidDiagram } from '../src/features/task-detail/MermaidDiagram';
-import { MermaidSourceError, renderMermaidDiagram } from '../src/features/task-detail/MermaidRenderer';
+import { MermaidDiagram } from '../src/ui/markdown/mermaid/MermaidDiagram';
+import { MermaidSourceError, renderMermaidDiagram } from '../src/ui/markdown/mermaid/MermaidRenderer';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
 const engine = vi.hoisted(() => ({ initialize: vi.fn(), detectType: vi.fn(), render: vi.fn(), mermaidAPI: { getDiagramFromText: vi.fn() } }));

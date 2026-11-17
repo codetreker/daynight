@@ -1,6 +1,4 @@
 .markdown-content { min-width: 0; max-width: 100%; font-size: 12px; line-height: 1.85; color: #45516a; overflow-wrap: anywhere; }
-.description-card { min-width: 0; max-width: 100%; padding: 16px 18px; border: 1px solid #d5dce5; border-radius: 7px; background: #fff; }
-@media (max-width: 600px) { .description-card { padding: 12px; } }
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
 .markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4, .markdown-content h5, .markdown-content h6 { font-size: 14px; line-height: 1.6; color: #344258; margin: 19px 0 9px; font-weight: 600; letter-spacing: 0; }
@@ -8,9 +6,6 @@
 .markdown-content a { color: #5c5cbd; text-decoration: underline; text-underline-offset: 3px; }
 .markdown-content a:hover { color: #44449b; }
 .markdown-content img { max-width: 100%; height: auto; }
-.markdown-image-error { display: block; min-width: 0; max-width: 100%; margin: 12px 0; padding: 12px; border: 1px solid #df9d96; border-radius: 7px; background: #fff0ef; color: #a3322b; }
-.markdown-image-error-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.markdown-image-error .button:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
 .markdown-content ul, .markdown-content ol { padding-left: 21px; margin: 9px 0; }
 .markdown-content li { margin: 3px 0; }
 .markdown-content code { font: 10px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f2f3f7; border-radius: 3px; padding: 2px 4px; color: #5e587c; }
@@ -30,3 +25,6 @@
 .mermaid-diagram { max-width: 100%; overflow-x: auto; padding: 16px; }
 .markdown-content .mermaid-diagram img { display: block; max-width: none; }
 .mermaid-diagram:focus-visible { outline: 2px solid #5c5ce0; outline-offset: -2px; }
+.markdown-document .markdown-table:focus-visible, .markdown-document pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
+.markdown-document .footnotes { font-size: 11px; }
+.markdown-document .footnotes .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

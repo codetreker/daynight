@@ -30,7 +30,7 @@ try {
   const page = await browser.newPage();
   await page.goto('http://127.0.0.1:' + address.port + '/');
   const result = await page.evaluate(async () => {
-    const { renderMermaidDiagram } = await import('/src/features/task-detail/MermaidRenderer.ts');
+    const { renderMermaidDiagram } = await import('/src/ui/markdown/mermaid/MermaidRenderer.ts');
     const branch = (prefix, depth) => Array.from({ length: depth - 1 }, (_, i) => 'block:' + prefix + i).join('\n')
       + '\n' + prefix + 'leaf["' + prefix + 'label"]\n' + Array.from({ length: depth - 1 }, () => 'end').join('\n');
     const deep = 'block\n' + branch('D', 27);

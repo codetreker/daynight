@@ -4,6 +4,7 @@ import { workspace } from "./zh-CN/workspace";
 import { graph } from "./zh-CN/graph";
 import { platform } from "./zh-CN/platform";
 import { automation } from "./zh-CN/automation";
+import { markdown } from "./zh-CN/markdown";
 import { inspection } from "./zh-CN/inspection";
 import { completion } from "./zh-CN/completion";
 import { execution } from "./zh-CN/execution";
@@ -18,6 +19,7 @@ export const zhCN: Messages = {
   workers,
   graph,
   inspection,
+  markdown,
   automation,
   platform,
   auth,

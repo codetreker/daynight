@@ -1,10 +1,7 @@
-import { createContext, useContext, useState, type ComponentPropsWithoutRef, type MouseEvent } from 'react';
-import Markdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { MermaidDiagram } from './MermaidDiagram';
+import { useState, type MouseEvent } from 'react';
+import { MarkdownView } from '../../ui/markdown/MarkdownView';
 import { MarkdownAttachmentImage } from './MarkdownAttachmentImage';
 import { resolveAttachmentReference, type MarkdownAttachmentBase } from './attachments/model';
-import '../../styles/markdown.css';
 
 type MarkdownContentProps = {
   readonly text: string;
@@ -15,42 +12,15 @@ type MarkdownContentProps = {
   readonly onLinkClick?: (value: string, event: MouseEvent<HTMLAnchorElement>) => void;
 };
 
-type MarkdownLinks = { readonly references: WeakMap<object, string>; readonly attachmentBase: MarkdownAttachmentBase; readonly onLinkClick: MarkdownContentProps['onLinkClick']; readonly remotePaused: boolean };
-const MarkdownLinksContext = createContext<MarkdownLinks | null>(null);
-const MarkdownLink = ({ node, ...props }: ComponentPropsWithoutRef<'a'> & ExtraProps) => {
-  const links = useContext(MarkdownLinksContext)!;
-  const blocked = links.remotePaused && !props.href?.startsWith('#');
-  return <a {...props} href={blocked ? undefined : props.href} aria-disabled={blocked || undefined} role={blocked ? "link" : undefined} tabIndex={blocked ? 0 : undefined} onClick={(event) => links.onLinkClick?.(links.references.get(node!)!, event)} />;
-};
-const MarkdownImage = ({ node, ...props }: ComponentPropsWithoutRef<'img'> & ExtraProps) => {
-  const { references, attachmentBase, remotePaused } = useContext(MarkdownLinksContext)!;
-  const reference = resolveAttachmentReference(references.get(node!)!, attachmentBase);
-  return reference.kind === 'relative' && props.src !== ''
-    ? <MarkdownAttachmentImage key={props.src} {...props} remotePaused={remotePaused} />
-    : <MarkdownImageSource key={props.src} {...props} remotePaused={remotePaused} />;
-};
-const MarkdownImageSource = ({ remotePaused, ...props }: ComponentPropsWithoutRef<'img'> & { readonly remotePaused: boolean }) => {
+const MarkdownImageSource = ({ url, alt, title, paused }: { readonly url: string; readonly alt: string; readonly title: string | undefined; readonly paused: boolean }) => {
   const [loaded, setLoaded] = useState(false);
-  return <img {...props} src={remotePaused && !loaded ? undefined : props.src} onLoad={() => setLoaded(true)} />;
+  return <img src={paused && !loaded ? undefined : url} alt={alt} title={title} onLoad={() => { if (!paused) setLoaded(true); }} />;
 };
-const MarkdownTable = ({ node: _node, ...props }: ComponentPropsWithoutRef<'table'> & ExtraProps) => <div className="markdown-table"><table {...props} /></div>;
-const MarkdownPre = ({ node, ...props }: ComponentPropsWithoutRef<'pre'> & ExtraProps) => {
-  const code = node?.children[0];
-  if (code?.type === 'element' && code.tagName === 'code' && Array.isArray(code.properties.className) && code.properties.className.includes('language-mermaid')) {
-    const source = code.children.filter((child) => child.type === 'text').map((child) => child.value).join('');
-    return <MermaidDiagram key={source} source={source} />;
-  }
-  return <pre {...props} />;
-};
-const components = { a: MarkdownLink, img: MarkdownImage, table: MarkdownTable, pre: MarkdownPre };
 
-export const MarkdownContent = ({ text, className, resolveUrl, attachmentBase, onLinkClick, remotePaused = false }: MarkdownContentProps) => {
-  const references = new WeakMap<object, string>();
-  return <div className={`markdown-content ${className}`}>
-    <MarkdownLinksContext value={{ references, attachmentBase, onLinkClick, remotePaused }}><Markdown remarkPlugins={[remarkGfm]} urlTransform={(value, key, node) => {
-      if (key === 'href' || key === 'src') references.set(node, value);
-      const resolved = resolveUrl(value);
-      return resolved === null ? '' : defaultUrlTransform(resolved);
-    }} components={components}>{text}</Markdown></MarkdownLinksContext>
-  </div>;
-};
+export const MarkdownContent = ({ text, className, resolveUrl, attachmentBase, onLinkClick, remotePaused = false }: MarkdownContentProps) =>
+  <MarkdownView text={text} className={className} resources={{
+    kind: 'document', paused: remotePaused, resolveUrl, ...(onLinkClick ? { onLinkClick } : {}),
+    renderImage: ({ sourceUrl, url, alt, title }) => resolveAttachmentReference(sourceUrl, attachmentBase).kind === 'relative' && url !== ''
+      ? <MarkdownAttachmentImage key={url} src={url} alt={alt} title={title} remotePaused={remotePaused} />
+      : <MarkdownImageSource key={url} url={url} alt={alt} title={title} paused={remotePaused} />,
+  }} />;

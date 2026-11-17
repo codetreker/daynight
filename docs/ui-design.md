@@ -6,6 +6,8 @@ semantic color roles, exact palette, and their visual hierarchy. Product
 specifications and design documents own the behavior of specific interfaces
 and reference these rules.
 
+Use the shared [MarkdownView](../packages/daynight-web/src/ui/markdown/MarkdownView.tsx) component for Markdown document rendering.
+
 ## Brand mark
 
 Use the D letter mark for Web brand entries: an independent vertical stem and

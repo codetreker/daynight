@@ -29,6 +29,7 @@ async function install(page: Page, descriptionOverride = description, chain = fa
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
@@ -187,17 +188,28 @@ test('opening a relative attachment from graph details retains the inspected gra
 
 for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Task description card in page at ${width}px in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
-  const source = `${description}\n\n- Reading item\n\n| Heading | Wide column |\n| --- | --- |\n| Value | ${'wide'.repeat(80)} |`;
+  const source = `${description}\n\n- Reading item\n\n| Heading | Wide column |\n| --- | --- |\n| Value | ${'wide'.repeat(80)} |\n\nNote[^one]\n\n[^one]: A footnote`;
   await install(page, source, false, locale);
   const check = async (surface: ReturnType<Page['locator']>) => {
     const card = surface.locator('.description-card');
     await expectDescriptionCard(page, card, width);
     await expect(card.getByRole('heading', { name: 'Delivery' })).toBeVisible();
     await expect(card.getByText('Reading item')).toBeVisible();
+    const code = card.getByRole('region', { name: locale === 'en' ? 'Code' : '代码', exact: true });
+    const table = card.getByRole('region', { name: locale === 'en' ? 'Table' : '表格', exact: true });
+    const diagram = card.getByRole('region', { name: locale === 'en' ? 'Diagram' : '图表', exact: true }).first();
+    await expect(code).toHaveAttribute('tabindex', '0');
+    await expect(table).toHaveAttribute('tabindex', '0');
+    await expect(diagram).toHaveAttribute('tabindex', '0');
+    await expect(card.locator('.footnotes h2')).toHaveText(locale === 'en' ? 'Footnotes' : '脚注');
+    await expect(card.locator('a[data-footnote-backref]')).toHaveAttribute('aria-label', locale === 'en' ? 'Back to reference' : '返回引用');
     if (width === 320) {
-      for (const item of [card.locator('pre').first(), card.locator('.markdown-table'), card.locator('.mermaid-diagram').first()]) {
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      for (const item of [code, table, diagram]) {
         await expect.poll(() => item.evaluate(element => element.scrollWidth > element.clientWidth), { timeout: 45_000 }).toBe(true);
-        expect(await item.evaluate(element => { element.scrollLeft = 30; return element.scrollLeft; })).toBeGreaterThan(0);
+        await item.focus();
+        await page.keyboard.press('ArrowRight');
+        await expect.poll(() => item.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
       }
     }
   };

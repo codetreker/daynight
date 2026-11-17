@@ -83,17 +83,6 @@ export type InspectionMessages = {
     readonly refused: string;
     readonly requestFailed: string;
   };
-  readonly mermaid: {
-    readonly loading: string;
-    readonly diagram: string;
-    readonly source: string;
-    readonly failed: string;
-    readonly configuration: string;
-    readonly unsupported: string;
-    readonly tooLarge: string;
-    readonly complexity: string;
-    readonly image: string;
-  };
   readonly deletion: {
     readonly action: string;
     readonly title: string;

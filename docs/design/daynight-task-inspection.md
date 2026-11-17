@@ -165,11 +165,9 @@ Task 属性、状态、删除、claim 和 Steps 写入共用 `TaskDetailSession`
 
 ## Markdown 与附件链接
 
-`MarkdownContent` 复用 `react-markdown` 与 `remark-gfm`，拥有 CommonMark/GFM、
-Mermaid 图表及共享样式，覆盖标题、段落、列表、引用、代码、表格、链接和图片。
-模块级稳定的 `pre` renderer 只将 `mermaid` fenced code block 交给图表组件，
-其他代码块保留原生 `pre/code` 结构。URL 转换与链接激活继续由调用方提供。原始 HTML
-作为文本，URL 协议沿用已有规则。空描述使用双语目录中的空态消息；用户 Markdown
+`MarkdownContent` 将任务和附件资源规则接入[公共 Markdown 文档视图](shared-markdown.md)。
+公共视图拥有 CommonMark/GFM、脚注、表格、Mermaid 和共享样式；原始 HTML 作为文本，
+URL 转换与链接激活由文档适配器提供。空描述使用双语目录中的空态消息；用户 Markdown
 字节不随语言切换变化。概览继续拥有纵向阅读滚动，代码和表格只在局部横向滚动，
 宽内容不能撑破 320px 的尺寸链。
 
@@ -216,55 +214,7 @@ Goal 持有共享需求、设计和整体验收，阶段 task 保留生产责任
 
 ## Mermaid 图表
 
-`MarkdownContent` 将 `mermaid` fenced block 交给共享图表组件，普通 Markdown
-无需等待 Mermaid 12.2.0 的动态加载。来源仍以任务根或附件文件目录解析，不改变
-存储格式或权限。显式稳定类型表约束[要求](../spec/daynight-task-inspection.md#markdown-图表)中的
-15 类入口和 SDK 识别、解析及绘制 ID；SDK 新增类型不会自动开放。默认流程图使用
-Dagre，显式 `flowchart-elk` 使用 SDK 内置布局，其他类型使用各自布局。
-
-SDK 初始化、类型判定、语义预检和绘制共享一个串行队列，避免全局配置互相覆盖。
-配置固定 `strict`、应用主题和关闭可配置 HTML labels；拒绝来源中的配置指令及
-frontmatter。源码上限为 50,000 个 UTF-16 代码单元。固定版本的 parser DB 提供
-语义预算，每项上限 500：流程图、类图、状态图、ER 和需求图分别计节点及边；
-时序图分别计参与者及消息/注释/控制标记；Gantt 与 Journey 分别计任务和分组，
-Journey 另计参与者且只调用一次有派生副作用的任务 getter；饼图计分区，象限图计
-点；XY 分别计 plot、全部数据点及分类轴 categories；Block 计展开后的块和边；
-Packet 计行和全部字段；Kanban 计列与卡片；Event Modeling 分别计 box、swimlane
-和 relation。异常 DB 结构作为兼容性错误暴露，而非默认为空。
-
-Block 的 `space:N` 在 parser 建立层级时展开，因此先通过安全种子获取固定 SDK 的
-lexer，在独立词法会话中检查空间展开总数、跨度和显式列数，避免大数分配；标签
-和注释由同一 lexer 区分。解析后还按 SDK 实际绘制树估算 `setBlockSizes` 的调用量：
-根的深度为 0 并计一次，深度为 d 的块计 2^d 次，合计上限为 50,000；超限在绘制前转为局部
-复杂度错误。该固定版本对每个子节点递归两次，嵌套可能导致指数增长，仅限制块数
-不足以约束该路径。估算依据真实层级而非源码或平面节点列表，仅限制尺寸计算调用，
-不保证整个 parser 为线性或其同步工作可中断；解析仍受源码长度及展开预算约束。
-SDK 升级须重新核对布局算法和预算。Gantt 的日期编译可能逐日循环，固定发布包通过 pnpm
-补丁在根入口使用的 chunk 中对每次 `getTasks()` 的所有任务和编译 pass 累计
-50,000 次实际日历步进，`clear()` 和读取入口重置预算。超限转为局部复杂度错误并
-保留原始 cause；升级 SDK 时须重新验证补丁路径和真实 parser 合同。
-
-流程图及可表达资源节点的类型在绘制前根据 parser 语义拒绝图片节点。图片绘制
-等待的 `Image.decode()` 不能由阅读组件的 abort 中断；裸 `Promise.race` 也不能
-终止 SDK 工作或释放其共享状态。预检保留普通形状 metadata、标签中的字面量
-`@{` 和已解析的转义 key。图片节点支持需要可中断的隔离上下文及新的构建入口、
-消息协议、CSP 和资源生命周期。
-
-每次绘制使用唯一 ID 和可测量的离屏容器，成功或失败均清理，隐藏页签不会造成
-零尺寸。返回 SVG 的根 `viewBox` 必须有有限且为正的宽高，应用以其设置固有尺寸并
-移除根 `max-width` 收缩样式。结果通过 Blob URL 和原生 `img` 展示，不插入阅读
-DOM，也不调用 `bindFunctions`。Event Modeling 的合法 XHTML 标签保留在静态图片中。
-临时绘图 DOM、自定义样式资源和普通 Markdown 外部图片仍可能产生网络请求，该
-机制不提供网络隔离。
-
-图块拥有当前语言的状态、源码和图片资源。异步结果绑定来源与挂载生命周期；内容
-变化立即停止呈现旧结果，晚到事件不能改写当前图块，替换和卸载时释放对象 URL。
-模块级 renderer 身份稳定，父组件更新不会重建整个阅读树。可聚焦且具备可访问
-名称的局部滚动区域保留自然尺寸和键盘阅读；320px 下不撑宽整体页面，概览及附件
-正文保留纵向滚动所有权。标签、关系及数据的最终绘制须由真实浏览器验证。原有
-[流程图决策](../../.agents/notes/archived/feature/2026-10-24-markdown-flowcharts.md)
-及[稳定类型决策](../../.agents/notes/implemented/feature/2026-11-05-stable-mermaid-diagrams.md)
-记录取舍。
+任务和附件阅读复用[公共图表设计](shared-markdown.md#mermaid-图表)。
 
 ## 验证与交付
 
