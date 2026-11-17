@@ -43,7 +43,7 @@ export type ControllerSnapshot = SessionBinding & {
 };
 export type ControllerOperation = {
   executionGeneration?: string;
-  operationId: string; kind: "initial" | "cleanup" | "send_message" | "cancel" | "interaction_response" | "update_setting" | "execute_command" | "refresh_controls";
+  operationId: string; kind: "initial" | "cleanup" | "worker_input" | "send_message" | "cancel" | "interaction_response" | "update_setting" | "execute_command" | "refresh_controls";
   payload: unknown; payloadHash: string; state: OperationState;
   result: unknown; error: string | null; createdAt: number; updatedAt: number;
 };
@@ -214,7 +214,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   });
   const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
     const operation = getOperation(operationId);
-    if (operation?.kind !== "send_message" || !operation.payload || typeof operation.payload !== "object" || !("origin" in operation.payload)) return entryId;
+    if (!operation || operation.kind !== "send_message" && operation.kind !== "worker_input" || !operation.payload || typeof operation.payload !== "object" || !("origin" in operation.payload)) return entryId;
     const origin = operation.payload.origin;
     if (origin !== "user" && origin !== "daynight") throw new Error("Invalid persisted input origin.");
     if (nativeSessionId !== getSnapshot().nativeSessionId || !/^[a-f0-9-]{36}$/.test(entryId)) throw new Error("Native message identity differs from its original input.");
@@ -363,7 +363,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
         ? (({ origin: _origin, ...payload }) => payload)(input.payload) : input.payload;
       const hash = canonical === null ? controllerPayloadHash({ kind: input.kind, payload: hashPayload }) : createHash("sha256").update(canonical).digest("hex"); const existing = getOperation(input.operationId);
       if (existing !== null) { if (existing.payloadHash !== hash) throw new Error("The operation ID has different content."); return existing; }
-      if (input.kind === "initial" || input.kind === "send_message" || input.kind === "interaction_response" || input.kind === "execute_command" || input.kind === "update_setting") assertInputCapacity();
+      if (input.kind === "initial" || input.kind === "send_message" || input.kind === "worker_input" || input.kind === "interaction_response" || input.kind === "execute_command" || input.kind === "update_setting") assertInputCapacity();
       if (canonical !== null) db.prepare("INSERT INTO input_intents VALUES(?,?,?)").run(input.operationId, canonical, hash);
       const { intent: _intent, ...operation } = input; void _intent;
       return writeOperation({ ...operation, executionGeneration: ticket.executionGeneration, payloadHash: hash, state: "accepted", result: null, error: null, createdAt: Date.now(), updatedAt: Date.now() });

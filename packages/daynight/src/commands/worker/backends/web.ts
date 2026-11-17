@@ -366,7 +366,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (initialContinuation && observed.initialInputState === "not_submitted") {
       await refreshGrant(task, ticket, signal);
       phase(task, { kind: "execution", phase: "input-submission" });
-      const response = await request(ticket, { kind: "submit_initial", operationId: execution.initialOperationId }, { signal, timeoutMs: 30000 });
+      const response = await request(ticket, { kind: "submit_initial", operationId: execution.initialOperationId }, { signal, timeoutMs: 70000 });
       task = remember(task, response.snapshot);
       if (response.snapshot.initialInputState === "confirmed") { success(task, { kind: "execution", phase: "input-submission" }); phase(task, { kind: "execution", phase: "input-submission" }, true); }
     }
@@ -565,7 +565,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         if (snapshot.lifecycle === "starting") return options.store.updateWebExecution(task, { activity: "initializing" }, options.now());
         if (snapshot.initialInputState === "not_submitted") {
           phase(task, { kind: "execution", phase: "input-submission" });
-          const response = await request(ticket, { kind: "submit_initial", operationId: task.webExecution!.initialOperationId }, { signal, timeoutMs: 30000 });
+          const response = await request(ticket, { kind: "submit_initial", operationId: task.webExecution!.initialOperationId }, { signal, timeoutMs: 70000 });
           task = remember(task, response.snapshot);
           if (response.snapshot.initialInputState === "confirmed") { success(task, { kind: "execution", phase: "input-submission" }); phase(task, { kind: "execution", phase: "input-submission" }, true); }
         }
