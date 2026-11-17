@@ -710,13 +710,22 @@ it.each(["recover", "next-generation", "automatic-generation", "same-task", "ind
     let stopped: Awaited<ReturnType<typeof stoppedWebExecution>> | undefined;
     if (scenario !== "first-generation") {
       record = webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(176) }, 5);
+      const recordStopped = lifecycle.recordStoppedControllerGeneration;
       stopped = await stoppedWebExecution(f, webStore, record);
       record = stopped.task;
       const journalFile = path.join(controllerExecutionDirectory(f.root, record.webExecution!.executionId), "journal.sqlite");
       await mkdir(path.dirname(journalFile), { recursive: true });
       const journal = lifecycle.openControllerLifecycleStore(journalFile, stopped.ticket, { onMigration() {} });
       const { executionId: _executionId, claimId: _claimId, sessionId: _sessionId, executionGeneration: _generation, controllerInstanceId: _instance, ...snapshotPatch } = stopped.snapshot;
-      try { journal.patchSnapshot(snapshotPatch); } finally { journal.close(); }
+      try { journal.patchSnapshot({ ...snapshotPatch, controllerProcess: { ...snapshotPatch.controllerProcess!, jobObjectName: `Local\\Daynight-${stopped.ticket.launchId}` } }); } finally { journal.close(); }
+      // Exercise the real durable Windows proof even on non-Windows test hosts;
+      // process-tree observation is the controlled boundary in this fixture.
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      try {
+        Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+        const proven = await recordStopped(journalFile, stopped.ticket, { deadline: Date.now() + 5000, jobLease: {} as never });
+        expect(lifecycle.readProvenWindowsStoppedControllerGeneration(journalFile, stopped.ticket)).toEqual(proven);
+      } finally { Object.defineProperty(process, "platform", platform); }
       if (scenario === "next-generation") {
         record = webStore.authorizeRecoveryRetry(record, 8);
         record = webStore.beginWebGeneration(record, stopped.snapshot, 9);
