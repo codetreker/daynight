@@ -1,5 +1,6 @@
 import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "../configuration-admission.js";
 import { WindowsProcessProofError } from "../../controller/windows-process-proof.js";
+import { MappingProcessProofAcquisitionError } from "./tool-launch-process-proof.js";
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { readCodexConfiguration } from "./codex-config.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -507,7 +508,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
     const mapping = await mappingFor(context, operation);
     let originalSession = expectedSession === undefined ? undefined : canonicalId(expectedSession);
-    let receiptIdentity: string | undefined, firstTermination: WindowsProcessProofError | undefined;
+    let receiptIdentity: string | undefined, firstDisappearance: WindowsProcessProofError | MappingProcessProofAcquisitionError | undefined;
     const readOriginalReceipt = async (): Promise<HerdrToolLaunchReceipt> => {
       const receipt = await mapping!.readReceipt(operation);
       if (receipt === null) throw new Error("The original native launch receipt disappeared before Session confirmation.");
@@ -526,10 +527,12 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
             const originalReceipt = await readOriginalReceipt();
             try { await verifyMappingProcesses(context, binding, mapping, operation, originalReceipt); }
             catch (cause) {
-              // A sampled descendant can exit while its command line is read.
+              // A sampled process can exit between inventory and acquisition or during a command-line query.
               // Reobserve the complete original chain without resubmitting input.
-              if (process.platform !== "win32" || !(cause instanceof WindowsProcessProofError) || cause.domain !== "NTSTATUS" || cause.stage !== "command-line" || (cause.code >>> 0) !== 0xc000010a) throw cause;
-              firstTermination ??= cause;
+              const terminating = cause instanceof WindowsProcessProofError && cause.domain === "NTSTATUS" && cause.stage === "command-line" && (cause.code >>> 0) === 0xc000010a;
+              const missing = cause instanceof MappingProcessProofAcquisitionError && cause.cause instanceof WindowsProcessProofError && cause.cause.domain === "Win32" && cause.cause.stage === "open-process" && cause.cause.code === 87;
+              if (process.platform !== "win32" || !terminating && !missing) throw cause;
+              firstDisappearance ??= cause;
               await wait(operation);
               continue;
             }
@@ -549,7 +552,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
     } catch (cause) {
       if (mapping === null) throw cause;
-      const failure = firstTermination === undefined || cause === firstTermination ? cause : new AggregateError([firstTermination, cause], "The original native Session confirmation failed after a process exited during observation.", { cause: firstTermination });
+      const failure = firstDisappearance === undefined || cause === firstDisappearance ? cause : new AggregateError([firstDisappearance, cause], "The original native Session confirmation failed after a process exited during observation.", { cause: firstDisappearance });
       throw new HerdrAgentActionError("The initial input was submitted but its original official native Session could not be confirmed; input cannot be repeated.", "agent.prompt", "unknown", { cause: failure, promptSubmission: "submitted" });
     }
   };

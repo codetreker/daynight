@@ -3,6 +3,12 @@ import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../
 import { inspectWindowsProcessProof } from "../../controller/windows-process-proof.js";
 
 export type MappingProcessProof = ProcessProof & { readonly birthToken?: string };
+export class MappingProcessProofAcquisitionError extends Error {
+  constructor(readonly pid: number, readonly role: string, readonly phase: "capture" | "observe", cause: unknown) {
+    super(`The ${role} process identity ${phase} failed for PID ${pid}.`, { cause });
+    this.name = "MappingProcessProofAcquisitionError";
+  }
+}
 export const validLinuxBirthToken = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]+$/.test(value);
 export const parseLinuxProcessBirth = (pid: number, stat: string, bootId: string): { token: string; parentPid: number; processGroupId: number } => {
   const end = stat.lastIndexOf(")"), prefix = stat.slice(0, end + 1), fields = stat.slice(end + 1).trim().split(/\s+/), token = `${bootId.trim()}:${fields[19]}`;

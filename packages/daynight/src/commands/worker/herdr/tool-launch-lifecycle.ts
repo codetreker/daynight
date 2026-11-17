@@ -3,8 +3,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Operation } from "../../../api/operation.js";
 import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
-import { stopWindowsBootstrapProcess } from "../../controller/windows-process-proof.js";
-import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
+import { stopWindowsBootstrapProcess, WindowsProcessProofError } from "../../controller/windows-process-proof.js";
+import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, MappingProcessProofAcquisitionError, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
 import { runHerdrCommand } from "./command.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
 import { parseToolReceipt } from "./tool-launch-protocol.js";
@@ -249,21 +249,29 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     const record = await read(), proofs = new Map((record?.proofs ?? []).map(proof => [proof.pid, proof]));
     const shell = record?.proofs[0];
     if (shell === undefined || shell.pid !== input.shellPid) throw new Error("The original shell has no process proof from workspace preparation.");
-    const observe = async (proof: ProcessProof, role: string): Promise<ProcessProof> => {
+    const acquire = async (id: number, role: string, phase: "capture" | "observe"): Promise<ProcessProof> => {
       operation.check();
-      const current = await captureProcessProof(proof.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
+      try { return await captureProcessProof(id, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs())))); }
+      catch (cause) {
+        if (cause instanceof WindowsProcessProofError && cause.domain === "Win32") throw new MappingProcessProofAcquisitionError(id, role, phase, cause);
+        throw cause;
+      }
+    };
+    const observe = async (proof: ProcessProof, role: string): Promise<ProcessProof> => {
+      const current = await acquire(proof.pid, role, "observe");
       if (!sameProcessIdentity(current, proof)) throw new Error(`The original ${role} process identity changed; input remains closed.`);
       return current;
     };
     await observe(shell, "shell");
     if (input.receipt === undefined) return;
     const receipt = parseToolReceipt(input.receipt, manifest);
+    const roleOf = (id: number): string => id === shell.pid ? "shell" : id === receipt.helperPid ? "helper" : id === receipt.childPid ? "native child" : "native descendant";
     const capture = async (id: number, role: string, parent: ProcessProof): Promise<ProcessProof> => {
-      if (process.platform === "win32") await observe(parent, "parent");
-      const previous = proofs.get(id), proof = previous === undefined ? await captureProcessProof(id, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs())))) : await observe(previous, role);
+      if (process.platform === "win32") await observe(parent, roleOf(parent.pid));
+      const previous = proofs.get(id), proof = previous === undefined ? await acquire(id, role, "capture") : await observe(previous, role);
       if (proof.parentPid !== parent.pid) throw new Error(`The original ${role} has no continuous original helper and shell parent chain.`);
       if (process.platform === "win32") assertWindowsParentBirth(proof, parent);
-      await observe(parent, "parent");
+      await observe(parent, roleOf(parent.pid));
       if (previous === undefined) { proofs.set(id, proof); await save([...proofs.values()]); }
       return proof;
     };
@@ -283,7 +291,7 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
       const row = pending.splice(index, 1)[0]!;
       await capture(row.pid, "native descendant", proofs.get(row.parentPid)!);
     }
-    for (const proof of proofs.values()) if (descendants.has(proof.pid)) await observe(proof, "native chain");
+    for (const proof of proofs.values()) if (descendants.has(proof.pid)) await observe(proof, roleOf(proof.pid));
   };
   return {
     captureProcesses, confirmStopped, stopProcesses, releaseFrozen, verifyProcesses,
