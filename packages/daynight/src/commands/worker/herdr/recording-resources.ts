@@ -7,7 +7,8 @@ import type { Operation } from "../../../api/operation.js";
 import { readWorkerClaim } from "../../../api/task-properties.js";
 import type { WorkerRemote } from "../remote.js";
 import type { ResourceOwner } from "../types.js";
-import { assertHerdrDisposalTarget, removeHerdrSourceDirectory } from "../resource-disposal.js";
+import { assertHerdrDisposalTarget } from "../resource-disposal.js";
+import { removeOwnedSourceDirectory } from "../owned-source-directory.js";
 import { canonicalSessionJson, decodeStrictSessionJson, uuid } from "../../../session/v2/values.js";
 import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import type { HerdrLifecycleRecord } from "./lifecycle-types.js";
@@ -175,7 +176,7 @@ export const createHerdrRecordingResources = (options: {
       if (actual !== null) {
         const root = lstatSync(options.directory, { bigint: true });
         if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("The recording root is not an original physical directory.");
-        await removeHerdrSourceDirectory(options.directory, directory, operation, { rootIdentity: `${root.dev}:${root.ino}`, sourceIdentity: actual });
+        await removeOwnedSourceDirectory(options.directory, directory, operation, { rootIdentity: `${root.dev}:${root.ino}`, sourceIdentity: actual });
       }
       if (!absent(directory)) throw new Error("The recording source removal was not confirmed.");
       // Re-establish the parent barrier even when a previous attempt removed
@@ -202,7 +203,7 @@ export const createHerdrRecordingResources = (options: {
           sourceOperation.check();
           if (originalAbsent !== true && !absent(record.cwd)) throw new Error("The original worktree removal was not confirmed.");
           if (sourceIdentity(directory) !== currentIdentity) throw new Error("The recording source changed during worktree disposal.");
-          await removeHerdrSourceDirectory(options.directory, directory, sourceOperation);
+          await removeOwnedSourceDirectory(options.directory, directory, sourceOperation);
           if (!absent(directory)) throw new Error("The recording source removal was not confirmed.");
           options.archive.removeSourceData(record, sourceOperation);
           sourceOperation.check();

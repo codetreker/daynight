@@ -6,7 +6,7 @@ import { createOperation } from "../../../api/operation.js";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket } from "../../controller/launch-ticket.js";
 import { resolveControllerIpcEndpoint } from "../../controller/paths.js";
-import { removeHerdrSourceDirectory } from "../resource-disposal.js";
+import { removeOwnedSourceDirectory } from "../owned-source-directory.js";
 import type { BotExecution } from "./execution-store.js";
 import { botStateDirectory } from "./environment.js";
 import { botUUID, parseBot, type BotRecord } from "./types.js";
@@ -179,7 +179,7 @@ export const removeBotDeletionFile = async (target: BotDeletionTarget, signal: A
   if (!await check()) { await syncExecutionRemoval(target, signal); return; }
   if (target.kind === "directory") {
     const operation = createOperation({ signal, limits: { totalMs: 300_000 } });
-    try { await removeHerdrSourceDirectory(target.root, target.path, operation, { rootIdentity: target.rootIdentity, sourceIdentity: target.identity }); }
+    try { await removeOwnedSourceDirectory(target.root, target.path, operation, { rootIdentity: target.rootIdentity, sourceIdentity: target.identity }); }
     finally { operation.dispose(); }
     await syncExecutionRemoval(target, signal);
     return;
