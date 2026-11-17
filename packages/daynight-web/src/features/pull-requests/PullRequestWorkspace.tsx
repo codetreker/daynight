@@ -11,7 +11,7 @@ import { PullRequestAuthorPicker } from './PullRequestAuthorPicker';
 import './pull-requests.css';
 
 const en = {
-  title: 'Pull requests', subtitle: 'Pull requests saved from this project’s repository', refresh: 'Refresh', refreshing: 'Refreshing…',
+  title: 'Pull requests', refresh: 'Refresh', refreshing: 'Refreshing…',
   filter: 'Pull request status', search: 'Search pull request title or number', placeholder: 'Search title or #number',
   active: 'Active', merged: 'Merged', closed: 'Closed', all: 'All', draft: 'Draft', open: 'Open', unknown: 'Unknown',
   authorMissing: 'Author unavailable', sourceMissing: 'Source repository or branch unavailable', repositoryMissing: 'Repository unavailable', branchMissing: 'Branch unavailable',
@@ -36,7 +36,7 @@ const en = {
   updates: 'New pull requests are available. Refresh to include them.', range: 'Showing',
 };
 const zh: typeof en = {
-  title: 'PR 列表', subtitle: '此项目仓库中已同步的 Pull Request', refresh: '刷新', refreshing: '正在刷新…',
+  title: 'PR 列表', refresh: '刷新', refreshing: '正在刷新…',
   filter: 'PR 状态', search: '搜索 PR 标题或编号', placeholder: '搜索标题或 #编号',
   active: '活跃', merged: '已合并', closed: '已关闭', all: '全部', draft: 'Draft', open: 'Open', unknown: '未知',
   authorMissing: '作者不可用', sourceMissing: '来源仓库或分支不可用', repositoryMissing: '仓库不可用', branchMissing: '分支不可用',
@@ -123,7 +123,7 @@ const Workspace = (props: PullRequestWorkspaceProps) => {
   const end = start + BigInt(page?.items.length ?? 0) - 1n;
 
   return <div className="pull-request-workspace" ref={workspace}>
-    <div className="project-section-heading pr-heading"><div><h2>{m.title}</h2><p>{m.subtitle}</p></div><button className="button" type="button" onClick={read.refresh} disabled={loading || !props.canRead} aria-busy={loading}><span aria-hidden="true">↻</span> {loading ? m.refreshing : m.refresh}</button></div>
+    <div className="project-section-heading pr-heading"><h2>{m.title}</h2><button className="button" type="button" onClick={read.refresh} disabled={loading || !props.canRead} aria-busy={loading}><span aria-hidden="true">↻</span> {loading ? m.refreshing : m.refresh}</button></div>
     <div className="pr-sync-status">
       {notes.map(note => <div className={`pr-status-note${note.danger ? ' danger' : ''}`} role="status" key={note.text}>{note.text} {settingsLink}</div>)}
       {read.statusError !== null && <div className="pr-status-note danger" role="alert">{m.statusError} <button type="button" onClick={read.reconcile}>{m.retry}</button></div>}
