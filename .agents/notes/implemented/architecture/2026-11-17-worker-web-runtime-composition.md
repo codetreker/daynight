@@ -10,6 +10,8 @@ A Worker that no longer owns old Herdr executions must not construct an instance
 
 Worker run and management compose the Web store and backend as required coordinator dependencies. Tool selection prepares and freezes Web recipes and reports Web and Bot activity. Management refuses an old Herdr execution before opening a backend. The existing public tool and context slots remain for the current wire contract; unobserved slots do not acquire synthetic probe results. Web probe and materializer cleanup retain their original owners.
 
+The uncalled Herdr shared and durable backend roots, adapter, and runtime version observer are removed. Remaining Herdr-specific leaf modules retain their existing types until their own consumers are removed; no replacement backend or synthetic probe takes their place.
+
 This supersedes the runtime admission and shared instance ownership in the [Herdr launch decision](2026-11-12-herdr-frozen-tool-launch.md), while preserving the Web ownership described in the [frozen runtime decision](2026-11-12-worker-frozen-tool-runtime.md).
 
 ## Alternatives
