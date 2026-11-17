@@ -195,13 +195,13 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   // MCP and Session registration use the PAT issued to the CLI by device login.
   // Keep it out of the browser and Playwright traces.
   const configModule = pathToFileURL(path.join(path.dirname(topology.cliEntry), "config/server.js")).href;
-  const { loadServerConfiguration } = await import(configModule) as { loadServerConfiguration(paths: { stateDirectory: string; configFile: string }): Promise<{ serverToken?: string }> };
-  const { serverToken } = await loadServerConfiguration({ stateDirectory: topology.cliConfigDirectory, configFile: path.join(topology.cliConfigDirectory, "config.yml") });
+  const { loadServerConfiguration } = await import(configModule) as { loadServerConfiguration(paths: { stateDirectory: string; configFile: string }): Promise<{ serverUrl: string; serverToken?: string }> };
+  const { serverUrl, serverToken } = await loadServerConfiguration({ stateDirectory: topology.cliConfigDirectory, configFile: path.join(topology.cliConfigDirectory, "config.yml") });
   if (serverToken === undefined) throw new Error("CLI device login did not save its Worker credential.");
 
   await verifyCompletionFlow(page, projectId!, task.id);
   await verifyControllerImages(page);
-  await verifyWorkerPatrol();
+  await verifyWorkerPatrol({ serverUrl, serverToken });
   await verifyTagFlow(page, projectId!, serverToken);
 
   // These API registrations exercise the assembled service without starting a

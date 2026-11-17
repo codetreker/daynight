@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runCommand, startCommand, type ManagedCommand } from "../src/command.ts";
+import { workerFixtureConfiguration } from "../src/worker-config.ts";
 import { cli, cliEnvironment, expect, topology } from "./fixtures.ts";
 
 type Task = { id: string; version: number; status: string; session?: { lifecycle?: string }; properties: { paused?: boolean; worker?: { claimId: string; workerId: string; worktreeId: string; nativeSessionId: string | null; state: string } } };
 type PeerEvent = { method: string; threadId: string; text?: string };
 
 // The native peer is controlled; Worker, Controller, Server, relay and PostgreSQL are real.
-export const verifyWorkerPatrol = async (): Promise<void> => {
+export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToken: string }): Promise<void> => {
   const root = path.join(path.dirname(topology.cliConfigDirectory), `worker-patrol-${randomUUID()}`);
   const repository = path.join(root, "repository"), bare = path.join(root, "remote.git"), peer = path.join(root, "codex.mjs"), log = path.join(root, "peer.jsonl");
   await mkdir(root, { recursive: true });
@@ -44,7 +45,8 @@ export const verifyWorkerPatrol = async (): Promise<void> => {
     const readTask = async (): Promise<Task> => JSON.parse((await cli(["task", "show", taskId, "--project", projectId, "--json"])).stdout) as Task;
     const task = await readTask();
     await cli(["task", "update", taskId, "--project", projectId, "--allow-agents", "true", "--if-version", String(task.version)]);
-    await writeFile(config, `${originalConfig}\nworkerId: ${randomUUID()}\nworker:\n  agentControlMode: web\n  agent: codex\n  pollIntervalMs: 1000\n  maxConcurrent: 1\n  repositoryRoot: ${JSON.stringify(path.join(root, "repositories"))}\n  toolPaths:\n    codex: ${JSON.stringify(peer)}\n  repositories:\n    - projectId: ${projectId}\n      remote: ${JSON.stringify(remote)}\n      path: ${JSON.stringify(repository)}\n`, { mode: 0o600 });
+    await writeFile(config, workerFixtureConfiguration({ ...server, workerId: randomUUID(), repositoryRoot: path.join(root, "repositories"),
+      peer, projectId, remote, repository }), { mode: 0o600 });
     const entries = async (): Promise<PeerEvent[]> => {
       try { return (await readFile(log, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as PeerEvent); }
       catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
