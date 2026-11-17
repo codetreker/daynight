@@ -31,7 +31,6 @@ export const configurationHasUnfinishedRemoval = (cache: WorkerConfigurationCach
 export const configurationToolTargets = (cache: WorkerConfigurationCache, local: ToolPaths): WorkerConfigurationToolTargets | null => {
   const desired = configurationDesired(cache), choices = desired?.value.toolPaths;
   if (choices === undefined) return { source: "local", revision: null, choices: local };
-  if (choices.codex === null || choices.copilot === null || choices.herdr === null) return null;
   return { source: "cloud", revision: cache.authority.applicationRevision, choices: { codex: choices.codex, copilot: choices.copilot, herdr: choices.herdr } };
 };
 export const resolveWorkerCloudProjectNative = (native: WorkerCloudNative, project: WorkerCloudProject): WorkerCloudNative => {

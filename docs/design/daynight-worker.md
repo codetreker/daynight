@@ -201,7 +201,7 @@ coordinator 的 `configurationComplete` 同时包含存储就绪与已有项目�
 
 ### 工具目标与验证接缝
 
-配置快照的 toolTargets 使用运行管理器同一 `{source,revision,choices}` 输入。未启用云端工具能力时给完整本地选择；已协商云端值仍有未采纳 null 时返回 null，待逐项导入完成后才发布完整 cloud 目标。不能把本地 fallback 标成该云端 revision 的事实。显式 auto 始终保持 auto。
+配置快照的 toolTargets 使用运行管理器同一 `{source,revision,choices}` 输入。未启用云端工具能力时给完整本地选择；已协商云端值逐项保留 choice 或未采纳 null，不用本地值填补云端目标。显式 auto 始终保持 auto。未采纳的工具不能准备或准入；当前遥测格式不能表达 null 目标，因此可报告的历史目标保留其真实来源与版本并标记配置不可用。没有历史目标或历史云端版本不能合法上报时省略该项，其他工具仍报告真实事实。
 
 配置管理器接收 readToolSelectionKeys(native,mode)，由运行管理器提供真实选择键；refreshToolSelections() 让变化进入原串行提交 owner。Codex/Copilot native 依赖自身工具，Herdr 模式额外依赖 Herdr；无关工具变化不撤销该 native 证明。接入回调后，缺失或非法键不能取得资格，迟到应用结果必须仍匹配捕获的目标选择和键。工具变化不丢旧成功历史、失败或仓库准备，也不创建第二份工具应用账本。未接回调的既有运行入口保持原 native 校验，但不产生 toolPaths 实际观察。
 

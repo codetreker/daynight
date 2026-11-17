@@ -305,7 +305,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
           if (targets === null) throw new Error("Worker tool targets are unavailable.");
           await options.prepareToolSelection(intended as WorkerCloudNative, mode, targets, controller.signal);
           controller.signal.throwIfAborted();
-          if (findRecord(cache, recordId)?.value.targetRevision !== revision || !equal(targets, toolTargets(cache, localTools))) throw new Error("Worker tool targets changed during preparation.");
+          const currentTargets = toolTargets(cache, localTools);
+          if (findRecord(cache, recordId)?.value.targetRevision !== revision || currentTargets === null || !nativeTools(intended as WorkerCloudNative, mode).every(tool => equal(targets.choices[tool], currentTargets.choices[tool]))) throw new Error("Worker tool targets changed during preparation.");
           notifyApplication("succeeded", "not_attempted");
           phase = "validate"; notifyApplication("started", "not_attempted");
         }
