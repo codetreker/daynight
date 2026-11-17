@@ -18,6 +18,11 @@ const response = (revision = '1', toolPaths: WorkerCloudToolPaths | undefined = 
   return result;
 };
 const legacyResponse = (revision: string, maxConcurrent = 7) => configurationResponse(configurationResource(revision, { ...configurationValue(), maxConcurrent }));
+const futureResponse = (revision: string, maxConcurrent: number, paths: WorkerCloudToolPaths = original, future = '900719925474099312345') => {
+  const toolPaths = { ...paths, codex: paths.codex === null ? null : { ...paths.codex, extra: { large: 'FUTURE_NUMBER' } }, nextTool: { kind: 'new', limit: 'FUTURE_NUMBER' } };
+  const text = JSON.stringify(configurationResource(revision, { ...configurationValue(), maxConcurrent, toolPaths })).replaceAll('"FUTURE_NUMBER"', future);
+  return new Response(text, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '1' } });
+};
 const scopes: TaskCacheScope[] = [];
 const scope = () => {
   const owner = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() });
@@ -37,6 +42,46 @@ beforeEach(() => vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }))
 afterEach(() => { for (const owner of scopes.splice(0)) owner.dispose(); invalidateAuthRequests(); vi.useRealTimers(); });
 
 describe('Worker legacy tool-path save reconciliation', () => {
+  it('uses the same-revision full source when capability appears during an edit', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(legacyResponse('1', 2)).mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(futureResponse('2', 7));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = hook(); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7' })));
+    await refresh(result); await act(async () => result.current.save());
+    const body = fetch.mock.calls[2]![1].body as string;
+    expect(body).toContain('900719925474099312345');
+    expect(JSON.parse(body).value.toolPaths).toHaveProperty('nextTool.kind', 'new');
+    expect(JSON.parse(body).value.toolPaths.codex).toHaveProperty('extra');
+    expect(result.current.notice).toBe('saved');
+  });
+
+  it('enriches an omitted receipt only from the same revision, never a delayed older read', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(legacyResponse('2'))
+      .mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(futureResponse('2', 7)).mockResolvedValueOnce(futureResponse('3', 7, local));
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = hook(); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7', toolPaths: local }))); rerender({ editable: false });
+    await act(async () => result.current.save()); rerender({ editable: true }); await refresh(result);
+    expect(result.current.baselineRevision).toBe('2'); expect(result.current.saveableDirty).toBe(false);
+    await act(async () => result.current.save()); expect(puts(fetch)).toHaveLength(1);
+    await refresh(result); expect(result.current.saveableDirty).toBe(true);
+    await act(async () => result.current.save());
+    const body = fetch.mock.calls[4]![1].body as string;
+    expect(body).toContain('900719925474099312345'); expect(JSON.parse(body).value.toolPaths).toHaveProperty('nextTool.kind', 'new');
+    expect(result.current.notice).toBe('saved');
+  });
+
+  it('retains the draft and blocks saves when the same revision changes unknown source', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(futureResponse('1', 2, original, '900719925474099312346'));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = hook(); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7' })));
+    await refresh(result);
+    expect(result.current.error).toMatchObject({ kind: 'protocol' });
+    expect(result.current.draft?.maxConcurrent).toBe('7'); expect(result.current.saveableDirty).toBe(false);
+    await act(async () => result.current.save()); expect(puts(fetch)).toHaveLength(0);
+  });
+
   it('adopts untouched omitted paths before using a newer read revision for a full save', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(response()).mockRejectedValueOnce(new TypeError('connection lost'))
       .mockResolvedValueOnce(response('3', remote, 7)).mockResolvedValueOnce(response('4', remote, 8));

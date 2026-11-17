@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getWorkerConfiguration, listWorkerConfigurationProjects, parseConfigurationRevision, parseWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationOutcome, type WorkerConfigurationResource } from '../src/api/worker-configuration';
+import { getWorkerConfiguration, listWorkerConfigurationProjects, parseConfigurationRevision, parseWorkerConfiguration, saveWorkerConfiguration, workerConfigurationBaseline, type WorkerConfigurationOutcome, type WorkerConfigurationResource } from '../src/api/worker-configuration';
+import { mergeConfigurationDraft } from '../src/api/configuration-source';
+import { mergeConfigurationResources } from '../src/features/workers/configuration/model';
 import { cancelAuthNetworkRequests, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
@@ -48,7 +50,6 @@ describe('Worker configuration wire format', () => {
     expect(() => parseConfigurationRevision(revision)).toThrow('invalid response');
   });
   it.each([
-    { ...configurationResource(), supported: true },
     { ...configurationResource(), observationRevision: '1' },
     { ...configurationResource(), desired: { ...configurationResource().desired, revision: 1 } },
     configurationResource('1', { ...configurationValue(), maxConcurrent: 0 }),
@@ -60,28 +61,59 @@ describe('Worker configuration wire format', () => {
     observed([outcome({ kind: 'projectRemoval', projectId: workerId(3) }, null)]),
     observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), targetRevision: '2' }]),
     observed([outcome({ kind: 'maxConcurrent' }, 2), outcome({ kind: 'maxConcurrent' }, 3)]),
+    observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), key: { kind: 'maxConcurrent', projectId: workerId(3) } } as WorkerConfigurationOutcome]),
+    observed([outcome({ kind: 'agentControlMode' }, 'web')]),
     observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), state: 'error' }]),
     observed([{ ...outcome({ kind: 'maxConcurrent' }, 2), nextAttemptAt: WORKER_TIME }]),
   ])('rejects malformed or inconsistent configuration %#', resource => {
     expect(() => parseWorkerConfiguration(resource)).toThrow('invalid response');
   });
-  it('rejects unknown diagnostics and false project success while allowing failed prior values', () => {
+  it('ignores unknown diagnostics and rejects false project success while allowing failed prior values', () => {
     const failure = { code: 'command_failed' as const, category: 'runtime' as const, phase: 'stop' as const, occurredAt: WORKER_TIME };
     const item = { ...outcome({ kind: 'projectRemoval', projectId: workerId(3) }, null), state: 'error' as const, error: failure, lastFailure: failure, nextAttemptAt: WORKER_TIME };
     expect(parseWorkerConfiguration(observed([item]))).toEqual(observed([item]));
-    expect(() => parseWorkerConfiguration(observed([{ ...item, error: { ...failure, message: 'raw tool output' } } as unknown as WorkerConfigurationOutcome]))).toThrow('invalid response');
+    expect(parseWorkerConfiguration(observed([{ ...item, error: { ...failure, message: 'raw tool output' } } as unknown as WorkerConfigurationOutcome])).observation!.items[0]!.error).toEqual(failure);
     expect(() => parseWorkerConfiguration(observed([{ ...item, appliedValue: false } as unknown as WorkerConfigurationOutcome]))).toThrow('invalid response');
     expect(() => parseWorkerConfiguration({ ...observed([item]), observation: { ...observed([item]).observation, baseRevision: '1' } })).toThrow('invalid response');
   });
 });
 
 describe('principal-admitted configuration API', () => {
+  it('retains the response document even for an uninitialized target', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(configurationResponse({ desired: null, observationRevision: '0', observation: null, future: { n: 9 } })));
+    const resource = await getWorkerConfiguration(workerId(1), new AbortController().signal, admission());
+    expect(resource.desired).toBeNull(); expect(resource.document!.source).toContain('"future"');
+  });
+  it('preserves independent desired and unknown observation sources across late reads', async () => {
+    const future = { key: { kind: 'future', id: 'opaque' }, targetRevision: '2', appliedValue: null, state: 'pending' };
+    const older = { ...configurationResource('2'), observationRevision: '1', observation: { baseRevision: '0', desiredRevision: '2', items: [future], reportedAt: WORKER_TIME } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource('3'))).mockResolvedValueOnce(configurationResponse(older)));
+    const signal = new AbortController().signal, current = await getWorkerConfiguration(workerId(1), signal, admission()), incoming = await getWorkerConfiguration(workerId(1), signal, admission());
+    const merged = mergeConfigurationResources(current, incoming);
+    expect(merged.desired!.revision).toBe('3'); expect(merged.desired!.document).toBe(current.document);
+    expect(merged.observation!.items).toEqual([]); expect(merged.observation!.document).toBe(incoming.document);
+    expect(merged.observation!.document!.source).toContain('"future"');
+  });
+  it('validates common revision constraints for unknown observation kinds', () => {
+    for (const revision of [undefined, '0', '3', 1]) {
+      const item = { key: { kind: 'future' }, targetRevision: revision, state: 'future' };
+      expect(() => parseWorkerConfiguration({ ...configurationResource('2'), observationRevision: '1', observation: { baseRevision: '0', desiredRevision: '2', items: [item], reportedAt: WORKER_TIME } })).toThrow();
+    }
+  });
+  it('rejects a receipt that changes unknown data despite matching known fields', async () => {
+    const raw = (revision: string, unknown: string) => new Response(JSON.stringify(configurationResource(revision)).replace('"maxConcurrent":2', `"future":${unknown},"maxConcurrent":2`), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1' } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(raw('1', '900719925474099312345')).mockResolvedValueOnce(raw('2', '900719925474099312346')));
+    const signal = new AbortController().signal, resource = await getWorkerConfiguration(workerId(1), signal, admission());
+    const submission = mergeConfigurationDraft(workerConfigurationBaseline(resource)!, configurationValue()), onConfirmed = vi.fn();
+    await expect(saveWorkerConfiguration(workerId(1), '1', submission, signal, { ...admission(), onConfirmed })).rejects.toMatchObject({ kind: 'protocol' });
+    expect(onConfirmed).not.toHaveBeenCalled();
+  });
   it('reads and saves decimal string CAS through the Worker-only API', async () => {
     const value = configurationValue(), fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource('9223372036854775806'))).mockResolvedValueOnce(configurationResponse(configurationResource('9223372036854775807', value)));
     vi.stubGlobal('fetch', fetch);
     const gate = { ...admission(), onDispatch: vi.fn() }, signal = new AbortController().signal;
     await getWorkerConfiguration(workerId(1).toUpperCase(), signal, gate);
-    expect(await saveWorkerConfiguration(workerId(1), '9223372036854775806', value, signal, gate)).toEqual(configurationResource('9223372036854775807', value));
+    expect((await saveWorkerConfiguration(workerId(1), '9223372036854775806', value, signal, gate)).document!.known).toEqual(configurationResource('9223372036854775807', value));
     expect(fetch.mock.calls.map(([url]) => url)).toEqual([`/api/v1/me/workers/${workerId(1)}/configuration`, `/api/v1/me/workers/${workerId(1)}/configuration`]);
     expect(JSON.parse(fetch.mock.calls[1]![1].body)).toEqual({ revision: '9223372036854775806', value });
     expect(gate.onDispatch).toHaveBeenCalledOnce(); expect(fetch.mock.calls[1]![1].headers).not.toHaveProperty('Daynight-Worker-Protocol');
@@ -91,10 +123,10 @@ describe('principal-admitted configuration API', () => {
     const reason = new Error('configuration view closed');
     const fetch = vi.fn().mockResolvedValue(configurationResponse(saved)); vi.stubGlobal('fetch', fetch);
     let resume = () => {};
-    const onConfirmed = vi.fn(() => { resume = pauseAuthRequests(); controller.abort(reason); });
+    const onConfirmed = vi.fn((_resource: WorkerConfigurationResource) => { resume = pauseAuthRequests(); controller.abort(reason); });
     try {
       await expect(saveWorkerConfiguration(workerId(1), '1', configurationValue(), controller.signal, { ...admission(), onConfirmed })).rejects.toBe(reason);
-      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed).toHaveBeenCalledWith(saved); expect(controller.signal.aborted).toBe(true);
+      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed.mock.calls[0]![0].document!.known).toEqual(saved); expect(controller.signal.aborted).toBe(true);
     } finally { resume(); }
   });
   it.each([{ status: 409, code: 'version_conflict' }, { status: 400, code: 'invalid_input' }])('reports a trusted $status refusal before a synchronous pause and abort', async ({ status, code }) => {
@@ -116,14 +148,14 @@ describe('principal-admitted configuration API', () => {
       return Promise.resolve(outcome === 'confirmed' ? configurationResponse(saved) : configurationError(409, 'version_conflict'));
     });
     vi.stubGlobal('fetch', fetch);
-    const onConfirmed = vi.fn(() => cancelAuthNetworkRequests());
+    const onConfirmed = vi.fn((_resource: WorkerConfigurationResource) => cancelAuthNetworkRequests());
     const onRejected = vi.fn(() => cancelAuthNetworkRequests());
     const pending = saveWorkerConfiguration(workerId(1), '1', configurationValue(), new AbortController().signal, { ...admission(), onConfirmed, onRejected });
     const error = await pending.catch((failure: unknown) => failure);
     expect(networkSignal?.aborted).toBe(true);
     expect(error).toBe(networkSignal?.reason);
     if (outcome === 'confirmed') {
-      expect(onConfirmed).toHaveBeenCalledExactlyOnceWith(saved);
+      expect(onConfirmed).toHaveBeenCalledOnce(); expect(onConfirmed.mock.calls[0]![0].document!.known).toEqual(saved);
       expect(onRejected).not.toHaveBeenCalled();
     } else {
       expect(onRejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 409, code: 'version_conflict' }));
@@ -210,7 +242,7 @@ describe('Worker control mode capability', () => {
     }
     const resource = { ...observed([outcome({ kind: 'agentControlMode' }, null)]), desired: configurationResource('1', { ...configurationValue(), agentControlMode: null }).desired };
     expect(() => parseWorkerConfiguration(resource, true)).toThrow('invalid response');
-    expect(() => parseWorkerConfiguration({ ...resource, observation: null, observationRevision: '0', desired: { ...resource.desired, value: { ...resource.desired!.value, projects: [{ projectId: workerId(3), nativeOverrides: { agentControlMode: 'web' } }] } } }, true)).toThrow('invalid response');
+    expect(parseWorkerConfiguration({ ...resource, observation: null, observationRevision: '0', desired: { ...resource.desired, value: { ...resource.desired!.value, projects: [{ projectId: workerId(3), nativeOverrides: { agentControlMode: 'web' } }] } } }, true).desired!.value.projects[0]!.nativeOverrides).toEqual({});
   });
   it('requires the capability echo when saving a mode', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(configurationResponse(configurationResource('2'))));

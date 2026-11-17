@@ -119,5 +119,5 @@ export const mergeConfigurationResources = (current: WorkerConfigurationResource
   if (current === null) return incoming;
   const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision)) ? current.desired : incoming.desired;
   const observation = BigInt(current.observationRevision) > BigInt(incoming.observationRevision) ? current : incoming;
-  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
+  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.document === undefined ? {} : { document: incoming.document }), ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
 };

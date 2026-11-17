@@ -205,3 +205,73 @@ test('invalid Worker history exposes an error without destroying the retained ow
   await expect(args).toHaveValue('[private');
   expect(await args.evaluate(element => element === (window as unknown as { workerErrorNode: Element }).workerErrorNode)).toBe(true);
 });
+
+test('320px keyboard save preserves unknown configuration and isolates the next account', async ({ page, context }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
+  const bob = workerId(88), number = '9007199254740993123456789', fraction = '-1.2500e+42';
+  let actor = WORKER_USER, revision = '1';
+  let value = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[],"futureNative":{"amount":${number}}},"projects":[],"future":{"negative":${fraction},"nested":[null,{"large":${number}}]}}`;
+  let bobValue = '{"maxConcurrent":8,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"future":1234567890123456789012345}';
+  const writes: { actor: string; body: string }[] = [];
+  await context.route('**/api/v1/**', async route => {
+    const request = route.request(), path = new URL(request.url()).pathname, current = actor;
+    const send = (json: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, json, headers: { 'Daynight-User-ID': current, ...extra } });
+    if (path === '/api/v1/me') return send({ id: current, personalTeam: personal, name: current === WORKER_USER ? 'Alice' : 'Bob', email: null, emailVerified: null, avatarUrl: null });
+    const team = { ...personal, version: 1, createdAt: WORKER_TIME, updatedAt: WORKER_TIME, membership: { teamId: personalId, userId: current, role: 'admin', version: 1, createdAt: WORKER_TIME, updatedAt: WORKER_TIME } };
+    if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
+    if (path === `/api/v1/teams/${personalId}`) return send(team);
+    if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
+    if (path === `/api/v1/me/workers/${target}/configuration`) {
+      if (request.method() === 'PUT') {
+        const body = request.postData()!; writes.push({ actor: current, body });
+        const prefix = body.match(/"value"\s*:\s*/);
+        if (!prefix || prefix.index === undefined) throw new Error('Missing configuration value');
+        const submitted = body.slice(prefix.index + prefix[0].length, -1);
+        if (current === WORKER_USER) value = submitted; else bobValue = submitted;
+        revision = '2';
+      }
+      const currentValue = current === WORKER_USER ? value : bobValue;
+      const body = `{"desired":{"revision":"${revision}","updatedAt":"${WORKER_TIME}","value":${currentValue}},"observationRevision":"1","observation":{"baseRevision":"0","desiredRevision":"${revision}","reportedAt":"${WORKER_TIME}","items":[{"key":{"kind":"futureSetting"},"targetRevision":"${revision}","appliedValue":true,"state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}}`;
+      return route.fulfill({ body, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': current, 'Daynight-Worker-Configuration': '1' } });
+    }
+    return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
+  });
+  await page.goto(workerPath);
+  await page.locator('[data-worker-tab="configuration"]:visible').click();
+  const input = page.locator('#config-maxConcurrent'); await expect(input).toHaveValue('2');
+  await expect(page.locator('#feedback-maxConcurrent')).toContainText('等待生效');
+  await input.focus(); await page.keyboard.press('ControlOrMeta+A'); await page.keyboard.insertText('4');
+  const save = page.locator('.config-save-bar').getByRole('button', { name: '保存配置', exact: true });
+  const bar = page.locator('.config-save-bar'); await expect(bar).toBeInViewport({ ratio: 1 });
+  await expect.poll(() => page.evaluate(() => {
+    const field = document.querySelector('#config-maxConcurrent')!.getBoundingClientRect();
+    const footer = document.querySelector('.config-save-bar')!.getBoundingClientRect();
+    return field.top >= 0 && field.bottom <= footer.top;
+  })).toBe(true);
+  await bar.getByRole('button', { name: '取消修改' }).focus(); await page.keyboard.press('Tab');
+  await expect(save).toBeFocused(); await page.keyboard.press('Enter');
+  await expect.poll(() => writes.length).toBe(1);
+  await expect(page.locator('.draft-summary')).toContainText('没有修改');
+  expect(writes[0]!.actor).toBe(WORKER_USER);
+  expect(writes[0]!.body).toContain(number); expect(writes[0]!.body).toContain(fraction);
+  expect(writes[0]!.body).toContain('"futureNative"'); expect(writes[0]!.body).toContain('"future"');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await input.fill('7');
+  const other = await context.newPage();
+  try {
+    actor = bob;
+    await other.goto(`/auth/complete?returnPath=${encodeURIComponent('/?from=login')}&callbackPath=%2Fauth%2Fcallback`);
+    await expect(page.getByText('账户已变化', { exact: true })).toBeVisible();
+    await expect(input).toHaveValue('7');
+    await expect(save).toBeDisabled(); expect(writes).toHaveLength(1);
+    await Promise.all([page.waitForEvent('load'), page.getByRole('button', { name: '刷新页面' }).click()]);
+    await page.locator('[data-worker-tab="configuration"]:visible').click();
+    await expect(input).toHaveValue('8');
+    await input.fill('9'); await save.click(); await expect.poll(() => writes.length).toBe(2);
+    expect(writes[1]!.actor).toBe(bob); expect(writes[1]!.body).toContain('1234567890123456789012345');
+    expect(writes[1]!.body).not.toContain(number);
+    await expect(page.locator('.draft-summary')).toContainText('没有修改');
+  } finally { await other.close(); }
+});

@@ -13,6 +13,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationError, configurationResource, configurationResponse, configurationValue, controlModeResponse } from './helpers/worker-configuration';
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerDetail, workerError, workerId, workerResponse } from './helpers/workers';
+import { automaticToolPaths, toolPathTelemetry } from './helpers/worker-tool-paths';
 
 const flush = () => act(async () => { for (let n = 0; n < 60; n++) { await Promise.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); } });
 const advance = async () => { await act(async () => { vi.advanceTimersByTime(5_000); for (let n = 0; n < 60; n++) await Promise.resolve(); }); };
@@ -212,6 +213,58 @@ describe('Worker configuration form', () => {
       { ...item({ kind: 'projectRemoval', projectId: workerId(9) }, true, '1'), lastFailure: stopping },
     ], '3'); await advance();
     expect(screen.getByText(/Last failure: Preparation · Permission denied/)).toBeInTheDocument(); expect(screen.getByText(/Last failure: Stopping · Command failed/)).toBeInTheDocument();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Applied')).toBeInTheDocument();
+  });
+  it.each(['target', 'native', 'project', 'override', 'observation', 'observationKey', 'observationValue', 'observationField'] as const)('does not claim full application for unknown %s data', async kind => {
+    const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
+    const resource = observed('1', value, [...globals(value), item({ kind: 'projectPreparation', projectId: workerId(3) }, true), item({ kind: 'projectNative', projectId: workerId(3) }, value.native)]);
+    const future = { setting: [9007199254740991, null] };
+    const raw = {
+      ...resource,
+      desired: { ...resource.desired!, value: {
+        ...value,
+        ...(kind === 'target' ? { future } : {}),
+        native: { ...value.native, ...(kind === 'native' ? { future } : {}) },
+        projects: value.projects.map(project => ({ ...project, ...(kind === 'project' ? { future } : {}), nativeOverrides: { ...project.nativeOverrides, ...(kind === 'override' ? { future } : {}) } })),
+      } },
+      observation: { ...resource.observation!, items: [...resource.observation!.items.map(entry => entry.key.kind === 'native' ? {
+        ...entry,
+        key: { ...entry.key, ...(kind === 'observationKey' ? { future } : {}) },
+        appliedValue: { ...value.native, ...(kind === 'observationValue' ? { future } : {}) },
+        ...(kind === 'observationField' ? { future } : {}),
+      } : entry), ...(kind === 'observation' ? [{ key: { kind: 'future' }, targetRevision: '1', state: 'pending', appliedValue: null }] : [])] },
+    };
+    install(() => configurationResponse(raw), [project(3)]); mount(); await flush();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(summary).queryByText('Applied')).toBeNull();
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Applied')).toBeInTheDocument();
+  });
+  it('does not let unknown tools or choice members imply full application', async () => {
+    const value = { ...configurationValue(), agentControlMode: 'web' as const, toolPaths: automaticToolPaths() };
+    const resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'web')]);
+    const raw = { ...resource, desired: { ...resource.desired!, value: { ...value, toolPaths: { ...value.toolPaths, codex: { kind: 'auto', futureChoice: 1 }, futureTool: { kind: 'future' } } } } };
+    install(() => { const response = configurationResponse(raw); response.headers.set('Daynight-Worker-Control-Mode', '1'); response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response; });
+    mount({ toolPaths: toolPathTelemetry() }); await flush();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(summary).queryByText('Applied', { selector: '.status-chip' })).toBeNull();
+  });
+  it('does not treat unknown response metadata as an unapplied target', async () => {
+    const value = configurationValue(), resource = observed('1', value, globals(value));
+    install(() => configurationResponse({ ...resource, futureMetadata: { valid: true } })); mount(); await flush();
+    const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
+    expect(within(summary).getByText('Applied')).toBeInTheDocument();
+  });
+  it('treats a known Project ID case change as the same observation', async () => {
+    const projectId = workerId(10), value = { ...configurationValue(), projects: [{ projectId, nativeOverrides: {} }] };
+    const resource = observed('1', value, [...globals(value), item({ kind: 'projectPreparation', projectId }, true), item({ kind: 'projectNative', projectId }, value.native)]);
+    const raw = { ...resource,
+      desired: { ...resource.desired!, value: { ...value, projects: [{ projectId: projectId.toUpperCase(), nativeOverrides: {} }] } },
+      observation: { ...resource.observation!, items: resource.observation!.items.map(entry => 'projectId' in entry.key ? { ...entry, key: { ...entry.key, projectId: projectId.toUpperCase() } } : entry) },
+    };
+    install(() => configurationResponse(raw), [project(10)]); mount(); await flush();
     const summary = screen.getByRole('heading', { name: 'Configuration status' }).closest('section')!;
     expect(within(summary).getByText('Applied')).toBeInTheDocument();
   });

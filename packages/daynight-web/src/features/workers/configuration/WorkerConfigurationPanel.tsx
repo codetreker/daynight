@@ -1,5 +1,8 @@
-import { useLayoutEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError } from '../../../api/client';
+import { configurationValueSourcesEqual } from '../../../api/configuration-source';
+import { jsonContainerSources, jsonObjectSources } from '../../../api/json-source';
+import { workerConfigurationBaseline } from '../../../api/worker-configuration';
 import type { WorkerConfigurationResource, WorkerConfigurationOutcome } from '../../../api/worker-configuration';
 import type { WorkerTaskSnapshot } from '../../../api/workers';
 import type { ToolPathTelemetry } from '../../../api/worker-tool-paths';
@@ -23,6 +26,29 @@ import './configuration.css';
 const agentName = (agent: string) => agent === 'claude' ? 'Claude Code' : agent === 'copilot' ? 'Copilot' : 'Codex';
 const globalFields = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit'] as const;
 
+const hasUnknownApplication = (resource: WorkerConfigurationResource): boolean => {
+  const baseline = workerConfigurationBaseline(resource);
+  if (baseline !== null && !configurationValueSourcesEqual(baseline.valueSource, JSON.stringify(baseline.known))) return true;
+  const observation = resource.observation;
+  if (observation?.document === undefined) return false;
+  const raw = jsonObjectSources(observation.document.source).get('observation');
+  const items = raw === undefined ? undefined : jsonObjectSources(raw).get('items');
+  if (items === undefined) return false;
+  const sources = jsonContainerSources(items);
+  if (sources.length !== observation.items.length) return true;
+  return sources.some((source, index) => {
+    const known = observation.items[index]!;
+    if ('projectId' in known.key) {
+      const fields = new Map(jsonObjectSources(source));
+      const key = new Map(jsonObjectSources(fields.get('key')!));
+      key.set('projectId', JSON.stringify(known.key.projectId));
+      fields.set('key', `{${[...key].map(([name, value]) => `${JSON.stringify(name)}:${value}`).join(',')}}`);
+      source = `{${[...fields].map(([name, value]) => `${JSON.stringify(name)}:${value}`).join(',')}}`;
+    }
+    return !configurationValueSourcesEqual(`{"item":${source}}`, JSON.stringify({ item: known }));
+  });
+};
+
 const applicationStates = (resource: WorkerConfigurationResource): readonly WorkerConfigurationOutcome['state'][] => {
   if (resource.desired === null) return [];
   const { value } = resource.desired;
@@ -36,13 +62,14 @@ const applicationStates = (resource: WorkerConfigurationResource): readonly Work
   for (const item of resource.observation?.items ?? []) {
     if (item.key.kind === 'projectRemoval' && (!selected.has(item.key.projectId) || item.state !== 'applied')) states.push(item.state);
   }
-  if (resource.observation === null || BigInt(resource.observation.desiredRevision) < BigInt(resource.desired.revision)) states.push('pending');
+  if (resource.observation === null || BigInt(resource.observation.desiredRevision) < BigInt(resource.desired.revision) || hasUnknownApplication(resource)) states.push('pending');
   return states;
 };
 
 const ConfigurationSummary = ({ resource, online, toolPaths }: { readonly resource: WorkerConfigurationResource; readonly online: boolean | null; readonly toolPaths: ToolPathTelemetry | undefined }) => {
   const { messages: { workers: { configuration: m } } } = useI18n();
-  const states = applicationStates(resource), failed = states.includes('error');
+  const states = useMemo(() => applicationStates(resource), [resource.desired, resource.observation, resource.controlModeSupported]);
+  const failed = states.includes('error');
   const tools = toolPathSummaryStates(resource, toolPaths, online);
   const toolsApplied = resource.toolPathsSupported !== true || tools.length > 0 && tools.every(state => state === 'applied');
   const status = failed ? states.includes('applied') ? m.partialFailure : m.state.error : states.length > 0 && states.every(state => state === 'applied') && toolsApplied && online === true ? m.allApplied : m.applying;
