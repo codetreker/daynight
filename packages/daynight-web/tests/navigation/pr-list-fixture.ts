@@ -27,7 +27,7 @@ export const authors = [
 export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
   const task = detailFixture(projectId, '00000000-0000-4000-8000-000000000041', { title: 'Existing task' });
   const graph = graphFixture([task]);
-  const state = { scene: 'populated' as Scene, syncOff: false, longCounts: false, revision: 1, graphFailure: false, authorError: false, pageReads: [] as string[], authorReads: [] as string[], detailReads: 0, statusReads: 0, unexpected: [] as string[] };
+  const state = { scene: 'populated' as Scene, syncOff: false, longCounts: false, longContent: false, revision: 1, graphFailure: false, authorError: false, pageReads: [] as string[], authorReads: [] as string[], detailReads: 0, statusReads: 0, unexpected: [] as string[] };
   const cursors = new Map<string, { offset: number; state: string; query: string; authorId: string | null }>();
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
@@ -82,7 +82,7 @@ export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') =
       const matches = scoped.filter(item => (filter === 'all' || (filter === 'active' ? item.state === 'open' : item.state === filter)) && `${item.title} ${item.number}`.toLowerCase().includes(query.toLowerCase().replace(/^#/, '')));
       const token = (offset: number) => { const key = `opaque:${filter}:${encodeURIComponent(query)}:${authorId}:${offset}`; cursors.set(key, { offset, state: filter, query, authorId }); return key; };
       const offset = position.offset;
-      return send({ projectId, revision: String(state.revision), items: matches.slice(offset, offset + 6).map(item => ({ ...item, revision: String(state.revision), title: state.revision > 1 && item.number === '1248' ? `${item.title} updated` : item.title })), total: String(matches.length),
+      return send({ projectId, revision: String(state.revision), items: matches.slice(offset, offset + 6).map(item => ({ ...item, revision: String(state.revision), title: state.longContent && item.number === '1248' ? 'Long title 中文标题'.repeat(12) : state.revision > 1 && item.number === '1248' ? `${item.title} updated` : item.title, author: state.longContent && item.number === '1248' ? { id: '42', login: 'longusername'.repeat(12) } : item.author })), total: String(matches.length),
         counts: state.longCounts ? { active: '9223372036854775807', merged: '9223372036854775807', closed: '9223372036854775807', all: '9223372036854775807' } : { active: String(scoped.filter(item => item.state === 'open').length), merged: String(scoped.filter(item => item.state === 'merged').length), closed: String(scoped.filter(item => item.state === 'closed').length), all: String(scoped.length) }, ...(authorId === null ? {} : { authorId, projectTotal: String(all.length) }), previousCursor: offset > 0 ? token(Math.max(0, offset - 6)) : null, nextCursor: offset + 6 < matches.length ? token(offset + 6) : null });
     }
     if (path.startsWith(`/api/v1/projects/${projectId}/pull-requests/`)) {
