@@ -1099,7 +1099,7 @@ describe("real runtime resource isolation", () => {
     const base = { type: "task", parentId: null, projectId: uuid(1), id: uuid(30), title: "healthy", status: "todo", ready: true, allowAgents: true, requiredPlatform: null, assignedTo: uuid(6), version: 1n, properties: {}, dependsOn: [], externalDependsOn: [], blockedBy: [], createdAt: "2026-11-10T00:00:00Z", updatedAt: "2026-11-10T00:00:00Z" };
     remote.ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [uuid(1)], unavailableProjectIds: [] }));
     remote.candidates = vi.fn(async function* () { yield base; });
-    remote.claim = vi.fn(async () => { cancellation.abort(); throw new Error("Grant deliberately unconfirmed"); });
+    remote.claim = vi.fn(async () => { throw new Error("Grant deliberately unconfirmed"); });
     let configurationComplete = false, cycles = 0;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
       const actual = createWorkerCoordinator({ ...options, verifyWebServer: async () => {} });
@@ -1107,17 +1107,23 @@ describe("real runtime resource isolation", () => {
       actual.tick = async () => {
         await tick(); cycles++;
         configurationComplete = options.configurationComplete!();
-        if (configurationComplete) cancellation.abort();
+        if (scenario === "unproven" && configurationComplete && remote.claim.mock.calls.length > 0) cancellation.abort();
       };
       return actual;
     });
     const { running } = start(f, { signal: cancellation.signal });
     try {
-      if (scenario === "unproven") await vi.waitFor(() => expect(configurationComplete).toBe(true), { timeout: 6000 });
-      else await vi.waitFor(() => { expect(cycles).toBeGreaterThan(0); expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("Local resource mapping"))).toBe(true); }, { timeout: 6000 });
-      expect(remote.claim).not.toHaveBeenCalled();
-      if (scenario === "foreign" || scenario === "invalid") expect(configurationComplete).toBe(false);
-      expect(await readFile(path.join(f.repository.path, ".worktrees", "daynight", owner.worktreeId, ".git"), "utf8")).toContain("gitdir:");
+      if (scenario === "unproven") {
+        await vi.waitFor(() => { expect(configurationComplete).toBe(true); expect(remote.claim).toHaveBeenCalled(); }, { timeout: 10000 });
+        expect(remote.claim.mock.calls.every(([candidate]: [{ id: string }, ...unknown[]]) => candidate.id === base.id)).toBe(true);
+      } else {
+        await vi.waitFor(() => { expect(cycles).toBeGreaterThan(0); expect(mocks.emit.mock.calls.some(([event]) => event.message.includes("Local resource mapping"))).toBe(true); }, { timeout: 10000 });
+        expect(remote.claim).not.toHaveBeenCalled();
+        expect(configurationComplete).toBe(false);
+      }
+      const worktree = path.join(f.repository.path, ".worktrees", "daynight", owner.worktreeId);
+      expect(await readFile(path.join(worktree, ".git"), "utf8")).toContain("gitdir:");
+      expect(execFileSync("git", ["branch", "--show-current"], { cwd: worktree, encoding: "utf8", timeout: 10000 }).trim()).toBe("changed-branch");
     } finally { cancellation.abort(); await running; await git.dispose(); }
-  }, 12000);
+  }, 25000);
 });

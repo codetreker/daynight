@@ -326,7 +326,7 @@ it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shu
   row = webStore.updateWebExecution(row, { sessionId: uuid(703), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
   row = webStore.bindNativeSession(row, { source: "controller", sessionId: uuid(703) }, 5);
   const stopped = await stoppedWebExecution(f, webStore, row);
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: event => { f.options.emit({ kind: event.kind, message: event.message, ...(event.task === undefined ? {} : { identity: { projectId: event.task.projectId, taskId: event.task.taskId, claimId: event.task.claimId, worktreeId: event.task.worktreeId } }), ...(event.component === undefined ? {} : { component: event.component }), ...(event.phase === undefined ? {} : { phase: event.phase }), ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }), ...(event.runKey === undefined ? {} : { runKey: event.runKey }), ...(event.error === undefined ? {} : { error: event.error }) }); }, now: f.options.now, request: stopped.request, archive: async () => {} });
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: event => { f.options.emit({ kind: event.kind, message: event.message, ...(event.task === undefined ? {} : { identity: { projectId: event.task.projectId, taskId: event.task.taskId, claimId: event.task.claimId, worktreeId: event.task.worktreeId } }), ...(event.component === undefined ? {} : { component: event.component }), ...(event.phase === undefined ? {} : { phase: event.phase }), ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }), ...(event.runKey === undefined ? {} : { runKey: event.runKey }), ...(event.error === undefined ? {} : { error: event.error }) }); }, now: f.options.now, request: stopped.request, archive: async () => {}, jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} } });
   const advance = vi.fn(async (input: WebTask, signal: AbortSignal) => {
     if (input.claimId === owner.claimId) return input;
     const operation = createOperation({ signal });
@@ -347,6 +347,8 @@ it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shu
       output: { stdoutBytes: gitProcess.child?.stdout ? gitProcess.stdoutBytes : "unknown", stderrBytes: gitProcess.child?.stderr ? gitProcess.stderrBytes : "unknown" },
       closed: { child: gitProcess.childClosed, stdout: gitProcess.stdoutClosed, stderr: gitProcess.stderrClosed },
       ready: await markerState(ready), rootReady: await markerState(rootReady), receipt: records,
+      events: f.events.map(event => ({ kind: event.kind, message: event.message, error: event.error instanceof Error ? { name: event.error.name, message: event.error.message, cause: event.error.cause instanceof Error ? event.error.cause.message : undefined } : undefined })),
+      localTask: f.store.getTask(owner), webTask: webStore.getTask(owner), cleanup: f.store.getCleanupSchedule(owner),
     }));
   };
   try {
