@@ -583,6 +583,8 @@ Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
+The detail overview places the current task panel or retained task snapshot after read and offline notices, before runtime monitoring and host telemetry. Its DOM order matches the visual and keyboard order.
+
 Detail resource cards render actual OS type/release/version/architecture, CPU
 model/logical processor count/use, used/total memory and available/total capacity
 of the startup working directory's filesystem. Capacity readings use localized
