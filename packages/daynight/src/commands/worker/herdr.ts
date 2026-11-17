@@ -1,4 +1,4 @@
-import { readCodexConfiguration } from "./herdr/codex-config.js";
+import { readCodexConfiguration } from "./codex-configuration.js";
 import type { WorkerPaths } from "./paths.js";
 import type { HerdrExecutionContext, HerdrExecutionOwner, HerdrWorkspaceEnvironment } from "./herdr/agents.js";
 import type { Operation } from "../../api/operation.js";

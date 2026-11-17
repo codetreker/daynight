@@ -9,11 +9,11 @@ import type { Operation } from "../../../api/operation.js";
 import type { WorkerAgent, WorkerAssistantHost, WorkerAssistantHostReason, WorkerAssistantProvider } from "../../../api/types.js";
 import { copilotExecutable } from "../../controller/providers/copilot-runtime.js";
 import { parseProviderArguments } from "../../controller/providers/projection.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "../herdr/command.js";
-import type { HerdrCommand, HerdrCommandResult } from "../herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandDeadlineError, OwnedCommandError, runOwnedCommand, spawnOwnedProcess } from "../owned-command.js";
+import type { OwnedCommand, OwnedCommandResult } from "../owned-command.js";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "../codex-probe-owner.js";
 import type { CodexProbeOwner } from "../codex-probe-owner.js";
-import { NativeVersionOutputError, parseNativeAgentVersion } from "../herdr/version-probe.js";
+import { NativeVersionOutputError, parseNativeAgentVersion } from "../native-version.js";
 import type { ExecutionConfiguration } from "../types.js";
 
 export type AssistantHostIssue = { provider: WorkerAgent; reason: WorkerAssistantHostReason; error: unknown };
@@ -23,12 +23,12 @@ const providers = ["codex", "claude", "copilot"] as const;
 const validText = (value: string, bytes: number): boolean => value.trim() !== "" && value.isWellFormed() && !/\p{Cc}/u.test(value) && Buffer.byteLength(value) <= bytes;
 const hasCode = (error: unknown, codes: readonly string[]): boolean => error instanceof Error && (("code" in error && codes.includes(String(error.code))) || hasCode(error.cause, codes));
 const reasonOf = (error: unknown): WorkerAssistantHostReason => {
-  if (hasHerdrCommandCleanupFailure(error)) return "unavailable";
-  if (error instanceof OperationError || error instanceof HerdrCommandDeadlineError) return "timeout";
+  if (hasOwnedCommandCleanupFailure(error)) return "unavailable";
+  if (error instanceof OperationError || error instanceof OwnedCommandDeadlineError) return "timeout";
   if (hasCode(error, ["ENOENT", "ENOTDIR", "MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND"])) return "not_found";
   if (hasCode(error, ["EACCES", "EPERM"])) return "permission_denied";
   if (error instanceof NativeVersionOutputError) return "invalid_output";
-  if (error instanceof HerdrCommandError) return "command_failed";
+  if (error instanceof OwnedCommandError) return "command_failed";
   return "unavailable";
 };
 
@@ -72,7 +72,7 @@ export const createAssistantHostCollector = (options: {
   hasCopilotProof?: () => boolean;
   toolRuntimeRoot?: string;
   toolInspector?: ReturnType<typeof createWorkerToolInspector>;
-  runCommand?: (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
+  runCommand?: (command: OwnedCommand, operation: Operation) => Promise<OwnedCommandResult>;
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || !validText(options.workingDirectory, 4096)) throw new TypeError("Assistant host startup directory must be a valid absolute path of at most 4096 bytes.");
   const configuration = typeof options.configuration === "function" ? options.configuration : (() => {
@@ -82,7 +82,7 @@ export const createAssistantHostCollector = (options: {
   const environment = { ...options.environment };
   for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN"]) delete environment[key];
   const resolveExecutable = options.resolveExecutable ?? assistantProviderExecutable;
-  const runCommand = options.runCommand ?? ((command, operation) => runHerdrCommand(command, operation, spawnHerdrProcess, { cleanupWithinDeadline: true }));
+  const runCommand = options.runCommand ?? ((command, operation) => runOwnedCommand(command, operation, spawnOwnedProcess, { cleanupWithinDeadline: true }));
   const cleanupFailures = new Map<WorkerAgent, unknown>();
   const codexEnvironment = captureCodexProbeEnvironment(environment);
   const localCodexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory);
@@ -135,7 +135,7 @@ export const createAssistantHostCollector = (options: {
           if (directoryError !== undefined) return fail(directoryError instanceof OperationError ? "timeout" : "invalid_cwd", directoryError);
           if (cleanupFailures.has(provider)) {
             const previous = cleanupFailures.get(provider);
-            if (hasUnconfirmedHerdrCommandCleanup(previous)) return fail("unavailable", previous);
+            if (hasUnconfirmedOwnedCommandCleanup(previous)) return fail("unavailable", previous);
             cleanupFailures.delete(provider);
           }
           try {
@@ -163,7 +163,7 @@ export const createAssistantHostCollector = (options: {
             };
             return provider === "codex" ? await codexProbes.observe({ file, environment: probeEnvironment, workingDirectory: options.workingDirectory }, collection, observeProvider) : await observeProvider();
           } catch (error) {
-            if (hasHerdrCommandCleanupFailure(error)) cleanupFailures.set(provider, error);
+            if (hasOwnedCommandCleanupFailure(error)) cleanupFailures.set(provider, error);
             return fail(reasonOf(error), error);
           }
         }));

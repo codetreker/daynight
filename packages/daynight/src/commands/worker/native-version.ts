@@ -1,7 +1,7 @@
-import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
-import type { Operation } from "../../../api/operation.js";
-import { runHerdrCommand } from "./command.js";
-import type { HerdrCommand, HerdrCommandResult } from "./command.js";
+import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../platform/tool-executables.js";
+import type { Operation } from "../../api/operation.js";
+import { runOwnedCommand } from "./owned-command.js";
+import type { OwnedCommand, OwnedCommandResult } from "./owned-command.js";
 
 export type NativeVersionAgent = "codex" | "copilot" | "claude";
 
@@ -26,13 +26,13 @@ export const probeNativeAgentVersion = async (options: {
   cwd: string;
   toolLaunch?: ResolvedToolLaunch;
   toolRuntimeRoot?: string;
-  runCommand?: (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
+  runCommand?: (command: OwnedCommand, operation: Operation) => Promise<OwnedCommandResult>;
 }, operation: Operation): Promise<string> => {
-  const runCommand = options.runCommand === undefined ? runHerdrCommand : options.runCommand;
+  const runCommand = options.runCommand === undefined ? runOwnedCommand : options.runCommand;
   if (options.toolLaunch) {
     if (options.toolLaunch.tool !== options.agent) throw new Error("Native version tool differs from its request.");
     if (options.agent === "copilot" && options.toolLaunch.context === "web") {
-      const { inspectWorkerToolLaunch } = await import("../native-selection.js");
+      const { inspectWorkerToolLaunch } = await import("./native-selection.js");
       return (await inspectWorkerToolLaunch({ launch: options.toolLaunch, cwd: options.cwd, environment: options.environment, ...(options.toolRuntimeRoot ? { toolRuntimeRoot: options.toolRuntimeRoot } : {}) }, operation)).version;
     }
     await verifyToolLaunch(options.toolLaunch, operation);

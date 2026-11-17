@@ -1,7 +1,7 @@
 import type { Operation } from "../../api/operation.js";
 import { probeResourceKey, type ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { withinOperation } from "../../platform/tool-io.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup } from "./herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup } from "./owned-command.js";
 import { BotCliProbeCleanupError } from "./bots/cli-probe.js";
 export { captureToolEnvironment as captureCodexProbeEnvironment } from "../../platform/tool-environment.js";
 
@@ -57,7 +57,7 @@ export const createCodexProbeOwner = (environment: NodeJS.ProcessEnv, workingDir
   };
   const assert = (state: State | undefined): void => {
     if (closed) throw new Error("Native tool probe owner is closed.");
-    const failure = state?.failures.find(error => hasUnconfirmedHerdrCommandCleanup(error));
+    const failure = state?.failures.find(error => hasUnconfirmedOwnedCommandCleanup(error));
     if (failure) throw failure;
     if (state?.pending.size) throw Object.assign(new Error("Native tool probe cleanup remains unconfirmed."), { code: "cleanup_unknown" });
   };
@@ -70,7 +70,7 @@ export const createCodexProbeOwner = (environment: NodeJS.ProcessEnv, workingDir
         await (operation ? withinOperation(pending, operation) : pending);
       } catch (failure) { errors.push(failure); if (operation?.signal.aborted) break; }
     }
-    state.failures = state.failures.filter(error => hasUnconfirmedHerdrCommandCleanup(error));
+    state.failures = state.failures.filter(error => hasUnconfirmedOwnedCommandCleanup(error));
     errors.push(...state.failures);
     if (errors.length === 1) throw errors[0];
     if (errors.length) throw Object.assign(new AggregateError(errors, "Native tool probe cleanup remains unconfirmed."), { code: "cleanup_unknown" });
@@ -84,8 +84,8 @@ export const createCodexProbeOwner = (environment: NodeJS.ProcessEnv, workingDir
         try { return await probe(); }
         catch (error) {
           retain(state, error);
-          if (hasHerdrCommandCleanupFailure(error) || state.pending.size || error instanceof Error && "code" in error && error.code === "cleanup_unknown") {
-            if (hasHerdrCommandCleanupFailure(error)) state.failures.push(error);
+          if (hasOwnedCommandCleanupFailure(error) || state.pending.size || error instanceof Error && "code" in error && error.code === "cleanup_unknown") {
+            if (hasOwnedCommandCleanupFailure(error)) state.failures.push(error);
             state.revision++; onCleanupFailure?.();
           }
           throw error;

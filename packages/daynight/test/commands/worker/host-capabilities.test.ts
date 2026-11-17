@@ -5,15 +5,15 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import { createAssistantHostCollector } from "../../../src/commands/worker/bots/host-capabilities.js";
-import { HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
-import type { HerdrCommand, HerdrCommandResult } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError, OwnedCommandError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
+import type { OwnedCommand, OwnedCommandResult } from "../../../src/commands/worker/owned-command.js";
 import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
 
 let root: string;
 beforeEach(async () => { const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(scratch, { recursive: true }); root = await mkdtemp(path.join(scratch, "host-")); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 const configuration: ExecutionConfiguration = { agent: "copilot", agentControlMode: "herdr", model: "configured-model", args: ["--effort", "high"], recoveryLimit: 3 };
-const output = async (command: HerdrCommand): Promise<HerdrCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
+const output = async (command: OwnedCommand): Promise<OwnedCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
   ? command.file === "codex" ? "codex-cli 0.1.0" : command.file === "claude" ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
   : command.file === "codex" ? "Usage: codex app-server --stdio" : command.file === "claude" ? "--input-format --output-format --permission-prompt-tool --include-partial-messages" : "--headless --no-auto-update" });
 const collect = async (overrides: Partial<Parameters<typeof createAssistantHostCollector>[0]> = {}) => {
@@ -24,7 +24,7 @@ const collect = async (overrides: Partial<Parameters<typeof createAssistantHostC
 
 describe("assistant host observations", () => {
   it("probes the bundled Copilot version without forwarding to an automatic update", async () => {
-    const commands: HerdrCommand[] = [];
+    const commands: OwnedCommand[] = [];
     const { assistantHost } = await collect({ runCommand: async command => {
       commands.push(command);
       return output(command);
@@ -94,7 +94,7 @@ describe("assistant host observations", () => {
   });
 
   it("keeps command output and causes private while exposing stable failure reasons", async () => {
-    const failure = new HerdrCommandError("private-token", 1, null, "private-token");
+    const failure = new OwnedCommandError("private-token", 1, null, "private-token");
     const { assistantHost, issues } = await collect({ runCommand: async () => { throw failure; } });
     expect(assistantHost.providers.every(entry => !entry.available && entry.reason === "command_failed")).toBe(true);
     expect(JSON.stringify(assistantHost)).not.toContain("private-token");
@@ -108,7 +108,7 @@ describe("assistant host observations", () => {
 
   it("retains uncertain cleanup and never starts replacement probes", async () => {
     let attempts = 0;
-    const failure = new HerdrCommandCleanupError([new Error("still-running")], undefined);
+    const failure = new OwnedCommandCleanupError([new Error("still-running")], undefined);
     const collector = createAssistantHostCollector({ workingDirectory: root, configuration, environment: {}, resolveExecutable: provider => provider, runCommand: async () => { attempts++; throw failure; } });
     const operation = createOperation();
     try {
@@ -158,10 +158,10 @@ describe("assistant host cleanup recovery", () => {
     if (terminationFailure) Object.defineProperty(child, "pid", { get: () => { throw new Error("Cannot terminate the owned process"); } });
     const operation = createOperation({ limits: { totalMs: 100, requestMs: 20 } });
     try {
-      const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, operation, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+      const result = runOwnedCommand({ file: "codex", args: ["--version"], environment: {} }, operation, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(110);
       const failure = await result;
-      expect(failure).toBeInstanceOf(HerdrCommandCleanupError);
+      expect(failure).toBeInstanceOf(OwnedCommandCleanupError);
       return { child, failure };
     } finally { operation.dispose(); }
   };
@@ -249,7 +249,7 @@ describe("assistant host cleanup recovery", () => {
 
   it.each(["termination failure", "legacy cleanup"])("does not recover %s from a later close", async mode => {
     const original = await timedOutProbe(mode === "termination failure");
-    const failure = mode === "legacy cleanup" ? new HerdrCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
+    const failure = mode === "legacy cleanup" ? new OwnedCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
     let attempts = 0;
     const collector = instance(async command => {
       if (command.file === "codex") { attempts++; throw failure; }
@@ -266,7 +266,7 @@ describe("assistant host cleanup recovery", () => {
 
   it("reports the retry's actual failure and does not probe after parent cancellation", async () => {
     const original = await timedOutProbe();
-    const currentFailure = new HerdrCommandError("Native executable failed", 2, null, "private diagnostic");
+    const currentFailure = new OwnedCommandError("Native executable failed", 2, null, "private diagnostic");
     let attempts = 0;
     const collector = instance(async command => {
       if (command.file === "codex") { attempts++; throw attempts === 1 ? original.failure : currentFailure; }

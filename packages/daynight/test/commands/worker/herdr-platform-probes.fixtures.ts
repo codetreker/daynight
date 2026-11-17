@@ -2,16 +2,16 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import type { OwnedCommand } from "../../../src/commands/worker/owned-command.js";
 
 export const preparationProbeMarker = "DAYNIGHT_FIXED_METADATA_MARKER";
 type Mode = "metadata" | "execFile";
 type Execution = { stdout: string; stderr: string; closed: boolean; errorType?: string | undefined; outputCaptured?: boolean };
 type ProbeResult = { mode: Mode; probe: "marker" | "inventory"; elapsedMs: number; stdoutBytes: number | null; stderrBytes: number | null; closed: boolean; errorType?: string | undefined; markerMatches?: boolean | undefined; jsonRows: number | null; current: { pid: number; parentPid: number } | null };
-export type PreparationProbeExecutor = (mode: Mode, command: HerdrCommand, operation: Operation) => Promise<Execution>;
+export type PreparationProbeExecutor = (mode: Mode, command: OwnedCommand, operation: Operation) => Promise<Execution>;
 
 /** Historical cmdlet comparison only; production metadata uses Win32 APIs. */
-export const historicalWindowsInventoryCommand = (environment: NodeJS.ProcessEnv): HerdrCommand => {
+export const historicalWindowsInventoryCommand = (environment: NodeJS.ProcessEnv): OwnedCommand => {
   const root = environment.SystemRoot ?? environment.SYSTEMROOT;
   if (root === undefined || !path.win32.isAbsolute(root)) throw new Error("SystemRoot is required for the historical PS5 probe.");
   return {
@@ -25,15 +25,15 @@ export const historicalWindowsInventoryCommand = (environment: NodeJS.ProcessEnv
  * non-detached child and existing production cleanup/deadline mechanism.
  */
 export const executeHistoricalMetadataProbe: PreparationProbeExecutor = async (_mode, input, active) => {
-  const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
+  const command = await import(new URL("../../../dist/commands/worker/owned-command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/owned-command.js");
   try {
-    return { ...await command.runHerdrCommand(input, active, (file, args, options) => command.spawnHerdrProcess(file, args, { ...options, detached: false })), closed: true };
+    return { ...await command.runOwnedCommand(input, active, (file, args, options) => command.spawnOwnedProcess(file, args, { ...options, detached: false })), closed: true };
   } catch (error) {
-    return { stdout: "", stderr: "", closed: !command.hasUnconfirmedHerdrCommandCleanup(error), outputCaptured: false, errorType: error instanceof Error ? error.name : "unknown" };
+    return { stdout: "", stderr: "", closed: !command.hasUnconfirmedOwnedCommandCleanup(error), outputCaptured: false, errorType: error instanceof Error ? error.name : "unknown" };
   }
 };
 
-export const runPreparationProbeSequence = async (commands: Record<"marker" | "inventory", HerdrCommand>, execute: PreparationProbeExecutor, cancelled = () => false) => {
+export const runPreparationProbeSequence = async (commands: Record<"marker" | "inventory", OwnedCommand>, execute: PreparationProbeExecutor, cancelled = () => false) => {
   const results: ProbeResult[] = [];
   for (const mode of ["metadata", "execFile"] as const) for (const probe of ["marker", "inventory"] as const) {
     if (cancelled()) return results;
@@ -61,7 +61,7 @@ export const runPreparationProbeSequence = async (commands: Record<"marker" | "i
 };
 
 /** Fixed read-only PS5 commands own only this child; close, not exit, confirms its streams. */
-export const executeRawPreparationProbe = (command: HerdrCommand): Promise<Execution> => new Promise(resolve => {
+export const executeRawPreparationProbe = (command: OwnedCommand): Promise<Execution> => new Promise(resolve => {
   let stdout = "", stderr = "", errorType: string | undefined, finished = false;
   const child = execFile(command.file, [...command.args], { env: command.environment, windowsHide: true, timeout: 2000, maxBuffer: 64 * 1024, encoding: "utf8" }, (error, output, errors) => { stdout = output; stderr = errors; if (error) errorType = error.name; });
   const timer = setTimeout(() => {

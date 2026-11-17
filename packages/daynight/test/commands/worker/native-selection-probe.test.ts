@@ -1,13 +1,14 @@
+import { codexConfigurationArguments } from "../../../src/commands/worker/codex-configuration.js";
 import { beforeEach, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { inspectNativeSelection, inspectNativeCapabilities } from "../../../src/commands/worker/native-selection-probe.js";
-import { withCodexConfigurationRpc } from "../../../src/commands/worker/herdr/codex-config.js";
-import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
-import { buildHerdrAgentArguments, codexConfigurationArguments, codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
+import { withCodexConfigurationRpc } from "../../../src/commands/worker/codex-configuration.js";
+import { OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
+import { buildHerdrAgentArguments, codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { ToolSelectionError } from "../../../src/platform/tool-executables.js";
 
-vi.mock("../../../src/commands/worker/herdr/codex-config.js", () => ({ withCodexConfigurationRpc: vi.fn() }));
+vi.mock("../../../src/commands/worker/codex-configuration.js", async original => ({ ...await original<object>(), withCodexConfigurationRpc: vi.fn() }));
 
 
 const mocks = vi.hoisted(() => ({ current: vi.fn(), list: vi.fn(), disconnect: vi.fn(), create: vi.fn(), stop: vi.fn(), forceStop: vi.fn(), options: [] as unknown[], runtimeClose: vi.fn(), runtimeStart: vi.fn(), claude: vi.fn(), claudeModels: vi.fn(), claudeSettings: vi.fn(), claudeClose: vi.fn() }));
@@ -133,7 +134,7 @@ it("retains discovery failure when native disconnect and client shutdown also fa
 });
 
 it("preserves Codex's unconfirmed inner process cleanup", async () => {
-  const cleanup = new HerdrCommandCleanupError([new Error("process still open")], new Error("native timed out"));
+  const cleanup = new OwnedCommandCleanupError([new Error("process still open")], new Error("native timed out"));
   vi.mocked(withCodexConfigurationRpc).mockRejectedValue(cleanup);
   await expect(inspectNativeCapabilities({ agent: "codex", model: null, args: [] })).rejects.toMatchObject({ code: "cleanup_unknown", cause: cleanup });
 });

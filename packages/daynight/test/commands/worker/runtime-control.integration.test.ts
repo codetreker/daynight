@@ -11,7 +11,7 @@ import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerCloudDesired, WorkerPromptSelector } from "../../../src/api/worker-configuration.js";
 import * as telemetryModule from "../../../src/commands/worker/telemetry.js";
-import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
 import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
@@ -33,7 +33,7 @@ vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await o
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", async original => ({ ...await original<object>(), buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/native-version.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
@@ -400,7 +400,7 @@ describe("worker synchronous management runtime ownership", () => {
 
   it("does not hide an unconfirmed telemetry probe cleanup during retry", async () => {
     const f = await fixture();
-    const failure = new HerdrCommandCleanupError([], new Error("probe cleanup"));
+    const failure = new OwnedCommandCleanupError([], new Error("probe cleanup"));
     vi.spyOn(telemetryModule, "createWorkerTelemetryCollector").mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [{ component: "codex" as const, code: "unavailable" as const, error: failure }] })) });
     const remote = mocks.remote(); mocks.remote.mockClear(); remote.reportConfiguration = vi.fn();
     mocks.submit.mockImplementationOnce(async () => {

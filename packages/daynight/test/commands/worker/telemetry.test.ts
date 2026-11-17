@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { hasOwnedCommandCleanupFailure, OwnedCommandCleanupError, OwnedCommandError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { createAssistantHostCollector } from "../../../src/commands/worker/bots/host-capabilities.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
@@ -13,7 +13,7 @@ import path from "node:path";
 const mocks = vi.hoisted(() => ({ cpus: vi.fn(), totalmem: vi.fn(), freemem: vi.fn(), statfs: vi.fn(), stat: vi.fn(), access: vi.fn(), version: vi.fn(), herdr: vi.fn() }));
 vi.mock("node:os", async (original) => ({ ...await original<object>(), cpus: mocks.cpus, totalmem: mocks.totalmem, freemem: mocks.freemem }));
 vi.mock("node:fs/promises", async (original) => ({ ...await original<object>(), statfs: mocks.statfs, stat: mocks.stat, access: mocks.access }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", async (original) => ({ ...await original<object>(), probeNativeAgentVersion: mocks.version }));
+vi.mock("../../../src/commands/worker/native-version.js", async (original) => ({ ...await original<object>(), probeNativeAgentVersion: mocks.version }));
 vi.mock("../../../src/commands/worker/herdr/instance.js", async (original) => ({ ...await original<object>(), createHerdrVersionObserver: () => ({ observe: mocks.herdr }) }));
 
 const operations: Operation[] = [];
@@ -44,7 +44,7 @@ describe("Worker telemetry", () => {
       if (provider === "copilot") throw Object.assign(new Error("unavailable"), { code: "EACCES" });
       return provider;
     });
-    const runCommand = vi.fn(async (command: import("../../../src/commands/worker/herdr/command.js").HerdrCommand) => ({ stderr: "", stdout: command.args.includes("--version")
+    const runCommand = vi.fn(async (command: import("../../../src/commands/worker/owned-command.js").OwnedCommand) => ({ stderr: "", stdout: command.args.includes("--version")
       ? command.file === "codex" ? "codex-cli 0.1.0" : "2.1.247 (Claude Code)"
       : command.file === "codex" ? "app-server --stdio" : "--input-format --output-format --include-partial-messages" }));
     const assistantHost = createAssistantHostCollector({ workingDirectory: process.cwd(), environment: {},
@@ -156,7 +156,7 @@ describe("Worker telemetry", () => {
   });
 
   it("includes explicitly supplied assistant observations and preserves cleanup failures privately", async () => {
-    const failure = new HerdrCommandCleanupError([new Error("private-token")], undefined);
+    const failure = new OwnedCommandCleanupError([new Error("private-token")], undefined);
     const assistantHost = { protocolVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", defaultCwd: cwd, defaultProvider: "copilot" as const, providers: ["codex", "claude", "copilot"].map(provider => ({ provider: provider as "codex" | "claude" | "copilot", available: false, reason: "unavailable" as const, model: null, args: [] })) };
     const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost: { collect: async () => ({ assistantHost, issues: [{ provider: "copilot" as const, reason: "unavailable" as const, error: failure }] }) } });
     const sample = await finish(instance.collect(operation()));
@@ -226,7 +226,7 @@ describe("Worker telemetry", () => {
   });
 
   it("distinguishes confirmed executable absence from an invalid native working directory", async () => {
-    const failure = new HerdrCommandError("Cannot execute", null, null, "", { cause: Object.assign(new Error("sensitive-command"), { code: "ENOENT" }) });
+    const failure = new OwnedCommandError("Cannot execute", null, null, "", { cause: Object.assign(new Error("sensitive-command"), { code: "ENOENT" }) });
     mocks.version.mockRejectedValue(failure);
     const missing = await finish(collector().collect(operation()));
     expect(missing.telemetry.versions.codex.state).toBe("not_installed");
@@ -237,7 +237,7 @@ describe("Worker telemetry", () => {
 
   it("keeps uncertain command cleanup visible and does not start a replacement probe", async () => {
     let monotonic = 0; vi.spyOn(performance, "now").mockImplementation(() => monotonic);
-    const failure = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const failure = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
     mocks.version.mockRejectedValue(failure); const instance = collector();
     const first = await finish(instance.collect(operation()));
     monotonic = 120_000;
@@ -259,18 +259,18 @@ describe("Worker telemetry", () => {
   });
 
   it("preserves unconfirmed native cleanup when runtime cancellation interrupts collection", async () => {
-    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const cleanup = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
     mocks.version.mockRejectedValue(cleanup);
     const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
     const pending = collector().collect(op); controller.abort();
     const failure: unknown = await pending.catch((error: unknown) => error);
-    expect(hasHerdrCommandCleanupFailure(failure)).toBe(true);
+    expect(hasOwnedCommandCleanupFailure(failure)).toBe(true);
     expect(failure).toMatchObject({ cause: op.signal.reason });
   });
 
   it.each(["rejection", "synchronous throw"])("joins ordinary probes and preserves cleanup after assistant %s", async mode => {
-    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
-    const laterCleanup = new HerdrCommandCleanupError([new Error("another owned process remains")], undefined);
+    const cleanup = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
+    const laterCleanup = new OwnedCommandCleanupError([new Error("another owned process remains")], undefined);
     const assistantFailure = new Error("assistant failed");
     const completions = new Map<string, (error?: unknown) => void>();
     mocks.version.mockImplementation(({ agent }: { agent: string }) => new Promise((resolve, reject) => {
@@ -298,7 +298,7 @@ describe("Worker telemetry", () => {
   });
 
   it("keeps reporter stop pending until ordinary cleanup finishes after assistant cancellation", async () => {
-    const cleanup = new HerdrCommandCleanupError([new Error("owned process remains")], undefined);
+    const cleanup = new OwnedCommandCleanupError([new Error("owned process remains")], undefined);
     const completions: ((error?: unknown) => void)[] = [];
     mocks.version.mockImplementation(() => new Promise((resolve, reject) => {
       completions.push(error => error === undefined ? resolve("1.0.0") : reject(error));
@@ -322,7 +322,7 @@ describe("Worker telemetry", () => {
     const failure: unknown = await observed;
     expect(stoppedBeforeCleanup).toBe(false);
     expect(stoppedBeforeLastProbe).toBe(false);
-    expect(hasHerdrCommandCleanupFailure(failure)).toBe(true);
+    expect(hasOwnedCommandCleanupFailure(failure)).toBe(true);
     expect(sent).toBe(0);
   });
 });
@@ -336,9 +336,9 @@ describe("native version cleanup recovery", () => {
     if (terminationFailure) Object.defineProperty(child, "pid", { get: () => { throw new Error("Cannot terminate the owned process"); } });
     const parent = createOperation({ limits: { totalMs: 100, requestMs: 20 } });
     try {
-      const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, parent, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+      const result = runOwnedCommand({ file: "codex", args: ["--version"], environment: {} }, parent, () => child, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
       const failure = await finish(result, 110);
-      expect(failure).toBeInstanceOf(HerdrCommandCleanupError);
+      expect(failure).toBeInstanceOf(OwnedCommandCleanupError);
       return { child, failure };
     } finally { parent.dispose(); }
   };
@@ -427,7 +427,7 @@ describe("native version cleanup recovery", () => {
 
   it.each(["termination failure", "legacy cleanup"])("keeps %s unavailable after a close and cache expiry", async mode => {
     const original = await timedOutProbe(mode === "termination failure");
-    const failure = mode === "legacy cleanup" ? new HerdrCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
+    const failure = mode === "legacy cleanup" ? new OwnedCommandCleanupError([new Error("No original confirmation handle")], undefined) : original.failure;
     let attempts = 0;
     mocks.version.mockImplementation(async ({ agent }: { agent: string }) => {
       if (agent === "codex") { attempts++; throw failure; }
@@ -445,7 +445,7 @@ describe("native version cleanup recovery", () => {
 
   it("confirms assistant and version probes independently and reports the retry's current failure", async () => {
     const host = await timedOutProbe(); const version = await timedOutProbe();
-    const currentFailure = new HerdrCommandError("Retry failed", 2, null, "private diagnostic");
+    const currentFailure = new OwnedCommandError("Retry failed", 2, null, "private diagnostic");
     let hostAttempts = 0; let versionAttempts = 0;
     mocks.access.mockResolvedValue(undefined);
     const assistantHost = createAssistantHostCollector({ workingDirectory: process.cwd(), environment: {},

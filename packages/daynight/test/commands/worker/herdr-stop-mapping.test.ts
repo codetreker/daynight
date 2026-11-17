@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { createWorkerHerdr, type HerdrExecutionOwner } from "../../../src/commands/worker/herdr.js";
 import { herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
-import * as commands from "../../../src/commands/worker/herdr/command.js";
+import * as commands from "../../../src/commands/worker/owned-command.js";
 import * as proofs from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 import * as metadata from "../../../src/commands/worker/herdr/windows-process-metadata.js";
 import { createToolLaunchMapping, mappingFiles } from "../../../src/commands/worker/herdr/tool-launch.js";
@@ -60,7 +60,7 @@ const fixture = async (platform: "darwin" | "win32", recipe: "frozen" | "legacy"
   vi.spyOn(proofs, "captureMappingProcessProof").mockResolvedValue(proof);
   const inspect = vi.spyOn(proofs, "inspectMappingProcessForCleanup").mockResolvedValue("stopped");
   vi.spyOn(metadata, "captureWindowsProcessInventory").mockResolvedValue([]);
-  vi.spyOn(commands, "runHerdrCommand").mockImplementation(async command => {
+  vi.spyOn(commands, "runOwnedCommand").mockImplementation(async command => {
     if (command.file !== "/bin/ps") throw new Error(`Unexpected process command: ${command.file}`);
     return { stdout: "", stderr: "" };
   });

@@ -1,12 +1,13 @@
+import { codexConfigurationArguments } from "../codex-configuration.js";
 import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import path from "node:path";
 import { open, realpath } from "node:fs/promises";
 import { gte } from "semver";
 import type { Operation } from "../../../api/operation.js";
-import { codexConfigurationArguments, codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
-import { runHerdrCommand, spawnHerdrProcess } from "./command.js";
-import type { HerdrCommand, HerdrCommandResult } from "./command.js";
-import { probeNativeAgentVersion } from "./version-probe.js";
+import { codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
+import { runOwnedCommand, spawnOwnedProcess } from "../owned-command.js";
+import type { OwnedCommand, OwnedCommandResult } from "../owned-command.js";
+import { probeNativeAgentVersion } from "../native-version.js";
 import type { HerdrRpcClient } from "./rpc.js";
 import { assertCodexInstallConfigurationSafe } from "./codex-install-safety.js";
 import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../native-selection.js";
@@ -23,7 +24,7 @@ export type HerdrNativePreflight = {
   nativeHome: string;
   integrationConfigured: true;
 };
-export type NativePrerequisiteCommandRunner = (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
+export type NativePrerequisiteCommandRunner = (command: OwnedCommand, operation: Operation) => Promise<OwnedCommandResult>;
 export type NativePrerequisiteCheck = {
   kind: "home" | "version" | "runtime" | "configuration";
   label: string;
@@ -131,9 +132,9 @@ export const nativeHookRuntimeChecks = (options: {
   // Windows PowerShell can exit zero without redirected output when detached.
   // Keep the official hook's command/PATH and the runner's budget/tree-close owner.
   const runCommand = options.runCommand ?? (options.platform === "win32"
-    ? (command: HerdrCommand, operation: Operation) => runHerdrCommand(command, operation,
-      (file, args, spawnOptions) => spawnHerdrProcess(file, args, { ...spawnOptions, detached: false }))
-    : runHerdrCommand);
+    ? (command: OwnedCommand, operation: Operation) => runOwnedCommand(command, operation,
+      (file, args, spawnOptions) => spawnOwnedProcess(file, args, { ...spawnOptions, detached: false }))
+    : runOwnedCommand);
   const runtimes = options.platform === "win32"
     ? [{ file: "powershell", args: ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], version: /^\d+\.\d+/m }]
     : [{ file: "bash", args: ["--version"], version: /^GNU bash, version /m }, { file: "python3", args: ["--version"], version: /^Python 3\./m }];
@@ -161,7 +162,7 @@ export const createNativePrerequisiteChecks = (options: {
 }, input: HerdrNativeStart): readonly [NativePrerequisiteCheck, NativePrerequisiteCheck, ...NativePrerequisiteCheck[]] => {
   const home = absolute(options.homeDirectory, "Native user home");
   const platform = options.platform === undefined ? process.platform : options.platform;
-  const runCommand = options.runCommand === undefined ? runHerdrCommand : options.runCommand;
+  const runCommand = options.runCommand === undefined ? runOwnedCommand : options.runCommand;
   const agent = input.configuration.agent;
   const launch = input.configuration.toolLaunch;
   if (launch && (launch.tool !== agent || launch.context !== "herdr")) throw new Error("Native prerequisite tool differs from its Herdr request.");

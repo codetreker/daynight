@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({ rpc: vi.fn(), observe: vi.fn(), peer: vi.fn(),
 vi.mock("node:fs/promises", async original => ({ ...await original<object>(), stat: (...args: unknown[]) => mocks.stat(...args) }));
 vi.mock("../../../src/commands/worker/herdr/rpc.js", async original => ({ ...await original<object>(), createHerdrRpcClient: (endpoint: string) => ({ request: (method: string, params: unknown, operation: Operation) => mocks.rpc(endpoint, method, params, operation) }) }));
 vi.mock("../../../src/commands/worker/herdr/native-macos.js", () => ({ createMacProcessControl: mocks.native }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.version }));
+vi.mock("../../../src/commands/worker/native-version.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.version }));
 vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await original<object>(), createWorkerHerdr: mocks.execution }));
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;

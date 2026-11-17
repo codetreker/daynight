@@ -4,7 +4,7 @@ import type { Operation } from "../../api/operation.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import type { WorkerDiagnostic } from "./diagnostics.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "./herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandCleanupError } from "./owned-command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
 import { syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures } from "./configuration-exchange.js";
 import type { WorkerConfigurationExchange } from "./configuration-exchange.js";
@@ -107,7 +107,7 @@ export const createWorkerReporter = (options: {
     (error instanceof OperationError && error.kind === "cancelled" && isCancellation(error.cause));
   const requiresCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
     if (seen.has(error)) return true;
-    if (error instanceof HerdrCommandCleanupError) return hasUnconfirmedHerdrCommandCleanup(error);
+    if (error instanceof OwnedCommandCleanupError) return hasUnconfirmedOwnedCommandCleanup(error);
     if (isCancellation(error)) return false;
     // Keep mixed aggregates intact when any independent failure remains. A cause
     // wrapper alone does not turn an acknowledged cleanup timeout into a new failure.
@@ -125,7 +125,7 @@ export const createWorkerReporter = (options: {
         phase = "collect";
         const sample = await options.collect(operation);
         for (const issue of sample.issues) {
-          if (hasHerdrCommandCleanupFailure(issue.error)) {
+          if (hasOwnedCommandCleanupFailure(issue.error)) {
             retainCleanupFailure(issue.error);
             if (stopped) fail(issue.component, "collect", issue.error, issue.code);
           }
@@ -159,7 +159,7 @@ export const createWorkerReporter = (options: {
       options.configuration?.prompts?.failCycle();
       pendingPrompt = false;
       if (options.configuration?.prompts !== undefined) deferPromptCycle = true;
-      if (hasHerdrCommandCleanupFailure(error)) {
+      if (hasOwnedCommandCleanupFailure(error)) {
         fail("report", phase, error);
         retainCleanupFailure(error);
       } else if (!stopped) fail("report", phase, error);

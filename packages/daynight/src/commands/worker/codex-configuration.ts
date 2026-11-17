@@ -1,9 +1,8 @@
-import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { spawn } from "node:child_process";
-import type { Operation } from "../../../api/operation.js";
-import { NativeRpc } from "../../controller/providers/native-rpc.js";
-import { codexConfigurationArguments } from "./arguments.js";
-import { HerdrCommandCleanupError, registerHerdrCommandCleanupConfirmation, terminateOwnedHerdrProcess } from "./command.js";
+import type { Operation } from "../../api/operation.js";
+import { NativeRpc } from "../controller/providers/native-rpc.js";
+import { OwnedCommandCleanupError, registerOwnedCommandCleanupConfirmation, terminateOwnedProcess } from "./owned-command.js";
 
 /** Read native config layers without creating or resuming an Agent session. */
 export const withCodexConfigurationRpc = async (options: {
@@ -59,12 +58,12 @@ export const withCodexConfigurationRpc = async (options: {
     const wait = (ms: number) => Promise.race([exited, new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(cleanupTimer));
     try {
       if (failure === undefined) await wait(250);
-      if (!closed) { if (options.detached === false) child.kill("SIGKILL"); else terminateOwnedHerdrProcess(child); }
+      if (!closed) { if (options.detached === false) child.kill("SIGKILL"); else terminateOwnedProcess(child); }
       await wait(2_000);
       if (!closed) throw new Error("The Codex configuration process did not close after termination.");
     } catch (error) {
-      const cleanup = new HerdrCommandCleanupError([error], failure);
-      registerHerdrCommandCleanupConfirmation(cleanup, () => closed);
+      const cleanup = new OwnedCommandCleanupError([error], failure);
+      registerOwnedCommandCleanupConfirmation(cleanup, () => closed);
       throw cleanup;
     }
     finally { rpc.dispose(); }
@@ -73,3 +72,19 @@ export const withCodexConfigurationRpc = async (options: {
 
 export const readCodexConfiguration = (options: Parameters<typeof withCodexConfigurationRpc>[0], operation: Operation): Promise<unknown> =>
   withCodexConfigurationRpc(options, operation, rpc => rpc.request("config/read", { cwd: options.cwd, includeLayers: false }));
+
+export const codexConfigurationArguments = (args: readonly string[]): { arguments: string[]; profile: boolean } => {
+  const relevant = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile"]);
+  const selected: string[] = [];
+  let profile = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    const equals = argument.indexOf("=");
+    const option = equals < 0 ? argument : argument.slice(0, equals);
+    if (!relevant.has(option)) continue;
+    profile ||= option === "-p" || option === "--profile";
+    selected.push(argument);
+    if (equals < 0) selected.push(args[++index]!);
+  }
+  return { arguments: selected, profile };
+};

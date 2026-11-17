@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, test, vi } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
-import { readCodexConfiguration } from "../../../src/commands/worker/herdr/codex-config.js";
+import { readCodexConfiguration } from "../../../src/commands/worker/codex-configuration.js";
 
 const directories: string[] = [], operations: Operation[] = [];
 afterEach(async () => { operations.splice(0).forEach(op => op.dispose()); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
