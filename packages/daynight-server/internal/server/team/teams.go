@@ -19,6 +19,7 @@ type TeamOperations interface {
 	Create(context.Context, model.Principal, coreteam.CreateTeam) (model.Team, error)
 	Get(context.Context, model.Principal, string) (model.Team, error)
 	List(context.Context, model.Principal, model.PageRequest) (coreteam.TeamPage, error)
+	SearchMemberCandidates(context.Context, model.Principal, string, coreteam.CandidateSearchInput) (coreteam.CandidatePage, error)
 	Rename(context.Context, model.Principal, string, coreteam.ChangeTeam) (model.Team, error)
 	Delete(context.Context, model.Principal, string, coreteam.ChangeTeam) error
 	Members(context.Context, model.Principal, string) ([]model.TeamMemberProfile, error)
@@ -47,6 +48,8 @@ func RegisterRoutes(mux *http.ServeMux, teams TeamOperations, auth *authhttp.Aut
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}", auth.Require(h.rename))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}", auth.Require(h.remove))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/members", auth.Require(h.listMembers))
+	mux.HandleFunc("POST /api/v1/teams/{teamId}/member-candidates/search", auth.Require(h.searchMemberCandidates))
+	mux.HandleFunc("/api/v1/teams/{teamId}/member-candidates/search", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.setMemberRole))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.removeMember))
 	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))

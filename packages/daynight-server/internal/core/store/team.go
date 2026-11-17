@@ -14,6 +14,17 @@ type TeamMemberPage struct {
 	HasMore bool
 }
 
+type TeamMemberCandidateQuery struct {
+	Query   string
+	AfterID *string
+	Limit   int
+}
+
+type TeamMemberCandidatePage struct {
+	Items   []model.TeamMemberCandidate
+	HasMore bool
+}
+
 // TeamInvitationPage is bounded by the requested page size.
 type TeamInvitationPage struct {
 	Items   []model.TeamInvitation

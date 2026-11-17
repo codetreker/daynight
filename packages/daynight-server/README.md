@@ -2953,6 +2953,17 @@ is no-store and does not echo the external identity. Resolution creates or chang
 no user, credential or membership; later writes still require current authority
 and the observed membership version.
 
+An ordinary Team admin can search existing account names and emails with
+`POST /api/v1/teams/{teamId}/member-candidates/search`. The body requires
+`expectedUserId` and `query`, with optional `limit` (default 20, maximum 50)
+and `cursor`. Matching uses literal substrings and ASCII case folding. An empty
+query returns an empty page only after authorization. The no-store response
+contains `{items,nextCursor,actorRole}`; each item contains the actual `userId`
+and nullable profile fields. Every page rechecks the credential and Team admin
+in the same snapshot as the search. Cursors bind that scope and the normalized
+query and limit, and pages use UUID order. Changes between pages can affect the
+results. The search does not return membership or log queries, cursors or profiles.
+
 An admin changes an existing role with `PATCH /api/v1/teams/{teamId}/members/{userId}`
 and `{version,role,expectedUserId}`; the response is `{membership,actorRole}`.
 An admin or the member removes the relationship with DELETE at the same path
