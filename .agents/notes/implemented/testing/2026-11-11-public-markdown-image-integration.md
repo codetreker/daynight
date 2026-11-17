@@ -29,10 +29,6 @@ subsequent resource reads are real. This is a source integration regression;
 it does not assert native-model vision or complete browser behavior.
 The decoder wrapper forwards the runtime's arguments to the server so that it
 uses the isolated configuration root as well as the configured image helper.
-The authentication client trusts only the isolated provider and Daynight fixture
-CAs and resolves the app and preview hosts to loopback. The namespace control
-forwarder verifies the Daynight TLS certificate and hostname while preserving its
-HTTP and WebSocket stream; public image access retains its own DNS and TLS policy.
 
 Network setup is restricted to a fresh standard GitHub-hosted Linux VM. A
 Controller namespace has one owned route to the host. A job-owned nftables
