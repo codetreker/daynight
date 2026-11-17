@@ -336,6 +336,8 @@ Web 原生恢复复用持久 `recovery.count`、`pauseReason` 和 `retryAuthoriz
 
 Worker claim 的 Controller 首次输入和 `submit_worker_input` 共用普通原生队列。队首先检查期限、连接和 idle 输入能力，再通过继承的配置读取同服务、同用户的当前 Task，核验未暂停、授权与原 claim/Worker/worktree/Agent/Web 归属，读取后再次检查本机状态并派发。配置或读取失败不使用旧快照；读取与原生派发不具有跨系统原子性。首次输入保留原 `initialOperationId` 和冻结正文；后续文本以本地 `worker_input` 操作记录，复用普通消息的来源关联和迟到受理，但不参与 relay 的远端命令对账。`observe` 顶层的 `workerInputProtocol:1` 声明该链路，旧调用方可忽略。正文上限为 4 MiB UTF-8，完整 IPC JSON 加换行上限为 5 MiB；排队准入期限为 30 秒，Controller 等待最多 65 秒，调用方等待最多 70 秒。断开不能撤回已派发输入。Test Session 首次输入及人工消息保留各自入口。
 
+完整 assignment 由 `prompts.ts` 组装：固定前言和 `execution-contract.ts` 中的共享章节按顺序组合，再加入新建或恢复原生会话说明及经过校验的 Assignment JSON。continuation 和 ping 复用相同章节，分别保留原身份前缀与 ping 的字面标签；cleanup 使用独立用途的正文。用户、项目和 Worker 自定义文本仍按现有顺序追加。共享文案避免后续输入恢复相反的暂停或等待规则，不改变已固定输入的投递身份和调度机制。
+
 Worker 的健康观察共用输入流程，以原运行绑定在内存维护 assignment 受理状态和至多一个待核对操作。首次 assignment 完成的轮次直接返回；恢复时用当前任务、冻结配置、已核实 native Session 与当前附加 prompts 构造完整 assignment。之后每轮符合输入条件时构造新 ping，不按 idle 观察去重。等待结果不消耗故障预算；未知结果按原 operation ID、generation、kind 和 hash 核对，assignment 未受理时不能用 ping 越过。普通 ping 的终态 unknown 不永久阻止下一轮，已派发输入不保证 exactly-once。
 
 旧存活 Controller 缺少能力声明时先结算原首次输入；明确尚未递交时使用原 operation 和冻结正文，在旧 IPC 前重新读取任务并复核本机资格。首次输入已受理、native Session 已核实且当前空闲可输入时，持有原 claim 串行锁的编排器执行既有 shutdown；只有完整停止证明后才清除 intent 并按正常 orderly restart 换代。停止未知保留原 intent 和责任，新代重新验证能力，同次 Worker 最多尝试一次升级。旧停止与最终观察之间仍有并发窗口，不宣称原子 compare-and-stop。取舍见[Web 自动输入决策](../../.agents/notes/implemented/architecture/2026-11-17-web-worker-patrol.md)。
