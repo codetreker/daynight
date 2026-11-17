@@ -547,7 +547,7 @@ for (const item of [{ path: 'interactive.html', type: 'text/html', body: html },
   });
 }
 
-for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
+for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 320, height: 240 }, { width: 844, height: 390 }]) {
   for (const locale of ['en', 'zh-CN'] as const) {
     test(`native reload is visible and keyboard reachable at ${viewport.width}x${viewport.height} (${locale})`, async ({ page }) => {
       await page.setViewportSize(viewport);
@@ -555,10 +555,28 @@ for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 
       await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
       await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/interactive.html`);
       const reload = page.getByRole('button', { name: locale === 'en' ? 'Reload' : '重新加载', exact: true });
-      await expect(reload).toBeVisible();
-      await expect(reload).toBeInViewport({ ratio: 1 });
+      const download = page.getByRole('link', { name: locale === 'en' ? 'Download' : '下载', exact: true });
+      const open = page.getByRole('link', { name: locale === 'en' ? 'Open in new tab' : '在新标签页打开', exact: true });
+      for (const action of [reload, download, open]) {
+        await expect(action).toBeVisible();
+        await expect(action).toBeInViewport({ ratio: 1 });
+      }
       await reload.focus();
       await expect(reload).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(download).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(open).toBeFocused();
+      const boxes = await page.locator('.attachment-preview-header').evaluate(header => {
+        const bounds = (selector: string) => [...header.querySelectorAll(selector)].map(element => {
+          const box = element.getBoundingClientRect();
+          return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+        });
+        return { actions: bounds('.attachment-preview-actions .button'), times: bounds('.attachment-timestamps dt, .attachment-timestamps time') };
+      });
+      expect(boxes.actions).toHaveLength(3);
+      expect(boxes.times).toHaveLength(4);
+      for (const action of boxes.actions) for (const time of boxes.times) {
+        expect(action.right <= time.left || time.right <= action.left || action.bottom <= time.top || time.bottom <= action.top).toBe(true);
+      }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     });
   }
