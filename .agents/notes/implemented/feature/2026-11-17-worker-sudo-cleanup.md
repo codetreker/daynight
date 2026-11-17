@@ -48,6 +48,8 @@ The Worker can recover permission-blocked owned worktrees without a password
 prompt, while preserving branches and external link targets. Failed commands
 retain both the ordinary failure and the command error for existing retry and
 diagnostics. Identity, device, Git and ordinary I/O failures do not authorize
-privileged removal. Schema 7 cannot be read by a schema 6 binary; migration must
+privileged removal. A partial recursive deletion can remove `.git` while leaving
+other contents; if ownership can no longer be proved, retries retain the error
+and responsibility instead of deleting the remaining directory. Schema 7 cannot be read by a schema 6 binary; migration must
 be saved before jobs start. The mount inventory is an observation and cannot prevent a concurrent external
 mount after its check. A forced restart has no new cross-process exclusion.

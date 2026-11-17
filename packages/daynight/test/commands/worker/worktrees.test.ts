@@ -1089,6 +1089,26 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
   });
 
+  it.skipIf(process.platform === "win32")("retains an unattributable nonempty leaf after partial privileged removal", async () => {
+    const f = await fixture(); let calls = 0;
+    const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
+    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
+      removeDirectory: async () => { throw denied; },
+      runShellRemoval: async (_root, target) => { calls++; await rm(path.join(target, ".git")); throw new Error("privileged partial removal"); },
+    });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const first = errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error));
+    expect(first).toContain("ordinary denied"); expect(first).toContain("privileged partial removal");
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
+    const retry = errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error));
+    expect(retry).toContain("Git pointer is missing");
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
+    expect(calls).toBe(1);
+  });
+
+
   it.skipIf(process.platform === "win32")("retains the permission error when Git registration removal fails", async () => {
     const f = await fixture();
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
