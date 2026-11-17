@@ -1486,6 +1486,7 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   const f = await fixture();
   target = { ...target, value: { ...target.value, pollIntervalMs: 60_000 } };
   let now = Date.parse(workerTelemetryTime), completedProbes = 0;
+  let probeCompleted = deferred<void>();
   const startTime = now;
   vi.spyOn(Date, "now").mockImplementation(() => now);
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
@@ -1500,6 +1501,8 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   mocks.archive.mockResolvedValue({ state: "ready" });
   mocks.emit.mockImplementation((event: { kind: string; message: string }) => {
     if ((event.kind !== "session-archive-retry" && event.kind !== "session-archive-ready") || !event.message.startsWith(`Completed session ${uuid(11)}`)) return;
+    probeCompleted.resolve();
+    probeCompleted = deferred<void>();
     if (event.kind === "session-archive-retry") {
       completedProbes++;
       if (completedProbes === 3) f.signal.abort();
@@ -1508,6 +1511,14 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
   // Configuration commits can wake reconciliation without advancing a poll interval.
   mocks.delay.mockImplementation(async (milliseconds, _value, options) => {
+    // At a probe deadline, the source lock may still be opening asynchronously.
+    // Wait for that attempt's outcome before advancing the next poll interval.
+    if (completedProbes !== 0 && completedProbes === probes.length && now - startTime >= completedProbes * 900_000) {
+      await Promise.race([
+        probeCompleted.promise,
+        timers.setTimeout(10_000, undefined, { ...options, ref: false }).then(() => { throw new Error("Archive probe did not settle at its deadline."); }),
+      ]);
+    }
     await timers.setTimeout(0, undefined, options);
     if (completedProbes !== 0 && completedProbes === probes.length) now += milliseconds;
   });
@@ -1530,7 +1541,7 @@ it.each(["blocked", "probe-error", "receipt", "cancelled", "persistence-error"] 
       expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
     }
   }
-});
+}, 15_000);
 
 
 it("retains backfill blocker and probe deadline across runtime restart without cleanup ownership", async () => {

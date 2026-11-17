@@ -69,8 +69,11 @@ it("imports local choices while preserving the legacy cloud report projection", 
     agentControlMode: "herdr", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
     preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [],
   };
-  expect(bootstrap).toEqual({ ...legacy, toolPaths: { ...automatic, codex: { kind: "path", path: codex } } });
+  expect(bootstrap).toEqual({ ...legacy, archiveSessions: true, toolPaths: { ...automatic, codex: { kind: "path", path: codex } } });
   expect(projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: true, toolPaths: false })).toEqual({
     bootstrap: legacy, observation: null, controlModeBootstrap: null,
+  });
+  expect(projectWorkerCloudReport({ bootstrap, observation: null }, { controlMode: true, toolPaths: false, archiveSessions: true })).toEqual({
+    bootstrap: { ...legacy, archiveSessions: true }, observation: null, controlModeBootstrap: null,
   });
 });

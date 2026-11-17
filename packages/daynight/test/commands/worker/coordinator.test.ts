@@ -3851,13 +3851,14 @@ describe("worker monitoring of coordinator jobs", () => {
     const owner = { projectId: f.project.projectId, taskId: uuid(975), claimId: uuid(985), worktreeId: uuid(995) };
     f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
     const retained = { owner, sessionId: uuid(1005), stopped: true, stopEvidence: archiveFixture.runs.map(run => run.stopProof), terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, "source"), sourceBytes: "10", state: "pending", error: null, nextAttemptAt: null, worktreeDeleted: true, disposition: null };
-    const archive = { resources: () => [retained], advance: vi.fn(async () => true), cleaned: vi.fn() };
+    const archive = { resources: () => [retained], advance: vi.fn(async (_owner: ResourceOwner, _operation: Operation, admit: () => boolean) => admit()), cleaned: vi.fn() };
     Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => true, archive, stop: vi.fn() } });
     const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true, monitoring: monitor });
     try {
       await coordinator.tick();
       await eventually(() => expect(archive.advance).toHaveBeenCalledOnce());
-      expect(archive.advance).toHaveBeenCalledWith(owner, expect.anything());
+      expect(archive.advance).toHaveBeenCalledWith(owner, expect.anything(), expect.any(Function));
+      expect(archive.advance.mock.calls[0]![2]()).toBe(true);
       expect(archive.cleaned).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
       expect(f.store.getTask(owner)?.status).toBe("done");
