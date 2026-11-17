@@ -146,6 +146,13 @@ incorrectly renewed budgets without relying on runner scheduling. The
 [API cursor deadline decision](../.agents/notes/implemented/testing/2026-11-10-api-cursor-deadline.md)
 records this pagination proof.
 
+Update supervisor deadline fixtures keep real subprocesses, IPC and group
+observations while controlling only the cleanup or release timer. They assert
+its original duration and cancellation state, and expire it only after the
+relevant process or IPC barrier. The
+[update deadline decision](../.agents/notes/implemented/testing/2026-11-17-update-cleanup-test-deadlines.md)
+records the proof and its limits.
+
 The blocked-sink attachment fixture observes entry into its consumer before
 advancing to the request deadline, then checks the timeout, sink abort and
 response cancellation. This keeps setup time from exercising an earlier timeout
