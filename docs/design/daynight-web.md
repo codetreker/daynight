@@ -71,7 +71,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 三组共享可滚动的 `.sidebar-main`，不收缩的 `.sidebar-bottom` 仅持有切换按钮。项目子项使用与当前 Team 项目列表相同的分页目录和原生链接处理；折叠竖条隐藏项目树，共享路由保留当前 Team 项目树。项目、成员及设置路由仅选中已加载目录中匹配的项目，Team 列表与设置、共享列表、账号资源和工具按各自路由选中。明确项目的面包屑不推断侧栏 Team 归属，账号及工具使用纯文本范围父项。Team／Personal 项目列表 H1 和 document title 统一为“项目”，范围显示在 eyebrow。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
 
-sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。完整名称作为链接名称及 title，视觉文字允许省略。详细取舍见[侧栏范围决策](../../.agents/notes/implemented/architecture/2026-11-12-sidebar-navigation-scopes.md)及[进行中任务入口位置](../../.agents/notes/implemented/architecture/2026-11-17-in-progress-tasks-sidebar-position.md)。
+sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。`SidebarIcon` 集中九种局部 SVG 图形及 24×24 画布、1.6 线宽和装饰性属性；侧栏样式以 18×18 槽双轴居中，并在该作用域内让 SVG 继承入口颜色；取舍见[导航图标决策](../../.agents/notes/implemented/bug-fix/2026-11-17-sidebar-navigation-icons.md)。完整名称作为链接名称及 title，视觉文字允许省略。详细取舍见[侧栏范围决策](../../.agents/notes/implemented/architecture/2026-11-12-sidebar-navigation-scopes.md)及[进行中任务入口位置](../../.agents/notes/implemented/architecture/2026-11-17-in-progress-tasks-sidebar-position.md)。
 
 `TeamSelector` 展开时以 flex 对齐头像、单行主名称和箭头，不渲染类型行或占位；名称优先截断并保留箭头。按钮的可访问名称和 title 仍组合完整名称与已知类型，折叠竖条保留图标入口。触发器所在侧栏内保留菜单 DOM，并使用 top-layer popover 脱离滚动裁剪；定位根据触发器、视口和菜单尺寸调整，菜单自身限制高度并滚动。保持 DOM 所属关系使手机抽屉的焦点隔离包含菜单；菜单先处理 Escape，创建时沿用抽屉与创建窗口的焦点交接。目录、分页和偏好仍由原有所有者管理，菜单的打开状态不依赖后台复核结果。详见[单行选择器决策](../../.agents/notes/implemented/simplification/2026-11-17-single-line-team-selector.md)和[Team 切换菜单决策](../../.agents/notes/implemented/feature/2026-11-05-team-switcher-popover.md)。
 
