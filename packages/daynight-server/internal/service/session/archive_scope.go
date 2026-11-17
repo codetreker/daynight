@@ -45,34 +45,6 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 	})
 }
 
-func (s *Service) terminal(ctx context.Context, principal model.Principal, project, taskID, id string, finalize bool, work func(*sessioncore.TerminalAccess) error) error {
-	op, err := s.engine.BeginOperation()
-	if err != nil {
-		return err
-	}
-	defer op.Close()
-	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-		task, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
-		if err != nil {
-			return err
-		}
-		if err = op.LockCredential(ctx, scope, principal); err != nil {
-			return err
-		}
-		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
-			return err
-		}
-		access, err := op.LoadTerminal(ctx, scope, id)
-		if err != nil {
-			return err
-		}
-		if err = op.BindTerminal(access, task, principal, project, taskID, deleted); err != nil {
-			return err
-		}
-		return work(access)
-	})
-}
-
 func (s *Service) terminalHistory(ctx context.Context, principal model.Principal, project, taskID, id string, finalize bool, work func(*sessioncore.TerminalHistoryAccess) error) error {
 	op, err := s.engine.BeginOperation()
 	if err != nil {

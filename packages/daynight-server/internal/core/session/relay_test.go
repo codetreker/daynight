@@ -18,7 +18,6 @@ type fixture struct {
 	dao           *fixtureDAO
 	data          *fixtureData
 	writes        *fixtureWrites
-	terminal      *terminalFixtureData
 	p             model.Principal
 	project, task string
 	r             sp.Registration

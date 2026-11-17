@@ -62,24 +62,3 @@ func (s *Service) authorize(ctx context.Context, op *sessioncore.Operation, scop
 	}
 	return nil
 }
-
-func (s *Service) registerTerminal(ctx context.Context, principal model.Principal, project, taskID string, work func(*sessioncore.Operation, store.SessionScope, *sessioncore.TaskAccess) error) error {
-	op, err := s.engine.BeginOperation()
-	if err != nil {
-		return err
-	}
-	defer op.Close()
-	return s.write(ctx, op.Finish, func(scope store.SessionScope) error {
-		task, err := op.LockRegistrationTask(ctx, scope, project, taskID)
-		if err != nil {
-			return err
-		}
-		if err = op.LockCredential(ctx, scope, principal); err != nil {
-			return err
-		}
-		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
-			return err
-		}
-		return work(op, scope, task)
-	})
-}

@@ -24,7 +24,7 @@ func New(writer store.SessionWriter, engine *sessioncore.Engine) *Service {
 	botRuntime := botruntime.NewRuntime(engine, func(ctx context.Context, op *sessioncore.Operation, fn func(store.SessionScope) error) error {
 		return s.write(ctx, op.Finish, fn)
 	})
-	s.Execution = sessioncore.NewExecution(engine, s.browserFor, s.controller, s.archive, s.terminal, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.registerTerminal, s.authorize)
+	s.Execution = sessioncore.NewExecution(engine, s.browserFor, s.controller, s.archive, s.registerTask, s.registerTest, s.controllerGrant, s.taskQuery, s.credential, botRuntime.Run, s.authorize)
 	s.Execution.SetArchivePreflight(s.archivePreflight)
 	s.Execution.SetTerminalHistoryRunner(s.terminalHistory)
 	s.Execution.SetTerminalDirectoryRunners(s.terminalDirectory, s.taskTerminalDirectory)

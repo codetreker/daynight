@@ -359,8 +359,8 @@ atomic, with the task-local `410 task_deleted` response for later access.
 Task Session reads require current project access; execution interactions require
 the authenticated actor to match the persisted Session owner. Project and Team
 administrators receive the same read-only access as other non-owner members.
-Admission, dispatch, reconnection reconciliation and terminal lease/ACK checks
-apply this rule without changing the wire format or Controller ownership.
+Admission, dispatch and reconnection reconciliation apply this rule without
+changing the wire format or Controller ownership.
 
 `GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/{sessionId}/inspection`
 reads an explicit Session's original identity, fence, `currentBinding`, readable

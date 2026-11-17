@@ -73,13 +73,6 @@ type SessionOperation struct {
 	Deadline               time.Time
 }
 
-type TerminalRegistration struct {
-	SessionID, ProjectID, TaskID, ClaimID, OwnerID, RegistrationID string
-	Registration, State                                            []byte
-	LastSeen                                                       time.Time
-	ServerInstance                                                 string
-}
-
 type BotSession struct {
 	ID, Owner, Scope, Backend string
 }
@@ -163,10 +156,4 @@ type SessionDAO interface {
 	ListTestSessions(context.Context, string, time.Time, int, bool, time.Time, *time.Time, string) ([]TestSessionListItem, error)
 	TerminalArchiveHistoryDAO
 	LockTerminal(context.Context, string) ([]byte, error)
-	SaveTerminal(context.Context, string, []byte, *time.Time, string) error
-	FindTerminalRegistration(context.Context, string, string, string, string, string) (string, error)
-	InsertTerminal(context.Context, TerminalRegistration) error
-	InsertRecordingEvidence(context.Context, string, int64, string, int64, string) error
-	InvalidateTerminalOperations(context.Context, string) error
-	ExpireTerminalOperations(context.Context, string, time.Time) error
 }

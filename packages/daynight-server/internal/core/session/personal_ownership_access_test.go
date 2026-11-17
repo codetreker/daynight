@@ -6,7 +6,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 func permissionCurrent(f fixture, ctx context.Context, principal model.Principal, work map[string]int) (map[string]any, error) {
@@ -90,23 +89,4 @@ func TestInheritedOnlySessionOwnerRetainsReadControlAndDispatchAdmission(t *test
 	if len(offers) != 0 {
 		t.Fatalf("dispatch offered work after its inherited requester lost access: %#v", offers)
 	}
-}
-
-func TestInheritedOnlyTerminalOwnerRetainsWorkerBinding(t *testing.T) {
-	f, message := terminalFixture(t)
-	makeRelayOwnerInheritedOnly(t, f)
-	ctx := context.Background()
-	registration := f.TerminalRegistrationPhase(ctx, map[string]int{"InsertTerminal": 1})
-	if _, err := terminalRegistrationStep(t, f, message.SessionID, func() (v2.Message, error) { return f.s.RegisterTerminal(registration, f.p, f.project, f.task, message) }); err != nil {
-		t.Fatal("inherited-only terminal registration", err)
-	}
-	f.dao.FinishContext(registration)
-	binding := f.TerminalPhase(ctx, false, map[string]int{"SaveTerminal": 1})
-	if err := terminalErrorStep(t, f, func() error {
-		return f.s.BindTerminalConnection(binding, f.p, f.project, f.task, message.SessionID, message.Envelope, "1")
-	}); err != nil {
-		t.Fatal("inherited-only terminal Worker connection", err)
-	}
-	f.dao.FinishContext(binding)
-
 }

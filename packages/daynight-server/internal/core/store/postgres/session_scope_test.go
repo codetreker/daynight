@@ -72,8 +72,11 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 		if err := dao.InsertSessionOperation(ctx, store.SessionOperation{SessionID: id, OperationID: opID, Seq: 1, Hash: []byte("child"), Actor: principal, Command: sp.Command{Fence: fence, OperationID: opID, Kind: "send_message", Payload: json.RawMessage(`{}`)}, Receipt: sp.Operation{Fence: fence, OperationID: opID, State: "accepted"}}); err != nil {
 			return err
 		}
-		return dao.InsertRecordingEvidence(ctx, id, 1, uuid.NewString(), 1, strings.Repeat("c", 64))
+		return nil
 	})
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO session_recording_evidence(session_id,execution_generation,evidence_id,revision,body_hash) VALUES($1,1,$2,1,$3)`, id, uuid.NewString(), strings.Repeat("c", 64)); err != nil {
+		t.Fatal(err)
+	}
 	state := func() string {
 		t.Helper()
 		var result string

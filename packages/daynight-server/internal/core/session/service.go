@@ -38,9 +38,6 @@ type Engine struct {
 	live                  map[string]*liveCell
 	instance              string
 	content               contentBroker
-	terminalMutex         sync.Mutex
-	terminalFrames        map[string]*terminalFrameWrite
-	terminalFrameWrites   map[string]*terminalFrameWrite
 	admissionMutex        sync.Mutex
 	closing               bool
 	activeOperations      int

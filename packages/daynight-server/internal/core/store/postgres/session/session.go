@@ -617,55 +617,6 @@ func (tx *DAO) LockTerminal(ctx context.Context, id string) ([]byte, error) {
 	return raw, nil
 }
 
-func (tx *DAO) SaveTerminal(ctx context.Context, id string, raw []byte, seen *time.Time, instance string) error {
-	_, err := tx.tx.Exec(ctx, `UPDATE task_sessions SET terminal_state=$2,last_seen=$3,server_instance=$4 WHERE id=$1 AND backend='herdr'`, id, raw, seen, instance)
-	if err != nil {
-		return pginternal.QueryError("save terminal", err)
-	}
-	return nil
-}
-
-func (tx *DAO) FindTerminalRegistration(ctx context.Context, id, project, registration, taskID, claim string) (string, error) {
-	var found string
-	err := tx.tx.QueryRow(ctx, `SELECT id::text FROM task_sessions WHERE id=$1 OR (project_id=$2 AND (registration_id=$3 OR (task_id=$4 AND claim_id=$5)))`, id, project, registration, taskID, claim).Scan(&found)
-	if err != nil {
-		return "", pginternal.QueryError("find terminal registration", err)
-	}
-	return found, nil
-}
-
-func (tx *DAO) InsertTerminal(ctx context.Context, r store.TerminalRegistration) error {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,backend,terminal_state,last_seen,server_instance) VALUES($1,$2,$3,$4,$5,$6,$7,NULL,'herdr',$8,$9,$10)`, r.SessionID, r.ProjectID, r.TaskID, r.ClaimID, r.OwnerID, r.RegistrationID, r.Registration, r.State, r.LastSeen, r.ServerInstance)
-	if err != nil {
-		return pginternal.QueryError("insert terminal", err)
-	}
-	return nil
-}
-
-func (tx *DAO) InsertRecordingEvidence(ctx context.Context, id string, generation int64, evidenceID string, revision int64, hash string) error {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO session_recording_evidence(session_id,execution_generation,evidence_id,revision,body_hash) VALUES($1,$2,$3,$4,$5)`, id, generation, evidenceID, revision, hash)
-	if err != nil {
-		return pginternal.QueryError("insert recording evidence", err)
-	}
-	return nil
-}
-
-func (tx *DAO) InvalidateTerminalOperations(ctx context.Context, id string) error {
-	_, err := tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=jsonb_build_object('operationId',operation_id::text,'state',CASE WHEN receipt->>'state'='queued' THEN 'rejected' ELSE 'unknown' END,'errorCode',CASE WHEN receipt->>'state'='queued' THEN 'stale_fence' ELSE 'input_unknown' END) WHERE session_id=$1 AND receipt->>'state' IN ('queued','dispatching')`, id)
-	if err != nil {
-		return pginternal.QueryError("invalidate terminal operations", err)
-	}
-	return nil
-}
-
-func (tx *DAO) ExpireTerminalOperations(ctx context.Context, id string, now time.Time) error {
-	_, err := tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=jsonb_build_object('operationId',operation_id::text,'state',CASE WHEN receipt->>'state'='queued' THEN 'rejected' ELSE 'unknown' END,'errorCode',CASE WHEN receipt->>'state'='queued' THEN 'input_busy' ELSE 'input_unknown' END) WHERE session_id=$1 AND deadline<=$2 AND receipt->>'state' IN ('queued','dispatching')`, id, now)
-	if err != nil {
-		return pginternal.QueryError("expire terminal operations", err)
-	}
-	return nil
-}
-
 func (tx *DAO) InsertBotSession(ctx context.Context, r store.SessionRegistration) (bool, error) {
 	raw, err := json.Marshal(r.Snapshot)
 	if err != nil {

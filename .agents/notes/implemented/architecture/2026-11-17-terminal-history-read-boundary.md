@@ -16,8 +16,9 @@ identities outlive the admission rules for new claims.
 Session history and terminal archive reads decode the persisted envelope, owner,
 runs, recording evidence and finalization identity needed for archive validation.
 They retain the existing permission scope, archive reservation, receipt and
-content integrity checks. Live operations retain their existing full record and
-admission. The persisted JSON and uploaded bytes do not require migration.
+content integrity checks. The persisted JSON and uploaded bytes do not require
+migration. The later [registry removal](../simplification/2026-11-18-remove-terminal-registry.md)
+removes the live record and admission path.
 
 Worker property persistence recognizes historical Herdr documents and Web
 records with either a null or absent Herdr field independently of new-claim

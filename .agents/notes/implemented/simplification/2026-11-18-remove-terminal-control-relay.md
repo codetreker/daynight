@@ -12,9 +12,9 @@ obscures the remaining historical and native Session responsibilities.
 
 The server removes terminal command submission, operation lookup, polling,
 Worker control messages and disconnect handling, together with the transient
-command body cache. Registry retains operation invalidation and snapshot cleanup; project retirement
-retains cleanup of resident snapshots. Historical archive reads and native Controller relay are
-independent of the removed control path.
+command body cache. Historical archive reads and native Controller relay are
+independent of the removed control path. The later [registry removal](2026-11-18-remove-terminal-registry.md)
+removes the remaining live state and its project-retirement handling.
 
 This follows the [Worker entry removal](2026-11-18-remove-worker-terminal-entries.md)
 and narrows the terminal part of the [Session engine boundary](../architecture/2026-11-05-server-session-boundaries.md).
@@ -30,6 +30,5 @@ would combine separate responsibilities and break their callers.
 ## Consequences
 
 No transient terminal command bodies or control operations can be submitted by
-the server. Existing shared state and durable ledger handling remain until their
-remaining callers are removed. Uploaded archive reading and Web/Controller
+the server. Uploaded archive reading and Web/Controller
 Sessions retain their existing access and lifetime rules.

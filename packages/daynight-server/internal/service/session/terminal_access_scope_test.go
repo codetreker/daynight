@@ -68,63 +68,52 @@ type terminalAccessScope struct {
 func (s terminalAccessScope) SessionDAO() store.SessionDAO { return s.dao }
 func (s terminalAccessScope) BotDAO() store.BotWriteDAO    { return nil }
 
-func TestTerminalScopesStopBeforeWorkOnFailure(t *testing.T) {
-	for _, kind := range []string{"registry", "history"} {
-		for _, failure := range []string{"", "task", "credential", "project", "load", "bind", "work"} {
-			t.Run(kind+"/"+failure, func(t *testing.T) {
-				ctx := t.Context()
-				actor := model.Principal{Kind: model.PATCredential, UserID: "reader", CredentialID: "credential"}
-				cause := errors.New("scope operation failed")
-				dao := &terminalAccessDAO{t: t, ctx: ctx, actor: actor, failure: failure, cause: cause}
-				scope := terminalAccessScope{dao: dao}
-				writer := archiveCompletionOrderWriter(func(actual context.Context, run func(store.SessionScope) error) (store.Completion, error) {
-					if actual != ctx {
-						t.Fatal("writer context changed")
-					}
-					if err := run(scope); err != nil {
-						return store.Completion{Outcome: store.TransactionNotCommitted}, err
-					}
-					return store.Completion{Outcome: store.TransactionCommitted}, nil
-				})
-				engine := core.NewEngine(nil)
-				t.Cleanup(func() { stopHistoryEngine(t, engine) })
-				s := New(writer, engine)
-				var err error
-				if kind == "registry" {
-					err = s.terminal(ctx, actor, "project", "task", "session", true, func(access *core.TerminalAccess) error {
-						if access == nil {
-							t.Fatal("missing transaction-bound access")
-						}
-						return dao.step("work")
-					})
-				} else {
-					err = s.terminalHistory(ctx, actor, "project", "task", "session", true, func(access *core.TerminalHistoryAccess) error {
-						if access == nil {
-							t.Fatal("missing transaction-bound access")
-						}
-						return dao.step("work")
-					})
+func TestTerminalHistoryScopeStopsBeforeWorkOnFailure(t *testing.T) {
+	for _, failure := range []string{"", "task", "credential", "project", "load", "bind", "work"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := t.Context()
+			actor := model.Principal{Kind: model.PATCredential, UserID: "reader", CredentialID: "credential"}
+			cause := errors.New("scope operation failed")
+			dao := &terminalAccessDAO{t: t, ctx: ctx, actor: actor, failure: failure, cause: cause}
+			scope := terminalAccessScope{dao: dao}
+			writer := archiveCompletionOrderWriter(func(actual context.Context, run func(store.SessionScope) error) (store.Completion, error) {
+				if actual != ctx {
+					t.Fatal("writer context changed")
 				}
-				if failure == "bind" {
-					requireServiceError(t, err, "session_conflict")
-				} else if failure == "" && err != nil || failure != "" && !errors.Is(err, cause) {
-					t.Fatalf("unexpected result: %v", err)
+				if err := run(scope); err != nil {
+					return store.Completion{Outcome: store.TransactionNotCommitted}, err
 				}
-				want := []string{"task", "credential", "project", "load", "work"}
-				stop := failure
-				if stop == "bind" {
-					stop = "load"
-				}
-				for i, step := range want {
-					if step == stop {
-						want = want[:i+1]
-						break
-					}
-				}
-				if !reflect.DeepEqual(dao.calls, want) {
-					t.Fatalf("calls %v, want %v", dao.calls, want)
-				}
+				return store.Completion{Outcome: store.TransactionCommitted}, nil
 			})
-		}
+			engine := core.NewEngine(nil)
+			t.Cleanup(func() { stopHistoryEngine(t, engine) })
+			s := New(writer, engine)
+			var err error
+			err = s.terminalHistory(ctx, actor, "project", "task", "session", true, func(access *core.TerminalHistoryAccess) error {
+				if access == nil {
+					t.Fatal("missing transaction-bound access")
+				}
+				return dao.step("work")
+			})
+			if failure == "bind" {
+				requireServiceError(t, err, "session_conflict")
+			} else if failure == "" && err != nil || failure != "" && !errors.Is(err, cause) {
+				t.Fatalf("unexpected result: %v", err)
+			}
+			want := []string{"task", "credential", "project", "load", "work"}
+			stop := failure
+			if stop == "bind" {
+				stop = "load"
+			}
+			for i, step := range want {
+				if step == stop {
+					want = want[:i+1]
+					break
+				}
+			}
+			if !reflect.DeepEqual(dao.calls, want) {
+				t.Fatalf("calls %v, want %v", dao.calls, want)
+			}
+		})
 	}
 }

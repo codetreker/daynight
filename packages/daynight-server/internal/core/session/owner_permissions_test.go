@@ -6,7 +6,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 func TestBrowserBindingUsesRecordedSessionOwner(t *testing.T) {
@@ -22,11 +21,7 @@ func TestBrowserBindingUsesRecordedSessionOwner(t *testing.T) {
 			if err := op.BindTaskBrowser(context.Background(), access, &TaskAccess{task: task}, p, "project", "task"); err != nil {
 				t.Fatal(err)
 			}
-			terminal := &TerminalAccess{record: &terminalRecord{Owner: v2.Owner{OwnerUserID: "owner", ProjectID: "project", TaskID: "task"}}}
-			if err := op.BindTerminal(terminal, &TaskAccess{task: task}, p, "project", "task", false); err != nil {
-				t.Fatal(err)
-			}
-			if access.write != (user == "owner") || terminal.write != (user == "owner") {
+			if access.write != (user == "owner") {
 				t.Fatal("session control authority did not follow its recorded owner")
 			}
 		})
@@ -165,26 +160,5 @@ func TestPersistedNonOwnerNativeOperationsCannotResumeExecution(t *testing.T) {
 				t.Fatal("retained non-owner operation was not rejected or became unreadable", receipt, err)
 			}
 		})
-	}
-}
-
-func TestTerminalBindingRejectsForeignScopeAndDeletedNonOwner(t *testing.T) {
-	op := &Operation{}
-	access := func() *TerminalAccess {
-		return &TerminalAccess{record: &terminalRecord{Owner: v2.Owner{ProjectID: "project", TaskID: "task", OwnerUserID: "owner"}}}
-	}
-	owner := model.Principal{Kind: model.PATCredential, UserID: "owner"}
-	for _, scope := range [][2]string{{"foreign", "task"}, {"project", "foreign"}} {
-		if err := op.BindTerminal(access(), &TaskAccess{}, owner, scope[0], scope[1], false); err == nil {
-			t.Fatal("foreign scope was accepted", scope)
-		}
-	}
-	for _, principal := range []model.Principal{{Kind: model.PATCredential, UserID: "other"}, {Kind: model.SessionCredential, UserID: "owner"}} {
-		if err := op.BindTerminal(access(), &TaskAccess{}, principal, "project", "task", true); err == nil {
-			t.Fatal("deleted Task admitted a non-owner credential", principal)
-		}
-	}
-	if err := op.BindTerminal(access(), &TaskAccess{}, owner, "project", "task", true); err != nil {
-		t.Fatal("original owner rejected", err)
 	}
 }
