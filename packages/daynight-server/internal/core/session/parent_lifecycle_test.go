@@ -14,13 +14,6 @@ func TestDeletedParentRetainsTerminalStopAndFinalization(t *testing.T) {
 	f, m, run, rid := terminalRunFixture(t, true)
 	f.data.TaskDeleted = true
 	ctx := context.Background()
-	if _, err := terminalStateStep(t, f, func() (map[string]any, error) {
-		return withinRecordingPhase(f, ctx, map[string]int{"LockTask": 1}, func(phase context.Context) (map[string]any, error) {
-			return f.s.TerminalState(phase, f.p, f.project, f.task, m.SessionID)
-		})
-	}); err == nil {
-		t.Fatal("hidden task exposed terminal state")
-	}
 	run = stopTerminalRun(t, f, m, run)
 	final := m
 	final.Type = "finalization"

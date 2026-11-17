@@ -12,9 +12,8 @@ obscures the remaining historical and native Session responsibilities.
 
 The server removes terminal command submission, operation lookup, polling,
 Worker control messages and disconnect handling, together with the transient
-command body cache. Registry and history callers retain their existing control
-refresh, suspension and snapshot helpers; project retirement retains cleanup of
-resident snapshots. Historical archive reads and native Controller relay are
+command body cache. Registry retains operation invalidation and snapshot cleanup; project retirement
+retains cleanup of resident snapshots. Historical archive reads and native Controller relay are
 independent of the removed control path.
 
 This follows the [Worker entry removal](2026-11-18-remove-worker-terminal-entries.md)
@@ -25,8 +24,7 @@ and narrows the terminal part of the [Session engine boundary](../architecture/2
 **Retain the unused control implementation.** It would keep an unreachable input
 and relay path after its producers and consumers have left.
 
-**Remove all terminal state together.** Registry, historical state and project
-retirement still call shared helpers; removing those with the control use cases
+**Remove all terminal state together.** Registry and project retirement still call shared helpers; removing those with the control use cases
 would combine separate responsibilities and break their callers.
 
 ## Consequences

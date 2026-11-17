@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strconv"
 	"testing"
@@ -219,5 +220,364 @@ func TestTerminalHistoryRejectsInvalidRecordAndMissingScope(t *testing.T) {
 	s := &Execution{Engine: NewEngine(nil)}
 	if _, err := s.TerminalArchiveStatus(t.Context(), model.Principal{}, "project", "task", "session"); err == nil || err.Error() != "terminal history scope unavailable" {
 		t.Fatalf("missing history scope: %v", err)
+	}
+}
+
+type historicalArchiveState struct {
+	Raw     []byte
+	Status  v2.ArchiveStatus
+	Receipt *v2.Receipt
+	Path    string
+}
+
+type historicalArchiveFixtureData struct {
+	fixture
+	archive *historicalArchiveState
+}
+
+func (f historicalArchiveFixtureData) readContent(ctx context.Context, id string) (*RetainedArchive, error) {
+	phase := f.dao.ContextPhase(ctx, map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2, "LockTask": 1, "LockCredential": 1, "LockTerminal": 1, "TerminalArchive": 1})
+	defer f.dao.FinishContext(phase)
+	return f.s.TerminalArchiveContent(phase, f.p, f.project, f.task, id)
+}
+
+func (f historicalArchiveFixtureData) readStatus(ctx context.Context, id string) (v2.Message, error) {
+	phase := f.dao.ContextPhase(ctx, map[string]int{"LockArchiveTask": 1, "LockCredential": 1, "ProjectAccess": 1, "LockTerminal": 1, "TerminalArchive": 1})
+	defer f.dao.FinishContext(phase)
+	return f.s.TerminalArchiveStatus(phase, f.p, f.project, f.task, id)
+}
+
+// historicalArchiveFixture represents an already persisted archive without a live writer.
+func historicalArchiveFixture(t *testing.T) (historicalArchiveFixtureData, v2.Message, v2.Archive) {
+	t.Helper()
+	f := historicalArchiveFixtureData{fixture: setup(t), archive: &historicalArchiveState{}}
+	owner := v2.Owner{ProjectID: f.project, TaskID: f.task, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, OwnerUserID: f.p.UserID, ServerOrigin: "https://daynight.example", Provider: "codex"}
+	message := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, SessionID: uuid.NewString(), ClaimID: uuid.NewString(), ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}}
+	f.dao.LockTerminalFn = func(_ context.Context, id string) ([]byte, error) {
+		if id != message.SessionID {
+			t.Fatal("wrong Session")
+		}
+		return bytes.Clone(f.archive.Raw), nil
+	}
+	f.dao.TerminalArchiveFn = func(_ context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
+		if id != message.SessionID {
+			t.Fatal("wrong archive")
+		}
+		return f.archive.Status, f.archive.Receipt, f.archive.Path, nil
+	}
+	f.dao.ArchiveMetadataFn = func(_ context.Context, id string) (store.ArchiveMetadata, error) {
+		if id != message.SessionID {
+			t.Fatal("wrong metadata")
+		}
+		return store.ArchiveMetadata{Owner: f.p.UserID, Project: f.project, Task: f.task, Backend: "herdr", TaskExists: true, ProjectLive: true, BotValid: true}, nil
+	}
+	raw, err := os.ReadFile("../../../../daynight/test/session/fixtures/v2/valid-archive.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := v2.DecodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.SessionID, doc.ClaimID, doc.Owner, doc.FinalizationID = message.SessionID, message.ClaimID, owner, uuid.NewString()
+	for i := range doc.Runs {
+		doc.Runs[i].Owner = owner
+	}
+	digest, err := v2.SourceDigest(doc, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := terminalArchiveRecord{Envelope: message.Envelope, Owner: owner, Runs: doc.Runs, FinalizationID: &doc.FinalizationID,
+		Recording: map[string]terminalRecording{"1": {Responsibility: &v2.RecordingResponsibility{RecordingEnabled: true}, Evidence: &v2.RecordingEvidence{Closed: true, SelectedFrameCount: "1", RegisteredFrameCount: "1", SourceSHA256: digest}}}}
+	f.archive.Raw = encode(record)
+	data := encode(doc)
+	hash, size := v2.HashBytes(data), strconv.Itoa(len(data))
+	path, err := archiveObjectPath(f.project, f.p.UserID, message.SessionID, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := files.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := files.Put(t.Context(), archiveBucket, path, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	f.s.files = files
+	f.archive.Path = path
+	f.archive.Receipt = &v2.Receipt{Disposition: "ready"}
+	f.archive.Status = v2.ArchiveStatus{State: "ready", FinalizationID: &doc.FinalizationID, SHA256: &hash, ByteLength: &size, Completeness: &doc.Completeness}
+	return f, message, doc
+}
+
+func TestTerminalArchiveReadValidatesClosedCountsDigestsAndPerRunGaps(t *testing.T) {
+	f, _, doc := historicalArchiveFixture(t)
+	r, err := decodeTerminalArchiveRecord(f.archive.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := r.Recording["1"]
+	for _, change := range []struct {
+		name string
+		edit func(*terminalRecording)
+	}{
+		{"missing closed evidence", func(v *terminalRecording) { v.Evidence = nil }},
+		{"selected content omitted", func(v *terminalRecording) { v.Evidence.SelectedFrameCount = "2" }},
+		{"registered content omitted", func(v *terminalRecording) { v.Evidence.RegisteredFrameCount = "2" }},
+		{"different source digest", func(v *terminalRecording) { v.Evidence.SourceSHA256 = v2.EmptySourceDigest() }},
+		{"error with no same-run gap", func(v *terminalRecording) { code := "recording_limit"; v.Evidence.CaptureError = &code }},
+		{"disabled recording with frames", func(v *terminalRecording) { v.Responsibility.RecordingEnabled = false }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			rec, ev, rp := base, *base.Evidence, *base.Responsibility
+			rec.Evidence, rec.Responsibility = &ev, &rp
+			change.edit(&rec)
+			r.Recording["1"] = rec
+			if err := verifyTerminalArchiveRecord(r, doc); err == nil {
+				t.Fatal("invalid content verified")
+			}
+		})
+	}
+	r.Recording["1"] = base
+	if err := verifyTerminalArchiveRecord(r, doc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminalHistoryNonReadyStatusHasNoContent(t *testing.T) {
+	for _, state := range []string{"pending", "unavailable"} {
+		t.Run(state, func(t *testing.T) {
+			f, message, doc := historicalArchiveFixture(t)
+			f.archive.Status = v2.ArchiveStatus{State: state, FinalizationID: &doc.FinalizationID}
+			if state == "pending" {
+				f.archive.Receipt = nil
+			} else {
+				f.archive.Receipt = &v2.Receipt{Disposition: state}
+			}
+			status, err := f.readStatus(t.Context(), message.SessionID)
+			if err != nil || status.Payload.(v2.ArchiveStatus).State != state {
+				t.Fatalf("status=%+v err=%v", status, err)
+			}
+			content, err := f.readContent(t.Context(), message.SessionID)
+			var fault *model.Fault
+			if content != nil || !errors.As(err, &fault) || fault.Code != "archive_pending" {
+				t.Fatalf("content=%v err=%v", content, err)
+			}
+		})
+	}
+}
+
+func withinHistoryPhase[T any](f fixture, ctx context.Context, calls map[string]int, run func(context.Context) (T, error)) (T, error) {
+	phase := f.dao.ContextPhase(ctx, calls)
+	defer f.dao.FinishContext(phase)
+	return run(phase)
+}
+
+func TestTerminalHistoryPaginationFindsOldClaimsAndHonorsDeletion(t *testing.T) {
+	f, m, _ := historicalArchiveFixture(t)
+	ctx := context.Background()
+	var err error
+	ids := []string{uuid.NewString(), uuid.NewString(), m.SessionID}
+	oldRecord, err := decodeTerminalArchiveRecord(f.archive.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRecord.Envelope.SessionID = ids[0]
+	oldRecord.Envelope.ClaimID = uuid.NewString()
+	oldRaw := encode(oldRecord)
+	middleRecord := *oldRecord
+	middleRecord.Envelope.SessionID = ids[1]
+	middleRecord.Envelope.ClaimID = uuid.NewString()
+	middleRaw := encode(middleRecord)
+	priorRead := f.dao.LockTerminalFn
+	f.dao.LockTerminalFn = func(ctx context.Context, id string) ([]byte, error) {
+		if id == ids[0] {
+			return oldRaw, nil
+		}
+		return priorRead(ctx, id)
+	}
+	created := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	rows := []store.TerminalHistoryRow{
+		{ID: ids[2], Claim: m.ClaimID, Backend: "herdr", Created: created, Terminal: append([]byte(nil), f.archive.Raw...)},
+		{ID: ids[1], Claim: middleRecord.Envelope.ClaimID, Backend: "herdr", Created: created.Add(-time.Second), Terminal: middleRaw},
+		{ID: ids[0], Claim: oldRecord.Envelope.ClaimID, Backend: "herdr", Created: created.Add(-2 * time.Second), Terminal: oldRaw},
+	}
+	f.dao.TerminalHistoryFn = func(_ context.Context, project, taskID string, before *time.Time, beforeID *string, limit int) ([]store.TerminalHistoryRow, error) {
+		if project != f.project || taskID != f.task || limit != 3 {
+			t.Fatal("history changed its DAO scope or lookahead limit")
+		}
+		if before == nil && beforeID == nil {
+			return rows, nil
+		}
+		if before == nil || beforeID == nil || !before.Equal(rows[1].Created) || *beforeID != rows[1].ID {
+			t.Fatal("history cursor did not preserve the last returned row")
+		}
+		return rows[2:], nil
+	}
+	f.dao.Expect("TerminalHistory", 2)
+	priorArchive := f.dao.TerminalArchiveFn
+	f.dao.TerminalArchiveFn = func(ctx context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
+		if id == ids[0] {
+			return v2.ArchiveStatus{State: "pending"}, nil, "", nil
+		}
+		return priorArchive(ctx, id)
+	}
+	page, err := withinHistoryPhase(f.fixture, ctx, map[string]int{"LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "TerminalHistory": 1}, func(phase context.Context) (map[string]any, error) {
+		return f.s.TerminalHistory(phase, f.p, f.project, f.task, "", 2)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := page["items"].([]map[string]any)
+	token := page["nextCursor"].(*string)
+	if len(items) != 2 || token == nil || items[0]["sessionId"] != ids[2] || items[1]["sessionId"] != ids[1] {
+		t.Fatal(page)
+	}
+	next, err := withinHistoryPhase(f.fixture, ctx, map[string]int{"LockTask": 1, "LockCredential": 1, "ProjectAccess": 1, "TerminalHistory": 1}, func(phase context.Context) (map[string]any, error) {
+		return f.s.TerminalHistory(phase, f.p, f.project, f.task, *token, 2)
+	})
+	if err != nil || len(next["items"].([]map[string]any)) != 1 || next["nextCursor"].(*string) != nil || next["items"].([]map[string]any)[0]["sessionId"] != ids[0] {
+		t.Fatal(next, err)
+	}
+	if _, err = withinHistoryPhase(f.fixture, ctx, map[string]int{}, func(phase context.Context) (map[string]any, error) {
+		return f.s.TerminalHistory(phase, f.p, f.project, uuid.NewString(), *token, 2)
+	}); err == nil {
+		t.Fatal("foreign task cursor")
+	}
+	if _, err = withinHistoryPhase(f.fixture, ctx, map[string]int{}, func(phase context.Context) (map[string]any, error) {
+		return f.s.TerminalHistory(phase, f.p, f.project, f.task, "not base64", 2)
+	}); err == nil {
+		t.Fatal("malformed cursor")
+	}
+	if _, err = withinHistoryPhase(f.fixture, ctx, map[string]int{}, func(phase context.Context) (map[string]any, error) {
+		return f.s.TerminalHistory(phase, f.p, f.project, f.task, "", 201)
+	}); err == nil {
+		t.Fatal("unbounded history")
+	}
+	f.data.Task.Status = "done"
+	f.data.TaskDeleted = true
+	if _, err = withinHistoryPhase(f.fixture, ctx, map[string]int{"LockTask": 1}, func(phase context.Context) (map[string]any, error) {
+		return f.s.TerminalHistory(phase, f.p, f.project, f.task, "", 2)
+	}); err == nil {
+		t.Fatal("deleted history visible")
+	}
+	if _, err = withinHistoryPhase(f.fixture, ctx, map[string]int{"LockArchiveTask": 1, "LockCredential": 1, "ProjectAccess": 1, "LockTerminal": 1, "TerminalArchive": 1}, func(phase context.Context) (v2.Message, error) {
+		return f.s.TerminalArchiveStatus(phase, f.p, f.project, f.task, ids[0])
+	}); err != nil {
+		t.Fatal("original owner cannot read deleted task archive status", err)
+	}
+}
+
+func TestTerminalHistoryPreservesWebAndHerdrContentAcrossClaims(t *testing.T) {
+	f, terminal, _ := historicalArchiveFixture(t)
+	ctx := context.Background()
+	webID, webClaim := uuid.NewString(), uuid.NewString()
+	webGeneration := "1"
+	rows := []store.TerminalHistoryRow{
+		{ID: terminal.SessionID, Claim: terminal.ClaimID, Backend: "herdr", Created: time.Date(2026, 11, 1, 11, 0, 0, 0, time.UTC), Terminal: append([]byte(nil), f.archive.Raw...)},
+		{ID: webID, Claim: webClaim, Backend: "web", Created: time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC), Snapshot: []byte(`{"executionGeneration":"1"}`)},
+	}
+	f.dao.TerminalHistoryFn = func(_ context.Context, project, taskID string, before *time.Time, beforeID *string, limit int) ([]store.TerminalHistoryRow, error) {
+		if project != f.project || taskID != f.task || before != nil || beforeID != nil || limit != 21 {
+			t.Fatal("mixed history changed its DAO query")
+		}
+		return rows, nil
+	}
+	f.dao.Expect("TerminalHistory", 2)
+	historyPhase := f.TaskPhase(ctx, map[string]int{"TerminalHistory": 1})
+	page, err := f.s.TerminalHistory(historyPhase, f.p, f.project, f.task, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.dao.FinishContext(historyPhase)
+	items := page["items"].([]map[string]any)
+	if len(items) != 2 {
+		t.Fatalf("mixed Session history lost an earlier backend: %#v", items)
+	}
+	byID := map[string]map[string]any{}
+	for _, item := range items {
+		byID[item["sessionId"].(string)] = item
+	}
+	native := byID[webID]
+	if native["claimId"] != webClaim || native["executionGeneration"] != webGeneration || native["agentControlMode"] != "web" || native["contentKind"] != "native_timeline" || native["archive"].(map[string]any)["state"] != "unavailable" {
+		t.Fatalf("web history was relabeled or rebound: %#v", native)
+	}
+	herdr := byID[terminal.SessionID]
+	if herdr["claimId"] != terminal.ClaimID || herdr["executionGeneration"] != "1" || herdr["agentControlMode"] != "herdr" || herdr["contentKind"] != "terminal_recording" || herdr["archive"].(map[string]any)["state"] != "pending" {
+		t.Fatalf("terminal history lost its native content type: %#v", herdr)
+	}
+	rows[1].Snapshot = []byte(`[]`)
+	corruptPhase := f.TaskPhase(ctx, map[string]int{"TerminalHistory": 1})
+	if _, err = f.s.TerminalHistory(corruptPhase, f.p, f.project, f.task, "", 20); err == nil {
+		t.Fatal("corrupt web history was silently omitted from the mixed result")
+	}
+	f.dao.FinishContext(corruptPhase)
+}
+
+type failedHistoryObject struct {
+	filestorage.Storage
+	failure  error
+	failOpen bool
+	closed   *bool
+}
+
+func (s failedHistoryObject) Open(ctx context.Context, bucket, path string) (filestorage.Object, error) {
+	if s.failOpen {
+		return filestorage.Object{}, s.failure
+	}
+	obj, err := s.Storage.Open(ctx, bucket, path)
+	if err != nil {
+		return obj, err
+	}
+	obj.Body = &failedHistoryBody{ReadCloser: obj.Body, failure: s.failure, closed: s.closed}
+	return obj, nil
+}
+
+type failedHistoryBody struct {
+	io.ReadCloser
+	failure error
+	closed  *bool
+}
+
+func (r *failedHistoryBody) Read([]byte) (int, error) { return 0, r.failure }
+func (r *failedHistoryBody) Close() error             { *r.closed = true; return r.ReadCloser.Close() }
+
+func TestTerminalHistoryMissingStatusAndStorageFailures(t *testing.T) {
+	t.Run("missing archive status", func(t *testing.T) {
+		f, message, doc := historicalArchiveFixture(t)
+		f.dao.TerminalArchiveFn = func(_ context.Context, id string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
+			if id != message.SessionID {
+				t.Fatal("wrong archive")
+			}
+			return v2.ArchiveStatus{}, nil, "", model.ErrNotFound
+		}
+		status, err := f.readStatus(t.Context(), message.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := status.Payload.(v2.ArchiveStatus)
+		if payload.State != "pending" || payload.FinalizationID == nil || *payload.FinalizationID != doc.FinalizationID {
+			t.Fatalf("missing archive status: %+v", payload)
+		}
+	})
+	for _, failOpen := range []bool{true, false} {
+		t.Run(map[bool]string{true: "open", false: "read"}[failOpen], func(t *testing.T) {
+			f, message, _ := historicalArchiveFixture(t)
+			failure := errors.New("historical storage failure")
+			closed := false
+			f.s.files = failedHistoryObject{Storage: f.s.files, failure: failure, failOpen: failOpen, closed: &closed}
+			content, err := f.readContent(t.Context(), message.SessionID)
+			if content != nil || !errors.Is(err, failure) {
+				t.Fatalf("content=%v err=%v", content, err)
+			}
+			if !failOpen && !closed {
+				t.Fatal("failed object read did not close the body")
+			}
+		})
 	}
 }

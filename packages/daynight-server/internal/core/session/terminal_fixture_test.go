@@ -86,20 +86,9 @@ func (f fixture) TerminalRegistrationPhase(ctx context.Context, work map[string]
 	return f.dao.ContextPhase(ctx, mergeFixtureCounts(counts, work))
 }
 
-func (f fixture) TerminalUploadPhase(ctx context.Context, work map[string]int) context.Context {
-	counts := map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2, "LockArchiveTask": 1, "LockCredential": 1, "LockTerminal": 1, "TerminalArchive": 1, "SaveTerminalReceipt": 1}
-	return f.dao.ContextPhase(ctx, mergeFixtureCounts(counts, work))
-}
-
 func (f fixture) TerminalReadPhase(ctx context.Context, work map[string]int) context.Context {
 	counts := map[string]int{"ReadCredential": 1, "ArchiveMetadata": 1, "ProjectAccess": 2, "LockTask": 1, "LockCredential": 1, "LockTerminal": 1, "TerminalArchive": 1}
 	return f.dao.ContextPhase(ctx, mergeFixtureCounts(counts, work))
-}
-
-func fixtureTerminalUpload(f fixture, ctx context.Context, p model.Principal, project, taskID, id string, data []byte, work map[string]int) (v2.Message, error) {
-	phase := f.TerminalUploadPhase(ctx, work)
-	defer f.dao.FinishContext(phase)
-	return f.s.PutTerminalArchive(phase, p, project, taskID, id, data)
 }
 
 func fixtureTerminalContent(f fixture, execution *Execution, ctx context.Context, p model.Principal, project, taskID, id string, work map[string]int) (*RetainedArchive, error) {
@@ -118,12 +107,6 @@ func fixtureTerminalStatus(f fixture, execution *Execution, ctx context.Context,
 	phase := f.TerminalPhase(ctx, true, mergeFixtureCounts(map[string]int{"TerminalArchive": 1}, work))
 	defer f.dao.FinishContext(phase)
 	return execution.TerminalArchiveStatus(phase, p, project, taskID, id)
-}
-
-func fixtureTerminalReceipt(f fixture, execution *Execution, ctx context.Context, p model.Principal, project, taskID, id string, work map[string]int) (v2.Message, error) {
-	phase := f.TerminalPhase(ctx, true, mergeFixtureCounts(map[string]int{"TerminalArchive": 1}, work))
-	defer f.dao.FinishContext(phase)
-	return execution.TerminalReceipt(phase, p, project, taskID, id)
 }
 
 func configureTerminalFixture(t *testing.T, f *fixture, m v2.Message) {

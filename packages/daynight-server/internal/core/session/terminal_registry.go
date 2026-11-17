@@ -62,10 +62,6 @@ func terminalActive(t task, r *terminalRecord) bool {
 	w := t.Worker
 	return !t.Deleted && t.Type != model.TaskTypeGoal && r.FinalizationID == nil && t.Status == "in_progress" && w != nil && w.State == model.WorkerActive && w.ClaimID == r.Envelope.ClaimID && w.UserID == r.Owner.OwnerUserID && w.WorkerID == r.Owner.WorkerID && w.WorktreeID == r.Owner.WorktreeID && w.AgentControlMode == model.AgentControlModeHerdr && string(w.Agent) == r.Owner.Provider
 }
-func terminalRecordingReady(r *terminalRecord) bool {
-	rec := r.Recording[r.Envelope.ExecutionGeneration]
-	return rec.Responsibility != nil && rec.Responsibility.RecordingEnabled && (rec.Evidence == nil || !rec.Evidence.Closed && rec.Evidence.CaptureError == nil) && len(r.Runs) > 0 && r.Runs[len(r.Runs)-1].StoppedAt == nil
-}
 func loadTerminal(ctx context.Context, tx *operationTx, id string) (*terminalRecord, error) {
 	raw, err := tx.dao.LockTerminal(ctx, id)
 	if err != nil {

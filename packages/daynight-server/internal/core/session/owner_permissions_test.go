@@ -168,20 +168,23 @@ func TestPersistedNonOwnerNativeOperationsCannotResumeExecution(t *testing.T) {
 	}
 }
 
-func TestTerminalSessionOwnerPermissionsPreserveReadersAndMemberOwner(t *testing.T) {
-	f := terminalControlSetup(t)
-	ctx := context.Background()
-	for _, reader := range sessionReaders(t, f.fixture) {
-		for _, current := range []bool{false, true} {
-			view, err := permissionTerminalRead(f.fixture, ctx, reader, f.message.SessionID, current, false)
-			if err != nil || view["connected"] != true || len(view["control"].(*v2.ControlState).AvailableActions) != 0 {
-				t.Fatal("non-owner lacked terminal read access or retained control actions", view, err)
-			}
+func TestTerminalBindingRejectsForeignScopeAndDeletedNonOwner(t *testing.T) {
+	op := &Operation{}
+	access := func() *TerminalAccess {
+		return &TerminalAccess{record: &terminalRecord{Owner: v2.Owner{ProjectID: "project", TaskID: "task", OwnerUserID: "owner"}}}
+	}
+	owner := model.Principal{Kind: model.PATCredential, UserID: "owner"}
+	for _, scope := range [][2]string{{"foreign", "task"}, {"project", "foreign"}} {
+		if err := op.BindTerminal(access(), &TaskAccess{}, owner, scope[0], scope[1], false); err == nil {
+			t.Fatal("foreign scope was accepted", scope)
 		}
 	}
-	fixtureMemberOwner(t, f.fixture)
-	view, err := permissionTerminalRead(f.fixture, ctx, f.p, f.message.SessionID, false, false)
-	if err != nil || len(view["control"].(*v2.ControlState).AvailableActions) == 0 {
-		t.Fatal("owner role demotion lost terminal read actions", view, err)
+	for _, principal := range []model.Principal{{Kind: model.PATCredential, UserID: "other"}, {Kind: model.SessionCredential, UserID: "owner"}} {
+		if err := op.BindTerminal(access(), &TaskAccess{}, principal, "project", "task", true); err == nil {
+			t.Fatal("deleted Task admitted a non-owner credential", principal)
+		}
+	}
+	if err := op.BindTerminal(access(), &TaskAccess{}, owner, "project", "task", true); err != nil {
+		t.Fatal("original owner rejected", err)
 	}
 }

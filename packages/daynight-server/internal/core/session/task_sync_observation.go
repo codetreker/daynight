@@ -154,8 +154,8 @@ func syncReadableSource(source store.TaskSessionSource, live *taskSessionLiveSta
 	if source.Session == nil || !validObservationIdentity(source) || !currentObservationBinding(source) || source.Worker == nil || source.Worker.State != model.WorkerActive {
 		return false
 	}
-	// CurrentTerminal reads the registered terminal record for this claim even
-	// when its connection is down; it does not use native chat history admission.
+	// A registered historical terminal remains identifiable when its connection
+	// is down; native chat history uses separate admission rules.
 	if source.Session.Backend == "herdr" {
 		return true
 	}
