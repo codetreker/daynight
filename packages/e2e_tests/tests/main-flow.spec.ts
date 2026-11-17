@@ -6,6 +6,7 @@ import { startCommand } from "../src/command.ts";
 import { verifyCompletionFlow } from "./completion-flow.ts";
 import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
+import { verifyWorkerPatrol } from "./worker-patrol.ts";
 import { verifyPreviewFlow } from "./preview-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
@@ -200,6 +201,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
 
   await verifyCompletionFlow(page, projectId!, task.id);
   await verifyControllerImages(page);
+  await verifyWorkerPatrol();
   await verifyTagFlow(page, projectId!, serverToken);
 
   // These API registrations exercise the assembled service without starting a

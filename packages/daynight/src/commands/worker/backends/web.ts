@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { controllerExecutionDirectory, readLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { matchesLaunchConfiguration, readLaunchToolSelection } from "../../controller/launch-tool-selection.js";
 import { ToolSelectionError } from "../../../platform/tool-executables.js";
-import { ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
+import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerBootstrapReplacedError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../controller/launch-observation.js";
@@ -32,6 +32,7 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { prepareControllerLaunchStorage } from "./controller-process.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+import { createWebInput, type WebAutomaticInputWait } from "./web-input.js";
 export type WebBackendOptions = {
   jobLeases?: ControllerJobLeases;
   homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: Pick<ReturnType<typeof createWebControllerLauncher>, "prepare" | "launch" | "refreshGrant"> & Partial<Pick<ReturnType<typeof createWebControllerLauncher>, "setGrantObserver">>;
@@ -48,8 +49,9 @@ export class WebRecoveryBlockedError extends Error {
   constructor(readonly reasonCode: NonNullable<RecoveryState["reasonCode"]>, message: string, options?: ErrorOptions) { super(message, options); }
 }
 export type WebCleanupOutcome = { task: LocalTask; complete: boolean };
-export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending";
-export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
+export type WebInputAuthority = (task: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal) => Promise<"task_paused" | "claim_invalid" | null>;
+export type WebInputWaitingReason = WebAutomaticInputWait | "storage_maintenance" | "configuration_pending";
+export type WebAdvanceResult = { kind: "observed" | "upgrade"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
 class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const jobLeases = options.jobLeases ?? createControllerJobLeases();
@@ -189,10 +191,20 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const request = options.request ?? requestController;
   const observeExecutionStop = createWebStopObserver(options);
   const waiting = new Map<string, WebInputWaitingReason>();
+  const upgrades = new Set<string>();
   const rejected = new Map<string, string>();
   const signature = (task: LocalTask, tuple: WorkerPromptTuple): string => JSON.stringify([tuple.user.revision, tuple.project.revision, tuple.worker.revision, task.configuration]);
   const current = (task: LocalTask): LocalTask => { const latest = options.store.getTask(task); if (latest === null || taskAgentControlMode(latest) !== "web") throw new Error("The frozen Web execution disappeared."); return latest; };
   const journal = (task: LocalTask): string => path.join(controllerExecutionDirectory(options.homeDirectory, task.webExecution!.executionId), "journal.sqlite");
+  const autoInput = createWebInput({
+    current, buildPrompt: task => options.buildPrompt(task, options.platform), request,
+    currentSnapshot: (task, ticket) => readCurrentControllerSnapshot(journal(task), ticket),
+    ...(options.promptSource === undefined ? {} : { promptSource: options.promptSource }),
+    ...(options.preparePromptSource === undefined ? {} : { preparePromptSource: options.preparePromptSource }),
+    readOperation: (task, operationId) => readControllerOperation(journal(task), operationId), now: options.now,
+    report: (task, error) => options.emit({ kind: "web-input-error", task, message: error.message, error }),
+    event: (task, event) => options.emit({ kind: "web-input", task, message: JSON.stringify(event) }),
+  });
   const recoverySelection = async (task: LocalTask, ticket: ControllerLaunchTicket) => {
     if (task.configuration!.agent === "claude") return undefined;
     const selected = task.configuration!.toolLaunch ?? await readLaunchToolSelection(options.homeDirectory, ticket);
@@ -205,6 +217,17 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (snapshot.startup !== undefined) options.store.observeStartup(task, parseStartupObservation(snapshot.startup), options.now());
     task = options.store.updateWebExecution(task, { ...(authenticated ? { launchSubmission: "acknowledged" as const } : {}), initialInputState: snapshot.initialInputState, activity: snapshot.activity, controllerProcess: snapshot.controllerProcess ?? task.webExecution!.controllerProcess, nativeProcesses: snapshot.nativeProcesses }, options.now());
     if (snapshot.nativeSessionId !== null) task = options.store.bindNativeSession(task, { source: "controller", sessionId: snapshot.nativeSessionId }, options.now());
+    return task;
+  };
+  const protocol = (response: Awaited<ReturnType<typeof request>>): 1 | undefined => {
+    if (Object.hasOwn(response, "workerInputProtocol") && response.workerInputProtocol !== 1) throw new ControllerIpcIdentityConflictError("Controller Worker input protocol is unsupported.");
+    return response.workerInputProtocol;
+  };
+  const applyInput = async (task: LocalTask, ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot, capability: 1 | undefined, signal: AbortSignal, authority?: WebInputAuthority): Promise<LocalTask> => {
+    const outcome = await autoInput.step({ task, ticket, snapshot, protocol: capability, signal, legacyAuthority: authority ?? (async () => "claim_invalid") });
+    task = remember(task, outcome.snapshot);
+    if (outcome.kind === "waiting") waiting.set(task.claimId, outcome.reason);
+    else if (outcome.kind === "upgrade") upgrades.add(task.claimId);
     return task;
   };
   const removeEndpoint = async (endpoint: string): Promise<void> => {
@@ -299,9 +322,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       throw failure;
     }
   };
-  const resumeOrchestration = async (input: LocalTask, blocker: OrchestrationBlocker, signal: AbortSignal): Promise<{ task: LocalTask; live: boolean }> => {
-    let task = current(input);
-    const legacyReport = blocker.source === "legacy_worktree" ? input.webExecution?.startupReport : undefined;
+  const resumeOrchestration = async (original: LocalTask, blocker: OrchestrationBlocker, signal: AbortSignal, authority?: WebInputAuthority): Promise<{ task: LocalTask; live: boolean }> => {
+    let task = current(original);
+    const legacyReport = blocker.source === "legacy_worktree" ? original.webExecution?.startupReport : undefined;
     const correctLegacyLatch = blocker.source === "legacy_worktree" && !task.recovery.retryAuthorized;
     if (!sameOrchestrationIdentity(task, blocker)) throw new Error("The orchestration block belongs to another original execution.");
     task = await verifyWorktree(task, signal);
@@ -324,9 +347,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       || saved.controllerProcess === null || execution.controllerProcess === null || !preservesControllerProcessProof(execution.controllerProcess, saved.controllerProcess, ticket.launchId)
       || !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("Orchestration verification requires original generation and process evidence.");
     let observed: ControllerSnapshot | null = null;
+    let capability: 1 | undefined;
     phase(task, { kind: "execution", phase: "agent-observation" });
-    try { observed = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot; }
-    catch (error) { signal.throwIfAborted(); if (correctLegacyLatch) throw error; }
+    try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 }); capability = protocol(response); observed = response.snapshot; }
+    catch (error) { signal.throwIfAborted(); if (correctLegacyLatch || error instanceof ControllerIpcIdentityConflictError) throw error; }
     if (observed !== null && !matchesGeneration(task, observed)) throw new Error("Orchestration verification found a conflicting controller generation.");
     const initialContinuation = blocker.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
     const liveObservation = observed !== null && (healthyOriginalGeneration(task, observed) || initialContinuation);
@@ -363,20 +387,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     task = remember(task, observed);
     if (task.recovery.retryAuthorized) task = options.store.completeRecoveryRetry(task, observed, options.now());
     if (observed.lifecycle === "ready" || observed.lifecycle === "working") success(task, { kind: "execution", phase: "agent-observation" });
-    if (initialContinuation && observed.initialInputState === "not_submitted") {
-      await refreshGrant(task, ticket, signal);
-      phase(task, { kind: "execution", phase: "input-submission" });
-      const response = await request(ticket, { kind: "submit_initial", operationId: execution.initialOperationId }, { signal, timeoutMs: 70000 });
-      task = remember(task, response.snapshot);
-      if (response.snapshot.initialInputState === "confirmed") { success(task, { kind: "execution", phase: "input-submission" }); phase(task, { kind: "execution", phase: "input-submission" }, true); }
-    }
+    await refreshGrant(task, ticket, signal);
+    task = await applyInput(task, ticket, observed, capability, signal, authority);
     return { task, live: true };
   };
   const backend = {
     observeStartupReport,
-    advance: async (input: LocalTask, signal: AbortSignal, admission?: () => boolean): Promise<LocalTask> => {
-      let task = current(input);
+    advance: async (original: LocalTask, signal: AbortSignal, admission?: () => boolean, authority?: WebInputAuthority): Promise<LocalTask> => {
+      let task = current(original);
       waiting.delete(task.claimId);
+      upgrades.delete(task.claimId);
       const canAdmitNewExecution = () => {
         const latest = current(task), execution = latest.webExecution;
         if (execution !== null && (execution.executionGeneration !== "1" || execution.launchSubmission !== "not-submitted"
@@ -390,12 +410,12 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         await verifyLegacyBranchProvenance(options.homeDirectory, task, signal);
         success(task, { kind: "execution", phase: "preparing" }, "web-legacy-provenance");
         const blocker = options.store.blockOrchestration(task, { source: "legacy_worktree", code: "branch_mismatch", message: task.recovery.pauseReason! }, options.now());
-        return (await resumeOrchestration(task, blocker, signal)).task;
+        return (await resumeOrchestration(task, blocker, signal, authority)).task;
       }
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) return task;
       const blocker = options.store.getOrchestrationBlocker(task);
       if (blocker !== null) {
-        const result = await resumeOrchestration(task, blocker, signal);
+        const result = await resumeOrchestration(task, blocker, signal, authority);
         task = result.task;
         if (result.live) return task;
       }
@@ -504,8 +524,10 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         task = current(task);
         if (wasUnsubmitted && task.webExecution?.launchSubmission !== "not-submitted") { success(task, { kind: "execution", phase: "agent-start" }); phase(task, { kind: "execution", phase: "agent-start" }, true); }
         let snapshot: ControllerSnapshot;
+        let capability: 1 | undefined;
+        let capabilityObserved = false;
         phase(task, { kind: "execution", phase: "agent-observation" });
-        try { snapshot = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot; }
+        try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 }); capability = protocol(response); capabilityObserved = true; snapshot = response.snapshot; }
         catch (error) {
           signal.throwIfAborted();
           if (!(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
@@ -539,7 +561,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           await options.launcher.launch(current(task), ticket, signal);
           success(task, { kind: "execution", phase: "agent-start" });
           phase(task, { kind: "execution", phase: "agent-observation" });
-          snapshot = (await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 })).snapshot;
+          const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 });
+          capability = protocol(response); capabilityObserved = true; snapshot = response.snapshot;
           }
         }
         const observedProof = current(task).webExecution!.controllerProcess;
@@ -563,12 +586,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         await refreshGrant(task, ticket, signal);
         if (snapshot.lifecycle === "starting") return options.store.updateWebExecution(task, { activity: "initializing" }, options.now());
-        if (snapshot.initialInputState === "not_submitted") {
-          phase(task, { kind: "execution", phase: "input-submission" });
-          const response = await request(ticket, { kind: "submit_initial", operationId: task.webExecution!.initialOperationId }, { signal, timeoutMs: 70000 });
-          task = remember(task, response.snapshot);
-          if (response.snapshot.initialInputState === "confirmed") { success(task, { kind: "execution", phase: "input-submission" }); phase(task, { kind: "execution", phase: "input-submission" }, true); }
-        }
+        if (capabilityObserved) task = await applyInput(task, ticket, snapshot, capability, signal, authority);
+        else waiting.set(task.claimId, "native_input");
         options.emit({ kind: "web-observed", task, message: `Original ${ticket.provider} controller generation ${ticket.executionGeneration} is bound to session ${ticket.sessionId}.` });
         return current(task);
       } catch (error) {
@@ -776,7 +795,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         signal.throwIfAborted();
         if (!launched) { await notifyStopped(); success(task, { kind: "cleanup", phase: "agent-stop" }); }
-        if (kind === "shutdown" || task.status === "done") return { task, complete: true };
+        if (kind === "shutdown" || task.status === "done") { if (kind === "terminal") autoInput.forget(task); return { task, complete: true }; }
         const fileSignal = cleanupRequest.signal ?? new AbortController().signal;
         fileSignal.throwIfAborted();
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
@@ -826,6 +845,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         phase(task, { kind: "cleanup", phase: "worktree-removal" }, true);
         fileSignal.throwIfAborted();
         waiting.delete(task.claimId); rejected.delete(task.claimId);
+        autoInput.forget(task);
         return { task, complete: true };
       } catch (error) {
         const failures: unknown[] = stopRequestFailure !== undefined && error !== stopRequestFailure.cause ? [stopRequestFailure.cause, error] : [error];
@@ -876,6 +896,21 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   return {
     ...backend,
     observeExecutionStop,
+    closeInput: autoInput.close,
+    confirmUpgrade: async (original: LocalTask, authority: WebInputAuthority, signal: AbortSignal): Promise<WebAdvanceResult> => {
+      let task = current(original);
+      const execution = task.webExecution;
+      if (execution === null || execution.ticketPath === null || execution.controllerProcess === null || task.cleanup !== null || task.control !== null) throw new Error("Legacy adoption requires the original running Controller evidence.");
+      const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+      const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 2000 });
+      if (protocol(response) === 1) return { kind: "waiting_input", reason: "native_input", task };
+      const snapshot = response.snapshot;
+      if (!matchesGeneration(task, snapshot) || !preservesControllerProcessProof(execution.controllerProcess, snapshot.controllerProcess, execution.launchId)
+        || !preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses)) throw new Error("Legacy adoption observation conflicts with the original execution.");
+      task = remember(task, snapshot);
+      const outcome = await autoInput.confirmUpgrade({ task, ticket, snapshot, signal, legacyAuthority: authority });
+      return outcome.kind === "upgrade" ? { kind: "upgrade", task } : { kind: "waiting_input", reason: outcome.kind === "waiting" ? outcome.reason : "native_input", task };
+    },
     probeArchive: async (input: LocalTask, signal: AbortSignal): Promise<ArchiveProbeResult> => {
       signal.throwIfAborted();
       const task = current(input);
@@ -896,9 +931,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         try { if (value.observeUnattributed(pending.identity, pending.operationKey, true)) pendingIdentities.delete(key); } catch { /* Retain the current unattributed state. */ }
       }
     },
-    advanceResult: async (task: LocalTask, signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<WebAdvanceResult> => {
+    advanceResult: async (task: LocalTask, signal: AbortSignal, canAdmitNewExecution?: () => boolean, authority?: WebInputAuthority): Promise<WebAdvanceResult> => {
       let result: LocalTask;
-      try { result = await backend.advance(task, signal, canAdmitNewExecution); }
+      try { result = await backend.advance(task, signal, canAdmitNewExecution, authority); }
       catch (cause) {
         if (signal.aborted || !(cause instanceof ControllerStorageWaitingError)) throw cause;
         result = current(task);
@@ -906,7 +941,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         phase(result, { kind: "execution", phase: "waiting" }, false, undefined, "web-storage-maintenance");
       }
       const reason = waiting.get(task.claimId);
-      return reason === undefined ? { kind: "observed", task: result } : { kind: "waiting_input", reason, task: result };
+      return reason !== undefined ? { kind: "waiting_input", reason, task: result } : { kind: upgrades.has(task.claimId) ? "upgrade" : "observed", task: result };
     },
   };
 };

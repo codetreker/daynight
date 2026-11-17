@@ -101,6 +101,13 @@ This establishes the product's normal Controller path, without claiming live
 third-party provider behavior. Failure, capability, retry and transport matrices
 remain with their CLI and service owners.
 
+The Worker patrol journey uses the compiled Worker and Controller against the
+real Server and isolated PostgreSQL, with a controlled Codex protocol peer in
+place of the upstream model. It retains the original claim, worktree and native
+Session across Worker restart, verifies the resumed assignment and repeated idle
+pings, and checks pause, resumption and claim-bound completion. The peer does not
+establish autonomous behavior by a real model.
+
 The tag journey reads empty catalogs in the Web catalog, shared child filter and
 Task editor, then creates a shared catalog and independently tagged Goal and
 child Tasks through the CLI. It reads a CLI-created color through MCP, associates
