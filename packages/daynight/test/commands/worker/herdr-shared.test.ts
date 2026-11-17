@@ -6,7 +6,6 @@ import { createOperation, type Operation } from "../../../src/api/operation.js";
 import type { HerdrExecutionContext, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
 import type { ProcessProof } from "../../../src/commands/controller/process-proof.js";
-import { ToolSelectionManager } from "../../../src/commands/worker/tool-selection.js";
 import { createSharedWorkerHerdr } from "../../../src/commands/worker/herdr/shared.js";
 import { readHerdrSharedInstance, writeHerdrSharedInstance } from "../../../src/commands/worker/herdr/shared-instance-store.js";
 import { resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
@@ -391,26 +390,4 @@ test("does not switch targets until every old native mapping tree is stopped", a
   const f = await fixture(), shared = f.build(); await shared.prepareSelection(f.a, operation()); f.settings.mappingsStopped = false;
   await expect(shared.prepareSelection(f.b, operation())).resolves.toEqual({ state: "pending", reason: "cleanup_unconfirmed" });
   expect(f.stateFor(f.b.selectionKey).ensures).toBe(0); expect(readHerdrSharedInstance(f.paths)).toMatchObject({ current: { launch: f.a, phase: "stopped" }, pending: { launch: f.b, phase: "old_stopped" } });
-});
-
-
-test("cached tool admission recreates an exited shared daemon only after every old responsibility closes", async () => {
-  const f = await fixture(), shared = f.build();
-  const manager = new ToolSelectionManager({ environment: {}, cwd: f.directory, readActiveSelections: () => shared.activeToolSelections(),
-    resolve: async () => f.a, admitHerdr: shared.prepareSelection,
-    probe: { check: async () => ({ version: "0.9.9" }), close: async () => {} },
-  });
-  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "path", path: f.a.entryPath } } });
-  try {
-    await manager.selectForNewExecution("herdr", "herdr", operation());
-    const original = f.stateFor(f.a.selectionKey); original.running = false; original.endpoints = false;
-    f.settings.mappingsStopped = false;
-    await expect(manager.selectForNewExecution("herdr", "herdr", operation())).rejects.toThrow("cleanup_unconfirmed");
-    expect(original.ensures).toBe(1);
-    f.settings.mappingsStopped = true;
-    await expect(manager.selectForNewExecution("herdr", "herdr", operation())).resolves.toEqual(f.a);
-    expect(original.ensures).toBe(2);
-    expect(readHerdrSharedInstance(f.paths)?.current?.daemon).toEqual(original.proof);
-    await shared.ensureInstance(operation());
-  } finally { await manager.close(operation()); }
 });

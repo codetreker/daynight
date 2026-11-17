@@ -19,9 +19,7 @@ export type ActiveToolSelection = {
   readonly version: string | null; readonly checkedAt: string | null;
   readonly executionCount: number | null; readonly instanceCount: number | null; readonly unconfirmedCount: number;
 };
-export type HerdrToolAdmission = (launch: ResolvedToolLaunch, operation: Operation) => Promise<{ state: "applied"; version: string; checkedAt: string } | { state: "pending"; reason: "active_instance" | "cleanup_unconfirmed" }>;
 type Options = {
-  readonly admitHerdr?: HerdrToolAdmission;
   readonly environment: NodeJS.ProcessEnv; readonly cwd: string; readonly workerNode?: string;
   readonly probe: ToolSelectionProbe; readonly readActiveSelections: () => readonly ActiveToolSelection[];
   readonly prepareLaunch?: (source: ResolvedToolLaunch, operation: Operation) => Promise<ResolvedToolLaunch>;
@@ -96,10 +94,7 @@ export class ToolSelectionManager {
     const slot = this.slot(tool, context); this.checkOpen(slot, operation);
     if (this.suspended) throw new Error("Worker tool configuration is unavailable.");
     if (this.targets.choices[tool] === null) throw new Error(`Worker ${tool} tool choice has not been adopted.`);
-    if (context === "herdr" && this.options.admitHerdr === undefined) {
-      if (this.targets.choices[tool]?.kind === "auto") return;
-      const error = new ToolSelectionError(tool, context, "launch", "incompatible_runtime"); this.fail(slot, error); throw error;
-    }
+    if (context !== "web") throw new ToolSelectionError(tool, context, "launch", "incompatible_runtime");
     if (this.usable(slot)) {
       const verified = slot.launch!, verifiedEpoch = slot.epoch;
       try { await this.verifyFrozen(verified, operation); this.options.probe.assertAvailable?.(verified); }
@@ -107,9 +102,7 @@ export class ToolSelectionManager {
         if (slot.epoch === verifiedEpoch && slot.launch === verified) { slot.epoch++; this.fail(slot, error); }
         if (toolPathErrorCode(error) !== "tool_identity_changed") throw error;
       }
-      // A file recipe can remain valid after its shared daemon exits. Re-enter
-      // instance admission before publishing Herdr readiness for new execution.
-      if (slot.epoch === verifiedEpoch && this.usable(slot) && tool !== "herdr") return;
+      if (slot.epoch === verifiedEpoch && this.usable(slot)) return;
     }
     this.checkOpen(slot, operation);
     if (this.suspended) throw new Error("Worker tool configuration is unavailable.");
@@ -139,21 +132,13 @@ export class ToolSelectionManager {
         this.options.probe.assertAvailable?.(launch); const token = this.options.probe.cacheToken?.(launch);
         this.options.probe.admit?.(launch, receipt);
         slot.probeRecipe = clone(launch);
-        let result = await this.options.probe.check(launch, operation); operation.check();
+        const result = await this.options.probe.check(launch, operation); operation.check();
         if (!validVersion(result.version)) throw new ToolSelectionError(tool, context, "probe", "unrecognized_output");
         const checkedAt = result.checkedAt ?? this.now();
         if (!validTime(checkedAt) || Date.parse(checkedAt) > Date.parse(this.now())) throw new ToolSelectionError(tool, context, "probe", "unrecognized_output");
         this.options.probe.assertAvailable?.(launch);
         if (!Object.is(token, this.options.probe.cacheToken?.(launch))) throw new ToolSelectionError(tool, context, "probe", "cleanup_unknown");
         if (this.closed || slot.epoch !== epoch) return;
-        if (tool === "herdr" && this.options.admitHerdr !== undefined) {
-          slot.candidate = actual(launch, result.version, checkedAt);
-          const admission = await this.options.admitHerdr(launch, operation); this.checkOpen(slot, operation);
-          if (slot.epoch !== epoch) return;
-          if (admission.state === "pending") { slot.state = "pending"; slot.reason = admission.reason; slot.launch = undefined; return; }
-          if (!validVersion(admission.version) || !validTime(admission.checkedAt) || Date.parse(admission.checkedAt) > Date.parse(this.now())) throw new ToolSelectionError(tool, context, "probe", "unrecognized_output");
-          result = admission;
-        }
         slot.candidate = null;
         slot.launch = clone(launch); slot.token = token; slot.actual = actual(launch, result.version, result.checkedAt ?? checkedAt); slot.state = "applied"; slot.reason = null; slot.error = null;
       } catch (error) {
@@ -167,10 +152,8 @@ export class ToolSelectionManager {
   }
   async selectForNewExecution(tool: Tool, context: ToolContext, operation: Operation): Promise<ResolvedToolLaunch> {
     const slot = this.slot(tool, context); this.checkOpen(slot, operation);
-    if (context === "herdr" && this.options.admitHerdr === undefined) throw new ToolSelectionError(tool, context, "launch", "incompatible_runtime");
     for (;;) {
       await this.prepare(tool, context, operation); this.checkOpen(slot, operation);
-      if (slot.state === "pending" && (slot.reason === "active_instance" || slot.reason === "cleanup_unconfirmed")) throw new Error(`Herdr tool selection is pending: ${slot.reason}.`);
       if (!this.usable(slot)) continue;
       const epoch = slot.epoch, launch = slot.launch!;
       try { await this.verifyFrozen(launch, operation); this.options.probe.assertAvailable?.(launch); }

@@ -14,7 +14,7 @@ import * as launchObservation from "../../../src/commands/controller/launch-obse
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
-import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { access, link, lstat, mkdir, mkdtemp, rm, rmdir, symlink, writeFile } from "node:fs/promises";
@@ -70,6 +70,7 @@ const createWorkerCoordinator = (options: Parameters<typeof createCoordinator>[0
   coordinators.push(coordinator);
   return coordinator;
 };
+const webStores: WebExecutionStore[] = [];
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => {
@@ -77,6 +78,7 @@ afterEach(async () => {
   const shutdownErrors = shutdowns.flatMap(result => result.status === "rejected" ? [result.reason] : []);
   polling.onSchedule = undefined; polling.requested.length = 0;
   vi.restoreAllMocks();
+  for (const store of webStores.splice(0)) store.close();
   for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   if (shutdownErrors.length > 0) throw new AggregateError(shutdownErrors, "Coordinator fixture shutdown failed.");
@@ -142,7 +144,10 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
     update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...readWorkerClaim(current.properties)!, ...update } } }; grants.set(readWorkerClaim(current.properties)!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
-  const options = { store, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const webStore = openWebExecutionStore(createMemoryDatabase()); webStores.push(webStore);
+  const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in coordinator fixture."); };
+  const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unknownStop };
+  const options = { store, webStore, webBackend, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   return { root, store, project, candidates, grants, grant, worktrees, manifests, git, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind };
 };
 

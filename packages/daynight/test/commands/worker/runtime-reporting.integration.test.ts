@@ -36,7 +36,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   ...mocks.captureBotOptions(options),
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn(), exchangeStage: vi.fn(), createdConfiguration: vi.fn(), createdReporter: vi.fn(), prepareCandidates: vi.fn(async (_signal: AbortSignal, _required: boolean) => false), botRequiresCopilot: vi.fn(() => false), captureBotOptions: vi.fn((_options: { copilotRequired: () => boolean }) => ({})) }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn(), exchangeStage: vi.fn(), createdConfiguration: vi.fn(), createdReporter: vi.fn(), prepareCandidates: vi.fn(async (_signal: AbortSignal, _required: boolean) => false), botRequiresCopilot: vi.fn(() => false), captureBotOptions: vi.fn((_options: { copilotRequired: () => boolean }) => ({})) }));
 vi.mock("../../../src/commands/worker/configuration.js", async original => {
   const actual = await original<typeof import("../../../src/commands/worker/configuration.js")>();
   return { ...actual, createWorkerConfigurationManager: async (...args: Parameters<typeof actual.createWorkerConfigurationManager>) => {
@@ -71,12 +71,6 @@ vi.mock("node:timers/promises", async original => {
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: mocks.archive, probeStoppedControllerArchive: mocks.archiveProbe }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await original<object>(), createWorkerHerdr: mocks.herdr }));
-vi.mock("../../../src/commands/worker/herdr/shared.js", () => ({ createSharedWorkerHerdr: mocks.herdr }));
-vi.mock("../../../src/commands/worker/herdr/durable.js", async original => {
-  const actual = await original<typeof import("../../../src/commands/worker/herdr/durable.js")>();
-  return { ...actual, createDurableWorkerHerdr: (...args: Parameters<typeof actual.createDurableWorkerHerdr>) => mocks.durable.getMockImplementation() ? mocks.durable(...args) : actual.createDurableWorkerHerdr(...args) };
-});
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", async original => ({ ...await original<object>(), buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
@@ -137,7 +131,6 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mocks.botRequiresCopilot.mockReturnValue(false);
   mocks.cachePersist.mockReset();
-  mocks.durable.mockReset();
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
@@ -160,7 +153,6 @@ beforeEach(async () => {
   mocks.telemetry.mockReturnValue({ collect }); mocks.probe.mockResolvedValue("0.164.0");
   mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "0", observation: null }))), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
-  mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), archiveYield: () => false, updateConfiguration: update, shutdown }));
 });
@@ -939,7 +931,7 @@ describe("worker runtime configuration reporting", () => {
     await eventually(() => expect(report.mock.calls.at(-1)![1].taskInventory).toEqual({ observedAt: workerTelemetryTime, claims: [] }));
     const claim = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3) }; options.onClaim!(claim);
     await eventually(() => expect(report.mock.calls.at(-1)![1].taskInventory).toEqual({ observedAt: workerTelemetryTime, claims: [claim] }));
-    expect(mocks.herdr).not.toHaveBeenCalled();
+
     f.signal.abort(); await running;
     const stoppedCount = report.mock.calls.length; await vi.advanceTimersByTimeAsync(60_000); expect(report).toHaveBeenCalledTimes(stoppedCount);
   });
