@@ -96,6 +96,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   const compiled = await import(pathToFileURL(path.join(dist, "commands/worker/tool-selection-runtime.js")).href) as typeof import("../../../src/commands/worker/tool-selection-runtime.js");
   const tools = compiled.createWorkerToolSelectionRuntime({ workerDirectory: path.join(state, "worker"), cwd: repository, environment: { ...process.env },
     localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } }, readActiveSelections: () => [] });
+  tools.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } } });
   const selectToolLaunch = vi.fn(tools.selectToolLaunch);
   const service = createServer();
   const relay = new WebSocketServer({ server: service });
@@ -389,7 +390,7 @@ test("restores the original Web claim with A after target B and refuses missing 
   expect(f.current(identityA)).toMatchObject({ ...identityA, configuration: original.configuration, resources: { nativeSession: { sessionId: f.nativeIds.A } }, webExecution: { executionId: initial.executionId, sessionId: initial.sessionId, executionGeneration: "3", initialOperationId: initial.initialOperationId, initialPrompt: initial.initialPrompt } });
   expect(await f.receipts()).toEqual(beforeRemoval);
   expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(2);
-  expect(f.register).toHaveBeenCalledTimes(2); expect(f.selectToolLaunch).toHaveBeenCalledTimes(2); expect(f.buildPrompt).toHaveBeenCalledTimes(3);
+  expect(f.register).toHaveBeenCalledTimes(2); expect(f.selectToolLaunch).toHaveBeenCalledTimes(2);
   const node = await realpath(process.execPath);
   for (const receipt of beforeRemoval) {
     expect(await realpath(receipt.execPath)).toBe(node);

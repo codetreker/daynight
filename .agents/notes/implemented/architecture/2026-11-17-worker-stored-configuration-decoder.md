@@ -15,7 +15,9 @@ three-tool fields, raw source projection, references and validation. It does not
 import active network configuration types or parsers. The outer cache owner
 converts newly recognized sudo and archive targets into application facts using
 the existing state transition, after validating the historical structure. The
-current writer remains schema 8 and retains the original source strings.
+current schema 9 writer retains original source strings and converts the
+historical ledger as described by the
+[Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md).
 
 The [unknown configuration decision](2026-11-17-worker-unknown-configuration-preservation.md)
 retains the source and application responsibilities that this boundary protects.

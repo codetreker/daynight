@@ -118,10 +118,10 @@ describe("Worker cloud configuration sources", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
-  it.each([undefined, "web"])("imports the effective local control mode without rewriting YAML: %s", async agentControlMode => {
+  it.each([undefined, "web"])("imports Web without rewriting YAML: %s", async agentControlMode => {
     const f = await fixture({ worker: agentControlMode === undefined ? {} : { agentControlMode } });
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
-    expect(seed.agentControlMode).toBe(agentControlMode ?? "herdr");
+    expect(seed.agentControlMode).toBe("web");
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 

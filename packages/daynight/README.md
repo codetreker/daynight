@@ -2084,17 +2084,17 @@ whether the service actually rolled back. Desired content
 under the same revision must be semantically equal wherever both negotiated
 projections expose it. Existing mode and tool fields may be absent from one
 projection; conflicting visible content still fails as a protocol error. Known target changes and authority rollback renew the local
-generation. Changes confined to unknown fields, a newer revision or update time
-preserve application records, jobs and `applicationRevision`. An unsupported
-known target remains visible as authority with new admission closed until a valid
-target arrives. Configuration enrollment does not depend on active claims or
+generation. For an applicable target, changes confined to unknown fields, a newer revision
+or update time preserve application records, jobs and `applicationRevision`. A structurally
+valid raw target with an unsupported known value or type remains visible with its
+true revision and new admission closed until a valid target arrives. It is not treated as an uninitialized target or imported again. Configuration enrollment does not depend on active claims or
 alter task/claim formats, permission or recovery rules.
 
 When the cloud target is uninitialized, including after an initialized target
 becomes null, the Worker automatically prepares a candidate from one consistent
-snapshot of the current local file. Its separate mode and tool adoption fields
-come from that same complete candidate. Without a complete candidate, independent
-capability adoption keeps the startup local choices. The running service,
+snapshot of the current local file. The mode adoption field is `web`; the tool
+adoption fields come from that candidate or the startup local choices when no
+complete candidate exists. The running service,
 credential, Worker identity and local execution
 overrides remain fixed; a file that names another service or Worker is rejected.
 A root-owned preparation pass has a 60-second budget, independently of a report
@@ -2112,16 +2112,14 @@ cache or execution is admitted before identity verification. A temporary initial
 configuration read failure remains unread and is retried by report preparation;
 authentication, protocol and format errors remain explicit failures.
 
-My Workers → Configuration → Control mode selects `herdr` or `web`. A new local
-configuration defaults to `herdr`; an existing local `web` setting is adopted
-when its cloud target has not yet acquired a mode. Explicit cloud choices win
-over later bootstrap candidates. Both service and CLI must support the separate
-`Daynight-Worker-Control-Mode: 1` capability; older services keep local mode.
-Applying a mode validates it together with global native settings and publishes
-the pair only after persistence. Project native settings are revalidated for that
-mode. Existing claims retain their frozen mode, native settings, sessions and
-worktrees. Failed application keeps the previous effective pair and reports the
-failure; saving a target alone does not confirm application.
+The current Worker applies only an adopted `web` target. A null or unadopted
+mode does not grant application or execution authority; the independent
+`controlModeBootstrap` reports `web` for adoption. A local bootstrap candidate
+defaults to `web`; explicit local `herdr` is refused with instructions to remove
+the field or set it to `web`. Explicit cloud `herdr` remains unchanged and is
+reported as unsupported. Existing wire fields and service negotiation remain
+available, and a partial observation does not fabricate a mode application item.
+Historical Herdr claims and resources are handled by their user.
 
 Set `worker.agentModel` and/or `worker.agentReasoningEffort` to override only
 those settings for new executions, even after enrollment. Each field independently
@@ -2260,14 +2258,14 @@ they do not create Projects, clone repositories, acquire tasks or start Herdr.
 Cancellation, empty selection, failed remote reads and save errors leave the
 selection unchanged.
 
-Service credentials, local repository root, mode and the first-import candidate
-come from one captured source; changed credentials require restarting the
-command. Cloud lookup and reporting do not wait for Project preparation or task inventory.
+Service credentials and local repository root come from the startup source; the
+first-import candidate reads a consistent current file. Changed credentials
+require restarting the command. Cloud lookup and reporting do not wait for Project preparation or task inventory.
 Selected Projects use existing local bindings or are prepared under
 `worker.repositoryRoot`; only confirmed prepared Projects can execute. A failed
 preparation does not block independent healthy Projects. Removing a Project
-excludes it from scheduling and stops its executions while retaining their
-claims, worktrees and session history. Unconfirmed stops continue to occupy
+excludes it from scheduling and stops its Web executions while retaining their
+claims, worktrees and session history. It does not take over old Herdr resources. Unconfirmed stops continue to occupy
 capacity; stopped retained worktrees do not permanently occupy a slot. Project
 failures are reported and retried. Persistent local mappings remain available
 to ownership inventory and resource discovery independently of the selection.
@@ -2440,15 +2438,21 @@ cycles add no configuration GET; startup, unknown results, 400/protocol failures
 and capability discovery read first. Reporting keeps its 30-second single-flight
 scheduler, merged triggers and finite prompt batches.
 
-The Worker stores configuration facts in one schema 8
+The Worker stores configuration facts in one schema 9
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
-observation revision and local generation. The executable known view derives from
-the original JSON. Unknown fields, nested values, large integers, negative numbers
+observation revision and local generation. The required `pendingApplication` flag
+is true when the current raw target has not been reconciled, including null or
+unsupported authority. False means the Web ledger was reconciled, not that every
+application has succeeded. It persists across restart; a later supported target
+is reconciled even if its values match the target before an unsupported interval.
+The executable known view derives from the original JSON. Unknown fields, nested values, large integers, negative numbers
 and exponents survive receive, cache and restart without conversion through
-JavaScript numbers. Known fields retain their strict validation; duplicate keys,
-depth and existing response limits still apply. Unknown targets create no jobs or
-pending/applied records. `remoteObservation` independently retains the last
+JavaScript numbers. The executable view requires strict known-field validation;
+an unsupported value or type retains the raw source and revision without creating
+a partial or default target. Invalid JSON, envelope, revision, timestamps,
+negotiated fields, depth and existing response limits still cause rejection.
+Unsupported targets create no new jobs or pending/applied records. `remoteObservation` independently retains the last
 explicit GET's complete observation and revision, including unknown item kinds;
 receipts do not import those remote facts into the execution ledger. A service
 rollback or null reset retains that independent snapshot under its original
@@ -2475,17 +2479,16 @@ failures and necessary actual values. Each record has a stable `recordId` and
 immutable `origin`. Reused actual values keep their observed source; schema 4
 history with a lost successful revision remains explicitly unknown.
 
-Versions 1–4 retain their original conversion to validated schema 5; schema 5 then
-upgrades to schema 6 with its complete ledger, identities, provenance, references,
-mode and retry facts preserved. Its old target becomes `desiredJson`, its revision
-becomes `applicationRevision`, and `remoteObservation` starts null. Version 1
-retains its platform-preference migration. Schema 6 and both earlier schema 7
-forms upgrade to 8. When a formerly unknown `enableSudoCleanup` or
-`archiveSessions` target is present without its corresponding record, migration
-creates a current item. It preserves any reusable confirmed actual value and its
-provenance; otherwise the item is pending with an unconfirmed actual value. The
-application revision then identifies the current target; recognition creates a new
-generation and current record IDs while retained work keeps its original identity.
+Deployed schemas 1–8 are strictly decoded under their historical structures and
+converted to schema 9. Old targets become `desiredJson` and their revision becomes
+`applicationRevision`; older formats without a remote observation retain null.
+The conversion removes mode items and `nativeMode`. It retains a native value and
+its source only when the historical mode proves Web, and still requires validation
+in the current process. Other native values, sources and corresponding failures
+are invalidated. Original record IDs, origins, source JSON, sudo provenance,
+failure numbers, started removals and blockers remain; the generation changes and
+the report cursor resets. Previously unknown `enableSudoCleanup` or
+`archiveSessions` is reconciled as a target without manufacturing success.
 Migration publishes only after atomic
 save; failed saves retain the original file and error. Missing required fields,
 invalid scope and corrupt data remain failures. Genuine file I/O failures
@@ -2521,16 +2524,16 @@ Worker instance lock until it actually ends. Unsaved results fail with original
 errors and record identities. Restart checks the durable started state and original
 resources; an unsaved side effect is not assumed absent.
 
-Native qualification belongs to this process and its
-record identity, mode and relevant tool selections. Matching proof follows the
-previous current or retained record supplying an inherited value when a target
-changes, independently of that value's historical source. Proof expires with its record owner; a mode change revokes every project
-proof before inheritance. Historical source references grant no qualification.
-A new runtime checks the current target first; only a failed target permits validation of compatible
-historical settings. Migrated version 1/2 history has no recorded mode and is
-revalidated under the local compatibility mode; that mode is not historical proof.
-Cached `applied` text grants no execution qualification. Result publication checks
-the original record binding, intended content and current proof.
+Native qualification belongs to this process and its record identity, native
+tuple and relevant Web tool choices and selection keys. Only the Codex or Copilot
+tool needed by the Provider is required; Herdr is not prepared for configuration.
+Matching proof follows its still-live prior record, independently of historical
+actual-value provenance. A new process checks the current target first, then can
+revalidate a proven Web historical value when the target fails. Schema 1/2 has no
+historical mode proof and cannot provide such a value. Tool changes revoke the
+affected proof; unrelated Providers and existing execution identities remain.
+Cached `applied` text grants no execution qualification. Result publication
+checks the original record binding, intended content and current proof.
 Unvalidated history remains unavailable during target validation; values already
 validated in this runtime remain usable during later updates. Original stops keep
 their identity and revision. Current stop verification waits for the original job
@@ -2561,8 +2564,8 @@ preparation and before the first intent, registration and dispatch. Original
 submitted/unknown execution and frozen native recovery/input/stop keep their
 original identities and permissions.
 
-Each observation batch fits at most 1025 non-mode items and 1026 total items when
-mode is negotiated, the 4 MiB Go-encoded storage budget with 512 bytes reserved
+Each observation batch fits at most 1025 non-mode items and the applicable
+negotiated scalar items, the 4 MiB Go-encoded storage budget with 512 bytes reserved
 for its wrapper, and the 9 MiB configuration request budget. One real unfinished
 or failed removal verification has a fixed slot; the other eligible records form
 a continuous prefix after the durable `projectionCursor`. The first item that
@@ -3181,13 +3184,11 @@ recovery ledger. The
 
 ## Web worker sessions
 
-Select Control mode `web` and Agent `codex`, `claude` or `copilot` in
-My Workers → Configuration. Before enrollment, `worker.agentControlMode` and
-`worker.agent` in `~/.daynight/config.yml` supply the initial values.
-The default mode is `herdr`. The mode is
-worker-wide, frozen by the service on each claim, and cannot be changed through
-summary updates. Older claim records without a mode mean Herdr. Changing
-configuration affects new claims; existing work stays with its original backend.
+Select Agent `codex`, `claude` or `copilot` with an adopted `web` target in
+My Workers → Configuration. Before enrollment, omitting `worker.agentControlMode`
+uses `web` for bootstrap. A saved explicit `herdr` target is not converted or
+applied. The service freezes the mode on each claim; existing claim identity is
+not changed by configuration updates.
 
 Web execution does not initialize, start or probe Herdr. Independent runtime
 reporting only reads the private endpoint for its version and does not initialize

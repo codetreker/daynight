@@ -52,9 +52,11 @@ report. Existing single-flight scheduling, merged triggers and finite prompt
 batches remain the report owner's responsibility.
 
 When desired is null, a root-owned preparation pass reads one consistent snapshot
-of the current local file and projects the permitted initial import once. Separate
-mode and tool adoption fields derive from that same complete candidate; without
-one, independent adoption retains startup local choices. The pass has a 60-second
+of the current local file and projects the permitted initial import once. The mode
+adoption field is Web; tool adoption derives from that candidate or,
+without one, from the startup local choices. The
+[Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md)
+owns unsupported targets and Web-only qualification. The pass has a 60-second
 budget, independently of the
 report waiter's deadline. Successful Project identity resolutions may be reused
 only within the same source hash and authenticated identity; explicit candidate
@@ -124,8 +126,9 @@ relabeling it as the current target would falsify its original source.
 ## Consequences
 
 Canonical recovery adds local token and candidate lifecycle state, while keeping
-the service DTO and transaction. The current schema 6 source representation is
-owned by the unknown configuration decision. Historical origins
+the service DTO and transaction. The current schema 9 source representation is
+owned by the unknown configuration and Web configuration decisions. Historical
+origins
 remain immutable, and process proof stays distinct from actual-value provenance.
 A local candidate can re-establish configuration lost by the service, but cannot
 promise to reconstruct the missing cloud value. Temporary candidate failures

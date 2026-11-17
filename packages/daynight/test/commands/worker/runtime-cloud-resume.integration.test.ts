@@ -1,6 +1,6 @@
 import { receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
-import { buildHerdrAgentArguments } from "../../../src/commands/worker/herdr/arguments.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,7 +51,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { agentControlMode: "web", maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {
@@ -82,7 +82,7 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
     return {
       archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
       tick: vi.fn(async () => {
-        if (!current.readyProjectIds?.includes(uuid(1))) return;
+        if (!current.readyProjectIds?.includes(uuid(1)) || !current.repositories.some(repository => repository.project.projectId === uuid(1))) return;
         try { check(current); } finally { cancellation.abort(); }
       }),
       shutdown: vi.fn(async () => true),
@@ -116,25 +116,29 @@ afterEach(async () => {
 });
 
 
-it("keeps cloud configuration current for new sessions and resumes the same native session after a Worker restart", async () => {
+it("keeps cloud configuration current and retains frozen Web identity for recovery after a Worker restart", async () => {
   const f = await fixture();
   const document = { ...f.document, worker: { ...f.document.worker, agent: "codex", model: "stale-local-model", args: ["--search"] } };
   const source = stringify(document);
   await writeFile(f.paths.configFile, source);
   const remote = mocks.remote(); mocks.remote.mockClear();
-  const target = (model: string): WorkerCloudDesired => ({ ...desired(), value: { ...desired().value, native: { agent: "codex", model, args: ["--search"] } } });
+  const target = (model: string): WorkerCloudDesired => ({ ...desired(), value: { ...desired().value, native: { agent: "codex", model, args: ["--sandbox", "workspace-write"] } } });
   remote.configuration.mockResolvedValue(resource(target("previous-cloud-model")));
   const savedSession = uuid(800);
-  const cwd = path.join(f.repository.path, ".worktrees", "daynight", uuid(801));
+  const claim = { projectId: uuid(1), taskId: uuid(802), claimId: uuid(803) };
   const firstCancel = new AbortController(); cancellations.add(firstCancel);
   finishAtTick(firstCancel, options => {
     const configuration = options.repositories[0]!.configuration;
     expect(configuration.model).toBe("previous-cloud-model");
-    const fresh = buildHerdrAgentArguments(configuration, cwd);
-    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "previous-cloud-model", "--search"]);
-    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
-    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
-    expect(resumed).toContain("--search");
+    expect(configuration.args).toEqual(["--sandbox", "workspace-write"]);
+    const task = options.store.activateTask(options.store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" }));
+    const web = options.webStore!;
+    web.register({ ...task, worktreeId: uuid(801), project: options.repositories[0]!.project, serverOrigin: origin, workerId, userId: uuid(6), configuration: { ...configuration, toolLaunch: frozenToolLaunch() } }, Date.now());
+    web.initializeWebExecution(claim, Date.now());
+    web.updateWebExecution(claim, { launchSubmission: "acknowledged" }, Date.now());
+    web.bindNativeSession(claim, { source: "controller", sessionId: savedSession }, Date.now());
+    web.beginCleanup(claim, { kind: "shutdown", deadline: Date.now() + 1000 }, Date.now());
+    web.clearShutdown(claim, Date.now());
   });
   await runWorker({ ...f, signal: firstCancel.signal });
   remote.configuration.mockResolvedValue(resource({ ...target("current-cloud-model"), revision: "2" }));
@@ -142,13 +146,15 @@ it("keeps cloud configuration current for new sessions and resumes the same nati
   finishAtTick(restartedCancel, options => {
     const configuration = options.repositories[0]!.configuration;
     expect(configuration.model).toBe("current-cloud-model");
-    const fresh = buildHerdrAgentArguments(configuration, cwd);
-    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "current-cloud-model", "--search"]);
-    expect(fresh).not.toContain("stale-local-model");
-    expect(fresh).not.toContain("previous-cloud-model");
-    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
-    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
-    expect(resumed).toContain("--search");
+    expect(configuration.args).toEqual(["--sandbox", "workspace-write"]);
+    const retained = options.webStore!.getTask(claim)!;
+    expect(retained.resources.nativeSession).toEqual({ source: "controller", sessionId: savedSession });
+    expect(retained.configuration).toMatchObject({ model: "previous-cloud-model", args: ["--sandbox", "workspace-write"] });
+    const execution = retained.webExecution!;
+    const resumed = options.webStore!.beginWebGeneration(claim, { executionGeneration: execution.executionGeneration, controllerInstanceId: execution.controllerInstanceId, nativeSessionId: savedSession, nativeStopped: true }, Date.now());
+    expect(resumed.webExecution!.executionGeneration).toBe("2");
+    expect(resumed.resources.nativeSession).toEqual({ source: "controller", sessionId: savedSession });
+    expect(resumed.configuration).toEqual(retained.configuration);
   });
   await runWorker({ ...f, signal: restartedCancel.signal });
   expect(remote.configuration).toHaveBeenCalledTimes(2);

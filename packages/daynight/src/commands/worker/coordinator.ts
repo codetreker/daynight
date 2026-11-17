@@ -18,7 +18,7 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
 import { ApiError } from "../../api/client.js";
-import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
+import type { Task, TaskPlatform, WorkerClaim, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
 import { createExecutionCapacity } from "./execution-capacity.js";
@@ -59,7 +59,7 @@ export type WorkerCoordinatorOptions = {
   archiveSessions?: () => boolean | null;
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
-  serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
+  serverOrigin: string; workerId: string; userId?: string; platform: TaskPlatform; machine: WorkerMachine;
   readyProjectIds?: readonly string[]; targetProjectIds?: readonly string[];
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
   preferPlatformSpecificTasks: boolean;
@@ -200,7 +200,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const pausedClaims = new Set<string>();
   const webMonitoringState = new Map<string, string>();
   const webRecoveryFailures = new Map<string, { id: string; reason: "native_identity_missing" | "recovery_limit" | "recovery_blocked" }>();
-  const controllers = new Map<string, { controller: AbortController; terminal: boolean }>();
+  const controllers = new Map<string, { controller: AbortController; terminal: boolean; webClaim?: WorkerClaim }>();
   const legacyEmpty = new Map<string, string>();
   const releaseObservedCapacity = (owner: ResourceOwner): void => {
     options.requestReconcile?.();
@@ -733,7 +733,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     try { await options.remote.update(remoteTask, { phase, herdr, nativeSessionId }, signal); }
     catch (error) { if (!isWorkerCancellation(error, signal)) options.emit({ kind: "summary-error", task, message: "The observed execution summary was not confirmed; the next round will read it again.", error }); }
   };
-  const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean): void => {
+  const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean, webClaim?: WorkerClaim): void => {
     const identityKey = key(identity);
     if (shuttingDown || jobs.has(identityKey) || !terminal && !canAdvanceProject(identity.projectId)) return;
     if (!terminal) { nameFailureThisJob.delete(identityKey); monitoringPhases.set(identityKey, "observation"); monitoringOperations.set(identityKey, "observation"); }
@@ -751,7 +751,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
       monitoringJobs.set(identityKey, operationId);
     });
-    controllers.set(identityKey, { controller, terminal });
+    controllers.set(identityKey, { controller, terminal, ...(webClaim === undefined ? {} : { webClaim }) });
     const signal = AbortSignal.any([normalSignal, controller.signal]);
     const job = serialize(identity, () => {
       if (!terminal && !canAdvanceProject(identity.projectId)) return Promise.resolve();
@@ -1083,12 +1083,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let observed = false;
       let advancing = false;
       let waitingInput: WorkerInputWait | undefined;
-      const canAdmitNewExecution = () => options.configurationComplete?.() ?? true;
+      const canAdmitNewExecution = () => (explicitRetry ? !projectStops.has(task.projectId) : canAdvanceProject(task.projectId)) && (options.configurationComplete?.() ?? true);
       const authority = (original: NonNullable<ReturnType<WebExecutionStore["getTask"]>>, _ticket: unknown, inputSignal: AbortSignal) => checkWebAuthority(original, inputSignal, explicitRetry);
       try {
         if (record === null || record.recovery.pauseReason === null || record.recovery.retryAuthorized || legacyBranchLatch(record)) {
           requireImplementedWorkerBackend(configuration);
           await options.verifyWebServer?.(configuration.agent, signal);
+          signal.throwIfAborted();
           if (record === null) {
             assertConfigurationAdmission(canAdmitNewExecution);
             if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
@@ -1098,6 +1099,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             if (options.freezeConfiguration !== undefined) configuration = await options.freezeConfiguration(configuration, signal);
             assertConfigurationAdmission(canAdmitNewExecution);
           }
+          signal.throwIfAborted();
           record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: worker.userId, configuration }, now());
           // A persisted orderly stop already commits this run to its replacement generation.
           if (record.cleanup?.kind === "shutdown" || record.webExecution?.restartAfterShutdown) webUpgradeAttempts.add(key(task));
@@ -1304,92 +1306,81 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
       });
       return ensure(task, remoteTask, signal, !exhausted).then(() => undefined);
-    }, false);
+    }, false, task.agentControlMode === "web" ? readWorkerClaim(remoteTask.properties) : undefined);
   };
-  // Stop the original execution without terminal cleanup, releasing neither claim nor worktree.
-  const stopOwner = async (owner: ResourceOwner, signal?: AbortSignal): Promise<void> => {
-    const webRecord = options.webStore?.getTask(owner);
-    if (webRecord != null) {
-      if (webRecord.worktreeId !== owner.worktreeId) throw new Error("The Web stop claim has conflicting worktree identities.");
-      if (!options.webBackend) throw new Error("The Web execution backend is unavailable.");
-      const stopped = await options.webBackend.cleanup(webRecord, { kind: "shutdown", deadline: now(), immediateStop: true, ...(signal === undefined ? {} : { signal }) });
-      if (!stopped.complete) throw new Error("The original Web resources remain during stop.");
-      return;
-    }
-    if (options.store.getTask(owner)?.agentControlMode === "web") throw new Error("The original Web execution evidence is missing.");
-    const durable = lifecycle();
-    if (durable !== undefined) {
-      if (!durable.isStopped(owner)) await cleanupOperation(operation => durable.stop(owner, "shutdown", operation), signal);
-      if (!durable.isStopped(owner)) throw new Error("The original Herdr run stop is not confirmed.");
-      return;
-    }
-    if (options.store.getTask(owner) === null) {
-      const observed = await cleanupOperation(operation => options.herdr.tasks.listResources(operation), signal);
-      recordMissingClaim(owner, actualTaskPane(owner, observed));
-    }
-    await settleWorkerStops(deps, owner, signal, cleanupOperation);
-    const resources = await cleanupOperation(operation => options.herdr.tasks.listResources(operation), signal);
-    const pane = actualTaskPane(owner, resources);
-    if (pane !== undefined) {
-      const context = { ...owner, cwd: await originalWorktreePath(projectFor(owner), owner, pane.cwd) };
-      await cleanupOperation(operation => options.herdr.tasks.stopAndClose(context, pane.binding, operation), signal);
-    }
-    await settleWorkerStops(deps, owner, signal, cleanupOperation);
-    if (actualTaskPane(owner, await cleanupOperation(operation => options.herdr.tasks.listResources(operation), signal)) !== undefined) throw new Error("The original Herdr pane remains after stop.");
-  };
+  const compatibleWebSessions = (...sessions: readonly (string | null | undefined)[]): boolean => new Set(sessions.filter((session): session is string => session != null)).size <= 1;
+  // Project removal joins only Web executions whose original identity is proved.
   const stopProject = (projectId: string, signal?: AbortSignal): Promise<void> => {
     const existing = projectStops.get(projectId);
     if (existing !== undefined) return existing;
     stoppedProjects.delete(projectId);
+    // The job's frozen claim and journal prove the original local execution even if authority is unavailable.
+    const interruptedWebJobs = new Set<string>();
     for (const [identity, running] of controllers) {
-      if (identity.startsWith(`${projectId}/`) && !running.terminal) running.controller.abort(new Error("The project was excluded from worker execution."));
+      const claim = running.webClaim;
+      if (running.terminal || claim === undefined || claim.agentControlMode !== "web" || claim.workerId !== options.workerId || options.userId === undefined || claim.userId !== options.userId) continue;
+      const local = options.store.listUnfinishedTasks().find(task => key(task) === identity), web = local === undefined ? null : options.webStore?.getTask(local);
+      if (local?.projectId !== projectId || local.agentControlMode !== "web" || local.claimId !== claim.claimId || local.agent !== claim.agent) continue;
+      const schedule = options.store.getCleanupSchedule(local);
+      if (schedule !== null && schedule.worktreeId !== claim.worktreeId) continue;
+      if (web == null) {
+        if (local.sessionId !== null || claim.nativeSessionId !== null) continue;
+      } else if (web.serverOrigin !== options.serverOrigin || web.workerId !== claim.workerId || web.userId !== claim.userId || web.worktreeId !== claim.worktreeId || !compatibleWebSessions(local.sessionId, web.resources.nativeSession?.sessionId, claim.nativeSessionId)) continue;
+      interruptedWebJobs.add(identity);
+      running.controller.abort(new Error("The project was excluded from worker execution."));
     }
-    for (const [identity, activity] of monitoringActivities) if (identity.startsWith(`false/${projectId}/`)) observe(m => m.updateActivity(activity, { phase: "waiting", status: "waiting", waitReason: "resource-stop" }));
     const operationSignal = signal === undefined ? normalSignal : AbortSignal.any([normalSignal, signal]);
     const operation = (async () => {
-      const endStoppedActivity = (owner: ClaimIdentity): void => {
+      const local = options.store.listUnfinishedTasks().filter(task => task.projectId === projectId);
+      const webOwners = (options.webStore?.listUnfinishedTasks() ?? []).filter(owner => owner.projectId === projectId);
+      const missing = local.filter(task => task.agentControlMode === "web" && options.webStore?.getTask(task) == null);
+      const failures: unknown[] = [];
+      const proven: typeof webOwners[number][] = [];
+      if (webOwners.length > 0) {
+        let userId: string;
+        try { userId = options.userId ?? await options.remote.currentUserId(operationSignal); }
+        catch (error) { throw new AggregateError([error], "Project execution stop was not confirmed."); }
+        const checks = await Promise.allSettled(webOwners.map(async owner => {
+          const localTask = options.store.getTask(owner), current = options.webStore?.getTask(owner);
+          if (localTask === null || localTask.agentControlMode !== "web" || current == null || current.worktreeId !== owner.worktreeId || current.workerId !== options.workerId || current.serverOrigin !== options.serverOrigin || current.userId !== userId) throw new Error("The original Web execution identity is missing or conflicting.");
+          const running = controllers.get(key(owner));
+          if (running !== undefined && !running.terminal && !interruptedWebJobs.has(key(owner))) throw new Error("The running execution identity is not proven to be Web.");
+          const schedule = options.store.getCleanupSchedule(localTask);
+          if (schedule !== null && schedule.worktreeId !== current.worktreeId) throw new Error("The original Web worktree identity is conflicting.");
+          if (!compatibleWebSessions(localTask.sessionId, current.resources.nativeSession?.sessionId)) throw new Error("The original Web session identity is conflicting.");
+          return owner;
+        }));
+        for (const result of checks) if (result.status === "fulfilled") proven.push(result.value); else failures.push(result.reason);
+      }
+      const webKeys = new Set(proven.map(key));
+      for (const identity of webKeys) {
+        const activity = monitoringActivities.get(`false/${identity}`);
+        if (activity !== undefined) observe(m => m.updateActivity(activity, { phase: "waiting", status: "waiting", waitReason: "resource-stop" }));
+      }
+      await Promise.all([...jobs].filter(([identity]) => webKeys.has(identity)).map(([, job]) => job));
+      operationSignal.throwIfAborted();
+      const missingResults = await Promise.allSettled(missing.map(task => serialize(task, async () => {
+        const current = options.store.getTask(task);
+        if (current?.agentControlMode !== "web" || current.status !== "pending" && !interruptedWebJobs.has(key(task)) || current.sessionId !== null || !options.verifyWebUnregistered || options.webStore?.getTask(task) != null) throw new Error("The original Web execution evidence is missing; stop is unconfirmed.");
+        await options.verifyWebUnregistered(current, operationSignal, CLEANUP_OPERATION_MS);
+      })));
+      const webResults = await Promise.allSettled(proven.map(owner => serialize(owner, async () => {
+        const current = options.webStore?.getTask(owner), localTask = options.store.getTask(owner);
+        const running = controllers.get(key(owner));
+        if (running !== undefined && !running.terminal && !interruptedWebJobs.has(key(owner))) throw new Error("The running execution identity is not proven to be Web.");
+        if (current == null || current.worktreeId !== owner.worktreeId || current.workerId !== owner.workerId || current.serverOrigin !== owner.serverOrigin || current.userId !== owner.userId || localTask?.agentControlMode !== "web") throw new Error("The original Web execution evidence is missing or conflicting.");
+        const schedule = options.store.getCleanupSchedule(localTask);
+        if (schedule !== null && schedule.worktreeId !== current.worktreeId) throw new Error("The original Web worktree identity changed before stop.");
+        if (!compatibleWebSessions(localTask.sessionId, current.resources.nativeSession?.sessionId)) throw new Error("The original Web session identity changed before stop.");
+        if (!options.webBackend) throw new Error("The Web execution backend is unavailable.");
+        const stopped = await options.webBackend.cleanup(current, { kind: "shutdown", deadline: now(), immediateStop: true, signal: operationSignal });
+        if (!stopped.complete) throw new Error("The original Web resources remain during stop.");
         const identity = `false/${key(owner)}`, activity = monitoringActivities.get(identity);
         if (activity !== undefined) { observe(m => m.endActivity(activity)); monitoringActivities.delete(identity); }
-      };
-      const stopObserved = async (owner: ResourceOwner): Promise<void> => {
-        await stopOwner(owner, operationSignal);
-        endStoppedActivity(owner);
-      };
-      await Promise.all([...jobs].filter(([identity]) => identity.startsWith(`${projectId}/`)).map(([, job]) => job));
-      operationSignal.throwIfAborted();
-      const local = options.store.listUnfinishedTasks().filter(task => task.projectId === projectId);
-      const webMissing = local.filter(task => task.agentControlMode === "web" && options.webStore?.getTask(task) == null);
-      const missingResults = await Promise.allSettled(webMissing.map(async task => {
-        if (task.status !== "pending" || task.sessionId !== null || !options.verifyWebUnregistered) throw new Error("The original Web execution evidence is missing; stop is unconfirmed.");
-        await options.verifyWebUnregistered(task, operationSignal, CLEANUP_OPERATION_MS);
-      }));
-      const webOwners = (options.webStore?.listUnfinishedTasks() ?? []).filter(owner => owner.projectId === projectId);
-      const webResults = await Promise.allSettled(webOwners.map(owner => serialize(owner, () => stopObserved(owner))));
-      const failures = [...missingResults, ...webResults].flatMap(result => result.status === "rejected" ? [result.reason] : []);
-      await ensureHerdr(operationSignal);
-      const workspaces = await listHerdr(operationSignal);
-      const durable = lifecycle();
-      const owned = [...responsibilities(), ...workspaces.map(workspace => workspace.owner), ...pendingStops().map(stop => stop.context), ...webOwners].filter(owner => owner.projectId === projectId);
-      if (durable !== undefined) for (const task of local) {
-        if (task.agentControlMode !== "web" && task.status === "active" && !owned.some(owner => sameClaim(owner, task))) failures.push(new Error("The original Herdr execution evidence is missing; stop is unconfirmed."));
-      }
-      const owners = new Map<string, ResourceOwner>();
-      const conflicting = new Set<string>();
-      for (const owner of owned) {
-        const previous = owners.get(key(owner));
-        if (previous !== undefined && previous.worktreeId !== owner.worktreeId) {
-          conflicting.add(key(owner));
-          failures.push(new Error("The original claim has conflicting stop identities."));
-          continue;
-        }
-        owners.set(key(owner), owner);
-      }
-      const webKeys = new Set(webOwners.map(key));
-      const results = await Promise.allSettled([...owners.values()].filter(owner => !webKeys.has(key(owner)) && !conflicting.has(key(owner))).map(owner => serialize(owner, () => stopObserved(owner))));
-      failures.push(...results.flatMap(result => result.status === "rejected" ? [result.reason] : []));
+      })));
+      failures.push(...[...missingResults, ...webResults].flatMap(result => result.status === "rejected" ? [result.reason] : []));
       if (failures.length > 0) throw new AggregateError(failures, "Project execution stop was not confirmed.");
       operationSignal.throwIfAborted();
-      if (durable === undefined) for (const task of local) if (task.agentControlMode !== "web" && !owned.some(owner => sameClaim(owner, task))) endStoppedActivity(task);
       if (selected(projectId) && (configuration.targetProjectIds === undefined || configuration.targetProjectIds.includes(projectId))) stoppedProjects.delete(projectId);
       else stoppedProjects.add(projectId);
     })().finally(() => { projectStops.delete(projectId); });
@@ -2182,10 +2173,6 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         configuration = next;
         updatePromptDemand();
         options.onInventory?.(null);
-        for (const [identity, running] of controllers) {
-          const projectId = identity.slice(0, identity.indexOf("/"));
-          if (!running.terminal && configuration.targetProjectIds !== undefined && !configuration.targetProjectIds.includes(projectId)) running.controller.abort(new Error("The project is no longer available for worker execution."));
-        }
         for (const projectId of stoppedProjects) if (canAdvanceProject(projectId)) stoppedProjects.delete(projectId);
       }
     },

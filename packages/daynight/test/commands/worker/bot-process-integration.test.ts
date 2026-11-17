@@ -516,6 +516,7 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
 
 test("keeps A/B version, host, models and native Bot launches on their selected recipes across restart and removal", async () => {
   const f = await fixture({ managedTools: true }), signal = AbortSignal.timeout(150_000), runtime = f.tools!;
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.toolEntries.A }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") }, herdr: { kind: "auto" } } });
   const dist = path.resolve(import.meta.dirname, "../../../dist");
   const hostModule = await import(pathToFileURL(path.join(dist, "commands/worker/bots/host-capabilities.js")).href) as typeof import("../../../src/commands/worker/bots/host-capabilities.js");
   const modelModule = await import(pathToFileURL(path.join(dist, "commands/worker/read-only/models.js")).href) as typeof import("../../../src/commands/worker/read-only/models.js");

@@ -11,7 +11,7 @@ import { replaceFileAtomicallyFromChunks } from "../../../src/platform/files.js"
 
 const projectId = "11111111-1111-4111-8111-111111111111";
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
-const desired = (revision: string, model = "original", selected = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model, args: [] }, projects: selected ? [{ projectId, nativeOverrides: {} }] : [] } });
+const desired = (revision: string, model = "original", selected = true): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { agentControlMode: "web", maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model, args: [] }, projects: selected ? [{ projectId, nativeOverrides: {} }] : [] } });
 const barrier = () => {
   let resolve!: () => void;
   const promise = new Promise<void>(accept => { resolve = accept; });

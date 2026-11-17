@@ -1,6 +1,9 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createOperation } from "../../../src/api/operation.js";
+import { createWorkerConfigurationExchange } from "../../../src/commands/worker/configuration-exchange.js";
+import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import { parseReceivedWorkerConfigurationReceipt, parseReceivedWorkerConfigurationResource, receiveWorkerDesired } from "../../../src/api/worker-configuration.js";
 import { desiredCapabilitySources } from "../../../src/api/worker-configuration-source.js";
 import { createWorkerConfigurationManager, type WorkerConfigurationManager, type WorkerConfigurationManagerOptions } from "../../../src/commands/worker/configuration.js";
@@ -10,7 +13,17 @@ import { replaceFileAtomicallyFromChunks } from "../../../src/platform/files.js"
 const identity = { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" };
 const projectId = "11111111-1111-4111-8111-111111111111";
 const future = '{"boolean":true,"nil":null,"array":[-1.25,1e100000000000000000000,900719925474099312345],"__proto__":{"future":false}}';
-const desired = (revision: string, extra = future) => receiveWorkerDesired(`{"revision":"${revision}","updatedAt":"2026-11-17T00:00:00Z","value":{"maxConcurrent":2,"pollIntervalMs":1200,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[],"future":${extra}},"projects":[{"projectId":"${projectId}","nativeOverrides":{"future":${extra}},"future":${extra}}],"toolPaths":{"codex":{"kind":"auto","future":${extra}},"copilot":{"kind":"auto"},"herdr":{"kind":"auto"},"future":${extra}},"future":${extra}},"future":${extra}}`);
+const desired = (revision: string, extra = future) => receiveWorkerDesired(`{"revision":"${revision}","updatedAt":"2026-11-17T00:00:00Z","value":{"agentControlMode":"web","maxConcurrent":2,"pollIntervalMs":1200,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[],"future":${extra}},"projects":[{"projectId":"${projectId}","nativeOverrides":{"future":${extra}},"future":${extra}}],"toolPaths":{"codex":{"kind":"auto","future":${extra}},"copilot":{"kind":"auto"},"herdr":{"kind":"auto"},"future":${extra}},"future":${extra}},"future":${extra}}`);
+const legacyCheckpoint = (cache: WorkerConfigurationCache) => {
+  const recordId = "99999999-9999-4999-8999-999999999999", revision = cache.authority.applicationRevision!;
+  const items = (entries: WorkerConfigurationCache["currentItems"]) => entries.map(item => ({ ...item, nativeMode: (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && item.value.appliedValue !== null ? "web" : null }));
+  const mode = { recordId, origin: { generation: cache.authority.generation, targetRevision: revision, source: "application" },
+    value: { key: { kind: "agentControlMode" }, targetRevision: revision, appliedValue: "web", state: "applied", error: null, lastFailure: null, nextAttemptAt: null },
+    backoffStep: 0, failureId: null, started: false, nativeMode: null,
+    actualSource: { kind: "observed", recordId, generation: cache.authority.generation, targetRevision: revision }, blockedByRemovalId: null };
+  const { pendingApplication: _pendingApplication, ...authority } = cache.authority;
+  return { ...cache, authority, currentItems: [...items(cache.currentItems), mode], retainedItems: items(cache.retainedItems) };
+};
 const receipt = (target: ReturnType<typeof desired>, revision: string, accepted: boolean) => parseReceivedWorkerConfigurationReceipt({ json: `{"desired":${target.json},"observationRevision":"${revision}","observationAccepted":${accepted}}` });
 const barrier = () => { let resolve!: () => void; const promise = new Promise<void>(accept => { resolve = accept; }); return { promise, resolve }; };
 const managers: WorkerConfigurationManager[] = [], directories: string[] = [];
@@ -26,20 +39,80 @@ const fixture = async (options: Partial<WorkerConfigurationManagerOptions> = {})
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.stop(); for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe("Worker future configuration persistence", () => {
+  it("preserves unreadable raw authority and unacknowledged removal across GET, restart and later recovery", async () => {
+    const apply = vi.fn(async () => {}), remove = vi.fn(async () => { throw new Error("original stop remains unconfirmed"); });
+    const first = await fixture({ applyNative: apply });
+    await first.manager.configureProjectAdapters({ prepare: async () => {}, remove });
+    const initial = desired("1");
+    await first.manager.receive(initial, "0"); await first.manager.settle();
+    expect(first.manager.current().effective.native).toEqual(initial.known!.value.native);
+    expect(first.manager.current().effective.projects[0]?.ready).toBe(true);
+    const removed = receiveWorkerDesired(desired("2").json.replace(/"projects":\[.*?\],"toolPaths":/, '"projects":[],"toolPaths":'));
+    await first.manager.receive(removed, "0"); await first.manager.settle();
+    const before = await first.read();
+    const failed = [...before.currentItems, ...before.retainedItems].find(item => item.value.key.kind === "projectRemoval" && item.failureId !== null);
+    expect(failed).toMatchObject({ started: true, value: { state: "error", lastFailure: expect.anything() } });
+    const applyCount = apply.mock.calls.length;
+    const oldReport = first.manager.report();
+    expect(oldReport.observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "projectRemoval", projectId }, lastFailure: expect.anything() }));
+    const unknownJson = desired("3").json.replace('"maxConcurrent":2', '"maxConcurrent":"future-value"');
+    const resource = parseReceivedWorkerConfigurationResource({ json: `{"desired":${unknownJson},"observationRevision":"0","observation":null}` });
+    expect(resource.desired).toMatchObject({ revision: "3", known: null, json: unknownJson });
+    const bootstrap = { prepare: vi.fn(async () => initial.known!.value), clear: vi.fn(async () => {}), invalidate: vi.fn() };
+    const exchange = createWorkerConfigurationExchange({ manager: first.manager, read: async () => resource, send: async () => { throw new Error("no report should be sent"); }, bootstrap });
+    const operation = createOperation();
+    try {
+      await exchange.prepare!(operation);
+      const saved = await first.read();
+      expect(saved.authority.desiredJson).toBe(unknownJson);
+      expect(saved.authority.applicationRevision).toBe("2");
+      expect(first.manager.current()).toMatchObject({ desired: null, desiredRevision: "3", synchronized: false, selectedProjects: null, toolTargets: null });
+      expect(first.manager.hasAuthority()).toBe(true);
+      expect(exchange.source!()).toMatchObject({ state: "initialized", desiredRevision: "3" });
+      expect(exchange.capture({ ...workerTelemetry, taskInventory: null })).toMatchObject({ bootstrap: null, observation: null, toolPathsBootstrap: null });
+      expect(bootstrap.prepare).not.toHaveBeenCalled();
+      expect(apply).toHaveBeenCalledTimes(applyCount);
+      expect([...saved.currentItems, ...saved.retainedItems]).toContainEqual(failed);
+      expect(await first.manager.acknowledge(oldReport, receipt(removed, "1", true))).toBe("ignored");
+      expect(await first.read()).toEqual(saved);
+      await exchange.close(); await first.manager.stop();
+
+      const reopened = await fixture({ file: first.file, applyNative: apply });
+      const reopenedExchange = createWorkerConfigurationExchange({ manager: reopened.manager, read: async () => resource, send: async () => { throw new Error("no report should be sent"); }, bootstrap });
+      try {
+        expect((await reopened.read()).authority.desiredJson).toBe(unknownJson);
+        expect(reopened.manager.current()).toMatchObject({ desired: null, desiredRevision: "3", synchronized: false });
+        await reopenedExchange.prepare!(operation);
+        expect(reopenedExchange.source!()).toMatchObject({ state: "initialized", desiredRevision: "3" });
+        expect(reopenedExchange.capture({ ...workerTelemetry, taskInventory: null })).toMatchObject({ bootstrap: null, observation: null, toolPathsBootstrap: null });
+        expect(bootstrap.prepare).not.toHaveBeenCalled();
+        expect(apply).toHaveBeenCalledTimes(applyCount);
+        expect([...(await reopened.read()).currentItems, ...(await reopened.read()).retainedItems]).toContainEqual(failed);
+        const valid = desired("4");
+        await reopened.manager.receive(valid, "0"); await reopened.manager.settle();
+        const restored = await reopened.read();
+        expect(restored.authority.desiredJson).toBe(valid.json);
+        expect(reopened.manager.current().desiredRevision).toBe("4");
+        expect([...restored.currentItems, ...restored.retainedItems]).toContainEqual(failed);
+      } finally { await reopenedExchange.close(); }
+    } finally { operation.dispose(); }
+  });
+
   it("reidentifies an unknown sudo target in schema 7 without losing an applied archive choice", async () => {
     const first = await fixture();
     const target = receiveWorkerDesired(desired("1").json.replace('"value":{', '"value":{"archiveSessions":false,"enableSudoCleanup":true,'));
     await first.manager.receive(target, "0"); await first.manager.settle();
     const original = await first.read(); await first.manager.stop();
-    const source = { ...original, schemaVersion: 7,
-      currentItems: original.currentItems.filter(item => item.value.key.kind !== "enableSudoCleanup"),
-      retainedItems: original.retainedItems.filter(item => item.value.key.kind !== "enableSudoCleanup") };
+    const historical = legacyCheckpoint(original);
+    const source = { ...historical, schemaVersion: 7,
+      currentItems: historical.currentItems.filter(item => item.value.key.kind !== "enableSudoCleanup"),
+      retainedItems: historical.retainedItems.filter(item => item.value.key.kind !== "enableSudoCleanup") };
     await writeFile(first.file, JSON.stringify(source));
     const second = await fixture({ file: first.file });
     expect(second.manager.readCleanupPolicy()).toBeNull();
     expect(second.manager.current().retainedArchiveSessions).toBe(false);
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(8);
+    expect(migrated.schemaVersion).toBe(9);
     expect(migrated.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")?.value).toMatchObject({ state: "pending", appliedValue: null });
     await second.manager.receive(target, "0"); await second.manager.settle();
     expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "1" });
@@ -51,11 +124,11 @@ describe("Worker future configuration persistence", () => {
     await first.manager.receive(initial, "0"); await first.manager.settle();
     const old = await first.read();
     await first.manager.stop();
-    const source = { ...old, schemaVersion: 6, authority: { ...old.authority, desiredJson: initial.json.replace('"revision":"1"', '"revision":"2"').replace('"value":{', '"value":{"enableSudoCleanup":true,') } };
+    const source = { ...legacyCheckpoint(old), schemaVersion: 6, authority: { ...legacyCheckpoint(old).authority, desiredJson: initial.json.replace('"revision":"1"', '"revision":"2"').replace('"value":{', '"value":{"enableSudoCleanup":true,') } };
     await writeFile(first.file, JSON.stringify(source));
     const second = await fixture({ file: first.file });
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(8);
+    expect(migrated.schemaVersion).toBe(9);
     expect(migrated.authority.applicationRevision).toBe("2");
     expect(migrated.authority.generation).not.toBe(old.authority.generation);
     expect(migrated.retainedItems).toEqual(expect.arrayContaining([...old.currentItems]));
@@ -82,7 +155,7 @@ describe("Worker future configuration persistence", () => {
     const first = await fixture(), initial = desired("1");
     await first.manager.receive(initial, "0"); await first.manager.settle();
     const old = await first.read(); await first.manager.stop();
-    const source = JSON.stringify({ ...old, schemaVersion: 6, authority: { ...old.authority, desiredJson: initial.json.replace('"value":{', '"value":{"enableSudoCleanup":true,') } });
+    const source = JSON.stringify({ ...legacyCheckpoint(old), schemaVersion: 6, authority: { ...legacyCheckpoint(old).authority, desiredJson: initial.json.replace('"value":{', '"value":{"enableSudoCleanup":true,') } });
     await writeFile(first.file, source);
     const failure = new Error("migration write failed");
     await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {}, persist: async () => { throw failure; } })).rejects.toBe(failure);
@@ -94,7 +167,7 @@ describe("Worker future configuration persistence", () => {
     await first.manager.receive(initial, "0"); await first.manager.settle();
     const old = await first.read(); await first.manager.stop();
     const observation = '{"baseRevision":"0","desiredRevision":"1","reportedAt":"2026-11-17T00:00:00Z","items":[{"key":{"kind":"enableSudoCleanup"},"targetRevision":"1","appliedValue":"invalid","state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}';
-    const source = JSON.stringify({ ...old, schemaVersion: 6, remoteObservation: { observationRevision: "1", json: observation } });
+    const source = JSON.stringify({ ...legacyCheckpoint(old), schemaVersion: 6, remoteObservation: { observationRevision: "1", json: observation } });
     await writeFile(first.file, source);
     await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} })).rejects.toThrow();
     expect(await readFile(first.file, "utf8")).toBe(source);
@@ -104,7 +177,7 @@ describe("Worker future configuration persistence", () => {
     const first = await fixture(), initial = desired("1");
     await first.manager.receive(initial, "0"); await first.manager.settle();
     const old = await first.read(); await first.manager.stop();
-    const source = JSON.stringify({ ...old, schemaVersion: 6, authority: { ...old.authority, desiredJson: initial.json.replace('"value":{', '"value":{"enableSudoCleanup":null,') } });
+    const source = JSON.stringify({ ...legacyCheckpoint(old), schemaVersion: 6, authority: { ...legacyCheckpoint(old).authority, desiredJson: initial.json.replace('"value":{', '"value":{"enableSudoCleanup":null,') } });
     await writeFile(first.file, source);
     await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} })).rejects.toThrow();
     expect(await readFile(first.file, "utf8")).toBe(source);
@@ -135,7 +208,7 @@ describe("Worker future configuration persistence", () => {
   });
 
   it("retains a hidden negotiated projection across restart without executing it", async () => {
-    const first = await fixture(), rich = receiveWorkerDesired(desired("1").json.replace('"value":{', '"value":{"agentControlMode":"web",'));
+    const first = await fixture(), rich = desired("1");
     const tools = desiredCapabilitySources(rich.json).get("toolPaths")!;
     const legacy = receiveWorkerDesired(rich.json.replace(`,"toolPaths":${tools}`, "").replace('"agentControlMode":"web",', ""));
     await first.manager.receive(rich, "0"); await first.manager.settle();
@@ -146,7 +219,7 @@ describe("Worker future configuration persistence", () => {
     expect(first.manager.current().desired!.value.toolPaths).toBeUndefined();
     expect(first.manager.current().desired!.value.agentControlMode).toBeUndefined();
     expect(JSON.stringify(first.manager.report())).not.toContain("future");
-    expect(first.manager.report().observation!.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+    expect(first.manager.report().observation).toBeNull();
     await first.manager.stop();
     const second = await fixture({ file: first.file });
     expect((await second.read()).hiddenCapabilitySources).toEqual(saved.hiddenCapabilitySources);
@@ -156,7 +229,7 @@ describe("Worker future configuration persistence", () => {
     const restored = await second.read();
     expect(restored.authority.desiredJson).toBe(rich.json);
     expect(restored.hiddenCapabilitySources).toBeUndefined();
-    expect(second.manager.current().desired!.value.toolPaths).toEqual(rich.known.value.toolPaths);
+    expect(second.manager.current().desired!.value.toolPaths).toEqual(rich.known!.value.toolPaths);
     expect(second.manager.current().desired!.value.agentControlMode).toBe("web");
   });
 
@@ -171,7 +244,7 @@ describe("Worker future configuration persistence", () => {
     const second = await fixture({ file: first.file });
     expect((await second.read()).hiddenCapabilitySources?.toolPaths?.json).toBe(largeTools);
     await second.manager.receive(legacy, "0"); await second.manager.receive(rich, "0");
-    expect(second.manager.current().desired!.value.toolPaths).toEqual(rich.known.value.toolPaths);
+    expect(second.manager.current().desired!.value.toolPaths).toEqual(rich.known!.value.toolPaths);
   });
 
   it("rejects changes to a previously hidden subtree at the same revision", async () => {
@@ -200,7 +273,7 @@ describe("Worker future configuration persistence", () => {
     const before = await first.read(); armed = true;
     await expect(first.manager.receive(legacy, "0")).rejects.toBe(failure);
     expect(await first.read()).toEqual(before);
-    expect(first.manager.current().desired!.value.toolPaths).toEqual(rich.known.value.toolPaths);
+    expect(first.manager.current().desired!.value.toolPaths).toEqual(rich.known!.value.toolPaths);
     managers.splice(managers.indexOf(first.manager), 1);
     await expect(first.manager.stop()).rejects.toBe(failure);
   });
@@ -242,7 +315,7 @@ describe("Worker future configuration persistence", () => {
   });
 
   it("preserves in-flight tool preparation, item identities and application revision across future-only updates", async () => {
-    const entered = barrier(), release = barrier(), prepare = vi.fn<NonNullable<WorkerConfigurationManagerOptions["prepareToolSelection"]>>(async (_native, _mode, targets, signal) => {
+    const entered = barrier(), release = barrier(), prepare = vi.fn<NonNullable<WorkerConfigurationManagerOptions["prepareToolSelection"]>>(async (_native, targets, signal) => {
       expect(targets.revision).toBe("1"); entered.resolve(); await release.promise; expect(signal.aborted).toBe(false);
     });
     const apply = vi.fn(async () => {}), first = await fixture({ prepareToolSelection: prepare, applyNative: apply });

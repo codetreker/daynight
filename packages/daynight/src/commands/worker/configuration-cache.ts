@@ -9,17 +9,28 @@ import { transitionConfigurationDesired } from "./configuration-state.js";
 type CacheRead = { readonly cache: WorkerConfigurationCache; readonly migrated: boolean };
 
 export const createConfigurationCache = (identity: WorkerConfigurationIdentity): WorkerConfigurationCache => freezeConfiguration({
-  schemaVersion: 8, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null,
+  schemaVersion: 9, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null,
   nextFailureId: 1, projectionCursor: null, currentItems: [], retainedItems: [],
 });
 export const parseConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): CacheRead => {
   const decoded = decodeConfigurationCache(source, identity);
-  let cache: WorkerConfigurationCache = decoded.cache;
-  if (decoded.migration !== null) {
+  const convertItems = (items: typeof decoded.cache.currentItems) => items.flatMap(item => {
+    if (item.value.key.kind === "agentControlMode") return [];
+    const { nativeMode, ...rest } = item;
+    if (decoded.migrated && (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && nativeMode !== "web") {
+      return [{ ...rest, value: { ...item.value, appliedValue: null, state: "pending" as const, error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, actualSource: null }];
+    }
+    return [rest];
+  });
+  let cache: WorkerConfigurationCache = {
+    ...decoded.cache, schemaVersion: 9,
+    authority: decoded.migrated ? { ...decoded.cache.authority, generation: randomUUID() } : decoded.cache.authority,
+    projectionCursor: decoded.migrated ? null : decoded.cache.projectionCursor,
+    currentItems: convertItems(decoded.cache.currentItems), retainedItems: convertItems(decoded.cache.retainedItems),
+  };
+  if (decoded.migration !== null && decoded.migration.received.known.value.agentControlMode === "web") {
     const { received, previousDesired } = decoded.migration;
-    const native = cache.currentItems.find(item => item.value.key.kind === "native");
-    const localMode = received.known.value.agentControlMode ?? native?.nativeMode ?? "herdr";
-    cache = transitionConfigurationDesired(cache, received, localMode, new Set(), randomUUID, previousDesired, true);
+    cache = transitionConfigurationDesired(cache, received, new Set(), randomUUID, previousDesired, true);
   }
   return { cache: freezeConfiguration(cache), migrated: decoded.migrated };
 };

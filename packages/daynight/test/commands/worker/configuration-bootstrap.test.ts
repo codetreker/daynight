@@ -58,6 +58,38 @@ afterEach(async () => {
 });
 
 describe("Worker configuration bootstrap preparation", () => {
+  it("adopts Web on the first bootstrap when local mode is omitted", async () => {
+    const f = await fixture({ worker: { maxConcurrent: 3 } });
+    const before = await readFile(f.paths.configFile, "utf8"), applyNative = vi.fn(async () => {});
+    const manager = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity, signal: f.root.signal, applyNative });
+    let wire: WorkerCloudReport | undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      wire = JSON.parse(init!.body as string).configuration as WorkerCloudReport;
+      expect(applyNative).not.toHaveBeenCalled();
+      return new Response(JSON.stringify({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime,
+        configuration: { desired: { revision: "1", updatedAt: workerTelemetryTime, value: wire.bootstrap }, observationRevision: "0", observationAccepted: false } }), {
+        headers: { "Content-Type": "application/json", "Daynight-User-ID": identity.userId, "Daynight-Worker-Configuration": "1",
+          "Daynight-Worker-Control-Mode": "1", "Daynight-Worker-Tool-Paths": "1" },
+      });
+    });
+    const exchange = createWorkerConfigurationExchange({ manager, bootstrap: f.provider,
+      read: async () => receivedResource({ desired: null, observationRevision: "0", observation: null }),
+      send: (report, captured, current) => createApiClient({ serverUrl: identity.serverOrigin, expectedUserId: identity.userId, operation: current, fetch,
+        workerControlMode: { supported: true }, workerToolPaths: { supported: true, serverOrigin: identity.serverOrigin, userId: identity.userId },
+      }).reportWorkerConfiguration(identity.workerId, report, captured),
+    });
+    try {
+      await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: () => ({ ...workerTelemetry, taskInventory: null }) });
+      await manager.settle();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(wire).toMatchObject({ bootstrap: { agentControlMode: "web" }, controlModeBootstrap: "web", observation: null });
+      expect(manager.current().desired?.value.agentControlMode).toBe("web");
+      expect(manager.current().effective.agentControlMode).toBe("web");
+      expect(applyNative).toHaveBeenCalledOnce();
+      expect(await readFile(f.paths.configFile, "utf8")).toBe(before);
+    } finally { await exchange.close(); await manager.stop(); }
+  });
+
   it("keeps current-file mode and tools in the wire bootstrap when a legacy target wins the import race", async () => {
     const f = await fixture({ worker: { agentControlMode: "herdr" } });
     const manager = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity, signal: f.root.signal, applyNative: async () => {} });
@@ -101,12 +133,21 @@ describe("Worker configuration bootstrap preparation", () => {
       toolPaths: { codex: path.join(path.parse(process.cwd()).root, "original", "codex") }, repositories: [repository(3)] };
     const f = await fixture({ worker: original }, resolve); f.entry.release.push(release.resolve);
     const first = f.provider.prepare(operation()); await entered.promise;
-    await f.write({ worker: { agentControlMode: "herdr", agent: "claude", model: "replacement", maxConcurrent: 7, repositories: [] } });
+    await f.write({ worker: { agentControlMode: "web", agent: "claude", model: "replacement", maxConcurrent: 7, repositories: [] } });
     release.resolve();
     expect(await first).toMatchObject({ agentControlMode: "web", maxConcurrent: 3, native: { agent: "codex", model: "original", args: ["--original"] },
       projects: [{ projectId: id(3) }], toolPaths: { codex: { kind: "path", path: original.toolPaths.codex } } });
-    expect(await f.provider.prepare(operation())).toMatchObject({ agentControlMode: "herdr", maxConcurrent: 7, native: { agent: "claude", model: "replacement" }, projects: [] });
+    expect(await f.provider.prepare(operation())).toMatchObject({ agentControlMode: "web", maxConcurrent: 7, native: { agent: "claude", model: "replacement" }, projects: [] });
     expect(resolve).toHaveBeenCalledOnce(); expect(f.errors).toEqual([]);
+  });
+
+  it("rejects an explicit unsupported local mode without project lookup or rewriting the file", async () => {
+    const resolve = vi.fn<WorkerBootstrapProjectResolver>(async input => ({ id: input.projectId! }));
+    const f = await fixture({ worker: { agentControlMode: "herdr", repositories: [repository(3)] } }, resolve);
+    const original = await readFile(f.paths.configFile, "utf8");
+    await expect(f.provider.prepare(operation())).rejects.toThrow("worker.agentControlMode herdr is no longer supported; remove it or set it to web");
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(original);
   });
 
   it("shares the root pass when a report waiter is cancelled", async () => {

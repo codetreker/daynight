@@ -9,9 +9,9 @@ const expanded = desired.replace('"value":{', `"future":${future},"value":{"futu
 
 describe("Worker configuration source documents", () => {
   it("retains complete desired source while deriving a strict nested known view", () => {
-    expect(receiveWorkerDesired(expanded)).toEqual({ json: expanded, known: JSON.parse(desired) });
+    expect(receiveWorkerDesired(expanded)).toEqual({ json: expanded, revision: "1", updatedAt: time, known: JSON.parse(desired) });
     const resource = `{"future":${future},"desired":${expanded},"observationRevision":"0","observation":null}`;
-    expect(parseReceivedWorkerConfigurationResource(decodeWorkerConfigurationSource(resource))).toEqual({ json: resource, desired: { json: expanded, known: JSON.parse(desired) }, observationRevision: "0", observationJson: null });
+    expect(parseReceivedWorkerConfigurationResource(decodeWorkerConfigurationSource(resource))).toEqual({ json: resource, desired: { json: expanded, revision: "1", updatedAt: time, known: JSON.parse(desired) }, observationRevision: "0", observationJson: null });
   });
   it("decodes large known configuration trees within bounded JSON operations", () => {
     const large = { revision: "1", updatedAt: time, value: { ...value, native: { ...value.native, args: Array.from({ length: 100 }, () => "x".repeat(4096)) } } };
@@ -29,21 +29,56 @@ describe("Worker configuration source documents", () => {
       }) as typeof JSON.stringify;
       received = receiveWorkerDesired(source);
     } finally { JSON.parse = parse; JSON.stringify = stringify; }
-    expect(received).toEqual({ json: source, known: large });
+    expect(received).toEqual({ json: source, revision: "1", updatedAt: time, known: large });
   });
   it("projects unknown native overrides, tools and choice members without admitting invalid known fields", () => {
     const source = JSON.stringify({ revision: "1", updatedAt: time, value: { ...value, native: { ...value.native, future: true }, projects: [{ projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", nativeOverrides: { model: null, future: -2 }, future: [] }], toolPaths: { codex: { kind: "auto", future: true }, copilot: null, herdr: { kind: "path", path: "/bin/herdr", future: {} }, future: false } } });
     const result = receiveWorkerDesired(source);
-    expect(result.known.value.toolPaths).toEqual({ codex: { kind: "auto" }, copilot: null, herdr: { kind: "path", path: "/bin/herdr" } });
-    expect(result.known.value.projects[0]!.nativeOverrides).toEqual({ model: null });
-    expect(() => receiveWorkerDesired(source.replace('"agent":"codex"', '"agent":"unknown"'))).toThrow();
-    expect(() => receiveWorkerDesired(source.replace('"maxConcurrent":2', '"maxConcurrent":2.0'))).toThrow();
-    expect(() => receiveWorkerDesired(source.replace('"path":"/bin/herdr"', '"path":true'))).toThrow();
-    expect(() => receiveWorkerDesired(source.replace('"kind":"auto"', '"kind":"auto","path":"/bin/x"'))).toThrow();
+    expect(result.known!.value.toolPaths).toEqual({ codex: { kind: "auto" }, copilot: null, herdr: { kind: "path", path: "/bin/herdr" } });
+    expect(result.known!.value.projects[0]!.nativeOverrides).toEqual({ model: null });
+    expect(receiveWorkerDesired(source.replace('"agent":"codex"', '"agent":"unknown"')).known).toBeNull();
+    expect(receiveWorkerDesired(source.replace('"maxConcurrent":2', '"maxConcurrent":2.0')).known).toBeNull();
+    expect(receiveWorkerDesired(source.replace('"path":"/bin/herdr"', '"path":true')).known).toBeNull();
+    expect(receiveWorkerDesired(source.replace('"kind":"auto"', '"kind":"auto","path":"/bin/x"')).known).toBeNull();
     expect(() => receiveWorkerDesired(source, false)).toThrow();
     const mode = desired.replace('"value":{', '"value":{"agentControlMode":"web",');
-    expect(receiveWorkerDesired(mode).known.value.agentControlMode).toBe("web");
+    expect(receiveWorkerDesired(mode).known!.value.agentControlMode).toBe("web");
     expect(() => receiveWorkerDesired(mode, false)).toThrow();
+  });
+  it("retains unsupported stored values while validating authority and observation envelopes", () => {
+    const raw = expanded.replace('"maxConcurrent":2', '"maxConcurrent":"future-value"');
+    const decoded = { json: raw, revision: "1", updatedAt: time, known: null };
+    expect(receiveWorkerDesired(raw)).toEqual(decoded);
+    const observation = JSON.stringify({ baseRevision: "0", desiredRevision: "1", items: [], reportedAt: time });
+    const source = `{"desired":${raw},"observationRevision":"1","observation":${observation}}`;
+    expect(parseReceivedWorkerConfigurationResource({ json: source })).toEqual({ json: source, desired: decoded, observationRevision: "1", observationJson: observation });
+    const receipt = `{"desired":${raw},"observationRevision":"1","observationAccepted":true}`;
+    const sync = `{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${receipt}}`;
+    expect(parseReceivedWorkerConfigurationReportReceipt({ json: sync }).configuration).toEqual({ json: receipt, desired: decoded, observationRevision: "1", observationAccepted: true });
+    expect(() => parseReceivedWorkerConfigurationResource({ json: source.replace('"desiredRevision":"1"', '"desiredRevision":"2"') })).toThrow();
+    expect(() => parseReceivedWorkerConfigurationResource({ json: source.replace('"baseRevision":"0"', '"baseRevision":"1"') })).toThrow();
+    expect(() => parseReceivedWorkerConfigurationResource({ json: source.replace('"observationRevision":"1"', '"observationRevision":"0"') })).toThrow();
+    expect(() => parseReceivedWorkerConfigurationReportReceipt({ json: sync.replace('"observationAccepted":true', '"observationAccepted":"true"') })).toThrow();
+    expect(() => receiveWorkerDesired(raw.replace('"revision":"1"', '"revision":"01"'))).toThrow();
+    expect(() => receiveWorkerDesired(raw.replace(time, "0001-01-01T00:00:00Z"))).toThrow();
+    expect(() => receiveWorkerDesired(raw.replace('"maxConcurrent":"future-value"', '"maxConcurrent":"future-value","maxConcurrent":2'))).toThrow();
+    for (const replacement of ['"maxConcurrent":false', '"maxConcurrent":900719925474099312345', '"maxConcurrent":-3']) {
+      expect(receiveWorkerDesired(expanded.replace('"maxConcurrent":2', replacement)).known).toBeNull();
+    }
+    const futureMode = raw.replace('"value":{', '"value":{"agentControlMode":"future",');
+    expect(receiveWorkerDesired(futureMode, { controlMode: true, toolPaths: false, archiveSessions: false }).known).toBeNull();
+    expect(() => receiveWorkerDesired(futureMode, false)).toThrow();
+  });
+  it.each([
+    ["control mode", { controlMode: true, toolPaths: false, archiveSessions: false }, '"agentControlMode":"future"'],
+    ["tool paths", { controlMode: false, toolPaths: true, archiveSessions: false }, '"toolPaths":{"future":true}'],
+    ["archive sessions", { controlMode: false, toolPaths: false, archiveSessions: true }, '"archiveSessions":"future"'],
+  ] as const)("requires negotiated %s while retaining an unsupported present value", (_name, capabilities, field) => {
+    expect(() => receiveWorkerDesired(desired, capabilities)).toThrow();
+    const source = desired.replace('"value":{', `"value":{${field},`);
+    expect(receiveWorkerDesired(source, capabilities)).toMatchObject({ json: source, revision: "1", known: null });
+    const resource = `{"desired":${desired},"observationRevision":"0","observation":null}`;
+    expect(() => parseReceivedWorkerConfigurationResource({ json: resource }, capabilities)).toThrow();
   });
   it("retains remote unknown observation kinds without importing them into a local report", () => {
     const observation = `{"baseRevision":"0","desiredRevision":"1","reportedAt":"${time}","items":[{"key":{"kind":"future"},"appliedValue":${future},"future":true}]}`;

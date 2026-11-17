@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 const [dist, directory] = process.argv.slice(1);
 const { decodeWorkerCloudJsonSource, parseReceivedWorkerConfigurationResource } = await import(pathToFileURL(path.join(dist, "api/worker-configuration.js")).href);
 const { createWorkerConfigurationManager } = await import(pathToFileURL(path.join(dist, "commands/worker/configuration.js")).href);
-const desiredJson = '{"revision":"1","updatedAt":"2026-11-17T00:00:00Z","value":{"maxConcurrent":2,"pollIntervalMs":1500,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"future":{"integer":900719925474099312345,"nested":[null,true,-1.25,1e1000]}}}';
+const desiredJson = '{"revision":"1","updatedAt":"2026-11-17T00:00:00Z","value":{"maxConcurrent":2,"pollIntervalMs":1500,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"agentControlMode":"web","future":{"integer":900719925474099312345,"nested":[null,true,-1.25,1e1000]}}}';
 const observationJson = '{"baseRevision":"0","desiredRevision":"1","reportedAt":"2026-11-17T00:00:01Z","items":[{"key":{"kind":"future"},"targetRevision":"1","appliedValue":{"integer":900719925474099312345},"state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}';
 const resource = parseReceivedWorkerConfigurationResource(decodeWorkerCloudJsonSource('{"desired":' + desiredJson + ',"observationRevision":"1","observation":' + observationJson + '}'));
 const identity = { serverOrigin: "https://daynight.example", userId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" };
@@ -32,7 +32,7 @@ try {
   await manager.stop();
   manager = undefined;
   const persisted = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(persisted.schemaVersion, 8);
+  assert.equal(persisted.schemaVersion, 9);
   assert.equal(persisted.authority.desiredJson, desiredJson);
   assert.deepEqual(persisted.remoteObservation, { observationRevision: "1", json: observationJson });
   manager = await createWorkerConfigurationManager(options);

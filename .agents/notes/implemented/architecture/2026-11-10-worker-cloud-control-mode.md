@@ -13,12 +13,11 @@ valid under the other mode.
 
 ## Decision
 
-The Worker configuration resource owns the global `agentControlMode` after
-explicit capability negotiation and first adoption. New local configurations
-default to `herdr`; an existing local `web` configuration remains `web` when its
-cloud target first adopts a mode. A nullable target means that adoption has not
-occurred. It is not a third mode or evidence of an applied default.
-
+The Worker configuration resource retains the negotiated global
+`agentControlMode` wire and nullable adoption state. The original implementation
+defaulted a new local candidate to Herdr and validated mode with native settings;
+the [Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md) replaces those Worker application semantics
+with Web-only qualification, without changing the existing service contract.
 `Daynight-Worker-Control-Mode: 1` is independent of configuration protocol versions
 1 and 2. A response must echo the capability before a client exchanges the new
 fields. Old responses omit the mode and its observation item. An old full PUT
@@ -38,38 +37,31 @@ The [tool-path configuration decision](2026-11-11-worker-tool-path-configuration
 extends independent negotiation and locked adoption to each tool, and adds
 selection-aware inputs to native qualification without replacing mode evidence.
 
-Mode and global native settings form one application unit. Validation receives
-the target mode explicitly, including local model and effort normalization. The
-existing serialized cache owner persists the successful pair before publishing
-it. Failure retains the prior effective pair. Project native validation records
-bind the mode and tuple together; a mode change invalidates their old qualification
-without discarding repository preparation or unfinished removal obligations.
+The original grouped mode and native application prevented a new mode from
+being published with arguments validated for another mode. It validated mode and
+global native together, persisted the pair before publishing, and retained the
+previous effective pair on failure. Project proof bound mode and native, so mode
+changes revoked old qualification without discarding repository preparation or
+unfinished removal obligations.
 
-Restarts rebuild native validation proofs. If the current global mode target
-fails and the previous global pair is validated in this process, historical
-Project tuples can be revalidated under that restored mode. Waiting for the
-failed target mode would make otherwise usable Projects unavailable indefinitely.
-The existing application owner retains the target failure and retry policy;
-historical recovery grants only a current-process proof for the matching mode,
-never an applied result for the failed target or authority from cached success.
+When a target mode failed, the earlier implementation revalidated the previous
+global pair in the current process, then allowed compatible historical Project
+tuples to be revalidated under that restored mode. This avoided making otherwise
+usable Projects wait indefinitely for a failed target. Such recovery retained
+the target failure and did not declare the failed target applied. A cached
+success or a mismatched historical mode did not grant qualification.
 
-Unacknowledged removals can retain an applied Project observation after a mode
-change revokes its process proof. Reselecting the same tuple and historical mode
-does not restore that proof. The serialized owner calculates the next proofs and
-normalizes selected applied items without matching evidence to pending before
-persistence. It publishes the cache and proofs together only after a successful
-write; unselected history remains owned by removal acknowledgement.
+An unacknowledged removal could retain a Project observation after a mode change
+revoked its proof. The serialized owner therefore calculated new proofs, changed
+reselected applied items without matching evidence to pending, and persisted the
+cache before publishing proof. This prevented a report from claiming success
+before revalidation. Existing claims kept frozen mode, native, session and
+worktree through recovery and cleanup. Frozen claim configuration took precedence
+over new Project qualification, subject to removal and permission gates. A
+backend serving a live claim remained available across a default change.
 
-New claims consume the applied mode. Existing claims retain their frozen mode,
-native configuration, session and worktree through advancement, retry, recovery
-and cleanup. Their frozen configuration is consulted before new-mode Project
-native qualification, while Project removal and permission gates still apply.
-Before a Web execution record exists, the main store already owns the tuple
-frozen when the claim was registered. That snapshot remains authoritative during
-configuration changes between the claim response and first execution.
-Backend availability follows actual claim ownership: switching defaults does not
-stop a backend with live claims, and Herdr can start lazily when newly required.
-
+The current Web-only configuration decision replaces that application model;
+the original reasons remain relevant to understanding mode-bearing checkpoints.
 This decision partially supersedes the local mode ownership in the archived
 [cloud application decision](../../archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md).
 Keeping mode local originally avoided changing its strict wire representation
@@ -110,11 +102,9 @@ mode to prevent a similar admission gap.
 
 ## Consequences
 
-Operators can edit and confirm a Worker's mode without rewriting its YAML or
-restarting existing claims. Older services retain local behavior, and older
-Workers do not acquire a false applied result merely because the cloud target
-contains a mode. Unknown actual values, failures and pending application remain
-visible in the existing form feedback.
+The service still accepts the negotiated field and preserves existing stored
+observations. The current Worker applies only adopted Web and does not create
+a mode observation; omitted evidence remains unknown in form feedback.
 
 The rollout adds a capability distinction, an unadopted target state and a cache
 migration. Tests must preserve old strict envelopes, concurrent adoption, failure

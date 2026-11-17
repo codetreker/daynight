@@ -83,7 +83,7 @@ const fixture = () => {
   const contexts = new WeakMap<WorkerCloudReport, { reportId: string; generation: string; baseRevision: string; recordIds: readonly string[]; failures: readonly { sourceRecordId: string; failureId: number }[]; items: readonly [] }>();
   let authorityRead = true, nextReportId = 0;
   const manager = {
-    current: () => state,
+    current: () => ({ ...state, desiredRevision: state.desired?.revision ?? null }),
     hasAuthority: () => authorityRead,
     waitReady: vi.fn(async () => { order.push("ready"); }),
     receive: vi.fn(async (received: ReceivedWorkerDesired | null, revision = "0") => { const desired = received?.known ?? null; authorityRead = true; state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
@@ -122,7 +122,7 @@ it("forwards source-backed authority and remote observations without projecting 
   const known = target("2");
   const desiredJson = JSON.stringify(known).replace('"value":{', '"value":{"future":900719925474099312345,');
   const observationJson = '{"baseRevision":"4","desiredRevision":"2","reportedAt":"2026-11-12T00:00:00Z","items":[{"key":{"kind":"future"},"appliedValue":-1.25e900}]}';
-  const received = { json: desiredJson, known };
+  const received = { json: desiredJson, revision: known.revision, updatedAt: known.updatedAt, known };
   f.read.mockResolvedValueOnce({ json: `{"desired":${desiredJson},"observationRevision":"5","observation":${observationJson}}`, desired: received, observationRevision: "5", observationJson });
   const exchange = createWorkerConfigurationExchange(f);
   await exchange.prepare!(current, "source-sync");

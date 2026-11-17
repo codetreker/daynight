@@ -1,14 +1,14 @@
 import { jsonContainerSources, jsonObjectSources } from "./json-source.js";
 import { parseWorkerReportReceipt } from "./parse.js";
-import { malformed, timestamp } from "./validation.js";
-import { parseWorkerCloudDesired, parseWorkerCloudResource, parseWorkerCloudReceipt, parseWorkerCloudObservation, parseWorkerCloudRevision } from "./worker-configuration.js";
+import { bool, malformed, ProtocolError, timestamp } from "./validation.js";
+import { parseWorkerCloudDesired, parseWorkerCloudObservation, parseWorkerCloudRevision } from "./worker-configuration.js";
 import type { WorkerCloudDesired } from "./worker-configuration.js";
 import type { WorkerReportReceipt } from "./types.js";
 import type { WorkerConfigurationCapabilityInput } from "./worker-tool-paths.js";
 import { workerConfigurationCapabilities } from "./worker-tool-paths.js";
 
 export type WorkerConfigurationJsonSource = { readonly json: string };
-export type ReceivedWorkerDesired = { readonly json: string; readonly known: WorkerCloudDesired };
+export type ReceivedWorkerDesired = { readonly json: string; readonly revision: string; readonly updatedAt: string; readonly known: WorkerCloudDesired | null };
 export type ReceivedWorkerConfigurationResource = { readonly json: string; readonly desired: ReceivedWorkerDesired | null; readonly observationRevision: string; readonly observationJson: string | null };
 export type ReceivedWorkerConfigurationReceipt = { readonly json: string; readonly desired: ReceivedWorkerDesired | null; readonly observationRevision: string; readonly observationAccepted: boolean };
 export type ReceivedWorkerConfigurationReportReceipt = WorkerReportReceipt & { readonly configuration: ReceivedWorkerConfigurationReceipt };
@@ -48,11 +48,20 @@ const sourceOf = (value: unknown): string => {
 };
 export const receiveWorkerDesired = (json: string, options?: WorkerConfigurationCapabilityInput, recognizeSudo = true): ReceivedWorkerDesired => {
   const root = jsonObjectSources(json), value = root.get("value");
-  const members = value === undefined ? new Map<string, string>() : jsonObjectSources(value);
+  if (value === undefined || !root.has("revision") || !root.has("updatedAt")) return malformed();
+  const members = jsonObjectSources(value);
+  const revision = parseWorkerCloudRevision(knownJson(root.get("revision")!));
+  const updatedAt = timestamp(knownJson(root.get("updatedAt")!));
+  if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(updatedAt)) return malformed();
   const capabilities = options ?? { controlMode: members.has("agentControlMode"), toolPaths: members.has("toolPaths"), archiveSessions: members.has("archiveSessions") };
   const enabled = workerConfigurationCapabilities(capabilities);
-  if (!enabled.controlMode && members.has("agentControlMode") || !enabled.toolPaths && members.has("toolPaths") || !enabled.archiveSessions && members.has("archiveSessions")) return malformed();
-  return { json, known: parseWorkerCloudDesired(knownJson(desiredProjection(json, capabilities, recognizeSudo)), false, capabilities) };
+  if (enabled.controlMode !== members.has("agentControlMode") || enabled.toolPaths !== members.has("toolPaths") || Boolean(enabled.archiveSessions) !== members.has("archiveSessions")) return malformed();
+  // The full source was validated above; a known-field shape or value that this
+  // binary cannot decode is retained as raw authority, not a partial target.
+  let known: WorkerCloudDesired | null;
+  try { known = parseWorkerCloudDesired(knownJson(desiredProjection(json, capabilities, recognizeSudo)), false, capabilities); }
+  catch (error) { if (!(error instanceof ProtocolError || error instanceof SyntaxError)) throw error; known = null; }
+  return { json, revision, updatedAt, known };
 };
 const failure = (source: string): string => nullable(source, value => project(value, ["code", "category", "phase", "occurredAt"]));
 const observationProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true): string => project(source, ["baseRevision", "desiredRevision", "items", "reportedAt"], {
@@ -84,18 +93,31 @@ export const validateWorkerRemoteObservation = (json: string, observationRevisio
 };
 export const parseReceivedWorkerConfigurationResource = (value: unknown, options?: WorkerConfigurationCapabilityInput): ReceivedWorkerConfigurationResource => {
   const json = sourceOf(value), members = jsonObjectSources(json), desiredSource = members.get("desired"), observationSource = members.get("observation");
-  const desired = desiredSource === undefined || desiredSource === "null" ? null : receiveWorkerDesired(desiredSource, options);
-  const capabilities = options ?? { controlMode: desired !== null && Object.hasOwn(desired.known.value, "agentControlMode"), toolPaths: desired !== null && Object.hasOwn(desired.known.value, "toolPaths"), archiveSessions: desired !== null && Object.hasOwn(desired.known.value, "archiveSessions") };
-  const projection = project(json, ["desired", "observationRevision", "observation"], { desired: source => nullable(source, source => desiredProjection(source, capabilities)), observation: source => nullable(source, source => observationProjection(source, capabilities)) });
-  const known = parseWorkerCloudResource(knownJson(projection), capabilities);
-  return { json, desired, observationRevision: known.observationRevision, observationJson: observationSource === "null" ? null : observationSource! };
+  if (desiredSource === undefined || observationSource === undefined || !members.has("observationRevision")) return malformed();
+  const desired = desiredSource === "null" ? null : receiveWorkerDesired(desiredSource, options);
+  const capabilities = options ?? (desired === null ? false : (() => { const fields = desiredCapabilitySources(desired.json); return { controlMode: fields.has("agentControlMode"), toolPaths: fields.has("toolPaths"), archiveSessions: fields.has("archiveSessions") }; })());
+  const observationRevision = parseWorkerCloudRevision(knownJson(members.get("observationRevision")!), true);
+  if (observationSource === "null") {
+    if (observationRevision !== "0") return malformed();
+  } else {
+    if (desired === null || observationRevision === "0") return malformed();
+    const projection = jsonObjectSources(observationProjection(observationSource, capabilities)), reportedAt = projection.get("reportedAt");
+    if (reportedAt === undefined) return malformed();
+    const instant = timestamp(knownJson(reportedAt));
+    if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(instant)) return malformed();
+    const observation = parseWorkerCloudObservation(knownJson(objectSource([...projection].filter(([key]) => key !== "reportedAt"))), false, capabilities);
+    if (BigInt(observation.desiredRevision) > BigInt(desired.revision) || BigInt(observation.baseRevision) + 1n !== BigInt(observationRevision)) return malformed();
+  }
+  return { json, desired, observationRevision, observationJson: observationSource === "null" ? null : observationSource };
 };
 export const parseReceivedWorkerConfigurationReceipt = (value: unknown, options?: WorkerConfigurationCapabilityInput): ReceivedWorkerConfigurationReceipt => {
   const json = sourceOf(value), members = jsonObjectSources(json), desiredSource = members.get("desired");
-  const desired = desiredSource === undefined || desiredSource === "null" ? null : receiveWorkerDesired(desiredSource, options);
-  const capabilities = options ?? { controlMode: desired !== null && Object.hasOwn(desired.known.value, "agentControlMode"), toolPaths: desired !== null && Object.hasOwn(desired.known.value, "toolPaths"), archiveSessions: desired !== null && Object.hasOwn(desired.known.value, "archiveSessions") };
-  const known = parseWorkerCloudReceipt(knownJson(project(json, ["desired", "observationRevision", "observationAccepted"], { desired: source => nullable(source, source => desiredProjection(source, capabilities)) })), capabilities);
-  return { json, desired, observationRevision: known.observationRevision, observationAccepted: known.observationAccepted };
+  if (desiredSource === undefined || !members.has("observationRevision") || !members.has("observationAccepted")) return malformed();
+  const desired = desiredSource === "null" ? null : receiveWorkerDesired(desiredSource, options);
+  const observationRevision = parseWorkerCloudRevision(knownJson(members.get("observationRevision")!), true);
+  const observationAccepted = bool(knownJson(members.get("observationAccepted")!));
+  if (desired === null && observationRevision !== "0" || observationAccepted && (desired === null || observationRevision === "0")) return malformed();
+  return { json, desired, observationRevision, observationAccepted };
 };
 export const parseReceivedWorkerConfigurationReportReceipt = (value: unknown, options: WorkerConfigurationCapabilityInput = false): ReceivedWorkerConfigurationReportReceipt => {
   const json = sourceOf(value), members = jsonObjectSources(json), configuration = members.get("configuration");
