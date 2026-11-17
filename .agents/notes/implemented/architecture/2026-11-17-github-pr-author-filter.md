@@ -20,4 +20,4 @@ Filter the saved author's stable ID in SQL before pagination. Author-scoped stat
 
 ## Consequences
 
-The partial author index adds storage and write cost, while project totals still require project-wide aggregation. The project total distinguishes a filtered empty result from an empty project. An unknown valid author ID can be queried without directory membership and matches no records unless that ID is stored. This API reads saved facts only; it does not fetch GitHub data or provide the author directory.
+The partial author index adds storage and write cost, while project totals still require project-wide aggregation. The project total distinguishes a filtered empty result from an empty project. An unknown valid author ID can be queried without directory membership and matches no records unless that ID is stored. This API reads saved facts only and does not fetch GitHub data; the separate author directory derives its entries from the same saved observations.

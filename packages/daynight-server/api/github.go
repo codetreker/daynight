@@ -49,6 +49,17 @@ type PullRequestAuthor struct {
 	ID    string `json:"id"`
 	Login string `json:"login"`
 }
+type PullRequestDirectoryAuthor struct {
+	ID             string `json:"id"`
+	Login          string `json:"login"`
+	LoginAmbiguous bool   `json:"loginAmbiguous"`
+}
+type PullRequestAuthorPage struct {
+	ProjectID  string                       `json:"projectId"`
+	Revision   string                       `json:"revision"`
+	Items      []PullRequestDirectoryAuthor `json:"items"`
+	NextCursor *string                      `json:"nextCursor"`
+}
 type PullRequestBase struct {
 	RepositoryID       string `json:"repositoryId"`
 	RepositoryFullName string `json:"repositoryFullName"`
