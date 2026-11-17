@@ -343,6 +343,7 @@ func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls i
 	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
 	want.PreserveAgentControlMode = true
 	want.PreserveToolPaths = true
+	want.PreserveArchiveSessions = true
 	revision := body["revision"].(string)
 	used := 0
 	f.operations.put = func(ctx context.Context, principal model.Principal, worker, actualRevision string, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
