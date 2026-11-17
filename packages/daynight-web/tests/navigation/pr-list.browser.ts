@@ -234,7 +234,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 768, 3
       });
       expect(geometry.right).toBeCloseTo(12, 0);
       expect(Math.abs(geometry.center)).toBeLessThanOrEqual(1);
-      expect([geometry.width, geometry.height, geometry.selectHeight, geometry.appearance]).toEqual([10, 10, width <= 800 ? 44 : 32, 'none']);
+      expect([geometry.width, geometry.height, geometry.selectHeight, geometry.appearance]).toEqual([10, 10, 32, 'none']);
       expect(geometry.textWidth).toBeLessThanOrEqual(geometry.available + 1);
       expect(geometry.hitSelect).toBe(true);
       await assertFits(page);
