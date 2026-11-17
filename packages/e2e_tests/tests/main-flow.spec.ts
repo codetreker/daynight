@@ -43,8 +43,6 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     expect((await login.finished).exitCode).toBe(0);
   } finally { await login.stop(); }
 
-  await verifyTeamMemberFlow(page);
-
   const initialTokens = await page.request.get(`${topology.baseURL}/api/v1/me/tokens`);
   expect(initialTokens.status()).toBe(200);
   const issued = (await initialTokens.json() as { items: Token[] }).items;
@@ -52,6 +50,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const cliToken = issued[0]!;
   expect(cliToken).toMatchObject({ name: expect.stringMatching(/^Daynight CLI/), lastUsedAt: null });
 
+  await verifyTeamMemberFlow(page);
   await verifyWorkerMonitoring(page);
 
   const name = `Product E2E ${randomUUID()}`;
