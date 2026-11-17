@@ -37,7 +37,7 @@ const install = async (page: Page): Promise<State> => {
   return state;
 };
 const start = async (page: Page) => { await page.goto(`/teams/${teamId}/settings`); await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible(); };
-const openDelete = async (page: Page) => { await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog'); await expect(dialog.getByLabel('Enter the Team name to confirm')).toBeVisible(); return dialog; };
+const openDelete = async (page: Page) => { const details = page.locator('details.team-delete'); await details.locator('summary').click(); await details.locator('button').click(); const dialog = page.getByRole('dialog'); await expect(dialog.getByLabel('Enter the Team name to confirm')).toBeVisible(); return dialog; };
 const foreground = async (page: Page, state: State) => {
   const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
   const other = await page.context().newPage(); await other.goto('about:blank');
@@ -75,7 +75,7 @@ test('preserves unknown through foreground resource checks without replay', asyn
   await expect(dialog.getByRole('alert')).toContainText('result is unknown');
   const check = await foreground(page, state);
   await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  expect(state.writes).toBe(1); await expect(page.getByRole('button', { name: 'Delete Team' })).toHaveCount(0);
+  expect(state.writes).toBe(1); await expect(page.locator('details.team-delete button')).toHaveCount(0);
   await check.other.close();
 });
 

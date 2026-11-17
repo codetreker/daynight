@@ -1,3 +1,4 @@
+import { expandTeamDelete } from "./helpers/teamDelete";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { waitForState } from "./helpers/waitForState";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -677,7 +678,7 @@ describe("Team workspace navigation", () => {
       return undefined;
     });
     render(<AuthenticatedApp />); const heading = await screen.findByRole("heading", { name: "Team settings" });
-    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     const confirmation = within(dialog).getByLabelText("Enter the Team name to confirm") as HTMLTextAreaElement;
     fireEvent.change(confirmation, { target: { value: "  Alpha  " } }); confirmation.focus(); confirmation.setSelectionRange(2, 5);
@@ -703,7 +704,7 @@ describe("Team workspace navigation", () => {
       if (url === `/api/v1/teams/${a}` && !init?.method && ++reads >= 4) return json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
       return undefined;
     });
-    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" }); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } }); fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
     await waitForState(() => expect(deletes).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
     await waitForState(() => expect(reads).toBeGreaterThanOrEqual(4)); expect(window.location.pathname).toBe(`/teams/${a}/settings`);
@@ -720,7 +721,7 @@ describe("Team workspace navigation", () => {
     });
     render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
     act(() => navigate(`/teams/${a}/settings`));
-    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     const name = within(dialog).getByLabelText("Enter the Team name to confirm");
     fireEvent.change(name, { target: { value: "  Alpha  " } });
@@ -755,7 +756,7 @@ describe("Team workspace navigation", () => {
     });
     render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Projects shared with me" });
     act(() => navigate(`/teams/${a}/settings`));
-    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
@@ -790,7 +791,7 @@ describe("Team workspace navigation", () => {
       return undefined;
     });
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 });
-    fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
+    await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" }));
@@ -1044,7 +1045,7 @@ describe("Team workspace navigation", () => {
       if (url.startsWith("/api/v1/projects?")) return Promise.resolve(response({ items: [], nextCursor: null }, current));
       throw new Error(`Unexpected request ${url}`);
     }));
-    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" })); await waitForState(() => expect(reads).toBe(3));
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" })); await waitForState(() => expect(reads).toBe(3));
     current = bob; act(() => { localStorage.setItem("daynight.activeUser", JSON.stringify(bob)); window.dispatchEvent(new StorageEvent("storage", { key: "daynight.activeUser" })); });
     await act(async () => old.resolve(response({ error: { code: "not_found", message: "missing", requestId: "rq-a" } }, userId, 404)));
     expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(screen.getByRole("heading", { name: "Team settings" })).toBeInTheDocument();
