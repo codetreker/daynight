@@ -7,6 +7,7 @@ import { verifyCompletionFlow } from "./completion-flow.ts";
 import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
 import { verifyPreviewFlow } from "./preview-flow.ts";
+import { verifyWorkerMonitoring } from "./worker-monitoring.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
@@ -47,6 +48,8 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(issued).toHaveLength(1);
   const cliToken = issued[0]!;
   expect(cliToken).toMatchObject({ name: expect.stringMatching(/^Daynight CLI/), lastUsedAt: null });
+
+  await verifyWorkerMonitoring(page);
 
   const name = `Product E2E ${randomUUID()}`;
   const project = await cli(["project", "create", name, "--repo", `https://example.test/e2e/${randomUUID()}.git`, "--team", "personal", "--confirm"]);

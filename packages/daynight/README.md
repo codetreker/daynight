@@ -2045,7 +2045,10 @@ service uses its last valid report time for the 120-second offline threshold and
 72-hour recent-worker window; observation does not release claims or change
 task status.
 
-Current execution monitoring is reported separately every 30 seconds. It shows
+Current execution monitoring is posted separately on startup and every 30 seconds
+after success or the first failure; consecutive failures use 60 seconds. Each
+attempt captures fresh state without reading or replaying an old observation.
+The direct endpoint requires a compatible Server. Monitoring shows
 observed scheduling, activities, capacity and bounded failure summaries. Claim failures with trusted bindings may include a project-relative worktree location or a fixed unavailable reason; unknown
 or stale data does not mean the Worker is idle. Monitoring failures do not stop
 heartbeats or task execution. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
