@@ -14,7 +14,7 @@ The expanded selector displays the avatar, one name line and the arrow, without
 a type line or its placeholder. The full name and known type remain available in
 the button's accessible name and title. The same presentation applies in the
 mobile drawer; the collapsed rail retains its icon entry. The existing menu and
-selection behavior remain unchanged.
+selection behavior remain unchanged. The subsequent [compact selector decision](../bug-fix/2026-11-17-compact-team-selector.md) changes its dimensions and arrow geometry while retaining this single-line presentation.
 
 This partially replaces the visible type label in the [sidebar scopes
 decision](../architecture/2026-11-12-sidebar-navigation-scopes.md); its grouping

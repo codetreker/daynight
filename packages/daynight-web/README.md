@@ -292,7 +292,7 @@ and Test sessions. Webhooks starts at
 `/webhooks?owner=personal` and retains its independent owner selection and catalog
 gate. The expanded selector displays an avatar, a single-line name and an arrow,
 with no type row or reserved blank line; its accessible name and title retain the
-full name and known type. Project list headings and document titles use
+full name and known type. Its 24px avatar and centered SVG arrow fit a 36px trigger on wide fine-pointer displays; narrow or coarse-pointer layouts use a 44px minimum touch target. The rail hides the name and arrow. Project list headings and document titles use
 Projects, with the confirmed scope in the eyebrow. Direct project breadcrumbs do
 not infer ownership from the sidebar Team. The Team trigger
 opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
