@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -35,6 +36,7 @@ type WorkerWriteDAO interface {
 	WorkerConfiguration(context.Context, string, string) (model.WorkerConfigurationResource, error)
 	ConfigurationProjectAccess(context.Context, string, string) error
 	SetWorkerConfiguration(context.Context, string, string, int64, model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error)
+	SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error)
 	SetWorkerConfigurationObservation(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
 }
 

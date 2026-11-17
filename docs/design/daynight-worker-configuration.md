@@ -23,13 +23,13 @@ flowchart LR
 
 workers 保存 configuration_revision、configuration_updated_at、desired_configuration、configuration_observation_revision、configuration_observation 和 archive_sessions。目标三列同时为空或存在；应用观测独立为空，观测版本初始为 0。迁移不从任务或旧机器报告推测配置。
 
-基础目标和观测保存为受验证 JSONB，公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。preferPlatformSpecificTasks 是独立布尔标量，不进入原生配置元组；应用观测的同名 key 接受 true、false 或 null。agentControlMode 作为同一目标 JSONB 中的 nullable 字段存储，只有旧目标未采纳时为 null。专用存储升级解码识别旧行缺字段，不改变新写入严格结构。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值；mode 不属于项目覆盖。
+目标 JSONB 作为独立原始事实与 revision、修改时间一起读取；读取不以当前候选 schema 的解析结果替代原值。完整 PUT 的候选仍严格验证，未知或不兼容的已存字段可被合法替换。观测按其存储协议解码；公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。preferPlatformSpecificTasks 是独立布尔标量，不进入原生配置元组；应用观测的同名 key 接受 true、false 或 null。agentControlMode 作为同一目标 JSONB 中的 nullable 字段存储，只有旧目标未采纳时为 null。专用存储升级解码识别旧行缺字段，不改变新写入严格结构。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值；mode 不属于项目覆盖。
 
 configuration_observation 的 items 保存除 mode 和 archiveSessions 外的应用项，包括 enableSudoCleanup；mode 与 archiveSessions 观测保存在同一 JSONB 的私有扩展槽，各自保留可恢复顺序的序号。internal/protocol/worker 的存储 codec 拥有该表示，DAO 写入与实际存储字节预算使用同一编码，读取时按序号恢复公开 items。仍在运行的旧服务忽略未知扩展槽，不会回显这些槽中的 key；直接字段的兼容基线按需求规定。旧报告完整替换观测时会移除扩展，此后必须等待 Worker 重新报告，不能复活旧 applied 值。数据库迁移后，旧二进制重启会因迁移版本超出其已知范围而拒绝启动。
 
 archive_sessions 是 `boolean NOT NULL DEFAULT true` 独立列，迁移为已有 Worker 设为 true，新 Worker 也从 true 开始。它不存入基础 desired JSONB，避免旧服务完整重写该 JSON 时擦除已保存的归档目标。读取时将列与目标组合；目标 revision、修改时间和列值在同一 Worker 行事务中维护。
 
-toolPaths 保存于同一 desired JSONB，固定三项 choice/null。旧 JSONB 缺少外层字段时由存储解码补三个 null，不改 revision 或时间，不把未采纳状态当作 auto。工具实际观察独立保存于现有 telemetry JSONB，由完整报告替换；后续报告省略扩展会清除原字段，避免旧 Worker 沿用此前成功。此扩展不新增表、列或配置 CRUD。
+toolPaths 保存于同一 desired JSONB，固定三项 choice/null。旧 JSONB 缺少外层字段时，协商后的响应投影三个 null，不改保存的目标、revision 或时间，也不把未采纳状态当作 auto。工具实际观察独立保存于现有 telemetry JSONB，由完整报告替换；后续报告省略扩展会清除原字段，避免旧 Worker 沿用此前成功。此扩展不新增表、列或配置 CRUD。
 
 数据库迁移为已初始化且缺少 preferPlatformSpecificTasks 的目标 JSON 补入 false，保留目标版本、修改时间、观测版本与原应用结果。缺少同名应用观测仍表示等待 Worker 确认，不从迁移后的目标推导已应用。当前完整目标解析始终要求该布尔字段。
 
@@ -39,9 +39,9 @@ toolPaths 保存于同一 desired JSONB，固定三项 choice/null。旧 JSONB �
 
 ## Worker 行事务
 
-报告复用 Store.WriteWorker。服务层重新解析基础配置 JSON 时单独保留归档候选，避免独立列字段在序列化中丢失。机器观测 upsert 建立或更新记录后，配置分支锁定同一 Worker 行：缺失目标且有合法候选时建立初值；已有目标不被完整候选改写。controlModeBootstrap 仅填尚未采纳的模式，toolPathsBootstrap 分别填尚为 null 的工具。最终候选先完成规范化、编码及预算，再一次持久化；多个工具和模式同时采纳也只升一次目标版本。无变化不写，编码失败回滚整个报告。观测比较自身 baseRevision 后保存。回执来自该事务内最终目标与观测版本。
+报告复用 Store.WriteWorker。服务层重新解析基础配置 JSON 时单独保留归档候选，避免独立列字段在序列化中丢失。机器观测 upsert 建立或更新记录后，配置分支锁定同一 Worker 行：缺失目标且有合法候选时建立初值；已有目标不被完整候选改写。controlModeBootstrap 仅填尚未采纳的模式，toolPathsBootstrap 分别填尚为 null 的工具。首次候选先完成规范化、编码及预算。已有目标的显式引导只更新未采纳字段，保留其他原始字段；多个工具和模式同时采纳也只升一次目标版本。无变化不写，编码失败回滚整个报告。观测比较自身 baseRevision 后保存。回执来自该事务内最终目标与观测版本。
 
-PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标志，不接受这些标志为业务 JSON。core 在锁内 CAS 后将旧客户端省略的模式、工具、sudo 和归档值合并入候选，再完整规范化、校验新增/修改项目准入、编码预算与深相等比较；不能从旧 GET 或解析器默认值决定保留内容。显式 enableSudoCleanup:false 是普通更新，null 或非布尔类型拒绝。已采纳的模式或工具 choice 不能清回 null，工具 auto 为正常显式更新。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
+PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标志，不接受这些标志为业务 JSON。core 在锁内 CAS 后将旧客户端省略的模式、工具、sudo 和归档值合并入候选，再完整规范化、校验新增/修改项目准入、编码预算与完整目标比较；未知字段使完整替换产生新版本。无法确认相同的项目条目时重新校验项目访问；不能从旧 GET 或解析器默认值决定保留内容。显式 enableSudoCleanup:false 是普通更新，null 或非布尔类型拒绝。已采纳的模式或工具 choice 不能清回 null，工具 auto 为正常显式更新。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
 
 并发导入只建立一次初值。观测 CAS 失败不覆盖结果，也不使合法 telemetry 失败；目标 CAS 失败不改变目标。数据库操作、提交与回滚错误保留原链。
 
