@@ -16,8 +16,6 @@ import type { WorkerPaths } from "./paths.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { statfsSync } from "node:fs";
-import type { WorkerResourceCommandRequest } from "./resource-disposal.js";
-import { assertHerdrDisposalTarget, reconcileDeletedHerdrResource } from "./resource-disposal.js";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -73,7 +71,6 @@ import { createWorkerModelDiscovery, createWorkerReadOnlyConfiguration, type Wor
 import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
 import type { WorkerDirectoryInput } from "./read-only/directory.js";
 import { createWorkerGitManager, type WorkerGitPending } from "./worktrees.js";
-import { sameWorktreeLocation } from "./worktrees/paths.js";
 import { normalizeWorkerNative, workerRuntimeConfigurationReport } from "./native-overrides.js";
 import type { WorkerLocalNativeOverrides } from "./local-native.js";
 import { createWorkerToolSelectionRuntime } from "./tool-selection-runtime.js";
@@ -888,7 +885,7 @@ export const runWorker = async (options: {
       await runningCoordinator.stopProject(projectId, applicationSignal);
       prepared.delete(projectId);
     } });
-    let attachmentShown = false, started = false, archiveDeferred = false;
+    let started = false, archiveDeferred = false;
     const archiveShouldYield = (): boolean => {
       const yielding = coordinator?.archiveYield() ?? true;
       if (yielding && !archiveDeferred) emit({ kind: "session-archive-deferred", message: "Completed session archive backfill is deferred while cleanup is pending or worker capacity is full." });
@@ -921,7 +918,6 @@ export const runWorker = async (options: {
           }
         } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });
         if (!started) { emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; cloud-managed configuration; logs=${diagnostics.filename}.` }); started = true; }
-        if (!attachmentShown && herdr !== undefined) { emit({ kind: "attach", message: "Run daynight worker attach in another terminal for native input." }); attachmentShown = true; }
       } catch (error) {
         if (isWorkerCancellation(error, signal)) break;
         if (signal.aborted) throw error;
@@ -1217,113 +1213,4 @@ export const runWorkerControl = async (options: {
     cancellation.dispose();
   }
   throwFailures(failures);
-};
-
-/** Operates only retained resources under the same exclusive runner lock. */
-export const runWorkerResources = async (options: {
-  homeDirectory: string; request: WorkerResourceCommandRequest; output: (message: string) => void; signal?: AbortSignal;
-}): Promise<void> => {
-  if (options.request.kind === "recover") {
-    await (await import("./resource-recovery-runtime.js")).runCompletedWebResourceRecovery({ ...options, request: options.request });
-    return;
-  }
-  const paths = resolveWorkerPaths(options.homeDirectory), platform = currentWorkerPlatform();
-  if (platform !== "macos") throw new Error("Herdr recording resource management requires macOS stop evidence.");
-  const lock = await tryAcquireWorkerInstanceLock(paths);
-  if (lock === null) throw new Error("Stop daynight worker run before inspecting or disposing retained resources.");
-  let herdr: WorkerHerdrAdapter | undefined, store: ReturnType<typeof openWorkerStore> | undefined, git: ReturnType<typeof createWorkerGitManager> | undefined;
-  const operation = createOperation({ ...(options.signal === undefined ? {} : { signal: options.signal }), limits: { totalMs: 300_000 } });
-  const failures: unknown[] = [];
-  try {
-    if (!await hasHerdrJournal(paths, platform)) {
-      if (options.request.kind !== "list") throw new Error("The original Herdr lifecycle journal is missing; disposal is prohibited.");
-      options.output("[]\n"); return;
-    }
-    const { serverUrl, serverToken } = await loadServerConfiguration(paths, operation.signal);
-    if (serverToken === undefined) throw new Error("The original Worker credential is unavailable. Run daynight login with its original owner before resource management.");
-    const workerId = await ensureWorkerIdentity(paths, operation.signal);
-    const remote = createWorkerRemote({ serverUrl, serverToken });
-    herdr = createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId });
-    const archive = herdr.lifecycle?.archive;
-    if (!archive) throw new Error("The installed Worker does not support retained Herdr recording resources.");
-    store = openWorkerStore(paths.databaseFile);
-    git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory,
-      reportPending: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local cleanup remains pending for project ${pending.projectId}; waiting for local close.\n`),
-      reportSettled: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local resources closed for project ${pending.projectId}.\n`),
-      prepareFormat: (candidate, repository, scoped) => prepareWorkerWorktreeFormat({ paths, store: store!, project: candidate, repository, operation: scoped, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
-    });
-    const projectResource = async (resource: ReturnType<typeof archive.resources>[number]) => {
-      if (resource.worktreeDeleted || !resource.stopped || store!.getTask(resource.owner)?.status !== "done" || store!.getCleanupSchedule(resource.owner) !== null) return resource;
-      const project = store!.getProject(resource.owner);
-      if (!project) return resource;
-      try {
-        return { ...resource, worktreeDeleted: await git!.isOriginalWorktreeAbsent(project, resource.owner, resource.worktreePath, operation) };
-      } catch (error) { operation.check(); return resource; }
-    };
-    if (options.request.kind === "list") { options.output(`${JSON.stringify(await Promise.all(archive.resources().map(projectResource)), null, 2)}\n`); return; }
-    const request = options.request;
-    const resource = archive.resources().find(value => value.sessionId === request.sessionId);
-    if (!resource) throw new Error("The requested original Session has no retained resource record.");
-    if (request.kind === "retry") {
-      const result = await archive.retry(request, operation);
-      options.output(`${JSON.stringify(await projectResource(result), null, 2)}\n`); return;
-    }
-    const project = store.getProject(request);
-    if (!project) throw new Error("The original worktree path has no matching project binding.");
-    await lstat(project.localPath);
-    await git.prepareRepository(project, operation);
-    let diagnosticFailure: unknown;
-    try {
-      const result = await archive.dispose(request, operation, async () => {
-        operation.check();
-        const fresh = archive.resources().find(value => value.sessionId === request.sessionId);
-        if (!fresh) throw new Error("The original resource responsibility disappeared during disposal.");
-        // The archive owner first verifies the live claim and persists this exact
-        // intent. A local shutdown record alone cannot decide claim finality.
-        if (fresh.disposition?.operationId !== request.operationId || fresh.disposition.action !== request.action) throw new Error("The original authorized disposal intent is missing.");
-        assertHerdrDisposalTarget(fresh, request);
-        const binding = await git!.resolveWorktreeBinding(project, request, operation);
-        if (binding === null && store!.getTask(request)?.status === "done" && store!.getCleanupSchedule(request) === null
-          && await git!.isOriginalWorktreeAbsent(project, request, fresh.worktreePath, operation)) return true;
-        if (binding === null || !await sameWorktreeLocation(binding.worktreePath, fresh.worktreePath)) throw new Error("The original worktree path has no matching project binding.");
-        const outcome = await git!.removeWorktree(project, request, options.signal === undefined ? {} : { signal: options.signal });
-        if (outcome.effectErrors.length > 0) {
-          try {
-            const diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, secrets: [serverToken] });
-            try { diagnostics.emit({ kind: "cleanup-effect-error", identity: request, component: "cleanup", phase: "worktree-removal", message: "Worktree removal reported errors, but the original resources are confirmed absent.", error: new AggregateError(outcome.effectErrors, "Worktree removal effect failed after reaching its postcondition.", { cause: outcome.effectErrors[0] }) }); }
-            finally { await diagnostics.close(); }
-          } catch (error) { diagnosticFailure = error; }
-        }
-        if (!await git!.isOriginalWorktreeAbsent(project, request, fresh.worktreePath, operation)) throw new Error("The original worktree or its Git branch registration remains present.");
-        return true;
-      }, options.signal === undefined ? {} : { signal: options.signal });
-      options.signal?.throwIfAborted();
-      if (reconcileDeletedHerdrResource(store, result)) {
-        await cleanupOperation(async scoped => {
-          const original = await git!.resolveWorktreeBinding(project, request, scoped);
-          if (original !== null) {
-            // The durable deletion decision predates any successor at this path.
-            // Reconcile only the recorded directory name; do not inspect that path.
-            if (path.basename(original.worktreePath) !== path.basename(result.worktreePath)) throw new Error("The original retained binding differs from its manifest.");
-            await git!.retireWorktreeManifest(project, request, scoped);
-          }
-        }, options.signal);
-      }
-      options.output(`${JSON.stringify(result, null, 2)}\n`);
-    } catch (error) {
-      if (diagnosticFailure !== undefined) throw new AggregateError([error, diagnosticFailure], "Resource disposal and diagnostics failed.", { cause: error });
-      throw error;
-    }
-    if (diagnosticFailure !== undefined) throw new Error("Worktree cleanup diagnostics could not be recorded.", { cause: diagnosticFailure });
-  } catch (error) {
-    failures.push(error);
-  } finally {
-    try { operation.dispose(); } catch (error) { failures.push(error); }
-    try { await git?.dispose(); } catch (error) { failures.push(error); }
-    try { herdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
-    try { store?.close(); } catch (error) { failures.push(error); }
-    try { await lock.release(); } catch (error) { failures.push(error); }
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, "Resource operation and cleanup failed.", { cause: failures[0] });
-  }
 };

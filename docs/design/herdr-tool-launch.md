@@ -8,7 +8,7 @@
 
 recipe 的文件范围由共享解析器拥有。新的 Codex Node 入口冻结 loader、Worker Node 和解析器实际记录的文件，不静态推断 loader 动态选择的 native；原记录中的 runtime、manifest 和命令参数仍逐项核验，不能按新解析格式删减旧证明。实际启动后的 native、完整父子链与官方 Session 由本机制的进程证明和 integration 确认，不能把该运行时证明称为动态 native 文件已在启动前冻结。
 
-`HerdrInstanceManager` 将 daemon、版本查询和 attach client 绑定到同一 Herdr launch。实例握手确认实际 version/protocol，不能把当前目标路径与旧实例版本拼在一起。POSIX 实例元数据保留受控 shell 使用的原 Node 与 helper 入口；Windows 从经 owner、selectionKey 和平台校验的原 mapping manifest 恢复这两个路径，保持与实际 ExternalScript 相同的来源。重连不能把后来安装的 helper 当成旧实例的启动代码；只有已退休映射的新 generation 使用当前 runtime。`worker attach` 只读原实例记录并核验原 launch；文件缺失或变化时明确失败，不使用新 client。
+`HerdrInstanceManager` 将 daemon、版本查询和 attach client 绑定到同一 Herdr launch。实例握手确认实际 version/protocol，不能把当前目标路径与旧实例版本拼在一起。POSIX 实例元数据保留受控 shell 使用的原 Node 与 helper 入口；Windows 从经 owner、selectionKey 和平台校验的原 mapping manifest 恢复这两个路径，保持与实际 ExternalScript 相同的来源。重连不能把后来安装的 helper 当成旧实例的启动代码；只有已退休映射的新 generation 使用当前 runtime。
 
 macOS 每个实际运行代次继续拥有独占实例。新 execution 可以选择新 Herdr，旧执行仍使用自己的实例；原 claim 恢复创建下一代 run 时仍使用原冻结选择。Linux/Windows 使用共享私有实例，其切换需要先清空旧责任，不能用独占实例的准入规则代替。
 
@@ -92,7 +92,7 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 工具遥测按 selectionKey 聚合原实例与执行事实，允许同时出现多个实际选择。版本来自对应冻结观察或实际实例握手；无完整证据时计数和版本保持未知并保留 unconfirmed，不能由 task.status 推导进程存活。采样只读，不启动或探测工具。
 
-单测与受控故障覆盖映射损坏、未知输入、旧 claim 恢复、A/B pending、替代进程、legacy endpoint 和旧 attach。`herdr-tool-platform.integration.test.ts` 在对应真实 OS 使用固定官方发行工具验证 shell、argv、TTY/console、官方 Session 回报及完整进程回收；Windows 验证真实系统 PowerShell 5 和 ExternalScript。独立清理检查不能以测试通过代替。CI 的三平台 job 必须实际成功，跳过不算通过；这些真实 native 隔离证据仍不等同于真实账号 Provider、完整 Worker 或网页组合验收。
+单测与受控故障覆盖映射损坏、未知输入、旧 claim 恢复、A/B pending、替代进程和 legacy endpoint。`herdr-tool-platform.integration.test.ts` 在对应真实 OS 使用固定官方发行工具验证 shell、argv、TTY/console、官方 Session 回报及完整进程回收；Windows 验证真实系统 PowerShell 5 和 ExternalScript。独立清理检查不能以测试通过代替。CI 的三平台 job 必须实际成功，跳过不算通过；这些真实 native 隔离证据仍不等同于真实账号 Provider、完整 Worker 或网页组合验收。
 
 真实平台 fixture 从继承的 PATH 通过现有 `which` 依赖解析 Windows 的真实 `git.exe`，随后执行真实 `git init`，保留其 5 秒上限。子进程失败的上传诊断保留 `code`、`killed`、`signal` 与耗时，不能仅凭 `Command failed` 将非零退出或超时解释为缺少 Git。fixture 在创建 adapter 前记录初始化阶段，并在创建前切换阶段；失败材料保留该阶段。
 

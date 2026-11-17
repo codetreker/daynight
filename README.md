@@ -268,10 +268,7 @@ original claim, worktree, Session, terminal and process birth identities before
 automatic input is allowed. Linux and Windows retain the shared private Herdr
 path. Each workspace shows its task title and stable ownership suffix.
 
-Use `daynight worker attach` in another terminal for human input, including for
-paused tasks. On macOS it selects a recorded runtime and verifies the original
-daemon before connecting. Detaching leaves execution running. Ctrl+C cancels
-and joins Worker jobs, then stops the original execution while preserving
+Ctrl+C cancels and joins Worker jobs, then stops the original execution while preserving
 claims, worktrees, native history and unfinished local rows. It sends no cleanup
 prompt and does not wait for a cleanup turn. Unconfirmed stopping retains
 responsibility and blocks replacement; external temporary resources may remain.

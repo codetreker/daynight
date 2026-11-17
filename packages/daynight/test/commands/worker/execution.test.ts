@@ -897,7 +897,7 @@ describe("execution from current Herdr resources", () => {
     await f.driver.advance(f.input);
     await f.driver.advance(f.input);
     expect(f.events.map((event) => event.kind)).toEqual(["waiting"]);
-    expect(f.events[0]!.message).toContain("daynight worker attach");
+    expect(f.events[0]!.message).toBe("The native agent is waiting for input.");
 
     current.agent_status = "working";
     await f.driver.advance(f.input);
@@ -1008,7 +1008,7 @@ describe("execution from current Herdr resources", () => {
     await f.driver.advance(f.input);
     expect(f.events.map((event) => event.kind)).toEqual(["waiting"]);
     expect(f.events[0]!.message).toContain("The first managed input");
-    expect(f.events[0]!.message).toContain("daynight worker attach");
+    expect(f.events[0]!.message).toBe("The first managed input is waiting in this worker process.");
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(0);
 
     f.agents[0]!.agent_status = "idle";
