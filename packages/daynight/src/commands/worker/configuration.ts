@@ -412,8 +412,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   return {
     current: (): WorkerConfigurationSnapshot => snapshot(cache, usable(), validatedNative, localTools, proofFor),
     readCleanupPolicy: (): { readonly enableSudoCleanup: boolean; readonly revision: string } | null => {
+      const authority = configurationAuthority(cache);
+      if (authority === null) return null;
+      const target = desiredCapabilitySources(authority.json).get("enableSudoCleanup")?.trim();
       const item = findItem(cache, { kind: "enableSudoCleanup" });
-      if (configurationDesired(cache)?.value.enableSudoCleanup === undefined || item?.actualSource?.kind !== "observed" || typeof item.value.appliedValue !== "boolean") return null;
+      if (target !== "true" && target !== "false" || item?.actualSource?.kind !== "observed" || typeof item.value.appliedValue !== "boolean") return null;
       return { enableSudoCleanup: item.value.appliedValue, revision: item.actualSource.targetRevision };
     },
     hasAuthority: (): boolean => synchronized,

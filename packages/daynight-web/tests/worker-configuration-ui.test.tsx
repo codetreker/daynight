@@ -65,7 +65,7 @@ describe('Worker configuration form', () => {
   });
   it('rejects a same-revision change to an unknown tool choice member', async () => {
     const raw = (future: string) => {
-      const value = { ...configurationValue(), toolPaths: { ...automaticToolPaths(), codex: { kind: 'auto', future: 'FUTURE' } } };
+      const value = { ...configurationValue(), toolPaths: { ...automaticToolPaths(), codex: { kind: 'auto' as const, future: 'FUTURE' } } };
       const body = JSON.stringify(configurationResource('1', value)).replace('"FUTURE"', future);
       return new Response(body, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
     };

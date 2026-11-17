@@ -621,7 +621,7 @@ describe("worker runtime configuration reporting", () => {
   });
 
   it.each(["checkpoint", "io-retry", "stale-generation"] as const)("reconciles an imported target after a lost bootstrap receipt before capturing another report (%s)", async scenario => {
-    const f = await fixture(), order: string[] = [], secondEntered = deferred<void>(), releaseSecond = deferred<void>(), thirdEntered = deferred<void>(), releaseThird = deferred<void>(), fourthEntered = deferred<void>(), releaseFourth = deferred<void>(), releaseLaterGet = deferred<void>(), releaseCheckpoint = deferred<void>();
+    const f = await fixture(), order: string[] = [], secondEntered = deferred<void>(), releaseSecond = deferred<void>(), thirdEntered = deferred<void>(), releaseThird = deferred<void>(), fourthEntered = deferred<void>(), releaseFourth = deferred<void>(), releaseLaterGet = deferred<void>(), releaseCheckpoint = deferred<void>(), releaseLaterReport = deferred<void>();
     if (scenario === "io-retry") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     target = { ...target, revision: "2", value: { ...target.value, maxConcurrent: 4, native: { ...target.value.native, model: "cloud-after-lost-receipt" } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -661,6 +661,7 @@ describe("worker runtime configuration reporting", () => {
       if (report.mock.calls.length === 2) { secondEntered.resolve(); await releaseSecond.promise; }
       if (report.mock.calls.length === 3) { thirdEntered.resolve(); await releaseThird.promise; }
       if (report.mock.calls.length === 4) { fourthEntered.resolve(); await releaseFourth.promise; }
+      if (report.mock.calls.length > 4) await releaseLaterReport.promise;
       const observationAccepted = configuration.observation?.baseRevision === String(remoteRevision);
       if (observationAccepted) remoteRevision++;
       const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: String(remoteRevision), observationAccepted }) };
@@ -760,10 +761,10 @@ describe("worker runtime configuration reporting", () => {
       });
       expect(report.mock.calls.slice(4).every(([, , configuration]) => configuration.observation?.baseRevision === "8")).toBe(true);
       releaseLaterGet.resolve();
-      f.signal.abort(); await running;
+      f.signal.abort(); releaseLaterReport.resolve(); await running;
       expect(report.mock.calls.slice(1).every(([, , configuration]) => configuration.bootstrap === null)).toBe(true);
     } finally {
-      releaseSecond.resolve(); releaseThird.resolve(); releaseFourth.resolve(); releaseLaterGet.resolve(); releaseCheckpoint.resolve(); f.signal.abort();
+      releaseSecond.resolve(); releaseThird.resolve(); releaseFourth.resolve(); releaseLaterGet.resolve(); releaseCheckpoint.resolve(); releaseLaterReport.resolve(); f.signal.abort();
       if (scenario === "io-retry") await vi.advanceTimersByTimeAsync(5_000);
       await Promise.allSettled([running]);
     }

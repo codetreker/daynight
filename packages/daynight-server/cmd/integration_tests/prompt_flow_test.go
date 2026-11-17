@@ -27,8 +27,8 @@ func serverAPIPromptNormalFlow(t *testing.T, f *fixture) {
 		"os":     probe(map[string]any{"type": "Linux", "release": "6.8", "version": "kernel", "arch": "x64"}),
 		"cpu":    probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 12.5}),
 		"memory": probe(map[string]any{"usedBytes": 4, "totalBytes": 8}), "disk": probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
-		"versions":      map[string]any{"daynight": "1.0.0", "herdr": probe("0.9.5"), "codex": map[string]any{"state": "not_installed", "checkedAt": stamp}, "copilot": map[string]any{"state": "error", "checkedAt": stamp, "code": "timeout"}},
-		"taskInventory": nil, "configuration": map[string]any{"bootstrap": nil, "observation": nil},
+		"versions":      map[string]any{"daynight": "1.0.0", "codex": map[string]any{"state": "not_installed", "checkedAt": stamp}, "copilot": map[string]any{"state": "error", "checkedAt": stamp, "code": "timeout"}},
+		"taskInventory": nil, "configuration": map[string]any{"bootstrap": nil, "observation": nil, "toolPathsBootstrap": nil},
 	}
 	report := func(selectors string) []model.PromptResult {
 		t.Helper()
@@ -42,6 +42,7 @@ func serverAPIPromptNormalFlow(t *testing.T, f *fixture) {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Daynight-Worker-Configuration", "2")
+		req.Header.Set("Daynight-Worker-Tool-Paths", "2")
 		req.Header.Set("Daynight-Worker-Prompts", selectors)
 		resp, err := f.client.Do(req)
 		if err != nil {

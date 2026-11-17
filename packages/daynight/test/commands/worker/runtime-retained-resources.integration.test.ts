@@ -95,7 +95,7 @@ it.each([false, true])("keeps frozen Web execution responsibility when native de
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const originalClaim = readWorkerClaim(task.properties);
-  const target: WorkerCloudDesired = { revision: "10", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "new-unavailable-model", args: ["--search"] }, projects: [{ projectId, nativeOverrides: {} }] } };
+  const target: WorkerCloudDesired = { revision: "10", updatedAt: workerTelemetryTime, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "new-unavailable-model", args: ["--search"] }, projects: [{ projectId, nativeOverrides: {} }] } };
   let canonical: WorkerCloudDesired | null = target;
   let observationRevision = 0n;
   const report = vi.fn(async (_workerId: string, _body: unknown, configuration: WorkerCloudReport) => {
@@ -172,7 +172,7 @@ it("registers fresh stop verification after a failed startup read even when the 
   const frozen = { agent: "codex" as const, agentControlMode: "web" as const, model: "original-frozen-model", args: [] as string[], recoveryLimit: 2 };
   webStore.register({ ...owner, project: retained, serverOrigin, workerId, userId, configuration: frozen }, Date.now());
   const original = webStore.bindWorktree(owner, binding, Date.now());
-  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "current-cloud-model", args: [] }, projects: [{ projectId: selectedProjectId, nativeOverrides: {} }] } };
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "current-cloud-model", args: [] }, projects: [{ projectId: selectedProjectId, nativeOverrides: {} }] } };
   const seed = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {} });
   await seed.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
   await seed.receive(receivedDesired({ ...target, revision: "1", value: { ...target.value, projects: [{ projectId, nativeOverrides: {} }] } }), "0"); await seed.settle();
@@ -240,7 +240,7 @@ it("counts removal registration only when usable authority still owns its queued
     if (hold) { hold = false; entered(); await writeAllowed; }
     await replaceFileAtomicallyFromChunks(file, chunks(), 0o600);
   } });
-  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: [{ projectId: uuid(9), nativeOverrides: {} }] } };
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: [{ projectId: uuid(9), nativeOverrides: {} }] } };
   try {
     expect(await manager.ensureProjectRemoval(projectId)).toBe(false);
     await manager.receive(receivedDesired(target), "0"); await manager.settle();
@@ -279,7 +279,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
   webStore.register({ ...owner, project: retained, serverOrigin, workerId, userId, configuration: frozen }, Date.now());
   const original = webStore.bindWorktree(owner, binding, Date.now());
   const holderIds = Array.from({ length: 16 }, (_, index) => uuid(100 + index));
-  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: holderIds.map(projectId => ({ projectId, nativeOverrides: {} })) } };
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: holderIds.map(projectId => ({ projectId, nativeOverrides: {} })) } };
   const seed = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {} });
   await seed.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
   await seed.receive(receivedDesired({ ...target, revision: "1", value: { ...target.value, projects: [{ projectId, nativeOverrides: {} }] } }), "0"); await seed.settle();

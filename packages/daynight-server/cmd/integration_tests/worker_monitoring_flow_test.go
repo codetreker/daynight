@@ -22,9 +22,9 @@ func serverAPIWorkerMonitoringFlow(t *testing.T, f *fixture) {
 			"os":     probe(map[string]any{"type": "Linux", "release": "6.8", "version": "kernel", "arch": "x64"}),
 			"cpu":    probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 1}),
 			"memory": probe(map[string]any{"usedBytes": 4, "totalBytes": 8}), "disk": probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
-			"versions": map[string]any{"daynight": "1.0.0", "herdr": probe("1.0.0"), "codex": probe("1.0.0"), "copilot": probe("1.0.0")}, "taskInventory": nil,
+			"versions": map[string]any{"daynight": "1.0.0", "codex": probe("1.0.0"), "copilot": probe("1.0.0")}, "taskInventory": nil,
 		}
-		requestJSON[map[string]any](t, f, http.MethodPost, "/api/v1/me/workers/"+id+"/report", report, http.StatusOK)
+		requestJSON[map[string]any](t, f, http.MethodPost, "/api/v1/me/workers/"+id+"/report", report, http.StatusOK, http.Header{"Daynight-Worker-Tool-Paths": {"2"}})
 	}
 	observation := func(occupied int, lifecycle string) map[string]any {
 		return map[string]any{
