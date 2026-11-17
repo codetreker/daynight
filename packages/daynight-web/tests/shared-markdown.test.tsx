@@ -59,7 +59,7 @@ it('rejects the entire controlled binding set before rendering and reports once 
   const view = render(content(positions));
   expect(draw).not.toHaveBeenCalled();
   expect(invalid).toHaveBeenCalledTimes(1);
-  view.rerender(content(positions.map(range => ({ ...range }))));
+  view.rerender(content(positions.map(range => ({ ...range, unrelated: 'changed' }))));
   expect(draw).not.toHaveBeenCalled();
   expect(invalid).toHaveBeenCalledTimes(1);
 });

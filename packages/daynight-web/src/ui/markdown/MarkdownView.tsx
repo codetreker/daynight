@@ -19,7 +19,7 @@ export const MarkdownView = ({ text, resources, className = '', labels }: Markdo
   const references = new WeakMap<object, string>();
   const positions = resources.kind === 'chat' && resources.images.kind === 'controlled' ? resources.images.positions : null;
   // Equivalent metadata must retain validation identity across ordinary parent updates.
-  const encoded = positions === null ? null : JSON.stringify(positions);
+  const encoded = positions === null ? null : JSON.stringify(positions.map(({ start, end }) => ({ start, end })));
   const validation = useMemo<ImageValidation>(() => ({ valid: encoded === null }), [text, encoded]);
   const plugins = useMemo<NonNullable<Options['remarkPlugins']>>(() => encoded === null
     ? (resources.kind === 'chat' ? chatPlugins : documentPlugins)
