@@ -2,7 +2,7 @@
 
 本文记录保留源码中的旧机制；Worker coordinator 不再调用这些执行、恢复、停止或清理路径。已有 Herdr claim 和资源由用户处理。
 
-本文拥有 macOS `herdr` 模式的运行身份、输入准入、停止证明和恢复机制；[输入仲裁设计](herdr-input-arbitration.md)拥有持久操作、人工控制和严格终端传输。[Worker 需求](../spec/daynight-worker.md)定义必须满足的结果，[Worker 架构](daynight-worker.md)定义调度、claim 与 Git 工作区。[Herdr 工具启动设计](herdr-tool-launch.md)拥有三平台冻结 launch、pane 映射和 Linux/Windows 共享私有实例切换；Web Controller 的 ticket、journal 与恢复契约由 [Task Session 设计](task-session-protocol.md)拥有，不能充当 Herdr 的执行证据。
+本文拥有 macOS `herdr` 模式的运行身份、输入准入、停止证明和恢复机制；原持久输入、人工控制和严格终端传输已移除，保留的历史格式见 [Session v2 契约](../spec/session-v2.md)。[Worker 需求](../spec/daynight-worker.md)定义必须满足的结果，[Worker 架构](daynight-worker.md)定义调度、claim 与 Git 工作区。[Herdr 工具启动设计](herdr-tool-launch.md)拥有三平台冻结 launch、pane 映射和 Linux/Windows 共享私有实例切换；Web Controller 的 ticket、journal 与恢复契约由 [Task Session 设计](task-session-protocol.md)拥有，不能充当 Herdr 的执行证据。
 
 ## 隔离与能力范围
 

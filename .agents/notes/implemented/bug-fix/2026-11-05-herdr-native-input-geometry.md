@@ -26,8 +26,7 @@ and no-follow flags. It verifies the descriptor is a character device and calls
 only `TIOCGWINSZ`, closing the descriptor in every success, failure and
 cancellation path. Darwin SDK headers and a native layout probe establish the
 structure offsets, constants and function signatures, including variadic ioctl
-calling conventions. The [input design](../../../../docs/design/herdr-input-arbitration.md)
-owns the current geometry and admission contract.
+calling conventions. The Herdr terminal input implementation has since been removed; the [Web-only runtime decision](../architecture/2026-11-17-worker-web-runtime-composition.md) records the current boundary.
 
 Both topology observations, the original process proof, readiness, authorization,
 per-frame admission and the existing batch deadline remain required. A failed
