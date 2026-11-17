@@ -26,7 +26,7 @@ const fixture = () => {
   const file = path.join(directory, "state.sqlite");
   const store = open(file);
   const project: WorkerProject = { projectId: claim.projectId, repoUrl: "https://github.com/owner/repo.git", localPath: path.join(directory, "repo") };
-  const register = () => { store.registerProject(project); return store.registerPending({ ...claim, agent: "codex" }); };
+  const register = () => { store.registerProject(project); return store.registerPending({ ...claim, agent: "codex", agentControlMode: "web" }); };
   return { directory, file, store, project, register };
 };
 
@@ -55,6 +55,8 @@ describe("minimal worker SQLite schema", () => {
     const f = fixture(); close(f.store);
     const db = connect(path.join(f.directory, "version12.sqlite"));
     for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 12) db.exec(step.sql);
+    db.prepare("INSERT INTO projects VALUES(?,?,?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
+    db.prepare("INSERT INTO tasks VALUES(?,?,?,'active','codex',NULL,'web')").run(claim.projectId, claim.taskId, claim.claimId);
     db.prepare("INSERT INTO cleanup_schedules VALUES(?,?,?,?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, uuid(4), 100, 3, 200, "archive", "retained");
     db.pragma("user_version=12"); db.close();
     expect(open(db.name).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
@@ -64,6 +66,8 @@ describe("minimal worker SQLite schema", () => {
     const f = fixture(); close(f.store);
     const file = path.join(f.directory, "version16.sqlite"), db = connect(file);
     for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 16) db.exec(step.sql);
+    db.prepare("INSERT INTO projects VALUES(?,?,?)").run(f.project.projectId, f.project.repoUrl, f.project.localPath);
+    db.prepare("INSERT INTO tasks VALUES(?,?,?,'active','codex',NULL,'web')").run(claim.projectId, claim.taskId, claim.claimId);
     db.prepare("INSERT INTO cleanup_schedules VALUES(?,?,?,?,?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, uuid(4), 100, 3, 200, "archive", "retained", "projection_gap");
     const history = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(5), executionGeneration: "1", launchId: uuid(6) };
     db.prepare("INSERT INTO archive_backfill_schedules VALUES(?,?,?,?,?,?,?,?,?)").run(history.serverOrigin, history.executionId, history.executionGeneration, history.launchId, claim.projectId, claim.taskId, claim.claimId, "archive_incomplete", 300);
@@ -180,7 +184,7 @@ describe("worker claim and native session index", () => {
   it("retains a known native identity and rejects a different observed session", () => {
     const { file, store, project } = fixture();
     store.registerProject(project);
-    expect(store.registerPending({ ...claim, agent: "copilot", agentControlMode: "herdr" as const, sessionId: uuid(8) }).sessionId).toBe(uuid(8));
+    expect(store.registerPending({ ...claim, agent: "copilot", agentControlMode: "web" as const, sessionId: uuid(8) }).sessionId).toBe(uuid(8));
     const concurrent = open(file);
     expect(store.setSessionId(claim, uuid(8)).sessionId).toBe(uuid(8));
     expect(() => concurrent.setSessionId(claim, uuid(9))).toThrow("different native session");
@@ -192,7 +196,7 @@ describe("worker claim and native session index", () => {
   it("permits only one active claim for the same project and task across connections", () => {
     const { file, store, register } = fixture();
     register();
-    const newer = { ...claim, claimId: uuid(4), agent: "codex" as const };
+    const newer = { ...claim, claimId: uuid(4), agent: "codex" as const, agentControlMode: "web" as const };
     store.registerPending(newer);
     const concurrent = open(file);
     store.activateTask(claim);
@@ -201,8 +205,8 @@ describe("worker claim and native session index", () => {
     store.completeTask(claim);
     expect(concurrent.activateTask(newer).status).toBe("active");
     expect(store.listTasks()).toEqual([
-      { ...claim, status: "done", agent: "codex", agentControlMode: "herdr" as const, sessionId: null },
-      { ...newer, status: "active", agentControlMode: "herdr", sessionId: null },
+      { ...claim, status: "done", agent: "codex", agentControlMode: "web" as const, sessionId: null },
+      { ...newer, status: "active", agentControlMode: "web", sessionId: null },
     ]);
   });
 
@@ -214,7 +218,7 @@ describe("worker claim and native session index", () => {
     close(store);
     const recovered = open(file);
     expect(recovered.getProject(project)).toEqual(project);
-    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(8) });
+    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "web" as const, sessionId: uuid(8) });
     expect(Object.keys(recovered.getTask(claim)!)).toEqual(["projectId", "taskId", "claimId", "status", "agent", "agentControlMode", "sessionId"]);
   });
 });
@@ -301,6 +305,7 @@ describe("worker cleanup schedules", () => {
     const original = f.store.getTask(claim);
     expect(f.store.saveCleanupSchedule(owner, schedule)).toEqual({ ...owner, ...schedule });
     const second = { ...owner, claimId: uuid(71), worktreeId: uuid(72) };
+    f.store.registerPending({ ...second, agent: "codex", agentControlMode: "web" });
     f.store.saveCleanupSchedule(second, { ...schedule, failures: 0, nextAttemptAt: 0 });
     close(f.store);
     const recovered = open(f.file);

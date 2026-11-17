@@ -1,5 +1,7 @@
 # macOS Herdr Worker 持久运行生命周期
 
+本文记录保留源码中的旧机制；Worker coordinator 不再调用这些执行、恢复、停止或清理路径。已有 Herdr claim 和资源由用户处理。
+
 本文拥有 macOS `herdr` 模式的运行身份、输入准入、停止证明和恢复机制；[输入仲裁设计](herdr-input-arbitration.md)拥有持久操作、人工控制和严格终端传输。[Worker 需求](../spec/daynight-worker.md)定义必须满足的结果，[Worker 架构](daynight-worker.md)定义调度、claim 与 Git 工作区。[Herdr 工具启动设计](herdr-tool-launch.md)拥有三平台冻结 launch、pane 映射和 Linux/Windows 共享私有实例切换；Web Controller 的 ticket、journal 与恢复契约由 [Task Session 设计](task-session-protocol.md)拥有，不能充当 Herdr 的执行证据。
 
 ## 隔离与能力范围
@@ -84,11 +86,11 @@ journal 无法落盘时只依据已有证明尝试受控停止，并报告结果
 
 ## 调度、退出与人工接入
 
-Coordinator 将未结算的本机行、清理计划、真实停止责任与 worktree 归属并入资源发现、同 task 启动屏障及 shutdown。终态清理的原执行 stop proof 已提交后可释放执行槽，不等待封段或网络确认；尚未清理的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。仅剩独立归档源和补传时不再投影为 worktree 清理 owner 或同 task 屏障。
+Worker coordinator 只协调 Web 执行。旧 Herdr 记录和资源不被自动恢复或清理；Web 容量与清理边界由 [Worker 架构](daynight-worker.md)拥有。
 
 终态清理由共享 `cleanup_schedules` 保存原资源身份、首个期限和每 claim 重试策略，不能用 schedule 中的步骤标记替代 lifecycle 原身份、停止证明或服务端 ledger 确认。失败按 1、2、4、8、16、32 秒及最多 60 秒退避，到期后的正常对账才重试；不会消耗业务恢复预算，也不能清除尚未确认的停止责任。调度写失败保留原错误与 SQLite 错误，进程内继续有界退避，不能宣称本次调度已持久保存。
 
-共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation、任务未暂停、结构化状态就绪且没有已知菜单或禁用输入时，通过同一仲裁器发送一次有界 cleanup prompt；cleanup 不要求正向空 composer，读取结果仍为 unavailable。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
+共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation、任务未暂停、结构化状态就绪且没有已知菜单或禁用输入时，通过同一仲裁器发送一次有界 cleanup prompt；cleanup 不要求正向空 composer，读取结果仍为 unavailable。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。
 
 Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止证明提交后释放执行槽；确认原运行、选择清理及在途本地操作结束后，安全删除原 worktree 并核验目录和 Git 注册，再结算本机行与清理计划。独立队列继续保存原源、封段、发布 ledger、冻结并核对不可变归档回执；这些步骤的失败不阻断文件清理。重启从原停止证明、实际 Git 状态、本机行和计划收敛清单退休；已确认后继的目录不能被旧责任删除。显式 delete 的持久处置记录保持独立。
 
@@ -97,6 +99,6 @@ Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。
 - `herdr/durable.ts` 组合 lifecycle store、Session 客户端、原生进程控制与现有 Herdr adapter；`WorkerHerdrLifecycle` 向协调器提供登记、准入、责任查询、条件 cleanup、停止和停止确认；`WorkerHerdrInput` 提供控制状态、授权控制请求及输入操作入口。
 - `herdr/agents.ts` 提供分离的 `launch`、`processInfo`、`submitInitialPrompt` 和 `submitPrompt`；共享路径的 `start` 同样消费冻结 mapping，并在单次初始输入后确认官方 Session。
 - `herdr/lifecycle-store.ts` 校验不可变身份、状态迁移和追加历史，并提供只读读取；`session-connection.ts` 拥有注册、读回和 ledger 确认。
-- `herdr/native-macos.ts` 拥有原进程身份与独占停止；`execution.ts`、`cleanup.ts`、`coordinator.ts` 消费持久准入和停止结果。
+- `herdr/native-macos.ts` 拥有旧机制的原进程身份与独占停止。
 
 验证应覆盖旧 prepared 的保守迁移、准备停止与零帧收尾、准备证明不授予恢复、两类停止证明独立校验、先记录身份后输入、注册与 ledger 丢响应、准备/启动/停止/封段崩溃、未知输入不重放、重连与运行换代、替代实例保护、终态同步、归档失败时安全工作区清理与重启收敛以及 Web/legacy 回归。模拟故障证明状态机与拒绝语义；macOS 真实 daemon、socket 与进程身份实验分别证明支持范围。二者不能互相替代，也不等同于 provider 登录或完整业务交付验收。

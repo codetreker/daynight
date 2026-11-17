@@ -46,7 +46,7 @@ describe("worker Project registration", () => {
     let originalTask: ReturnType<typeof original.getTask>;
     try {
       original.registerProject(binding);
-      original.registerPending({ ...claim, agent: "codex" });
+      original.registerPending({ ...claim, agent: "codex", agentControlMode: "web" });
       original.activateTask(claim);
       original.setSessionId(claim, sessionId);
       originalTask = original.getTask(claim);

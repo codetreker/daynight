@@ -15,7 +15,7 @@ import type { ArchiveBackfillIdentity, CleanupScheduleRecord } from "./types.js"
 import { deleteWebRecording, WebRecordingDiscardedError, withWebRecordingSource } from "./web-recording-source.js";
 
 export const createWebArchiveMaintenance = (options: {
-  homeDirectory: string; serverUrl: string; workerId: string; signal: AbortSignal;
+  homeDirectory: string; serverUrl: string; workerId: string; userId: string; signal: AbortSignal;
   store: ReturnType<typeof openWorkerStore>; webStore: ReturnType<typeof openWebExecutionStore>;
   archive: NonNullable<WebBackendOptions["archive"]>; probeArchive: NonNullable<WebBackendOptions["probeArchive"]>;
   archiveSessions?: () => boolean | null;
@@ -59,16 +59,16 @@ export const createWebArchiveMaintenance = (options: {
     } catch (failure) { return [failure]; }
     return [];
   };
-  const identityFor = (task: LocalTask): ArchiveBackfillIdentity => {
-    if (task.workerId !== options.workerId || task.serverOrigin !== serverUrl) throw new Error("The Web recording belongs to a different Worker or service.");
+  const identityFor = (task: LocalTask, expectedUserId = options.userId): ArchiveBackfillIdentity => {
+    if (task.workerId !== options.workerId || task.serverOrigin !== serverUrl || task.userId !== expectedUserId) throw new Error("The Web recording belongs to a different Worker, owner or service.");
     const execution = task.webExecution;
     if (execution === null) throw new Error("Archive failure has no original execution identity.");
     return { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
       executionId: execution.executionId, executionGeneration: execution.executionGeneration, launchId: execution.launchId };
   };
-  const recordLegacyFailure = (task: LocalTask, schedule: CleanupScheduleRecord): void => {
+  const recordLegacyFailure = (task: LocalTask, schedule: CleanupScheduleRecord, expectedUserId = options.userId): void => {
     if (task.projectId !== schedule.projectId || task.taskId !== schedule.taskId || task.claimId !== schedule.claimId || task.worktreeId !== schedule.worktreeId || task.serverOrigin !== serverUrl) throw new Error("Legacy archive failure identity changed.");
-    const identity = identityFor(task), code = schedule.archiveRepairCode;
+    const identity = identityFor(task, expectedUserId), code = schedule.archiveRepairCode;
     if (code !== undefined && code !== null) archiveRepairs.set(identity.executionId, code);
     archiveRetryAt.set(identity.executionId, schedule.nextAttemptAt);
     const error = new Error(schedule.lastError ?? "Legacy archive failure; original error was not recorded.");
@@ -79,10 +79,10 @@ export const createWebArchiveMaintenance = (options: {
     if (diagnostics.length > 0) reportedError = new AggregateError([reportedError, ...diagnostics], "Legacy archive failure diagnostics failed.", { cause: error });
     emit({ kind: "session-archive-retry", message: "Legacy session archive failure remains pending; its source is retained for retry.", error: reportedError });
   };
-  const recordFailure = (task: LocalTask, error: unknown): void => {
+  const recordFailure = (task: LocalTask, error: unknown, expectedUserId = options.userId): void => {
     const execution = task.webExecution;
     if (execution === null) throw new Error("Archive failure has no original execution identity.", { cause: error });
-    const identity = identityFor(task);
+    const identity = identityFor(task, expectedUserId);
     let retained: ReturnType<typeof store.getArchiveBackfillSchedule> = null;
     let persistenceError: unknown;
     try { retained = store.getArchiveBackfillSchedule(identity); }
@@ -112,7 +112,7 @@ export const createWebArchiveMaintenance = (options: {
       if (signal.aborted) return;
       const task = tasks[(previous + offset) % tasks.length]!;
       const execution = task.webExecution;
-      if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || task.workerId !== options.workerId || task.cleanup?.discardRecording || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
+      if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || task.workerId !== options.workerId || task.userId !== options.userId || task.cleanup?.discardRecording || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
       // Advance on failure as well as success so a damaged source cannot monopolize catch-up.
       lastArchiveAttempt = execution.executionId;
       const identity = { serverOrigin: serverUrl, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
@@ -171,7 +171,7 @@ export const createWebArchiveMaintenance = (options: {
   let shutdownFailed = false;
   const discardShutdownFailures: unknown[] = [];
   let failureId: string | undefined;
-  const startDiscard = (selected: LocalTask, isSettled: (task: LocalTask) => boolean, inputSignal: AbortSignal): Promise<{ ok: true } | { error: unknown }> => {
+  const startDiscard = (selected: LocalTask, isSettled: (task: LocalTask) => boolean, inputSignal: AbortSignal, expectedUserId = options.userId): Promise<{ ok: true } | { error: unknown }> => {
     const execution = selected.webExecution!;
     const existing = discardJobs.get(execution.executionId);
     if (existing !== undefined) return existing;
@@ -179,7 +179,7 @@ export const createWebArchiveMaintenance = (options: {
     const job: Promise<{ ok: true } | { error: unknown }> = (async () => {
       try {
         await (options.removeRecording ?? deleteWebRecording)(options.homeDirectory, selected, () => webStore.getTask(selected), isSettled, jobSignal);
-        store.deleteArchiveBackfillSchedule(identityFor(selected));
+        store.deleteArchiveBackfillSchedule(identityFor(selected, expectedUserId));
         discardRetryAt.delete(execution.executionId);
         discarded.add(execution.executionId);
         return { ok: true as const };
@@ -198,21 +198,21 @@ export const createWebArchiveMaintenance = (options: {
   return {
     recordFailure,
     recordLegacyFailure,
-    async discardOne(task: LocalTask, isSettled: (task: LocalTask) => boolean, signal: AbortSignal): Promise<void> {
+    async discardOne(task: LocalTask, isSettled: (task: LocalTask) => boolean, signal: AbortSignal, expectedUserId = options.userId): Promise<void> {
       signal.throwIfAborted();
       const current = webStore.getTask(task);
-      if (current === null || current.serverOrigin !== serverUrl || current.workerId !== options.workerId || task.serverOrigin !== current.serverOrigin || task.workerId !== current.workerId || current.worktreeId !== task.worktreeId || current.webExecution?.executionId !== task.webExecution?.executionId || current.webExecution?.executionGeneration !== task.webExecution?.executionGeneration || current.webExecution?.launchId !== task.webExecution?.launchId) throw new Error("The original Web recording identity changed.");
+      if (current === null || current.serverOrigin !== serverUrl || current.workerId !== options.workerId || current.userId !== expectedUserId || task.userId !== current.userId || task.serverOrigin !== current.serverOrigin || task.workerId !== current.workerId || current.worktreeId !== task.worktreeId || current.webExecution?.executionId !== task.webExecution?.executionId || current.webExecution?.executionGeneration !== task.webExecution?.executionGeneration || current.webExecution?.launchId !== task.webExecution?.launchId) throw new Error("The original Web recording identity changed.");
       if (current.status !== "done" || current.cleanup?.kind !== "terminal") throw new Error("Web recording deletion requires completed terminal cleanup.");
       if (!current.cleanup.discardRecording || current.webExecution === null || discarded.has(current.webExecution.executionId)) return;
       if (!isSettled(current)) throw new Error("The original Web cleanup has not settled.");
-      const outcome = await startDiscard(current, isSettled, signal);
+      const outcome = await startDiscard(current, isSettled, signal, expectedUserId);
       if ("error" in outcome) throw outcome.error;
       signal.throwIfAborted();
     },
     async discardLocal(isSettled: (task: LocalTask) => boolean, archiveSessions: boolean | null, signal: AbortSignal): Promise<void> {
       for (let task of webStore.listCompletedTasks()) {
         if (signal.aborted) return;
-        if (task.serverOrigin !== serverUrl || task.workerId !== options.workerId || task.cleanup?.kind !== "terminal" || task.webExecution === null) continue;
+        if (task.serverOrigin !== serverUrl || task.workerId !== options.workerId || task.userId !== options.userId || task.cleanup?.kind !== "terminal" || task.webExecution === null) continue;
         const execution = task.webExecution;
         if (discarded.has(execution.executionId) || discardJobs.has(execution.executionId)) continue;
         if ((discardRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;

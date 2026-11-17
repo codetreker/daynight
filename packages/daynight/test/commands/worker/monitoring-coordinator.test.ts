@@ -9,60 +9,31 @@ import { createMonitoringObserver } from "../../../src/commands/worker/monitorin
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { Task } from "../../../src/api/types.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
-import type { ResourceOwner } from "../../../src/commands/worker/types.js";
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 let project = { projectId: uuid(10), repoUrl: "https://example.test/a/b.git", localPath: "" };
-const owner: ResourceOwner = { projectId: uuid(10), taskId: uuid(20), claimId: uuid(30), worktreeId: uuid(40) };
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 const roots: string[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-const fixture = (settings: { retained?: boolean; pending?: boolean; prepareProject?: () => Promise<void> } = {}) => {
+const fixture = (settings: { prepareProject?: () => Promise<void> } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/monitoring-coordinator"); mkdirSync(base, { recursive: true });
   const root = mkdtempSync(path.join(base, "case-")); roots.push(root);
   project = { ...project, localPath: root };
-  const binding = { repositoryPath: root, commonDirectory: path.join(root, ".git"), worktreePath: path.join(root, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
   const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   let clock = 1_000;
   const monitor = createMonitoringObserver({ now: () => clock, reservationKey: new Uint8Array(32) });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), listWorktreeManifests: vi.fn(async () => settings.retained ? [{ owner, binding }] : []), resolveWorktreeBinding: vi.fn(async () => binding) } as unknown as WorkerGitManager;
-  const tasks = { pendingStops: vi.fn(() => settings.pending ? [{ context: { ...owner, cwd: binding.worktreePath }, binding: {} }] : []), listResources: vi.fn(async () => settings.retained ? [{ owner, workspaceId: "workspace", panes: [] }] : []) };
-  const herdr = { tasks, ensureInstance: vi.fn(async () => {}) } as unknown as WorkerHerdrAdapter;
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []) } as unknown as WorkerGitManager;
   const ownInventory = vi.fn(async () => ({ tasks: [], coveredProjectIds: [project.projectId], unavailableProjectIds: [] as string[] }));
   const candidates = vi.fn(async function* (): AsyncGenerator<Task> { /* Full successful search has no candidates. */ });
   const claim = vi.fn();
   const remote = { serverOrigin: "https://example.test", currentUserId: vi.fn(async () => uuid(2)), ownInventory, candidates, claim } as unknown as WorkerRemote;
-  const coordinator = createWorkerCoordinator({ store, git, herdr, remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, preferPlatformSpecificTasks: false, buildPrompt: () => "", emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
+  const coordinator = createWorkerCoordinator({ store, git, remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
   return { coordinator, monitor, ownInventory, candidates, claim, clock: (value: number) => { clock = value; } };
 };
 
 describe("coordinator monitoring", () => {
-  it("uses the deduplicated retained responsibility for both admission and capacity", async () => {
-    const f = fixture({ retained: true });
-    await f.coordinator.tick();
-    const snapshot = f.monitor.capture();
-    expect(snapshot.capacity).toMatchObject({ limit: 1, occupied: 1, available: 0 });
-    expect(snapshot.reservations).toHaveLength(1);
-    expect(snapshot.reservations[0]!.roles).toEqual(expect.arrayContaining(["resource-owner", "cleanup"]));
-    expect(snapshot.admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "capacity-full" }), expect.objectContaining({ code: "cleanup-capacity-blocked", scope: { kind: "worker" } })]));
-    expect(f.candidates).not.toHaveBeenCalled(); expect(f.claim).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(f.monitor.capture().currentFailures).toHaveLength(1));
-  });
-
-  it("does not double count the same pending stop and cleanup responsibility", async () => {
-    const f = fixture({ retained: true, pending: true });
-    await f.coordinator.tick();
-    const snapshot = f.monitor.capture();
-    expect(snapshot.capacity).toMatchObject({ occupied: 1, available: 0 });
-    expect(snapshot.reservations).toHaveLength(1);
-    expect(snapshot.reservations[0]!.roles).toEqual(expect.arrayContaining(["resource-owner", "cleanup", "pending-stop"]));
-    expect(f.candidates).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(f.monitor.capture().currentFailures).toHaveLength(1));
-  });
-
   it("records complete empty search, but neither a failed search nor a skipped tick advances success", async () => {
     const f = fixture();
     await f.coordinator.tick();
@@ -99,7 +70,7 @@ describe("coordinator monitoring", () => {
     const pending = f.coordinator.tick();
     try {
       await entered;
-      f.coordinator.updateConfiguration({ repositories: [{ project, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 2, preferPlatformSpecificTasks: false });
+      f.coordinator.updateConfiguration({ repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 2, preferPlatformSpecificTasks: false });
       release(); await pending;
       const current = f.monitor.capture();
       expect(current.scheduler).toMatchObject({ coverage: "partial", lastOutcome: "completed", lastSuccessfulAt: first.scheduler.lastSuccessfulAt });

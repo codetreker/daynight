@@ -15,7 +15,6 @@ import type { WorkerEvent } from "./execution.js";
 import type { WorkerPaths } from "./paths.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { statfsSync } from "node:fs";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -49,8 +48,6 @@ import { isWorkerCancellation } from "./execution.js";
 import type { ExecutionConfiguration } from "./types.js";
 import { createSharedWorkerHerdr } from "./herdr/shared.js";
 import { hasUnconfirmedOwnedCommandCleanup } from "./owned-command.js";
-import type { WorkerHerdrAdapter } from "./herdr.js";
-import { createDurableWorkerHerdr } from "./herdr/durable.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
@@ -86,12 +83,6 @@ const gitSettledReporter = (emit: (event: WorkerEvent) => void): NonNullable<Par
   emit({ kind: "git-local-closed", message: `Git ${pending.command} local resources closed.`, projectId: pending.projectId,
     ...(pending.owner === undefined ? {} : { identity: pending.owner }), component: "git", phase: pending.command, attemptId: pending.attemptId,
     ...(settlement.cleanupErrors.length === 0 ? {} : { error: new AggregateError(settlement.cleanupErrors, "Repository Git local cleanup reported errors.", { cause: pending.error }) }) });
-};
-
-const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
-  if (platform !== "macos") return false;
-  try { await lstat(path.join(paths.workerDirectory, "herdr-executions.sqlite")); return true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 };
 
 export const currentWorkerPlatform = (platform: NodeJS.Platform = process.platform): TaskPlatform => {
@@ -218,7 +209,7 @@ const nativeConfigurationApplication = (options: {
   };
 };
 
-const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, workerId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>, archiveSessions?: () => boolean | null) => {
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, workerId: string, userId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>, archiveSessions?: () => boolean | null) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
     const api = createWorkerSessionApi(serverUrl, serverToken);
@@ -241,7 +232,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive probe does not identify the original execution.");
       return probeStoppedControllerArchive({ journalPath, ticket, signal });
     };
-    const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, workerId, signal, store, webStore, archive, probeArchive, emit, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { monitoring }) });
+    const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, workerId, userId, signal, store, webStore, archive, probeArchive, emit, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { monitoring }) });
     const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, jobLeases, platform, now: Date.now, archive, probeArchive, onArchiveFailure: archiveMaintenance.recordFailure, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
@@ -252,7 +243,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         emit({ kind: event.kind, message: event.message, ...(event.task === undefined ? {} : { identity: { projectId: event.task.projectId, taskId: event.task.taskId, claimId: event.task.claimId, worktreeId: event.task.worktreeId } }), ...(task === null ? {} : { task }), ...(event.component === undefined ? {} : { component: event.component }), ...(event.phase === undefined ? {} : { phase: event.phase }), ...(event.attemptId === undefined ? {} : { attemptId: event.attemptId }), ...(event.runKey === undefined ? {} : { runKey: event.runKey }), ...(event.error === undefined ? {} : { error: event.error }) });
       },
     });
-    return { webStore, webBackend, launcher, jobLeases, archiveMaintenance, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports, buildPrompt: buildWorkerPrompt };
+    return { webStore, webBackend, launcher, jobLeases, archiveMaintenance, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, verifyWebStartupReporting: api.supportsStartupReports };
   } catch (error) {
     try { webStore.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Web runtime initialization and store shutdown failed."); }
     throw error;
@@ -292,7 +283,6 @@ export const runWorker = async (options: {
   let tools: ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
-  let herdr: WorkerHerdrAdapter | undefined;
   let selectionHerdr: ReturnType<typeof createSharedWorkerHerdr> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
@@ -394,7 +384,7 @@ export const runWorker = async (options: {
       readCleanupPolicy: () => configuration?.readCleanupPolicy() ?? null,
       prepareFormat: (project, repository, operation) => prepareWorkerWorktreeFormat({ paths, store: getStore(), project, repository, operation, workerId, serverOrigin: serverUrl, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered }),
     })) : git;
-    const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
+    const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore, workerId, serverOrigin: serverUrl });
     const admitLocalBinding = async (binding: WorkerProject, operationSignal: AbortSignal): Promise<WorkerProject> => {
       unobservedLocalMappings.add(binding.projectId);
       try {
@@ -470,7 +460,7 @@ export const runWorker = async (options: {
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
       admitHerdr: async (launch, operation) => sharedHerdr(await nativeApplication.prepareEnvironment()).prepareSelection(launch, operation),
       closeHerdr: async operation => { if (selectionHerdr !== undefined && (platform === "macos" || !getStore().listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr") && !getStore().listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr"))) await selectionHerdr.stopInstance(operation); },
-      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? herdr?.lifecycle?.activeToolSelections?.() ?? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? [], ...bots?.activeToolSelections() ?? []] });
+      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? [], ...bots?.activeToolSelections() ?? []] });
     const toolRuntime = tools;
     let retainedView: WorkerCoordinatorConfiguration | undefined;
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
@@ -778,31 +768,20 @@ export const runWorker = async (options: {
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
     scheduleInitialRemovals();
     signal.throwIfAborted();
-    const lazyHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>>): WorkerHerdrAdapter => new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => {
-      herdr = herdr === undefined ? platform === "macos" ? createDurableWorkerHerdr({ paths, selectionVerifier, readExecutionConfiguration, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : sharedHerdr(environment) : herdr;
-      return Reflect.get(herdr, property);
-    } });
     let coordinatorJob: Promise<ReturnType<typeof createWorkerCoordinator>> | undefined;
     const ensureCoordinator = (): Promise<ReturnType<typeof createWorkerCoordinator>> => {
       if (coordinator !== undefined) return Promise.resolve(coordinator);
       if (coordinatorJob !== undefined) return coordinatorJob;
       const job = (async () => {
         const currentStore = getStore();
-        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, workerId, platform, emit, signal, currentPromptSource, undefined, observer, toolRuntime, () => manager.current().effective.archiveSessions);
+        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, workerId, userId, platform, emit, signal, currentPromptSource, undefined, observer, toolRuntime, () => manager.current().effective.archiveSessions);
         if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
           onError: message => emit({ kind: "credential-renewal-error", message }),
         }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
-        const environment = await nativeApplication.prepareEnvironment();
         signal.throwIfAborted();
         const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().selectedProjects?.map(project => project.projectId) ?? getStore().listProjects().map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
         coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration,
-          reserveClaimTools: async (reservation, signal) => {
-            if (platform === "macos") { currentStore.reserveClaimTools(reservation); return; }
-            const operation = createOperation({ signal, limits: { totalMs: 15_000 } });
-            try { await sharedHerdr(environment).reserveSelection(reservation.nativeConfiguration.herdrLaunch!, () => { currentStore.reserveClaimTools(reservation); }, operation); }
-            finally { operation.dispose(); }
-          },
-          store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...current,
+          store: currentStore, git: getGit(), ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...current,
           archiveSessions: () => manager.current().effective.archiveSessions,
           prepareProject: async (projectId, preparationSignal) => {
             const project = currentStore.getProject({ projectId });
@@ -813,8 +792,6 @@ export const runWorker = async (options: {
             try { await getGit().prepareRepository(project, operation); } finally { operation.dispose(); }
           },
           monitoring: observer,
-          hasHerdrJournal: await hasHerdrJournal(paths, platform),
-          availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
           onInventory: inventory => {
             const selectedProjects = manager.current().selectedProjects;
             const complete = unobservedLocalMappings.size === 0 && selectedProjects !== null && selectedProjects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null);
@@ -825,9 +802,8 @@ export const runWorker = async (options: {
           },
           onClaim: reporter!.recordClaim,
           requestReconcile: reconcileWake.request,
-          promptSource: currentPromptSource,
           onPromptDemand: projectIds => { if (currentPromptSource.setDemand(projectIds)) reporter!.demandChanged(); },
-          buildPrompt: web.buildPrompt, emit, signal });
+          emit, signal });
         const latest = view(manager.current());
         if (latest !== null) coordinator.updateConfiguration(latest);
         return coordinator;
@@ -952,10 +928,7 @@ export const runWorker = async (options: {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
         await shutdownWorkerExecutions({ ...(coordinator === undefined ? {} : { tasks: async () => {
-          if (!await coordinator!.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
-          const operation = createOperation({ limits: { totalMs: 30_000 } });
-          try { if (herdr !== undefined && herdr.lifecycle === undefined) await herdr.stopInstance(operation); }
-          finally { operation.dispose(); }
+          if (!await coordinator!.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed.");
         } }), ...(bots === undefined ? {} : { bots: () => bots!.shutdown() }) });
       } catch (error) { if (!failures.includes(error)) failures.push(error); }
     }
@@ -965,7 +938,6 @@ export const runWorker = async (options: {
     try { await web?.jobLeases.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
-    try { herdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
@@ -993,7 +965,6 @@ export const runWorkerControl = async (options: {
   let tools: ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
-  let actualHerdr: WorkerHerdrAdapter | undefined;
   let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
   const configurationExchanges: ReturnType<typeof createWorkerConfigurationExchange>[] = [];
   let selectionHerdr: ReturnType<typeof createSharedWorkerHerdr> | undefined;
@@ -1034,7 +1005,7 @@ export const runWorkerControl = async (options: {
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
       admitHerdr: async (launch, operation) => sharedHerdr(await nativeApplication.prepareEnvironment()).prepareSelection(launch, operation),
       closeHerdr: async operation => { if (selectionHerdr !== undefined && platform === "macos") await selectionHerdr.stopInstance(operation); },
-      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? actualHerdr?.lifecycle?.activeToolSelections?.() ?? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? []] });
+      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? []] });
     const toolRuntime = tools;
     const initializeConfiguration = (): Promise<WorkerConfigurationManager> => configurationInitialization ??= createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localToolPaths: local.toolPaths,
@@ -1071,7 +1042,7 @@ export const runWorkerControl = async (options: {
           try {
             const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
             if (targetProjectId !== undefined && project.id !== targetProjectId) continue;
-            const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
+            const binding = await createWorkerRepositoryAdmission({ paths, store: () => store!, workerId, serverOrigin: serverUrl }).admit({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path }, signal);
             repositories.push({ project: binding, configuration: repository });
           } catch (error) {
             if (signal.aborted || repository.projectId === targetProjectId || targetProjectId === undefined || error instanceof ProtocolError || error instanceof ApiError && !projectUnavailable(error)) throw error;
@@ -1105,8 +1076,6 @@ export const runWorkerControl = async (options: {
       const current = configurationManager?.current();
       return current?.effective.archiveSessions ?? current?.retainedArchiveSessions ?? null;
     };
-    const agentEnvironment = options.request.kind === "retry" ? nativeApplication.current() === undefined ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : nativeApplication.current()! : {};
-    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, selectionVerifier, readExecutionConfiguration, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : sharedHerdr(agentEnvironment); return Reflect.get(actualHerdr, property); } });
     const machine = machineDescription(platform);
     const retryPromptSource = options.request.kind === "retry" ? createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId }) : undefined;
     controlPromptSource = retryPromptSource;
@@ -1146,18 +1115,16 @@ export const runWorkerControl = async (options: {
         diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
       } finally { operation.dispose(); }
     };
-    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, workerId, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource, undefined, toolRuntime, controlArchiveSessions);
+    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, workerId, userId, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource, undefined, toolRuntime, controlArchiveSessions);
     if (frozenRetry) {
       const original = sources[0]!, saved = store.getNativeConfiguration(original);
-      const frozen = web.webStore.getTask(original)?.configuration ?? (saved === null ? null : { ...saved, agentControlMode: original.agentControlMode ?? "herdr", recoveryLimit: workerConfigurationDefaults.recoveryLimit });
+      const frozen = web.webStore.getTask(original)?.configuration ?? (saved === null ? null : { ...saved, agentControlMode: "web", recoveryLimit: workerConfigurationDefaults.recoveryLimit });
       coordinatorConfiguration = { repositories: [], globalConfiguration: frozen, recoveryLimit: frozen?.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     }
     const coordinator = createWorkerCoordinator({
-      freezeConfiguration: toolRuntime.freezeConfiguration, store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...coordinatorConfiguration,
+      freezeConfiguration: toolRuntime.freezeConfiguration, store, git, ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...coordinatorConfiguration,
       archiveSessions: controlArchiveSessions,
-      hasHerdrJournal: await hasHerdrJournal(paths, platform),
-      availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
-      buildPrompt: buildWorkerPrompt, ...(retryPromptSource === undefined || preparePromptSource === undefined ? {} : { promptSource: retryPromptSource, preparePromptSource }), emit: diagnostics.emit, signal,
+      emit: diagnostics.emit, signal,
     });
     const prepareControlProject = async (identity: { projectId: string }): Promise<void> => {
       const project = store!.getProject(identity);
@@ -1179,9 +1146,9 @@ export const runWorkerControl = async (options: {
         if (settings?.deleteWorktree === true) await prepareControlProject(identity);
         return coordinator.cleanupSource(identity, settings);
       },
-      completeSource: async (owner: Parameters<typeof coordinator.completeSource>[0]) => {
+      completeSource: async (owner: Parameters<typeof coordinator.completeSource>[0], ownerUserId: Parameters<typeof coordinator.completeSource>[1]) => {
         await prepareControlProject(owner);
-        return coordinator.completeSource(owner);
+        return coordinator.completeSource(owner, ownerUserId);
       },
     };
     const result = await submitWorkerControl({
@@ -1201,7 +1168,6 @@ export const runWorkerControl = async (options: {
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
-    try { actualHerdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }

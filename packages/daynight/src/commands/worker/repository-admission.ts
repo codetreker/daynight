@@ -69,8 +69,10 @@ export const prepareWorkerWorktreeFormat = async (options: {
     await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources: {
       listSchedules: async () => {
         const records = await relevantWeb();
-        return store.listCleanupSchedules().filter(value => records.some(record =>
-          record.projectId === value.projectId && record.taskId === value.taskId && record.claimId === value.claimId));
+        return records.flatMap(record => {
+          const schedule = store.getCleanupSchedule(record, record);
+          return schedule === null ? [] : [schedule];
+        });
       },
       listWebTasks: relevantWeb,
     } });
@@ -80,6 +82,8 @@ export const prepareWorkerWorktreeFormat = async (options: {
 export const createWorkerRepositoryAdmission = (options: {
   readonly paths: WorkerPaths;
   readonly store: () => WorkerStore;
+  readonly workerId: string;
+  readonly serverOrigin: string;
 }): { admit(binding: WorkerProject, signal: AbortSignal): Promise<WorkerProject> } => {
   let pending: Promise<void> = Promise.resolve();
   return {
@@ -95,7 +99,15 @@ export const createWorkerRepositoryAdmission = (options: {
           ...retained.map(project => ({ path: project.localPath })), { path: candidate.localPath },
         ], options.paths, signal);
         signal.throwIfAborted();
-        return store.registerProject({ ...candidate, projectId });
+        const existing = store.getProject({ projectId });
+        if (existing === null || existing.repoUrl === candidate.repoUrl && existing.localPath === candidate.localPath) return store.registerProject({ ...candidate, projectId });
+        const web = openWebExecutionStore(path.join(options.paths.workerDirectory, "web-executions.sqlite"));
+        try {
+          const owners = [...web.listUnfinishedTasks(), ...web.listCompletedTasks()]
+            .filter(owner => owner.workerId === options.workerId && owner.serverOrigin === options.serverOrigin && owner.projectId === projectId);
+          signal.throwIfAborted();
+          return store.registerProject({ ...candidate, projectId }, owners);
+        } finally { web.close(); }
       });
       // Each caller retains its failure while the next admission reads the latest retained bindings.
       pending = admission.then(() => undefined, () => undefined);

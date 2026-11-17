@@ -44,7 +44,7 @@ export type WebBackendOptions = {
   probeArchive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<ArchiveProbeResult>;
   archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
   archiveSessions?: () => boolean | null;
-  onArchiveFailure?: (task: LocalTask, error: unknown) => void;
+  onArchiveFailure?: (task: LocalTask, error: unknown, ownerUserId?: string) => void;
   onUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => void;
 };
 export class WebRecoveryBlockedError extends Error {
@@ -815,8 +815,11 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           } catch (error) {
             fileSignal.throwIfAborted();
             try {
-              if (options.onArchiveFailure) options.onArchiveFailure(task, error);
-              else options.emit({ kind: "session-archive-retry", task, component: "archive", phase: "archive-backfill", message: "Session archive failed; its source is retained for retry.", error });
+              if (options.onArchiveFailure) {
+                const ownerUserId = cleanupRequest.kind === "terminal" ? cleanupRequest.ownerUserId : undefined;
+                if (ownerUserId === undefined) options.onArchiveFailure(task, error);
+                else options.onArchiveFailure(task, error, ownerUserId);
+              } else options.emit({ kind: "session-archive-retry", task, component: "archive", phase: "archive-backfill", message: "Session archive failed; its source is retained for retry.", error });
             } catch (diagnosticError) {
               try { options.emit({ kind: "session-archive-retry", task, component: "archive", phase: "archive-backfill", message: "Session archive failure registration failed; its source is retained for retry.", error: new AggregateError([error, diagnosticError], "Archive and failure registration failed.", { cause: error }) }); } catch { /* Diagnostics cannot prevent cleanup. */ }
             }

@@ -115,7 +115,11 @@ const historicalFixture = () => {
       ownerUserId: randomUUID(), serverOrigin: "https://daynight.example", provider: "codex" },
     claimId: value.claimId, cwd: f.binding(value).worktreePath,
   });
-  const sources: MigrationSources = { listSchedules: () => worker.listCleanupSchedules(), listWebTasks: () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()] };
+  const webTasks = () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()];
+  const sources: MigrationSources = { listSchedules: () => webTasks().flatMap(task => {
+    const schedule = worker.getCleanupSchedule(task, task);
+    return schedule === null ? [] : [schedule];
+  }), listWebTasks: webTasks };
   const release = () => { git(f.repositoryPath, ["worktree", "unlock", "--", original.cwd]); git(f.repositoryPath, ["worktree", "remove", "--force", "--", original.cwd]); };
   const reuse = () => {
     const marker = `daynight-worker:${JSON.stringify({ ...next, leaf: "1:1", root: "2:2", common: "3:3" })}`;
@@ -288,14 +292,14 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     const herdr = openHerdrLifecycleStore(path.join(f.root, "herdr.sqlite"), { onMigration: () => {} });
     try {
       worker.registerProject({ projectId: scheduled.projectId, repoUrl: "https://example.test/repo.git", localPath: f.repositoryPath });
-      worker.saveCleanupSchedule(scheduled, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
       const config = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
       const register = (value: ResourceOwner) => {
         const project = { projectId: value.projectId, repoUrl: "https://example.test/repo.git", localPath: f.repositoryPath };
         const task = web.register({ ...value, project, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(), configuration: config }, 1);
         return web.bindWorktree(task, f.binding(value), 2);
       };
-      register(scheduled); let done = register(completed); register(active);
+      const scheduledTask = register(scheduled); let done = register(completed); register(active);
+      worker.saveCleanupSchedule(scheduled, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null }, scheduledTask);
       done = web.initializeWebExecution(done, 3);
       const execution = done.webExecution!;
       const ticket: ControllerLaunchTicket = {
@@ -320,7 +324,10 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
       const operation = createOperation();
       try {
         await migrateLegacyWorktrees({ repositoryPath: f.repositoryPath, commonDirectory: f.commonDirectory, operation, sources: {
-          listSchedules: () => worker.listCleanupSchedules(),
+          listSchedules: () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()].flatMap(task => {
+            const schedule = worker.getCleanupSchedule(task, task);
+            return schedule === null ? [] : [schedule];
+          }),
           listWebTasks: () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()],
         } });
       } finally { operation.dispose(); }
@@ -337,7 +344,7 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     const f = historicalFixture();
     try {
       f.registerWeb(f.old, false);
-      f.worker.saveCleanupSchedule(f.old, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+      f.worker.saveCleanupSchedule(f.old, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null }, f.web.getTask(f.old)!);
       const file = sidecar(f.original.admin, f.old);
       const rows = snapshotRows(f.webFile, "executions"), operation = createOperation();
       try {
@@ -421,7 +428,7 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     try {
       f.registerWeb(f.old); f.release();
       f.web.beginCleanup(f.old, { kind: "terminal", deadline: 100 }, 4); f.web.completeTask(f.old, 5);
-      f.worker.saveCleanupSchedule(f.old, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+      f.worker.saveCleanupSchedule(f.old, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null }, f.web.getTask(f.old)!);
       const current = f.reuse(); f.registerWeb(f.next);
       writeFileSync(path.join(current.cwd, "tracked.txt"), "current owner\n");
       const pointer = readFileSync(path.join(current.cwd, ".git")), oldBinding = f.web.getTask(f.old)!.resources.worktree;
@@ -441,7 +448,7 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     try {
       f.registerWeb(f.old, false); f.release();
       f.web.beginCleanup(f.old, { kind: "terminal", deadline: 100 }, 4); f.web.completeTask(f.old, 5);
-      f.worker.saveCleanupSchedule(f.old, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+      f.worker.saveCleanupSchedule(f.old, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null }, f.web.getTask(f.old)!);
       const schedules = snapshotRows(f.workerFile, "cleanup_schedules");
       await f.run();
       expect(f.store.list()).toEqual([]);

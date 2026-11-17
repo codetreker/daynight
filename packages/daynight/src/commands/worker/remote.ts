@@ -150,7 +150,9 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
         const projectTasks: Task[] = [];
         try {
           for await (const task of taskPages(projectId, { workerId }, signal)) {
-            if (readWorkerClaim(task.properties)?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
+            const claim = readWorkerClaim(task.properties);
+            if (claim?.agentControlMode !== "web") continue;
+            if (claim.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
             projectTasks.push(task);
           }
         } catch (error) {

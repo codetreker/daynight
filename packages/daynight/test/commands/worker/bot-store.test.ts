@@ -13,7 +13,7 @@ describe("durable Bot inventory", () => {
   it("keeps Bot records out of task inventory and cleanup budget", () => {
     const f = fixture(); const worker = openWorkerStore(f.database, { onMigration: () => {} }); handles.push(worker);
     worker.registerProject({ projectId: id(4), repoUrl: "https://example.test/repo", localPath: f.home });
-    const claim = { projectId: id(4), taskId: id(5), claimId: id(6), agent: "codex" as const };
+    const claim = { projectId: id(4), taskId: id(5), claimId: id(6), agent: "codex" as const, agentControlMode: "web" as const };
     worker.registerPending(claim); worker.saveCleanupSchedule({ ...claim, worktreeId: id(7) }, { deadline: 100, failures: 2, nextAttemptAt: 50, stage: "archive", lastError: "retained" });
     const before = { tasks: worker.listUnfinishedTasks(), cleanup: worker.listCleanupSchedules() };
     f.store.observe(owner, bot(), 1); f.store.prepare(owner, id(3), { homeDirectory: f.home, recoveryLimit: 3 });
