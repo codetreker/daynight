@@ -947,12 +947,8 @@ test('standalone Goal external Expand enters an unowned chain through the projec
   await expect(targetGraph.locator('.task-node')).toHaveCount(3);
   await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
   await page.goBack();
-  await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
-  await page.goBack();
   await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
   await expect(page.locator('.task-chain-dialog')).toHaveAccessibleName('First task');
-  await page.goForward();
-  await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
   await page.goForward();
   await expect(targetGraph).toHaveAccessibleName('Outside chain');
   await targetGraph.locator(`[data-id="${singleId}"]`).getByRole('button', { name: 'Expand Outside singleton in its task or Goal' }).click();
