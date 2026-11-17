@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const actor = '00000000-0000-4000-8000-000000000001', otherActor = '00000000-0000-4000-8000-000000000002';
@@ -9,9 +9,9 @@ const team = { id: teamId, kind: 'personal', name: null }, target = { id: target
 const app = (id: string) => ({ id, githubAppId: '42', name: id === appId ? 'Platform App' : 'Second App', githubName: 'Platform', githubSlug: 'platform', version, administrators: '1', authorizedTeams: '1', connectedProjects: '2', webhookUrl: `https://daynight.example/api/v1/github/apps/${id}/webhook`, createdAt: stamp, updatedAt: stamp });
 const grant = (id: string, appId: string) => ({ id, appId, team: target, createdAt: stamp });
 const impact = (id: string, grantId: string, hidden: string) => ({ appId: id, grantId, version, impactVersion, totalProjects: '2', visibleProjects: hidden === '1' ? '1' : '0', hiddenProjects: hidden, teams: [{ team: { id: targetId, kind: 'ordinary', name: 'Engineering' }, projects: '2' }], nextCursor: null });
-type State = { writes: { path: string; body: Record<string, unknown> }[]; mode: 'ok' | 'unknown' | 'conflict'; denied: boolean; actor: string; previewGate: Promise<void> | null; projectGate: Promise<void> | null; writeGate: Promise<void> | null; listGate: Promise<void> | null; listReads: number; grantReads: number; paginate: boolean; previewReads: number; projectReads: number; projectDenied: boolean; hidden: string; revoked: boolean };
+type State = { writes: { path: string; body: Record<string, unknown> }[]; mode: 'ok' | 'unknown' | 'conflict'; denied: boolean; actor: string; previewGate: Promise<void> | null; previewFailed: boolean; targetName: string; projectGate: Promise<void> | null; writeGate: Promise<void> | null; listGate: Promise<void> | null; listReads: number; grantReads: number; paginate: boolean; previewReads: number; projectReads: number; projectDenied: boolean; hidden: string; revoked: boolean };
 const install = async (page: Page): Promise<State> => {
-  const state: State = { writes: [], mode: 'ok', denied: false, actor, previewGate: null, projectGate: null, writeGate: null, listGate: null, listReads: 0, grantReads: 0, paginate: false, previewReads: 0, projectReads: 0, projectDenied: false, hidden: '1', revoked: false };
+  const state: State = { writes: [], mode: 'ok', denied: false, actor, previewGate: null, previewFailed: false, targetName: target.name, projectGate: null, writeGate: null, listGate: null, listReads: 0, grantReads: 0, paginate: false, previewReads: 0, projectReads: 0, projectDenied: false, hidden: '1', revoked: false };
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method(), principal = state.actor;
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': principal } });
@@ -26,7 +26,7 @@ const install = async (page: Page): Promise<State> => {
     const id = match[1]!, rest = match[2]!; if (state.denied && id === appId) return error('not_found', 404);
     if (rest === '' && method === 'GET') return send(app(id));
     if (rest === '/team-grants' && method === 'GET') { state.listReads++; if (state.listGate) await state.listGate; const next = url.searchParams.has('cursor'); return send({ items: state.revoked ? [] : next ? [{ ...grant('00000000-0000-4000-8000-000000000032', id), team: { id: otherTeamId, kind: 'ordinary', name: 'Operations', version } }] : [grant(grantId, id)], nextCursor: state.paginate && !next ? 'next' : null }); }
-    if (rest === '/team-grant-preview' && method === 'POST') { const body = request.postDataJSON() as { teamId: string }; state.previewReads++; if (state.previewGate) await state.previewGate; const selected = body.teamId === targetId ? target : { id: otherTeamId, kind: 'ordinary', name: 'Operations', version }; return send({ appId: id, version, targetTeam: selected, grant: null }); }
+    if (rest === '/team-grant-preview' && method === 'POST') { const body = request.postDataJSON() as { teamId: string }; state.previewReads++; if (state.previewGate) await state.previewGate; if (state.previewFailed) return error('internal_error', 500); const selected = body.teamId === targetId ? { ...target, name: state.targetName } : { id: otherTeamId, kind: 'ordinary', name: 'Operations', version }; return send({ appId: id, version, targetTeam: selected, grant: null }); }
     if (rest === '/team-grants' && method === 'POST') { const body = request.postDataJSON() as Record<string, unknown>; state.writes.push({ path, body }); if (state.writeGate) await state.writeGate; return state.mode === 'unknown' ? error('github_write_outcome_unknown', 503) : state.mode === 'conflict' ? error('version_conflict', 409) : send(grant(String(body.id), id), 201); }
     if (rest === `/team-grants/${grantId}/revocation-preview`) return send(impact(id, grantId, state.hidden));
     if (rest === `/team-grants/${grantId}/revocation-preview/projects`) { state.projectReads++; if (state.projectGate) await state.projectGate; return send({ items: [{ id: projectId, name: 'Visible project', repoUrl: 'https://github.com/example/visible' }], hiddenProjects: state.hidden, nextCursor: null }); }
@@ -38,18 +38,56 @@ const install = async (page: Page): Promise<State> => {
 };
 const route = (id: string) => `/github-apps/${id}/teams`;
 
-for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
-  test(`direct Team authorization route and reload at ${width}px in ${locale}`, async ({ page }) => {
-    await install(page); await page.setViewportSize({ width, height: 900 }); await page.goto(route(appId));
+const expectVerificationRow = async (page: Page, dialog: Locator, verify: Locator, below?: Locator) => {
+  const field = dialog.getByLabel('Team ID'), label = dialog.locator('label').filter({ hasText: 'Team ID' });
+  const [inputBox, buttonBox, labelBox, bodyBox] = await Promise.all([field.boundingBox(), verify.boundingBox(), label.boundingBox(), dialog.locator('.dialog-body').boundingBox()]);
+  expect(inputBox).not.toBeNull(); expect(buttonBox).not.toBeNull(); expect(labelBox).not.toBeNull(); expect(bodyBox).not.toBeNull();
+  expect(inputBox!.width).toBeGreaterThan(24);
+  expect(buttonBox!.x).toBeGreaterThan(inputBox!.x + inputBox!.width);
+  expect(Math.abs(inputBox!.y + inputBox!.height / 2 - buttonBox!.y - buttonBox!.height / 2)).toBeLessThanOrEqual(1);
+  expect(labelBox!.y + labelBox!.height).toBeLessThanOrEqual(inputBox!.y);
+  expect(inputBox!.x).toBeGreaterThanOrEqual(bodyBox!.x);
+  expect(buttonBox!.x + buttonBox!.width).toBeLessThanOrEqual(bodyBox!.x + bodyBox!.width);
+  expect(await verify.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth)).toBe(true);
+  if (below) {
+    const box = await below.boundingBox(); expect(box).not.toBeNull();
+    expect(box!.y).toBeGreaterThanOrEqual(Math.max(inputBox!.y + inputBox!.height, buttonBox!.y + buttonBox!.height));
+  }
+};
+
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) {
+  test(`Team verification stays beside its input through grant states at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+    const state = await install(page), zh = locale === 'zh-CN'; await page.setViewportSize({ width, height: 900 }); await page.goto(route(appId));
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     await expect(page.getByRole('heading', { name: locale === 'en' ? 'Team access' : 'Team 使用授权' })).toBeVisible();
     await page.reload(); await expect(page.getByText('Engineering', { exact: true })).toBeVisible();
     expect(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth)).toBe(true);
     await page.getByRole('button', { name: locale === 'en' ? 'Authorize Team' : '授权 Team' }).click();
-    const dialog = page.getByRole('dialog'); await dialog.getByLabel('Team ID').fill(targetId);
-    await dialog.getByRole('button', { name: locale === 'en' ? 'Verify Team' : '核对 Team' }).click();
-    await expect(dialog.getByText('Engineering', { exact: true })).toBeVisible();
-    expect(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth)).toBe(true);
+    const dialog = page.getByRole('dialog'), field = dialog.getByLabel('Team ID');
+    const verify = dialog.getByRole('button', { name: zh ? /^(核对 Team|正在核对…)$/ : /^(Verify Team|Verifying…)$/ }), submit = dialog.getByRole('button', { name: zh ? '授予使用权' : 'Grant access' });
+    await expect(field).toBeFocused(); await expect(submit).toBeDisabled(); await expectVerificationRow(page, dialog, verify);
+    await field.fill('invalid'); await page.keyboard.press('Tab'); await expect(verify).toBeFocused();
+    expect(await verify.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
+    await page.keyboard.press('Enter');
+    const invalid = dialog.getByRole('alert'); await expect(invalid).toContainText('UUID'); await expectVerificationRow(page, dialog, verify, invalid); expect(state.previewReads).toBe(0);
+    await field.fill(targetId); await expectVerificationRow(page, dialog, verify);
+    state.previewFailed = true; await verify.click();
+    await expect(dialog.getByRole('alert')).toBeVisible(); await expect(verify).toBeEnabled(); await expectVerificationRow(page, dialog, verify, dialog.getByRole('alert'));
+    state.previewFailed = false; state.targetName = 'International Platform Engineering Team — 跨区域平台研发团队 '.repeat(3);
+    const gate = Promise.withResolvers<void>(); state.previewGate = gate.promise;
+    try {
+      await verify.click(); await expect(verify).toHaveText(zh ? '正在核对…' : 'Verifying…'); await expect(verify).toBeDisabled(); await expectVerificationRow(page, dialog, verify);
+      gate.resolve(); state.previewGate = null;
+      const preview = dialog.locator('.github-grants-target'); await expect(preview).toContainText(state.targetName.trim()); await expect(preview).toContainText(targetId);
+      await expect(submit).toBeEnabled(); await expectVerificationRow(page, dialog, verify, preview);
+      await page.screenshot({ path: testInfo.outputPath(`${width}-${locale}-preview.png`), fullPage: true });
+      await field.fill(otherTeamId); await expect(preview).toHaveCount(0); await expect(submit).toBeDisabled();
+      await field.fill(targetId); await verify.click(); await expect(preview).toBeVisible(); state.mode = 'unknown'; await submit.click();
+      await expect(dialog.getByRole('alert')).toContainText(zh ? '操作结果未知' : 'The outcome is unknown');
+      await expect(field).toBeDisabled(); await expect(verify).toBeDisabled(); await expectVerificationRow(page, dialog, verify, dialog.getByRole('alert'));
+      await page.keyboard.press('Enter'); expect(state.writes).toHaveLength(1);
+    } finally { gate.resolve(); }
   });
 }
 

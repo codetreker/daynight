@@ -4,6 +4,9 @@
 .github-grants-list p, .github-grants-target p { margin: 6px 0 0; }
 .github-grants-list code, .github-grants-target code { overflow-wrap: anywhere; word-break: break-word; }
 .github-grants-more, .github-grants-help { padding: 16px 24px; }
+.github-grants-team-input { display: flex; align-items: center; gap: 8px; }
+.github-grants-team-input input { flex: 1; min-width: 0; }
+.github-grants-team-input .button { flex: none; white-space: nowrap; }
 .github-grants-target { margin: 16px 0; padding: 14px; border: 1px solid #dfe5ec; border-radius: 8px; overflow-wrap: anywhere; }
 @media (max-width: 480px) { .github-grants-list li { flex-wrap: wrap; align-items: flex-start; padding: 16px; } .github-grants-list li > div { flex-basis: 100%; } }
 
