@@ -4,10 +4,11 @@ import path from "node:path";
 import type { ManagedCommand } from "../src/command.ts";
 import { markFixtureStopped, prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
 import { prepareWorkerFixtureConfiguration } from "../src/worker-config.ts";
+import { completeFixtureTask, type WorkerCompletionTask } from "../src/worker-completion.ts";
 import { stopFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
 import { cli, cliEnvironment, expect, runOwnedCommand, topology } from "./fixtures.ts";
 
-type Task = { id: string; version: number; status: string; assignedTo: string | null; session?: { lifecycle?: string }; properties: { paused?: boolean; worker?: { claimId: string; workerId: string; worktreeId: string; nativeSessionId: string | null; state: string } } };
+type Task = WorkerCompletionTask & { session?: { lifecycle?: string } };
 type PeerEvent = { method: string; threadId: string; text?: string };
 
 // The native peer is controlled; Worker, Controller, Server, relay and PostgreSQL are real.
@@ -74,8 +75,8 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     expect(firstTurns[1]!.text).toContain("periodic check");
     await expect.poll(async () => (await readTask()).properties.worker?.nativeSessionId, { timeout: 30_000, intervals: [1_000] }).toEqual(expect.any(String));
     const first = await readTask(), workerClaim = first.properties.worker;
-    expect(first.status).toBe("in_progress"); expect(workerClaim).toMatchObject({ state: "active", nativeSessionId: expect.any(String) });
-    const original = { claimId: workerClaim!.claimId, workerId: workerClaim!.workerId, worktreeId: workerClaim!.worktreeId, nativeSessionId: workerClaim!.nativeSessionId, state: "active" };
+    expect(first.status).toBe("in_progress"); expect(workerClaim).toMatchObject({ state: "active", workerId, userId: task.assignedTo, platform: "linux", agent: "codex", agentControlMode: "web", nativeSessionId: expect.any(String) });
+    const original = { claimId: workerClaim!.claimId, workerId: workerClaim!.workerId, worktreeId: workerClaim!.worktreeId, nativeSessionId: workerClaim!.nativeSessionId, state: "active", platform: workerClaim!.platform, agent: workerClaim!.agent, agentControlMode: workerClaim!.agentControlMode };
     identity.claimId = original.claimId;
     await registerFixtureClaim(checkout, runDirectory, original.claimId);
     await stop();
@@ -100,8 +101,8 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     const paused = await readTask(); expect(paused.properties.paused).toBe(true);
     await cli(["task", "set-property", taskId, "paused", "false", "--project", projectId, "--if-version", String(paused.version)]);
     await expect.poll(async () => (await events()).filter(event => event.method === "turn/start").length, { timeout: 30_000, intervals: [1_000] }).toBeGreaterThan(pausedCount);
-    const active = await readTask();
-    await cli(["task", "set-status", taskId, "done", "--project", projectId, "--claim-id", original!.claimId, "--if-version", String(active.version)]);
+    await completeFixtureTask({ projectId, taskId, userId: task.assignedTo, original, read: readTask,
+      complete: version => cli(["task", "set-status", taskId, "done", "--project", projectId, "--claim-id", original.claimId, "--if-version", String(version)]) });
     const completed = await readTask(); expect(completed).toMatchObject({ status: "done", properties: { worker: { claimId: original!.claimId, state: "completed" } } });
     // Already submitted inputs may settle after completion; compare subsequent patrols after that window.
     await new Promise(resolve => setTimeout(resolve, 3_000));

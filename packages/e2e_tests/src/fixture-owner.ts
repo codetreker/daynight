@@ -5,13 +5,16 @@ import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import type { CommandOptions, CommandResult, ManagedCommand } from "./command.ts";
 import { startGatedCommand, stopGate } from "./gated-command.ts";
-import { captureProcessEvidence, inspectProcessEvidence, type ProcessEvidence } from "./process-evidence.ts";
+import { captureProcessEvidence, inspectProcessEvidence, stopEvidenceGroup, type ProcessEvidence } from "./process-evidence.ts";
 import { loadFixtureStopProofs, readFixtureExecutions, stopRecordedFixtureExecutions, type FixtureExecutionIdentity } from "./worker-cleanup.ts";
 
 type Launch = { id: string; stopped: boolean };
+type BrowserScope = { id: string; proof: ProcessEvidence | null; stopped: boolean };
+type BrowserRegistry = { schemaVersion: 1; runId: string; playwrightId: string; scopes: BrowserScope[] };
 type Owner = { schemaVersion: 1; runId: string; runner: ProcessEvidence; verified: boolean; playwright: Launch | null; browserUnconfirmed: boolean; commands: Launch[]; controllerUnconfirmed: boolean; fixture: { prepared: boolean; identity: FixtureExecutionIdentity | null; interrupted: boolean; launches: Launch[] } };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ownerPath = (run: string) => path.join(run, "results", "fixture-owner.json");
+const browserPath = (run: string) => path.join(run, "results", "browser-ownership.json");
 const lockPath = (run: string) => path.join(run, "results", "fixture-owner-lock.sqlite");
 const withLock = async <T>(run: string, operation: () => Promise<T>): Promise<T> => {
   if (!(await stat(lockPath(run))).isFile()) throw new Error("Fixture ownership lock is unavailable.");
@@ -34,6 +37,36 @@ const writeOwner = async (run: string, value: Owner): Promise<void> => {
   try { await rename(temp, file); } finally { await rm(temp, { force: true }); }
   const parent = await open(path.dirname(file), "r"); try { await parent.sync(); } finally { await parent.close(); }
 };
+const writeBrowsers = async (run: string, value: BrowserRegistry): Promise<void> => {
+  const file = browserPath(run), temp = `${file}.${process.pid}.${randomUUID()}.tmp`, handle = await open(temp, "wx", 0o600);
+  try { await handle.writeFile(`${JSON.stringify(value)}\n`); await handle.sync(); } finally { await handle.close(); }
+  try { await rename(temp, file); } finally { await rm(temp, { force: true }); }
+  const parent = await open(path.dirname(file), "r"); try { await parent.sync(); } finally { await parent.close(); }
+};
+const readBrowsers = async (run: string, playwrightId: string): Promise<BrowserRegistry> => {
+  let value: BrowserRegistry;
+  try { value = JSON.parse(await readFile(browserPath(run), "utf8")) as BrowserRegistry; }
+  catch { throw new Error("Original browser ownership is unavailable."); }
+  if (!value || Object.keys(value).sort().join() !== "playwrightId,runId,schemaVersion,scopes" || value.schemaVersion !== 1
+    || value.runId !== path.basename(run) || value.playwrightId !== playwrightId || !Array.isArray(value.scopes)
+    || value.scopes.some(scope => !scope || Object.keys(scope).sort().join() !== "id,proof,stopped" || !uuid.test(scope.id)
+      || typeof scope.stopped !== "boolean" || !(scope.proof === null || typeof scope.proof === "object") || scope.stopped && scope.proof === null)
+    || new Set(value.scopes.map(scope => scope.id)).size !== value.scopes.length) throw new Error("Original browser ownership conflicts with its run.");
+  return value;
+};
+const settleBrowsers = async (run: string, playwrightId: string): Promise<boolean> => {
+  const registry = await readBrowsers(run, playwrightId);
+  if (registry.scopes.length === 0) return false;
+  for (const scope of registry.scopes) {
+    if (scope.proof === null) throw new Error("Original browser process proof is unavailable.");
+    if (!scope.stopped) {
+      await stopEvidenceGroup(scope.proof, [], Date.now() + 15_000);
+      scope.stopped = true;
+      await writeBrowsers(run, registry);
+    }
+  }
+  return true;
+};
 const readOwner = async (run: string): Promise<Owner> => {
   let value: Owner;
   try { value = JSON.parse(await readFile(ownerPath(run), "utf8")) as Owner; } catch { throw new Error("Original fixture ownership is unavailable."); }
@@ -55,16 +88,47 @@ export const startOwnedPlaywright = async (input: { repository: string; runDirec
   const run = await validateRun(input.repository, input.runDirectory), launch = { id: randomUUID(), stopped: false };
   await withLock(run, async () => { const owner = await readOwner(run);
     if (owner.verified || owner.playwright !== null || owner.runner.pid !== process.pid || await inspectProcessEvidence(owner.runner) !== "running") throw new Error("Playwright launch does not own this run.");
-    owner.playwright = launch; owner.browserUnconfirmed = true; await writeOwner(run, owner); });
+    owner.playwright = launch; owner.browserUnconfirmed = true; await writeOwner(run, owner);
+    const marker = await open(browserPath(run), "wx", 0o600); await marker.close();
+    await writeBrowsers(run, { schemaVersion: 1, runId: path.basename(run), playwrightId: launch.id, scopes: [] }); });
   const command = await startGatedCommand({ runDirectory: run, gateId: launch.id, command: input.command, args: input.args, options: input.options });
   const finished = command.finished.then(async result => {
-    if (result.exitCode === 0) await withLock(run, async () => { const owner = await readOwner(run);
+    await withLock(run, async () => { const owner = await readOwner(run);
       if (owner.playwright?.id !== launch.id || owner.playwright.stopped) throw new Error("Playwright completion conflicts with original ownership.");
-      owner.playwright.stopped = true; owner.browserUnconfirmed = false; await writeOwner(run, owner); });
+      const registry = await readBrowsers(run, launch.id);
+      let browsersStopped = registry.scopes.length === 0 && result.exitCode === 0;
+      if (registry.scopes.length > 0) try { browsersStopped = await settleBrowsers(run, launch.id); } catch { /* Retain unconfirmed browser ownership. */ }
+      owner.playwright.stopped = true; owner.browserUnconfirmed = !browsersStopped; await writeOwner(run, owner); });
     return result;
   });
   void finished.catch(() => {});
   return { ...command, finished, stop: async () => { await command.stopProcesses(); await finished; } };
+};
+export const beginBrowserScope = async (repository: string, runDirectory: string): Promise<string> => {
+  const run = await validateRun(repository, runDirectory), id = randomUUID();
+  await withLock(run, async () => { const owner = await readOwner(run);
+    if (owner.verified || owner.playwright === null || owner.playwright.stopped) throw new Error("Browser launch conflicts with original Playwright ownership.");
+    const registry = await readBrowsers(run, owner.playwright.id);
+    registry.scopes.push({ id, proof: null, stopped: false }); await writeBrowsers(run, registry); });
+  return id;
+};
+export const bindBrowserScope = async (repository: string, runDirectory: string, id: string, pid: number): Promise<void> => {
+  const run = await validateRun(repository, runDirectory), proof = await captureProcessEvidence(pid);
+  if (proof.pid !== proof.group) throw new Error("Original browser is not its process-group leader.");
+  await withLock(run, async () => { const owner = await readOwner(run);
+    if (owner.verified || owner.playwright === null || owner.playwright.stopped) throw new Error("Browser identity conflicts with original Playwright ownership.");
+    const registry = await readBrowsers(run, owner.playwright.id), scope = registry.scopes.find(item => item.id === id);
+    if (!scope || scope.proof !== null || scope.stopped || await inspectProcessEvidence(proof) !== "running") throw new Error("Original browser process identity is unavailable.");
+    scope.proof = proof; await writeBrowsers(run, registry); });
+};
+export const finishBrowserScope = async (repository: string, runDirectory: string, id: string): Promise<void> => {
+  const run = await validateRun(repository, runDirectory);
+  await withLock(run, async () => { const owner = await readOwner(run);
+    if (owner.verified || owner.playwright === null || owner.playwright.stopped) throw new Error("Browser stop conflicts with original Playwright ownership.");
+    const registry = await readBrowsers(run, owner.playwright.id), scope = registry.scopes.find(item => item.id === id);
+    if (!scope || scope.proof === null || scope.stopped) throw new Error("Original browser process proof is unavailable.");
+    await stopEvidenceGroup(scope.proof, [], Date.now() + 15_000);
+    scope.stopped = true; await writeBrowsers(run, registry); });
 };
 export const startOwnedAuxiliary = async (input: { repository: string; runDirectory: string; command: string; args: readonly string[]; options: CommandOptions; independentController?: boolean }): Promise<ManagedCommand> => {
   const run = await validateRun(input.repository, input.runDirectory), launch = { id: randomUUID(), stopped: false };
@@ -148,6 +212,10 @@ export const recoverRunOwnership = async (input: { repository: string; runDirect
   }
   if (latest.controllerUnconfirmed) throw new Error("Test Session Controller stop is unconfirmed; original private evidence is retained.");
   if (latest.fixture.interrupted) throw new Error("Interrupted Worker subprocess ownership remains unconfirmed; original state is retained.");
+  if (latest.browserUnconfirmed && latest.playwright !== null && latest.playwright.stopped) {
+    try { if (await settleBrowsers(run, latest.playwright.id)) { latest.browserUnconfirmed = false; await writeOwner(run, latest); } }
+    catch { /* Preserve missing or conflicting original browser evidence. */ }
+  }
   if (latest.browserUnconfirmed) throw new Error("Playwright browser stop is unconfirmed; original state is retained.");
   if (latest.fixture.prepared) await rm(rootFor(input.repository, run), { recursive: true, force: true });
   latest.verified = true; await writeOwner(run, latest);

@@ -106,7 +106,10 @@ real Server and isolated PostgreSQL, with a controlled Codex protocol peer in
 place of the upstream model. It retains the original claim, worktree and native
 Session across Worker restart, verifies the resumed assignment and repeated idle
 pings, and checks pause, resumption and claim-bound completion. The peer does not
-establish autonomous behavior by a real model.
+establish autonomous behavior by a real model. On an explicit version-conflict
+response to completion, the fixture reads the Task again and rechecks the original
+active assignment and authorization before another attempt. It makes at most
+three attempts; unknown responses and changed assignments fail the journey.
 
 The tag journey reads empty catalogs in the Web catalog, shared child filter and
 Task editor, then creates a shared catalog and independently tagged Goal and
@@ -198,11 +201,14 @@ have their own recorded process groups. Independent recovery
 first verifies that the original runner has exited, then stops the recorded
 groups and checks the Worker's original Controller and native process evidence.
 Fixture credentials remain in a separate private, retained directory outside
-uploaded results. An interrupted Playwright run may leave detached browsers,
-and an interrupted Worker or Test Session may leave detached helpers. If their
-original stop cannot be proved, or build or environment setup has not reached a
-confirmed boundary, recovery fails and retains the original state for inspection
-instead of reporting cleanup success. Docker cleanup mutations record an intent
+uploaded results. Before Chromium starts, the fixture records a browser launch
+intent and binds the original process-group leader's identity. Cleanup confirms
+that recorded group has stopped, including after a failed Playwright run; a
+missing or conflicting proof cannot establish browser shutdown. An interrupted
+Worker or Test Session may leave detached helpers. If their original stop cannot
+be proved, or build or environment setup has not reached a confirmed boundary,
+recovery fails and retains the original state for inspection instead of reporting
+cleanup success. Docker cleanup mutations record an intent
 before dispatch. An unknown result keeps that intent and prevents automatic
 replay or treating a temporarily absent resource as final absence.
 

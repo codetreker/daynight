@@ -62,9 +62,18 @@ its identity must be cleaned by their original runner rather than inferred.
 Worker product journeys also register their original runner and gated process
 identities before the test can launch a detached Controller. Parent cleanup and
 independent recovery verify and stop the original processes before removing the
-fixture or its private execution evidence. A missing or conflicting proof keeps
-the responsibility visible instead of turning process absence into a guessed
-successful cleanup. The product E2E guide owns the recovery procedure.
+fixture or its private execution evidence. Chromium launch intent and the
+original process-group identity are persisted separately, so a failed Playwright
+run can verify that the recorded browser group stopped without relying on
+`browser.close()` alone. A missing or conflicting proof keeps the responsibility
+visible instead of turning process absence into a guessed successful cleanup.
+The product E2E guide owns the recovery procedure.
+
+Worker completion is versioned. An explicit conflict rejects the attempted
+write, so the fixture can read the Task again, verify the original active
+assignment and authorization, and make a bounded new decision. An unknown
+outcome cannot justify a replay. This keeps concurrent Task updates from making
+the normal journey fail while preserving the original claim.
 
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
@@ -88,6 +97,10 @@ production resource assembly. It does not establish the cross-client journey.
 **Use a shared or simulated monitoring store.** A shared Redis would couple runs
 and weaken resource ownership; a simulated API would not establish that the real
 Server can read monitoring through its configured store.
+
+**Infer browser shutdown from Playwright exit or close.** Chromium is detached,
+and a close result alone does not establish that its original process group has
+stopped. Recovery needs the persisted identity and a confirmed stop.
 
 ## Consequences
 

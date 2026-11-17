@@ -5,10 +5,11 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { once } from "node:events";
 import { test } from "node:test";
-import { startCommand } from "../src/command.ts";
+import { startCommand, type ManagedCommand } from "../src/command.ts";
 import { startGatedCommand, stopGate } from "../src/gated-command.ts";
 import { readGateReceipt, writeGateReceipt } from "../src/gated-record.ts";
-import { initializeRunOwnership, recoverRunOwnership } from "../src/fixture-owner.ts";
+import { beginBrowserScope, bindBrowserScope, finishBrowserScope, initializeRunOwnership, recoverRunOwnership, startOwnedPlaywright } from "../src/fixture-owner.ts";
+import { captureProcessEvidence, inspectProcessEvidence, stopEvidenceGroup, type ProcessEvidence } from "../src/process-evidence.ts";
 
 const repository = path.resolve(import.meta.dirname, "../../.."), parent = path.join(repository, ".tmp", "product-e2e");
 const create = async () => { const run = path.join(parent, randomUUID()); await mkdir(path.join(run, "results"), { recursive: true }); return run; };
@@ -16,6 +17,97 @@ const wait = async (condition: () => Promise<boolean>) => {
   const deadline = Date.now() + 8_000;
   while (!await condition()) { if (Date.now() > deadline) throw new Error("Timed out waiting for fixture proof."); await new Promise(resolve => setTimeout(resolve, 20)); }
 };
+
+test("failed Playwright cleanup uses the original browser process proof", async () => {
+  const run = await create(), exitFile = path.join(run, "exit");
+  let browser: ReturnType<typeof spawn> | undefined, playwright: ManagedCommand | undefined, browserExit: Promise<unknown> | undefined;
+  try {
+    await initializeRunOwnership(repository, run);
+    playwright = await startOwnedPlaywright({ repository, runDirectory: run, command: process.execPath,
+      args: ["-e", `const fs=require('fs');setInterval(()=>{if(fs.existsSync(${JSON.stringify(exitFile)}))process.exit(1)},20)`], options: { cwd: run, timeoutMs: 15_000, onOutput: () => {} } });
+    const scope = await beginBrowserScope(repository, run);
+    browser = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
+    browserExit = once(browser, "exit");
+    const proof = await captureProcessEvidence(browser.pid!);
+    await bindBrowserScope(repository, run, scope, browser.pid!);
+    await finishBrowserScope(repository, run, scope);
+    assert.equal(await inspectProcessEvidence(proof), "stopped");
+    await writeFile(exitFile, "exit");
+    assert.equal((await playwright.finished).exitCode, 1);
+    await recoverRunOwnership({ repository, runDirectory: run, mode: "owner" });
+    assert.equal(JSON.parse(await readFile(path.join(run, "results", "fixture-owner.json"), "utf8")).verified, true);
+  } finally {
+    await playwright?.stop().catch(() => {});
+    if (browser?.pid !== undefined && browser.exitCode === null && browser.signalCode === null) try { process.kill(-browser.pid, "SIGKILL"); } catch { /* Already stopped. */ }
+    await browserExit;
+    await rm(run, { recursive: true, force: true });
+  }
+});
+
+test("unbound browser launch remains unconfirmed after Playwright fails", async () => {
+  const run = await create(), exitFile = path.join(run, "exit");
+  let playwright: ManagedCommand | undefined;
+  try {
+    await initializeRunOwnership(repository, run);
+    playwright = await startOwnedPlaywright({ repository, runDirectory: run, command: process.execPath,
+      args: ["-e", `const fs=require('fs');setInterval(()=>{if(fs.existsSync(${JSON.stringify(exitFile)}))process.exit(1)},20)`], options: { cwd: run, timeoutMs: 15_000, onOutput: () => {} } });
+    await beginBrowserScope(repository, run);
+    await writeFile(exitFile, "exit");
+    assert.equal((await playwright.finished).exitCode, 1);
+    await assert.rejects(recoverRunOwnership({ repository, runDirectory: run, mode: "owner" }), /browser stop is unconfirmed/);
+    assert.equal(JSON.parse(await readFile(path.join(run, "results", "fixture-owner.json"), "utf8")).verified, false);
+  } finally { await playwright?.stop().catch(() => {}); await rm(run, { recursive: true, force: true }); }
+});
+
+test("browser proof conflict never signals the mismatched process", async () => {
+  const run = await create(); let browser: ReturnType<typeof spawn> | undefined, playwright: ManagedCommand | undefined, browserExit: Promise<unknown> | undefined;
+  try {
+    await initializeRunOwnership(repository, run);
+    playwright = await startOwnedPlaywright({ repository, runDirectory: run, command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], options: { cwd: run, timeoutMs: 15_000, onOutput: () => {} } });
+    const scope = await beginBrowserScope(repository, run);
+    browser = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
+    browserExit = once(browser, "exit");
+    await bindBrowserScope(repository, run, scope, browser.pid!);
+    const filename = path.join(run, "results", "browser-ownership.json"), registry = JSON.parse(await readFile(filename, "utf8"));
+    registry.scopes[0].proof.commandHash = "0".repeat(64); await writeFile(filename, JSON.stringify(registry));
+    await assert.rejects(finishBrowserScope(repository, run, scope));
+    assert.doesNotThrow(() => process.kill(browser!.pid!, 0));
+    await playwright.stopProcesses(); await playwright.finished;
+  } finally {
+    await playwright?.stop().catch(() => {});
+    if (browser?.pid !== undefined && browser.exitCode === null && browser.signalCode === null) try { process.kill(-browser.pid, "SIGKILL"); } catch { /* Already stopped. */ }
+    await browserExit;
+    await rm(run, { recursive: true, force: true });
+  }
+});
+
+test("independent recovery after runner SIGKILL stops the proved original browser group", async () => {
+  const run = await create(), module = new URL("../src/fixture-owner.ts", import.meta.url).href;
+  const source = `import {spawn} from 'node:child_process'; import {initializeRunOwnership,startOwnedPlaywright,beginBrowserScope,bindBrowserScope} from ${JSON.stringify(module)};
+    await initializeRunOwnership(${JSON.stringify(repository)},${JSON.stringify(run)});
+    await startOwnedPlaywright({repository:${JSON.stringify(repository)},runDirectory:${JSON.stringify(run)},command:process.execPath,args:['-e','setInterval(()=>{},1000)'],options:{cwd:${JSON.stringify(run)},timeoutMs:30000,onOutput:()=>{}}});
+    const scope=await beginBrowserScope(${JSON.stringify(repository)},${JSON.stringify(run)}), browser=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});
+    await bindBrowserScope(${JSON.stringify(repository)},${JSON.stringify(run)},scope,browser.pid);process.stdout.write('READY\\n');setInterval(()=>{},1000);`;
+  const runner = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "pipe", "pipe"] });
+  let gateId: string | undefined, proof: ProcessEvidence | undefined;
+  try {
+    await once(runner.stdout, "data");
+    const owner = JSON.parse(await readFile(path.join(run, "results", "fixture-owner.json"), "utf8"));
+    gateId = owner.playwright.id;
+    await wait(async () => (await readGateReceipt(run, gateId!)).child !== null);
+    proof = JSON.parse(await readFile(path.join(run, "results", "browser-ownership.json"), "utf8")).scopes[0].proof;
+    assert.ok(proof);
+    runner.kill("SIGKILL"); await once(runner, "exit");
+    await recoverRunOwnership({ repository, runDirectory: run, mode: "independent" });
+    assert.equal(await inspectProcessEvidence(proof), "stopped");
+    assert.equal(JSON.parse(await readFile(path.join(run, "results", "fixture-owner.json"), "utf8")).verified, true);
+  } finally {
+    if (runner.exitCode === null && runner.signalCode === null) { runner.kill("SIGKILL"); await once(runner, "exit"); }
+    if (gateId !== undefined) try { await stopGate(run, gateId, Date.now() + 5_000); } catch { /* Preserve original proof on uncertainty. */ }
+    if (proof !== undefined) try { await stopEvidenceGroup(proof, [], Date.now() + 5_000); } catch { /* Preserve original proof on uncertainty. */ }
+    await rm(run, { recursive: true, force: true });
+  }
+});
 
 test("gate binds process evidence before a target starts, and stops its real process group", async () => {
   const run = await create(), gateId = randomUUID(), marker = path.join(run, "target");
