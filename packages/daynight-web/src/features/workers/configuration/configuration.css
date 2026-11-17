@@ -97,6 +97,9 @@
 .configuration-notice { margin-bottom: 19px; }
 .configuration-notice .notice-heading { font-weight: 600; }
 .configuration-notice .notice-actions { margin-top: 10px; }
+.configuration-source { margin: 10px 0; font-size: 11px; }
+.configuration-source summary { cursor: pointer; }
+.configuration-source pre { margin: 9px 0 0; padding: 11px; border: 1px solid var(--line); border-radius: 5px; background: #fff; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; font-size: 10px; }
 .configuration-notice details { margin-top: 10px; font-size: 11px; }
 .configuration-notice summary { cursor: pointer; }
 .configuration-notice pre { margin: 9px 0 0; padding: 11px; border: 1px solid #e8dfcd; background: #fffdf8; border-radius: 5px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }

@@ -28,7 +28,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   saved: 'Saved to the cloud. Application is confirmed by a Worker report.',
   reconciled: 'The cloud confirms the submitted configuration.', notSaved: 'The cloud does not contain the submitted configuration. Review the latest values before saving again.',
   uncertain: 'The save result is not yet confirmed. Your draft has been kept.', verifySave: 'Check save result',
-  conflict: 'The cloud configuration changed in another page.', viewLatest: 'View latest cloud configuration', loadLatest: 'Load latest configuration',
+  conflict: 'The cloud configuration changed in another page.', savedSource: 'View saved configuration response', sourceProjection: 'This response may omit fields due to capability negotiation.', viewLatest: 'View latest cloud configuration response', loadLatest: 'Load latest configuration',
   settings: 'Runtime settings', maxConcurrent: 'Concurrent task limit', pollIntervalMs: 'Task polling interval', recoveryLimit: 'Automatic recovery limit', milliseconds: 'ms',
   agentControlMode: 'Control mode', controlModeDetail: 'Once applied, used for new tasks. Running tasks keep their original mode.',
   controlModeAwaitingAdoption: 'Waiting for the Worker to sync its control mode.', controlModeUnsupported: 'Upgrade the service to configure control mode.',
