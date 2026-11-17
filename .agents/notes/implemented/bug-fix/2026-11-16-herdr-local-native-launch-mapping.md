@@ -2,6 +2,8 @@
 
 Status: implemented
 
+The Herdr execution mechanism described here is superseded by [daemon removal](../simplification/2026-11-18-remove-herdr-daemon.md); its rationale and evidence remain historical.
+
 ## Problem
 
 Herdr format 3 adds native launch provenance to existing runs. Complete lifecycle

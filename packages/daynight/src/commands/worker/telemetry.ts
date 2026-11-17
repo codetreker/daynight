@@ -8,7 +8,6 @@ import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerCPU, WorkerDisk, WorkerExecutableProbe, WorkerMachine, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
 import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandDeadlineError, OwnedCommandError, runOwnedCommand, spawnOwnedProcess } from "./owned-command.js";
-import { createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { NativeVersionOutputError, probeNativeAgentVersion } from "./native-version.js";
 import type { WorkerPaths } from "./paths.js";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "./codex-probe-owner.js";
@@ -123,7 +122,8 @@ export const createWorkerTelemetryCollector = (options: {
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
   if (Buffer.byteLength(options.workingDirectory) > 4096 || Buffer.byteLength(options.machine.name) > 256 || Buffer.byteLength(options.version) > 256) throw new RangeError("Worker identity, directory or version exceeds its UTF-8 byte limit.");
-  const environment = createHerdrNativeEnvironment(options.paths, process.env);
+  const environment = { ...process.env };
+  for (const key of ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]) delete environment[key];
   const codexEnvironment = captureCodexProbeEnvironment(environment);
   const cache = new Map<"codex" | "copilot", { started: number; probe: WorkerExecutableProbe; issue?: WorkerTelemetryIssue; cleanupUncertain: boolean }>();
   const codexProbes = createCodexProbeOwner(codexEnvironment, options.workingDirectory, () => { cache.delete("codex"); });
