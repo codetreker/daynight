@@ -66,6 +66,52 @@ describe('Worker configuration form', () => {
     expect(input()).toHaveValue('4'); expect(screen.getByRole('alert')).toHaveTextContent('invalid configuration response');
     expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
   });
+  it('edits the archive target and reports the observed value independently', async () => {
+    const value = { ...configurationValue(), archiveSessions: true };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'archiveSessions' }, true)]);
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value);
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      const response = configurationResponse(resource); response.headers.set('Daynight-Worker-Archive-Sessions', '1'); return response;
+    });
+    mount(); await flush();
+    const archive = screen.getByRole('checkbox', { name: 'Archive Sessions' });
+    expect(archive).toBeChecked(); expect(archive).toBeEnabled();
+    expect(archive).toHaveAttribute('aria-describedby', expect.stringContaining('archive-sessions-detail'));
+    fireEvent.click(archive); expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Unsaved');
+    save(); await flush();
+    expect(writes[0]?.archiveSessions).toBe(false);
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Awaiting application');
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Actual: On');
+    resource = observed('2', resource.desired!.value, [...globals(resource.desired!.value, '2'), item({ kind: 'archiveSessions' }, false, '2')], '2'); await advance();
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Applied');
+    expect(document.getElementById('feedback-archiveSessions')).toHaveTextContent('Actual: Off');
+    fireEvent.click(archive); fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(archive).not.toBeChecked();
+  });
+  it('shows unavailable service and disables an unsupported Worker without inventing a value', async () => {
+    let supported = false;
+    const value = { ...configurationValue(), archiveSessions: false };
+    let resource = observed('1', value, globals(value));
+    install(() => {
+      const response = configurationResponse(supported ? resource : configurationResource());
+      if (supported) response.headers.set('Daynight-Worker-Archive-Sessions', '1');
+      return response;
+    });
+    mount(); await flush();
+    expect(screen.queryByRole('checkbox', { name: 'Archive Sessions' })).toBeNull();
+    expect(screen.getByText('Upgrade the service to configure Session archiving.')).toBeInTheDocument();
+    supported = true; await advance();
+    const archive = screen.getByRole('checkbox', { name: 'Archive Sessions' });
+    expect(archive).not.toBeChecked(); expect(archive).toBeDisabled();
+    expect(screen.getByText(/has not reported support for Session archiving/)).toBeInTheDocument();
+    resource = observed('1', value, [...globals(value), item({ kind: 'archiveSessions' }, false)] , '2'); await advance();
+    expect(archive).toBeEnabled(); expect(archive).not.toBeChecked();
+  });
   it('saves the platform preference independently and reports actual false until the Worker applies it', async () => {
     const value = configurationValue();
     let resource = observed('1', value, globals(value));

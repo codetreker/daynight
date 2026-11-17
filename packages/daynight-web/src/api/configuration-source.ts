@@ -80,6 +80,7 @@ export const configurationBaselinesCompatible = (baseline: ConfigurationBaseline
   return configurationValueSourcesEqual(baseline.valueSource, observed.valueSource, {
     controlMode: baseline.known.agentControlMode !== undefined && observed.known.agentControlMode !== undefined,
     toolPaths: baseline.known.toolPaths !== undefined && observed.known.toolPaths !== undefined,
+    archiveSessions: baseline.known.archiveSessions !== undefined && observed.known.archiveSessions !== undefined,
   });
 };
 
@@ -89,7 +90,7 @@ export const enrichConfigurationBaseline = (baseline: ConfigurationBaseline, obs
   if (observed === null || baseline.revision !== observed.revision || !configurationBaselinesCompatible(baseline, observed)) return baseline;
   const original = sourceObject(baseline.valueSource), incoming = sourceObject(observed.valueSource);
   let known = baseline.known;
-  for (const key of ['agentControlMode', 'toolPaths'] as const) {
+  for (const key of ['agentControlMode', 'toolPaths', 'archiveSessions'] as const) {
     const source = incoming.get(key);
     if (!original.has(key) && source !== undefined && observed.known[key] !== undefined) {
       original.set(key, source);
@@ -101,7 +102,7 @@ export const enrichConfigurationBaseline = (baseline: ConfigurationBaseline, obs
 
 export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: WorkerConfigurationValue): ConfigurationSubmission => {
   const root = sourceObject(baseline.valueSource);
-  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode'] as const) setKnown(root, key, known[key]);
+  for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions'] as const) setKnown(root, key, known[key]);
   root.set('native', mergeMembers(root.get('native')!, known.native, ['agent', 'model', 'args']));
   const projects = new Map(jsonContainerSources(root.get('projects')!).map(source => [projectId(source), source]));
   root.set('projects', arraySource(known.projects.map(project => {
@@ -166,18 +167,24 @@ const equivalent = (left: string, right: string, projects = false, projectEntity
   if (/^-?\d/.test(left) && /^-?\d/.test(right)) return numberTuple(left) === numberTuple(right);
   return JSON.parse(left) === JSON.parse(right);
 };
-export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly controlMode?: boolean; readonly toolPaths?: boolean }): boolean => {
+export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly controlMode?: boolean; readonly toolPaths?: boolean; readonly archiveSessions?: boolean }): boolean => {
   validateConfigurationSource(left); validateConfigurationSource(right);
   if (options !== undefined) {
     const project = (source: string): string => {
       const fields = sourceObject(source);
       if (options.controlMode === false) fields.delete('agentControlMode');
       if (options.toolPaths === false) fields.delete('toolPaths');
+      if (options.archiveSessions === false) fields.delete('archiveSessions');
       return objectSource(fields);
     };
     left = project(left); right = project(right);
   }
   return equivalent(left, right, true);
+};
+export const withoutArchiveSessions = (source: string): string => {
+  const fields = sourceObject(source);
+  fields.delete('archiveSessions');
+  return objectSource(fields);
 };
 export const encodeConfigurationPut = (submission: ConfigurationSubmission): string => {
   validateConfigurationSource(submission.valueSource);

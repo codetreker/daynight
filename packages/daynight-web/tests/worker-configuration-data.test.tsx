@@ -754,3 +754,78 @@ describe('control mode capability continuity', () => {
     expect(result.current.resource?.desired?.value.agentControlMode).toBe('web'); expect(fetch).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('archive configuration continuity', () => {
+  const response = (revision: string, archive: boolean, observationRevision = 1, supportedWorker = true, maxConcurrent = 2) => {
+    const value = { ...configurationValue(), archiveSessions: archive, maxConcurrent };
+    const result = configurationResponse({ ...configurationResource(revision, value), observationRevision: String(observationRevision), observation: {
+      baseRevision: String(observationRevision - 1), desiredRevision: '1', reportedAt: '2026-01-01T00:00:00Z', items: supportedWorker ? [{ key: { kind: 'archiveSessions' }, targetRevision: '1', appliedValue: true, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null }] : [],
+    } });
+    result.headers.set('Daynight-Worker-Archive-Sessions', '1');
+    return result;
+  };
+  it.each([true, false])('reads %s and saves the opposite with an older Worker observation', async initial => {
+    const fetch = vi.fn().mockResolvedValueOnce(response('2', initial)).mockResolvedValueOnce(response('3', !initial));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); expect(result.current.draft?.archiveSessions).toBe(initial);
+    act(() => result.current.setDraft(draft => ({ ...draft, archiveSessions: !initial })));
+    expect(result.current.saveableDirty).toBe(true);
+    await act(async () => result.current.save());
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).value.archiveSessions).toBe(!initial);
+    expect(result.current.notice).toBe('saved'); expect(result.current.dirty).toBe(false);
+  });
+  it('retains the unsent draft when Worker support disappears and preserves the saved value in other writes', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response('1', true)).mockResolvedValueOnce(response('1', true, 2, false))
+      .mockResolvedValueOnce(response('2', true, 2, false, 3)).mockResolvedValueOnce(response('2', true, 3, true, 3))
+      .mockResolvedValueOnce(response('3', false, 3, true, 3));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, archiveSessions: false })));
+    await advance(); expect(result.current.draft?.archiveSessions).toBe(false); expect(result.current.saveableDirty).toBe(false);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    await act(async () => result.current.save());
+    expect(JSON.parse(fetch.mock.calls[2]![1].body).value).toMatchObject({ archiveSessions: true, maxConcurrent: 3 });
+    expect(result.current.draft?.archiveSessions).toBe(false); expect(result.current.dirty).toBe(true); expect(result.current.saveableDirty).toBe(false);
+    await advance(); expect(result.current.saveableDirty).toBe(true);
+    await act(async () => result.current.save());
+    expect(JSON.parse(fetch.mock.calls[4]![1].body).value.archiveSessions).toBe(false);
+    expect(result.current.dirty).toBe(false);
+  });
+  it('preserves a saved false while editing another setting on an older Worker', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response('1', false, 1, false)).mockResolvedValueOnce(response('2', false, 1, false, 3));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); expect(result.current.draft?.archiveSessions).toBe(false);
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    await act(async () => result.current.save());
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).value).toMatchObject({ archiveSessions: false, maxConcurrent: 3 });
+    expect(result.current.draft?.archiveSessions).toBe(false); expect(result.current.dirty).toBe(false);
+  });
+  it('adopts a newly negotiated false without overwriting an unrelated draft', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
+      .mockResolvedValueOnce(response('1', false)).mockResolvedValueOnce(response('2', false, 1, true, 3));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    await advance(); expect(result.current.draft?.archiveSessions).toBe(false); expect(result.current.draft?.maxConcurrent).toBe('3');
+    await act(async () => result.current.save());
+    expect(JSON.parse(fetch.mock.calls[2]![1].body).value).toMatchObject({ archiveSessions: false, maxConcurrent: 3 });
+    expect(result.current.dirty).toBe(false);
+  });
+  it('waits for a supported read before reconciling an unknown write and keeps later edits', async () => {
+    const legacy = configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 3 }));
+    const fetch = vi.fn().mockResolvedValueOnce(response('1', true)).mockRejectedValueOnce(new TypeError('connection lost'))
+      .mockResolvedValueOnce(legacy).mockResolvedValueOnce(response('2', false, 2, true, 3));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
+    await flush(); act(() => result.current.setDraft(draft => ({ ...draft, archiveSessions: false, maxConcurrent: '3' })));
+    await act(async () => result.current.save()); await flush();
+    expect(result.current.uncertain).toBe(true); expect(result.current.draft?.archiveSessions).toBe(false);
+    act(() => result.current.setDraft(draft => ({ ...draft, archiveSessions: true })));
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.uncertain).toBe(false); expect(result.current.notice).toBe('reconciled');
+    expect(result.current.draft?.archiveSessions).toBe(true); expect(result.current.dirty).toBe(true);
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+});
