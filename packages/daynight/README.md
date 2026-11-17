@@ -2079,12 +2079,17 @@ acquisition preference, control mode, Project selection, and global/per-Project
 Agent, model and arguments. Repository roots, local paths, service credentials,
 Worker identity, and optional
 `agentModel` / `agentReasoningEffort` overrides stay local. An authenticated
-configuration read or matching report receipt installs the complete current cloud
-target and observation baseline, including lower counters, different content at
-the same revision, or an uninitialized target. Local cached or pending targets
-cannot override that authority. Each installation renews a local generation while
-matching application records and jobs retain their identities. An unsupported
-cloud target remains visible as authority with new admission closed until a valid
+configuration GET installs the complete current cloud target and observation
+baseline, including lower counters or an uninitialized target. Matching report
+receipts retain a newer target when an older response arrives. A receipt with
+lower target or observation counters triggers an authenticated GET to determine
+whether the service actually rolled back. Desired content
+under the same revision must be semantically equal wherever both negotiated
+projections expose it. Existing mode and tool fields may be absent from one
+projection; conflicting visible content still fails as a protocol error. Known target changes and authority rollback renew the local
+generation. Changes confined to unknown fields, a newer revision or update time
+preserve application records, jobs and `applicationRevision`. An unsupported
+known target remains visible as authority with new admission closed until a valid
 target arrives. Configuration enrollment does not depend on active claims or
 alter task/claim formats, permission or recovery rules.
 
@@ -2438,26 +2443,53 @@ cycles add no configuration GET; startup, unknown results, 400/protocol failures
 and capability discovery read first. Reporting keeps its 30-second single-flight
 scheduler, merged triggers and finite prompt batches.
 
-The Worker stores configuration facts in one schema 5
+The Worker stores configuration facts in one schema 6
 `worker/configuration.json`, scoped to the service origin, authenticated user and
-Worker ID. Its authority contains the target, observation revision and a local
-generation UUID. Current records describe the target's application and verification;
+Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
+observation revision and local generation. The executable known view derives from
+the original JSON. Unknown fields, nested values, large integers, negative numbers
+and exponents survive receive, cache and restart without conversion through
+JavaScript numbers. Known fields retain their strict validation; duplicate keys,
+depth and existing response limits still apply. Unknown targets create no jobs or
+pending/applied records. `remoteObservation` independently retains the last
+explicit GET's complete observation and revision, including unknown item kinds;
+receipts do not import those remote facts into the execution ledger. A service
+rollback or null reset retains that independent snapshot under its original
+counters; it is not evidence about the restored current authority.
+When existing mode or tool negotiation hides a previously received field at the
+same revision, `hiddenCapabilitySources` retains its raw source as a historical
+fact. It is not executed or reported as the current target; the Worker compares
+it if that field becomes visible again at the same revision. Older schema 6
+checkpoints without this optional field remain readable.
+
+Current records describe the known target's application and verification;
 retained records preserve original work, stops, unknown outcomes, unacknowledged
 failures and necessary actual values. Each record has a stable `recordId` and
 immutable `origin`. Reused actual values keep their observed source; schema 4
 history with a lost successful revision remains explicitly unknown.
 
-Versions 1–4 upgrade through the strict migration owner, preserving original
-values, mode, backoff, failure identity, started removals and observation facts.
-Version 1 retains its platform-preference migration. Current-format missing
-fields, invalid scope and corrupt data remain failures. Genuine file I/O failures
-wait in the original storage scope and recover automatically; they do not
-initialize an empty cache. Cache
-reads and atomic writes process JSON in chunks using the pinned
-`@discoveryjs/json-ext` dependency and a cache-specific syntax guard. Total file
-size is not limited by one JSON string; individual tokens and retained domain
-objects still consume their corresponding memory. Historical structurally valid
-values are read without applying newer per-item limits.
+Versions 1–4 retain their original conversion to validated schema 5; schema 5 then
+upgrades to schema 6 with its complete ledger, identities, provenance, references,
+mode and retry facts preserved. Its old target becomes `desiredJson`, its revision
+becomes `applicationRevision`, and `remoteObservation` starts null. Version 1
+retains its platform-preference migration. Migration publishes only after atomic
+save; failed saves retain the original file and error. Missing required fields,
+invalid scope and corrupt data remain failures. Genuine file I/O failures
+recover in the original storage scope. Reads and atomic writes process the outer
+cache in chunks using pinned `@discoveryjs/json-ext` and its cache-specific syntax
+guard; raw documents remain ordinary strings, so unknown values require no change
+to the outer numeric grammar. Aggregate file size is not limited by one JSON
+string; individual tokens and retained objects still consume their corresponding
+memory. Historical values remain readable without newer per-item limits.
+
+Application-side tool targets, native proof and Project preparation confirmations
+use `applicationRevision`, which can precede the newest received revision.
+Reports use the newest desired revision in their envelope while each item retains
+its actual target revision. Unknown-only changes do not reapply known values,
+restart Agents or repeat unchanged Project preparation. Existing control-mode and
+tool-path negotiation still governs outbound fields; unknown-response preservation
+adds no negotiation mechanism. Older strict clients require the compatibility
+patch before a service begins returning new configuration fields.
 
 One FIFO persistence owner merges target receives, application outcomes and
 acknowledgments from the last durable state. It calculates and freezes each head
@@ -2527,7 +2559,7 @@ current generation's cursor and acknowledges its exact
 `sourceRecordId`/`failureId` pairs. The local token includes a random report ID,
 generation, exact base, observation and sent record identities. A stale-generation
 receipt cannot change the current target, baseline, failures or cursor. A matching
-rejected observation adopts the receipt's canonical state and produces a new
+rejected observation adopts the receipt's observation state and eligible target, retaining a newer desired revision, then produces a new
 report; false for a null observation is a normal receipt with no observation to
 confirm. New or unsent failures remain owned locally; a failure without a current
 carrier is not invented as a new Project target.

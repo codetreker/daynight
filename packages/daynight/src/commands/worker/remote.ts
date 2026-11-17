@@ -1,4 +1,4 @@
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
+import type { WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
 import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
@@ -27,8 +27,8 @@ export type WorkerRemote = {
   currentUserId(signal: AbortSignal): Promise<string>;
   report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
   writeMonitoring(workerId: string, observation: DirectObservation, operation: Operation, requestId: string): Promise<DirectReceipt>;
-  configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource>;
-  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
+  configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<ReceivedWorkerConfigurationResource>;
+  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;

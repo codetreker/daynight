@@ -14,21 +14,30 @@ baseline or repeat the divergence.
 
 ## Decision
 
-An authenticated configuration GET for the running origin, principal and Worker,
-or a valid receipt belonging to its current captured report, installs the exact
-canonical desired and observation baseline. Lower counters, equal-revision
-content changes and null are normal authority inputs. A structurally valid but
-unsupported target remains the accurate stored authority with admission closed;
-a later supported target can recover regardless of its counter. Each authority
-installation renews a local generation UUID. Equal target content preserves
-matching records and jobs; job applicability uses its original record binding,
-content and process proof.
+An authenticated configuration GET for the running origin, principal and Worker
+installs the exact canonical desired and observation baseline, including lower
+counters and null. Structurally valid but unsupported known targets remain stored
+with admission closed. Matching report receipts install eligible targets and
+settle their captured observations; a late lower desired revision cannot replace
+a newer received target. Equal-revision documents must be semantically identical.
+Known target changes or authority rollback renew the local generation; changes
+confined to unknown fields, update time or a forward revision retain generation,
+application identities and jobs. Job applicability uses its original record
+binding, content and process proof.
+
+The original authority decision accepted equal-revision content changes and lower
+receipt targets after service restore and renewed generation on each installation.
+The [unknown configuration decision](2026-11-17-worker-unknown-configuration-preservation.md)
+replaces those choices to preserve future data, avoid redundant application and
+fence late target receipts. Authenticated GET remains the recovery path for an
+actual service rollback.
 
 A local capture owns a random report ID, generation, exact base, observation,
 sent record IDs, failure source tokens and projected cursor. The manager checks
 the generation again inside the serialized checkpoint. Only matching accepted
 observations retire exactly sent failures and advance the cursor. A matching
-rejection adopts canonical receipt state and produces a new report. False for a
+rejection adopts the receipt baseline and eligible target, retaining a newer
+desired revision, then produces a new report. False for a
 null observation means no observation was submitted. Old-generation receipts
 cannot change the current target, baseline, failures or cursor; a known remote
 result keeps its meaning when its local waiter ends.
@@ -115,7 +124,8 @@ relabeling it as the current target would falsify its original source.
 ## Consequences
 
 Canonical recovery adds local token and candidate lifecycle state, while keeping
-the existing checkpoint schema, service DTO and transaction. Historical origins
+the service DTO and transaction. The current schema 6 source representation is
+owned by the unknown configuration decision. Historical origins
 remain immutable, and process proof stays distinct from actual-value provenance.
 A local candidate can re-establish configuration lost by the service, but cannot
 promise to reconstruct the missing cloud value. Temporary candidate failures

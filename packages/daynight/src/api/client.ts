@@ -2,7 +2,7 @@ import { normalizeTaskTagFilter } from "./task-tag-filter.js";
 import { confirmTaskTagIds, normalizeTaskTagIds } from "./task-tags.js";
 import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
 import type { Tag, TagDeletionReceipt, TagListQuery, TagPage } from "./tags.js";
-import { projectWorkerCloudReport, decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
+import { projectWorkerCloudReport, decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseReceivedWorkerConfigurationReportReceipt, parseReceivedWorkerConfigurationResource } from "./worker-configuration.js";
 import { parseObservedTask, parseObservedTaskGraph, parseTaskSessionObservation, taskObservationPartial, unsupportedSessionObservation } from "./task-observation.js";
 import type { ObservedTask, ObservedTaskGraph, TaskObservationList } from "./task-observation.js";
 import { createTaskSessionClient } from "./task-session.js";
@@ -10,7 +10,7 @@ import type { TaskSessionClient } from "./task-session.js";
 import { parseTaskWorkPage } from "./task-work.js";
 import type { TaskWorkPage, TaskWorkQuery } from "./task-work.js";
 import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp } from "./validation.js";
-import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
+import type { WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
 import { WORKER_CONFIGURATION_REPORT_BYTES, workerReportBody, type ToolPathsReportBudget } from "./worker-report.js";
 import { parseMonitoringReceipt } from "./worker-monitoring.js";
 import type { DirectReceipt } from "./worker-monitoring.js";
@@ -194,8 +194,8 @@ export type ApiClient = TaskSessionClient & {
   deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   writeWorkerMonitoring(workerId: string, observation: DirectObservation, requestId: string): Promise<DirectReceipt>;
-  getWorkerConfiguration(workerId: string): Promise<WorkerCloudResource>;
-  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
+  getWorkerConfiguration(workerId: string): Promise<ReceivedWorkerConfigurationResource>;
+  reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   createProject(input: CreateProjectInput, requestId?: string): Promise<Project>;
   getProject(projectId: string, userId?: string): Promise<Project>;
   getProjectAccess(projectId: string): Promise<ProjectAccess>;
@@ -1257,7 +1257,7 @@ export const createApiClient = (options: {
         parse: (value, response) => {
           if (response.configurationHeader !== "1") throw new ProtocolError("The server does not support Worker configuration exchange version 1.");
           if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1") throw new ProtocolError("Invalid Worker tool paths capability.");
-          const resource = parseWorkerCloudResource(value, { controlMode: response.controlModeHeader === "1", toolPaths: response.toolPathsHeader === "1" });
+          const resource = parseReceivedWorkerConfigurationResource(value, { controlMode: response.controlModeHeader === "1", toolPaths: response.toolPathsHeader === "1" });
           confirmToolPaths(response.toolPathsHeader, response.principalId);
           workerControlMode.supported = response.controlModeHeader === "1";
           return resource;
@@ -1277,9 +1277,9 @@ export const createApiClient = (options: {
           if (response.configurationHeader !== (promptSelectors === undefined ? "1" : "2")) throw new ProtocolError("The server does not support the requested Worker configuration exchange version.");
           const sync = promptSelectors === undefined ? undefined : value as { native: unknown; promptSource: string | undefined };
           if (response.toolPathsHeader !== null && response.toolPathsHeader !== "1" || toolsSupported && response.toolPathsHeader !== "1") { workerToolPaths.supported = false; throw new ProtocolError("The server did not confirm the requested Worker tool paths capability."); }
-          const receipt = parseWorkerCloudReportReceipt(sync === undefined ? value : sync.native, { controlMode: supported && response.controlModeHeader === "1", toolPaths: toolsSupported && response.toolPathsHeader === "1" });
+          const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: supported && response.controlModeHeader === "1", toolPaths: toolsSupported && response.toolPathsHeader === "1" });
           workerControlMode.supported = supported && response.controlModeHeader === "1";
-          if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
+          if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.known.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           if (sync === undefined || promptSelectors === undefined) return receipt;
           let prompts: WorkerPromptResults;
           try {

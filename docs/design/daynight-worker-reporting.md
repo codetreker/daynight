@@ -50,7 +50,7 @@ reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发�
 
 本批同时受 1025 个非 mode 项、协商后的 1026 个总项、Go 编码加存储包装余量的 4 MiB 和整包 9 MiB 约束；固定一项真实未完成或失败移除，其余连续轮转。最近同 key 失败可以来自保留记录，捕获保存其准确 sourceRecordId/failureId，而不复制失败所有权或历史成功出处。服务端整体替换本批观察，不合并各批历史；本机记录不因本次遗漏而被删除。
 
-成功回执交给原捕获的确认处理，并在 manager 的串行提交内核对 generation。当前捕获 observationAccepted=true 才确认实际发送且身份仍匹配的失败与游标；飞行期间的新失败保留，恢复不提前丢弃 lastFailure。当前捕获的合法回执完整安装规范 desired 与 observationRevision，包括较低值、同版本异内容和 null；非空 observation 的 false 不确认应用，下一轮基于准确状态生成新报告，空 observation 的 false 是正常未提交观察。旧 generation 的任何回执均不更新当前目标、基线、失败或游标，已知远端成功不能因本地等待取消而改称未知。未知或无合法规范回执时先读，不让出未确认报告槽或重放。完成移除还须满足原执行结束、准确本批确认及本机保留责任的收敛条件。完整投影与状态表示由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。
+成功回执交给原捕获的确认处理，并在 manager 的串行提交内核对 generation。当前捕获 observationAccepted=true 才确认实际发送且身份仍匹配的失败与游标；飞行期间的新失败保留，恢复不提前丢弃 lastFailure。当前捕获的合法回执安装 observationRevision 与可接纳的 desired，包括 null；迟到的较低 desired revision 不回退最新原始目标，同 revision 的完整目标语义冲突明确拒绝；非空 observation 的 false 不确认应用，下一轮基于准确状态生成新报告，空 observation 的 false 是正常未提交观察。旧 generation 的任何回执均不更新当前目标、基线、失败或游标，已知远端成功不能因本地等待取消而改称未知。未知或无合法规范回执时先读，不让出未确认报告槽或重放。完成移除还须满足原执行结束、准确本批确认及本机保留责任的收敛条件。完整投影与状态表示由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。
 
 capture 和 accept 不执行 native、仓库或停止 I/O。接收唤醒配置应用循环，外部操作在报告预算之外完成，再通过配置提交队列发布实际结果。报告因此不等待项目变更，也不被任务清单错误阻断。配置持久化错误保持原错误链，不能把尚未持久化的实际值发布为成功。配置模块在 Worker 自有 JSON 保存应用与确认状态，机器采样、版本缓存和清单仍是进程内状态。
 
@@ -145,7 +145,7 @@ jq -c --arg request "$REQUEST_ID" 'select(.configuration.requestId == $request)'
 
 ## 验证结构
 
-reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。配置诊断以受控时钟核对首次、原因变化、五分钟 summary、真实次数与恢复，动态关联字段不能破坏分组。真实 JSONL 与 segment 读回验证字段投影、原项/当前权威分别关联、凭据脱敏、部分 append 不重放及错误链。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次，并核对实际失败阶段与远端/本地确定性。配置测试核对不可变 token、较低/同版本异内容/null 权威、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
+reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。配置诊断以受控时钟核对首次、原因变化、五分钟 summary、真实次数与恢复，动态关联字段不能破坏分组。真实 JSONL 与 segment 读回验证字段投影、原项/当前权威分别关联、凭据脱敏、部分 append 不重放及错误链。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次，并核对实际失败阶段与远端/本地确定性。配置测试核对不可变 token、GET 较低/null 恢复、同版本语义冲突拒绝、迟到低版本回执与未知-only 应用版本锚点、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
 
 collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。
 

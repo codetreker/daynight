@@ -106,9 +106,9 @@ describe("worker remote API", () => {
     });
     const remote = await verifiedRemote(serverUrl), operation = operations.createOperation();
     try {
-      await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired });
+      await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired: { known: desired, json: JSON.stringify(desired) } });
       const opened = vi.spyOn(operations, "createOperation");
-      await expect(remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation)).resolves.toMatchObject({ configuration: { desired } });
+      await expect(remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation)).resolves.toMatchObject({ configuration: { desired: { known: desired, json: JSON.stringify(desired) } } });
       await remote.report(workerId, { ...workerTelemetry, taskInventory: null }, operation);
       expect(opened).not.toHaveBeenCalled();
       expect(requests.map(({ method, capability }) => ({ method, capability }))).toEqual([{ method: "GET", capability: "1" }, { method: "POST", capability: "1" }, { method: "POST", capability: undefined }]);

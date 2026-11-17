@@ -90,7 +90,7 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 配置报告共用“持久化就绪→权威/候选准备→新采样→不可变捕获→generation 检查→发送一次→接收并持久化回执”的顺序，foreground 与实际配置管理路径一致。prepare 完成后才采样，代次改变时丢弃旧样本并等待后续触发；正常已同步周期不增加 GET，未知结果、400/协议失败及能力重发现先认证读取。回执包含当前目标、观测 CAS 及是否接纳该份观测。接收目标和处理确认通过配置模块的同一提交 owner，实际应用在心跳之外运行，不能在报告内等待 preflight、仓库或停止操作。目标、实际值与应用观测的完整语义由[Worker 配置需求](daynight-worker.md#w-01前台运行配置与平台)与[配置协议](daynight-worker-configuration.md)持有。
 
-捕获绑定本机 reportId、generation、精确基线、实际观察及 recordId/failureId。只有当前 generation 的匹配接纳确认该份已发送失败与游标；发送期间新增的失败以及被拒绝观测中的失败继续保留，报告前已恢复时仍携带 lastFailure。当前捕获被拒绝时采用回执完整规范状态，再生成最新报告；observation:null 对应的 false 是正常未提交观察。旧代回执不能改变当前目标、基线、失败或游标；响应未知不能确认失败或重放旧报告。配置读取、缓存与报告不依赖 taskInventory 已知或业务执行准备成功。
+捕获绑定本机 reportId、generation、精确基线、实际观察及 recordId/failureId。只有当前 generation 的匹配接纳确认该份已发送失败与游标；发送期间新增的失败以及被拒绝观测中的失败继续保留，报告前已恢复时仍携带 lastFailure。当前捕获被拒绝时采用回执观测基线与可接纳目标，再生成最新报告；迟到较低 desired revision 不回退已收到的目标，同 revision 完整语义冲突明确拒绝；observation:null 对应的 false 是正常未提交观察。旧代回执不能改变当前目标、基线、失败或游标；响应未知不能确认失败或重放旧报告。配置读取、缓存与报告不依赖 taskInventory 已知或业务执行准备成功。
 
 配置诊断区分 authority-read、bootstrap-prepare、telemetry-collect、observation-capture、report-send、receipt-accept、cache-persist，以及应用 validate、prepare、apply、stop。每轮 syncId 关联真实配置 key、本机 generation、reportId、recordId、原项 targetRevision、当前权威目标与观测基线，以及已取得的 HTTP requestId。请求关联仅来自实际 ApiError，优先保留合法 X-Request-ID；只有头缺席时才采用合法错误正文 ID，正文损坏不抹去已取得的头关联。不合法头与伪造对象均不进入关联字段，所选值遵守既有 64 字符安全格式。权威未读取、已读取但未初始化、有效初始观测基线 "0" 分别表达；不能用伪造的 0 或当前目标改写原项来源。
 

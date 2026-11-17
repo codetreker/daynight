@@ -1,3 +1,4 @@
+import { receivedResource } from "../../helpers/worker-received-configuration.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -78,7 +79,7 @@ describe("Worker configuration bootstrap preparation", () => {
       });
     });
     const exchange = createWorkerConfigurationExchange({ manager, bootstrap: f.provider,
-      read: async () => ({ desired: null, observationRevision: "0", observation: null }),
+      read: async () => receivedResource({ desired: null, observationRevision: "0", observation: null }),
       send: (report, captured, current) => createApiClient({ serverUrl: identity.serverOrigin, expectedUserId: identity.userId, operation: current, fetch,
         workerControlMode: { supported: true }, workerToolPaths: { supported: true, serverOrigin: identity.serverOrigin, userId: identity.userId },
       }).reportWorkerConfiguration(identity.workerId, report, captured),

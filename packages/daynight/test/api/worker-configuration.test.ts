@@ -20,6 +20,8 @@ const configuration: WorkerCloudReport = { bootstrap: null, observation: { baseR
 const resource = { desired, observationRevision: "0", observation: null };
 const report = { ...workerTelemetry, taskInventory: null };
 const receipt = { observedAt: time, lastReportedAt: time, configuration: { desired, observationRevision: "1", observationAccepted: true } };
+const receivedDesired = (value: WorkerCloudDesired | null) => value === null ? null : { json: JSON.stringify(value), known: value };
+const receivedReceipt = (value: typeof receipt) => ({ ...value, configuration: { ...value.configuration, json: JSON.stringify(value.configuration), desired: receivedDesired(value.configuration.desired) } });
 const operations: Operation[] = [];
 const api = (fetch: typeof globalThis.fetch) => {
   const operation = createOperation(); operations.push(operation);
@@ -29,6 +31,23 @@ const response = (body: unknown, capability: string | null = "1", principal = us
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); vi.restoreAllMocks(); });
 
 describe("Worker cloud configuration protocol", () => {
+  it("preserves future source values across GET and both report receipt variants", async () => {
+    const future = '{"negative":-2,"fraction":1.25,"integer":9007199254740993,"exponent":1e9999,"array":[true,null]}';
+    const desiredJson = JSON.stringify(desired).replace('"value":{', `"future":${future},"value":{"future":${future},`).replace('"agent":"codex"', `"agent":"codex","future":${future}`);
+    const configJson = `{"desired":${desiredJson},"observationRevision":"1","observationAccepted":true,"future":${future}}`;
+    const rawResponse = (source: string, version: string) => new Response(source, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": version } });
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(rawResponse(`{"desired":${desiredJson},"observationRevision":"0","observation":null,"future":${future}}`, "1"))
+      .mockResolvedValueOnce(rawResponse(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson}}`, "1"))
+      .mockResolvedValueOnce(rawResponse(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson.slice(0, -1)},"prompts":[]}}`, "2"));
+    const client = api(fetch);
+    expect((await client.getWorkerConfiguration(workerId)).desired).toEqual({ json: desiredJson, known: desired });
+    expect((await client.reportWorkerConfiguration(workerId, report, configuration)).configuration).toEqual({ json: configJson, desired: { json: desiredJson, known: desired }, observationRevision: "1", observationAccepted: true });
+    const sync = await client.reportWorkerConfiguration(workerId, report, configuration, []);
+    expect(sync.configuration.desired?.json).toBe(desiredJson);
+    expect(sync.configuration.json).toBe(configJson);
+    expect(sync.prompts).toEqual({ ok: true, results: [] });
+  });
   it("requires the negotiated control mode field and validates its distinct observation value", () => {
     expect(parseWorkerCloudValue({ ...value, agentControlMode: "web" }, true, true).agentControlMode).toBe("web");
     expect(parseWorkerCloudValue({ ...value, agentControlMode: null }, true, true).agentControlMode).toBeNull();
@@ -120,8 +139,8 @@ describe("Worker cloud configuration protocol", () => {
     expect(() => parseWorkerCloudReport({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [invalid] } })).toThrow(ProtocolError);
   });
 
-  it("rejects duplicate keys, lexical nonintegers and malformed source before coercion", () => {
-    for (const source of ["{\"a\":1,\"a\":2}", "{\"nested\":{\"a\":1,\"a\":2}}", "{\"a\":1e2}", "{\"a\":1.0}", "{\"a\":-0}", "{} {}"] ) {
+  it("rejects duplicate keys and malformed source before projecting known values", () => {
+    for (const source of ["{\"a\":1,\"a\":2}", "{\"nested\":{\"a\":1,\"a\":2}}", "{} {}"] ) {
       expect(() => decodeWorkerCloudJsonSource(source)).toThrow();
     }
     expect(() => parseWorkerCloudReport({ ...configuration, observation: { ...configuration.observation!, items: [item, item] } })).toThrow(ProtocolError);
@@ -170,7 +189,7 @@ describe("Worker cloud configuration client", () => {
     expect(new Headers(calls[0]!.headers).get("Daynight-Worker-Control-Mode")).toBe("1");
     const sent = JSON.parse(calls[1]!.body as string).configuration;
     expect(Object.hasOwn(sent, "controlModeBootstrap")).toBe(supported);
-    expect(result.configuration.desired?.value.agentControlMode).toBe(supported ? "web" : undefined);
+    expect(result.configuration.desired?.known.value.agentControlMode).toBe(supported ? "web" : undefined);
     if (prompts) expect(result.prompts).toEqual({ ok: true, results: [] });
   });
 
@@ -213,8 +232,8 @@ describe("Worker cloud configuration client", () => {
     const legacy = { observedAt: time, lastReportedAt: time };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(resource)).mockResolvedValueOnce(response(receipt)).mockResolvedValueOnce(response(legacy, null));
     const client = api(fetch);
-    await expect(client.getWorkerConfiguration(workerId)).resolves.toEqual(resource);
-    await expect(client.reportWorkerConfiguration(workerId, report, configuration)).resolves.toEqual(receipt);
+    await expect(client.getWorkerConfiguration(workerId)).resolves.toEqual({ json: JSON.stringify(resource), desired: receivedDesired(desired), observationRevision: "0", observationJson: null });
+    await expect(client.reportWorkerConfiguration(workerId, report, configuration)).resolves.toEqual(receivedReceipt(receipt));
     await expect(client.reportWorker(workerId, report)).resolves.toEqual(legacy);
     expect(fetch.mock.calls.map(([, options]) => new Headers(options!.headers).get("Daynight-Worker-Configuration"))).toEqual(["1", "1", null]);
     expect(JSON.parse(fetch.mock.calls[1]![1]!.body as string)).toEqual({ ...report, configuration });
@@ -256,7 +275,7 @@ describe("Worker cloud configuration client", () => {
   it("exposes a rejected CAS receipt without treating it as success or retrying", async () => {
     const rejected = { ...receipt, configuration: { ...receipt.configuration, observationRevision: "9", observationAccepted: false } };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(rejected));
-    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration)).resolves.toEqual(rejected);
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration)).resolves.toEqual(receivedReceipt(rejected));
     expect(fetch).toHaveBeenCalledOnce();
   });
 
@@ -279,7 +298,7 @@ describe("Worker prompt configuration sync", () => {
   it("sends selectors on the same POST and returns the native and prompt results", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ ...receipt, configuration: { ...receipt.configuration, prompts } }, "2"));
     const result = await api(fetch).reportWorkerConfiguration(workerId, report, configuration, selectors);
-    expect(result).toEqual({ ...receipt, prompts: { ok: true, results: prompts } });
+    expect(result).toEqual({ ...receivedReceipt(receipt), prompts: { ok: true, results: prompts } });
     const headers = new Headers(fetch.mock.calls[0]![1]!.headers);
     expect(headers.get("Daynight-Worker-Configuration")).toBe("2");
     expect(JSON.parse(headers.get("Daynight-Worker-Prompts")!)).toEqual(selectors);
@@ -288,10 +307,10 @@ describe("Worker prompt configuration sync", () => {
   it("retains the native receipt while refusing malformed prompt batches", async () => {
     const invalid = { ...receipt, configuration: { ...receipt.configuration, prompts: [{ ...prompts[0], value: { ...prompts[0]!.value, scopeId: workerId } }] } };
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(invalid, "2"));
-    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receipt, prompts: { ok: false } });
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receivedReceipt(receipt), prompts: { ok: false } });
     const duplicate = JSON.stringify({ ...receipt, configuration: { ...receipt.configuration, prompts } }).replace('"scope":"user"', '"scope":"user","scope":"user"');
     const raw = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(duplicate, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "2" } }));
-    await expect(api(raw).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receipt, prompts: { ok: false } });
+    await expect(api(raw).reportWorkerConfiguration(workerId, report, configuration, selectors)).resolves.toEqual({ ...receivedReceipt(receipt), prompts: { ok: false } });
   });
   it("reads three worst-case escaped prompt values within the POST limit without lowering the operation budget", async () => {
     const project = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";

@@ -1,5 +1,6 @@
 import { parseWorkerCloudToolPaths, parseToolPathsBootstrap, workerConfigurationCapabilities, type WorkerCloudToolPaths, type WorkerConfigurationCapabilityInput } from "./worker-tool-paths.js";
 import type { ToolPaths } from "../platform/tool-path-choice.js";
+import { decodeWorkerConfigurationSource } from "./worker-configuration-source.js";
 import { jsonObjectSources } from "./json-source.js";
 import { parseWorkerReportReceipt } from "./parse.js";
 import type { AgentControlMode, WorkerReportReceipt } from "./types.js";
@@ -180,14 +181,8 @@ export const parseWorkerCloudReportReceipt = (value: unknown, options: WorkerCon
   return { ...parseWorkerReportReceipt({ observedAt: data.observedAt, lastReportedAt: data.lastReportedAt }), configuration: parseWorkerCloudReceipt(data.configuration, options) };
 };
 
-export const decodeWorkerCloudJsonSource = (source: string): unknown => {
-  jsonObjectSources(source);
-  const json = JSON as unknown as { parse(source: string, reviver: (key: string, value: unknown, context: { source?: string }) => unknown): unknown };
-  return json.parse(source, (_key, value: unknown, context: { source?: string }) => {
-    if (typeof value === "number" && (context.source === undefined || !/^(?:0|[1-9][0-9]*)$/.test(context.source))) return malformed();
-    return value;
-  });
-};
+export { decodeWorkerConfigurationSource as decodeWorkerCloudJsonSource } from "./worker-configuration-source.js";
+export * from "./worker-configuration-source.js";
 
 export type WorkerPromptKey = { readonly scope: "user" | "worker" } | { readonly scope: "project"; readonly projectId: string };
 export type WorkerPromptSelector = { readonly key: WorkerPromptKey; readonly knownRevision: string | null };
@@ -256,5 +251,5 @@ export const decodeWorkerCloudSyncSource = (source: string): { readonly native: 
   const promptSource = configuration.get("prompts");
   const configNative = `{${[...configuration].filter(([key]) => key !== "prompts").map(([key, value]) => `${JSON.stringify(key)}:${value}`).join(",")}}`;
   const nativeSource = `{${[...root].map(([key, value]) => `${JSON.stringify(key)}:${key === "configuration" ? configNative : value}`).join(",")}}`;
-  return { native: decodeWorkerCloudJsonSource(nativeSource), promptSource };
+  return { native: decodeWorkerConfigurationSource(nativeSource), promptSource };
 };
