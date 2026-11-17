@@ -162,4 +162,47 @@ describe('Worker tool paths in the configuration owner', () => {
     expect(fetch).toHaveBeenCalledTimes(1); expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false);
     expect(result.current.draft?.toolPaths).toEqual(explicit); expect(result.current.dirty).toBe(true);
   });
+
+  it.each([false, true])('saves other fields and preserves an unavailable foreign-platform path (legacy: %s)', async legacy => {
+    const foreign: WorkerCloudToolPaths = { codex: { kind: 'path', path: String.raw`C:\Tools\codex.exe` }, copilot: { kind: 'auto' } };
+    const savedPaths = { ...foreign, codex: { ...foreign.codex, futureChoice: { revision: 'unchanged' } }, ...(legacy ? { herdr: { kind: 'auto' } } : {}) };
+    const old = { ...configurationValue(), toolPaths: savedPaths, ...(legacy ? { agentControlMode: 'herdr' } : {}), archiveSessions: true, enableSudoCleanup: false, future: { value: 'preserved' } };
+    const corrected = { ...old, maxConcurrent: 7, toolPaths: { ...savedPaths } };
+    delete (corrected as { agentControlMode?: string }).agentControlMode;
+    delete (corrected.toolPaths as { herdr?: unknown }).herdr;
+    const rawResponse = (value: unknown, revision: string) => {
+      const result = configurationResponse(configurationResource(revision, value as ReturnType<typeof configurationValue>));
+      result.headers.set('Daynight-Worker-Archive-Sessions', '1');
+      return result;
+    };
+    const fetch = vi.fn().mockResolvedValueOnce(rawResponse(old, '1')).mockResolvedValueOnce(rawResponse(corrected, '2'));
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = renderHook(({ editable }) => useWorkerConfiguration(workerId(1), { readEnabled: true, toolPathsEditable: editable, platform: 'linux' }), { initialProps: { editable: true }, wrapper: wrapper() });
+    await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7', toolPaths: { ...foreign, codex: { kind: 'path', path: '/draft/codex' } } })));
+    rerender({ editable: false });
+    await act(async () => result.current.save()); await flush();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).value).toEqual(corrected);
+    expect(result.current.notice).toBe('saved');
+    expect(result.current.draft?.toolPaths?.codex).toEqual({ kind: 'path', path: '/draft/codex' });
+    expect(result.current.dirty).toBe(true);
+    rerender({ editable: true });
+    expect(result.current.saveableDirty).toBe(true);
+  });
+
+  it('corrects a legacy target explicitly without editing a foreign-platform path', async () => {
+    const foreign: WorkerCloudToolPaths = { codex: { kind: 'path', path: String.raw`C:\Tools\codex.exe` }, copilot: null };
+    const old = { ...configurationValue(), toolPaths: { ...foreign, herdr: { kind: 'auto' } }, agentControlMode: 'herdr' as const, enableSudoCleanup: true };
+    const corrected = { ...configurationValue(), toolPaths: foreign, enableSudoCleanup: true };
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource('1', old))).mockResolvedValueOnce(configurationResponse(configurationResource('2', corrected)));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true, toolPathsEditable: false, platform: 'linux' }), { wrapper: wrapper() });
+    await flush();
+    expect(result.current.saveableDirty).toBe(true);
+    await act(async () => result.current.save()); await flush();
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).value).toEqual(corrected);
+    expect(result.current.notice).toBe('saved');
+    expect(result.current.dirty).toBe(false);
+  });
 });

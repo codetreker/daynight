@@ -162,6 +162,31 @@ func sameStoredConfiguration(desired *model.WorkerDesiredConfiguration, fields m
 	if _, exists := fields["archiveSessions"]; exists {
 		return false
 	}
+	// Typed decoding collapses absent and null legacy slots. A complete replacement
+	// must persist the actual wire shape even when the interpreted choices match.
+	candidate, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var candidateFields map[string]json.RawMessage
+	if json.Unmarshal(candidate, &candidateFields) != nil {
+		return false
+	}
+	_, storedMode := fields["agentControlMode"]
+	_, candidateMode := candidateFields["agentControlMode"]
+	if storedMode != candidateMode {
+		return false
+	}
+	var storedPaths, candidatePaths map[string]json.RawMessage
+	if json.Unmarshal(fields["toolPaths"], &storedPaths) != nil || storedPaths == nil ||
+		json.Unmarshal(candidateFields["toolPaths"], &candidatePaths) != nil || candidatePaths == nil || len(storedPaths) != len(candidatePaths) {
+		return false
+	}
+	for key := range candidatePaths {
+		if _, exists := storedPaths[key]; !exists {
+			return false
+		}
+	}
 	raw, err := json.Marshal(fields)
 	if err != nil {
 		return false
@@ -466,7 +491,11 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 		if !preserve {
 			continue
 		}
-		comparison[key] = candidate[key]
+		if projected, exists := candidate[key]; exists {
+			comparison[key] = projected
+		} else {
+			delete(comparison, key)
+		}
 		if raw, exists := fields[key]; exists {
 			candidate[key] = raw
 		} else {
