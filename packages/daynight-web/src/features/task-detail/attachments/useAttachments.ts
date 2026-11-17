@@ -200,7 +200,9 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
         if (selectedMetadata.current.scope === scope && selectedMetadata.current.path === path && selectedMetadata.current.attachment !== undefined) {
           selectedMetadata.current = { scope, path, attachment };
         }
-        setList((prior) => ({ ...prior, items: [...prior.items.filter((item) => item.path !== path), attachment].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }));
+        // A successful write proves that conflicting ancestor and descendant files
+        // in a stale inventory are gone, even while the next inventory is pending.
+        setList((prior) => ({ ...prior, items: [...prior.items.filter((item) => item.path !== path && !item.path.startsWith(`${path}/`) && !path.startsWith(`${item.path}/`)), attachment].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }));
         setSelection({ scope, path });
       }
       else setSelection((prior) => prior.scope === scope && prior.path === path ? { scope, path: null } : prior);

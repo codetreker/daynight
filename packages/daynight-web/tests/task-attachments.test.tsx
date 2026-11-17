@@ -4,8 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, pauseAuthRequests } from '../src/api/client';
 import type { Attachment, AttachmentPage } from '../src/api/types';
-import { TaskAttachments } from '../src/features/task-detail/attachments/TaskAttachments';
-import type { AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
+import { TaskAttachments, TaskAttachmentsPanel } from '../src/features/task-detail/attachments/TaskAttachments';
+import { useAttachments, type AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
 
 const render = createLocaleRender('zh-CN');
 
@@ -56,6 +56,46 @@ const showDeleteConfirmation = (path: string) => {
 
 
 describe('task attachments', () => {
+  it.each([false, true])('reconciles stale ancestor and descendant files after a successful upload (complete inventory %s)', async (requireCompleteInventory) => {
+    for (const { stale, target } of [
+      { stale: ['docs'], target: 'docs/index.html' },
+      { stale: ['docs/index.html', 'docs/nested/other.txt'], target: 'docs' },
+    ]) {
+      const unrelated = [file('docs2'), file('docs-extra/keep.txt'), file('Docs')];
+      const original = [...stale.map(path => file(path)), ...unrelated];
+      const updated = file(target, 'text/plain');
+      const pending = deferred<AttachmentPage>();
+      const api = fixture(original);
+      vi.mocked(api.list).mockResolvedValueOnce({ items: original, nextCursor: null }).mockReturnValueOnce(pending.promise);
+      vi.mocked(api.put).mockResolvedValueOnce(updated);
+      const projectId = '00000000-0000-4000-8000-000000000100', taskId = '00000000-0000-4000-8000-000000000001';
+      const Panel = () => {
+        const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory });
+        return <TaskAttachmentsPanel projectId={projectId} taskId={taskId} attachments={attachments} />;
+      };
+      const view = render(<Panel />);
+      await findFileButton(/^docs2/);
+      for (const path of stale) expect(screen.getByRole('button', { name: `更多操作：${path}`, hidden: true })).toBeInTheDocument();
+      const user = userEvent.setup();
+      await user.click(screen.getByText('上传文件', { selector: 'summary' }));
+      await user.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'upload.txt', { type: 'text/plain' }));
+      const input = screen.getByRole('textbox', { name: '目标相对路径' });
+      await user.clear(input);
+      await user.type(input, target);
+      await user.click(screen.getByRole('button', { name: '上传文件' }));
+      await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+      for (const path of stale) expect(screen.queryByRole('button', { name: `更多操作：${path}`, hidden: true })).not.toBeInTheDocument();
+      for (const item of unrelated) expect(screen.getByRole('button', { name: `更多操作：${item.path}`, hidden: true })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: `更多操作：${target}`, hidden: true })).toBeInTheDocument();
+      if (requireCompleteInventory) expect(screen.queryByRole('heading', { name: target })).not.toBeInTheDocument();
+      else expect(await screen.findByRole('heading', { name: target })).toBeVisible();
+      await act(async () => { pending.resolve({ items: [...unrelated, updated], nextCursor: null }); });
+      expect(await screen.findByRole('heading', { name: target })).toBeVisible();
+      for (const item of unrelated) expect(screen.getByRole('button', { name: `更多操作：${item.path}`, hidden: true })).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
   it('binds localized timestamps to the selected metadata through refresh, failures and pause', async () => {
     const first = { ...file('one.txt'), updatedAt: '2026-10-22T01:02:03Z' };
     const second = { ...file('two.txt'), createdAt: '2026-10-23T04:05:06Z', updatedAt: '2026-10-23T04:05:06Z' };
