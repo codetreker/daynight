@@ -21,6 +21,8 @@ import type { HerdrRpcClient } from "../../../src/commands/worker/herdr/rpc.js";
 import { loadWindowsJobKernel, type WindowsNamedJobKernel, type WindowsJobProcess } from "../../../src/platform/windows-job.js";
 import * as windowsJobs from "../../../src/commands/controller/windows-job.js";
 import * as windowsProcessProofs from "../../../src/commands/controller/windows-process-proof.js";
+import { ExitingProcessProofError } from "../../../src/commands/controller/process-proof.js";
+import { createMappingProcessLifecycle } from "../../../src/commands/worker/herdr/tool-launch-lifecycle.js";
 
 const roots: string[] = [], operations: Operation[] = [];
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -100,6 +102,90 @@ const windowsVerificationTree = async () => {
 };
 
 describe("owned Herdr launch mapping", () => {
+  it.skipIf(platformDescriptor.value === "win32").each(["Z", "E"] as const)("rebuilds cleanup ownership after an unregistered %s descendant exits", async state => {
+    const root = posixProof(501, 1), exiting = posixProof(502, root.pid), survivor = posixProof(503, root.pid, root.processGroupId!), f = await posixTree([root, exiting, survivor]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    f.capture.mockImplementation(async id => { if (id === exiting.pid) throw new ExitingProcessProofError(id, state, exiting.parentPid, exiting.processGroupId); return id === survivor.pid ? survivor : root; });
+    f.query.mockImplementation(async () => ({ stdout: f.query.mock.calls.length === 1
+      ? `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${survivor.pid} ${survivor.parentPid} ${survivor.processGroupId} S\n${exiting.pid} ${exiting.parentPid} ${exiting.processGroupId} S`
+      : `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${survivor.pid} 1 ${survivor.processGroupId} S`, stderr: "" }));
+    expect(await f.mapping.captureProcesses([root.pid, exiting.pid], operation(), true)).toEqual([root.pid, survivor.pid]);
+    expect(f.query.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root, survivor]);
+    expect(f.signal.mock.calls.some(([pid]) => pid === exiting.pid)).toBe(false);
+    await f.mapping.releaseFrozen();
+  });
+
+  it.skipIf(platformDescriptor.value === "win32").each(["orphan", "same-group-reuse"] as const)("retains unknown %s candidate across cleanup reconstruction", async scenario => {
+    const root = posixProof(501, 1), exiting = posixProof(502, root.pid), child = posixProof(503, exiting.pid), f = await posixTree([root, exiting, child]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    f.capture.mockRejectedValue(new ExitingProcessProofError(exiting.pid, "E", exiting.parentPid, exiting.processGroupId));
+    f.query.mockImplementation(async () => ({ stdout: f.query.mock.calls.length === 1
+      ? `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${exiting.pid} ${exiting.parentPid} ${exiting.processGroupId} S\n${child.pid} ${child.parentPid} ${child.processGroupId} S`
+      : `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${child.pid} 1 ${scenario === "orphan" ? child.processGroupId : root.processGroupId} S`, stderr: "" }));
+    await expect(f.mapping.captureProcesses([root.pid], operation(), true)).rejects.toThrow(/ownership remains unknown/);
+    const recovered = createMappingProcessLifecycle(f.mapping.manifestPath, await readToolManifest(f.mapping.manifestPath), process.env);
+    await expect(recovered.captureProcesses([root.pid], operation(), true)).rejects.toThrow(/ownership remains unknown/);
+    await expect(recovered.confirmStopped(operation())).rejects.toThrow(/candidate ownership remains unknown/);
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+    expect(f.signal.mock.calls.some(([pid]) => pid === child.pid || pid === exiting.pid)).toBe(false);
+  });
+
+  it.skipIf(platformDescriptor.value === "win32")("checks cancellation after the final cleanup anchor observation", async () => {
+    const root = posixProof(501, 1), f = await posixTree([root]), abort = new AbortController();
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    const op = createOperation({ signal: abort.signal }); operations.push(op);
+    f.inspect.mockImplementation(async () => { if (f.query.mock.calls.length > 0) abort.abort(); return "running"; });
+    await expect(f.mapping.captureProcesses([root.pid], op, true)).rejects.toThrow(/cancelled/);
+    expect(f.signal.mock.calls).toEqual([[root.pid, "SIGSTOP"], [root.pid, "SIGCONT"]]);
+  });
+
+  it.skipIf(platformDescriptor.value === "win32")("does not close the workspace when an exiting descendant leaves an unknown child", async () => {
+    const root = posixProof(501, 1), exiting = posixProof(502, root.pid), child = posixProof(503, exiting.pid), f = await posixTree([root, exiting, child]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    f.capture.mockRejectedValue(new ExitingProcessProofError(exiting.pid, "Z", exiting.parentPid, exiting.processGroupId));
+    f.query.mockImplementation(async () => ({ stdout: f.query.mock.calls.length === 1
+      ? `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${exiting.pid} ${exiting.parentPid} ${exiting.processGroupId} S\n${child.pid} ${child.parentPid} ${child.processGroupId} S`
+      : `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${child.pid} 1 ${child.processGroupId} S`, stderr: "" }));
+    const context = { ...owner, cwd: f.directory, agent: "codex" as const }, binding = { session: "w", workspaceId: "owned", paneId: "pane", terminalId: "terminal" }, close = vi.fn();
+    const rpc: HerdrRpcClient = { request: async method => {
+      if (method === "session.snapshot") return { type: "session_snapshot", snapshot: { workspaces: [{ workspace_id: binding.workspaceId, label: herdrExecutionLabel(context, "Task") }], panes: [{ workspace_id: binding.workspaceId, pane_id: binding.paneId, terminal_id: binding.terminalId, agent: "codex" }], agents: [], tabs: [] } };
+      if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: root.pid, foreground_processes: [] } };
+      if (method === "workspace.close") return close();
+      throw new Error(`Unexpected cleanup RPC: ${method}`);
+    } };
+    const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => {} }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, toolMapping: async () => f.mapping });
+    await expect(manager.stopAndClose(context, binding, operation())).rejects.toThrow(/ownership remains unknown/);
+    expect(close).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it.skipIf(platformDescriptor.value === "win32").each(["orphan", "reused", "other", "cancel", "deadline"] as const)("retains unknown cleanup ownership on %s after an exiting observation", async scenario => {
+    const root = posixProof(501, 1), exiting = posixProof(502, root.pid), child = posixProof(503, exiting.pid), f = await posixTree([root, exiting, child]);
+    await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
+    const original = new ExitingProcessProofError(exiting.pid, "E", exiting.parentPid, exiting.processGroupId), other = new Error("capture denied"), abort = new AbortController();
+    const op = createOperation({ signal: abort.signal, limits: { totalMs: scenario === "deadline" ? 300 : 10_000 } }); operations.push(op);
+    f.capture.mockImplementation(async id => {
+      if (id !== exiting.pid) throw new Error("unexpected capture");
+      if (scenario === "other") throw other;
+      if (scenario === "cancel") abort.abort();
+      if (scenario === "reused" && f.query.mock.calls.length > 1) return { ...exiting, startedAt: "replacement" };
+      throw original;
+    });
+    f.query.mockImplementation(async () => {
+      if (scenario === "deadline" && f.query.mock.calls.length > 1 && !op.signal.aborted) await new Promise<void>(resolve => op.signal.addEventListener("abort", () => resolve(), { once: true }));
+      return { stdout: f.query.mock.calls.length === 1 || scenario === "deadline" || scenario === "reused"
+      ? `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${exiting.pid} ${exiting.parentPid} ${exiting.processGroupId} S\n${child.pid} ${child.parentPid} ${child.processGroupId} S`
+      : `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${child.pid} 1 ${child.processGroupId} S`, stderr: "" };
+    });
+    const error = await f.mapping.captureProcesses([root.pid], op, true).catch(error => error);
+    if (scenario === "other") expect(error).toBe(other);
+    else { expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toContain(original); }
+    if (scenario === "deadline") expect(error.cause).toMatchObject({ kind: "deadline" });
+    if (scenario === "cancel") expect(op.signal.reason).toMatchObject({ kind: "cancelled" });
+    expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+    expect(f.signal.mock.calls.some(([pid]) => pid === exiting.pid || pid === child.pid)).toBe(false);
+  });
   it.skipIf(platformDescriptor.value === "win32")("retains unknown POSIX foreground responsibility across failed cleanup and PID reuse", async () => {
     const f = await fixture(), root = { ...windowsProof(501, 1, "original-root"), processGroupId: 501 }, child = { ...windowsProof(502, 501, "original-child"), processGroupId: 502 };
     Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
@@ -441,6 +527,8 @@ describe("owned Herdr launch mapping", () => {
     const stat = (start: string) => `23 (native name (child)) S 17 23 23 0 -1 4194304 12 0 0 0 0 0 0 0 20 0 1 0 ${start} 123456 42`;
     expect(parseLinuxProcessBirth(23, stat("567890"), `${boot}\n`)).toEqual({ token: `${boot}:567890`, parentPid: 17, processGroupId: 23 });
     expect(parseLinuxProcessBirth(23, stat("567891"), boot).token).not.toBe(`${boot}:567890`);
+    try { parseLinuxProcessBirth(23, stat("567890").replace(") S ", ") Z "), boot); throw new Error("Expected exiting state"); }
+    catch (error) { expect(error).toBeInstanceOf(ExitingProcessProofError); expect(error).toMatchObject({ pid: 23, state: "Z", parentPid: 17, processGroupId: 23 }); }
     expect(() => parseLinuxProcessBirth(24, stat("567890"), boot)).toThrow();
     expect(() => parseLinuxProcessBirth(23, stat("not-a-token"), boot)).toThrow();
     expect(() => parseLinuxProcessBirth(23, stat("567890"), "unknown-boot")).toThrow();

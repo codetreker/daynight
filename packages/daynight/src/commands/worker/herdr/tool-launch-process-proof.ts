@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../controller/process-proof.js";
+import { captureProcessProof, ExitingProcessProofError, inspectProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { inspectWindowsProcessProof } from "../../controller/windows-process-proof.js";
 
 export type MappingProcessProof = ProcessProof & { readonly birthToken?: string };
@@ -13,7 +13,8 @@ export const validLinuxBirthToken = (value: unknown): value is string => typeof 
 export const parseLinuxProcessBirth = (pid: number, stat: string, bootId: string): { token: string; parentPid: number; processGroupId: number } => {
   const end = stat.lastIndexOf(")"), prefix = stat.slice(0, end + 1), fields = stat.slice(end + 1).trim().split(/\s+/), token = `${bootId.trim()}:${fields[19]}`;
   const positive = (value: string | undefined, zero = false) => value !== undefined && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) >= (zero ? 0 : 1);
-  if (!Number.isSafeInteger(pid) || pid <= 0 || !prefix.startsWith(`${pid} (`) || end < 0 || fields.length < 20 || fields[0] === "Z" || !positive(fields[1], true) || !positive(fields[2]) || !validLinuxBirthToken(token)) throw new Error("The original Linux process birth identity cannot be established.");
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !prefix.startsWith(`${pid} (`) || end < 0 || fields.length < 20 || !positive(fields[1], true) || !positive(fields[2]) || !validLinuxBirthToken(token)) throw new Error("The original Linux process birth identity cannot be established.");
+  if (fields[0] === "Z") throw new ExitingProcessProofError(pid, "Z", Number(fields[1]), Number(fields[2]));
   return { token, parentPid: Number(fields[1]), processGroupId: Number(fields[2]) };
 };
 const linuxBirth = async (pid: number) => {

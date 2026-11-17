@@ -8,6 +8,12 @@ export type ProcessProof = { readonly pid: number; readonly parentPid: number; r
 const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
+export class ExitingProcessProofError extends Error {
+  constructor(readonly pid: number, readonly state: "Z" | "E", readonly parentPid: number, readonly processGroupId: number | null) {
+    super("An exiting process cannot supply a running process proof.");
+    this.name = "ExitingProcessProofError";
+  }
+}
 const capturePosixProcessState = async (pid: number, timeoutMs: number): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
   const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
@@ -19,7 +25,7 @@ export const captureProcessProof = async (pid: number, timeoutMs = process.platf
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error("Process identity timeout must be a positive supported integer.");
   if (process.platform === "win32") return captureWindowsProcessProof(pid, timeoutMs);
   const observed = await capturePosixProcessState(pid, timeoutMs);
-  if (observed.zombie || observed.exiting) throw new Error("An exiting process cannot supply a running process proof.");
+  if (observed.zombie || observed.exiting) throw new ExitingProcessProofError(pid, observed.zombie ? "Z" : "E", observed.proof.parentPid, observed.proof.processGroupId);
   return observed.proof;
 };
 export const captureControllerProcessProof = async (launchId: string): Promise<ProcessProof> => {

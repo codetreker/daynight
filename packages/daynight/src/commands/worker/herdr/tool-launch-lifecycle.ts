@@ -4,6 +4,7 @@ import type { Operation } from "../../../api/operation.js";
 import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
 import { stopWindowsBootstrapProcess, WindowsProcessProofError } from "../../controller/windows-process-proof.js";
+import { ExitingProcessProofError } from "../../controller/process-proof.js";
 import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, MappingProcessProofAcquisitionError, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
 import { runHerdrCommand } from "./command.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
@@ -62,7 +63,7 @@ const parse = (value: unknown, nonce: string): ProcessRecord => {
 
 /** Process identities survive workspace removal. Retirement additionally fences native groups/jobs. */
 export const createMappingProcessLifecycle = (manifestPath: string, manifest: HerdrToolLaunchManifest, environment: NodeJS.ProcessEnv) => {
-  const directory = path.dirname(manifestPath), file = path.join(directory, "processes.json"), retired = path.join(directory, "retired.json");
+  const directory = path.dirname(manifestPath), file = path.join(directory, "processes.json"), candidatesFile = path.join(directory, "cleanup-candidates.json"), retired = path.join(directory, "retired.json");
   const frozen = new Map<number, ProcessProof>();
   const retiredValue = { nonce: manifest.nonce, selectionKey: manifest.launch.selectionKey, owner: manifest.owner };
   const alreadyRetired = async (): Promise<boolean> => {
@@ -76,6 +77,20 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
   };
   const read = async (): Promise<ProcessRecord | null> => { const value = await optionalOwnedJson(file); return value === null ? null : parse(value, manifest.nonce); };
   const save = async (proofs: ProcessProof[]): Promise<void> => { const row = parse({ nonce: manifest.nonce, proofs }, manifest.nonce); await replaceFileAtomically(file, JSON.stringify(row), 0o600); syncDurableDirectory(directory); };
+  const readCandidates = async (): Promise<{ observed: number[]; exiting: number[]; pending: boolean }> => {
+    const value = await optionalOwnedJson(candidatesFile);
+    if (value === null) return { observed: [], exiting: [], pending: false };
+    if (typeof value !== "object" || Array.isArray(value)) throw new Error("The original Herdr cleanup candidate record is invalid.");
+    const row = value as Record<string, unknown>;
+    const valid = (ids: unknown): ids is number[] => Array.isArray(ids) && ids.length <= 1000 && new Set(ids).size === ids.length && ids.every(id => Number.isSafeInteger(id) && id > 0 && id <= 2_147_483_647);
+    if (Object.keys(row).sort().join() !== "exiting,nonce,observed,pending" || row.nonce !== manifest.nonce || typeof row.pending !== "boolean" || !valid(row.observed) || !valid(row.exiting) || row.exiting.some(id => !(row.observed as number[]).includes(id))) throw new Error("The original Herdr cleanup candidate record is invalid.");
+    return { observed: row.observed, exiting: row.exiting, pending: row.pending };
+  };
+  const saveCandidates = async (observed: Set<number>, exiting: Set<number>, pending: boolean): Promise<void> => {
+    if (observed.size > 1000) throw new Error("The original Herdr cleanup candidate record exceeds its supported bound.");
+    await replaceFileAtomically(candidatesFile, JSON.stringify({ nonce: manifest.nonce, observed: [...observed], exiting: [...exiting], pending }), 0o600);
+    syncDurableDirectory(directory);
+  };
   const observeWindowsParent = async (proof: ProcessProof, operation: Operation): Promise<void> => {
     operation.check();
     const current = await captureProcessProof(proof.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
@@ -120,6 +135,9 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
       if (state === "replaced") throw new Error("An original Herdr process identity changed before freezing.");
       if (state === "running") { process.kill(proof.pid, "SIGSTOP"); frozen.set(proof.pid, proof); }
     };
+    let exitingCause: ExitingProcessProofError | undefined;
+    const candidates = freeze ? await readCandidates() : { observed: [], exiting: [], pending: false };
+    const observedCandidates = new Set(candidates.observed), exitingCandidates = new Set(candidates.exiting);
     try {
       for (const id of pids) {
         operation.check();
@@ -151,9 +169,19 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
         const ids = new Set(anchors.keys()), groups = new Set([...anchors.values()].map(proof => proof.processGroupId).filter(group => group !== null));
         let changed = true;
         while (changed) { changed = false; for (const row of rows) if (!ids.has(row.pid) && (ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) { ids.add(row.pid); changed = true; } }
-        if (pids.some(id => !proofs.has(id) && !ids.has(id) && !closingJob?.closedMember(id))) throw new Error("The original foreground process has no complete original parent or process group chain; process ownership remains unknown.");
+        if (rows.some(row => observedCandidates.has(row.pid) && !exitingCandidates.has(row.pid) && !proofs.has(row.pid))) throw new Error("A previously observed descendant has no original birth proof; process ownership remains unknown.");
+        if (pids.some(id => !proofs.has(id) && !ids.has(id) && !closingJob?.closedMember(id) && !(exitingCandidates.has(id) && !rows.some(row => row.pid === id)))) throw new Error("The original foreground process has no complete original parent or process group chain; process ownership remains unknown.");
+        // A later occupant, including another exiting process, may be a
+        // replacement; second-resolution POSIX births cannot prove continuity.
+        if (rows.some(row => exitingCandidates.has(row.pid))) throw new Error("An exiting descendant PID is still present; process ownership remains unknown.");
         const unseen = rows.filter(row => ids.has(row.pid) && !proofs.has(row.pid));
-        if (unseen.length === 0) return [...proofs.keys()];
+        if (unseen.length === 0) {
+          operation.check();
+          if (observedCandidates.size > 0) await saveCandidates(observedCandidates, exitingCandidates, false);
+          operation.check();
+          return [...proofs.keys()];
+        }
+        let retry = false;
         while (unseen.length > 0) {
           if (proofs.size >= 1000) throw new Error("The original Herdr process tree exceeds its supported ownership bound.");
           const anchorFor = (row: Inventory): ProcessProof | undefined => anchors.get(row.parentPid) ?? (process.platform === "win32" || row.group === null ? undefined : [...anchors.values()].find(proof => proof.processGroupId === row.group));
@@ -166,16 +194,31 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
             else if (await inspectProcessProof(anchor) !== "running") throw new Error("The original descendant parent or group identity changed; process ownership remains unknown.");
           };
           await observeAnchor();
-          const proof = await captureProcessProof(row.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs()))));
+          let proof: ProcessProof;
+          try { proof = await captureProcessProof(row.pid, Math.max(1, Math.min(5000, Math.floor(operation.remainingMs())))); }
+          catch (cause) {
+            if (!freeze || !(cause instanceof ExitingProcessProofError) || cause.pid !== row.pid || cause.parentPid !== row.parentPid || cause.processGroupId !== row.group) throw cause;
+            exitingCause ??= cause;
+            exitingCandidates.add(row.pid);
+            for (const id of ids) if (!anchors.has(id)) observedCandidates.add(id);
+            await saveCandidates(observedCandidates, exitingCandidates, true);
+            retry = true;
+            break;
+          }
           if (proof.parentPid !== row.parentPid || proof.processGroupId !== row.group) throw new Error("The original Herdr descendant changed during identity registration.");
           if (process.platform === "win32") assertWindowsParentBirth(proof, anchor);
           await observeAnchor();
           proofs.set(proof.pid, proof); await save([...proofs.values()]); await freezeOriginal(proof);
           anchors.set(proof.pid, proof);
         }
+        if (retry) await delay(Math.max(1, Math.min(25, operation.remainingMs())), undefined, { signal: operation.signal });
       }
       throw new Error("The original Herdr process tree did not stabilize before closure.");
-    } catch (cause) { await releaseFrozen(); throw cause; }
+    } catch (cause) {
+      try { await releaseFrozen(); } catch (rollback) { throw new AggregateError([...(exitingCause === undefined ? [] : [exitingCause]), cause, rollback], "The original Herdr process freeze rollback remains unknown.", { cause }); }
+      if (exitingCause !== undefined && cause !== exitingCause) throw new AggregateError([exitingCause, cause], "Herdr descendant re-observation failed; process ownership remains unknown.", { cause });
+      throw cause;
+    }
   };
   const releaseFrozen = async (): Promise<void> => {
     const failures: unknown[] = [];
@@ -194,12 +237,14 @@ export const createMappingProcessLifecycle = (manifestPath: string, manifest: He
     if (await alreadyRetired()) return true;
     const record = await read();
     if (record === null) throw new Error("The original Herdr process tree has no stopped identity proof.");
+    const candidates = await readCandidates();
+    if (candidates.pending) throw new Error("The original Herdr cleanup candidate ownership remains unknown.");
     const receipt = await assertDeclaredLaunchProofs(record);
     const job = process.platform === "win32" && receipt !== null ? await retainHerdrJobObserver(manifestPath, manifest, receipt, operation, record.proofs.find(proof => proof.pid === receipt.helperPid)) : null;
     operation.check();
     // Zombies have exited and cannot execute or spawn, even before an adopter reaps them.
     const rows = await inventory(environment, operation), ids = new Set(record.proofs.map(proof => proof.pid)), groups = new Set(record.proofs.map(proof => proof.processGroupId).filter(group => group !== null));
-    if (rows.some(row => ids.has(row.pid) || ids.has(row.parentPid) || row.group !== null && groups.has(row.group))) return false;
+    if (rows.some(row => ids.has(row.pid) || ids.has(row.parentPid) || candidates.observed.includes(row.pid) || row.group !== null && groups.has(row.group))) return false;
     if (job !== null && !job.stopped()) return false;
     // The root shell is outside the helper Job. Inventory disappearance and
     // an empty Job do not prove that its original handle has become signaled.

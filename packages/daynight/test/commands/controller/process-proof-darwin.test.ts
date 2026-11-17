@@ -3,13 +3,22 @@ import { afterEach, expect, it, vi } from "vitest";
 
 const f = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), execFile: f.exec }));
-import { inspectBootstrapProcessProof, inspectProcessProof, confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
+import { captureProcessProof, ExitingProcessProofError, inspectBootstrapProcessProof, inspectProcessProof, confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const proof = { pid: 4101, parentPid: 4000, processGroupId: 4101, startedAt: "Thu Nov 12 15:53:09 2026", commandHash: createHash("sha256").update("node main.js").digest("hex") };
 const exiting = "4101 4000 4101 ?Es Thu Nov 12 15:53:09 2026 (node)\n";
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.defineProperty(process, "platform", platform); });
+
+it.each([["Z", "Z"], ["?Es", "E"]] as const)("reports a restricted %s acquisition without a running proof", async (status, state) => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  f.exec.mockImplementation((_file, _args, _options, callback) => callback(null, `4101 4000 4101 ${status} Thu Nov 12 15:53:09 2026 (node)\n`));
+  const error = await captureProcessProof(proof.pid).catch(error => error);
+  expect(error).toBeInstanceOf(ExitingProcessProofError);
+  expect(error).toMatchObject({ pid: proof.pid, state, parentPid: proof.parentPid, processGroupId: proof.processGroupId });
+  expect(error).not.toHaveProperty("proof");
+});
 
 it("does not signal a group when its inventory consumes the cleanup deadline", async () => {
   Object.defineProperty(process, "platform", { ...platform, value: "darwin" }); vi.useFakeTimers();
