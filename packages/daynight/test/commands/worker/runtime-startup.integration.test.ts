@@ -201,7 +201,7 @@ describe("worker cloud-first startup", () => {
             expect(reporterOptions).toBeDefined();
             expect(stopProject).toHaveBeenCalledTimes(2);
             const saved = observed.current();
-            expect(saved.schemaVersion).toBe(6);
+            expect(saved.schemaVersion).toBe(7);
             expect(JSON.parse(saved.authority.desiredJson!)).toEqual(target);
             if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
             for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
@@ -248,7 +248,7 @@ describe("worker cloud-first startup", () => {
       queueMicrotask(() => { void (async () => {
         try {
           const installed = observed.current();
-          expect(installed.schemaVersion).toBe(6);
+          expect(installed.schemaVersion).toBe(7);
           expect(JSON.parse(installed.authority.desiredJson!)).toEqual(next);
           expect(installed.currentItems.length).toBeGreaterThan(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,

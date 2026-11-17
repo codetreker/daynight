@@ -149,7 +149,7 @@ describe("Worker configuration persistence", () => {
     expect((await readConfigurationCache(file, identity, new AbortController().signal)).cache).toEqual(store.current());
   });
 
-  it("freezes migration identities across write retries and persists schema 6", async () => {
+  it("freezes migration identities across write retries and persists schema 7", async () => {
     clock();
     const { file, entry } = await fixture(), state = observe(), encodings: string[] = [];
     await writeFile(file, JSON.stringify({ schemaVersion: 4, identity, desired: null, observationRevision: "0", nextFailureId: 1, items: [], nativeModes: {} }));

@@ -124,7 +124,7 @@ describe("Worker configuration cache", () => {
     expect(reopened.cache.retainedItems).toEqual([]);
   });
 
-  it("validates optional hidden capability facts without changing older schema 6 caches", () => {
+  it("validates optional hidden capability facts in schema 7 caches", () => {
     const original = cache(), json = '{"codex":{"kind":"auto","future":[-1.25,900719925474099312345]},"copilot":null,"herdr":null}';
     const source = { ...original, hiddenCapabilitySources: { toolPaths: { revision: "10", json } } };
     expect(parseConfigurationCache(original, identity)).toEqual({ cache: original, migrated: false });
