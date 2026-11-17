@@ -28,7 +28,7 @@ const certificate = async (directory: string, name: string, hostname: string) =>
   // each extension once instead of merging -addext with a host configuration.
   const config = path.join(directory, `${name}-openssl.cnf`);
   await writeFile(config, `[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=extensions\n[dn]\nCN=${hostname}\n[extensions]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\nsubjectAltName=DNS:${names}\n`, { mode: 0o600 });
-  await runFile("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1", "-config", config, "-keyout", path.join(directory, `${name}-key.pem`), "-out", path.join(directory, `${name}-ca.pem`)], { timeout: 15_000 });
+  await runFile("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-sha256", "-days", "1", "-config", config, "-keyout", path.join(directory, `${name}-key.pem`), "-out", path.join(directory, `${name}-ca.pem`)], { timeout: 15_000 });
   const cert = await readFile(path.join(directory, `${name}-ca.pem`)), parsed = new X509Certificate(cert);
   expect(parsed.ca).toBe(true); expect(parsed.subject).toBe(parsed.issuer); expect(parsed.verify(parsed.publicKey)).toBe(true);
   expect(parsed.checkHost(hostname)).toBe(hostname);
