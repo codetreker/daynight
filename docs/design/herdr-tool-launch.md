@@ -92,16 +92,4 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 工具遥测按 selectionKey 聚合原实例与执行事实，允许同时出现多个实际选择。版本来自对应冻结观察或实际实例握手；无完整证据时计数和版本保持未知并保留 unconfirmed，不能由 task.status 推导进程存活。采样只读，不启动或探测工具。
 
-单测与受控故障覆盖映射损坏、未知输入、旧 claim 恢复、A/B pending、替代进程和 legacy endpoint。`herdr-tool-platform.integration.test.ts` 在对应真实 OS 使用固定官方发行工具验证 shell、argv、TTY/console、官方 Session 回报及完整进程回收；Windows 验证真实系统 PowerShell 5 和 ExternalScript。独立清理检查不能以测试通过代替。CI 的三平台 job 必须实际成功，跳过不算通过；这些真实 native 隔离证据仍不等同于真实账号 Provider、完整 Worker 或网页组合验收。
-
-真实平台 fixture 从继承的 PATH 通过现有 `which` 依赖解析 Windows 的真实 `git.exe`，随后执行真实 `git init`，保留其 5 秒上限。子进程失败的上传诊断保留 `code`、`killed`、`signal` 与耗时，不能仅凭 `Command failed` 将非零退出或超时解释为缺少 Git。fixture 在创建 adapter 前记录初始化阶段，并在创建前切换阶段；失败材料保留该阶段。
-
-Windows 的最终独立清理检查区分尚未创建 adapter 的无资源初始化失败与已经进入 adapter 创建的执行。前者必须保留明确失败、诊断耗时、空进程与 endpoint/receipt 记录、零输入和请求、已关闭 mock 与空查询记录；矛盾或不完整的证据仍失败，目录和链接的清理检查继续执行。该分类只证明没有 Herdr 资源需要停证，测试本身仍保留原初始化失败。真实平台 fixture 在 daemon 启动后保留原始 PID 与出生 token，后续捕获只沿当前仍匹配原身份的祖先扩展 owned set。每条父子边都以 BigInt 比较同来源出生 token，要求子进程不早于父进程；相等时间符合 CIM 微秒及 Linux clock-tick 精度。旧子进程及其子树不能通过复用的 parent PID 纳入；已捕获身份退出后继续保留供停证使用，替代 incarnation 不能仅凭相同 PID 成为遍历根；若新进程通过当前仍存活的原始祖先重新建立归属，则按新的 PID/出生 token 身份纳入历史，并保留旧身份的清理责任。独立 checker 要求每个 PID/出生 token 身份唯一且具有完整停证；每个 PID/来源只查询一次，再分别比较所有历史出生身份。任何一代 owned incarnation 仍存活或观察未知均使清理失败。必要身份缺失、候选 token 无法解析或同身份证据矛盾均保留捕获失败。具体决策见[进程 incarnation 捕获记录](../../.agents/notes/implemented/testing/2026-11-14-herdr-process-incarnation-capture.md)。启动后的独立检查重新观察原 PID 的出生身份，不能仅凭 `kill(pid, 0)` 判定原进程仍在。普通平台证据沿用 CIM `CreationDate` 的 UTC ticks，metadata oracle 沿用其原 `.NET Process.StartTime` UTC ticks；按各自来源完整比较，不混用精度。检查保留原标识、当前标识、观察来源及错误，区分原进程仍在、PID 已复用、缺失和未知。原停证完整且独立观察确认缺失或不同出生身份时，才可确认原进程不再存活；原进程仍在、缺原身份、查询失败或不完整输出均失败。观察器仅清理自己创建的查询进程，不向被检查 PID 发信号；endpoint、目录、查询进程及输出流关闭检查仍独立成立。
-
-Windows 清理策略单测执行真实检查器及文件操作，仅在 OS 查询边界控制观察结果；专用 native job 必须实际验证 PowerShell 5、同来源出生身份比较和脚本入口。一个 Windows 机制测试保留对存活 owned 进程的真实 .NET 读取；脚本退出码测试在检查器模块边界控制返回结果。POSIX 脚本入口及查询子进程超时后的真实关闭验证分别保留，不以策略模拟代替 native 验收。
-
-Windows 的独立 WMI/console 观察脚本使用观察器自己的执行环境：仅继承测试运行器的明确系统变量，用户目录与临时目录归属测试根目录，传入系统 PowerShell 5 的模块路径。Windows PowerShell 启动时可能扩展有效模块搜索路径；查询本体直接使用 .NET API，不依赖模块自动导入。查询子进程非 detached，且不通过 `windowsHide` 设置 `CREATE_NO_WINDOW`；输入流处理保持不变。PowerShell 直接通过 .NET `System.Management` 读取 `root\cimv2` 的 `Win32_Process`，只接受原 shell/helper/native 三个 PID 各一条的完整记录。固定字段包含 PID、父 PID、完整 executable、command line、原始 DMTF 出生时间及对应 UTC ticks；解码器核验字段和时间一致性，再与独立 inventory 的同精度 token 比较。WMI 微秒精度的出生时间不替代原生 readiness 的 100ns 精度要求。查询对象、枚举器、结果集合与 searcher 全部释放后才输出结果；任一释放失败均保留失败。
-
-console 观察通过 `Reflection.Emit` 在原 PowerShell 进程中定义并核验 P/Invoke 元数据，再调用 `FreeConsole`、`AttachConsole` 和 `GetConsoleProcessList`，不启动编译器或生成程序集文件。声明保留 Winapi、`SetLastError`、`PreserveSig`、BOOL 返回值与输出数组语义；附加后立即读取错误码，最终脱离控制台成功后才输出固定 ASCII 结果。结果必须包含完整、无重复且不超出 256 项缓冲区的进程列表，并继续核验原 shell/helper/native 三个进程同在该控制台。动态程序集随观察器进程关闭而释放。
-
-独立查询继续受 10 秒预算和进程树及输出流关闭要求约束；关闭未知时保留目录并使独立清理检查失败。固定阶段标记只辅助定位查询停点，不能代替查询结果或关闭证明。ExternalScript 发现和官方 hook 探测仍使用被测环境，native 与 daemon 的环境不因观察器而改变。
+保留能力的普通安装、原生工具和进程验证继续由现有跨平台 CI 执行。Herdr 专属真实平台验证及独立清理检查已退役；不据此推断旧资源已停止或清理。相关历史取舍见[验证退役决策](../../.agents/notes/implemented/testing/2026-11-18-retire-herdr-platform-validation.md)。

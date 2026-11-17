@@ -12,6 +12,8 @@ daemon can also abandon live agents or uncertain startup and shutdown work.
 
 ## Decision
 
+The [platform validation retirement](../testing/2026-11-18-retire-herdr-platform-validation.md) supersedes the dedicated fixture and checker described here. The original decisions and rationale remain below as history.
+
 The later [Web-only runtime decision](2026-11-17-worker-web-runtime-composition.md) removes this admission and instance ownership from the Worker runtime. The following records the original design and its rationale.
 
 Each new execution freezes both Agent and Herdr recipes. A private, owner-bound
