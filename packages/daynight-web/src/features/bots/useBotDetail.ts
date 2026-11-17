@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { authRequestsPaused } from '../../api/client';
 import { getBot, type Bot } from '../../api/bots';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -29,9 +29,10 @@ export function useBotDetail(botId: string | null, enabled: boolean, retainedBot
   useLayoutEffect(() => {
     cache.select(selection, new Set(JSON.parse(retainedKey) as string[]), enabled);
   }, [cache, selection, retainedKey, enabled]);
-  useEffect(() => {
-    let live = true, pending: BotDetailRequest | null = null;
-    const allowed = () => live && enabled && botId !== null && !scope.isInvalidated && !authRequestsPaused() && document.visibilityState !== 'hidden';
+  useLayoutEffect(() => {
+    let live = true, pending: BotDetailRequest | null = null, timer: ReturnType<typeof setInterval> | null = null;
+    const eligible = () => live && enabled && botId !== null && !scope.isInvalidated && document.visibilityState !== 'hidden';
+    const allowed = () => eligible() && !authRequestsPaused();
     const cancel = () => { if (pending) cache.cancel(pending); pending = null; };
     const run = async () => {
       if (!allowed() || pending) return;
@@ -41,6 +42,7 @@ export function useBotDetail(botId: string | null, enabled: boolean, retainedBot
         await scope.ready(ticket.signal);
         if (!allowed() || ticket.signal.aborted) return;
         const value = await load(ticket.botId, scope, ticket.signal);
+        if (!allowed() || ticket.signal.aborted) return;
         if (value.deletion !== null) {
           cache.accept(ticket, value);
           const deletion = cache.read(selection).deletion;
@@ -50,18 +52,24 @@ export function useBotDetail(botId: string | null, enabled: boolean, retainedBot
         await scope.ready(ticket.signal);
         if (allowed() && !ticket.signal.aborted) cache.accept(ticket, value);
       } catch (error) {
-        if (live) cache.fail(ticket, error);
+        if (allowed() && !ticket.signal.aborted) cache.fail(ticket, error);
       } finally {
         cache.cancel(ticket);
         if (pending === ticket) pending = null;
       }
     };
-    const visibility = () => { cancel(); void run(); };
+    const stop = () => { if (timer !== null) clearInterval(timer); timer = null; cancel(); };
+    const sync = () => {
+      if (!eligible()) { stop(); return; }
+      if (timer !== null) return;
+      void run();
+      timer = setInterval(() => { if (!allowed()) cancel(); else void run(); }, 5_000);
+    };
     action.current = () => { void run(); };
-    void run();
-    const timer = setInterval(() => { if (!allowed()) cancel(); else void run(); }, 5_000);
-    document.addEventListener('visibilitychange', visibility);
-    return () => { live = false; cancel(); clearInterval(timer); document.removeEventListener('visibilitychange', visibility); action.current = () => {}; };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    scope.signal.addEventListener('abort', stop, { once: true });
+    return () => { live = false; stop(); document.removeEventListener('visibilitychange', sync); scope.signal.removeEventListener('abort', stop); action.current = () => {}; };
   }, [cache, coordinator, scope, selection, botId, enabled, load]);
   return { ...cache.read(selection, enabled, enabled), refresh, cache };
 }
