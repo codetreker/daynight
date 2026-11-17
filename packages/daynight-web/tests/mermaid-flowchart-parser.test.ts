@@ -1,6 +1,6 @@
 import mermaid from 'mermaid';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { renderMermaidDiagram } from '../src/features/task-detail/MermaidRenderer';
+import { renderMermaidDiagram } from '../src/ui/markdown/mermaid/MermaidRenderer';
 
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="80" viewBox="0 0 100 80"/>';
 let render: MockInstance<typeof mermaid.render>;

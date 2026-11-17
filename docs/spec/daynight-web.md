@@ -554,7 +554,7 @@ HTML 或脚本执行。页面展示不改变 server 对字符串的接受规则�
 ## 描述与附件引用
 
 `description` 按 CommonMark/GFM 展示标题、段落、列表、引用、代码块、表格、链接和
-图片；`mermaid` fenced code block 共享[图表要求](daynight-task-inspection.md#markdown-图表)，支持静态图表、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块。原始 HTML 作为文本显示，URL 协议处理沿用附件 Markdown 的规则。空字符串
+图片；`mermaid` fenced code block 共享[图表要求](shared-markdown.md#markdown-图表)，支持静态图表、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块。原始 HTML 作为文本显示，URL 协议处理沿用附件 Markdown 的规则。空字符串
 显示当前语言的“暂无描述”。标题和仓库地址继续作为文本显示。Markdown 表格与
 代码块在各自区域横向滚动，长描述在 320px 下换行，页面不产生整体横向溢出。
 API 存储与 CLI/Agent 读取保留原始字符串字节，不增加格式标记或改写已有描述。

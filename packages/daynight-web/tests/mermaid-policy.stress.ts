@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import mermaid from 'mermaid';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { identifyMermaidType, inspectMermaidDiagram, preflightBlock, type StableMermaidType } from '../src/features/task-detail/MermaidPolicy';
+import { identifyMermaidType, inspectMermaidDiagram, preflightBlock, type StableMermaidType } from '../src/ui/markdown/mermaid/MermaidPolicy';
 
 const items = (n: number): number[] => Array.from({ length: n }, (_, index) => index);
 const samples: ReadonlyArray<[StableMermaidType, (n: number) => string]> = [

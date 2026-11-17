@@ -72,15 +72,6 @@ export const inspection: InspectionMessages = {
     refused: "The service refused withdrawal. Only the claim owner or a project administrator can withdraw a current claim.", requestFailed: "The withdrawal request failed.",
   },
 
-  mermaid: {
-    loading: "Rendering diagram…", diagram: "Diagram", source: "View Mermaid source",
-    failed: "Unable to render this diagram. Check the Mermaid source below.",
-    configuration: "Diagram configuration is not supported. Remove Mermaid directives or frontmatter and check the source below.",
-    unsupported: "This Mermaid diagram type is not supported.",
-    tooLarge: "Diagram source exceeds 50,000 characters. Reduce the source below.",
-    complexity: "Diagram exceeds the complexity limit. Reduce the source below.",
-    image: "Image nodes are not supported. Use text nodes in the Mermaid source below.",
-  },
   deletion: {
     action: "Delete task", title: "Delete and remove dependencies?", question: "Delete this task and remove other tasks’ ordinary and external dependencies on it?",
     explanation: "All ordinary and external dependencies on this task will be removed when the operation runs. This may make successor tasks ready to run. The task will be marked as deleted; its records and attachments will be retained.",

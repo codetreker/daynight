@@ -1,3 +1,4 @@
+import './description-card.css';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { TaskDetailNavigation } from '../../app/router';
 import { attachmentPreviewRoot } from '../../api/client';

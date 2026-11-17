@@ -1,7 +1,7 @@
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
 import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { legacySubagentActivity } from './legacy-subagent-activity';
-import '../../styles/markdown.css';
+import '../../ui/markdown/markdown.css';
 import './session-timeline.css';
 import { SessionMarkdown } from './SessionMarkdown';
 import type { ImagePart, ImageUnavailablePart, MarkdownImageMetadata } from '../../../../daynight/src/session/image-values';

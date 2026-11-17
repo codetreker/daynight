@@ -110,3 +110,16 @@ it('retries linked images without following the enclosing Markdown link', () => 
   expect(onLinkClick).not.toHaveBeenCalled();
   expect(screen.getByRole('img')).toHaveAttribute('src', `${root}bad.png`);
 });
+
+
+it('ignores a native image load that arrives after pausing', () => {
+  const source = '![Native](https://example.com/image.png)';
+  const view = render(markdown(source));
+  const image = screen.getByRole('img', { name: 'Native' });
+  view.rerender(markdown(source, true));
+  expect(image).not.toHaveAttribute('src');
+  fireEvent.load(image);
+  expect(image).not.toHaveAttribute('src');
+  view.rerender(markdown(source));
+  expect(image).toHaveAttribute('src', 'https://example.com/image.png');
+});

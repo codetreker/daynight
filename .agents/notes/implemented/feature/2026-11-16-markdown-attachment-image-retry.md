@@ -13,8 +13,10 @@ own behavior.
 
 ## Decision
 
-The shared Markdown renderer classifies each original image reference through
-`resolveAttachmentReference()` using the caller's root or document base. Only
+The document adapter classifies each original image reference through
+`resolveAttachmentReference()` using the caller's root or document base; the
+[shared Markdown architecture](../architecture/2026-11-17-shared-markdown-document.md)
+passes the normalized source separately from the checked display URL. Only
 attachment-relative images receive local failure feedback and ordinary Retry.
 URL construction continues to preserve encoded path segments, directory semantics,
 query and fragment. Task and Goal descriptions supply an attachment-root base;

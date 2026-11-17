@@ -4,7 +4,7 @@ import { LocaleProvider } from '../../src/i18n/LocaleProvider';
 import { PullRequestDetailDialog } from '../../src/features/pull-request-detail/PullRequestDetailDialog';
 import '../../src/styles/app.css';
 import '../../src/styles/auth.css';
-import '../../src/styles/markdown.css';
+import '../../src/ui/markdown/markdown.css';
 
 const userId = '00000000-0000-4000-8000-000000000011';
 const projectId = '00000000-0000-4000-8000-000000000031';

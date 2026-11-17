@@ -3,7 +3,7 @@ import type { AssistantTaskDecisionInput, AssistantTaskJson, AssistantTaskPropos
 import { parseAssistantTaskJson, stringifyAssistantTaskJson } from '../../api/assistant-tasks';
 import { ChatMarkdown } from '../../ui/ChatMarkdown';
 import { useAssistantTaskContentMessages } from './assistant-task-messages';
-import '../../styles/markdown.css';
+import '../../ui/markdown/markdown.css';
 
 export type AssistantTaskDecision = Omit<AssistantTaskDecisionInput, 'ifVersion'>;
 export type AssistantTaskProposalPanelProps = {

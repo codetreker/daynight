@@ -206,7 +206,7 @@ Enter/空格操作，隐藏面板不参与键盘导航。页签切换保留已�
 
 | 类型 | 展示方式 |
 |---|---|
-| Markdown | CommonMark 与 GFM（含表格）渲染，原始 HTML 作为文本；`mermaid` 图块按[图表要求](daynight-task-inspection.md#markdown-图表)展示静态图表、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块；按文档目录解析相对图片和链接，独立 `#fragment` 保留。 |
+| Markdown | CommonMark 与 GFM（含表格）渲染，原始 HTML 作为文本；`mermaid` 图块按[图表要求](shared-markdown.md#markdown-图表)展示静态图表、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块；按文档目录解析相对图片和链接，独立 `#fragment` 保留。 |
 | 图片 | 图片展示。 |
 | PDF | 浏览器 PDF 展示。 |
 | 文本、JSON、源码 | 保留换行的文本展示。 |

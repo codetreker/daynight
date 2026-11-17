@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useI18n } from '../../i18n/LocaleProvider';
+import { useI18n } from '../../../i18n/LocaleProvider';
 import { MermaidSourceError, renderMermaidDiagram, type MermaidSourceIssue } from './MermaidRenderer';
 
 type DiagramState =
@@ -9,7 +9,7 @@ type DiagramState =
 
 export const MermaidDiagram = ({ source }: { readonly source: string }) => {
   const { messages } = useI18n();
-  const text = messages.inspection.mermaid;
+  const text = messages.markdown.mermaid;
   const [rendered, setRendered] = useState<{ readonly source: string; readonly state: DiagramState }>({ source, state: { status: 'pending' } });
   const state: DiagramState = rendered.source === source ? rendered.state : { status: 'pending' };
 
@@ -29,7 +29,7 @@ export const MermaidDiagram = ({ source }: { readonly source: string }) => {
     };
   }, [source]);
 
-  const code = <pre><code className="language-mermaid">{source}</code></pre>;
+  const code = <pre role="region" aria-label={messages.markdown.code} tabIndex={0}><code className="language-mermaid">{source}</code></pre>;
   return <div className="mermaid-chart">
     {state.status === 'pending' && <p role="status">{text.loading}</p>}
     {state.status === 'ready' && <div className="mermaid-diagram" role="region" aria-label={text.diagram} tabIndex={0}>

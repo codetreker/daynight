@@ -72,15 +72,6 @@ export const inspection: InspectionMessages = {
     refused: "服务拒绝撤回。只有认领用户或项目管理员可以撤回当前执行归属。", requestFailed: "撤回请求失败。",
   },
 
-  mermaid: {
-    loading: "正在渲染图表…", diagram: "图表", source: "查看 Mermaid 源码",
-    failed: "无法渲染此图表，请检查下方 Mermaid 源码。",
-    configuration: "不支持图块内配置，请移除 Mermaid 指令或 frontmatter，并检查下方源码。",
-    unsupported: "不支持此 Mermaid 图表类型。",
-    tooLarge: "图表源码超过 50,000 个字符，请缩减下方源码。",
-    complexity: "图表超过复杂度限制，请缩减下方源码。",
-    image: "不支持图片节点，请在下方 Mermaid 源码中使用文字节点。",
-  },
   deletion: {
     action: "删除任务", title: "删除并解除依赖？", question: "确认删除这个任务，并解除其他任务对它的普通和外部依赖吗？",
     explanation: "将解除操作执行时所有其他任务对它的普通和外部依赖，后继任务可能因此变为可执行。任务会被标记为已删除，任务记录和附件会保留。",

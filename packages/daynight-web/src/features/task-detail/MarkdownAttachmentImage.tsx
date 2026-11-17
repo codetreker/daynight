@@ -1,3 +1,4 @@
+import './markdown-attachment-image.css';
 import { useRef, useState, type ComponentPropsWithoutRef } from 'react';
 import { previewLoginUrl } from '../../api/client';
 import { useI18n } from '../../i18n/LocaleProvider';

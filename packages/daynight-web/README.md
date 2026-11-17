@@ -2139,7 +2139,7 @@ Task descriptions render CommonMark and GFM using the same `MarkdownContent`
 renderer and styles as Markdown attachments: headings, paragraphs, lists,
 checkboxes, quotes, fenced code, tables, links and images. Mermaid fences render
 static diagrams under the
-[shared diagram requirements](../../docs/spec/daynight-task-inspection.md#markdown-图表).
+[shared diagram requirements](../../docs/spec/shared-markdown.md#markdown-图表).
 Raw HTML remains text;
 URL protocols retain the renderer's existing policy. Empty descriptions use the
 current interface language. Markdown and localized messages do not change the
@@ -2179,7 +2179,7 @@ is checked before parsing; before rendering, its actual tree is also limited to
 50,000 estimated SDK sizing calls. A deeply nested block can exceed this budget
 even with fewer than 500 nodes. A pinned SDK patch limits Gantt calendar work to
 50,000 actual steps per task compilation. The
-[diagram design](../../docs/design/daynight-task-inspection.md#mermaid-图表)
+[diagram design](../../docs/design/shared-markdown.md#mermaid-图表)
 owns the counts and implementation constraints.
 
 The pinned parser identifies image nodes before drawing, including escaped

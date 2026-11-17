@@ -480,9 +480,9 @@ HTML 继续在 Task origin 的普通 iframe 中执行，不与主站或其他 Ta
 | HTML | 主站 HEAD 检查后在 Task origin 的普通 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
-`MarkdownContent` 负责 CommonMark/GFM、Mermaid 图表及样式，URL 转换与链接激活由
-调用方提供。图表的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
-隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[图表设计](daynight-task-inspection.md#mermaid-图表)，
+`MarkdownContent` 将 URL 转换、图片分类与链接激活接入[公共 Markdown 视图](shared-markdown.md)，
+公共视图拥有 CommonMark/GFM、Mermaid 图表及样式。图表的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
+隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[图表设计](shared-markdown.md#mermaid-图表)，
 内嵌及独立完整详情不建立第二套渲染机制。`MarkdownAttachmentBase` 区分 `document` 与 `root`：附件调用方使用
 当前文件的目录作为资源基准，描述调用方使用任务附件根；不虚构描述文件名。路径解析逐段处理 URL 编码和 parent 段，拒绝
 越过任务根，保留 query/hash。独立 `#fragment` 保持原值，不改成文件请求。绝对、
