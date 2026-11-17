@@ -66,7 +66,13 @@ func serverAPIDirectMemberNormalFlow(t *testing.T, f *fixture) {
 	target.client = &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: tokens.AccessToken, next: transport}}
 	target.userID = member.UserID
 	requestJSON[api.ProjectDocument](t, &target, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusNotFound)
-	grant := requestJSON[api.ProjectGrantResult](t, f, http.MethodPut, "/api/v1/projects/"+project.ID+"/grants/"+member.UserID, api.SetProjectGrantRequest{Version: nil, Role: "admin", ExpectedUserID: f.userID}, http.StatusOK).Grant
+	invitation := requestJSON[api.CreatedProjectInvitation](t, f, http.MethodPost, "/api/v1/projects/"+project.ID+"/invitations", api.ProjectInvitationMutationRequest{ExpectedUserID: f.userID}, http.StatusCreated)
+	_, token, ok := strings.Cut(invitation.Link, "#")
+	if !ok || token == "" {
+		t.Fatal("invitation token missing")
+	}
+	accepted := requestJSON[api.ProjectInvitationAcceptance](t, &target, http.MethodPost, "/api/v1/invitations/accept", api.AcceptProjectInvitationRequest{Token: token, ExpectedUserID: member.UserID}, http.StatusOK)
+	grant := requestJSON[api.ProjectGrantResult](t, f, http.MethodPut, "/api/v1/projects/"+project.ID+"/grants/"+member.UserID, api.SetProjectGrantRequest{Version: &accepted.DirectGrant.Version, Role: "admin", ExpectedUserID: f.userID}, http.StatusOK).Grant
 	beforeAccess := requestJSON[api.ProjectDocument](t, &target, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusOK).Access
 	if beforeAccess.DirectGrant == nil || !reflect.DeepEqual(*beforeAccess.DirectGrant, grant) || beforeAccess.TeamRole != nil || beforeAccess.EffectiveRole != "admin" {
 		t.Fatalf("initial grant differs: %+v", beforeAccess)
