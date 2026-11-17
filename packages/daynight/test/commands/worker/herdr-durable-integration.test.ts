@@ -735,6 +735,40 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(existsSync(source)).toBe(false);
   });
 
+  it("recovers a persisted capture failure after restart without accepting unknown I/O errors", async () => {
+    let blocked = true;
+    const cleanupFailure = new Error("probe cleanup unavailable");
+    const diskFailure = Object.assign(new Error("recording journal access denied"), { code: "EACCES" });
+    const verifier: NativeSelectionVerifier = { verify: async () => {}, settle: async () => { if (blocked) throw cleanupFailure; }, close: async () => {} };
+    const f = fixture(false, false, verifier); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toBe(cleanupFailure);
+    const record = f.read();
+    expect(record.runs[0]!.run.stopProof).not.toBeNull();
+    expect(record.segments[0]!.endedAt).toBeNull();
+    const sourcePath = path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId);
+    openHerdrRecordingStore({ directory: sourcePath, owner: record.owner, sessionId: record.sessionId, claimId: record.claimId }).fail(record.runs[0]!.run.executionGeneration);
+    blocked = false; f.reopen();
+    const journal = path.join(sourcePath, "journal.jsonl"), savedJournal = readFileSync(journal);
+    writeFileSync(journal, Buffer.concat([savedJournal, Buffer.from("{}\n")]));
+    await expect(f.facade.lifecycle!.archive!.selectDiscard(f.context, operation(), () => true)).rejects.toThrow("source_corrupt");
+    expect(f.read().segments[0]!.endedAt).toBeNull();
+    writeFileSync(journal, savedJournal);
+    const open = recordingStoreModule.openHerdrRecordingStore;
+    let denied = true;
+    const spy = vi.spyOn(recordingStoreModule, "openHerdrRecordingStore").mockImplementation(options => { if (denied) throw diskFailure; return open(options); });
+    const archive = f.facade.lifecycle!.archive!, ledgerCount = f.ledgers.length;
+    await expect(archive.selectDiscard(f.context, operation(), () => true)).rejects.toBe(diskFailure);
+    expect(f.read().segments[0]!.endedAt).toBeNull();
+    expect(existsSync(sourcePath)).toBe(true);
+    denied = false;
+    expect(await archive.selectDiscard(f.context, operation(), () => true)).toBe(true);
+    expect(f.read().segments[0]!.endedAt).toBe(record.runs[0]!.run.stoppedAt);
+    expect(f.ledgers).toHaveLength(ledgerCount);
+    await archive.discard(f.context, operation());
+    expect(existsSync(sourcePath)).toBe(false);
+    spy.mockRestore();
+  });
+
   it("retains both native stop and probe cleanup failures after attempting owned stopping", async () => {
     const cleanup = new Error("another task probe cleanup is unconfirmed");
     const f = fixture(false, false, { verify: async () => {}, settle: async () => { throw cleanup; }, close: async () => {} });

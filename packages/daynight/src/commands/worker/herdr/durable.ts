@@ -39,6 +39,7 @@ import { readHerdrTerminalSnapshot } from "./recording-sampler.js";
 import type { HerdrRecordingScreen } from "./recording-types.js";
 import { createHerdrArchiveApi, ensureHerdrRecordingResponsibility, type HerdrArchiveApi } from "./archive-api.js";
 import { createHerdrRecordingArchive } from "./recording-archive.js";
+import { HerdrPersistedCaptureFailure } from "./recording-store.js";
 import { createHerdrRecordingResources } from "./recording-resources.js";
 import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../native-selection.js";
 
@@ -566,10 +567,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     return receipt;
   };
   const finishStopLocally = async (owner: Identity, strict = false): Promise<void> => {
-    // A prior capture failure can permanently mark the source corrupt. The
-    // confirmed native stop still supplies the lifecycle boundary needed for
-    // content deletion; do not require a corrupt source to become uploadable.
-    if (!strict || !recordingFailures.has(need(owner).sessionId)) await stopRecording(owner, true, strict);
+    if (strict) {
+      // Reopen the original source so only a verified durable failure, not a
+      // process-local error or an unknown I/O failure, can replace its boundary.
+      recording.forget(need(owner));
+      try { await stopRecording(owner, true, true); }
+      catch (error) {
+        const open = need(owner).segments.filter(segment => segment.endedAt === null);
+        if (!(error instanceof HerdrPersistedCaptureFailure) || open.some(segment => !error.executionGenerations.includes(segment.executionGeneration))) throw error;
+      }
+    } else await stopRecording(owner, true);
     // Each segment ends at its own run boundary, including after interrupted closure.
     update(owner, draft => {
       for (const segment of draft.segments) {

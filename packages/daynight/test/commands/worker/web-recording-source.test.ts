@@ -3,6 +3,11 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { expect, it, vi } from "vitest";
 import * as instanceLock from "../../../src/platform/instance-lock.js";
+import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
+import { probeStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
+import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import { deleteWebRecording, WebRecordingDiscardedError, withWebRecordingSource } from "../../../src/commands/worker/web-recording-source.js";
 import { createWebStoreFixtures } from "./web-store.fixtures.js";
@@ -10,6 +15,57 @@ import { createWebArchiveMaintenance } from "../../../src/commands/worker/web-ar
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 
 const { fixture, id, open, close } = createWebStoreFixtures("file");
+
+it.each(["unsupported", "invalid-schema"] as const)("releases the recording source after a closed journal probe fails: %s", async mode => {
+  const { root, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const task = store.initializeWebExecution(claim, 2);
+  store.beginCleanup(claim, { kind: "terminal", deadline: 100 }, 3); store.completeTask(claim, 4);
+  const directory = controllerExecutionDirectory(root, task.webExecution!.executionId), journalPath = path.join(directory, "journal.sqlite");
+  await mkdir(directory, { recursive: true });
+  const journal = new Database(journalPath);
+  journal.pragma(`user_version = ${mode === "unsupported" ? currentSqliteVersion(controllerJournalFormat) + 1 : currentSqliteVersion(controllerJournalFormat)}`);
+  journal.close();
+  const probe = () => probeStoppedControllerArchive({ journalPath, ticket: {} as ControllerLaunchTicket });
+  await expect(withWebRecordingSource(root, task, () => store.getTask(task), probe)).rejects.toMatchObject({
+    kind: mode === "unsupported" ? "unsupported-version" : "invalid-format", connectionClosed: true,
+  });
+  const marked = store.discardRecording(task, 5);
+  await deleteWebRecording(root, marked, () => store.getTask(task), () => true);
+  await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("retains the recording source lock while journal closure is unconfirmed", async () => {
+  const { root, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const task = store.initializeWebExecution(claim, 2);
+  store.beginCleanup(claim, { kind: "terminal", deadline: 100 }, 3); store.completeTask(claim, 4);
+  const directory = controllerExecutionDirectory(root, task.webExecution!.executionId), journalPath = path.join(directory, "journal.sqlite");
+  await mkdir(directory, { recursive: true });
+  const journal = new Database(journalPath); journal.pragma(`user_version = ${currentSqliteVersion(controllerJournalFormat) + 1}`); journal.close();
+  const acquire = instanceLock.acquireInstanceLockSync, closeDatabase = sqliteAccess.closeSqliteDatabase;
+  let held: ReturnType<typeof acquire> | undefined, lockFile = "", gateFile = "", unclosed: Database.Database | undefined;
+  vi.spyOn(instanceLock, "acquireInstanceLockSync").mockImplementation((...args) => { const lock = acquire(...args); held = lock; [lockFile, gateFile] = args; return lock; });
+  const failure = new Error("controlled journal close failure");
+  vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((db, options, outcome) => {
+    if (db.name === journalPath) { unclosed = db; throw failure; }
+    closeDatabase(db, options, outcome);
+  });
+  try {
+    await expect(withWebRecordingSource(root, task, () => store.getTask(task), () => probeStoppedControllerArchive({ journalPath, ticket: {} as ControllerLaunchTicket }))).rejects.toMatchObject({
+      kind: "cleanup-failed", connectionClosed: false,
+      cause: { errors: [expect.objectContaining({ kind: "unsupported-version" }), failure] },
+    });
+    expect(unclosed?.open).toBe(true);
+    expect(() => acquire(lockFile, gateFile)).toThrow("Cannot acquire instance lock");
+  } finally {
+    if (unclosed?.open) unclosed.close();
+    held?.release();
+  }
+  const marked = store.discardRecording(task, 5);
+  await deleteWebRecording(root, marked, () => store.getTask(task), () => true);
+  await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 it("keeps an admitted source operation until exit, rejects new reads, then deletes the entire recording", async () => {
   const { root, store, project, claim } = fixture();

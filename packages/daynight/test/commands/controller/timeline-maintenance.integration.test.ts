@@ -12,6 +12,7 @@ import { sessionBinding, type TimelineEntry } from "../../../src/session/protoco
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { readSqliteDatabase, type SqliteMigrationEvent } from "../../../src/platform/sqlite-access.js";
+import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
@@ -658,6 +659,19 @@ test("stopped action errors retain their outcome and the actual closed connectio
   const original = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back" });
   const error = failureOf(() => withStoppedControllerStorage({ journalPath: f.file, ticket: f.ticket, assertOriginal: () => {} }, () => { throw original; }));
   expect(error).toMatchObject({ kind: "invalid-format", outcome: "rolled-back", connectionClosed: true, context: { phase: "outbox-read" }, cause: original });
+  const permit = acquireControllerStoragePermit(f.file); permit.release();
+});
+
+test("stopped storage reports the confirmed close after its read-phase close reports an error", () => {
+  const f = fixture(), db = upgrade(f); db.close(); f.permit.release();
+  const original = new SqliteAccessError("cleanup-failed", { database: "controller-journal", phase: "close" }, { outcome: "not-started" });
+  const close = sqliteAccess.closeSqliteDatabase;
+  vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((database, options, outcome) => {
+    close(database, options, outcome);
+    if (database.name === f.file) throw original;
+  });
+  const error = failureOf(() => withStoppedControllerStorage({ journalPath: f.file, ticket: f.ticket, assertOriginal: () => {} }, () => { throw new Error("must not run"); }));
+  expect(error).toMatchObject({ kind: "cleanup-failed", outcome: "not-started", connectionClosed: true, cause: original });
   const permit = acquireControllerStoragePermit(f.file); permit.release();
 });
 

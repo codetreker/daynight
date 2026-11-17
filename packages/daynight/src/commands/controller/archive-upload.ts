@@ -2,7 +2,7 @@ import { ArchiveRepairRequiredError, ArchiveRequestError, archiveRepairCode, typ
 import Database from "better-sqlite3";
 import path from "node:path";
 import { withStoppedControllerStorage } from "./stopped-storage.js";
-import { acquireControllerStoragePermit } from "./storage-lock.js";
+import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen } from "./storage-lock.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { parseSessionResource, sessionBinding, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
@@ -32,9 +32,18 @@ const stoppedSnapshot = (db: Database.Database, ticket: ControllerLaunchTicket):
 const withClosedJournal = <T>(db: Database.Database, action: () => T): T => {
   let result: T | undefined, failed = false, failure: unknown;
   try { result = action(); } catch (cause) { failed = true; failure = cause; }
-  try { closeSqliteDatabase(db, { file: db.name, format: controllerJournalFormat }, failed ? sqliteTransactionOutcome(failure) : "committed"); }
-  catch (close) { if (failed) throw new AggregateError([failure, close], "Archive journal operation and shutdown failed."); throw close; }
-  if (failed) throw failure;
+  const outcome = failed ? failure instanceof SqliteAccessError ? failure.outcome : sqliteTransactionOutcome(failure) : "committed";
+  try { closeSqliteDatabase(db, { file: db.name, format: controllerJournalFormat }, outcome); }
+  catch (close) {
+    throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: db.name, phase: "archive-close" }, {
+      cause: failed ? new AggregateError([failure, close], "Archive journal operation and shutdown failed.", { cause: failure }) : close,
+      outcome, connectionClosed: !db.open,
+    });
+  }
+  if (failed) {
+    if (failure instanceof SqliteAccessError) throw new SqliteAccessError(failure.kind, failure.context, { cause: failure, outcome: failure.outcome, connectionClosed: !db.open });
+    throw failure;
+  }
   return result!;
 };
 
@@ -150,6 +159,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     let value: T | undefined, failure: unknown, failed = false;
     try { inspectOriginal(() => undefined); value = action(); }
     catch (error) { failed = true; failure = error; }
+    if (failed && controllerStorageConnectionIsOpen(failure)) throw failure;
     try { permit.release(); }
     catch (release) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: journalPath, phase: "archive-file-release" }, { cause: failed ? new AggregateError([failure, release], "Archive file operation and storage release failed.") : release, outcome: "not-started", connectionClosed: true }); }
     if (failed) throw failure;
