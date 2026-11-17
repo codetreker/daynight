@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"strconv"
@@ -975,5 +976,69 @@ func TestUnknownStoredFieldRequiresCompleteReplacement(t *testing.T) {
 				t.Fatalf("stored %s must make PUT a replacement: %+v %d %v", key, got, d.desiredWrites, err)
 			}
 		})
+	}
+}
+
+func TestStoredProjectsRequireAccessWhenRetentionCannotBeProven(t *testing.T) {
+	project := model.WorkerProjectConfiguration{ProjectID: configurationInputProjectA, NativeOverrides: map[string]json.RawMessage{}}
+	entry := fmt.Sprintf(`{"projectId":%q,"nativeOverrides":{}}`, project.ProjectID)
+	cases := map[string]string{
+		"projects not array":             `{"projects":{}}`,
+		"invalid project identifier":     `{"projects":[{"projectId":"bad","nativeOverrides":{}}]}`,
+		"invalid identifier type":        `{"projects":[{"projectId":2,"nativeOverrides":{}}]}`,
+		"extra project member":           fmt.Sprintf(`{"projects":[{"projectId":%q,"nativeOverrides":{},"future":true}]}`, project.ProjectID),
+		"invalid overrides":              fmt.Sprintf(`{"projects":[{"projectId":%q,"nativeOverrides":{"agent":false}}]}`, project.ProjectID),
+		"duplicate project":              fmt.Sprintf(`{"projects":[%s,%s]}`, entry, entry),
+		"duplicate incompatible project": fmt.Sprintf(`{"projects":[%s,{"projectId":%q,"nativeOverrides":{"agent":false}}]}`, entry, project.ProjectID),
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := configuredDAO("7")
+			d.accessErr = model.ErrNotFound
+			d.current.Desired.Raw = json.RawMessage(raw)
+			err := configurationProjects(t.Context(), d, "user", d.current.Desired, model.WorkerConfiguration{Projects: []model.WorkerProjectConfiguration{project}})
+			requireFault(t, err, "not_found")
+			if !reflect.DeepEqual(d.accesses, []string{project.ProjectID}) {
+				t.Fatalf("accesses: %v", d.accesses)
+			}
+		})
+	}
+}
+
+func TestRawBootstrapRejectsMalformedStoredTarget(t *testing.T) {
+	input := model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: &model.ToolPathChoice{Kind: "auto"}}}
+	for name, raw := range map[string]string{"invalid object": `[]`, "invalid tool paths": `{"toolPaths":false}`} {
+		t.Run(name, func(t *testing.T) {
+			d := configuredDAO("7")
+			d.current.Desired.Raw = json.RawMessage(raw)
+			_, err := ExchangeConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", input)
+			requireFault(t, err, "invalid_input")
+			if d.desiredWrites != 0 {
+				t.Fatalf("wrote invalid target: %d", d.desiredWrites)
+			}
+		})
+	}
+}
+
+func TestRawBootstrapAdoptsMissingToolPaths(t *testing.T) {
+	d := configuredDAO("7")
+	archive := false
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Raw = json.RawMessage(`{"future":{"unchanged":1}}`)
+	input := model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: &model.ToolPathChoice{Kind: "auto"}}}
+	got, err := ExchangeConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", input)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("missing paths adoption: %+v %d %v", got, d.desiredWrites, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var paths map[string]json.RawMessage
+	if err := json.Unmarshal(fields["toolPaths"], &paths); err != nil {
+		t.Fatal(err)
+	}
+	if string(paths["codex"]) != `{"kind":"auto"}` || string(paths["copilot"]) != `null` || string(paths["herdr"]) != `null` || string(fields["future"]) != `{"unchanged":1}` {
+		t.Fatalf("unexpected result %s", d.rawWritten)
 	}
 }
