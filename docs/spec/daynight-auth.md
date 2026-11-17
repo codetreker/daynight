@@ -235,6 +235,7 @@ Team API 使用 session/PAT 或固定 API OAuth、Cookie 写请求 Origin 校验
 | `DELETE /api/v1/teams/{teamId}` | 当前 admin；`version,name,expectedUserId` | `200`，有限回执 `{teamId,deleted:true}` |
 | `GET /api/v1/teams/{teamId}/members` | 当前 Team 成员 | `200`，完整目录 `{items}` |
 | `POST /api/v1/teams/{teamId}/members` | 当前 admin；`expectedUserId,user,role` | `200`，`{membership,added,actorRole:"admin"}` |
+| `POST /api/v1/teams/{teamId}/member-candidates/search` | 普通 Team admin；`expectedUserId,query`，可选 `limit,cursor` | `200`，既有账号资料分页 `{items,nextCursor,actorRole}` |
 | `PATCH /api/v1/teams/{teamId}/members/{userId}` | 当前 admin；`version,role,expectedUserId` | `200`，`{membership,actorRole}` |
 | `DELETE /api/v1/teams/{teamId}/members/{userId}` | 当前 admin 或本人；`version,expectedUserId` | `200`，`{teamId,userId,removed:true,actorRole}` |
 
@@ -300,6 +301,10 @@ externalUserId 使用直接添加的身份校验和规范化规则。成功返�
 凭据失效、非 admin、Team 不存在、主体不匹配和 Personal Team 沿现有 401/403/404/409 拒绝，
 内部或事务完成失败不能返回成功。响应保留 `Daynight-User-ID` 和 `no-store`，不回显外部身份。
 此读取不创建用户、凭据或成员，不改变资料或角色；它不授权后续写入，角色变更仍须使用当前版本和权限检查。
+
+普通 Team 的当前 admin 可通过 `POST /api/v1/teams/{teamId}/member-candidates/search` 搜索全服务既有账号的姓名或邮箱字面片段。请求仅接受必需的 `expectedUserId`、`query` 和可选的 `limit`、`cursor`，不接受 query string；主体和 Team ID 为非零规范 UUID，主体必须匹配当前凭据。查询须为合法 UTF-8 且不含 NUL，裁切 Unicode 空白后最多 1024 bytes，ASCII 字母忽略大小写；空查询仍校验权限并返回空页，不能携带 cursor。limit 默认 20，范围 1–50；cursor 非空且最多 2048 bytes，并绑定主体、凭据、Team、规范化查询和 limit。未知、重复、缺失必需字段、null 或错误类型以及非法 Unicode 均拒绝。
+
+成功返回 `{items,nextCursor,actorRole}`，actorRole 为 `admin`；每项仅包含真实本地 `userId` 和必需的 `profile:{name,email,avatarUrl}`，资料字段可为 null。按 UUID 排序并按条分页，同名同邮箱的账号仍各自返回；静态数据可完整遍历，每页重新校验当前凭据与权限。分页间资料或账号变化不保证跨页快照一致。响应保留主体头与 `no-store`，查询、cursor 和资料不写入诊断日志。凭据失效、无权限、Team 缺失、主体不匹配或 Personal Team 分别沿用现有拒绝；无效输入或 cursor 返回 `400 invalid_input`，读取或清理失败不返回成功。
 
 角色修改和移除必须提供观察到的真实成员 version 及 `expectedUserId`，主体核对先于领域 SQL。
 过期版本返回 `409 version_conflict`，即使所请求角色与当前角色相同也不例外；精确版本下的

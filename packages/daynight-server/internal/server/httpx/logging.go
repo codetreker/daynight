@@ -109,6 +109,7 @@ func runtimeComponent(err error) *RuntimeError {
 }
 
 func LogFailure(logger *slog.Logger, ctx context.Context, component, phase string, err error) {
+	candidateSearch := component == "member_candidate_search"
 	diagnostic := "operation failed"
 	kind, code := ErrorKind(err), "internal_error"
 	if component == "task_search" {
@@ -120,7 +121,7 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	var configurationError *configvalue.ConfigurationError
 	var databaseError *store.Error
 	var runtimeFailure *RuntimeError
-	if failure := runtimeComponent(err); failure != nil {
+	if failure := runtimeComponent(err); failure != nil && !candidateSearch {
 		component, phase = failure.Component, failure.Phase
 	}
 	var identityFailure *model.IdentityProviderError
@@ -137,7 +138,7 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	case errors.As(err, &runtimeFailure):
 		diagnostic = runtimeFailure.Error()
 	}
-	if component == "task_search" {
+	if component == "task_search" || component == "member_candidate_search" {
 		// Search failures may contain query parameters or driver diagnostics.
 		diagnostic = "search operation failed"
 	}
@@ -153,6 +154,20 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	}
 	if errors.As(err, &gatewayFailure) && ValidRequestID(gatewayFailure.RequestID) {
 		upstreamID = gatewayFailure.RequestID
+	}
+	if candidateSearch {
+		// Only stable classifications may leave the search boundary.
+		upstreamID = ""
+		switch kind {
+		case "canceled", "deadline", "database", "protocol", "network", "internal", "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "personal_team_immutable":
+		default:
+			kind = "internal"
+		}
+		switch code {
+		case "unauthenticated", "invalid_input", "identity_mismatch", "forbidden", "not_found", "personal_team_immutable", "internal_error":
+		default:
+			code = "internal_error"
+		}
 	}
 	attrs := []any{"type", "operation_error", "component", component,
 		"phase", phase, "cause", kind, "error_code", code, "diagnostic", diagnostic, "request_id", RequestID(ctx), "upstream_request_id", upstreamID}

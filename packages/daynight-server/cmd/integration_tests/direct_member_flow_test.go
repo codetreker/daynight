@@ -19,7 +19,7 @@ func serverAPIDirectMemberNormalFlow(t *testing.T, f *fixture) {
 	if team.ID == "" || team.Kind != "ordinary" || team.Membership.UserID != f.userID || team.Membership.Role != "admin" {
 		t.Fatalf("created Team or actor membership differs: %+v", team)
 	}
-	name, avatar := "  External target  ", "data:image/png;base64,dGFyZ2V0"
+	name, avatar := "  External target "+uuid.NewString()+"  ", "data:image/png;base64,dGFyZ2V0"
 	externalID := "integration:" + uuid.NewString()
 	path := "/api/v1/teams/" + team.ID
 	added := requestJSON[api.AddTeamMemberReceipt](t, f, http.MethodPost, path+"/members", map[string]any{
@@ -31,6 +31,17 @@ func serverAPIDirectMemberNormalFlow(t *testing.T, f *fixture) {
 	parsed, err := uuid.Parse(member.UserID)
 	if err != nil || parsed == uuid.Nil || parsed.String() != member.UserID || member.UserID == f.userID || member.TeamID != team.ID || member.Role != "admin" || member.Version < 1 || member.CreatedAt.IsZero() || member.UpdatedAt.IsZero() || !added.Added || added.ActorRole != "admin" {
 		t.Fatalf("direct member receipt differs: %+v", added)
+	}
+	search := requestJSON[struct {
+		Items []struct {
+			UserID  string                        `json:"userId"`
+			Profile api.ProjectParticipantProfile `json:"profile"`
+		} `json:"items"`
+		NextCursor *string `json:"nextCursor"`
+		ActorRole  string  `json:"actorRole"`
+	}](t, f, http.MethodPost, path+"/member-candidates/search", map[string]any{"expectedUserId": f.userID, "query": strings.TrimSpace(name)}, http.StatusOK)
+	if len(search.Items) != 1 || search.Items[0].UserID != member.UserID || search.Items[0].Profile.Name == nil || *search.Items[0].Profile.Name != name || search.Items[0].Profile.Email != nil || search.Items[0].Profile.AvatarURL == nil || *search.Items[0].Profile.AvatarURL != avatar || search.NextCursor != nil || search.ActorRole != "admin" {
+		t.Fatalf("candidate search differs: %+v", search)
 	}
 	resolve := func(externalID string) api.ResolveTeamMemberResponse {
 		t.Helper()
