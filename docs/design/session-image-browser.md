@@ -192,7 +192,7 @@ Enter/Shift+Enter及平台快捷键沿主线，IME期间不提交；纯图点击
 - `SessionImageStore` 消费现有 Session client 或固定记录 reader，拥有完整验证、请求合并、Blob lease、取消、错误和内存预算。分块读取和块校验属于统一资源 reader；真实响应体进度刷新无进展时限。它不决定来源采集，不自行创建 Session client。
 - `SessionImageFrame` 拥有缩略展示、尺寸框、解码状态、可访问错误及动作；输入是稳定出现和 store 状态，不是 URL/path。用户、Agent、工具、Markdown 与 retainedImages 复用它。
 - `ImagePreviewHost`、`ImagePreviewController` 与 `useSessionImageScope` 定义本专题公共 UI API，负责一个展示 owner 的页内预览、缩放、焦点、滚动和下载；草稿消费者通过同一 asset/lease 合同接入。
-- `SessionMarkdown` 连接 Markdown 来源采集的正文映射与 SessionImageFrame；`ChatMarkdown` 只接收已验证的纯渲染回调，不获取权限、解析 Controller 路径或发网络请求。
+- `SessionMarkdown` 连接 Markdown 来源采集的正文映射与 SessionImageFrame；`ChatMarkdown` 通过公共 Markdown 内核接收受控渲染回调，不获取权限、解析 Controller 路径或发网络请求。
 - live/record/draft adapter 各自提供可读原件与撤销信号。record 不依赖在线 Controller，draft 不伪造服务资源。
 
 读取流为：真实出现 → owner 校验与 descriptor → store 合并读取 → 校验全部块及完整 SHA → 创建受控 Blob → 浏览器解码 → 原位置展示。打开预览获取同一 lease，下载同一已校验原件。每一异步完成都检查 scope、resource identity 与请求代次；旧结果不能写进新账户、新记录或新出现。
@@ -311,7 +311,7 @@ Controller 媒体存储尺寸是未应用 EXIF orientation 的存储画布，动
 
 采用 Markdown 来源采集的完整正文 AST+bindings；不拆正文成散片段、不用正则替换。先验证 partId/revision/textSha256、UTF-16 半开区间和 imageId 唯一归属，再给真实 image/imageReference HAST 节点注入稳定展示。chatBreaks、表格和脚注前缀保留；图片绑定基于原始正文，不因软换行插件改位置。无真实节点、旧 revision/hash 或绑定越界时保留可读正文、阻止对应图读取并重取条目，不能 fallback 到原 src/srcset。 自动重取按同 owner 和 entry revision 去重，最多一次；账户变化或 current 准入暂停时保留待处理项，恢复后只重读权威条目或所选归档。同 available ID 元数据冲突使用同一恢复通道，普通网络、完整性或本地解码错误不自动循环读取。重取后仍不合格则保留显式失败与手动刷新入口。未声明格式的工具 raw 文本不走解析；reasoning 只有公共协议纳入独立位置后采用同规则。
 
-`ChatMarkdown` 新增可选受控节点 renderer，只接收经验证的节点 key/内容；缺省仍显示不可用。Session 层负责创建 callback及scope，其他 ChatMarkdown 消费者（例如 Thread）缺省不获得图片访问权。原始 HTML img、code、普通路径零图片读取。
+`ChatMarkdown` 将受控范围与纯渲染回调交给[公共内核](shared-markdown.md)，核验真实图片节点后只向回调提供范围、alt 和呈现方式；缺省显示不可用。Session 层负责验证 metadata、摘要、scope 和绑定并创建回调，公共范围匹配不授予访问权。其他调用者（例如 Thread）缺省不获得图片访问权。原始 HTML img、code、普通路径零图片读取。
 
 同一scope与partId的合法完整正文更新在摘要待验期间保留最近一次已验证的正文及图片映射，避免已显示图片、预览触发点和解码lease因异步检查而卸载。新版本通过校验后原子替换展示，未改变的图片出现保持原DOM与焦点；新增或替换绑定在此之前没有准入权。身份变化、只读缓存、缺失或非法metadata不能沿用旧展示，迟到验证也不能恢复已经结束的scope。
 

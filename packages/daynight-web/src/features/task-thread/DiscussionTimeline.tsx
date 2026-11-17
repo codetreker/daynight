@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { ChatMarkdown } from '../../ui/ChatMarkdown';
+import { ChatMarkdown } from '../../ui/markdown/ChatMarkdown';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
 import type { ThreadController, ThreadView } from './controller';
 import { authorLabel, excerpt, providerLabel, ThreadAvatar, ThreadFailure, ThreadIcon, type DiscussionMessages } from './presentation';

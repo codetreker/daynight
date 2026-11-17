@@ -11,10 +11,7 @@
 .session-tool-failed .session-tool-status { color: var(--task-error-ink); font-weight: 600; }
 .session-tool-running .session-tool-status { color: var(--task-in_progress-ink); }
 .session-tool-completed .session-tool-status { color: var(--task-done-ink); }
-.session-tool pre:focus-visible, .session-markdown .markdown-table:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
-.session-markdown { min-width: 0; }
-.session-markdown .footnotes { font-size: 11px; }
-.session-markdown .footnotes .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.session-tool pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
 .session-entry .session-error p, .session-compaction p { white-space: pre-wrap; }
 
 .session-cancellation { margin: 8px 12px; color: var(--task-cancelled-ink); font-size: 12px; }

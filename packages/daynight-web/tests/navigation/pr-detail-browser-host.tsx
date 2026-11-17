@@ -4,7 +4,6 @@ import { LocaleProvider } from '../../src/i18n/LocaleProvider';
 import { PullRequestDetailDialog } from '../../src/features/pull-request-detail/PullRequestDetailDialog';
 import '../../src/styles/app.css';
 import '../../src/styles/auth.css';
-import '../../src/ui/markdown/markdown.css';
 
 const userId = '00000000-0000-4000-8000-000000000011';
 const projectId = '00000000-0000-4000-8000-000000000031';
@@ -17,4 +16,5 @@ function Host() {
     userId={userId} projectId={projectId} number="1248" canRead active refreshKey={refresh}
     onPrincipalMismatch={() => { throw new Error('Unexpected principal'); }} onClose={() => setOpen(false)} />}</>;
 }
-createRoot(document.getElementById('root')!).render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Host /></LocaleProvider>);
+const locale = new URLSearchParams(location.search).get('locale') === 'zh-CN' ? 'zh-CN' : 'en';
+createRoot(document.getElementById('root')!).render(<LocaleProvider initial={{ locale, issue: null }}><Host /></LocaleProvider>);

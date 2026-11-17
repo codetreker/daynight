@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { PullRequestDetailDialog, type PullRequestDetailDialogProps } from '../src/features/pull-request-detail/PullRequestDetailDialog';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
+// Rendering the SDK is covered by the browser and Mermaid tests; this checks
+// that the real PR Markdown parser routes only Mermaid blocks to that owner.
+vi.mock('../src/ui/markdown/mermaid/MermaidDiagram', () => ({
+  MermaidDiagram: ({ source }: { source: string }) => <img src="blob:diagram" alt="Diagram" data-source={source} />,
+}));
+
 const userId = '6153d2b9-82b1-4589-9107-8f6fc78b5da7';
 const projectId = 'fb1a3e30-f945-4c48-ab0f-55be117e098e';
 const record = {
@@ -32,8 +38,9 @@ describe('pull request detail dialog', () => {
     expect(within(dialog).getByText('fork/repo:feature/full-branch')).toBeVisible();
     expect(within(dialog).getByText(record.head.sha)).toBeVisible();
     expect(within(dialog).getByRole('heading', { name: 'Heading' })).toBeVisible();
-    expect(dialog.querySelector('img, script, iframe, svg')).toBeNull();
-    expect(within(dialog).getByText(/graph TD/).tagName).toBe('CODE');
+    expect(dialog.querySelector('script, iframe, svg, img[src^="https:"], img[src^="http:"]')).toBeNull();
+    expect(within(dialog).getByRole('img', { name: 'Diagram' })).toHaveAttribute('data-source', 'graph TD; A-->B\n');
+    expect(within(dialog).getByText(/photo.*unavailable/i)).toBeVisible();
     expect(within(dialog).getByRole('link', { name: 'Link' })).toHaveAttribute('rel', 'noopener noreferrer');
     expect(within(dialog).getByRole('link', { name: /View on GitHub/ })).toHaveAttribute('href', record.url);
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Raw Markdown' }));

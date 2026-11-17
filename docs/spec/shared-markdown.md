@@ -1,16 +1,18 @@
-# 公共 Markdown 文档渲染
+# 公共 Markdown 渲染
 
 ## 范围
 
-Task、Goal 描述、Task Steps 和 Markdown 附件的内嵌与独立阅读共享文档渲染能力。聊天阅读仍使用独立渲染器。API、CLI 和存储保留原始 Markdown 字符串。
+Task、Goal 描述、Task Steps、Markdown 附件的内嵌与独立阅读、Discussion、Session、PR 描述和 Assistant Task 提案共享 Markdown 渲染能力。API、CLI 和存储保留原始 Markdown 字符串。
 
-## 文档行为
+## 公共阅读行为
 
-文档按 CommonMark/GFM 展示标题、段落、强调、列表、任务列表、引用、行内代码、代码块、表格、链接、图片和脚注，保留 CommonMark 软换行语义。普通代码保持代码块；只有标记为 `mermaid` 的 fenced code block 进入图表渲染。原始 HTML 作为文本展示，危险 URL 不执行。
+各入口按 CommonMark/GFM 展示标题、段落、强调、列表、任务列表、引用、行内代码、代码块、表格、链接、图片和脚注。文档保留 CommonMark 软换行语义，聊天中的单换行可见；换行不改变代码或图片绑定位置。普通代码保持代码块；只有标记为 `mermaid` 的 fenced code block 进入图表渲染。原始 HTML 作为文本展示，危险 URL 不执行。
 
 多个实例的脚注 ID、引用、返回链接及 `aria-describedby` 指向各自实例，脚注标签与返回提示随应用语言变化。表格以保留原生语义的可聚焦滚动区展示，具有当前语言的可访问名称。表格、宽代码块及图表局部横向滚动，在桌面及 320px 窄屏下不撑宽页面；键盘可访问图表、表格和代码滚动区，且各区均有可访问名称。
 
 Task 和 Goal 描述分别以所属附件根解析相对资源，Steps 使用所属任务根；附件以实际文件目录解析且不能越过附件根。普通附件链接的导航、修饰键和 query/hash 语义及图片暂停、失败和重试由[附件要求](daynight-task-attachments.md#web-管理与预览)拥有。暂停不发起新的来源请求，重试不重建阅读状态。组件自带公共样式，独立阅读无需页面外壳样式。
+
+聊天仅允许 HTTP(S)、mailto 和本实例生成的脚注链接，外链在新标签打开并使用 `noopener noreferrer`。Discussion、PR 描述及提案不读取原始图片来源，以替代内容展示图片。Session 由所属功能核验正文摘要、revision、位置及图片绑定，并管理资源权限和生命周期；无权或无效绑定不读取原始来源。链接中的图片动作位于链接之外，并保持原有顺序。原始 HTML 及代码中的伪图片不读取来源。
 
 ## Markdown 图表
 

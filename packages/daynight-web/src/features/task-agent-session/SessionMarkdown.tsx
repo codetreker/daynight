@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { parseMarkdownImageMetadata, type ImagePart, type ImageUnavailablePart, type MarkdownImageMetadata } from '../../../../daynight/src/session/image-values';
-import { ChatMarkdown, type ChatImageNode, type ChatImagePresentation } from '../../ui/ChatMarkdown';
+import { ChatMarkdown } from '../../ui/markdown/ChatMarkdown';
+import type { MarkdownImageNode, MarkdownImagePresentation } from '../../ui/markdown/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useSessionMessages } from './messages';
 import { useTimelineMessages } from './timeline-messages';
 import { useSessionImageScope } from './images/SessionImageScope';
 
-export type SessionImageRenderer = (part: ImagePart | ImageUnavailablePart, presentation: ChatImagePresentation) => ReactNode;
+export type SessionImageRenderer = (part: ImagePart | ImageUnavailablePart, presentation: MarkdownImagePresentation) => ReactNode;
 export type SessionMarkdownProps = {
   readonly text: string;
   readonly metadata?: MarkdownImageMetadata;
@@ -64,7 +65,7 @@ export function SessionMarkdown({ text, metadata, renderImage, resourceAccess = 
   const admitted = presentation === verifiedPresentation ? presentation.metadata : null;
   const bindings = admitted?.complete && !admitted.truncated ? admitted.bindings : null;
   const byPosition = useMemo(() => new Map(bindings?.map(binding => [`${binding.start}/${binding.end}`, binding])), [bindings]);
-  const draw = useCallback((node: ChatImageNode, presentation: ChatImagePresentation) => {
+  const draw = useCallback((node: MarkdownImageNode, presentation: MarkdownImagePresentation) => {
     const binding = byPosition.get(`${node.start}/${node.end}`);
     if (binding && renderImage) return renderImage(binding.part, presentation);
     return presentation === 'actions' ? null : <span className="session-resource-unavailable">{node.alt} — {messages.resourceUnavailable}</span>;
