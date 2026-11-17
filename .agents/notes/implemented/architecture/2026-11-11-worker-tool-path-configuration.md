@@ -43,12 +43,14 @@ The original tool-path cache seam used schema 4 to preserve mode, native, failur
 and removal history. Schema 5 now separates current and retained records while
 keeping those facts and their genuine provenance, as specified by the
 [fact separation decision](2026-11-12-worker-configuration-fact-separation.md).
-Runtime tool proofs start unverified. Complete targets and optional
+Runtime tool proofs start unverified. Per-tool targets and optional
 selection-key inputs connect the configuration owner to the selection manager
 without another application ledger or another probe. Incomplete cloud adoption
 does not relabel a local choice as a cloud fact. Matching native qualification
 includes the relevant choices and keys when the runtime adapter is present;
 unrelated tool changes do not revoke that qualification.
+The [per-tool readiness decision](2026-11-17-worker-per-tool-readiness.md)
+describes how unadopted choices affect preparation and telemetry.
 
 This decision extends the [shared resolution decision](2026-11-11-worker-tool-path-resolution.md)
 and the [cloud mode decision](2026-11-10-worker-cloud-control-mode.md).

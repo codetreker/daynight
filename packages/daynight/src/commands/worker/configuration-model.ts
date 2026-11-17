@@ -3,9 +3,10 @@ import { receiveWorkerDesired, parseWorkerCloudDesired } from "../../api/worker-
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import type { AgentControlMode, WorkerReport } from "../../api/types.js";
 import type { Tool, ToolPathChoice, ToolPaths } from "../../platform/tool-path-choice.js";
+import type { ToolSelectionTargets } from "./tool-selection.js";
 
 export type WorkerConfigurationIdentity = { readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
-export type WorkerConfigurationToolTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: ToolPaths };
+export type WorkerConfigurationToolTargets = ToolSelectionTargets;
 export type WorkerNativeProof = { readonly mode: AgentControlMode; readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
 export type TrackedConfigurationItem = {
   readonly recordId: string;

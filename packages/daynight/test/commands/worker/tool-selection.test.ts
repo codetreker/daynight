@@ -31,6 +31,61 @@ test("target publication does not probe and unchanged choices retain verified re
   expect(checked).toHaveLength(1); expect(entry(manager)).toMatchObject({ state: "applied", targetRevision: "2" });
   expect(parseToolPathTelemetry(manager.snapshot())).toEqual(manager.snapshot());
 });
+test("unadopted choices cannot probe or launch and do not prevent another tool", async () => {
+  const { manager, checked } = create();
+  manager.setTargets({ ...targets("A"), choices: { ...targets("A").choices, copilot: null, herdr: null } });
+  await expect(manager.selectForNewExecution("copilot", "web", op())).rejects.toThrow("has not been adopted");
+  await expect(manager.prepare("herdr", "herdr", op())).rejects.toThrow("has not been adopted");
+  const selected = await manager.selectForNewExecution("codex", "web", op());
+  expect(selected.entryPath).toBe(path.resolve("/tools/A")); expect(checked).toHaveLength(1);
+  const telemetry = manager.snapshot();
+  expect(telemetry.entries.map(value => value.tool)).toEqual(["codex", "codex"]);
+  expect(parseToolPathTelemetry(telemetry)).toEqual(telemetry);
+  await manager.close(op());
+});
+test("an unrelated target change preserves an in-flight probe; withdrawing its own choice revokes it", async () => {
+  const entered = deferred(), release = deferred();
+  const { manager, checked } = create({ probe: { check: async value => { entered.resolve(); await release.promise; checked.push(value.entryPath); return { version: "1.0.0" }; } } });
+  manager.setTargets(targets("A"));
+  const pending = manager.prepare("codex", "web", op()); await entered.promise;
+  manager.setTargets({ ...targets("A", "2"), choices: { ...targets("A").choices, herdr: null } });
+  release.resolve(); await pending;
+  expect(entry(manager)).toMatchObject({ state: "applied", targetRevision: "2" }); expect(checked).toHaveLength(1);
+  const frozen = manager.currentSelection("codex", "web")!;
+  manager.setTargets({ ...targets("A", "3"), choices: { ...targets("A").choices, codex: null, herdr: null } });
+  expect(manager.currentSelection("codex", "web")).toBeUndefined();
+  await expect(manager.prepare("codex", "web", op())).rejects.toThrow("has not been adopted");
+  await manager.verifyFrozen(frozen, op()); await manager.close(op());
+});
+test("withdrawing a choice while probing discards the result and close joins the original work", async () => {
+  const entered = deferred(), release = deferred(); let closed = false;
+  const { manager } = create({ probe: { check: async () => { entered.resolve(); await release.promise; return { version: "1.0.0" }; }, close: async () => {} } });
+  manager.setTargets(targets("A"));
+  const pending = manager.prepare("codex", "web", op()); await entered.promise;
+  manager.setTargets({ ...targets("A", "2"), choices: { ...targets("A").choices, codex: null } });
+  const closing = manager.close(op()).then(() => { closed = true; });
+  await Promise.resolve(); expect(closed).toBe(false);
+  release.resolve(); await pending; await closing;
+  expect(manager.currentSelection("codex", "web")).toBeUndefined();
+  expect(entry(manager)).toMatchObject({ state: "pending", reason: "configuration_unavailable", targetRevision: "1", actual: null });
+});
+test("an unadopted target retains reportable historical active selections without granting admission", async () => {
+  const record: ActiveToolSelection = { tool: "codex", context: "web", launch: launch("A"), version: "1.0.0", checkedAt: now, executionCount: 1, instanceCount: 0, unconfirmedCount: 1 };
+  const { manager } = create({ readActiveSelections: () => [record] });
+  manager.setTargets({ source: "local", revision: null, choices: targets("A").choices });
+  await manager.prepare("codex", "web", op());
+  manager.setTargets({ ...targets("A", "2"), choices: { ...targets("A").choices, codex: null } });
+  expect(entry(manager)).toMatchObject({ configurationSource: "local", targetRevision: null, state: "pending", reason: "configuration_unavailable", actual: { entryPath: path.resolve("/tools/A") }, activeObservationError: "cleanup_unknown", activeSelectionCount: 1, activeSelections: [{ executionCount: 1, unconfirmedCount: 1 }] });
+  expect(manager.currentSelection("codex", "web")).toBeUndefined();
+  expect(parseToolPathTelemetry(manager.snapshot())).toEqual(manager.snapshot());
+  await manager.close(op());
+});
+test("does not report a historical cloud choice at the same unadopted revision", () => {
+  const { manager } = create(); manager.setTargets(targets("A"));
+  manager.setTargets({ ...targets("A"), choices: { ...targets("A").choices, codex: null } });
+  expect(manager.snapshot().entries.some(value => value.tool === "codex")).toBe(false);
+  expect(parseToolPathTelemetry(manager.snapshot())).toEqual(manager.snapshot());
+});
 test("an old candidate cannot overwrite a newer successful target", async () => {
   const entered = deferred(), release = deferred(); const { manager } = create({ probe: { check: async value => { if (value.entryPath.endsWith("A")) { entered.resolve(); await release.promise; } return { version: value.entryPath.endsWith("A") ? "1.0.0" : "2.0.0" }; } } });
   manager.setTargets(targets("A")); const old = manager.prepare("codex", "web", op()); await entered.promise;
@@ -79,6 +134,20 @@ test("selection checks the target again after identity verification", async () =
   const entered = deferred(), release = deferred(); let calls = 0; const { manager } = create({ verify: async value => { if (value.entryPath.endsWith("A") && ++calls === 2) { entered.resolve(); await release.promise; } } });
   manager.setTargets(targets("A")); const selected = manager.selectForNewExecution("codex", "web", op()); await entered.promise;
   manager.setTargets(targets("B", "2")); release.resolve(); await expect(selected).resolves.toMatchObject({ entryPath: path.resolve("/tools/B") });
+});
+test.each(["replacement", "withdrawal", "suspension"] as const)("preparation rereads its target after verification and %s", async scenario => {
+  const entered = deferred(), release = deferred(); let calls = 0;
+  const { manager, checked } = create({ verify: async value => { if (value.entryPath.endsWith("A") && ++calls === 2) { entered.resolve(); await release.promise; } } });
+  manager.setTargets(targets("A")); await manager.prepare("codex", "web", op());
+  const pending = manager.prepare("codex", "web", op()); await entered.promise;
+  if (scenario === "suspension") manager.suspendTargets();
+  else if (scenario === "withdrawal") manager.setTargets({ ...targets("A", "2"), choices: { ...targets("A").choices, codex: null } });
+  else manager.setTargets(targets("B", "2"));
+  const result = scenario === "replacement" ? expect(pending).resolves.toBeUndefined() : expect(pending).rejects.toThrow(scenario === "withdrawal" ? "has not been adopted" : "configuration is unavailable");
+  release.resolve(); await result;
+  expect(checked).toEqual(scenario === "replacement" ? [path.resolve("/tools/A"), path.resolve("/tools/B")] : [path.resolve("/tools/A")]);
+  if (scenario === "replacement") expect(entry(manager)).toMatchObject({ state: "applied", actual: { entryPath: path.resolve("/tools/B") } });
+  await manager.close(op());
 });
 test.each(["prepare", "final selection"])("refreshes a changed cached identity during %s in the same call", async phase => {
   let current = "A", verifications = 0;

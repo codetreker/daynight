@@ -1,10 +1,10 @@
 import { OperationError, type Operation } from "../../api/operation.js";
-import { boundToolPathTelemetry, parseToolPathsBootstrap, sameToolPathChoice, toolPathErrorCode, type ToolPathActual, type ToolPathObservation, type ToolPathTelemetry } from "../../api/worker-tool-paths.js";
+import { boundToolPathTelemetry, sameToolPathChoice, toolPathErrorCode, type ToolPathActual, type ToolPathObservation, type ToolPathTelemetry } from "../../api/worker-tool-paths.js";
 import { captureToolEnvironment, resolveToolLaunch, verifyToolLaunch, ToolSelectionError, type ResolvedToolLaunch, type Tool, type ToolContext, type ToolPathChoice, type ToolPaths } from "../../platform/tool-executables.js";
 import type { FrozenToolObservation } from "./types.js";
 import { withinOperation } from "../../platform/tool-io.js";
 
-export type ToolSelectionTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: ToolPaths };
+export type ToolSelectionTargets = { readonly source: "local" | "cloud"; readonly revision: string | null; readonly choices: Readonly<Record<Tool, ToolPathChoice | null>> };
 export type ToolSelectionProbe = {
   reconcile?(launch: ResolvedToolLaunch, operation: Operation): Promise<unknown>;
   admit?(launch: ResolvedToolLaunch, receipt: unknown): void;
@@ -33,6 +33,7 @@ type Slot = {
   actual: ToolPathActual | null; candidate: ToolPathActual | null; launch: ResolvedToolLaunch | undefined; token: unknown;
   error: ToolPathObservation["error"]; pending: { epoch: number; promise: Promise<void> } | undefined;
   probeRecipe: ResolvedToolLaunch | undefined; tail: Promise<void> | undefined;
+  lastTarget: { source: "local" | "cloud"; revision: string | null; choice: ToolPathChoice } | undefined;
 };
 const contexts = [["codex", "web"], ["codex", "herdr"], ["copilot", "web"], ["copilot", "herdr"], ["herdr", "herdr"]] as const;
 const automatic = (): ToolPaths => ({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
@@ -42,11 +43,12 @@ const actual = (launch: ResolvedToolLaunch, version: string, checkedAt: string):
 const validVersion = (value: string): boolean => value.trim() !== "" && value.isWellFormed() && !/\p{Cc}/u.test(value) && Buffer.byteLength(value) <= 256;
 const validTime = (value: string): boolean => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value)) && !value.startsWith("0000-");
 const count = (value: number | null): boolean => value === null || Number.isSafeInteger(value) && value >= 0;
+const sameChoice = (left: ToolPathChoice | null, right: ToolPathChoice | null): boolean => left === null || right === null ? left === right : sameToolPathChoice(left, right);
 
 /** Own target generations and admission facts; process owners retain their cleanup acknowledgements. */
 export class ToolSelectionManager {
   private targets: ToolSelectionTargets = { source: "local", revision: null, choices: automatic() };
-  private readonly slots = new Map<string, Slot>(contexts.map(([tool, context]) => [`${tool}/${context}`, { tool, context, epoch: 0, state: "not_checked", reason: null, actual: null, candidate: null, launch: undefined, token: undefined, error: null, pending: undefined, probeRecipe: undefined, tail: undefined }]));
+  private readonly slots = new Map<string, Slot>(contexts.map(([tool, context]) => [`${tool}/${context}`, { tool, context, epoch: 0, state: "not_checked", reason: null, actual: null, candidate: null, launch: undefined, token: undefined, error: null, pending: undefined, probeRecipe: undefined, tail: undefined, lastTarget: undefined }]));
   private readonly inFlight = new Set<Promise<void>>();
   private probeClosing: Promise<void> | undefined;
   private readonly environment: NodeJS.ProcessEnv;
@@ -57,7 +59,7 @@ export class ToolSelectionManager {
   private slot(tool: Tool, context: ToolContext): Slot { const result = this.slots.get(`${tool}/${context}`); if (!result) throw new TypeError("Unsupported tool context."); return result; }
   private checkOpen(slot: Slot, operation: Operation): void { operation.check(); if (this.closed) throw new ToolSelectionError(slot.tool, slot.context, "launch", "cancelled"); }
   private usable(slot: Slot): boolean {
-    if (this.closed || this.suspended || slot.state !== "applied" || !slot.launch || !sameToolPathChoice(selection(slot.launch), this.targets.choices[slot.tool])) return false;
+    if (this.closed || this.suspended || slot.state !== "applied" || !slot.launch || !sameChoice(selection(slot.launch), this.targets.choices[slot.tool])) return false;
     try { this.options.probe.assertAvailable?.(slot.launch); return Object.is(slot.token, this.options.probe.cacheToken?.(slot.launch)); } catch { return false; }
   }
   private fail(slot: Slot, error: unknown): void { slot.state = "error"; slot.reason = null; slot.launch = undefined; slot.error = { code: toolPathErrorCode(error), occurredAt: this.now() }; }
@@ -73,12 +75,12 @@ export class ToolSelectionManager {
     if (this.closed) throw new Error("Tool selection manager is closed.");
     if (input.source === "local" ? input.revision !== null : input.source !== "cloud" || typeof input.revision !== "string" || !/^[1-9][0-9]{0,18}$/.test(input.revision) || BigInt(input.revision) > 9_223_372_036_854_775_807n) throw new TypeError("Invalid tool target revision.");
     this.suspended = false;
-    const next = { source: input.source, revision: input.revision, choices: parseToolPathsBootstrap(input.choices) };
+    const next = input;
     for (const slot of this.slots.values()) {
-      const sameChoice = sameToolPathChoice(this.targets.choices[slot.tool], next.choices[slot.tool]);
-      if (sameChoice && this.targets.source === next.source && this.targets.revision === next.revision) continue;
+      const choice = next.choices[slot.tool];
+      if (choice !== null) slot.lastTarget = clone({ source: next.source, revision: next.revision, choice });
+      if (sameChoice(this.targets.choices[slot.tool], next.choices[slot.tool])) continue;
       slot.epoch++; slot.pending = undefined;
-      if (sameChoice && this.usable(slot)) continue;
       slot.launch = undefined; slot.candidate = null; slot.error = null; slot.state = slot.actual === null ? "not_checked" : "pending"; slot.reason = slot.actual === null ? null : "configuration_unavailable";
     }
     this.targets = clone(next);
@@ -93,8 +95,9 @@ export class ToolSelectionManager {
   async prepare(tool: Tool, context: ToolContext, operation: Operation): Promise<void> {
     const slot = this.slot(tool, context); this.checkOpen(slot, operation);
     if (this.suspended) throw new Error("Worker tool configuration is unavailable.");
+    if (this.targets.choices[tool] === null) throw new Error(`Worker ${tool} tool choice has not been adopted.`);
     if (context === "herdr" && this.options.admitHerdr === undefined) {
-      if (this.targets.choices[tool].kind === "auto") return;
+      if (this.targets.choices[tool]?.kind === "auto") return;
       const error = new ToolSelectionError(tool, context, "launch", "incompatible_runtime"); this.fail(slot, error); throw error;
     }
     if (this.usable(slot)) {
@@ -108,8 +111,12 @@ export class ToolSelectionManager {
       // instance admission before publishing Herdr readiness for new execution.
       if (slot.epoch === verifiedEpoch && this.usable(slot) && tool !== "herdr") return;
     }
+    this.checkOpen(slot, operation);
+    if (this.suspended) throw new Error("Worker tool configuration is unavailable.");
     if (slot.pending?.epoch === slot.epoch) return withinOperation(slot.pending.promise, operation);
-    const epoch = slot.epoch, choice = clone(this.targets.choices[tool]); slot.state = "checking"; slot.reason = null; slot.error = null;
+    const target = this.targets.choices[tool];
+    if (target === null) throw new Error(`Worker ${tool} tool choice has not been adopted.`);
+    const epoch = slot.epoch, choice = clone(target); slot.state = "checking"; slot.reason = null; slot.error = null;
     const previous = slot.tail;
     const running = (async () => {
       try {
@@ -179,7 +186,14 @@ export class ToolSelectionManager {
   snapshot(): ToolPathTelemetry {
     let records: readonly ActiveToolSelection[] = [], inventoryFailed = false; try { records = this.options.readActiveSelections(); } catch { inventoryFailed = true; }
     const observedAt = this.now();
-    const entries = [...this.slots.values()].map((slot): ToolPathObservation => {
+    const entries = [...this.slots.values()].flatMap((slot): ToolPathObservation[] => {
+      const choice = this.targets.choices[slot.tool], previous = slot.lastTarget;
+      // The wire cannot carry a null target. Historical cloud targets are valid
+      // only at a revision strictly older than the current unadopted target.
+      if (choice === null && (previous === undefined || previous.source === "cloud" && (this.targets.revision === null || BigInt(previous.revision!) >= BigInt(this.targets.revision)))) return [];
+      const target = choice ?? previous!.choice;
+      const source = choice === null ? previous!.source : this.targets.source;
+      const revision = choice === null ? previous!.revision : this.targets.revision;
       const invalidated = slot.state === "applied" && !this.usable(slot);
       const groups = new Map<string, ToolPathObservation["activeSelections"][number]>();
       let error: ToolPathObservation["activeObservationError"] = inventoryFailed ? "inventory_unavailable" : null, unknownCount = inventoryFailed;
@@ -194,8 +208,8 @@ export class ToolSelectionManager {
         groups.set(record.launch.selectionKey, { actual: previous?.actual ?? actual(record.launch, record.version, record.checkedAt), executionCount: previous ? sum(previous.executionCount, record.executionCount) : record.executionCount,
           instanceCount: previous ? sum(previous.instanceCount, record.instanceCount) : record.instanceCount, unconfirmedCount: (previous?.unconfirmedCount ?? 0) + record.unconfirmedCount });
       }
-      return { tool: slot.tool, context: slot.context, configurationSource: this.targets.source, targetRevision: this.targets.revision, target: clone(this.targets.choices[slot.tool]), state: invalidated ? "pending" : slot.state, reason: invalidated ? "cleanup_unconfirmed" : slot.reason, actual: slot.actual, candidate: slot.candidate, error: slot.error,
-        activeSelectionCount: unknownCount ? null : groups.size, activeSelectionsComplete: !unknownCount && error === null, activeObservationError: error, activeSelections: [...groups.values()] };
+      return [{ tool: slot.tool, context: slot.context, configurationSource: source, targetRevision: revision, target: clone(target), state: choice === null || invalidated ? "pending" : slot.state, reason: choice === null ? "configuration_unavailable" : invalidated ? "cleanup_unconfirmed" : slot.reason, actual: slot.actual, candidate: choice === null ? null : slot.candidate, error: choice === null ? null : slot.error,
+        activeSelectionCount: unknownCount ? null : groups.size, activeSelectionsComplete: !unknownCount && error === null, activeObservationError: error, activeSelections: [...groups.values()] }];
     });
     return boundToolPathTelemetry({ schemaVersion: 1, observedAt, entries });
   }

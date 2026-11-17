@@ -112,7 +112,7 @@ describe("Worker cloud configuration application", () => {
     expect(stopped).toBe(true);
   });
 
-  it("publishes local targets until complete cloud adoption and retains explicit auto", async () => {
+  it("publishes each cloud adoption without substituting local choices", async () => {
     const localToolPaths: ToolPaths = { codex: { kind: "path", path: "/local/codex" }, copilot: { kind: "path", path: "/local/copilot" }, herdr: { kind: "auto" } };
     const { manager } = await fixture({ localToolPaths });
     expect(manager.current().toolTargets).toEqual({ source: "local", revision: null, choices: localToolPaths });
@@ -121,11 +121,29 @@ describe("Worker cloud configuration application", () => {
     expect(manager.current().toolTargets).toEqual({ source: "local", revision: null, choices: localToolPaths });
     expect(manager.report()).toMatchObject({ bootstrap: null, toolPathsBootstrap: localToolPaths });
     await manager.receive(receivedDesired({ ...original, revision: "2", value: { ...original.value, toolPaths: { codex: { kind: "auto" }, copilot: null, herdr: null } } }));
-    expect(manager.current().toolTargets).toBeNull();
+    expect(manager.current().toolTargets).toEqual({ source: "cloud", revision: "2", choices: { codex: { kind: "auto" }, copilot: null, herdr: null } });
     const cloud: ToolPaths = { codex: { kind: "auto" }, copilot: { kind: "path", path: "/cloud/copilot" }, herdr: { kind: "auto" } };
     await manager.receive(receivedDesired({ ...original, revision: "3", value: { ...original.value, toolPaths: cloud } })); await manager.settle();
     expect(manager.current().toolTargets).toEqual({ source: "cloud", revision: "3", choices: cloud });
     expect(manager.report()).toMatchObject({ toolPathsBootstrap: localToolPaths });
+  });
+
+  it.each([
+    ["web", "codex", "codex", false], ["web", "codex", "copilot", true], ["web", "codex", "herdr", true],
+    ["web", "copilot", "codex", true], ["web", "copilot", "copilot", false], ["web", "copilot", "herdr", true],
+    ["web", "claude", "codex", true], ["web", "claude", "copilot", true], ["web", "claude", "herdr", true],
+    ["herdr", "codex", "codex", false], ["herdr", "codex", "copilot", true], ["herdr", "codex", "herdr", false],
+    ["herdr", "copilot", "codex", true], ["herdr", "copilot", "copilot", false], ["herdr", "copilot", "herdr", false],
+    ["herdr", "claude", "codex", true], ["herdr", "claude", "copilot", true], ["herdr", "claude", "herdr", false],
+  ] as const)("qualifies %s %s with missing %s: %s", async (mode, agent, missing, ready) => {
+    const applyNative = vi.fn(async () => {});
+    const { manager } = await fixture({ localControlMode: mode, readToolSelectionKeys: () => ({ codex: "a".repeat(64), copilot: "b".repeat(64), herdr: "c".repeat(64) }), applyNative });
+    const original = desired("1", "original", false);
+    const choices = { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const }, [missing]: null };
+    await manager.receive(receivedDesired({ ...original, value: { ...original.value, native: { agent, model: null, args: [] }, toolPaths: choices } }));
+    await manager.settle();
+    expect(manager.current().effective.native?.agent ?? null).toBe(ready ? agent : null);
+    expect(applyNative).toHaveBeenCalledTimes(ready ? 1 : 0);
   });
 
   it("reads and upgrades a real checkpoint within a bounded JSON operation budget", async () => {
