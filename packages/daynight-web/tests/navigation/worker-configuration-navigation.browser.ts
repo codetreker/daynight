@@ -210,7 +210,8 @@ test('320px keyboard save preserves unknown configuration and isolates the next 
   await page.setViewportSize({ width: 320, height: 800 });
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
   const bob = workerId(88), number = '9007199254740993123456789', fraction = '-1.2500e+42';
-  let actor = WORKER_USER, revision = '1';
+  let actor = WORKER_USER;
+  const revisions = new Map([[WORKER_USER, '1'], [bob, '1']]);
   let value = `{"maxConcurrent":2,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[],"futureNative":{"amount":${number}}},"projects":[],"future":{"negative":${fraction},"nested":[null,{"large":${number}}]}}`;
   let bobValue = '{"maxConcurrent":8,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[],"future":1234567890123456789012345}';
   const writes: { actor: string; body: string }[] = [];
@@ -230,8 +231,9 @@ test('320px keyboard save preserves unknown configuration and isolates the next 
         if (!prefix || prefix.index === undefined) throw new Error('Missing configuration value');
         const submitted = body.slice(prefix.index + prefix[0].length, -1);
         if (current === WORKER_USER) value = submitted; else bobValue = submitted;
-        revision = '2';
+        revisions.set(current, String(BigInt(revisions.get(current)!) + 1n));
       }
+      const revision = revisions.get(current)!;
       const currentValue = current === WORKER_USER ? value : bobValue;
       const body = `{"desired":{"revision":"${revision}","updatedAt":"${WORKER_TIME}","value":${currentValue}},"observationRevision":"1","observation":{"baseRevision":"0","desiredRevision":"${revision}","reportedAt":"${WORKER_TIME}","items":[{"key":{"kind":"futureSetting"},"targetRevision":"${revision}","appliedValue":true,"state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}}`;
       return route.fulfill({ body, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': current, 'Daynight-Worker-Configuration': '1' } });
