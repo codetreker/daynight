@@ -14,9 +14,10 @@ make the existing Worker reporting and readiness depend on another service.
 
 The server accepts a closed, bounded current observation and stores one expiring
 Redis String per account and Worker. A header supports bounded summary reads;
-a single `SET EX` replaces the complete frame and its TTL after ordered CAS
-checks. Redis time supplies receipts and observation anchors. A separate
-monitoring connection has a fixed operation deadline and does not participate
+a single `SET EX` replaces the complete frame and its TTL. Legacy PUT uses
+ordered CAS checks; the [direct reporting decision](../simplification/2026-11-17-worker-monitoring-direct-reporting.md)
+adds unconditional saves for compatible producers. Redis time supplies receipts
+and observation anchors. A separate monitoring connection has a fixed operation deadline and does not participate
 in PostgreSQL transactions or readiness.
 
 Current PostgreSQL access determines association visibility on every detail

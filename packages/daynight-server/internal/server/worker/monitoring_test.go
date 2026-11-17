@@ -33,6 +33,7 @@ type monitoringMock struct {
 	ids         []string
 	revision    *string
 	observation monitoring.Observation
+	direct      monitoring.DirectObservation
 	detail      *monitoring.DetailResponse
 	query       *monitoring.QueryResponse
 	err         error
@@ -43,6 +44,11 @@ func (m *monitoringMock) PutMonitoring(_ context.Context, p model.Principal, id 
 	m.calls++
 	m.principal, m.id, m.revision, m.observation = p, id, revision, observation
 	return monitoring.Receipt{Revision: monitoringOtherID, RunID: monitoringOtherID, Sequence: "1", ReceivedAt: time.Unix(1, 0).UTC(), ExpiresAt: time.Unix(3601, 0).UTC()}, m.err
+}
+func (m *monitoringMock) SaveDirectMonitoring(_ context.Context, p model.Principal, id string, observation monitoring.DirectObservation) (monitoring.DirectReceipt, string, error) {
+	m.calls++
+	m.principal, m.id, m.direct = p, id, observation
+	return monitoring.DirectReceipt{ReceivedAt: time.Unix(1, 0).UTC(), ExpiresAt: time.Unix(3601, 0).UTC()}, monitoringOtherID, m.err
 }
 func (m *monitoringMock) GetMonitoring(ctx context.Context, p model.Principal, id string) (monitoring.DetailResponse, error) {
 	m.calls++
@@ -111,7 +117,7 @@ func TestMonitoringRoutingAndInput(t *testing.T) {
 		{"POST", query, `{"workerIds":[]}`, 400}, {"POST", query, `{"workerIds":null}`, 400},
 		{"POST", query, `{"workerIds":["` + monitoringWorkerID + `","` + monitoringWorkerID + `"]}`, 400},
 		{"POST", query, `{"workerIds":["BAD"]}`, 400}, {"POST", query, `{"workerIds":["` + monitoringWorkerID + `"],"owner":"a"}`, 400},
-		{"HEAD", path, "", 405}, {"POST", path, "", 405}, {"GET", query, "", 405},
+		{"HEAD", path, "", 405}, {"POST", path, "", 400}, {"GET", query, "", 405},
 	} {
 		w = monitoringRequest(h, tc.method, tc.path, tc.body)
 		if w.Code != tc.status || mock.calls != 3 {
@@ -204,9 +210,9 @@ func TestMonitoringRequestLimitsAndMethodHeaders(t *testing.T) {
 	if w := monitoringRequest(h, "PUT", path, monitoringBody+padding+" "); w.Code != 413 || mock.calls != 1 {
 		t.Fatalf("over limit body: %d %s", w.Code, w.Body)
 	}
-	for _, method := range []string{"HEAD", "POST", "DELETE"} {
+	for _, method := range []string{"HEAD", "DELETE"} {
 		w := monitoringRequest(h, method, path, "")
-		if w.Code != 405 || w.Header().Get("Allow") != "GET, PUT" {
+		if w.Code != 405 || w.Header().Get("Allow") != "GET, PUT, POST" {
 			t.Errorf("%s: %d Allow %q", method, w.Code, w.Header().Get("Allow"))
 		}
 	}
@@ -250,6 +256,47 @@ func TestMonitoringRequestLimitsAndMethodHeaders(t *testing.T) {
 	}
 	if w := monitoringRequest(h, "POST", query, string(body)); w.Code != 400 || mock.calls != 2 {
 		t.Fatalf("101 ids: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestDirectMonitoringHTTP(t *testing.T) {
+	mock := &monitoringMock{}
+	h := monitoringRouter(mock, model.Principal{UserID: monitoringOtherID})
+	path := "/api/v1/me/workers/" + monitoringWorkerID + "/monitoring"
+	var envelope struct {
+		Observation map[string]any `json:"observation"`
+	}
+	if err := json.Unmarshal([]byte(monitoringBody), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	delete(envelope.Observation, "runId")
+	delete(envelope.Observation, "sequence")
+	body, err := json.Marshal(envelope.Observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := monitoringRequest(h, "POST", path, string(body))
+	var receipt map[string]any
+	if w.Code != 200 || mock.calls != 1 || mock.id != monitoringWorkerID || mock.direct["lifecycle"] != "running" || json.Unmarshal(w.Body.Bytes(), &receipt) != nil || len(receipt) != 2 || receipt["receivedAt"] == nil || receipt["expiresAt"] == nil {
+		t.Fatalf("POST: %d %s", w.Code, w.Body)
+	}
+	for _, tc := range []struct {
+		path, body string
+		status     int
+	}{
+		{path + "?", string(body), 400}, {path, monitoringBody, 400},
+		{path, strings.Replace(string(body), `"lifecycle":`, `"lifecycle":"running","lifecycle":`, 1), 400},
+		{path, string(body) + strings.Repeat(" ", monitoringRequestLimit), 413},
+	} {
+		w = monitoringRequest(h, "POST", tc.path, tc.body)
+		if w.Code != tc.status || mock.calls != 1 {
+			t.Fatalf("POST rejection: %d %s calls=%d", w.Code, w.Body, mock.calls)
+		}
+	}
+	mock.err = &model.Fault{Code: "monitoring_write_outcome_unknown", Message: "unknown"}
+	w = monitoringRequest(h, "POST", path, string(body))
+	if w.Code != 503 || mock.calls != 2 {
+		t.Fatalf("POST unknown: %d %s", w.Code, w.Body)
 	}
 }
 

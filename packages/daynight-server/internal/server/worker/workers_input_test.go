@@ -230,6 +230,10 @@ func (s *capacityReportOperations) PutMonitoring(context.Context, model.Principa
 	return monitoring.Receipt{}, s.unexpected("PutMonitoring")
 }
 
+func (s *capacityReportOperations) SaveDirectMonitoring(context.Context, model.Principal, string, monitoring.DirectObservation) (monitoring.DirectReceipt, string, error) {
+	return monitoring.DirectReceipt{}, "", s.unexpected("SaveDirectMonitoring")
+}
+
 func (s *capacityReportOperations) GetMonitoring(context.Context, model.Principal, string) (monitoring.DetailResponse, error) {
 	return monitoring.DetailResponse{}, s.unexpected("GetMonitoring")
 }
