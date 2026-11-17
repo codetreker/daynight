@@ -14,40 +14,14 @@ const decodeCimOracle = (stdout: string): CimProcess => {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 };
 
-// WMI is a format oracle only. A single isolated query gets its own allowance;
+// CIM is a format oracle only. A single isolated query gets its own allowance;
 // neither production acquisition nor identity reinspection invokes this shell.
 // Windows PowerShell's console code page can replace surrogate pairs with '?'.
 // Transport explicit UTF-8 JSON in an ASCII Base64 envelope so the oracle keeps
 // the complete command line independently of its console encoding.
 const cimOracle = (pid: number): Promise<CimProcess> => new Promise((resolve, reject) => {
   const started = performance.now();
-  const script = `$ErrorActionPreference='Stop';
-[Console]::Error.WriteLine('DAYNIGHT_ORACLE:entry'); [Console]::Error.Flush();
-$null=[System.Reflection.Assembly]::Load('System.Management, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a');
-[Console]::Error.WriteLine('DAYNIGHT_ORACLE:assembly-complete'); [Console]::Error.Flush();
-$searcher=[System.Management.ManagementObjectSearcher]::new('root\\cimv2','SELECT ProcessId,ParentProcessId,CreationDate,CommandLine FROM Win32_Process WHERE ProcessId=${pid}');
-try {
-  $collection=$searcher.Get();
-  try {
-[Console]::Error.WriteLine('DAYNIGHT_ORACLE:wmi-get-returned'); [Console]::Error.Flush();
-    $iterator=$collection.GetEnumerator(); $count=0; $json=$null;
-    try {
-      while ($iterator.MoveNext()) {
-        $row=$iterator.Current;
-        try {
-          $count++;
-          $birth=[string]$row['CreationDate'];
-          if ($birth -cnotmatch '^[0-9]{14}\\.[0-9]{6}[+-][0-9]{3}$') { throw 'The WMI birth is incomplete.' }
-          $value=@{ ProcessId=[uint32]$row['ProcessId']; ParentProcessId=[uint32]$row['ParentProcessId']; Birth=[System.Management.ManagementDateTimeConverter]::ToDateTime($birth).ToUniversalTime().ToString('o'); CommandLine=[string]$row['CommandLine'] };
-          $json=ConvertTo-Json -InputObject $value -Compress;
-        } finally { ([System.IDisposable]$row).Dispose() }
-      }
-      if ($count -ne 1) { throw 'Expected exactly one process from WMI.' }
-    } finally { ([System.IDisposable]$iterator).Dispose() }
-  } finally { $collection.Dispose() }
-} finally { $searcher.Dispose() }
-[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))`;
-  execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: false, timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+  execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$value=Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ParentProcessId,@{Name='Birth';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},CommandLine; $json=ConvertTo-Json -InputObject $value -Compress; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))`], { encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
     if (error !== null) {
       try {
         console.error(JSON.stringify({ fixture: "windows-process-proof", stage: "cim-oracle-command", pid,
