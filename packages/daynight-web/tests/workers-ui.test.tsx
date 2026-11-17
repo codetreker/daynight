@@ -168,6 +168,28 @@ describe('Worker list presentation', () => {
 });
 
 describe('Worker detail presentation', () => {
+  it.each(['current', 'idle', 'offline', 'stale', 'pending', 'failed refresh'] as const)('places the task panel first with %s data', scenario => {
+    const worker = detail();
+    if (scenario === 'idle') detailState = shown({ ...worker, activeTaskCount: 0, tasks: [] });
+    if (scenario === 'offline') detailState = shown({ ...worker, lastReportedAt: new Date(now - 3600_000).toISOString() });
+    if (scenario === 'stale') detailState = shown({ ...worker, taskObservationState: 'stale' });
+    if (scenario === 'pending') detailState = shown({ ...worker, taskObservationState: 'unavailable', activeTaskCount: null, taskObservedAt: null, inventoryObservedAt: null, tasks: [] });
+    if (scenario === 'failed refresh') detailState = { ...shown(), stale: true, error: new ApiError('network') };
+    showDetail();
+    const overview = document.querySelector('[data-worker-panel="overview"]')!;
+    const panel = overview.querySelector('.worker-task-heading-label')!.closest('section')!;
+    expect(overview.querySelectorAll('.worker-task-heading-label')).toHaveLength(1);
+    expect(panel).toHaveAttribute('data-worker-reading');
+    for (const selector of ['.monitoring-empty', '.worker-sample-time', '.worker-metric-grid', '.worker-detail-columns']) {
+      expect(panel.compareDocumentPosition(overview.querySelector(selector)!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(overview.querySelector('[data-worker-reading]')).toBe(panel);
+    if (scenario === 'offline' || scenario === 'failed refresh') {
+      const notice = overview.querySelector(scenario === 'offline' ? '.worker-snapshot-notice' : '.worker-sync-notice')!;
+      expect(notice.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
   it('retains data and focus through repeated quiet rechecks while keeping last-confirmed labels', () => {
     const view = showDetail(), task = screen.getByRole('link', { name: 'Build reliable workers' }), cpu = screen.getByRole('meter', { name: 'CPU usage' });
     const caption = screen.getByText('State at the last observation'), currentHeading = screen.getByRole('heading', { name: 'Tasks in progress 1' });

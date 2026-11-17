@@ -121,6 +121,14 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
     {worker === undefined || unavailable ? <WorkerReadState kind="detail" {...state} status={unavailable ? 'unavailable' : state.status} readEnabled /> : <>
       <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled />
       {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
+      <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
+        {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
+        <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>
+        {worker.taskObservationState === 'unavailable' ? <p className="worker-task-empty">{m.tasksPending}</p> : <>
+          <div className="worker-task-observation">{worker.taskObservationState === 'stale' && <p>{m.oldInventory}</p>}<p>{m.taskObservedAt}: <WorkerTimestamp value={worker.taskObservedAt!} /></p><p>{m.inventoryObservedAt}: <WorkerTimestamp value={worker.inventoryObservedAt!} /></p></div>
+          {worker.tasks.length > 0 ? <TaskRows tasks={worker.tasks} /> : <p className="worker-task-empty">{taskSnapshot ? m.snapshotIdle : m.idle}</p>}
+        </>}
+      </section>
       <WorkerMonitoring state={monitoring} readEnabled />
       <p className="worker-sample-time">{m.sampledAt}: <WorkerTimestamp value={worker.telemetry.sampledAt} /></p>
       <div className="worker-metric-grid" data-worker-reading>
@@ -148,14 +156,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
           {(['codex', 'copilot'] as const).map(tool => <ToolSoftwareRow key={tool} tool={tool} telemetry={worker.telemetry.toolPaths} online={state.stale ? null : online} probe={worker.telemetry.versions[tool]} />)}
         </dl></section>
       </div>
-      <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
-        {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
-        <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>
-        {worker.taskObservationState === 'unavailable' ? <p className="worker-task-empty">{m.tasksPending}</p> : <>
-          <div className="worker-task-observation">{worker.taskObservationState === 'stale' && <p>{m.oldInventory}</p>}<p>{m.taskObservedAt}: <WorkerTimestamp value={worker.taskObservedAt!} /></p><p>{m.inventoryObservedAt}: <WorkerTimestamp value={worker.inventoryObservedAt!} /></p></div>
-          {worker.tasks.length > 0 ? <TaskRows tasks={worker.tasks} /> : <p className="worker-task-empty">{taskSnapshot ? m.snapshotIdle : m.idle}</p>}
-        </>}
-      </section><p className="worker-detail-footnote">{m.footer}</p>
+      <p className="worker-detail-footnote">{m.footer}</p>
     </>}
     </section>
     {!configurationOpened && <><section id={`${id}-panel-configuration`} data-worker-panel="configuration" role="tabpanel" aria-labelledby={`${id}-tab-configuration`} hidden inert /><section id={`${id}-panel-prompt`} data-worker-panel="prompt" role="tabpanel" aria-labelledby={`${id}-tab-prompt`} hidden inert /></>}
