@@ -40,6 +40,7 @@ func scopeSignal(ctx context.Context, w store.GitHubAppSignalWriter) error {
 	return err
 }
 func TestAppSignalScopeCredentialRace(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, mutation := range []string{`UPDATE github_apps SET credential_version=2,webhook_secret='new' WHERE id=$1`, `UPDATE github_apps SET deleted_at=now(),webhook_secret=NULL WHERE id=$1`} {
 		t.Run(mutation, func(t *testing.T) {
 			f := newAppSignalScopeFixture(t)
@@ -82,6 +83,7 @@ func TestAppSignalScopeCredentialRace(t *testing.T) {
 	}
 }
 func TestAppSignalScopeHoldsAppAndGrantLocks(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := newAppSignalScopeFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -125,6 +127,7 @@ func TestAppSignalScopeHoldsAppAndGrantLocks(t *testing.T) {
 	}
 }
 func TestAppSignalScopeLostCommitReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := newAppSignalScopeFixture(t)
 	ctx := t.Context()
 	var armed, lost atomic.Bool
@@ -156,6 +159,7 @@ func TestAppSignalScopeLostCommitReceipt(t *testing.T) {
 }
 
 func TestAppSignalScopeConcurrentGrantRevocation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, signalFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("signalFirst=%t", signalFirst), func(t *testing.T) {
 			f := newAppSignalScopeFixture(t)
@@ -256,6 +260,7 @@ func TestAppSignalScopeConcurrentGrantRevocation(t *testing.T) {
 }
 
 func TestAppSignalScopeDatabaseFailurePaths(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, tc := range []struct{ name, mutation string }{
 		{"App lock query", `ALTER TABLE github_apps RENAME TO unavailable_apps`},
 		{"grant lock query", `ALTER TABLE github_app_team_grants RENAME TO unavailable_grants`},

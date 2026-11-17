@@ -21,6 +21,7 @@ func identitySession(userID, subject string) (model.User, model.Session) {
 }
 
 func TestProjectCreationPersonalLookupFailuresPreserveStateAndCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, failure := range []string{"missing-team", "team-query", "owner-query"} {
 		t.Run(failure, func(t *testing.T) {
 			s := isolatedStore(t)

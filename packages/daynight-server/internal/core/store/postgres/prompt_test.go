@@ -54,6 +54,7 @@ func TestPromptMigrationSchema(t *testing.T) {
 }
 
 func TestPromptStoreWriteCompletionAndSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

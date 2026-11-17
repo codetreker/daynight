@@ -32,6 +32,7 @@ func waitProjectDeletionWitnessBlock(t *testing.T, ctx context.Context, database
 }
 
 func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, operation := range []string{"claim", "thread"} {
 		for _, deletionFirst := range []bool{false, true} {
 			for _, taskDeleted := range []bool{false, true} {
@@ -165,6 +166,7 @@ func TestProjectDeletionOrdersClaimAndThread(t *testing.T) {
 }
 
 func TestProjectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, _, project := membershipFixture(t)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -207,6 +209,7 @@ func TestProjectDeletionWaitingStatementUsesOldProjectSnapshot(t *testing.T) {
 }
 
 func TestProjectDeletionAuthorizationAfterTransferAndReturn(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, original, other, project := membershipFixture(t)
 	ctx := t.Context()
 	target, err := testCreateTeam(database, ctx, other.UserID, uuid.NewString(), "Destination")

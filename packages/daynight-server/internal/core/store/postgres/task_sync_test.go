@@ -21,6 +21,7 @@ import (
 const taskSyncIndexColumnsQuery = `SELECT pg_get_indexdef(format('%I.%I', current_schema(), 'tasks_project_updated_id')::regclass) LIKE '%(project_id, updated_at, id)%'`
 
 func TestTaskSyncDependencyStatesCancellationReleasesBlockedQuery(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, _, project := membershipFixture(t)
 	root := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	owner := queryTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
@@ -266,6 +267,7 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 }
 
 func TestTaskSyncIndexCheckStaysInFixtureSchema(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := context.Background()
 	fallback := emptyPool(t)
 	if _, err := fallback.Exec(ctx, `CREATE TABLE tasks(project_id integer, updated_at integer, id integer);

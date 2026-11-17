@@ -19,6 +19,7 @@ func transferRecord(user string, now time.Time) model.PrivateTransfer {
 	return model.PrivateTransfer{ID: uuid.NewString(), UserID: user, AuthorityKind: "pat", AuthorityID: uuid.NewString(), Direction: "upload", ProjectID: uuid.NewString(), TaskID: uuid.NewString(), Path: "file", ContentType: "text/plain", Binding: []byte(`{}`), Data: []byte(`{}`), State: "receiving", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour), HardExpiresAt: now.Add(24 * time.Hour)}
 }
 func TestPrivateTransferLedgerLifecycle(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -153,6 +154,7 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 }
 
 func TestPrivateTransferConcurrentCapacity(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -197,6 +199,7 @@ func TestPrivateTransferConcurrentCapacity(t *testing.T) {
 }
 
 func TestPrivateTransferAuthorityAdmission(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -445,6 +448,7 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 }
 
 func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -556,6 +560,7 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 }
 
 func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -662,6 +667,7 @@ func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
 }
 
 func TestPrivateTransferReservationMaxInt64Accounting(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -709,6 +715,7 @@ func TestPrivateTransferReservationMaxInt64Accounting(t *testing.T) {
 }
 
 func TestPrivateTransferStats(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -758,6 +765,7 @@ func TestPrivateTransferStats(t *testing.T) {
 }
 
 func TestPrivateTransferAuthorizationWaitDoesNotBlockOtherUsers(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -863,6 +871,7 @@ func TestPrivateTransferAuthorizationWaitDoesNotBlockOtherUsers(t *testing.T) {
 }
 
 func TestPrivateTransferConcurrentCreateSlots(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -900,6 +909,7 @@ func TestPrivateTransferConcurrentCreateSlots(t *testing.T) {
 }
 
 func TestPrivateTransferConcurrentCreateReserveClose(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -962,6 +972,7 @@ func TestPrivateTransferConcurrentCreateReserveClose(t *testing.T) {
 }
 
 func TestPrivateTransferRejectsInvalidStoredDirection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := t.Context()
 	db := isolatedStore(t)
 	record := transferRecord(uuid.NewString(), time.Now().UTC())
@@ -976,6 +987,7 @@ func TestPrivateTransferRejectsInvalidStoredDirection(t *testing.T) {
 }
 
 func TestPrivateTransferLateReceiptPersistsThroughClose(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := t.Context()
 	db, owner, _, project := membershipFixture(t)
 	task := queryTask(t, db, project.ID, 10, model.TaskTodo)
@@ -1059,6 +1071,7 @@ func TestPrivateTransferLateReceiptPersistsThroughClose(t *testing.T) {
 }
 
 func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)

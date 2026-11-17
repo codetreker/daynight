@@ -9,6 +9,7 @@ import (
 )
 
 func TestWebhookStartupReferences(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	policies, err := s.WebhookStartupPolicies(ctx)

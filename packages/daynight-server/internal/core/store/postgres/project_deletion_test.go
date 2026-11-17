@@ -124,6 +124,7 @@ func TestProjectDeletionPreservesWorkerJSONDecodeFailure(t *testing.T) {
 }
 
 func TestProjectDeletionWaitsForDeletedTask(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, _, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

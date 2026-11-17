@@ -41,6 +41,7 @@ func readStoreTeam(t *testing.T, s *Store, userID, teamID string) model.Team {
 }
 
 func TestTeamCreationIsAtomicAndRollbackPreservesCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, _ := storeTeamFixture(t)
 	ctx := context.Background()
 	id := uuid.NewString()
@@ -62,6 +63,7 @@ func TestTeamCreationIsAtomicAndRollbackPreservesCause(t *testing.T) {
 }
 
 func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, commit := range []bool{false, true} {
 		t.Run(map[bool]string{false: "writer rollback", true: "writer commit"}[commit], func(t *testing.T) {
 			s, actor, team := storeTeamFixture(t)
@@ -202,6 +204,7 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 }
 
 func TestTeamDeletionLockPreventsNewOrphanOwnership(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, rollback := range []bool{false, true} {
 		t.Run(map[bool]string{false: "delete commits", true: "delete rolls back"}[rollback], func(t *testing.T) {
 			s, actor, team := storeTeamFixture(t)
@@ -259,6 +262,7 @@ func TestTeamDeletionLockPreventsNewOrphanOwnership(t *testing.T) {
 }
 
 func TestTeamCancellationRollsBackAndDoesNotRunLateCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	err := testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error { _, err := tx.Rename(ctx, actor.UserID, "Changed"); cancel(); return err })
@@ -294,6 +298,7 @@ func TestTeamCancellationRollsBackAndDoesNotRunLateCallback(t *testing.T) {
 }
 
 func TestTeamCommitResponseLossRetainsCommittedResult(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})

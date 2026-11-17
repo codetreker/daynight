@@ -52,6 +52,7 @@ func TestTaskTimingMigrationPreservesUnknownHistoricalIntervals(t *testing.T) {
 }
 
 func TestTaskStartAndSnapshotClockFollowTheActualLockWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 11, model.TaskTodo)
@@ -165,10 +166,12 @@ func waitForTaskStoreDatabaseTime(ctx context.Context, database *Store, boundary
 }
 
 func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	verifyTaskSyncLockWatermarks(t, false)
 }
 
 func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	verifyTaskSyncLockWatermarks(t, true)
 }
 
@@ -276,6 +279,7 @@ func verifyTaskSyncLockWatermarks(t *testing.T, writeBeforeWait bool) {
 }
 
 func TestTaskTimingCallbackFailureRollsBackInterval(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	project := queryProject(t, database, 1)

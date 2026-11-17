@@ -18,6 +18,7 @@ import (
 )
 
 func TestTeamInvitationStoreFailurePaths(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, admin, team := storeTeamFixture(t)
 	ctx := context.Background()
 	invitation := testutil.TeamInvitation(team, admin, "fault")

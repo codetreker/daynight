@@ -15,6 +15,7 @@ import (
 )
 
 func TestGitHubGrantLostCommitReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	actor, app, teamID, grant, project := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()

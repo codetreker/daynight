@@ -18,6 +18,7 @@ func waitThreadBackendLock(t *testing.T, database *Store, pid uint32) {
 }
 
 func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, mutation := range []string{"delete", "source status"} {
 		t.Run(mutation, func(t *testing.T) {
 			database, principal, _, project := membershipFixture(t)
@@ -79,6 +80,7 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 }
 
 func TestThreadCredentialAndGrantLocksBlockRevocation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, mutation := range []string{"credential", "grant"} {
 		t.Run(mutation, func(t *testing.T) {
 			database, principal, _, project := membershipFixture(t)
@@ -123,6 +125,7 @@ func TestThreadCredentialAndGrantLocksBlockRevocation(t *testing.T) {
 }
 
 func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, _, principal, project := membershipFixture(t)
 	if err := writeProjectForTest(database, context.Background(), project.ID, func(tx ProjectWriteScope) error {
 		_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
@@ -177,6 +180,7 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 }
 
 func TestThreadHeadLockCancellationReleasesConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	locker, err := database.Pool.Begin(ctx)

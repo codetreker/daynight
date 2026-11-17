@@ -22,6 +22,7 @@ import (
 )
 
 func TestProjectDeletionObservationAndTransactionBoundRetirement(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, owner, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -77,6 +78,7 @@ func TestProjectDeletionObservationAndTransactionBoundRetirement(t *testing.T) {
 }
 
 func TestProjectDeletionMarkPreservesDatabaseFailureAndRejectsSecondMark(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, _, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -120,6 +122,7 @@ func TestProjectDeletionMarkPreservesDatabaseFailureAndRejectsSecondMark(t *test
 }
 
 func TestPrivateTransferProjectLifecycleAdmissionAndFailures(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, owner, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -172,6 +175,7 @@ func TestPrivateTransferProjectLifecycleAdmissionAndFailures(t *testing.T) {
 }
 
 func TestPrivateTransferProjectLifecycleSerializesProjectDeletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, deletionFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("deletion-first=%t", deletionFirst), func(t *testing.T) {
 			f := attachmentWitnessFixture(t)

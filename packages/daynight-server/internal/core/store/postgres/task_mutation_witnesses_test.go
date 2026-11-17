@@ -301,6 +301,7 @@ func TestTaskDependencyReadScopeRefusalPreservesFacts(t *testing.T) {
 }
 
 func TestTaskReadOnlyScopePreservesExactLargeVersionAndHistory(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -360,6 +361,7 @@ func taskMutationWaitForWriters(t *testing.T, ctx context.Context, database *Sto
 }
 
 func TestConcurrentSameVersionTaskWritesReadFreshAfterProjectLock(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	for index, kind := range []string{"metadata", "status", "permission", "platform", "assignment"} {
 		if !t.Run(kind, func(t *testing.T) {
@@ -426,6 +428,7 @@ func TestConcurrentSameVersionTaskWritesReadFreshAfterProjectLock(t *testing.T) 
 }
 
 func TestProjectWriteScopeRechecksMemberRemovalAfterLockWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, removeActor := range []bool{false, true} {
 		t.Run(fmt.Sprintf("actor=%t", removeActor), func(t *testing.T) {
 			database := isolatedStore(t)
@@ -466,6 +469,7 @@ func TestProjectWriteScopeRechecksMemberRemovalAfterLockWait(t *testing.T) {
 }
 
 func TestTaskAssignmentTargetQueryFailureKeepsSafeDriverCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	target := storeAssigneeUser(t, database, project.ID, 51, true)
@@ -489,6 +493,7 @@ func TestTaskAssignmentTargetQueryFailureKeepsSafeDriverCause(t *testing.T) {
 }
 
 func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	project := queryProject(t, database, 1)
@@ -524,6 +529,7 @@ func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T
 }
 
 func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, external := range []bool{false, true} {
 		t.Run(fmt.Sprintf("external=%t", external), func(t *testing.T) {
 			database := isolatedStore(t)
@@ -589,6 +595,7 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 }
 
 func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, scenario := range []struct {
 		sourceKind    string
 		removeDepends bool
@@ -747,6 +754,7 @@ func taskMutationOneWinner(t *testing.T, results []error, refusal error) {
 }
 
 func TestTaskProjectSerializationSuppliesFreshReachabilityToCompetingWriters(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	a := queryTask(t, database, project.ID, 11, model.TaskTodo)
@@ -780,6 +788,7 @@ func TestTaskProjectSerializationSuppliesFreshReachabilityToCompetingWriters(t *
 }
 
 func TestTaskProjectSerializationKeepsPrerequisiteAndDependentQueriesConsistent(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	caseNumber := 0
 	for _, edgeWrite := range []bool{false, true} {

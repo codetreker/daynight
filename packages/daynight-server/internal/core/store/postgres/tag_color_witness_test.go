@@ -41,6 +41,7 @@ func (s *heldColorProjectWrite) WriteProject(ctx context.Context, projectID stri
 }
 
 func TestTagColorServicePostgres(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, principal, outsider, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -215,6 +216,7 @@ func TestTagColorServicePostgres(t *testing.T) {
 }
 
 func TestTagColorLostCommitReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, principal, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

@@ -40,6 +40,7 @@ func insertIdentityBundle(ctx context.Context, sc IdentityScope, subject string,
 }
 
 func TestIdentityScopeConcurrentCanonicalOwnerAndSessions(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -99,6 +100,7 @@ func TestIdentityScopeConcurrentCanonicalOwnerAndSessions(t *testing.T) {
 }
 
 func TestIdentityScopePersonalAndSessionFailuresRollbackAllWrites(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, table := range []string{"teams", "team_members", "sessions"} {
 		t.Run(table, func(t *testing.T) {
 			s := isolatedStore(t)
@@ -130,6 +132,7 @@ func TestIdentityScopePersonalAndSessionFailuresRollbackAllWrites(t *testing.T) 
 }
 
 func TestIdentityScopeCorruptPersonalFactsRollbackProfile(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, damage := range []string{"missing-owner", "wrong-role", "additional-member"} {
 		t.Run(damage, func(t *testing.T) {
 			s := isolatedStore(t)
@@ -200,6 +203,7 @@ func TestIdentityScopeCorruptPersonalFactsRollbackProfile(t *testing.T) {
 }
 
 func TestIdentityScopeConcurrentLoginConsumption(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -261,6 +265,7 @@ func waitIdentityLock(t *testing.T, ctx context.Context, s *Store, fragment stri
 }
 
 func TestIdentityScopeDeviceLocksExposeCurrentDecisionAndConsumption(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, operation := range []string{"decision", "redemption"} {
 		t.Run(operation, func(t *testing.T) {
 			s := isolatedStore(t)
@@ -382,6 +387,7 @@ func TestIdentityScopeDeviceLocksExposeCurrentDecisionAndConsumption(t *testing.
 }
 
 func TestIdentityScopeDeviceMintFailurePreservesGrant(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	_, p, _ := testAuthRecords(t, s)
@@ -432,6 +438,7 @@ func TestIdentityScopeDeviceMintFailurePreservesGrant(t *testing.T) {
 }
 
 func TestIdentityScopePATLockReadsLatestExpiryAndRollsBackFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -516,6 +523,7 @@ func TestIdentityScopePATLockReadsLatestExpiryAndRollsBackFailure(t *testing.T) 
 }
 
 func TestIdentityScopeDuplicateSessionRollsBackNewOwner(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	_, _, existing := testAuthRecords(t, s)

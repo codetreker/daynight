@@ -13,6 +13,7 @@ import (
 )
 
 func TestBackupInventoryIncludesReadyIdentityAndBothOriginalRepresentations(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	owner, id, execution := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -62,6 +63,7 @@ func TestBackupInventoryIncludesReadyIdentityAndBothOriginalRepresentations(t *t
 }
 
 func TestBackupInventoryRejectsCorruptRestoredMetadataAndMissingRelations(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, kind := range []string{"descriptor", "ready-identity", "missing-resources", "missing-chunks", "missing-archives", "canceled"} {
 		t.Run(kind, func(t *testing.T) {
 			database := isolatedStore(t)

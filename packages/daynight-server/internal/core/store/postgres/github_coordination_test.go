@@ -80,6 +80,7 @@ func b2Observation(number int64, seen *string) githubpr.PullRequest {
 }
 
 func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
@@ -210,6 +211,7 @@ func b2Signal(t *testing.T, s *Store, signal store.GitHubAppPRSignal) int64 {
 }
 
 func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	a, b, other := queryProject(t, s, 1), queryProject(t, s, 2), queryProject(t, s, 3)
 	b2Configure(t, s, a.ID, 10, 20, 30)
@@ -315,6 +317,7 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 }
 
 func TestGitHubCoordinationDeletionSerializesWithPublication(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
@@ -405,6 +408,7 @@ func TestGitHubCoordinationDeletionSerializesWithPublication(t *testing.T) {
 }
 
 func TestGitHubCoordinationPublicationAndAckRollbackAndUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
@@ -481,6 +485,7 @@ func TestGitHubCoordinationPublicationAndAckRollbackAndUnknown(t *testing.T) {
 }
 
 func TestGitHubCoordinationDisconnectInvalidatesLeaseAndPending(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
@@ -530,6 +535,7 @@ func TestGitHubCoordinationDisconnectInvalidatesLeaseAndPending(t *testing.T) {
 }
 
 func TestGitHubCoordinationSignalWaitsForDisconnect(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
@@ -594,6 +600,7 @@ func TestGitHubCoordinationSignalWaitsForDisconnect(t *testing.T) {
 }
 
 func TestGitHubCoordinationDueProjects(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	a, b, c, blocked := queryProject(t, s, 1), queryProject(t, s, 2), queryProject(t, s, 3), queryProject(t, s, 4)
 	for _, id := range []string{a.ID, b.ID, c.ID, blocked.ID} {
@@ -629,6 +636,7 @@ func TestGitHubCoordinationDueProjects(t *testing.T) {
 }
 
 func TestGitHubAccessHintRetryAndNewSignalWake(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
@@ -677,6 +685,7 @@ func TestGitHubAccessHintRetryAndNewSignalWake(t *testing.T) {
 }
 
 func TestGitHubCoordinationRuntimeAndConditionalRetries(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
@@ -758,6 +767,7 @@ func TestGitHubCoordinationRuntimeAndConditionalRetries(t *testing.T) {
 }
 
 func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, signalKind := range []string{"pull request", "access"} {
 		t.Run(signalKind, func(t *testing.T) {
 			s := isolatedStore(t)

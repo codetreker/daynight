@@ -61,6 +61,7 @@ func usageAssert(t *testing.T, got *time.Time, want *time.Time) {
 }
 
 func TestCredentialUsagePersistenceAndMetadata(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -366,6 +367,7 @@ func TestCredentialUsageConcurrentOlderRetry(t *testing.T) {
 }
 
 func TestCredentialUsagePartialUpdateRollsBack(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, stop := context.WithTimeout(t.Context(), 20*time.Second)
 	defer stop()
@@ -393,6 +395,7 @@ func TestCredentialUsagePartialUpdateRollsBack(t *testing.T) {
 }
 
 func TestCredentialUsageCommitCancellationRemainsUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, stop := context.WithTimeout(t.Context(), 20*time.Second)
 	defer stop()

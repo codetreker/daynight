@@ -150,6 +150,7 @@ func attachmentWitnessDelete(ctx context.Context, f attachmentWitness, project b
 }
 
 func TestAttachmentLifecycleBlocksTaskAndProjectDeletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, project := range []bool{false, true} {
 		t.Run(fmt.Sprintf("project=%t", project), func(t *testing.T) {
 			f := attachmentWitnessFixture(t)
@@ -226,6 +227,7 @@ func TestAttachmentLifecycleBlocksTaskAndProjectDeletion(t *testing.T) {
 }
 
 func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, test := range []struct {
 		name                          string
 		project, commits, taskDeleted bool
@@ -314,6 +316,7 @@ func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
 }
 
 func TestAttachmentAdmissionDoesNotLockGrantAcrossMutation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -365,6 +368,7 @@ func TestAttachmentAdmissionDoesNotLockGrantAcrossMutation(t *testing.T) {
 }
 
 func TestAttachmentRollbackRetainsExternalFileEffects(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	before, _, err := f.database.PutAttachment(t.Context(), f.metadata("before"))
 	if err != nil {
@@ -471,6 +475,7 @@ func TestAttachmentRollbackRetainsExternalFileEffects(t *testing.T) {
 }
 
 func TestAttachmentGateSurvivesBackendLoss(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -581,6 +586,7 @@ func TestAttachmentGateSurvivesBackendLoss(t *testing.T) {
 }
 
 func TestAttachmentCompletionRetainsCommittedRowsWhenReceiptIsLost(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := attachmentWitnessFixture(t)
 	ctx := t.Context()
 	tx, err := f.database.Pool.Begin(ctx)

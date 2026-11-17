@@ -39,6 +39,7 @@ func tagWitnessDelete(ctx context.Context, scope ProjectWriteScope, id string) e
 }
 
 func TestTaskTagAdmissionRollbackAndRenameReadback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, principal, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -136,6 +137,7 @@ func TestTaskTagAdmissionRollbackAndRenameReadback(t *testing.T) {
 // Both operations validate after acquiring the Project lock. A deleted tag must
 // not be attached, while an attachment committed first is cleared by deletion.
 func TestTagDeletionSerializesWithAttachAndCreate(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, create := range []bool{false, true} {
 		for _, deleteFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("create=%t/deleteFirst=%t", create, deleteFirst), func(t *testing.T) {
@@ -221,6 +223,7 @@ func TestTagDeletionSerializesWithAttachAndCreate(t *testing.T) {
 }
 
 func TestTagDeleteRollbackAndLostCommitReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, lostReceipt := range []bool{false, true} {
 		t.Run(fmt.Sprintf("lostReceipt=%t", lostReceipt), func(t *testing.T) {
 			s := isolatedStore(t)
@@ -288,6 +291,7 @@ func TestTagDeleteRollbackAndLostCommitReceipt(t *testing.T) {
 }
 
 func TestTaskTagWriteRemainsVisibleToSyncAcrossLockAndCommit(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, waiting := range []bool{false, true} {
 		t.Run(fmt.Sprintf("waitingForProjectLock=%t", waiting), func(t *testing.T) {
 			s := isolatedStore(t)

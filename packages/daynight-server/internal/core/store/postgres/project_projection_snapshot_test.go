@@ -93,6 +93,7 @@ func TestProjectOwnershipAndAccessShareSnapshot(t *testing.T) {
 }
 
 func TestOrdinaryTaskWriteDoesNotFenceOwnershipSources(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, actor, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

@@ -22,6 +22,7 @@ func identityScopeTest(t *testing.T, s *Store, op func(IdentityScope) error) {
 }
 
 func TestIdentityDAOFailuresPreserveTransactionOutcome(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, test := range []struct {
 		name, table string
 		operation   func(context.Context, IdentityScope, string) error
@@ -62,6 +63,7 @@ func TestIdentityDAOFailuresPreserveTransactionOutcome(t *testing.T) {
 }
 
 func TestIdentityCleanupFailureRollsBackEarlierDeletes(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)

@@ -75,6 +75,7 @@ func webhookBoundaryStore(t *testing.T) (*Store, wm.Owner, wm.Endpoint, wm.Opera
 }
 
 func TestWebhookRedeliveryWritesRollBackWithReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, owner, endpoint, initial, original, attempt := webhookBoundaryStore(t)
 	ctx := t.Context()
 	mustQueryExec(t, s, `CREATE FUNCTION reject_boundary_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1911',MESSAGE='receipt rejected'; END $$; CREATE TRIGGER reject_boundary_receipt BEFORE INSERT ON webhook_operations FOR EACH ROW EXECUTE FUNCTION reject_boundary_receipt()`)
@@ -147,6 +148,7 @@ func TestWebhookRedeliveryWritesRollBackWithReceipt(t *testing.T) {
 }
 
 func TestWebhookSubscriptionReplacementRollsBackWithBinding(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, owner, endpoint, initial, _, _ := webhookBoundaryStore(t)
 	ctx := t.Context()
 	subID, bindingID, project := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -221,6 +223,7 @@ func TestWebhookSubscriptionReplacementRollsBackWithBinding(t *testing.T) {
 }
 
 func TestWebhookSourceAndCaptureShareRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	project, task, team := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -247,6 +250,7 @@ func TestWebhookSourceAndCaptureShareRollback(t *testing.T) {
 }
 
 func TestWebhookTransactionEntryCompletionAndReadback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, _, _, _, original, _ := webhookBoundaryStore(t)
 	ctx := t.Context()
 	cause := errors.New("callback refused transaction")
@@ -399,6 +403,7 @@ func TestWebhookTransactionSurvivesProcessExitAtCommitBoundary(t *testing.T) {
 }
 
 func TestDeletedSourceAndCaptureRemainAtomicAtCommit(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	project, team, source, dependent := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -464,6 +469,7 @@ func TestDeletedSourceAndCaptureRemainAtomicAtCommit(t *testing.T) {
 }
 
 func TestWebhookTransactionEntryLostCommitReplyIsUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, kind := range []string{"delivery", "retention"} {
 		t.Run(kind, func(t *testing.T) {
 			base, _, _, _, delivery, _ := webhookBoundaryStore(t)

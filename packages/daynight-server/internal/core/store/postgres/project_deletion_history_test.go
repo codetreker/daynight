@@ -11,6 +11,7 @@ import (
 )
 
 func TestProjectDeletionPreservesHistoricalRowsAndCommitsRetirement(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, owner, _, project := membershipFixture(t)
 	ctx := t.Context()
 	otherID := uuid.NewString()

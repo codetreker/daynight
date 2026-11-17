@@ -57,6 +57,7 @@ func (d registrationOwnerDAO) LockTestOwner(ctx context.Context, user string) er
 }
 
 func TestProfilePatchSharesPATWithSameOwnerTestRegistrationRetry(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()

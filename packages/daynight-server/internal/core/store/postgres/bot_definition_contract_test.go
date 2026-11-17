@@ -13,6 +13,7 @@ import (
 )
 
 func TestBotDefinitionCredentialRechecksAfterLockedRead(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	bot, principal := storedBotCandidate(t, db)
 	sessionDAOTransaction(t, db, func(s store.SessionScope) error { return s.BotDAO().InsertBot(t.Context(), bot) })
@@ -35,6 +36,7 @@ func TestBotDefinitionCredentialRechecksAfterLockedRead(t *testing.T) {
 }
 
 func TestBotDeletionKeepsIndependentTaskAndPreciseVersion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx := t.Context()
 	candidate, _ := storedBotCandidate(t, db)

@@ -26,6 +26,7 @@ func sessionDAOTransaction(t *testing.T, db *Store, fn func(store.SessionScope) 
 }
 
 func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -289,6 +290,7 @@ func TestSessionDAOBotDeletionCleanupCanRollBackAndRetry(t *testing.T) {
 }
 
 func TestSessionWriterClosedPoolDoesNotInvokeCallback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := t.Context()
 	db := closedStore(t)
 	completion, err := db.WriteSession(ctx, func(store.SessionScope) error {
@@ -301,6 +303,7 @@ func TestSessionWriterClosedPoolDoesNotInvokeCallback(t *testing.T) {
 }
 
 func TestSessionDisconnectFailureRollsBackAndPreservesCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	_, owner, _ := testAuthRecords(t, database)
 	project := queryProject(t, database, 1)
@@ -347,6 +350,7 @@ func TestSessionDisconnectFailureRollsBackAndPreservesCause(t *testing.T) {
 }
 
 func TestSessionWriterReturnsItsOnlyPhysicalConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	parsed, err := url.Parse(scopedDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
@@ -412,6 +416,7 @@ func TestSessionWriterReturnsItsOnlyPhysicalConnection(t *testing.T) {
 }
 
 func TestSessionWriterSharesTransactionAndReportsCompletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx := context.Background()
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)

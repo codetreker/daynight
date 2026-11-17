@@ -11,6 +11,7 @@ import (
 )
 
 func TestGitHubResourcesShareProjectSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	ctx := t.Context()
@@ -60,6 +61,7 @@ func TestGitHubResourcesShareProjectSnapshot(t *testing.T) {
 }
 
 func TestGitHubConfigurationSharesProjectTransaction(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, actor, project, team, app, grant := projectAppScopeFixture(t)
 	ctx := t.Context()
 	principal := model.Principal{Kind: model.SessionCredential, UserID: actor, CredentialID: uuid.NewString()}

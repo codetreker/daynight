@@ -57,6 +57,7 @@ func graphCancellationPoolDrained(t *testing.T, ctx context.Context, pool *pgxpo
 }
 
 func TestTaskGraphSnapshotCancellationReleasesBlockedQuery(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, principal, _, project := membershipFixture(t)
 	root := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	queryTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
