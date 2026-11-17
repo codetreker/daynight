@@ -57,6 +57,8 @@ The [Worker design](../../../../docs/design/daynight-worker.md#云端接收与�
 owns the mechanism, and the [configuration contract](../../../../docs/spec/daynight-worker-configuration.md#worker-响应的未知内容保留)
 owns consumer behavior.
 
+The [stored checkpoint decoder decision](2026-11-17-worker-stored-configuration-decoder.md) owns the independent disk decoding boundary.
+
 ## Alternatives
 
 **Remove exact-field checks and rebuild the known DTO.** This accepts a response
