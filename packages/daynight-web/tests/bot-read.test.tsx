@@ -131,6 +131,34 @@ it('recreates active Strict Mode owners and releases both timers and signals on 
  one.unmount(); two.unmount();
 });
 
+it('refreshes idle reads on a visible visibility event without overlapping active reads or adding timers', async () => {
+ vi.useFakeTimers({toFake:['setInterval','clearInterval']});
+ vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+ const firstRead = Promise.withResolvers<string>(), nextRead = Promise.withResolvers<string>();
+ const bot = botDefinition(), firstDetail = Promise.withResolvers<typeof bot>(), nextDetail = Promise.withResolvers<typeof bot>();
+ const genericSignals: AbortSignal[] = [], detailSignals: AbortSignal[] = [];
+ const generic = vi.fn((_scope: TaskCacheScope, signal: AbortSignal) => {
+   genericSignals.push(signal); return genericSignals.length === 1 ? firstRead.promise : nextRead.promise;
+ });
+ const detail = vi.fn((_id: string, _scope: TaskCacheScope, signal: AbortSignal) => {
+   detailSignals.push(signal); return detailSignals.length === 1 ? firstDetail.promise : nextDetail.promise;
+ });
+ const one = renderHook(() => useBotRead('a', true, generic), wrap());
+ const two = renderHook(() => useBotDetail(bot.id, true, new Set(), detail), wrap());
+ await act(async () => {});
+ expect(generic).toHaveBeenCalledTimes(1); expect(detail).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(2);
+ await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+ expect(genericSignals[0]!.aborted).toBe(false); expect(detailSignals[0]!.aborted).toBe(false);
+ expect(generic).toHaveBeenCalledTimes(1); expect(detail).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(2);
+ await act(async () => { firstRead.resolve('old'); firstDetail.resolve({...bot, name: 'Old'}); });
+ await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+ expect(generic).toHaveBeenCalledTimes(2); expect(detail).toHaveBeenCalledTimes(2); expect(vi.getTimerCount()).toBe(2);
+ expect(one.result.current.busy).toBe(true); expect(two.result.current.busy).toBe(true);
+ await act(async () => { nextRead.resolve('current'); nextDetail.resolve(bot); });
+ expect(one.result.current.value).toBe('current'); expect(two.result.current.value).toEqual(bot);
+ one.unmount(); two.unmount(); expect(vi.getTimerCount()).toBe(0);
+});
+
 it('aborts the real detail fetch before a late 401 can notify unauthorized listeners', async () => {
  vi.useFakeTimers({toFake:['setInterval','clearInterval']});
  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');

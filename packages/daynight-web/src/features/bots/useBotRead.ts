@@ -47,11 +47,15 @@ export function useBotRead<T>(key: string, enabled: boolean, load: (scope: TaskC
       timer = setInterval(() => { if (!allowed()) cancel(); else void run(); }, 5_000);
     };
     const invalidate = () => { stop(); setState(empty()); };
+    const visibility = () => {
+      if (eligible() && timer !== null) void run();
+      else sync();
+    };
     action.current = () => { void run(); };
     sync();
-    document.addEventListener('visibilitychange', sync);
+    document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
-    return () => { live = false; stop(); document.removeEventListener('visibilitychange', sync); scope.signal.removeEventListener('abort', invalidate); action.current = () => {}; };
+    return () => { live = false; stop(); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); action.current = () => {}; };
   }, [scope, key, enabled, load]);
   const current = state.scope === scope && state.key === key && !scope.isInvalidated ? state : empty();
   return { ...current, refresh };

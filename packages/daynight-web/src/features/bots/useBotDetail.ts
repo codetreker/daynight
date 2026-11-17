@@ -65,11 +65,15 @@ export function useBotDetail(botId: string | null, enabled: boolean, retainedBot
       void run();
       timer = setInterval(() => { if (!allowed()) cancel(); else void run(); }, 5_000);
     };
+    const visibility = () => {
+      if (eligible() && timer !== null) void run();
+      else sync();
+    };
     action.current = () => { void run(); };
     sync();
-    document.addEventListener('visibilitychange', sync);
+    document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', stop, { once: true });
-    return () => { live = false; stop(); document.removeEventListener('visibilitychange', sync); scope.signal.removeEventListener('abort', stop); action.current = () => {}; };
+    return () => { live = false; stop(); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', stop); action.current = () => {}; };
   }, [cache, coordinator, scope, selection, botId, enabled, load]);
   return { ...cache.read(selection, enabled, enabled), refresh, cache };
 }
