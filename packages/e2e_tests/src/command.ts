@@ -14,6 +14,7 @@ export type CommandResult = { stdout: string; stderr: string; exitCode: number }
 export type ManagedCommand = {
   readonly pid: number;
   finished: Promise<CommandResult>;
+  stopProcesses: () => Promise<void>;
   stop: () => Promise<void>;
 };
 
@@ -167,6 +168,7 @@ export const startCommand = (command: string, args: readonly string[], options: 
       return child.pid;
     },
     finished,
+    stopProcesses: stopGroup,
     stop: async (): Promise<void> => {
       await stopGroup();
       await finished;

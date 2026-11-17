@@ -1,3 +1,6 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 export type WorkerFixtureConfiguration = {
   serverUrl: string;
   serverToken: string;
@@ -20,3 +23,11 @@ export const workerFixtureConfiguration = (input: WorkerFixtureConfiguration): s
     repositories: [{ projectId: input.projectId, remote: input.remote, path: input.repository }],
   },
 }, null, 2)}\n`;
+
+// A fresh directory prevents another CLI or Worker identity's cache from being adopted.
+export const prepareWorkerFixtureConfiguration = async (root: string, input: WorkerFixtureConfiguration): Promise<string> => {
+  const directory = path.join(root, "worker-config");
+  await mkdir(directory, { mode: 0o700 });
+  await writeFile(path.join(directory, "config.yml"), workerFixtureConfiguration(input), { mode: 0o600, flag: "wx" });
+  return directory;
+};
