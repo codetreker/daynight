@@ -16,6 +16,17 @@ const task: GraphTask = { type: 'task', parentId: null, id: '00000000-0000-4000-
   createdAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z' };
 const projectId = '00000000-0000-4000-8000-000000000101';
 
+it.each(['standalone', 'chain', 'goal'] as const)('uses the task permission for the empty Session hint in %s', kind => {
+  current.value = { state: 'no_session', needsAttention: null, canOpen: false };
+  const row = (allowAgents: boolean) => kind === 'standalone'
+    ? <StandaloneTaskRow projectId={projectId} task={{ ...task, allowAgents }} title="Example" instanceId="example" onSelectTask={vi.fn()} />
+    : <TaskMemberRow projectId={projectId} task={{ ...task, allowAgents }} title="Example" instanceId={kind} workerMachine={undefined} onOpenTask={vi.fn()} />;
+  const view = renderWithLocale(<ul>{row(false)}</ul>, { locale: 'en', taskCache: true });
+  expect(view.container.querySelector('.project-session-status')).toBeNull();
+  view.rerender(<ul>{row(true)}</ul>);
+  expect(view.container).toHaveTextContent('No current Session');
+});
+
 it.each(['standalone', 'chain', 'goal'] as const)('presents Session state and independent navigation for %s', async (kind) => {
   current.value = { state: 'pending', needsAttention: null, canOpen: true };
   const openTask = vi.fn(), openSession = vi.fn();

@@ -391,6 +391,11 @@ background, border and text tokens and does not indicate a claim, activity or
 completion. Chain summaries do not aggregate a root value. Full task and graph
 decoders require an explicit boolean `allowAgents`; missing, null and nonboolean
 values fail.
+Ordinary Task rows hide the confirmed `no_session` text when their own
+`allowAgents` is false, without leaving an empty status container. Automatic
+Tasks retain the text; other observations, attention and independently admitted
+Session entries retain their normal behavior. Project and personal rows share
+this presentation without changing the observation or issuing another request.
 Task/graph resources require nullable requiredPlatform (null/windows/linux/macos),
 with no missing-key fallback. Rows and nodes retain read-only platform badges.
 The detail combines platform display and editing in one select in the left

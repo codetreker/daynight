@@ -122,7 +122,7 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
         <span className={`root-status graph-status-${model.status}`}>{common.status[model.status]}</span>
         {model.ready && <span className="task-ready">{project.ready}</span>}
         {model.blocked && <span className="graph-blocked-badge">{project.blocked}</span>}
-        <TaskSessionStatus title={model.title} status={model.status} observation={model.session} showTaskStatus={false}
+        <TaskSessionStatus title={model.title} status={model.status} observation={model.session} allowAgents={model.allowAgents} showTaskStatus={false}
           {...(onOpenSession === undefined ? {} : { onActivate: (event: MouseEvent<HTMLButtonElement>) => onOpenSession(model.id, event.currentTarget) })} />
       </div>
       {execution !== null && <TaskExecutionDescription execution={execution} id={`${labelId}-execution`} />}

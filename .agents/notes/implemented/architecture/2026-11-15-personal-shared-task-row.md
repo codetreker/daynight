@@ -45,6 +45,8 @@ rows and preserves a separately confirmed, unexpired Session entry during that
 window. The [Web design](../../../../docs/design/daynight-web.md#我的进行中任务)
 and [Session design](../../../../docs/design/task-session-status.md) own the
 mechanisms and observable conditions.
+The [manual Task Session hint decision](../bug-fix/2026-11-17-hide-manual-no-session.md)
+applies the same confirmed-absence presentation to this list and project rows.
 
 ## Alternatives
 

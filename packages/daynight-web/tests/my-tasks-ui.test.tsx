@@ -24,6 +24,16 @@ beforeEach(() => history.replaceState(null, '', '/my-tasks'));
 afterEach(() => vi.useRealTimers());
 
 describe('personal task overview', () => {
+  it('updates the empty Session hint from the personal task permission', () => {
+    const a = item(0);
+    mock.value = state([{ ...a, task: { ...a.task, allowAgents: false } }]);
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
+    const row = screen.getByText('Task 0').closest('li')!;
+    expect(row.querySelector('.project-session-status')).toBeNull();
+    expect(row).toHaveTextContent('In progress');
+    mock.value = state([a]); view.rerender(<MyTasksPage />);
+    expect(row).toHaveTextContent('No current Session');
+  });
   it('shows each current Worker independently of Session and pause, and updates on refresh', () => {
     const a = item(0), b = item(1), c = item(2);
     const worker = (n: number, name: string) => ({ workerId: id(n), state: 'active' as const, machine: { id: id(n + 10), name } });
