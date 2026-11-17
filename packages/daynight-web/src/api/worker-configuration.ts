@@ -14,6 +14,7 @@ export type WorkerConfigurationValue = {
   readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean;
   readonly agentControlMode?: WorkerControlMode | null;
   readonly archiveSessions?: boolean;
+  readonly enableSudoCleanup?: boolean;
   readonly toolPaths?: WorkerCloudToolPaths;
   readonly native: WorkerConfigurationNative;
   readonly projects: readonly { readonly projectId: string; readonly nativeOverrides: WorkerConfigurationOverrides }[];
@@ -25,7 +26,7 @@ export type WorkerConfigurationFailure = {
   readonly phase: 'validate' | 'prepare' | 'apply' | 'stop' | 'persist'; readonly occurredAt: string;
 };
 export type WorkerConfigurationKey =
-  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'agentControlMode' | 'archiveSessions' | 'native' }
+  | { readonly kind: 'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'agentControlMode' | 'archiveSessions' | 'enableSudoCleanup' | 'native' }
   | { readonly kind: 'projectPreparation' | 'projectRemoval' | 'projectNative'; readonly projectId: string };
 export type WorkerConfigurationOutcome = {
   readonly key: WorkerConfigurationKey; readonly targetRevision: string;
@@ -100,6 +101,7 @@ export const parseWorkerConfigurationValue = (value: unknown, options: WorkerCon
   return { maxConcurrent: integer(data.maxConcurrent, 1), pollIntervalMs: integer(data.pollIntervalMs, 1, 2_147_483_647), recoveryLimit: integer(data.recoveryLimit, 0), preferPlatformSpecificTasks: boolean(data.preferPlatformSpecificTasks),
     ...(toolPathsSupported ? { toolPaths: parseWorkerCloudToolPaths(knownToolPaths(data.toolPaths)) } : {}),
     ...(archiveSessionsSupported ? { archiveSessions: boolean(data.archiveSessions) } : {}),
+    ...(Object.hasOwn(data, 'enableSudoCleanup') ? { enableSudoCleanup: boolean(data.enableSudoCleanup) } : {}),
     ...(controlModeSupported ? { agentControlMode: data.agentControlMode === null ? null : choice(data.agentControlMode, ['herdr', 'web'] as const) } : {}),
     native: parseConfigurationNative(data.native), projects };
 };
@@ -117,14 +119,14 @@ const outcome = (value: unknown, controlModeSupported: boolean, archiveSessionsS
   if (!projectKind && Object.hasOwn(rawKey, 'projectId')) return malformed();
   const key: WorkerConfigurationKey = projectKind
     ? { kind: choice(rawKey.kind, ['projectPreparation', 'projectRemoval', 'projectNative']), projectId: id(rawKey.projectId) }
-    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', ...(controlModeSupported ? ['agentControlMode' as const] : []), ...(archiveSessionsSupported ? ['archiveSessions' as const] : [])]) };
+    : { kind: choice(rawKey.kind, ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'enableSudoCleanup', 'native', ...(controlModeSupported ? ['agentControlMode' as const] : []), ...(archiveSessionsSupported ? ['archiveSessions' as const] : [])]) };
   let appliedValue: WorkerConfigurationOutcome['appliedValue'] = null;
   if (data.appliedValue !== null) {
     switch (key.kind) {
       case 'maxConcurrent': appliedValue = integer(data.appliedValue, 1); break;
       case 'pollIntervalMs': appliedValue = integer(data.appliedValue, 1, 2_147_483_647); break;
       case 'recoveryLimit': appliedValue = integer(data.appliedValue, 0); break;
-      case 'preferPlatformSpecificTasks': case 'archiveSessions': appliedValue = boolean(data.appliedValue); break;
+      case 'preferPlatformSpecificTasks': case 'archiveSessions': case 'enableSudoCleanup': appliedValue = boolean(data.appliedValue); break;
       case 'agentControlMode': appliedValue = choice(data.appliedValue, ['herdr', 'web'] as const); break;
       case 'native': case 'projectNative': appliedValue = parseConfigurationNative(data.appliedValue); break;
       case 'projectPreparation': case 'projectRemoval': if (data.appliedValue !== true) return malformed(); appliedValue = true;
@@ -146,7 +148,7 @@ export const parseWorkerConfiguration = (value: unknown, options: WorkerConfigur
   }
   if (data.observation !== null) {
     const raw = fields(data.observation, ['baseRevision', 'desiredRevision', 'items', 'reportedAt'], false, true);
-    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode', 'archiveSessions', 'projectPreparation', 'projectRemoval', 'projectNative'];
+    const kinds = ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup', 'projectPreparation', 'projectRemoval', 'projectNative'];
     const desiredRevision = parseConfigurationRevision(raw.desiredRevision);
     const items = array(raw.items, item => {
       const entry = record(item), key = record(entry.key);

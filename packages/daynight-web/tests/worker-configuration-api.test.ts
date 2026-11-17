@@ -40,6 +40,17 @@ describe('Worker configuration wire format', () => {
       expect(() => parseWorkerConfiguration(observed([{ ...outcome({ kind: 'preferPlatformSpecificTasks' }, false), appliedValue: invalid } as unknown as WorkerConfigurationOutcome]))).toThrow('invalid response');
     }
   });
+  it('recognizes optional sudo target and strictly validates its observation', () => {
+    expect(parseWorkerConfiguration(configurationResource()).desired!.value).not.toHaveProperty('enableSudoCleanup');
+    for (const enabled of [false, true]) {
+      expect(parseWorkerConfiguration(configurationResource('1', { ...configurationValue(), enableSudoCleanup: enabled })).desired!.value.enableSudoCleanup).toBe(enabled);
+      expect(parseWorkerConfiguration(observed([outcome({ kind: 'enableSudoCleanup' }, enabled)])).observation!.items[0]!.appliedValue).toBe(enabled);
+    }
+    for (const invalid of [null, 0, 'false']) {
+      expect(() => parseWorkerConfiguration({ ...configurationResource(), desired: { ...configurationResource().desired, value: { ...configurationValue(), enableSudoCleanup: invalid } } })).toThrow();
+      expect(() => parseWorkerConfiguration(observed([outcome({ kind: 'enableSudoCleanup' }, invalid as unknown as boolean)]))).toThrow();
+    }
+  });
   it('preserves inheritance, explicit null/empty args and canonical Project ordering', () => {
     const resource = configurationResource('1', { ...configurationValue(), native: { agent: 'claude', model: '\uFEFF', args: ['--a', 'spaces allowed'] }, projects: [
       { projectId: workerId(9).toUpperCase(), nativeOverrides: { args: [], model: null } }, { projectId: workerId(3), nativeOverrides: {} },

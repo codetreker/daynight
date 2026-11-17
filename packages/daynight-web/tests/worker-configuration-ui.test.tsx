@@ -29,7 +29,7 @@ const install = (handler: (url: string, init: RequestInit) => Response | Promise
 };
 type ConfigurationFixtureProps = Omit<Parameters<typeof WorkerConfigurationPanel>[0], 'state' | 'confirming' | 'visible'>;
 const ConfigurationFixture = (props: ConfigurationFixtureProps) => {
-  const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled });
+  const state = useWorkerConfiguration(props.workerId, { readEnabled: props.readEnabled, ...(props.platform === undefined ? {} : { platform: props.platform }) });
   return <WorkerConfigurationPanel {...props} visible state={state} confirming={false} />;
 };
 const mount = (props: Partial<ConfigurationFixtureProps> = {}) => renderWithLocale(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} {...props} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
@@ -65,6 +65,65 @@ describe('Worker configuration form', () => {
     mount({ toolPaths: toolPathTelemetry() }); await flush(); change('Concurrent task limit', '4'); await advance();
     expect(input()).toHaveValue('4'); expect(screen.getByRole('alert')).toHaveTextContent('invalid configuration response');
     expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  });
+  it('saves sudo cleanup without an application report, preserves unknown source, and discards edits', async () => {
+    const value = { ...configurationValue(), enableSudoCleanup: false, future: { number: 'unchanged' } };
+    let resource = observed('1', value, globals(value));
+    const writes: string[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: body.value } };
+      }
+      return configurationResponse(resource);
+    });
+    mount({ platform: 'linux', online: false }); await flush();
+    const toggle = screen.getByRole('checkbox', { name: 'Enable sudo cleanup' });
+    expect(toggle).not.toBeChecked(); expect(toggle).toBeEnabled();
+    expect(document.getElementById('feedback-enableSudoCleanup')).toHaveTextContent('Awaiting application');
+    fireEvent.click(toggle); save(); await flush();
+    expect(JSON.parse(writes[0]!).value).toMatchObject({ enableSudoCleanup: true, future: { number: 'unchanged' } });
+    expect(document.getElementById('feedback-enableSudoCleanup')).toHaveTextContent('Awaiting application');
+    fireEvent.click(toggle); fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(toggle).toBeChecked();
+  });
+  it.each([['windows', 'Sudo cleanup is not supported on Windows.'], [undefined, 'Waiting to identify the Worker platform.']] as const)('disables sudo cleanup on %s while other settings remain editable', async (platform, message) => {
+    install(() => configurationResponse(configurationResource('1', { ...configurationValue(), enableSudoCleanup: false })));
+    mount(platform === undefined ? {} : { platform }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeDisabled();
+    expect(screen.getByText(message)).toBeInTheDocument();
+    change('Concurrent task limit', '3'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('preserves a sudo draft when the platform becomes unavailable and saves only other edits', async () => {
+    let resource = configurationResource('1', { ...configurationValue(), enableSudoCleanup: false });
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value); resource = configurationResource('2', body.value);
+      }
+      return configurationResponse(resource);
+    });
+    const view = mount({ platform: 'linux' }); await flush();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' }));
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="windows" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, enableSudoCleanup: false });
+    view.rerender(<ConfigurationFixture workerId={workerId(1)} readEnabled online tasks={[]} platform="linux" />);
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
+  it('does not add the absent sudo field when saving other settings', async () => {
+    let body = '';
+    install((_url, init) => { if (init.method === 'PUT') body = String(init.body); return configurationResponse(configurationResource(init.method === 'PUT' ? '2' : '1', { ...configurationValue(), maxConcurrent: init.method === 'PUT' ? 3 : 2 })); });
+    mount({ platform: 'macos' }); await flush();
+    expect(screen.getByRole('checkbox', { name: 'Enable sudo cleanup' })).toBeDisabled();
+    expect(screen.getByText('The service does not yet provide this setting.')).toBeInTheDocument();
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(JSON.parse(body).value).not.toHaveProperty('enableSudoCleanup');
   });
   it('edits the archive target and reports the observed value independently', async () => {
     const value = { ...configurationValue(), archiveSessions: true };
