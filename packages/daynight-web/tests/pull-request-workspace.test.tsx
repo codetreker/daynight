@@ -105,9 +105,11 @@ describe('pull request workspace', () => {
       webhook: { ...base.webhook, error: scene === 'errors' ? syncError : null },
     });
     mockReads(url => url.pathname.endsWith('/github') ? state : page([]));
-    renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    const { container } = renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
     const heading = scene === 'not_connected' ? 'GitHub is not connected' : scene === 'initializing' ? 'Initial synchronization in progress' : 'No pull requests';
     expect(await screen.findByRole('heading', { name: heading })).toBeVisible();
+    await waitFor(() => expect(container.querySelector('.pr-connected')?.textContent ?? null).toBe(state.connection === 'connected' ? 'Connected' : null));
+    expect(container.querySelector('.pr-sync-status .pr-connected')).toBeNull();
     if (scene === 'not_connected' || scene === 'initializing') expect(screen.getByRole('option', { name: 'Active' })).toBeInTheDocument();
     else expect(screen.getByRole('option', { name: 'Active · 0' })).toBeInTheDocument();
     if (scene === 'errors') {
@@ -148,6 +150,21 @@ describe('pull request workspace', () => {
     });
   });
 
+  it('updates the connection label with the global locale without changing the title semantics', async () => {
+    mockReads(url => url.pathname.endsWith('/github') ? status({ syncEnabled: false }) : page([summary()]));
+    const view = renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    const label = await screen.findByText('Connected');
+    expect(label.closest('.pr-title-line')).toContainElement(screen.getByRole('heading', { name: 'Pull requests', level: 2 }));
+    expect(label.closest('h2')).toBeNull();
+    expect(screen.getByText(/Sync is off/)).toBeVisible();
+    view.setLocale('zh-CN');
+    expect(screen.getByText('已连接')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'PR 列表', level: 2 })).toBeVisible();
+    expect(screen.queryByText('Connected')).toBeNull();
+    view.setLocale('en');
+    expect(screen.getByText('Connected')).toBeVisible();
+  });
+
   it('keeps independent historical diagnostics alongside the single primary notice', async () => {
     const error = { code: 'network', message: 'safe diagnostic', at: time }, base = status();
     mockReads(url => url.pathname.endsWith('/github') ? status({ syncEnabled: false, serviceAvailable: false, connection: 'unavailable', poll: { ...base.poll, error }, webhook: { ...base.webhook, error } }) : page([summary()]));
@@ -165,6 +182,7 @@ describe('pull request workspace', () => {
     const { container } = renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
     await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
     expect(container.querySelector('.pr-sync-status .pr-status-note')).toBeNull();
+    expect(container.querySelector('.pr-connected')).toBeNull();
   });
 
   it('keeps saved records during list failure, retries status separately, and retains the return cursor on an empty page', async () => {
@@ -185,6 +203,7 @@ describe('pull request workspace', () => {
     expect(await screen.findByText('Could not read pull requests. Previously saved data has not been deleted.')).toBeVisible();
     expect(screen.getByRole('button', { name: '#117 Preserve 117, Open' })).toBeVisible();
     expect(screen.getByText('Could not read synchronization status.')).toBeVisible();
+    expect(screen.getByText('Connected')).toBeVisible();
     failed = false;
     fetch.mockImplementation(async (input: string) => response(input.endsWith('/github') ? status() : page([], { previousCursor: 'first-page' })));
     fireEvent.click(screen.getAllByRole('button', { name: 'Retry' })[0]!);

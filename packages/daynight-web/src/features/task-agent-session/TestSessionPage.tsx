@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import { useLayoutEffect, useState, useSyncExternalStore } from 'react';
 import { authRequestsPaused, subscribeAuthPause } from '../../api/client';
 import { createTestSessionApi } from '../../api/sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -9,8 +9,9 @@ import { useTestSessionListMessages } from './test-session-list-messages';
 import { followSessionLink } from './TestSessionListPage';
 import { getBotDeletionCoordinator } from '../bots/deletion-coordinator';
 import { BotDeletionStatus } from '../bots/BotDeletionStatus';
+import { useBotDeletionChecks } from '../bots/useBotDeletionChecks';
 
-export function TestSessionPage({ sessionId }: { readonly sessionId: string }) {
+export function TestSessionPage({ sessionId, readEnabled }: { readonly sessionId: string; readonly readEnabled: boolean }) {
   const scope = useTaskCacheScope();
   const coordinator = getBotDeletionCoordinator(scope);
   const records = useSyncExternalStore(coordinator.subscribe, coordinator.snapshot);
@@ -39,11 +40,7 @@ export function TestSessionPage({ sessionId }: { readonly sessionId: string }) {
     const abort = () => next.invalidate(); scope.signal.addEventListener('abort', abort, { once: true });
     return () => { unsubscribe(); unsubscribePause(); clearInterval(timer); scope.signal.removeEventListener('abort', abort); next.close(); };
   }, [scope, sessionId, coordinator, admission, record]);
-  useEffect(() => {
-    if (!record || !['unknown', 'pending', 'failed'].includes(record.phase)) return;
-    const timer = setInterval(() => { if (document.visibilityState === 'visible' && !record.busy) void coordinator.check(record.id); }, 5_000);
-    return () => clearInterval(timer);
-  }, [coordinator, record]);
+  const deletionChecks = useBotDeletionChecks(coordinator, readEnabled, record ? [record] : [], sessionId);
   const client = admission === 'allowed' && !scope.isInvalidated && owned?.scope === scope && owned.sessionId === sessionId ? owned.client : null;
-  return <section className="test-session-page"><a className="test-session-back" href="/test-sessions" onClick={followSessionLink}>‹ {listMessages.back}</a><h1>{listMessages.session}</h1>{admission !== 'allowed' && record ? <BotDeletionStatus record={record} coordinator={coordinator} enabled={!scope.isInvalidated && !authRequestsPaused()} /> : client ? <SessionView userId={scope.userId} client={client} active current /> : <p role="status">{m.loading}</p>}</section>;
+  return <section className="test-session-page"><a className="test-session-back" href="/test-sessions" onClick={followSessionLink}>‹ {listMessages.back}</a><h1>{listMessages.session}</h1>{admission !== 'allowed' && record ? <BotDeletionStatus record={record} coordinator={coordinator} onCheck={deletionChecks.check} enabled={readEnabled && !scope.isInvalidated && !authRequestsPaused()} /> : client ? <SessionView userId={scope.userId} client={client} active current /> : <p role="status">{m.loading}</p>}</section>;
 }

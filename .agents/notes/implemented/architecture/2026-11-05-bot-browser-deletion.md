@@ -32,6 +32,8 @@ for identity admission. A later check is a new admitted action, and a retry cann
 submit a different deletion observed during its original operation. Observing a
 different deletion retires the old operation so its late result cannot alter the
 new record or hold its busy state.
+The [independent check lifetime decision](2026-11-17-bot-deletion-check-lifetime.md)
+separates page-owned observation from account-owned deletion settlement.
 
 Confirmed deletion invalidates the target's mounted and retained browser state.
 The account coordinator clears target storage and display preferences even when

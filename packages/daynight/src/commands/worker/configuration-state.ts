@@ -45,6 +45,7 @@ export const configurationTarget = (cache: WorkerConfigurationCache, key: Worker
   if (desired === null) return null;
   if (key.kind === "agentControlMode") return desired.value.agentControlMode === undefined ? null : desired.value.agentControlMode;
   if (key.kind === "archiveSessions") return desired.value.archiveSessions ?? null;
+  if (key.kind === "enableSudoCleanup") return desired.value.enableSudoCleanup ?? null;
   if (key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "native") return desired.value[key.kind];
   if (!("projectId" in key)) throw new TypeError("Worker configuration project key is invalid.");
   const projectId = key.projectId;
@@ -85,9 +86,9 @@ export const pruneConfigurationRetained = (cache: WorkerConfigurationCache, runn
 
 export const transitionConfigurationDesired = (
   cache: WorkerConfigurationCache, received: ReceivedWorkerDesired | null, localMode: AgentControlMode,
-  runningRecordIds: ReadonlySet<string>, newId: () => string,
+  runningRecordIds: ReadonlySet<string>, newId: () => string, previousOverride?: WorkerCloudDesired | null, preserveRetained = false,
 ): WorkerConfigurationCache => {
-  const previousDesired = configurationDesired(cache), desired = received?.known ?? null;
+  const previousDesired = previousOverride === undefined ? configurationDesired(cache) : previousOverride, desired = received?.known ?? null;
   let hidden = cache.hiddenCapabilitySources;
   if (previousDesired !== null && desired !== null) {
     const previous = desiredCapabilitySources(cache.authority.desiredJson!), current = desiredCapabilitySources(received!.json);
@@ -146,12 +147,13 @@ export const transitionConfigurationDesired = (
   for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"] as const) add({ kind });
   if (configurationSupportsMode(desired)) add({ kind: "agentControlMode" });
   if (desired.value.archiveSessions !== undefined) add({ kind: "archiveSessions" });
+  if (desired.value.enableSudoCleanup !== undefined) add({ kind: "enableSudoCleanup" });
   for (const project of desired.value.projects) {
     add({ kind: "projectPreparation", projectId: project.projectId }, !previousSelected.has(project.projectId));
     add({ kind: "projectNative", projectId: project.projectId });
   }
   for (const projectId of removals) add({ kind: "projectRemoval", projectId });
-  return pruneConfigurationRetained({ ...next, currentItems }, runningRecordIds);
+  return preserveRetained ? { ...next, currentItems } : pruneConfigurationRetained({ ...next, currentItems }, runningRecordIds);
 };
 
 const latestFailures = (cache: WorkerConfigurationCache): ReadonlyMap<string, TrackedConfigurationItem> => {
@@ -215,7 +217,8 @@ const removalSeverity = (item: TrackedConfigurationItem): number => item.value.s
 
 export const projectConfigurationReport = (cache: WorkerConfigurationCache, options: ConfigurationProjectionOptions): ConfigurationProjection => {
   const desired = configurationDesired(cache);
-  const bootstrap = desired === null && options.bootstrap !== null ? parseWorkerCloudValue(options.bootstrap, true, configurationCapabilities(options.bootstrap)) : null;
+  const bootstrapSource = options.bootstrap === null ? null : (({ enableSudoCleanup: _sudo, ...rest }) => rest)(options.bootstrap);
+  const bootstrap = desired === null && bootstrapSource !== null ? parseWorkerCloudValue(bootstrapSource, true, configurationCapabilities(bootstrapSource)) : null;
   const base: WorkerCloudReport = {
     controlModeBootstrap: bootstrap !== null && bootstrap.agentControlMode !== undefined ? bootstrap.agentControlMode : options.localMode,
     toolPathsBootstrap: bootstrap !== null && bootstrap.toolPaths !== undefined ? parseToolPathsBootstrap(bootstrap.toolPaths) : options.localTools,
@@ -258,10 +261,10 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
   let nextCursor = cache.projectionCursor;
   const add = (candidate: typeof candidates[number]): boolean => {
     const comma = selected.length === 0 ? 0 : 1;
-    const nextNonMode = nonModeCount + (candidate.item.value.key.kind === "agentControlMode" || candidate.item.value.key.kind === "archiveSessions" ? 0 : 1);
+    const nextNonMode = nonModeCount + (candidate.item.value.key.kind === "agentControlMode" || candidate.item.value.key.kind === "archiveSessions" || candidate.item.value.key.kind === "enableSudoCleanup" ? 0 : 1);
     const nextObservationBytes = observationBytes + storageBytes(candidate.encoded) + comma;
     let nextRequestBytes = requestBytes + Buffer.byteLength(candidate.encoded, "utf8") + comma;
-    if (selected.length >= (1025 + Number(configurationSupportsMode(desired)) + Number(desired!.value.archiveSessions !== undefined)) || nextNonMode > 1025 || nextObservationBytes > 4 * 1_048_576) return false;
+    if (selected.length >= (1025 + Number(configurationSupportsMode(desired)) + Number(desired!.value.archiveSessions !== undefined) + Number(desired!.value.enableSudoCleanup !== undefined)) || nextNonMode > 1025 || nextObservationBytes > 4 * 1_048_576) return false;
     if (nextRequestBytes > WORKER_CONFIGURATION_REPORT_BYTES && options.telemetry !== undefined) {
       const trial = { ...base, observation: { ...base.observation!, items: [...selected.map(current => current.value), candidate.value] } };
       nextRequestBytes = Buffer.byteLength(stringifyApiJson(prepareWorkerReport({ ...options.telemetry, configuration: trial }, WORKER_CONFIGURATION_REPORT_BYTES).value), "utf8");

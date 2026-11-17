@@ -2,8 +2,11 @@
 .pull-request-workspace .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .project-section-heading.pr-heading { align-items: center; }
 .pr-heading { justify-content: space-between; gap: 14px; }
+.pr-title-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 10px; min-width: 0; }
+.pr-connected { color: var(--task-done-ink); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .pr-heading .button { flex: none; }
 .pr-sync-status { display: flex; align-items: center; gap: 7px 12px; flex-wrap: wrap; font-size: 10px; color: #556176; margin: -5px 0 18px; min-height: 18px; }
+.pr-sync-status:empty { display: none; }
 .pr-sync-status a, .pr-status-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .pr-status-note { background: #fffaf0; border: 1px solid #ecdfc8; border-radius: 7px; padding: 12px 14px; line-height: 1.9; color: #805b27; margin: 0 0 16px; font-size: 11px; display: block; width: 100%; overflow-wrap: anywhere; }
 .pr-sync-status .pr-status-note { margin: 0; }

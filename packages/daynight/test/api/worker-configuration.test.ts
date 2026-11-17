@@ -62,6 +62,18 @@ describe("Worker cloud configuration protocol", () => {
     expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items }, true, true)).toThrow(ProtocolError);
     expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items.slice(0, 1025), { ...item, key: { kind: "agentControlMode" }, appliedValue: "web" }] }, true, true).items).toHaveLength(1026);
   });
+  it("reserves separate slots for mode, sudo and archive without expanding ordinary items", () => {
+    const items = Array.from({ length: 1026 }, (_, n) => ({ ...item, key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, appliedValue: null, state: "pending" }));
+    const extensions = [
+      { ...item, key: { kind: "agentControlMode" }, appliedValue: "web" },
+      { ...item, key: { kind: "enableSudoCleanup" }, appliedValue: false },
+      { ...item, key: { kind: "archiveSessions" }, appliedValue: true },
+    ];
+    const capabilities = { controlMode: true, toolPaths: false, archiveSessions: true };
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items.slice(0, 1025), ...extensions] }, true, capabilities).items).toHaveLength(1028);
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items.slice(0, 1025), ...extensions.slice(0, 2)] }, true, true).items).toHaveLength(1027);
+    expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items, ...extensions] }, true, capabilities)).toThrow(ProtocolError);
+  });
   it("enforces byte, scalar, Project and observation limits before producing reports", () => {
     const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
     const projects = Array.from({ length: 129 }, (_, n) => ({ projectId: id(n), nativeOverrides: {} }));

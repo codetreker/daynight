@@ -18,7 +18,8 @@ export type BotDeletionRecord = {
 };
 type Cache = Pick<BotSessionCache, 'blockBot' | 'unblockBot' | 'invalidateBot'>;
 type Saved = { readonly record: BotDeletionRecord; readonly rejected: boolean };
-type Operation = { readonly revision: number; readonly request: DeleteBotInput | null; readonly controller: AbortController; promise: Promise<void> };
+type OperationFields = { readonly revision: number; readonly request: DeleteBotInput | null; readonly controller: AbortController; promise: Promise<void> };
+type Operation = OperationFields & ({ readonly kind: 'mutation' } | { readonly kind: 'check'; readonly owner: AbortSignal; readonly onAbort: () => void });
 const sameRequest = (left: DeleteBotInput | null, right: DeleteBotInput | null): boolean => left === right || left !== null && right !== null && left.deletionId === right.deletionId && left.ifVersion === right.ifVersion;
 const owners = new WeakMap<TaskCacheScope, BotDeletionCoordinator>();
 const cleared = new Set<string>();
@@ -52,6 +53,7 @@ export class BotDeletionCoordinator {
     for (const { record } of this.records.values()) this.applyDisplaySnapshots(record);
     scope.signal.addEventListener('abort', () => {
       this.records.clear(); this.view = []; clearPendingBotDeletions(scope.userId);
+      for (const [id, operation] of this.operations) if (operation.kind === 'check') this.retireCheck(id, operation);
       for (const listener of this.listeners) listener();
       this.caches.clear();
     }, { once: true });
@@ -140,12 +142,24 @@ export class BotDeletionCoordinator {
   private run(id: string, request: DeleteBotInput | null, action: (operation: Operation) => Promise<void>): Promise<void> {
     const existing = this.operations.get(id); if (existing) return existing.promise;
     if (!this.admitted()) return Promise.resolve();
-    const operation: Operation = { revision: authRequestsPauseRevision(), request, controller: new AbortController(), promise: Promise.resolve() };
+    const operation: Operation = { kind: 'mutation', revision: authRequestsPauseRevision(), request, controller: new AbortController(), promise: Promise.resolve() };
     operation.promise = Promise.resolve().then(() => action(operation)).finally(() => {
       if (this.operations.get(id) === operation) this.operations.delete(id);
     });
     this.operations.set(id, operation);
     return operation.promise;
+  }
+  private retireCheck(id: string, operation: Extract<Operation, { kind: 'check' }>): void {
+    if (this.operations.get(id) !== operation) return;
+    this.operations.delete(id);
+    operation.owner.removeEventListener('abort', operation.onAbort);
+    operation.controller.abort();
+    // Aborting can synchronously reenter through listeners. Never clear a new
+    // operation's busy state or overwrite the operation it installed.
+    if (!this.operations.has(id)) {
+      const current = this.records.get(id)?.record;
+      if (current?.busy) this.save({ ...current, busy: false });
+    }
   }
   begin = (bot: BotDefinition): Promise<void> => {
     if (!this.admitted() || bot.ownerUserId !== this.scope.userId || this.operations.has(bot.id)) return Promise.resolve();
@@ -172,9 +186,10 @@ export class BotDeletionCoordinator {
     const superseded = operation !== undefined && !sameRequest(operation.request, request);
     if (superseded) {
       this.operations.delete(bot.id);
+      if (operation.kind === 'check') operation.owner.removeEventListener('abort', operation.onAbort);
       operation.controller.abort(new DOMException('Deletion operation superseded.', 'AbortError'));
     }
-    this.save({ id: bot.id, name: previous?.name ?? '', sessionId: previous?.sessionId ?? null, workerId: bot.workerId, request, result: bot, phase: phase(bot), busy: superseded ? false : previous?.busy ?? false, error: null }, false);
+    this.save({ id: bot.id, name: previous?.name ?? '', sessionId: previous?.sessionId ?? null, workerId: bot.workerId, request, result: bot, phase: phase(bot), busy: superseded ? this.operations.has(bot.id) : previous?.busy ?? false, error: null }, false);
   }
   /** A rejected replay cannot settle an earlier request whose response was lost. */
   private async submit(id: string, request: DeleteBotInput, operation: Operation, earlierUnknown = false): Promise<void> {
@@ -232,14 +247,38 @@ export class BotDeletionCoordinator {
       return false;
     }
   }
-  check = (id: string): Promise<void> => this.run(id, this.records.get(id)?.record.request ?? null, async operation => {
-    if (!this.current(id, operation)) return;
-    const current = this.records.get(id)?.record; if (!current) return;
-    this.save({ ...current, busy: true });
-    try { await this.read(id, operation); } finally {
-      if (this.current(id, operation)) { const latest = this.records.get(id)?.record; if (latest) this.save({ ...latest, busy: false }); }
+  check = (id: string, owner: AbortSignal): Promise<void> => {
+    if (owner.aborted || !this.admitted()) return Promise.resolve();
+    let existing = this.operations.get(id);
+    while (existing) {
+      if (existing.kind === 'mutation') return Promise.resolve();
+      if (existing.owner === owner) return existing.promise;
+      this.retireCheck(id, existing);
+      if (owner.aborted || !this.admitted()) return Promise.resolve();
+      existing = this.operations.get(id);
     }
-  });
+    const operation: Extract<Operation, { kind: 'check' }> = {
+      kind: 'check', owner, revision: authRequestsPauseRevision(), request: this.records.get(id)?.record.request ?? null,
+      controller: new AbortController(), promise: Promise.resolve(), onAbort: () => this.retireCheck(id, operation),
+    };
+    operation.promise = Promise.resolve().then(async () => {
+      if (!this.current(id, operation)) return;
+      const current = this.records.get(id)?.record; if (!current) return;
+      this.save({ ...current, busy: true });
+      await this.read(id, operation);
+    }).finally(() => {
+      operation.owner.removeEventListener('abort', operation.onAbort);
+      if (this.current(id, operation)) {
+        this.operations.delete(id);
+        const latest = this.records.get(id)?.record;
+        if (latest?.busy && !this.operations.has(id)) this.save({ ...latest, busy: false });
+      }
+    });
+    this.operations.set(id, operation);
+    owner.addEventListener('abort', operation.onAbort, { once: true });
+    if (owner.aborted) this.retireCheck(id, operation);
+    return operation.promise;
+  };
   retry = (id: string): Promise<void> => this.run(id, this.records.get(id)?.record.request ?? null, async operation => {
     if (!this.current(id, operation)) return;
     const current = this.records.get(id)?.record;

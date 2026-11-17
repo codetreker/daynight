@@ -48,6 +48,8 @@ macOS Herdr 的执行槽随原运行停止证明释放。确认停止、选择�
 
 `worktrees/migration.ts` 提供独立的显式转换入口：调用者持有既有实例所有权和仓库 gate，停止旧 Worker，并提供完整的清理调度、Web 与 Herdr 绑定。转换核对这些来源、旧 Git 注册和已发布清单；全部清单可靠发布并读回后才复核和解开旧 Worker 锁、移除关联的废弃 sidecar，再完整重枚举并发布格式标记。失败可按实际资源重试，冲突和读取失败保持可见；原 checkout 和冻结 cwd 不移动或改写。选中和保留的仓库在文件操作准入前完成转换；失败仅关闭对应仓库的文件 gate。转换不遍历 namespace 中的未知目录；只验证已有来源关联的 worktree，未关联目录保持原状且不阻断准备。非空且没有 Git 关联的目录不能凭清单获得删除授权。转换顺序与降级限制见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
 
+自动清理开始时从已提交的 appliedValue 与 actualSource 捕获 enableSudoCleanup 和真实 revision；缺席或尚未应用时只执行普通清理。文件系统阶段确认权限障碍后重新核验清单、目录身份和可访问的 Git 关联，再读取系统挂载清单并拒绝目标或其子树上的挂载；在已核验的仓库根目录通过 POSIX shell 删除原目标；root 使用 rm，其他用户使用 sudo -n，路径按单引号规则引用。普通清理的操作与句柄先收尾，shell 受原 Operation 预算与取消约束并等待关闭，再由普通 Git 清除原登记并重新观察。其他错误不触发提权；人工入口不接入该策略。整目录删除不保证最后移除 .git；部分失败后若 .git 已缺失、目录非空且原归属无法重新证明，后续重试保留错误与责任，不强行删除。进程内责任保持到命令收尾；非 root 的 sudo 在取消或超时后仍由原进程等待结束，不能以杀死父进程推断 root 子进程停止。挂载检查不能排除检查后外部并发挂载，强制重启后不提供新增跨进程互斥。取舍见[清理决策](../../.agents/notes/implemented/feature/2026-11-17-worker-sudo-cleanup.md)。
+
 历史执行可以保留已经交接的 cwd，同一 task 的后续 claim 也可以重用该目录。转换完整读取历史来源，按原 owner 关联 Web 终态清理完成记录，以及 Herdr 已确认资源删除或已核验的 never-started 退休记录；这些记录不证明当前目录缺席，也不授权重新删除。明确退休的历史绑定不占新清单的位置，仍有责任或证据不明的来源继续参与冲突检查。原锁、清单或来源身份与退休证据矛盾时保留错误；历史记录和残留调度不由转换器修改。
 
 ## 配置与目录
@@ -145,13 +147,13 @@ Worker instance lock 下的 `copilot-tool-materializer.ts` 在 `<workerDirectory
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
 
-configuration.json 使用 schemaVersion=7，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
+configuration.json 使用 schemaVersion=8，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
 
 | 模块 | 责任 |
 | --- | --- |
 | configuration-model.ts | 缓存、记录与捕获的完整类型、从原始目标派生的 known 视图及共用值规则 |
 | api/worker-configuration-source.ts | 配置专用源文本载体、已知路径投影、完整资源/回执解析与无损 JSON 语义比较 |
-| configuration-cache.ts | schema 7 严格校验、版本 1–4→5→6→7 显式升级与冻结编码 factory |
+| configuration-cache.ts | schema 8 严格校验、旧版本显式升级与冻结编码 factory |
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
 | configuration-persistence.ts | 初始化读取、串行冻结检查点、存储 readiness、I/O 重试及关闭所有权 |
@@ -161,11 +163,11 @@ configuration.json 使用 schemaVersion=7，保持单个 JSON 对象、原路径
 
 authority 保存本机 generation UUID、完整 desiredJson、applicationRevision 与 observationRevision；generation 不是服务端 epoch。desiredJson 是唯一持久目标，known 从同一源文本按已知路径严格派生。applicationRevision 标识最近已知目标变化，可以小于最新 desired.revision；currentItems 的必需已知项对应这个锚点。工具目标 revision、native/tool preparation 的比较与证明、confirmProjectPrepared、延后准备确认和新增移除 origin 均消费该锚点；报告 envelope 使用最新 desiredRevision，item 保留原 targetRevision。remoteObservation 单独存储最后一次明确 GET 的 {observationRevision,json}，可落后 authority.observationRevision，服务回退或 null 重置也保留此前快照，独立按其原 base/版本验证；receipt 不将本机新报告伪装成已读取的远端事实。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，retainedItems 保存原工作、停止、未知结果、失败或必要实际值。recordId 全局唯一，origin 保留原 generation、targetRevision 与 application/schema4 来源且不可改写；actualSource 独立表达真实来源，复用值不修改旧历史。schema4/successRevision:null 保留历史未知版本；nativeMode 不授予进程资格，blockedByRemovalId 必须同项目且无环。
 
-版本 1–4 经原结构转换并严格验证为 schema 5，再与既有 schema 5 一起转为 schema 6，最后转为 schema 7；正常运行只处理 7。schema 6 中此前未知的归档字段仅生成 pending/null，不制造已应用证据。已验证旧 desired 编码为 desiredJson，applicationRevision 取旧目标版本，无目标则均为 null；remoteObservation 为 null。原 identity、generation、recordId、origin、actualSource、失败预算、期限、游标和引用关系保持，applying 沿原重启规则恢复；版本 1 继续补 preferPlatformSpecificTasks:false 及已初始化目标的同名 pending/null 项。格式、scope 和损坏仍拒绝，历史结构超过新业务容量限制不清空责任。结果在原子保存前冻结，重试不重新生成身份，失败保留原文件与原错误。
+版本 1–4 经原结构转换并严格验证为 schema 5，再与既有 schema 5 一起转为 schema 6，随后与两个旧 schema 7 格式一同迁移到 schema 8。旧格式此前未知的 enableSudoCleanup 或 archiveSessions 在目标可见且对应记录不存在时重新建立核验；有可复用的已确认实际值时保留其来源，否则生成 pending/null，不制造已应用证据。重识别建立新的 generation 和当前 recordId，applicationRevision 指向当前目标；原工作及其历史记录保留。转换原子保存后才启动应用，正常运行只处理 8。从 schema 5 转换时，已验证旧 desired 编码为 desiredJson，applicationRevision 取旧目标版本，无目标则均为 null；remoteObservation 为 null。原 identity、保留记录的 generation、recordId、origin、actualSource、失败预算、期限、游标和引用关系保持，applying 沿原重启规则恢复；版本 1 继续补 preferPlatformSpecificTasks:false 及已初始化目标的同名 pending/null 项。格式、scope 和损坏仍拒绝，历史结构超过新业务容量限制不清空责任。结果在原子保存前冻结，重试不重新生成身份，失败保留原文件与原错误。
 
 读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；未知目标与远端观测位于普通 JSON 字符串内部，guard 不解释其中的任意数字或键。真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
 
-当前 origin、principal 与 workerId 验证通过的 GET 完整安装服务端 desired 与 observationRevision，包括较低计数与 null，回退建立围栏并保留原资源责任。同 revision 的目标按无损 JSON 语义比较双方可见内容；既有 mode/tool 能力投影在一方省略字段时不比较该字段，双方均提供时连同未知子树完整比较。缓存单独保留同版本被隐藏的已收字段源片段，不将其派生为当前应用；字段同版本重新出现时与该历史事实比较，版本变化或权威重置不能将其当作新目标。其他差异报协议错误。当前收到的源文本仍是权威，投影变化引起的已知目标变化正常重新协调。匹配捕获的 receipt 可更新目标，较低 desired revision 只结算其捕获而不回退新目标；回执暴露较低目标或观测计数时安排认证 GET，由该读取确认服务是否回退，读取失败继续保留读取责任。仅未知字段、更高 revision 或 updatedAt 变化更新源文本，保留 applicationRevision、generation、记录身份和 job；已知目标变化或认证权威回退才重新协调。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威并关闭新准入。job 的适用性核对原 recordId、内容和证明。
+当前 origin、principal 与 workerId 验证通过的 GET 完整安装服务端 desired 与 observationRevision，包括较低计数与 null，回退建立围栏并保留原资源责任。同 revision 的目标按无损 JSON 语义比较双方可见内容；mode、tool 和 archive 能力投影在一方省略字段时不比较该字段，双方均提供时连同未知子树完整比较。缓存单独保留同版本被隐藏的已收字段源片段，不将其派生为当前应用；字段同版本重新出现时与该历史事实比较，版本变化或权威重置不能将其当作新目标。其他差异报协议错误。当前收到的源文本仍是权威，投影变化引起的已知目标变化正常重新协调。匹配捕获的 receipt 可更新目标，较低 desired revision 只结算其捕获而不回退新目标；回执暴露较低目标或观测计数时安排认证 GET，由该读取确认服务是否回退，读取失败继续保留读取责任。仅未知字段、更高 revision 或 updatedAt 变化更新源文本，保留 applicationRevision、generation、记录身份和 job；已知目标变化或认证权威回退才重新协调。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威并关闭新准入。job 的适用性核对原 recordId、内容和证明。
 
 配置 GET、普通 report receipt 及 prompts 联合 receipt 使用显式 Received 包装；完整 JSON 先经既有源工具校验语法、重复解码键和深度，再只提取已知路径调用原严格解析器。未知数字不进入普通 number；native/projects/overrides/toolPaths 中的未知兄弟留在 desired 原文。远端未知 observation kind 留在 observationJson，不进入本机账本或上报。对象比较忽略成员顺序，数组保留顺序，数字按符号、有效数字串及 BigInt 十进制指数比较，不展开巨大指数。该配置局部机制不修改全局 API serializer。
 
