@@ -7,7 +7,8 @@
 .bot-list-heading h1 { font-size: 21px; }
 .bot-create, .bot-refresh { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 9px; }
 .bot-create:is(:hover, :focus-visible)::after, .bot-refresh:is(:hover, :focus-visible)::after { content: attr(aria-label); position: absolute; z-index: 1; top: calc(100% + 4px); right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); font-size: 12px; font-weight: 400; pointer-events: none; }
-.bot-list-heading .bot-create { border: 1px solid var(--line); background: #fff; font-size: 24px; font-weight: 400; }
+.bot-list-heading .bot-create { border: 1px solid var(--line); background: #fff; }
+.bot-create svg { width: 18px; height: 18px; }
 .bot-search { display: flex; align-items: center; gap: 8px; padding: 0 10px; margin: 0 4px 12px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--muted); }
 .bot-search svg { flex: none; width: 16px; height: 16px; }
 .bot-search input { width: 100%; min-width: 0; padding: 10px 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; }
