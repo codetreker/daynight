@@ -26,7 +26,7 @@ func TestGitHubResourcesShareProjectSnapshot(t *testing.T) {
 		}
 		mustQueryExec(t, database, `UPDATE project_github SET revision=2 WHERE project_id=$1`, project.ID)
 		mustQueryExec(t, database, `INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,2,2,'url','second','open',false,'main','sha',now(),now(),now(),2)`, project.ID)
-		counts, err := scope.GitHubDAO().PullRequestCounts(ctx, project.ID)
+		counts, err := scope.GitHubDAO().PullRequestCounts(ctx, GitHubPRCountsQuery{ProjectID: project.ID})
 		if err != nil {
 			return err
 		}
@@ -46,7 +46,7 @@ func TestGitHubResourcesShareProjectSnapshot(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		counts, err := scope.GitHubDAO().PullRequestCounts(ctx, project.ID)
+		counts, err := scope.GitHubDAO().PullRequestCounts(ctx, GitHubPRCountsQuery{ProjectID: project.ID})
 		if err != nil {
 			return err
 		}

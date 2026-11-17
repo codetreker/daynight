@@ -13,7 +13,7 @@ import { botDefinition, botError, botId, botResponse, BOT_USER } from './helpers
 const render = createLocaleRender('en');
 const createTestSessionApi = sessions.createTestSessionApi;
 const scopes: ReturnType<typeof createTaskCacheScope>[] = [];
-afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); sessionStorage.clear(); });
+afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); sessionStorage.clear(); localStorage.clear(); });
 function fixture() {
   const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   const coordinator = getBotDeletionCoordinator(scope);
@@ -127,6 +127,44 @@ it('clears only the revoked independent Session storage and never restores its o
   await act(async () => { await f.coordinator.check(f.bot.id); });
   expect(screen.queryByRole('textbox')).toBeNull(); expect(screen.queryByText(`Message ${f.binding.botId}`)).toBeNull();
   expect(f.apiFactory).toHaveBeenCalledOnce();
+});
+
+
+it('clears only the revoked independent Session storage and refuses its old URL opened after completion', async () => {
+  const f = fixture(); const original = render(f.element()); const client = await restoredClient(f);
+  act(() => client.setDraft('delete this draft'));
+  vi.mocked(f.api.command).mockRejectedValue(new Error('receipt unknown'));
+  await act(async () => { await expect(client.send('delete this draft')).rejects.toThrow('receipt unknown'); });
+  const keys = Object.keys(sessionStorage).filter(key => key.includes(f.binding.sessionId));
+  expect(keys.some(key => key.includes('session-draft'))).toBe(true);
+  expect(keys.some(key => key.includes('session-operations'))).toBe(true);
+  const unrelated = [`daynight:session-draft:${BOT_USER}:test:${f.other.binding.sessionId}:test:other`, `daynight:session-draft:${BOT_USER}:task:other`];
+  for (const key of unrelated) sessionStorage.setItem(key, 'keep');
+  const displayKey = (sessionId: string) => `daynight.web.session.display.v1:${JSON.stringify([BOT_USER, sessionId])}`;
+  localStorage.setItem(displayKey(f.binding.sessionId), '"standard"');
+  localStorage.setItem(displayKey(f.other.binding.sessionId), '"conversation"');
+  original.unmount();
+  await act(async () => { await f.coordinator.begin(f.bot); });
+  expect(keys.every(key => sessionStorage.getItem(key) !== null)).toBe(true);
+  act(() => f.coordinator.observe({ id: f.bot.id, workerId: f.bot.workerId, version: '2', deletion: { deletionId: f.coordinator.snapshot()[0]!.request!.deletionId, requestedVersion: '1', workerCleanup: { state: 'completed', code: null }, serverCleanup: { state: 'completed', code: null } } }));
+  expect(f.coordinator.sessionAdmission(f.binding.sessionId)).toBe('revoked');
+  expect(keys.every(key => sessionStorage.getItem(key) === null)).toBe(true);
+  expect(localStorage.getItem(displayKey(f.binding.sessionId))).toBeNull();
+  expect(unrelated.map(key => sessionStorage.getItem(key))).toEqual(['keep', 'keep']);
+  expect(localStorage.getItem(displayKey(f.other.binding.sessionId))).toBe('"conversation"');
+  const reopened = render(f.element());
+  expect(screen.queryByRole('textbox')).toBeNull(); expect(screen.queryByText(`Message ${f.binding.botId}`)).toBeNull();
+  expect(f.apiFactory).toHaveBeenCalledOnce();
+  const restored = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(restored);
+  reopened.rerender(f.element(f.binding.sessionId, restored));
+  expect(getBotDeletionCoordinator(restored).sessionAdmission(f.binding.sessionId)).toBe('revoked');
+  expect(screen.queryByRole('textbox')).toBeNull(); expect(screen.queryByText(`Message ${f.binding.botId}`)).toBeNull();
+  expect(f.apiFactory).toHaveBeenCalledOnce();
+  reopened.rerender(f.element(f.other.binding.sessionId, restored));
+  await screen.findByText(`Message ${f.other.binding.botId}`);
+  expect(f.other.api.current).toHaveBeenCalled();
+  expect(unrelated.map(key => sessionStorage.getItem(key))).toEqual(['keep', 'keep']);
+  expect(localStorage.getItem(displayKey(f.other.binding.sessionId))).toBe('"conversation"');
 });
 
 it.each(['current', 'timeline'] as const)('discards a late independent %s response after synchronous deletion blocking', async kind => {

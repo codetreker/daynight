@@ -184,8 +184,8 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	if _, err = r.PullRequest(ctx, other, 8); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing: %v", err)
 	}
-	counts, err := r.PullRequestCounts(ctx, id)
-	if err != nil || counts != (store.GitHubPRCounts{Active: 3, Closed: 1, Merged: 1, All: 5}) {
+	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id})
+	if err != nil || counts != (store.GitHubPRCounts{Active: 3, Closed: 1, Merged: 1, All: 5, ProjectTotal: 5}) {
 		t.Fatalf("counts: %+v %v", counts, err)
 	}
 	q := store.GitHubPRQuery{ProjectID: id, State: "active", Limit: 2}
@@ -217,7 +217,7 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	if err = newtx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	counts, err = r.PullRequestCounts(ctx, id)
+	counts, err = r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id})
 	if err != nil || counts.Active != 3 {
 		t.Fatalf("snapshot count changed: %+v %v", counts, err)
 	}
@@ -235,8 +235,128 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	}
 	cancel, cancelFn := context.WithCancel(ctx)
 	cancelFn()
-	if _, err = github.NewReader(fresh).PullRequestCounts(cancel, id); !errors.Is(err, context.Canceled) {
+	if _, err = github.NewReader(fresh).PullRequestCounts(cancel, store.GitHubPRCountsQuery{ProjectID: id}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
+	}
+}
+
+func TestPullRequestReadsByAuthor(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	setup := begin(t, db, pgx.TxOptions{})
+	for _, pr := range []struct {
+		n            int
+		state, title string
+		author       *int64
+	}{
+		{9, "open", "match nine", ptr(int64(9007199254740997))},
+		{8, "open", "match eight", ptr(int64(42))},
+		{7, "open", "match seven", ptr(int64(9007199254740997))},
+		{6, "closed", "match six", ptr(int64(9007199254740997))},
+		{5, "merged", "other", ptr(int64(9007199254740997))},
+		{4, "open", "match null author", nil},
+		{3, "open", "match three", ptr(int64(9007199254740997))},
+	} {
+		insertPR(t, setup, id, pr.n, pr.state, pr.title, nil)
+		mustExec(t, setup, `UPDATE project_pull_requests SET author_id=$3 WHERE project_id=$1 AND number=$2`, id, pr.n, pr.author)
+	}
+	if err := setup.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx := begin(t, db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	r := github.NewReader(tx)
+	author := int64(9007199254740997)
+	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: &author})
+	if err != nil || counts != (store.GitHubPRCounts{Active: 3, Closed: 1, Merged: 1, All: 5, ProjectTotal: 7}) {
+		t.Fatalf("author counts: %+v %v", counts, err)
+	}
+	q := store.GitHubPRQuery{ProjectID: id, AuthorID: &author, State: "active", Query: "match", Limit: 2}
+	first, err := r.PullRequests(ctx, q)
+	if err != nil || !reflect.DeepEqual(numbers(first.Items), []int64{9, 7}) || first.Total != 3 || !first.HasMore || first.UpperNumber == nil || *first.UpperNumber != 9 {
+		t.Fatalf("author first page: %+v %v", first, err)
+	}
+	q.UpperNumber, q.AnchorNumber = first.UpperNumber, ptr(int64(7))
+	second, err := r.PullRequests(ctx, q)
+	if err != nil || !reflect.DeepEqual(numbers(second.Items), []int64{3}) || second.Total != 3 || second.HasMore {
+		t.Fatalf("author next page: %+v %v", second, err)
+	}
+	q.Previous, q.AnchorNumber = true, ptr(int64(3))
+	previous, err := r.PullRequests(ctx, q)
+	if err != nil || !reflect.DeepEqual(numbers(previous.Items), []int64{9, 7}) || previous.Total != 3 {
+		t.Fatalf("author previous page: %+v %v", previous, err)
+	}
+	q.Previous, q.AnchorNumber = false, ptr(int64(1))
+	empty, err := r.PullRequests(ctx, q)
+	if err != nil || len(empty.Items) != 0 || empty.Total != 3 || empty.UpperNumber == nil || *empty.UpperNumber != 9 {
+		t.Fatalf("empty anchored page: %+v %v", empty, err)
+	}
+	missing := int64(43)
+	missingCounts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: &missing})
+	if err != nil || missingCounts != (store.GitHubPRCounts{ProjectTotal: 7}) {
+		t.Fatalf("missing author counts: %+v %v", missingCounts, err)
+	}
+	q.AuthorID, q.AnchorNumber, q.UpperNumber = &missing, nil, nil
+	missingPage, err := r.PullRequests(ctx, q)
+	if err != nil || len(missingPage.Items) != 0 || missingPage.Total != 0 {
+		t.Fatalf("missing author page: %+v %v", missingPage, err)
+	}
+	newtx := begin(t, db, pgx.TxOptions{})
+	insertPR(t, newtx, id, 10, "open", "match ten", nil)
+	mustExec(t, newtx, `UPDATE project_pull_requests SET author_id=$3 WHERE project_id=$1 AND number=$2`, id, 10, author)
+	if err := newtx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	counts, err = r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: &author})
+	if err != nil || counts.All != 5 || counts.ProjectTotal != 7 {
+		t.Fatalf("author snapshot changed: %+v %v", counts, err)
+	}
+	q.AuthorID = &author
+	page, err := r.PullRequests(ctx, q)
+	if err != nil || page.Total != 3 || !reflect.DeepEqual(numbers(page.Items), []int64{9, 7}) {
+		t.Fatalf("author page snapshot changed: %+v %v", page, err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := r.PullRequests(cancelled, q); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled author page: %v", err)
+	}
+}
+
+func TestPullRequestAuthorQueryCancellationDuringLockWait(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	blocker := begin(t, db, pgx.TxOptions{})
+	mustExec(t, blocker, `LOCK TABLE project_pull_requests IN ACCESS EXCLUSIVE MODE`)
+	waiter := begin(t, db, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	var pid int
+	if err := waiter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := github.NewReader(waiter).PullRequests(operationCtx, store.GitHubPRQuery{ProjectID: id, AuthorID: ptr(int64(42)), State: "all", Limit: 10})
+		result <- err
+	}()
+	waitForLock(t, db, pid)
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("author query cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled author query did not exit")
+	}
+	_ = waiter.Rollback(context.Background())
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fresh := begin(t, db, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	page, err := github.NewReader(fresh).PullRequests(ctx, store.GitHubPRQuery{ProjectID: id, AuthorID: ptr(int64(42)), State: "all", Limit: 10})
+	if err != nil || page.Total != 0 {
+		t.Fatalf("pool recovery: %+v %v", page, err)
 	}
 }
 

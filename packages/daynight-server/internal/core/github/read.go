@@ -29,12 +29,14 @@ type Status struct {
 type ListRequest struct {
 	State, Query, Cursor string
 	Limit                int
+	AuthorID             *int64
 }
 type Page struct {
 	Connection                 githubpr.Connection
 	Items                      []githubpr.PullRequestSummary
 	Total                      int64
 	Counts                     store.GitHubPRCounts
+	AuthorID                   *int64
 	NextCursor, PreviousCursor *string
 }
 type Detail struct {
@@ -115,6 +117,9 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 	if request.Limit < 1 || request.Limit > 100 {
 		return Page{}, invalid("Limit must be between 1 and 100.")
 	}
+	if request.AuthorID != nil && *request.AuthorID <= 0 {
+		return Page{}, invalid("Author ID must be positive.")
+	}
 	if len(request.Query) > 1024 || !utf8.ValidString(request.Query) || containsNUL(request.Query) {
 		return Page{}, invalid("Query is invalid.")
 	}
@@ -122,7 +127,7 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 	if err != nil {
 		return Page{}, err
 	}
-	query := store.GitHubPRQuery{ProjectID: id, State: request.State, Query: request.Query, Limit: request.Limit}
+	query := store.GitHubPRQuery{ProjectID: id, AuthorID: request.AuthorID, State: request.State, Query: request.Query, Limit: request.Limit}
 	var cursor *pageCursor
 	if request.Cursor != "" {
 		cursor, err = decodeCursor(request.Cursor, id, request)
@@ -133,7 +138,7 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 		query.AnchorNumber = &cursor.anchor
 		query.Previous = cursor.direction == "previous"
 	}
-	var result Page
+	result := Page{AuthorID: request.AuthorID}
 	err = r.snapshot(ctx, principal, id, func(s store.SnapshotScope, id string) error {
 		dao := s.GitHubDAO()
 		var e error
@@ -141,7 +146,7 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 		if e != nil {
 			return e
 		}
-		result.Counts, e = dao.PullRequestCounts(ctx, id)
+		result.Counts, e = dao.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: request.AuthorID})
 		if e != nil {
 			return e
 		}

@@ -25,6 +25,7 @@ type fixture struct {
 	page                                                                   store.GitHubPRPage
 	counts                                                                 store.GitHubPRCounts
 	query                                                                  store.GitHubPRQuery
+	countsQuery                                                            store.GitHubPRCountsQuery
 	wantCtx                                                                context.Context
 }
 
@@ -69,11 +70,12 @@ func (f *fixture) PullRequests(ctx context.Context, q store.GitHubPRQuery) (stor
 	f.query = q
 	return f.page, f.listErr
 }
-func (f *fixture) PullRequestCounts(ctx context.Context, id string) (store.GitHubPRCounts, error) {
+func (f *fixture) PullRequestCounts(ctx context.Context, q store.GitHubPRCountsQuery) (store.GitHubPRCounts, error) {
 	f.trace = append(f.trace, "counts")
-	if ctx != f.wantCtx || id != projectID {
+	if ctx != f.wantCtx || q.ProjectID != projectID {
 		panic("incorrect count arguments")
 	}
+	f.countsQuery = q
 	return f.counts, f.countsErr
 }
 func fixtureFor(ctx context.Context) *fixture { return &fixture{wantCtx: ctx} }
@@ -160,8 +162,10 @@ func TestReadStatusAndDetail(t *testing.T) {
 
 func TestListValidationAndEmptyPage(t *testing.T) {
 	ctx := context.Background()
+	zero, negative := int64(0), int64(-1)
 	for _, req := range []ListRequest{
 		{State: "open", Limit: 1}, {State: "active", Limit: 0}, {State: "active", Limit: 101},
+		{State: "all", Limit: 1, AuthorID: &zero}, {State: "all", Limit: 1, AuthorID: &negative},
 		{State: "all", Limit: 1, Query: strings.Repeat("a", 1025)}, {State: "all", Limit: 1, Query: "\x00"}, {State: "all", Limit: 1, Query: "\xff"},
 	} {
 		f := fixtureFor(ctx)
@@ -179,5 +183,16 @@ func TestListValidationAndEmptyPage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(f.trace, []string{"snapshot", "access", "connection", "counts", "list"}) || f.query.ProjectID != projectID || f.query.State != "merged" || f.query.Limit != 100 {
 		t.Fatalf("query %+v trace %v", f.query, f.trace)
+	}
+}
+
+func TestListAuthorScopeUsesSameSnapshot(t *testing.T) {
+	ctx := context.Background()
+	author := int64(9007199254740993)
+	f := fixtureFor(ctx)
+	f.counts = store.GitHubPRCounts{All: 2, ProjectTotal: 7}
+	page, err := NewReader(f, true).List(ctx, principal, projectID, ListRequest{State: "closed", Query: "match", Limit: 2, AuthorID: &author})
+	if err != nil || page.AuthorID == nil || *page.AuthorID != author || page.Counts != f.counts || f.query.AuthorID == nil || *f.query.AuthorID != author || f.countsQuery.AuthorID == nil || *f.countsQuery.AuthorID != author || !reflect.DeepEqual(f.trace, []string{"snapshot", "access", "connection", "counts", "list"}) {
+		t.Fatalf("page=%+v query=%+v countsQuery=%+v trace=%v err=%v", page, f.query, f.countsQuery, f.trace, err)
 	}
 }

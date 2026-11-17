@@ -13,7 +13,7 @@ type GitHubReadDAO interface {
 	Authors(context.Context, GitHubAuthorQuery) (GitHubAuthorPage, error)
 	PullRequest(context.Context, string, int64) (githubpr.PullRequest, error)
 	PullRequests(context.Context, GitHubPRQuery) (GitHubPRPage, error)
-	PullRequestCounts(context.Context, string) (GitHubPRCounts, error)
+	PullRequestCounts(context.Context, GitHubPRCountsQuery) (GitHubPRCounts, error)
 }
 
 // GitHubAuthorQuery selects a bounded page of canonical saved authors.
@@ -31,6 +31,7 @@ type GitHubAuthorPage struct {
 
 type GitHubPRQuery struct {
 	ProjectID string
+	AuthorID  *int64
 	// State is active, closed, merged or all; validation belongs to core.
 	State, Query              string
 	Limit                     int
@@ -46,7 +47,12 @@ type GitHubPRPage struct {
 	HasMore     bool
 }
 
-type GitHubPRCounts struct{ Active, Closed, Merged, All int64 }
+type GitHubPRCountsQuery struct {
+	ProjectID string
+	AuthorID  *int64
+}
+
+type GitHubPRCounts struct{ Active, Closed, Merged, All, ProjectTotal int64 }
 
 // GitHubConfigurationWrite is a management decision, not a runtime-state or
 // observation replacement. ExpectedVersion is always the caller's original version.

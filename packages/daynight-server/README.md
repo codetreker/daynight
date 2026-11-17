@@ -82,6 +82,8 @@ remain enforced; database and backup readers can read retained credentials.
 
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
+The [PR read design](../../docs/design/github-pr-reading.md) defines the optional
+author filter, scoped counts, project total and compatible cursor versions.
 The [single-Project executor](../../docs/design/github-sync-executor.md) performs synchronization;
 the [connection and scheduler design](../../docs/design/github-connection-runtime.md)
 describes management, scheduling and resource lifecycle. Independent App
