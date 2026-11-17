@@ -14,7 +14,8 @@ vi.mock("../../../src/commands/controller/storage-lock.js", async importOriginal
 vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: (...args: unknown[]) => storage.prepare(...args) }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (value: string) => value, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.serverCreate(); fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
-vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller" }));
+vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller", controllerPayloadHash: () => "fixture-hash" }));
+vi.mock("../../../src/commands/controller/worker-task.js", () => ({ checkWorkerTask: async () => null }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: (...args: unknown[]) => { storage.open(...args); return fixture.journal(); } }));
 const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), coordinatorCreate: vi.fn(), coordinatorStop: vi.fn(async () => {}), pipelineCreate: vi.fn(), pipelineTick: vi.fn(async () => {}), pipelineStop: vi.fn(async () => {}), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
 vi.mock("../../../src/commands/controller/markdown/external-policy.js", () => ({ createExternalImagePolicyProducer: (options: unknown) => { externalRuntime.create(options); return { acquire: externalRuntime.acquire, close: externalRuntime.close }; } }));
@@ -55,7 +56,7 @@ const setup = () => {
   storage.open.mockReset(); storage.open.mockImplementation(() => { storage.order.push("journal-open"); });
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
-  fixture.journal.mockReturnValue({ reconcileNativeIndexLease: async () => {}, listOperations: () => [], disableOutboxWrites: vi.fn(), patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; storage.order.push("journal"); } });
+  fixture.journal.mockReturnValue({ reconcileNativeIndexLease: async () => {}, listOperations: () => [], getOperation: () => null, disableOutboxWrites: vi.fn(), patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; storage.order.push("journal"); } });
   fixture.capture.mockResolvedValue({ pid: 1 });
   fixture.close.mockImplementation(async () => { expect(fixture.closed).toBe(false); });
   return patch;
@@ -166,6 +167,7 @@ test("dispatches Copilot with its frozen profile and closes that provider", asyn
 
 test("initial input waits for both the provider handle and relay without turning startup into a failure", async () => {
   const patch = setup(); let opened!: (value: unknown) => void;
+  fixture.ticketOverrides = { initialOperationId: "initial-operation", initialPrompt: "original" };
   fixture.open.mockImplementation(() => new Promise(resolve => { opened = resolve; }));
   const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
   await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
@@ -175,7 +177,7 @@ test("initial input waits for both the provider handle and relay without turning
   try {
     expect(patch).toHaveBeenLastCalledWith(expect.objectContaining({ lifecycle: "starting" }));
     fixture.socketHandler!(socket);
-    socket.emit("data", JSON.stringify({ requestId: "request", action: { kind: "submit_initial" } }) + "\n");
+    socket.emit("data", JSON.stringify({ requestId: "request", action: { kind: "submit_initial", operationId: "initial-operation" } }) + "\n");
     await vi.waitFor(() => expect(socket.end).toHaveBeenCalled());
     expect(JSON.parse(socket.end.mock.calls[0]![0])).toMatchObject({ ok: true, snapshot: { lifecycle: "starting", initialInputState: "not_submitted" } });
     nativeOptions.onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: true } });
@@ -734,7 +736,7 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
   const journal = fixture.journal(), send = vi.fn(), record = vi.fn(), mark = vi.fn();
   const operation = { operationId: "operation", kind: "send_message", state: "accepted" };
   Object.assign(journal, {
-    prepareOperation: vi.fn(() => operation), getOperation: vi.fn(() => operation), recordOperation: record, markDispatching: mark,
+    prepareOperation: vi.fn(() => operation), getOperation: vi.fn((id: string) => id === "initial-operation" ? null : operation), recordOperation: record, markDispatching: mark,
     assertInputCapacity: vi.fn(), patchNativeImagePart: vi.fn(),
   });
   fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close, send });
@@ -746,9 +748,10 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
     fixture.relayCallbacks!.onConnection(true);
     if (source === "IPC admission") {
       journal.prepareOperation.mockImplementation(() => { throw failure; });
+      (fixture.options as ProviderOptions).onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: false, respond: false } });
       const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, setEncoding: () => {}, destroy: () => {}, end: vi.fn() });
       fixture.socketHandler!(socket);
-      socket.emit("data", JSON.stringify({ requestId: "request", action: { kind: "submit_initial" } }) + "\n");
+      socket.emit("data", JSON.stringify({ requestId: "request", action: { kind: "submit_initial", operationId: "initial-operation" } }) + "\n");
       await vi.waitFor(() => expect(socket.end).toHaveBeenCalled());
       expect(JSON.parse(socket.end.mock.calls[0]![0])).toMatchObject({ ok: false });
     } else if (source === "relay capacity") {
