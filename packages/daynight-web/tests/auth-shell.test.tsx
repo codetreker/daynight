@@ -440,6 +440,23 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("button", { name: "正在前往 UniAuth…" })).toBeDisabled();
   });
 
+  it.each([['tokens', '访问凭据'], ['prompt', '用户级 Prompt']] as const)("returns an anonymous account %s destination after login", async (tab, label) => {
+    window.history.replaceState(null, "", `/account?tab=${tab}`);
+    let anonymous = true;
+    install(url => url === "/api/v1/me" && anonymous ? fail(401, "unauthenticated") : url === "/api/v1/me/tokens" ? json({ items: [] }) : url === "/api/v2/oauth/grants" ? json({ userId, grants: [] }) : url === "/api/v1/me/worker-prompt" ? json({ scope: 'user', scopeId: userId, revision: '0', text: '', updatedAt: null }) : defaults(url));
+    const login = vi.fn();
+    const view = render(<AuthenticatedApp navigateToLogin={login} />);
+    fireEvent.click(await screen.findByRole("button", { name: "使用 GitHub 登录" }));
+    expect(new URL(login.mock.calls[0]![0], window.location.origin).searchParams.get('returnPath')).toBe(`/account?tab=${tab}`);
+    expect(new URL(window.location.href).searchParams.get('returnPath')).toBe(`/account?tab=${tab}`);
+    view.unmount();
+    anonymous = false;
+    browserNavigation().dispose();
+    render(<AuthenticatedApp />);
+    expect(await screen.findByRole('link', { name: label })).toHaveAttribute('aria-current', 'page');
+    expect(window.location.pathname + window.location.search).toBe(`/account?tab=${tab}`);
+  });
+
   it("keeps provider loading failures distinct from an empty configured provider set", async () => {
     let providerCalls = 0;
     install((url) => url === "/api/v1/me" ? fail(401, "unauthenticated") : ++providerCalls === 1 ? fail(503, "internal") : json({ providers: [] }));
@@ -630,7 +647,7 @@ describe("authenticated application shell", () => {
     const fetcher = install(url => url === "/api/v1/me/tokens" ? json({ items: [] }) : defaults(url));
     render(<AuthenticatedApp />); await screen.findByRole("button", { name: "账户菜单：Alice" });
     accountChange(otherId); await screen.findByText("账户已变化");
-    fireEvent.click(screen.getByRole("button", { name: "访问凭据" })); await act(async () => {});
+    fireEvent.click(screen.getByRole("link", { name: "访问凭据" })); await act(async () => {});
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
   });
 
@@ -650,7 +667,7 @@ describe("authenticated application shell", () => {
     window.history.replaceState(null, "", "/account");
     const fetcher = vi.fn((url: string, options?: RequestInit) => Promise.resolve(url === "/api/v1/me/tokens" ? options?.method === "POST" ? json({ id: otherId, name: "Device", lastUsedAt: null, createdAt: now, expiresAt: "2099-10-22T10:00:00Z", token: "once-only-secret" }, 201) : json({ items: [] }) : defaults(url)));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "访问凭据" }));
+    fireEvent.click(await screen.findByRole("link", { name: "访问凭据" }));
     await waitFor(() => expect(tokenPanel().getByRole("button", { name: "创建令牌" })).not.toBeDisabled());
     fireEvent.click(tokenPanel().getByRole("button", { name: "创建令牌" }));
     fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } }); fireEvent.submit(document.getElementById("create-token-form")!);
@@ -916,7 +933,7 @@ describe("authenticated application shell", () => {
   });
 
   it("handles valid account, membership and malformed routes", () => {
-    expect(parseAuthRoute("/account")).toEqual({ kind: "account" });
+    expect(parseAuthRoute("/account")).toEqual({ kind: "account", selection: { kind: "tab", tab: "profile" } });
     expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
     expect(parseAuthRoute("/projects/%E0%A4%A")).toEqual({ kind: "notFound" });
     expect(parseAuthRoute("/projects/no/members")).toEqual({ kind: "notFound" });
@@ -936,7 +953,7 @@ describe("authenticated standalone attachment reader", () => {
     for (const malformed of [location("docs%2Fguide.md"), location("../secret.md"), location("%E0%A4%A"), `/projects/no/tasks/${taskId}/attachments/a.md`]) {
       expect(parseAuthRoute(malformed)).toEqual({ kind: "notFound" });
     }
-    expect(parseAuthRoute("/account")).toEqual({ kind: "account" });
+    expect(parseAuthRoute("/account")).toEqual({ kind: "account", selection: { kind: "tab", tab: "profile" } });
     expect(parseAuthRoute("/invitations")).toEqual({ kind: "invitations" });
     expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
   });

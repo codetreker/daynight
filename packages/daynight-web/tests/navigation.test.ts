@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserNavigation, type DirtyDraft } from '../src/app/navigation';
-import { myTasksHistory } from '../src/app/page-history';
+import { myTasksHistory, workerHistory } from '../src/app/page-history';
 
 let owner: BrowserNavigation;
 beforeEach(() => { owner = new BrowserNavigation(window); });
@@ -238,8 +238,8 @@ describe('window navigation admission', () => {
   });
 
   it('publishes same-URL reading entries, preserves their identity on replacement and deduplicates choices', () => {
-    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
-    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
     owner.navigate('/account');
     const length = history.length;
     const initialId = owner.snapshot().entryId;
@@ -255,7 +255,7 @@ describe('window navigation admission', () => {
     expect(owner.snapshot().view).toEqual(tokens);
     expect(commit).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledTimes(2);
-    owner.setView({ ...tokens, selection: { ...tokens.selection } }, { onCommit: commit });
+    owner.setView(structuredClone(tokens), { onCommit: commit });
     owner.navigate('/account');
     expect(history.length).toBe(length + 1);
     expect(notify).toHaveBeenCalledTimes(2);
@@ -268,8 +268,8 @@ describe('window navigation admission', () => {
   });
 
   it('admits reading targets through draft protection and does not commit on cancel', () => {
-    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
-    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
     owner.navigate('/account'); owner.setView(profile, { replace: true });
     const current = owner.snapshot();
     const survives = vi.fn((_url: URL, view?: unknown) => view === profile);
@@ -288,8 +288,8 @@ describe('window navigation admission', () => {
   });
 
   it('passes the destination payload to guards during traversal and optional routed navigation', () => {
-    const profile = { version: 1 as const, userId: 'user', pageKey: 'account' as const, selection: { tab: 'profile' as const } };
-    const tokens = { ...profile, selection: { tab: 'tokens' as const } };
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
     owner.navigate('/account'); owner.setView(profile, { replace: true });
     const source = history.state;
     owner.setView(tokens);

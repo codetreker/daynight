@@ -45,7 +45,7 @@ export const McpSetupGuide = ({ client, onClientChange, ...copyProps }: Props) =
           </div>
         </li>
       </ol>
-      <div className="setup-section-footer"><p><a href="/mcp">{c.manual}</a> · <a href="/account">{c.tokens}</a></p><p>{c.accountNote}</p><p>{c.pat}</p></div>
+      <div className="setup-section-footer"><p><a href="/mcp">{c.manual}</a> · <a href="/account?tab=tokens">{c.tokens}</a></p><p>{c.accountNote}</p><p>{c.pat}</p></div>
     </div>
   </section>;
 };

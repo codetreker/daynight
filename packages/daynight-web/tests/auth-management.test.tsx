@@ -11,6 +11,7 @@ import { messagesByLocale } from '../src/i18n/messages';
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { AccountPage } from '../src/features/management/AccountPage';
 import { browserNavigation } from '../src/app/navigation';
+import { workerHistory } from '../src/app/page-history';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
 import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
@@ -59,7 +60,7 @@ const clickWhenReady = async (name: string) => {
 const dialogClick = async (name: string) => { const button = within(screen.getByRole('dialog')).getByRole('button', { name }); await waitFor(() => expect(button).not.toBeDisabled()); fireEvent.click(button); };
 const account = () => render(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
 const members = (props: Partial<Parameters<typeof MembersPanel>[0]> = {}) => render(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" user={user} onRemoved={vi.fn()} {...props} />);
-const tokensTab = async () => { click('访问凭据'); await waitFor(() => expect(screen.queryByText('正在加载访问令牌…')).toBeNull()); };
+const tokensTab = async () => { fireEvent.click(screen.getByRole('link', { name: '访问凭据' })); await waitFor(() => expect(screen.queryByText('正在加载访问令牌…')).toBeNull()); };
 const readyMembers = async () => { await waitFor(() => expect(screen.queryByText('正在加载项目成员…')).toBeNull()); };
 const memberRoster = () => within(document.getElementById('members-title')!.closest('section')!);
 const tokenForm = () => within(document.getElementById('create-token-form')!);
@@ -134,7 +135,7 @@ describe('account credentials', () => {
   it('keeps a loading state, marks expired tokens unusable, and cancels the creation dialog with focus recovery', async () => {
     const result = deferred<readonly PersonalAccessToken[]>();
     vi.mocked(auth.listTokens).mockReturnValue(result.promise);
-    account(); click('访问凭据');
+    account(); fireEvent.click(screen.getByRole('link', { name: '访问凭据' }));
     expect(screen.getByText('正在加载访问令牌…')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建令牌' })).toBeDisabled();
     await act(async () => result.resolve([{ ...token, expiresAt: '2000-01-01T00:00:00Z' }]));
@@ -169,7 +170,7 @@ describe('account credentials', () => {
     await dialogClick('返回保存'); expect(screen.queryByRole('alert')).toBeNull();
     await dialogClick('关闭对话框'); await dialogClick('确认已保存，关闭');
     expect(screen.queryByDisplayValue('pat-secret-once')).toBeNull(); expect(screen.getByText('MacBook')).toBeInTheDocument();
-    click('个人资料'); await tokensTab(); expect(screen.queryByDisplayValue('pat-secret-once')).toBeNull();
+    fireEvent.click(screen.getByRole('link', { name: '个人资料' })); await tokensTab(); expect(screen.queryByDisplayValue('pat-secret-once')).toBeNull();
   });
 
   it('retains selectable secret on clipboard rejection, then explicitly closes it', async () => {
@@ -253,9 +254,26 @@ describe('account credentials', () => {
     await dialogClick(en.secret.confirmClose); expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('leaves other route history untouched while the retained account owner is hidden', () => {
+    const navigation = browserNavigation();
+    const view = render(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
+    fireEvent.click(screen.getByRole('link', { name: '用户级 Prompt' }));
+    view.rerender(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} active={false} />);
+    const workerId = '00000000-0000-4000-8000-000000000011';
+    const workerView = workerHistory(user.id, workerId, 'configuration');
+    act(() => navigation.navigate(`/workers/${workerId}`, false, workerView));
+    const foreign = navigation.snapshot();
+    view.rerender(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} active={false} />);
+    expect(navigation.snapshot()).toEqual(foreign);
+    expect(navigation.snapshot().view).toEqual(workerView);
+    act(() => navigation.navigate('/account?tab=tokens'));
+    view.rerender(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
+    expect(screen.getByRole('link', { name: '访问凭据' })).toHaveAttribute('aria-current', 'page');
+  });
+
   it('aborts stale loads and never renders old account metadata after account replacement', async () => {
-    const late = deferred<readonly PersonalAccessToken[]>(); vi.mocked(auth.listTokens).mockReturnValue(late.promise);
-    const view = account(); click('访问凭据');
+    const late = deferred<readonly PersonalAccessToken[]>(); vi.mocked(auth.listTokens).mockReturnValueOnce(late.promise).mockResolvedValue([]);
+    const view = account(); fireEvent.click(screen.getByRole('link', { name: '访问凭据' }));
     const signal = vi.mocked(auth.listTokens).mock.calls[0]![0];
     view.rerender(<AccountPage user={{ ...user, id: '00000000-0000-4000-8000-000000000202', name: 'New account' }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
     expect(signal.aborted).toBe(true); expect(screen.getByText('New account')).toBeInTheDocument();

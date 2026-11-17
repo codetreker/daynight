@@ -71,7 +71,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
   test(`token revocation starts on cancel and keeps keyboard actions safe in ${locale}`, async ({ page }) => {
     const fixture = await install(page, locale);
     await page.goto('/account');
-    await page.getByRole('button', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
+    await page.getByRole('link', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
     const opener = page.getByRole('button', { name: locale === 'en' ? `Revoke token ${tokenName}` : `撤销令牌 ${tokenName}` });
     const dialog = page.getByRole('dialog', { name: locale === 'en' ? 'Revoke access token?' : '撤销访问令牌？' });
     const cancel = dialog.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
@@ -98,12 +98,12 @@ for (const locale of ['en', 'zh-CN'] as const) {
 }
 
 for (const locale of ['en', 'zh-CN'] as const) {
-  for (const width of [1440, 800, 390, 320]) {
+  for (const width of [1280, 800, 390, 320]) {
     test(`credential metadata remains readable and operable in ${locale} at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
       await install(page, locale);
       await page.goto('/account');
-      await page.getByRole('button', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
+      await page.getByRole('link', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
       const token = page.locator('.token-row').filter({ hasText: tokenName });
       const grant = page.locator('.grant-row').filter({ hasText: clientId });
       const revoked = page.locator('.owner-grant-row.revoked').filter({ hasText: 'Revoked client' });
@@ -185,7 +185,7 @@ test('a clock tick and metadata refresh preserve the focused open details and sc
   await page.setViewportSize({ width: 390, height: 600 });
   const fixture = await install(page, 'en');
   await page.goto('/account');
-  await page.getByRole('button', { name: 'Access credentials', exact: true }).click();
+  await page.getByRole('link', { name: 'Access credentials', exact: true }).click();
   const grant = page.locator('.grant-row').filter({ hasText: clientId });
   const details = grant.locator('details');
   const summary = details.locator('summary');

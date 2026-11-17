@@ -55,7 +55,7 @@ const checkAvatar = async (avatar: Locator, src: string, size: number) => {
   })).toEqual({ width: size, height: size, radius: '50%', overflow: 'hidden', imageWidth: size, imageHeight: size, fit: 'cover', alt: '', hidden: 'true' });
 };
 
-for (const width of [1360, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+for (const width of [1280, 390, 320]) for (const locale of ['en', 'zh-CN']) {
   test(`management avatars decode and preserve account and member layouts at ${width}px in ${locale}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const png = await portrait(page), src = locale === 'en' ? imageUrl : png;
@@ -67,10 +67,10 @@ for (const width of [1360, 390, 320]) for (const locale of ['en', 'zh-CN']) {
     await expect(page.locator('.profile-info .person-meta')).toHaveText(email);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const tabs = page.getByRole('navigation', { name: locale === 'en' ? 'Account settings' : '账户设置' });
-    await tabs.getByRole('button', { name: locale === 'en' ? 'Access credentials' : '访问凭据' }).click();
-    await tabs.getByRole('button', { name: locale === 'en' ? 'User prompt' : '用户级 Prompt' }).click();
+    await tabs.getByRole('link', { name: locale === 'en' ? 'Access credentials' : '访问凭据' }).click();
+    await tabs.getByRole('link', { name: locale === 'en' ? 'User prompt' : '用户级 Prompt' }).click();
     await expect(page.locator('.worker-prompt-text')).toHaveValue('Original prompt');
-    await tabs.getByRole('button', { name: locale === 'en' ? 'Profile' : '个人资料' }).click();
+    await tabs.getByRole('link', { name: locale === 'en' ? 'Profile' : '个人资料' }).click();
     await checkAvatar(page.locator('.profile-info .management-avatar'), src, 49);
     await expect(page.getByRole('button', { name: locale === 'en' ? 'Sign out' : '退出登录' })).toBeVisible();
 
@@ -115,8 +115,8 @@ test('a delayed invalid image keeps the profile size and does not retry on reren
     const failedAttempts = attempts;
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
     const tabs = page.getByRole('navigation', { name: '账户设置' });
-    await tabs.getByRole('button', { name: '访问凭据' }).click();
-    await tabs.getByRole('button', { name: '个人资料' }).click();
+    await tabs.getByRole('link', { name: '访问凭据' }).click();
+    await tabs.getByRole('link', { name: '个人资料' }).click();
     await expect(avatar.locator('img')).toHaveCount(0);
     expect(attempts).toBe(failedAttempts);
   } finally { gate.resolve(); }

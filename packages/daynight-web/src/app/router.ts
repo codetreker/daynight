@@ -2,6 +2,7 @@ import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
 import { browserNavigation } from './navigation';
 import { projectSettingsSelection, type ProjectSettingsSelection } from './project-settings-route';
+import { accountSelection, type AccountSelection } from './account-route';
 
 export type TaskDetailTab = "description" | "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
@@ -67,7 +68,8 @@ export type ProtectedRoute = Route
   | { readonly kind: "worker"; readonly workerId: string }
   | { readonly kind: "testSessions" }
   | { readonly kind: "testSession"; readonly sessionId: string }
-  | { readonly kind: "account" | "invitations" | "teamInvitations" | "githubAppInvitations" }
+  | { readonly kind: "account"; readonly selection: AccountSelection }
+  | { readonly kind: "invitations" | "teamInvitations" | "githubAppInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "oauthConsent"; readonly requestId: string | null }
   | { readonly kind: "settings"; readonly projectId: string; readonly selection: ProjectSettingsSelection };
@@ -161,7 +163,7 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
     try { const sessionId = canonicalId(decodeURIComponent(test[1]!)); return sessionId === null ? { kind: "notFound" } : { kind: "testSession", sessionId }; }
     catch { return { kind: "notFound" }; }
   }
-  if (pathname === "/account") return { kind: "account" };
+  if (pathname === "/account") return { kind: "account", selection: accountSelection(search) };
   if (pathname === "/github-app-admin-invitations") return { kind: "githubAppInvitations" };
   if (pathname === "/invitations") return { kind: "invitations" };
   if (pathname === "/team-invitations") return { kind: "teamInvitations" };

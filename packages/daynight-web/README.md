@@ -230,7 +230,7 @@ configuration of Codex, Claude Code or Copilot CLI for the current user and brow
 account authorization, and provides a read-only `team_list` request to verify connection.
 MCP shell commands use POSIX quoting and instruct Windows users to use a POSIX
 shell such as Git Bash. The guide links to the public `/mcp` installation manual, the selected client's
-official documentation and `/account`, where Tokens manages tokens and authorized
+official documentation and `/account?tab=tokens`, where Tokens manages tokens and authorized
 applications. The five CLI steps cover installation with Node.js 22 or newer,
 device login, repository project discovery or creation, Agent skill installation,
 and registering and viewing a first task. Each gives its execution location,
@@ -346,9 +346,16 @@ pages or dialogs. It uses a decorative, circular 30px image, or 49px in the
 account profile. The [Web requirements](../../docs/spec/daynight-web.md#管理身份展示)
 and [design](../../docs/design/daynight-web.md) own the display contract and
 mechanism.
-Account profile, credentials and user prompt tabs participate in browser Back and
-Forward. Their history state contains only an account-bound tab selection; the
-existing credential and prompt owners retain their drafts and operation results.
+Account profile, credentials and user prompt use `/account`,
+`/account?tab=tokens` and `/account?tab=prompt`. An explicit `tab=profile`
+also selects profile without rewriting the URL. Empty, unknown or repeated `tab`
+values show an error while the links remain available; unrelated query parameters
+do not select a tab. Native links support copying, new tabs, reload, login return
+and Back/Forward. Selecting the current tab adds no history entry. The existing
+credential and prompt owners retain drafts and operation results across tab
+navigation; neither secrets nor drafts enter the URL or history state. Leaving the
+account still protects unsaved prompt edits, and continuing editing restores the
+prompt URL and focus. See the [tab URL decision](../../.agents/notes/implemented/feature/2026-11-17-account-tab-urls.md).
 Worker monitoring, configuration and prompts tabs also participate in Back and
 Forward, scoped to the current user and Worker; both editing owners retain their
 drafts and operation state.
@@ -513,7 +520,8 @@ further decisions until inspection confirms the actual state. Inspection never
 replays approval, and a still-pending result requires another explicit decision.
 Identity changes abort requests and remount this page through the shared shell.
 CLI access appears in the account token list, where its expiration can be changed
-or access revoked. The device request's ten-minute approval deadline remains
+or access revoked. The successful authorization page links directly to
+`/account?tab=tokens` as “Manage CLI access”. The device request's ten-minute approval deadline remains
 independent of the token lifetime.
 
 Token creation defaults to Never expires and optionally accepts a future local

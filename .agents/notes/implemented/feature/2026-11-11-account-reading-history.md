@@ -10,13 +10,14 @@ order, even though changing tabs preserves sensitive operation and editor owners
 
 ## Decision
 
-The existing navigation owner records an entry identity and a lightweight,
-identity-bound page selection with the history marker. Account consumes its
-admitted selection; an active controlled entry is initialized by replacement,
-and a changed selection is pushed through the existing draft admission gate.
-Same-URL entries publish distinct snapshots. The account page retains its
-credential and prompt owners independently of the entry identity. Worker detail
-uses the same mechanism with a Worker-bound selection; its editing owners remain
+The original decision used the existing navigation owner to record an entry
+identity and a lightweight, identity-bound selection with the history marker.
+Account consumed its admitted selection, initializing an active controlled entry
+by replacement and pushing changes through the draft admission gate. This made
+same-URL entries publish distinct snapshots while retaining credential and prompt
+owners independently of the entry identity. The later [account tab URL decision](2026-11-17-account-tab-urls.md)
+replaces that account-specific selection with URL routing to support sharing and
+cold entry. Worker detail continues to use a Worker-bound history selection; its editing owners remain
 mounted after opening and cancellation restores the appropriate dirty tab only
 after the original history position is admitted. The
 [peer-tab decision](../architecture/2026-11-12-worker-detail-prompt-tab.md)
