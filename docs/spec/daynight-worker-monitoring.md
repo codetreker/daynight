@@ -127,7 +127,10 @@ type Observation = {
   detailCoverage: DetailCoverage;
   delivery: { lastSucceededAt: string | null; lastFailure: DeliveryFailure | null };
 };
+type DirectObservation = Omit<Observation, "runId" | "sequence">;
 ```
+
+DirectObservation 采用同一业务字段与校验，但不接受 `runId`、`sequence`、`expectedRevision` 或 `observation` 外壳；直接来源的 `delivery.lastFailure` 及 component 为 monitoring 的 `currentFailures` 的 phase 只允许 `write` 和 `shutdown`。旧 Observation 仍接受 `read`、`write`、`reconcile` 和 `shutdown`，以保留旧 Worker 的合同。
 
 ExecutionPhase 中的 preparing/executing/verifying/completing/waiting/paused 保留既有 WorkerPhase 拼写；CleanupPhase 完全沿用现有 WorkerCleanupStage。维护活动采用已列出的 SchedulerPhase，不能引入任意操作名称。
 
@@ -143,7 +146,7 @@ lastProgressAt 为 null 表示未观测到真实进展；deadlineAt 为 null 表
 
 ## 字段与编码限额
 
-PUT 完整 JSON 及规范化正文各最多 256 KiB。activities/reservations/currentFailures 上限为 128/128/32；reasons 最多 16；roles 最多 5。字符串 UTF-8 上限：component/type/code 64 bytes、cause/explanation 2048 bytes、requestId 128 bytes。诊断原因与恢复说明使用下文固定摘要，truncated 标记必须为 false；输入不能由服务端静默截断，生产者构造有界观测并置 partial。
+PUT 和直接 POST 的原始 JSON 请求各最多 256 KiB；各自规范化观测正文也最多 256 KiB。activities/reservations/currentFailures 上限为 128/128/32；reasons 最多 16；roles 最多 5。字符串 UTF-8 上限：component/type/code 64 bytes、cause/explanation 2048 bytes、requestId 128 bytes。诊断原因与恢复说明使用下文固定摘要，truncated 标记必须为 false；输入不能由服务端静默截断，生产者构造有界观测并置 partial。
 
 观测器保留完整准入计数，详情按阻塞/异常优先、首次观测时间、稳定 ID 排序截取。所有时间、质量、完整计数均独立于被截取的明细。达到编码预算时，先按既有顺序裁减活动和容量责任；在移除完整异常前，按 Go JSON 编码体积从大到小、稳定顺序将相对路径转为 `unavailable/limit-exceeded` 并标记 partial，重新计量。单字段超限也显式标 partial；内存记录不受快照裁减影响。Server 在权限过滤和名称补充后按真实 Go JSON escaping 再执行响应预算，在包含 worktree 与 labels-omitted 占位的完整准入基础上保留精确容量与无名称故障摘要，逐项加入标签/普通活动，超限明确 labelsOmitted/detailCoverage=partial。
 
@@ -207,17 +210,23 @@ Worker 在拥有事实的操作边界，从受控枚举、协议结果或已确�
 - Server 读取时依据当前项目/任务权限过滤关联项及其 ID、原因、错误与名称；清理不以旧 claim 仍活跃作为条件。保留真实 Worker 总容量及上面独立上报的无身份阻塞事实，为该 worker scope 原因输出 `association:null`。Server 不从隐藏详情或占用推断或合成阻塞，不逐条匿名化；`permissionProjection=restricted` 不含隐藏数量。
 - UUID 和数值限制防止可信 Worker 意外搬运原文，不能防止有上报权限的恶意 Worker 将信息编码进 UUID、计数或时间。服务端不能从输入证明自报运行事实或语义 scope 的真实性；监控不作为执行所有权证明。当前权限过滤与账号隔离仍是独立的访问边界。
 
-PUT 对未知 type/code、错误配对、非固定文本、true 截断标记、非法 ID 或可判定的 scope 违例返回 400；不得静默修正。Redis 已存值读取时若违反合同，返回 monitoring_unavailable，而不是 absent 或原样返回。日志保留内部错误链但不记录原始状态或凭据。
+PUT 和直接 POST 对未知 type/code、错误配对、非固定文本、true 截断标记、非法 ID 或可判定的 scope 违例返回 400；不得静默修正。Redis 已存值读取时若违反合同，返回 monitoring_unavailable，而不是 absent 或原样返回。日志保留内部错误链但不记录原始状态或凭据。
 
 `capacity.breakdown` 与 `ownership-unconfirmed` 也遵循下述先 Server、再严格 Web 读者、最后 Worker 生产者的部署顺序。新服务端接受不含 breakdown 的旧观测和旧摘要；回滚前排空新增字段和分类的生产并等待相应帧自然到期。
 
 worktree 是独立的 typed 字段，不放宽 StructuredCause 的路径禁令。部署时先更新所有 Server 使其接受、保存、重验并过滤字段，再更新严格 CLI/Web 读者，最后启用 Worker 生产者。回滚到拒绝该字段的读者或 Server 前停止生产并等待相关帧按 3600 秒 TTL 自然过期或安全替换为不含字段的观测；不删键、续期或重放未知写入。
 
-既有码和固定句不得重定义或复用为新含义。新增分类须先让所有 Server 副本部署并确认支持，再部署能识别它的严格 Web 消费者，最后让 Worker 上报。新 Server 接受旧表，未知值按闭合合同拒绝。回滚到不能读取新码的 Server 前，须先停止新码生产并等待相关帧过期或安全地被旧兼容状态替换；否则保留能读取新码的 Server。不提供旧监控 Redis 帧兼容；协议演进不得依赖各组件同时升级。
+既有码和固定句不得重定义或复用为新含义。新增分类须先让所有 Server 副本部署并确认支持，再部署能识别它的严格 Web 消费者，最后让 Worker 上报。新 Server 接受旧表，未知值按闭合合同拒绝。回滚到不能读取新码的 Server 前，须先停止新码生产并等待相关帧过期或安全地被旧兼容状态替换；否则保留能读取新码的 Server。不提供 v1 Redis 帧兼容；协议演进不得依赖各组件同时升级。
 
 ## HTTP 合同
 
-三条路由认证、resource admission 和方法拒绝沿用既有 Server 机制。请求不接受查询参数、owner 字段或未知 JSON 字段。权限与资源准入先确认账号拥有的、现有 72 小时窗口内 Worker。
+各路由认证、resource admission 和方法拒绝沿用既有 Server 机制。请求不接受查询参数、owner 字段或未知 JSON 字段。权限与资源准入先确认账号拥有的、现有 72 小时窗口内 Worker。
+
+### POST /api/v1/me/workers/{workerId}/monitoring
+
+请求为闭合的 DirectObservation。通过认证、Worker 资源准入、当前 claim 校验和内容校验后，无条件整体替换同一 Worker 的当前观测；不读取、比较或依赖已有监控状态。重复或较早采集的快照也作为新的保存，最后成功写入的完整快照成为当前值，每次成功重新开始 3600 秒期限。该路径不产生旧 CAS 的四种 409 冲突。
+
+成功 HTTP 200 回执只包含 `receivedAt` 和 `expiresAt`，二者由 Redis 时间生成，为 UTC 时间且严格相差 3600000 毫秒。失败或响应丢失不能证明保存结果；未知结果可能已经写入。直接上报不需要读回对账或重放旧观测。
 
 ### PUT /api/v1/me/workers/{workerId}/monitoring
 
@@ -242,7 +251,7 @@ receipt 的 receivedAt/expiresAt 由 Redis TIME/3600 秒生成，重复返回原
 }
 ```
 
-data 是权限投影后的 Observation。读取 DTO 的每个 scoped 明细增加 association，类型为 null、`{kind:"project",projectName:string}`、`{kind:"task",projectName:string,title:string}` 或 `{kind:"labels-omitted"}`；最后一种只用于已授权标签因响应预算省略。PUT 不接受 association。
+data 是权限投影后的 Observation。直接来源的 revision 与样本 ID 由 Server 为该次保存生成；runId 等于样本 ID，sequence 为 `"1"`，顶层与 data 中对应值一致并在同一已保存记录中保持稳定。这些兼容字段不表示真实进程运行身份，也不用于直接上报的排序、接续或去重。旧来源保留原始 runId 与 sequence。读取 DTO 的每个 scoped 明细增加 association，类型为 null、`{kind:"project",projectName:string}`、`{kind:"task",projectName:string,title:string}` 或 `{kind:"labels-omitted"}`；最后一种只用于已授权标签因响应预算省略。PUT 和直接 POST 不接受 association。
 
 permissionProjection 为 current/restricted。不可访问/已删除的 scoped 明细、ID、原因和关联标签一同过滤；restricted 不包含被隐藏数量。Worker 总容量、可选 active/retained 容量分解和无身份的阻塞事实保留，不能显示私有任务行。清理 scope 不要求旧 claim 仍活跃；当前任务权限决定标签，监控关联不是执行所有权证明。
 
@@ -260,11 +269,11 @@ summary 包含 `{capturedAt,lifecycle,scheduler:{phase,coverage,lastSuccessfulAt
 
 ## 错误、CAS 与存储
 
-错误使用 `{error:{code,message,requestId,details?}}` 外壳：409 monitoring_revision_conflict / monitoring_sequence_stale / monitoring_sample_conflict / monitoring_state_lost；503 monitoring_unavailable / monitoring_write_outcome_unknown。既有 400/401/403/404/413 和方法 405 合同保持。内部 Redis 类型、格式、网络、OOM 错误保留 cause 链并进入结构化诊断，响应不加入 Redis URL/原始 payload。
+错误使用 `{error:{code,message,requestId,details?}}` 外壳：旧 PUT 的 409 monitoring_revision_conflict / monitoring_sequence_stale / monitoring_sample_conflict / monitoring_state_lost；503 monitoring_unavailable / monitoring_write_outcome_unknown。既有 400/401/403/404/413 和方法 405 合同保持。内部 Redis 类型、格式、网络、OOM 错误保留 cause 链并进入结构化诊断，响应不加入 Redis URL/原始 payload。
 
 CAS 顺序：先校验旧帧/版本/key 类型；缺席+非 null revision→state_lost；同 run+sequence+digest→重复；同 run+sequence 不同 digest→sample_conflict；同 run 旧 sequence→sequence_stale；revision 不匹配→revision_conflict；其余用一条 SET EX3600 接受新状态。所有拒绝/重复不写状态和 TTL。
 
-存储 key 为 `dn:worker-monitoring:{userId:workerId}`。首行 JSON 包含 formatVersion=2、revision、runId、sequence、bodyDigest、receivedAtMs、expiresAtMs、summary；连换行最多 2 KiB。正文是 Go 规范 JSON Observation，最多 256 KiB；完整值最多 258 KiB。digest 为规范 Observation JSON 的 SHA-256，不包含 expectedRevision。Lua 只解析首行，sequence 用规范十进制字符串的长度/字典序比较。
+存储 key 为 `dn:worker-monitoring:{userId:workerId}`。首行 JSON 包含 formatVersion=2、revision、runId、sequence、bodyDigest、receivedAtMs、expiresAtMs、summary；连换行最多 2 KiB。正文是 Go 规范 JSON Observation；直接来源添加 36 字符 UUID 的 runId 和 sequence=`"1"` 后最多 256 KiB + 62 bytes，完整值最多 258 KiB + 62 bytes。该私有余量只承接兼容封装，外部原始和规范请求限额不变。digest 为规范 Observation JSON 的 SHA-256，不包含 expectedRevision。Lua 只解析首行，sequence 用规范十进制字符串的长度/字典序比较。
 
 首行私有 StoredSummary 包含原摘要和 `admission={observedAt,coverage,reasons}`，最多 16 个 `[codeIndex,scopeToken]`。索引按下表固定；worker scope 为 null，project 是 16 字节 UUID 的规范无 padding base64url，claim 为 project 与 task 各 16 字节拼接后同样编码。claimId 不用于权限核对。token 仅能解码为 16 或 32 字节，必须重新编码逐字一致；非法类型、索引、字段或长度明确拒绝；`no-ready-tasks` 仅配完整覆盖，项目不可用或项目准备失败不得使用 worker scope。私有引用不进入 HTTP 或日志。公共和存储摘要使用独立闭合 codec，原正文保留完整 scope。
 
@@ -284,10 +293,14 @@ CAS 顺序：先校验旧帧/版本/key 类型；缺席+非 null revision→stat
 | 11 | retained-resource-conflict |
 | 12 | stopping |
 
-MonitoringStore 提供 CompareAndSet(identity,expectedRevision,candidate) / Read(identity) / ReadSummaries(identities)。identity 是 UserID/WorkerID 类型，不是任意 key。CAS result kind 为 accepted/duplicate/revision-conflict/sequence-stale/sample-conflict/state-lost，成功/重复带 receipt；冲突可带内部 metadata。缺席是明确 missing result，Redis/格式/类型错误为 error。驱动/命令只归 Redis adapter，所有操作总 deadline 200 ms；PG 事务不覆盖 Redis。
+MonitoringStore 提供 Save(identity,candidate) / CompareAndSet(identity,expectedRevision,candidate) / Read(identity) / ReadSummaries(identities)。Save 在同一预算内使用 Redis TIME 和单次 SET EX3600，不读或校验旧值，也不执行 CAS；旧值损坏或类型不同不阻止合法直接保存。identity 是 UserID/WorkerID 类型，不是任意 key。CAS result kind 为 accepted/duplicate/revision-conflict/sequence-stale/sample-conflict/state-lost，成功/重复带 receipt；冲突可带内部 metadata。缺席是明确 missing result，Redis/格式/类型错误为 error。驱动/命令只归 Redis adapter，所有操作总 deadline 200 ms；PG 事务不覆盖 Redis。
 
-没有运行注册、租约或持久历史。响应丢失不证明写入失败，客户端必须先读回状态，不得自动重放旧观测。
+没有运行注册、租约或持久历史。响应丢失不证明写入失败；旧 PUT 客户端按旧合同读回对账，直接上报不要求读回或重放。读取和明确拒绝不续期；旧 PUT 的确认重复也不续期。
 
-## 格式切换
+## 独立升级与格式切换
 
-正式首行 codec 和 CAS 只接受 v2，不提供旧格式兼容。独立确认存量为空且旧写入已排空时可以直接切换；存量存在或未知时，关闭并排空全部旧 monitoring 写入，以 Redis TIME 为起点等待至少 3600 秒，使合法旧帧按原 TTL 自然过期，再完整部署和验证 v2 Server 并恢复监控，随后部署 Web。监控维护窗口明确返回 503，心跳、Task、claim 和清理保持独立。回滚采用同一排空和自然到期条件；不扫描、迁移或删除键，不延长 TTL。无法确认写入已排空或 Redis 时间达到门槛时，监控保持关闭。操作细节见 [Server README](../../packages/daynight-server/README.md#monitoring-format-transition)。
+Server 可先部署并继续接受旧 GET/PUT/query 和现有 Web 读取。所有实际接流量的 Server 均支持直接 POST 和私有正文余量后，生产者才能采用直接上报；旧协议不因新生产者发布或短期无请求而退役。新旧来源共用同一当前值，不迁移合法 v2 记录。
+
+优先回滚直接上报生产者。回滚到不支持 POST 或私有正文余量的 Server 前，须停止直接写入，并在最后一次直接写入后等待至少 3600 秒，或证明所有不兼容记录已被合规旧报告替换；保留旧 GET/PUT/query 和业务通道，不删除键或重写未知写入。操作细节见 [Server README](../../packages/daynight-server/README.md#monitoring-format-transition)。
+
+对 v1 与 v2 等不兼容帧版本的切换，正式首行 codec 和 CAS 只接受 v2，不提供 v1 格式兼容。独立确认存量为空且旧写入已排空时可以直接切换；存量存在或未知时，关闭并排空全部旧 monitoring 写入，以 Redis TIME 为起点等待至少 3600 秒，使合法旧帧按原 TTL 自然过期，再完整部署和验证 v2 Server 并恢复监控，随后部署 Web。监控维护窗口明确返回 503，心跳、Task、claim 和清理保持独立。回滚采用同一排空和自然到期条件；不扫描、迁移或删除键，不延长 TTL。无法确认写入已排空或 Redis 时间达到门槛时，监控保持关闭。操作细节见 [Server README](../../packages/daynight-server/README.md#monitoring-format-transition)。

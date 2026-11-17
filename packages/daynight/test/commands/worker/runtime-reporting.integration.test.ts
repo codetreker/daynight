@@ -1401,14 +1401,14 @@ it("continues polling during one historical upload and joins its finalizer befor
   f.signal.abort();
   await cancelled.promise;
   await eventually(() => expect(order).toContain("coordinator-stopped"));
-  expect(options.monitoring!.capture("1").lifecycle).toBe("stopping");
+  expect(options.monitoring!.capture().lifecycle).toBe("stopping");
   expect(mocks.webClose).not.toHaveBeenCalled();
   expect(storeClose).not.toHaveBeenCalled();
   releaseFinalizer.resolve();
   await running;
   expect(order.indexOf("upload-finalized")).toBeLessThan(order.indexOf("web-store-closed"));
   expect(storeClose).toHaveBeenCalledOnce();
-  expect(options.monitoring!.capture("1").lifecycle).toBe("stopped");
+  expect(options.monitoring!.capture().lifecycle).toBe("stopped");
   expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
 });
 
@@ -1428,12 +1428,12 @@ it("reports an inventory failure against worker archive maintenance and recovers
   });
   const running = start(f);
   await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error: failure })));
-  const current = options.monitoring!.capture("1").currentFailures;
+  const current = options.monitoring!.capture().currentFailures;
   expect(current).toContainEqual(expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: { kind: "worker" } }));
   mocks.completed.mockReturnValue([]);
   await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
   polls.findLast(poll => !poll.signal.aborted)!.gate.resolve();
-  await eventually(() => expect(options.monitoring!.capture("1").currentFailures.some(item => item.phase === "archive-backfill")).toBe(false));
+  await eventually(() => expect(options.monitoring!.capture().currentFailures.some(item => item.phase === "archive-backfill")).toBe(false));
   f.signal.abort(); await running;
 });
 
@@ -1467,7 +1467,7 @@ it("reports historical Web archive failures against the original frozen checkout
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry" })));
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
     await eventually(() => expect(options.store.getProject({ projectId: uuid(1) })?.localPath).toBe(path.join(f.homeDirectory, "repo")));
-    const failure = options.monitoring!.capture("1").currentFailures.find(item => item.phase === "archive-backfill")!;
+    const failure = options.monitoring!.capture().currentFailures.find(item => item.phase === "archive-backfill")!;
     expect(failure.worktree).toEqual({ kind: "project-relative", path: "../retained-worktree" });
     expect(JSON.stringify(failure)).not.toContain(f.homeDirectory);
   } finally { f.signal.abort(); await running; }
@@ -1585,11 +1585,11 @@ it.each(["ordinary", "markdown_projection_failed"] as const)("routes a terminal 
     backendOptions.onArchiveFailure!(task as never, error);
     expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error }));
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions & { archiveMaintenance: { request: (shouldYield: () => boolean) => void } };
-    expect(options.monitoring!.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: expect.objectContaining({ claimId: task.claimId }) })]));
+    expect(options.monitoring!.capture().currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: expect.objectContaining({ claimId: task.claimId }) })]));
     const identity = { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, executionId: task.webExecution.executionId, executionGeneration: task.webExecution.executionGeneration, launchId: task.webExecution.launchId };
     if (kind === "markdown_projection_failed") {
       expect(options.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: kind, nextAttemptAt: now + 900_000 });
-      expect(options.monitoring!.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", error: expect.objectContaining({ code: "markdown-projection-repair" }) })]));
+      expect(options.monitoring!.capture().currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", error: expect.objectContaining({ code: "markdown-projection-repair" }) })]));
     }
     mocks.completed.mockReturnValue([task]);
     options.archiveMaintenance.request(() => false);
@@ -1599,7 +1599,7 @@ it.each(["ordinary", "markdown_projection_failed"] as const)("routes a terminal 
     options.archiveMaintenance.request(() => false);
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-ready" })));
     expect(mocks.archive).toHaveBeenCalledWith(expect.objectContaining({ ticket: expect.objectContaining({ claimId: task.claimId, executionId: task.webExecution.executionId, executionGeneration: "1", sessionId: task.webExecution.sessionId }) }));
-    expect(options.monitoring!.capture("2").currentFailures.some(item => item.component === "archive" && item.phase === "archive-backfill")).toBe(false);
+    expect(options.monitoring!.capture().currentFailures.some(item => item.component === "archive" && item.phase === "archive-backfill")).toBe(false);
     expect(options.store.getArchiveBackfillSchedule(identity)).toBeNull();
   } finally { f.signal.abort(); await running; }
 });
@@ -1768,7 +1768,7 @@ it("admits another task through the real coordinator after a stop wake with both
     await eventually(() => expect(polls.some(poll => poll !== initialPoll && !poll.settled && !poll.signal.aborted)).toBe(true));
     stopRelease.resolve();
     await bounded("original worktree removal", removeEntered.promise);
-    await eventually(() => { if (started.mock.calls.length !== 1) throw new Error(JSON.stringify({ trace, tasks: actualOptions.store.listTasks(), prompt: actualOptions.promptSource?.current(owner.projectId), monitoring: actualOptions.monitoring?.capture("1"), grants: [...grants.values()].map(value => value.id) })); });
+    await eventually(() => { if (started.mock.calls.length !== 1) throw new Error(JSON.stringify({ trace, tasks: actualOptions.store.listTasks(), prompt: actualOptions.promptSource?.current(owner.projectId), monitoring: actualOptions.monitoring?.capture(), grants: [...grants.values()].map(value => value.id) })); });
     expect([...grants.values()].map(value => value.id)).toEqual([uuid(30)]);
     expect(worktrees.has(owner.claimId)).toBe(true);
     expect(mocks.archive).toHaveBeenCalledOnce();

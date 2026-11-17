@@ -7,6 +7,7 @@ import { verifyCompletionFlow } from "./completion-flow.ts";
 import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
 import { verifyPreviewFlow } from "./preview-flow.ts";
+import { verifyWorkerMonitoring } from "./worker-monitoring.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
@@ -47,6 +48,8 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(issued).toHaveLength(1);
   const cliToken = issued[0]!;
   expect(cliToken).toMatchObject({ name: expect.stringMatching(/^Daynight CLI/), lastUsedAt: null });
+
+  await verifyWorkerMonitoring(page);
 
   const name = `Product E2E ${randomUUID()}`;
   const project = await cli(["project", "create", name, "--repo", `https://example.test/e2e/${randomUUID()}.git`, "--team", "personal", "--confirm"]);
@@ -210,6 +213,29 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(patch.status(), await patch.text()).toBe(200);
   const ready = await patch.json() as Task;
   const workerId = randomUUID(), firstClaimId = randomUUID(), firstWorktreeId = randomUUID();
+  const workerRoot = `/api/v1/me/workers/${workerId}`;
+  const sampledAt = new Date().toISOString();
+  const probe = (value: unknown) => ({ state: "ok", checkedAt: sampledAt, value });
+  const machine = { id: randomUUID(), name: "Product E2E worker" };
+  const report = await fetch(`${topology.baseURL}${workerRoot}/report`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${serverToken}` },
+    body: JSON.stringify({
+      machine, platform: "linux", workingDirectory: "/work", sampledAt,
+      os: probe({ type: "Linux", release: "6.8", version: "kernel", arch: "x64" }),
+      cpu: probe({ model: "CPU", logicalProcessors: 4, usagePercent: 1 }),
+      memory: probe({ usedBytes: 4, totalBytes: 8 }), disk: probe({ availableBytes: 8, totalBytes: 16 }),
+      versions: { daynight: "1.0.0", herdr: probe("1.0.0"), codex: probe("1.0.0"), copilot: probe("1.0.0") },
+      taskInventory: null,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  expect(report.status, await report.text()).toBe(200);
+  const worker = await page.request.get(workerRoot);
+  expect(worker.status(), await worker.text()).toBe(200);
+  expect(await worker.json()).toMatchObject({ worker: { workerId, machine } });
+  const monitoring = await page.request.get(`${workerRoot}/monitoring`);
+  expect(monitoring.status(), await monitoring.text()).toBe(200);
+  expect(await monitoring.json()).toMatchObject({ state: "absent", data: null });
   const claim = async (version: number, claimId: string, worktreeId: string, machine: string) => {
     const response = await page.request.post(`${taskRoot}/worker-claim`, { headers, data: {
       version, claimId, workerId, worktreeId, machine: { id: randomUUID(), name: machine },

@@ -41,6 +41,12 @@ func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
 		"taskInventory": nil,
 	}
 	requestJSON[map[string]any](t, f, http.MethodPost, base+"/report", report, http.StatusOK)
+	monitoring := requestJSON[struct {
+		State string `json:"state"`
+	}](t, f, http.MethodGet, base+"/monitoring", nil, http.StatusOK)
+	if monitoring.State != "absent" {
+		t.Fatalf("new Worker monitoring state differs: %+v", monitoring)
+	}
 
 	const exchangeBudget = 5 * time.Second
 	if exchangeBudget >= credentialusage.Cooldown {

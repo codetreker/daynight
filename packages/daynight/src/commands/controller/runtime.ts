@@ -8,6 +8,9 @@ import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
 import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
 import { assertNativeImageAdmission, authorizeNativeImageInput } from "./providers/image-admission.js";
 import type { ImageCapabilities } from "../../session/image-values.js";
+import { checkWorkerTask } from "./worker-task.js";
+import { controllerPayloadHash } from "./launch-ticket.js";
+import type { WorkerInputResult } from "./local-client.js";
 import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
@@ -165,7 +168,9 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const providerImages = journal.providerImageCapabilities?.(qualified ?? { expectedNativeSessionId: s.nativeSessionId, modelId: ticket.configuration.model, controlsRevision: s.controls?.revision ?? null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } });
     return { ...(providerImages ? { providerImages } : {}), nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
+  let inputFailed = false;
   const fail = (error: unknown) => {
+    inputFailed = true;
     if (isOutboxFailure(error) && accountingFailure === undefined) { stopForAccountingFailure(error); return; }
     const message = error instanceof Error ? error.message : String(error); diagnostic(error);
     try {
@@ -179,7 +184,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const running = active.get(operation.operationId); if (running) return running;
     if (operation.state !== "accepted") return Promise.resolve(operation);
     const execute = (async () => {
-      if (["initial", "send_message", "interaction_response", "execute_command", "update_setting"].includes(operation.kind)) accountingBoundary(() => journal.assertInputCapacity());
+      if (["initial", "send_message", "worker_input", "interaction_response", "execute_command", "update_setting"].includes(operation.kind)) accountingBoundary(() => journal.assertInputCapacity());
       journal.markDispatching(operation.operationId); nativeEvent(publishState);
       if (accountingFailure !== undefined) throw accountingFailure;
       try { const result = await invoke(); const saved = journal.recordOperation(operation.operationId, "confirmed", result); nativeEvent(publishState); return saved; }
@@ -187,7 +192,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         if (accountingFailure !== undefined) throw accountingFailure;
         if (isOutboxFailure(error)) { stopForAccountingFailure(error); throw error; }
         const observed = journal.getOperation(operation.operationId);
-        if (observed && (["confirmed", "failed", "rejected", "expired"].includes(observed.state) || ["initial", "send_message", "execute_command"].includes(operation.kind) && observed.state === "provider_accepted")) { nativeEvent(publishState); return observed; }
+        if (observed && (["confirmed", "failed", "rejected", "expired"].includes(observed.state) || ["initial", "send_message", "worker_input", "execute_command"].includes(operation.kind) && observed.state === "provider_accepted")) { nativeEvent(publishState); return observed; }
         const saved = journal.recordOperation(operation.operationId, error instanceof NativeRpcError ? "rejected" : "unknown", null, error instanceof Error ? error.message : String(error)); nativeEvent(publishState); return saved;
       }
     })();
@@ -437,6 +442,83 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       if (socket.destroyed) disconnected();
     });
   };
+  const pendingWorkerInput = new Map<string, { hash: string; promise: Promise<WorkerInputResult> }>();
+  const workerReady = (deadline: number, initial: boolean): WorkerInputResult | null => {
+    if (Date.now() >= deadline) return { kind: "waiting", reason: "expired" };
+    if (stopping || cleaning) return { kind: "waiting", reason: "cleaning" };
+    const snapshot = journal.getSnapshot();
+    if (inputFailed || ["paused", "failed", "stopping", "stopped"].includes(snapshot.lifecycle)) return { kind: "waiting", reason: "unavailable" };
+    if (!provider) return { kind: "waiting", reason: "initializing" };
+    if (!synchronized) return { kind: "waiting", reason: "disconnected" };
+    if (snapshot.startup?.state !== "ready") return { kind: "waiting", reason: "initializing" };
+    if (snapshot.activity === "initializing") return { kind: "waiting", reason: "initializing" };
+    if (snapshot.activity === "waiting_input") return { kind: "waiting", reason: "waiting_input" };
+    if (snapshot.activity === "working" || snapshot.currentTurnId !== null) return { kind: "waiting", reason: "working" };
+    if (snapshot.activity !== "idle" || !snapshot.capabilities.send || (!initial && !["confirmed", "provider_accepted", "not_required"].includes(snapshot.initialInputState))) return { kind: "waiting", reason: "unavailable" };
+    if (initial && snapshot.initialInputState !== "not_submitted") return { kind: "waiting", reason: "unavailable" };
+    return null;
+  };
+  const submitWorkerInput = (operationId: string, prompt: string, deadline: number, initial: boolean): Promise<WorkerInputResult> => {
+    const kind = initial ? "initial" : "worker_input";
+    const payload = initial ? { text: prompt } : { content: [{ type: "text", text: prompt }], expectedTurnId: null, origin: "daynight" };
+    const hash = controllerPayloadHash({ kind, payload });
+    const existing = journal.getOperation(operationId);
+    if (existing) {
+      if (existing.kind !== kind || existing.executionGeneration !== ticket.executionGeneration || existing.payloadHash !== hash) throw new Error("The operation ID has different content or generation.");
+      const running = active.get(operationId);
+      return running ? running.then(operation => ({ kind: "operation", operation })) : Promise.resolve({ kind: "operation", operation: existing });
+    }
+    const pending = pendingWorkerInput.get(operationId);
+    if (pending) {
+      if (pending.hash !== hash) throw new Error("The operation ID has different content.");
+      return pending.promise;
+    }
+    if (pendingWorkerInput.size >= 32) throw new Error("Controller IPC action capacity is unavailable.");
+    const promise = queueNative("send_message", async (): Promise<WorkerInputResult> => {
+      const nowExisting = journal.getOperation(operationId);
+      if (nowExisting) {
+        if (nowExisting.kind !== kind || nowExisting.executionGeneration !== ticket.executionGeneration || nowExisting.payloadHash !== hash) throw new Error("The operation ID has different content or generation.");
+        return { kind: "operation", operation: nowExisting };
+      }
+      let waiting = workerReady(deadline, initial);
+      if (waiting) return waiting;
+      let taskResult: "task_paused" | "claim_invalid" | null;
+      try { taskResult = await checkWorkerTask(ticket, options.homeDirectory, deadline); }
+      catch (error) { if (Date.now() >= deadline) return { kind: "waiting", reason: "expired" }; throw error; }
+      waiting = workerReady(deadline, initial);
+      if (waiting) return waiting;
+      if (taskResult) return { kind: "waiting", reason: taskResult };
+      const prepared = accountingBoundary(() => journal.prepareOperation({ operationId, kind, payload }));
+      return { kind: "operation", operation: await dispatch(prepared, () => provider!.send(textNativeInput(prompt), operationId, null)) };
+    });
+    pendingWorkerInput.set(operationId, { hash, promise });
+    void promise.finally(() => { if (pendingWorkerInput.get(operationId)?.promise === promise) pendingWorkerInput.delete(operationId); }).catch(() => {});
+    return promise;
+  };
+  const workerWaiters = new Map<Promise<WorkerInputResult>, Set<(value: WorkerInputResult | null, error?: unknown) => void>>();
+  const waitForWorkerInput = (socket: Socket, promise: Promise<WorkerInputResult>): Promise<WorkerInputResult | null> => {
+    const existing = workerWaiters.get(promise);
+    const waiters = existing ?? new Set<(value: WorkerInputResult | null, error?: unknown) => void>();
+    if (!existing) {
+      workerWaiters.set(promise, waiters);
+      const complete = (value: WorkerInputResult | null, error?: unknown): void => {
+        workerWaiters.delete(promise);
+        for (const waiter of waiters) waiter(value, error);
+      };
+      void promise.then(result => complete(result), error => complete(null, error));
+    }
+    return new Promise((resolve, reject) => {
+      const finish = (value: WorkerInputResult | null, error?: unknown): void => {
+        if (!waiters.delete(finish)) return;
+        localWaiterCount--; clearTimeout(timer); socket.off("close", disconnected);
+        if (error !== undefined) reject(error); else resolve(value);
+      };
+      const disconnected = (): void => finish(null);
+      const timer = setTimeout(() => { socket.destroy(); disconnected(); }, 65_000);
+      waiters.add(finish); localWaiterCount++; socket.once("close", disconnected);
+      if (socket.destroyed) disconnected();
+    });
+  };
   let ipcBound = false;
   const server = createServer(socket => {
     sockets.add(socket); socket.once("close", () => sockets.delete(socket)); socket.on("error", () => {}); socket.setTimeout(30_000, () => socket.destroy()); socket.setEncoding("utf8"); let buffer = "", handled = false;
@@ -453,24 +535,31 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
           // acceptance that legitimately takes longer than this socket window.
           socket.setTimeout(0);
           let operation: ControllerOperation | null | undefined;
+          let inputResult: WorkerInputResult | null | undefined;
           if (request.action.kind === "stop") {
             socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot() } satisfies ControllerLocalResponse) + "\n", () => { void shutdown(); }); return;
           }
           if (request.action.kind !== "observe") {
             const pending = active.get(request.action.operationId);
             if (localWaiterCount >= 32 || localWaiters.size >= 32 && (!pending || !localWaiters.has(pending))) throw new Error("Controller IPC action capacity is unavailable.");
-            if (!stopping && request.action.kind === "submit_initial" && (!provider || !synchronized)) {
-              // No dispatch intent exists yet. The worker may observe again
-              // after startup/reconnection without treating this as a failure.
-              journal.patchSnapshot({ lifecycle: "starting" });
-              socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot() } satisfies ControllerLocalResponse) + "\n"); return;
-            }
-            if (!provider || stopping || request.action.kind === "submit_initial" && !synchronized) throw new Error("Controller is still initializing or disconnected.");
-            if (request.action.kind === "submit_initial") {
-              const prepared = accountingBoundary(() => journal.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }));
-              operation = await waitForOperation(socket, dispatch(prepared, () => provider!.send(textNativeInput(ticket.initialPrompt), ticket.initialOperationId, null)), 65_000);
-              if (operation === null) return;
+            if (request.action.kind === "submit_worker_input" || request.action.kind === "submit_initial" && ticket.claimId !== undefined) {
+              const action = request.action;
+              const initial = action.kind === "submit_initial";
+              const deadline = action.kind === "submit_initial" ? Date.now() + 30_000 : action.deadline;
+              inputResult = await waitForWorkerInput(socket, submitWorkerInput(action.operationId, action.kind === "submit_initial" ? ticket.initialPrompt : action.prompt, deadline, initial));
+              if (inputResult === null) return;
+              if (initial) { operation = inputResult.kind === "operation" ? inputResult.operation : undefined; inputResult = undefined; }
+            } else if (request.action.kind === "submit_initial") {
+              if (stopping) throw new Error("Controller is still initializing or disconnected.");
+              if (!provider || !synchronized) {
+                journal.patchSnapshot({ lifecycle: "starting" });
+              } else {
+                const prepared = accountingBoundary(() => journal.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }));
+                operation = await waitForOperation(socket, dispatch(prepared, () => provider!.send(textNativeInput(ticket.initialPrompt), ticket.initialOperationId, null)), 65_000);
+                if (operation === null) return;
+              }
             } else {
+              if (!provider || stopping) throw new Error("Controller is still initializing or disconnected.");
               const action = request.action;
               cleaning = true; cleanupInputStarted = false; cleanupInteractions.clear(); nativeEvent(publishState);
               if (stopping) throw new Error("Controller stopped after a durable event failure.");
@@ -500,7 +589,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
               if (operation === null) return;
             }
           }
-          socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}) } satisfies ControllerLocalResponse) + "\n");
+          socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}), ...(inputResult ? { inputResult } : {}), ...(request.action.kind === "observe" && ticket.claimId !== undefined ? { workerInputProtocol: 1 as const } : {}) } satisfies ControllerLocalResponse) + "\n");
         } catch (error) { if (isOutboxFailure(error)) stopForAccountingFailure(error); socket.end(JSON.stringify({ requestId, ok: false, error: error instanceof Error ? error.message : String(error) } satisfies ControllerLocalResponse) + "\n"); }
       })().catch(fail);
     });

@@ -18,12 +18,13 @@ const metadata = async (runDirectory: string, runId: string): Promise<RecoveryMe
   return { schemaVersion: 1, runId, directoryId: path.basename(runDirectory), ownerUid: owner.uid, ownerGid: owner.gid };
 };
 
-const fakeDocker = (resources: ResourceIdentity, runId: string, options: { helperFailure?: Error; foreignApplication?: boolean } = {}) => {
+const fakeDocker = (resources: ResourceIdentity, runId: string, options: { helperFailure?: Error; foreignApplication?: boolean; foreignRedis?: boolean; redisRemovalFailure?: boolean; missingRedis?: boolean } = {}) => {
   const labels = { 'daynight.e2e.run': runId };
   const objects = new Map<string, unknown>([
     [resources.applicationContainer, { Config: { Labels: options.foreignApplication ? {} : labels }, State: { Running: false, ExitCode: 137 } }],
     [resources.ownershipContainer, { Config: { Labels: labels }, State: { Running: true, ExitCode: 0 } }],
     [resources.postgresContainer, { Config: { Labels: labels }, State: { Running: true, ExitCode: 0 } }],
+    ...options.missingRedis ? [] : [[resources.redisContainer, { Config: { Labels: options.foreignRedis ? {} : labels }, State: { Running: true, ExitCode: 0 } }] as [string, unknown]],
     [resources.postgresVolume, { Labels: labels }], [resources.network, { Labels: labels }],
     [resources.ingressNetwork, { Labels: labels }], [resources.runtimeImage, { Config: { Labels: labels } }],
   ]);
@@ -38,7 +39,10 @@ const fakeDocker = (resources: ResourceIdentity, runId: string, options: { helpe
         ? { exitCode: 1, stdout: '', stderr: `Error: No such object: ${resource}` }
         : { exitCode: 0, stdout: JSON.stringify([object]), stderr: '' };
     }
-    if (args[1] === 'rm') { objects.delete(args.at(-1)!); return { exitCode: 0, stdout: '', stderr: '' }; }
+    if (args[1] === 'rm') {
+      if (options.redisRemovalFailure && args.at(-1) === resources.redisContainer) return { exitCode: 1, stdout: '', stderr: 'Redis removal failed' };
+      objects.delete(args.at(-1)!); return { exitCode: 0, stdout: '', stderr: '' };
+    }
     if (args[0] === 'logs') return { exitCode: 0, stdout: 'runtime output', stderr: '' };
     if (args[0] === 'create') {
       assert.equal(args[args.indexOf('--network') + 1], 'none');
@@ -69,6 +73,58 @@ test('recovery of a killed application reuses ownership repair before removing i
     const imageRemoved = docker.calls.findIndex((args) => args[1] === 'rm' && args.at(-1) === resources.runtimeImage);
     assert.ok(applicationRemoved < helperCreated && helperCreated < imageRemoved);
     assert.equal(await readFile(path.join(runDirectory, 'logs', 'runtime.stdout.log'), 'utf8'), 'runtime output');
+  } finally { await rm(runDirectory, { recursive: true }); }
+});
+
+test('partial setup without Redis still verifies all run-owned resources absent', async () => {
+  const runDirectory = await directory();
+  try {
+    const runId = randomUUID(), resources = resourceIdentity(runId);
+    const docker = fakeDocker(resources, runId, { missingRedis: true });
+    const result = await cleanupOwnedResources({ repository, runDirectory, resources, metadata: await metadata(runDirectory, runId), mode: 'recovery', applicationStarted: false, execute: docker.execute });
+    assert.equal(result.verified, true);
+    assert.ok(docker.calls.some((args) => args[1] === 'inspect' && args[2] === resources.redisContainer));
+    assert.equal(docker.objects.size, 0);
+  } finally { await rm(runDirectory, { recursive: true }); }
+});
+
+test('unexpected Redis exit fails normal cleanup while still removing all resources', async () => {
+  const runDirectory = await directory();
+  try {
+    const runId = randomUUID(), resources = resourceIdentity(runId);
+    const docker = fakeDocker(resources, runId);
+    docker.objects.set(resources.redisContainer, { Config: { Labels: { 'daynight.e2e.run': runId } }, State: { Running: false, ExitCode: 1 } });
+    const result = await cleanupOwnedResources({ repository, runDirectory, resources, metadata: await metadata(runDirectory, runId), mode: 'normal', applicationStarted: false, redisStarted: true, execute: docker.execute });
+    assert.equal(result.verified, false);
+    assert.equal(result.resourcesAbsent, true);
+    assert.ok(result.cleanupErrors.some((error) => error.includes('Redis exited before requested shutdown')));
+    assert.equal(docker.objects.size, 0);
+  } finally { await rm(runDirectory, { recursive: true }); }
+});
+
+test('Redis removal failures and foreign ownership prevent verified cleanup', async () => {
+  for (const options of [{ redisRemovalFailure: true }, { foreignRedis: true }]) {
+    const runDirectory = await directory();
+    try {
+      const runId = randomUUID(), resources = resourceIdentity(runId);
+      const docker = fakeDocker(resources, runId, options);
+      const result = await cleanupOwnedResources({ repository, runDirectory, resources, metadata: await metadata(runDirectory, runId), mode: 'recovery', applicationStarted: false, execute: docker.execute });
+      assert.equal(result.verified, false);
+      assert.equal(result.resourcesAbsent, false);
+      assert.ok(docker.objects.has(resources.redisContainer));
+      if (options.foreignRedis) assert.ok(!docker.calls.some((args) => args[1] === 'rm' && args.at(-1) === resources.redisContainer));
+      else assert.ok(result.remaining.includes(resources.redisContainer));
+    } finally { await rm(runDirectory, { recursive: true }); }
+  }
+});
+
+test('legacy receipts lacking Redis identity are rejected without guessing ownership', async () => {
+  const runDirectory = await directory();
+  try {
+    const runId = randomUUID(), resources = resourceIdentity(runId);
+    const { redisContainer: _redis, ...legacy } = resources;
+    await writeCleanupReceipt(runDirectory, { ...await metadata(runDirectory, runId), resourceIdentity: legacy as ResourceIdentity, state: 'pending', verified: false, resourcesAbsent: false, remaining: [], verificationErrors: [], cleanupErrors: [] });
+    await assert.rejects(recoverEnvironment({ repository, runDirectory }), /exactly its run-owned resources/);
   } finally { await rm(runDirectory, { recursive: true }); }
 });
 

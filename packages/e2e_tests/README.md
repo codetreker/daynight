@@ -42,7 +42,7 @@ this package.
 ## Runtime topology
 
 Each run owns a dedicated internal database network, private ingress bridge,
-PostgreSQL 18.6 container and data volume, runtime image and application container. The application container runs
+PostgreSQL 18.6 container and data volume, a Redis monitoring container, runtime image and application container. Redis has no published host port or persistent volume; it uses a bounded 64 MB memory budget, no eviction and no persistence. The application container runs
 the compiled Daynight Server, compiled UniAuth and a local OAuth provider. The
 compiled CLI and Playwright browser drive the system from the host through
 loopback-only published ports. A run-local TLS gateway preserves Host for
@@ -81,7 +81,11 @@ reference work, project detail and attachment-tab Back/Forward, direct Web propo
 completion, and Web reload. A second Task is claimed, registered, released and
 claimed again through the real service; CLI reads both Session identities and the
 Web shows the retained history without the old current claim. These API registrations
-do not start a Worker process. The same resource IDs and content cross the clients
+do not start a Worker process. A registered Worker's monitoring read returns an
+absent observation through the real Redis-backed Server. Separately, a real
+compiled Worker with no selected Projects reports to that Server and Redis; the
+production Web reads the same Worker's observation, capacity and timestamps.
+The journey starts no native agent and does not replace normal tool preflight. The same resource IDs and content cross the clients
 and persist in the real database.
 
 The same authenticated journey launches the compiled CLI's public Test Session
@@ -178,6 +182,10 @@ trees. Private credentials,
 auth SQLite data, attachment storage, certificates and copied build artifacts
 are removed. A cleanup failure makes the run fail rather than producing a
 successful result.
+
+Recovery requires the exact recorded resource set and owner labels, including
+Redis. Clean up runs created by an older runner with that runner before upgrading;
+the current runner does not infer missing resource identities from old receipts.
 
 The framework does not touch an existing deployment or use its database. A
 passing local run establishes only the recorded source and scenarios; it does

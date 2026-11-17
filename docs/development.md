@@ -779,7 +779,8 @@ Build production Web resources
 once, then run `bash scripts/integration.sh` from the Go module. The runner owns
 a fresh PostgreSQL container when `DAYNIGHT_TEST_DATABASE_URL` is unset; an
 explicit URL must identify the invoking test environment's isolated instance.
-It also prepares real authentication, records the source and binary identity,
+Each run also owns an isolated Redis container for current monitoring. It
+prepares real authentication, records the source and binary identity,
 and bounds startup, execution and cleanup. `bash scripts/integration.sh --cleanup`
 independently reconciles saved runs after interruption and preserves their
 original failure or unknown command outcome. Safe build/result JSON and streamed
@@ -956,8 +957,8 @@ bash -n packages/daynight/scripts/external-image-network.sh
 
 `packages/e2e_tests` owns the complete-product Linux runner. It compiles the CLI,
 production Web and full Go Server from the current checkout, builds the pinned
-unmodified UniAuth command and Console, and starts a dedicated PostgreSQL
-instance and auth runtime on dedicated networks. The database network is internal;
+unmodified UniAuth command and Console, and starts dedicated PostgreSQL and Redis
+instances and an auth runtime on dedicated networks. The database network is internal;
 a private ingress bridge publishes loopback ports, and the application removes
 its default route before starting services.
 

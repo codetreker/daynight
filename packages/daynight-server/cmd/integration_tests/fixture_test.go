@@ -209,6 +209,10 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	if databaseURL == "" {
 		t.Fatal("integration requires its test environment's isolated PostgreSQL")
 	}
+	redisURL := os.Getenv("DAYNIGHT_TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Fatal("integration requires its run-owned Redis")
+	}
 	runRoot := integrationRunRoot(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	t.Cleanup(cancel)
@@ -302,13 +306,14 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	})
 	s2sSharedKey := rand.Text() + rand.Text()
 	configuration := map[string]any{
-		"s2s":       map[string]any{"allowed_origin": "https://client.example", "shared_key": s2sSharedKey},
-		"server":    map[string]any{"listen_address": address, "public_origin": origin, "preview_origin": testauth.PreviewOrigin(origin), "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
-		"database":  map[string]any{"url": parsed.String()},
-		"storage":   map[string]any{"root": "attachments"},
-		"uniauth":   map[string]any{"url": gateway.Origin, "app_id": gateway.AppID, "app_secret": gateway.AppSecret, "callback_url": callbackURL, "allow_loopback_http": true},
-		"task_sync": map[string]any{"overlap": "10s"},
-		"webhook":   map[string]any{"enabled": true},
+		"s2s":        map[string]any{"allowed_origin": "https://client.example", "shared_key": s2sSharedKey},
+		"server":     map[string]any{"listen_address": address, "public_origin": origin, "preview_origin": testauth.PreviewOrigin(origin), "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
+		"database":   map[string]any{"url": parsed.String()},
+		"monitoring": map[string]any{"redis_url": redisURL},
+		"storage":    map[string]any{"root": "attachments"},
+		"uniauth":    map[string]any{"url": gateway.Origin, "app_id": gateway.AppID, "app_secret": gateway.AppSecret, "callback_url": callbackURL, "allow_loopback_http": true},
+		"task_sync":  map[string]any{"overlap": "10s"},
+		"webhook":    map[string]any{"enabled": true},
 	}
 	if imageDecoder {
 		dir, node := os.Getenv("DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR"), os.Getenv("DAYNIGHT_INTEGRATION_NODE_PATH")

@@ -19,6 +19,10 @@ type monitoringAppBackend struct {
 	err     error
 }
 
+func (b *monitoringAppBackend) Save(context.Context, store.MonitoringIdentity, store.MonitoringCandidate) (store.MonitoringReceipt, error) {
+	panic("unexpected monitoring request")
+}
+
 func (b *monitoringAppBackend) CompareAndSet(context.Context, store.MonitoringIdentity, *string, store.MonitoringCandidate) (store.MonitoringCASResult, error) {
 	panic("unexpected monitoring request")
 }

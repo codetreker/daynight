@@ -12,9 +12,9 @@ import type { TaskWorkPage, TaskWorkQuery } from "./task-work.js";
 import { array as observationArray, bool as observationBool, record as observationRecord, timestamp as observationTimestamp } from "./validation.js";
 import type { WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerPromptSelector, WorkerPromptResults } from "./worker-configuration.js";
 import { WORKER_CONFIGURATION_REPORT_BYTES, workerReportBody, type ToolPathsReportBudget } from "./worker-report.js";
-import { parseMonitoringRead, parseMonitoringReceipt } from "./worker-monitoring.js";
-import type { MonitoringRead, MonitoringReceipt } from "./worker-monitoring.js";
-import type { Observation } from "../commands/worker/monitoring/types.js";
+import { parseMonitoringReceipt } from "./worker-monitoring.js";
+import type { DirectReceipt } from "./worker-monitoring.js";
+import type { DirectObservation } from "../commands/worker/monitoring/types.js";
 import { jsonContainerSources, jsonObjectSources } from "./json-source.js";
 import { randomUUID } from "node:crypto";
 import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRevoke } from "./team-invitations.js";
@@ -193,8 +193,7 @@ export type ApiClient = TaskSessionClient & {
   previewProjectDeletion(userId: string, projectId: string): Promise<ProjectDeletionPreview>;
   deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
-  readWorkerMonitoring(workerId: string, requestId: string): Promise<MonitoringRead>;
-  writeWorkerMonitoring(workerId: string, expectedRevision: string | null, observation: Observation, requestId: string): Promise<MonitoringReceipt>;
+  writeWorkerMonitoring(workerId: string, observation: DirectObservation, requestId: string): Promise<DirectReceipt>;
   getWorkerConfiguration(workerId: string): Promise<ReceivedWorkerConfigurationResource>;
   reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   createProject(input: CreateProjectInput, requestId?: string): Promise<Project>;
@@ -1241,21 +1240,14 @@ export const createApiClient = (options: {
       const worker = resourceId(workerId);
       return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], reportBody(projectToolReport(input, false)), true);
     },
-    readWorkerMonitoring: (workerId, requestId) => {
+    writeWorkerMonitoring: (workerId, observation, requestId) => {
       const worker = resourceId(workerId);
       if (canonicalId(requestId) !== requestId) throw new Error("Monitoring request ID must be a canonical UUID.");
-      return exchange({ operation: "worker.monitoring.read", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "GET", {
+      return exchange({ operation: "worker.monitoring.write", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true, responseBytes: 512 * 1024,
-        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: parseMonitoringRead,
-      }, [200], undefined, true);
-    },
-    writeWorkerMonitoring: (workerId, expectedRevision, observation, requestId) => {
-      const worker = resourceId(workerId);
-      if (canonicalId(requestId) !== requestId || expectedRevision !== null && canonicalId(expectedRevision) !== expectedRevision) throw new Error("Monitoring request and revision IDs must be canonical UUIDs.");
-      return exchange({ operation: "worker.monitoring.write", sentRequestId: requestId }, `/me/workers/${encodeURIComponent(worker)}/monitoring`, "PUT", {
-        kind: "json", requirePrincipal: true, checkPrincipalOnError: true, responseBytes: 512 * 1024,
-        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: value => parseMonitoringReceipt(value, observation),
-      }, [200], { kind: "json", value: { expectedRevision, observation }, maxBytes: 256 * 1024 }, true);
+        decodeJsonSource: source => { jsonObjectSources(source); return parseApiJson(source); }, parse: parseMonitoringReceipt,
+        confirmedFailure: (status, error) => status === 503 && error.code === "monitoring_unavailable",
+      }, [200], { kind: "json", value: observation, maxBytes: 256 * 1024 }, true);
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);

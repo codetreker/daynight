@@ -63,6 +63,7 @@ type MonitoringSummariesResult struct {
 }
 
 type MonitoringStore interface {
+	Save(context.Context, MonitoringIdentity, MonitoringCandidate) (MonitoringReceipt, error)
 	CompareAndSet(context.Context, MonitoringIdentity, *string, MonitoringCandidate) (MonitoringCASResult, error)
 	Read(context.Context, MonitoringIdentity) (MonitoringReadResult, error)
 	ReadSummaries(context.Context, []MonitoringIdentity) (MonitoringSummariesResult, error)

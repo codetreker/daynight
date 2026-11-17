@@ -1966,6 +1966,9 @@ When the URL is unset, the runner owns a fresh PostgreSQL 18.6 container. An
 explicit `DAYNIGHT_TEST_DATABASE_URL` must refer to the invoking test
 environment's isolated instance, such as its fresh CI service or local validation
 container. It must not select a development, shared or production database.
+Every run also owns a fresh Redis container for monitoring, bound to a random
+loopback port. The runner supplies its URL to the Server configuration; it does
+not use an external or shared Redis instance.
 
 `scripts/integration.sh` builds the production `cmd/daynight-server` and the
 CLI image validator from the current source, requiring Node 24 and the installed
@@ -1983,6 +1986,8 @@ resources. Task groups run sequentially with separate projects: lifecycle,
 search pagination and dependency graph, property and Sync readback, Step
 operations, Thread replies, Attachment bytes, personal Worker prompt
 synchronization, and Worker claim/Agent discussion.
+The Worker readonly flow registers a Worker and reads an absent monitoring
+snapshot through the real Redis-backed Server.
 
 The application flows obtain a real S2S grant for the existing native user and
 use API Bearer requests for profile, Team/member, Project, Goal/Task, Step,
@@ -2022,8 +2027,8 @@ or Web test suites and contains no business boundary or fault matrices.
 Startup, build and test execution have deadlines. Owned process cleanup stops
 the Server before releasing its schema and storage and confirms authentication
 process termination. The shell EXIT handler uses `integration-runtime.mts` to
-reconcile owned process identities and the run's resources, including its local
-database container. Failed termination or cleanup remains a failure and retains
+reconcile owned process identities and the run's resources, including its Redis
+and any local database container. Failed termination or cleanup remains a failure and retains
 the affected run directory; successful cleanup cannot erase a test failure.
 
 After interruption, run the independent reconciliation command from this module:
@@ -2032,10 +2037,12 @@ After interruption, run the independent reconciliation command from this module:
 bash scripts/integration.sh --cleanup
 ```
 
-Local reconciliation skips runs with a live runner. In CI it selects only the
+Local reconciliation skips current-version runs with a live runner. In CI it selects only the
 current workflow run, job and attempt, then drains that run's owned children and
 resources. It preserves the original command outcome and reports cleanup
-failures. CI invokes it in an always-run step after API validation.
+failures. Legacy version 1 ownership receipts are reported for cleanup by their
+original runner; they do not prevent reconciliation of current runs. CI invokes
+the command in an always-run step after API validation.
 
 Safe evidence is retained under `.tmp/integration-results/<run-id>/`: `build.json`
 binds source/fingerprint, binary hash, toolchain and race mode; `result.json`
@@ -2743,19 +2750,37 @@ with independent lifecycles.
 
 | Method | Path | Result |
 |---|---|---|
-| `PUT` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, accepted or duplicate receipt |
+| `POST` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, direct save receipt with received and expiry times |
+| `PUT` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, accepted or duplicate CAS receipt |
 | `GET` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, current permission-filtered observation or absent state |
 | `POST` | `/api/v1/me/workers/monitoring/query` | `200`, ordered summaries for 1–100 distinct admitted Worker IDs |
 
 These authenticated routes accept no query parameters. The request owner comes
 from the principal; an unknown, other-account or expired Worker returns 404,
-including any failed admission in a batch. Stored observations expire after
-one hour; reads and duplicate or rejected writes do not renew them. Detail and
-summary responses have separate encoding budgets. Four CAS conflicts return
-409, unavailable storage returns `503 monitoring_unavailable`, and an uncertain
-write returns `503 monitoring_write_outcome_unknown`; callers must read back an
-unknown result before deciding what to do. Current access filters associated
-names, IDs and private details, including claim failure worktree paths, without changing the Worker's total capacity. Deploy all Servers that accept and preserve the optional field before strict CLI/Web readers, then enable Worker production. Before rollback to a reader or Server that rejects it, stop production and allow affected frames to expire naturally after 3600 seconds or be safely replaced without the field; do not delete keys, renew TTLs or replay uncertain writes.
+including any failed admission in a batch. Direct POST replaces the complete
+current observation without reading or comparing the existing value; every
+successful POST renews its one-hour TTL, including duplicate or delayed samples.
+The retained PUT protocol uses CAS; its duplicate and rejected writes, and all
+reads, do not renew TTL. Both protocols use the same current value and permission
+projection. Detail and summary responses have separate encoding budgets.
+
+Four CAS conflicts return 409 only for PUT. Unavailable storage returns
+`503 monitoring_unavailable`, and an uncertain write returns
+`503 monitoring_write_outcome_unknown`; an unknown result does not establish
+whether the write committed. Legacy PUT callers reconcile under their original
+protocol; direct callers do not need to read back or replay an old observation.
+Current access filters associated names, IDs and private details, including claim
+failure worktree paths, without changing the Worker's total capacity.
+
+All Servers receiving traffic must support direct POST and the additional 62-byte
+private compatibility envelope before producers use direct reporting. Existing
+Workers and Web readers continue using their supported protocols independently;
+old protocol retirement requires a separate support and migration decision.
+Deploy all Servers that accept and preserve optional monitoring fields before
+strict CLI/Web readers, then enable Worker production. Before rollback to a reader
+or Server that rejects a field, stop production and allow affected frames to
+expire naturally after 3600 seconds or be safely replaced without the field; do
+not delete keys, renew TTLs or replay uncertain writes.
 
 Summary reads first admit the entire Worker batch and read only each bounded
 Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
@@ -2771,6 +2796,16 @@ The Redis connection is owned only by monitoring and is closed during shutdown.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
 
 ### Monitoring format transition
+
+Direct reporting preserves v2 frames but may produce a private observation body
+up to 256 KiB + 62 bytes. Prefer rolling back the direct producer while keeping
+the compatible Server. Before rolling back to a Server without direct POST or
+this private allowance, stop and drain direct writes while preserving legacy
+PUT/GET/query and business channels. Wait at least 3600 seconds after the last
+direct write, or establish that all incompatible records were replaced by valid
+legacy reports, before rollback. Do not delete keys or rewrite unknown writes.
+
+The following barrier applies to transitions between incompatible frame versions:
 
 The stored header uses strict format version 2; v1 and v2 servers cannot serve
 the same monitoring data concurrently. If an independently verified empty

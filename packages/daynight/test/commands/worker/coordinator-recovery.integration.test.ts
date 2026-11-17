@@ -291,14 +291,14 @@ it.each([
     expect(f.store.getNativeConfiguration(herdrOwner)?.herdrLaunch).toEqual(tools.herdr);
     expect(restore).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
     expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.store.getTask(pendingOwner)?.status).toBe("pending");
-    expect(monitor.capture("outage").admission.coverage).toBe("unknown");
-    expect(monitor.capture("outage").capacity?.quality).not.toBe("current");
-    expect(monitor.capture("outage").currentFailures).toContainEqual(expect.objectContaining({ component: "resources", phase: "resource-observation" }));
+    expect(monitor.capture().admission.coverage).toBe("unknown");
+    expect(monitor.capture().capacity?.quality).not.toBe("current");
+    expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ component: "resources", phase: "resource-observation" }));
     recover();
     await coordinator.tick();
     await eventually(() => expect(advance).toHaveBeenCalledTimes(2));
-    expect(monitor.capture("recovered").capacity).toMatchObject({ quality: "current", occupied: 2, available: 0 });
-    expect(monitor.capture("recovered").currentFailures.filter(item => item.component === "resources")).toEqual([]);
+    expect(monitor.capture().capacity).toMatchObject({ quality: "current", occupied: 2, available: 0 });
+    expect(monitor.capture().currentFailures.filter(item => item.component === "resources")).toEqual([]);
     expect(f.store.getTask(pendingOwner)?.status).toBe("pending");
   } finally { recover(); await coordinator.shutdown(); webStore.close(); }
 });

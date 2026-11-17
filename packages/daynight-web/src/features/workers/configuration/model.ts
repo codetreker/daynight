@@ -117,7 +117,11 @@ export const resolvedProjectNative = (global: WorkerConfigurationNative, overrid
 };
 export const mergeConfigurationResources = (current: WorkerConfigurationResource | null, incoming: WorkerConfigurationResource): WorkerConfigurationResource => {
   if (current === null) return incoming;
-  const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision)) ? current.desired : incoming.desired;
+  const currentValue = current.desired?.value, incomingValue = incoming.desired?.value;
+  const currentHasMore = current.desired?.revision === incoming.desired?.revision && currentValue !== undefined && incomingValue !== undefined &&
+    (incomingValue.agentControlMode === undefined || currentValue.agentControlMode !== undefined) && (incomingValue.toolPaths === undefined || currentValue.toolPaths !== undefined) &&
+    (currentValue.agentControlMode !== undefined && incomingValue.agentControlMode === undefined || currentValue.toolPaths !== undefined && incomingValue.toolPaths === undefined);
+  const desired = current.desired !== null && (incoming.desired === null || BigInt(current.desired.revision) > BigInt(incoming.desired.revision) || currentHasMore) ? current.desired : incoming.desired;
   const observation = BigInt(current.observationRevision) > BigInt(incoming.observationRevision) ? current : incoming;
-  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
+  return { desired, observationRevision: observation.observationRevision, observation: observation.observation, ...(incoming.document === undefined ? {} : { document: incoming.document }), ...(incoming.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(incoming.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
 };

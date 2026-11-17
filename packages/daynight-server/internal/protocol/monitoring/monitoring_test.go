@@ -154,3 +154,129 @@ func TestSummaryRejectsPrivateOrMalformedData(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectObservationContract(t *testing.T) {
+	legacy := detailed(t)
+	delete(legacy, "runId")
+	delete(legacy, "sequence")
+	encode := func() []byte {
+		t.Helper()
+		raw, err := json.Marshal(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	for _, phase := range []string{"write", "shutdown"} {
+		legacy["delivery"].(map[string]any)["lastFailure"].(map[string]any)["phase"] = phase
+		o, err := ParseDirectObservation(encode())
+		if err != nil {
+			t.Fatalf("phase %s: %v", phase, err)
+		}
+		wrapped := LegacyObservationForDirect(o, "10000000-0000-4000-8000-000000000001")
+		if wrapped["runId"] != "10000000-0000-4000-8000-000000000001" || wrapped["sequence"] != "1" || o["runId"] != nil || wrapped["capturedAt"] != o["capturedAt"] {
+			t.Fatalf("invalid envelope: %#v", wrapped)
+		}
+		b, _ := json.Marshal(wrapped)
+		if _, err := ParseStoredObservation(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, phase := range []string{"read", "reconcile"} {
+		legacy["delivery"].(map[string]any)["lastFailure"].(map[string]any)["phase"] = phase
+		if _, err := ParseDirectObservation(encode()); err == nil {
+			t.Fatalf("direct accepted phase %s", phase)
+		}
+		wrapped := LegacyObservationForDirect(DirectObservation(legacy), "10000000-0000-4000-8000-000000000001")
+		b, _ := json.Marshal(wrapped)
+		if _, err := ParseObservation(b); err != nil {
+			t.Fatalf("legacy phase %s: %v", phase, err)
+		}
+	}
+	legacy["delivery"].(map[string]any)["lastFailure"].(map[string]any)["phase"] = "write"
+	failure := legacy["currentFailures"].([]any)[0].(map[string]any)
+	failure["component"], failure["phase"] = "monitoring", "read"
+	if _, err := ParseDirectObservation(encode()); err == nil {
+		t.Fatal("direct accepted monitoring read failure")
+	}
+	failure["phase"] = "shutdown"
+	if _, err := ParseDirectObservation(encode()); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{
+		strings.Replace(string(encode()), `"lifecycle":`, `"runId":"10000000-0000-4000-8000-000000000001","lifecycle":`, 1),
+		strings.Replace(string(encode()), `"lifecycle":`, `"sequence":"1","lifecycle":`, 1),
+		strings.Replace(string(encode()), `"lifecycle":`, `"expectedRevision":null,"lifecycle":`, 1),
+		strings.Replace(string(encode()), `"lifecycle":`, `"lifecycle":"running","lifecycle":`, 1),
+	} {
+		if _, err := ParseDirectObservation([]byte(raw)); err == nil {
+			t.Fatal("accepted unknown or duplicate field")
+		}
+	}
+}
+
+func TestDirectStoredEnvelopeBudget(t *testing.T) {
+	o := detailed(t)
+	o["capturedAt"] = "2026-01-02T02:04:05Z"
+	delete(o, "runId")
+	delete(o, "sequence")
+	base := o["currentFailures"].([]any)[0].(map[string]any)
+	failures := make([]any, 32)
+	for i := range failures {
+		f := make(map[string]any, len(base)+1)
+		for k, v := range base {
+			f[k] = v
+		}
+		f["worktree"] = map[string]any{"kind": "project-relative", "path": strings.Repeat("x", 4000)}
+		failures[i] = f
+	}
+	o["currentFailures"] = failures
+	raw, _ := json.Marshal(o)
+	remaining := MaxBody - len(raw)
+	if remaining < 0 {
+		t.Fatal("fixture too large")
+	}
+	for _, item := range failures {
+		path := item.(map[string]any)["worktree"].(map[string]any)
+		n := min(4000, remaining/5)
+		remaining -= n * 5
+		path["path"] = strings.Repeat("<", n) + strings.Repeat("x", 4000-n)
+	}
+	if remaining > 96 {
+		t.Fatalf("fixture cannot reach limit, remaining %d", remaining)
+	}
+	path := failures[0].(map[string]any)["worktree"].(map[string]any)
+	path["path"] = path["path"].(string) + strings.Repeat("x", remaining)
+	raw, _ = json.Marshal(o)
+	if len(raw) != MaxBody {
+		t.Fatalf("size %d", len(raw))
+	}
+	direct, err := ParseDirectObservation(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := LegacyObservationForDirect(direct, "10000000-0000-4000-8000-000000000001")
+	stored, _ := json.Marshal(wrapped)
+	if len(stored) != MaxStoredBody {
+		t.Fatalf("stored size %d", len(stored))
+	}
+	if _, err := ParseStoredObservation(stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseObservation(stored); err == nil {
+		t.Fatal("legacy HTTP accepted private allowance")
+	}
+	expanded := strings.Replace(string(raw), `\u003c`, `<<`, 1)
+	if len(expanded) >= MaxBody {
+		t.Fatal("fixture must fit raw limit")
+	}
+	if _, err := ParseDirectObservation([]byte(expanded)); err == nil {
+		t.Fatal("direct accepted oversized canonical encoding")
+	}
+	if _, err := ParseDirectObservation(append(raw, ' ')); err == nil {
+		t.Fatal("direct accepted oversized input")
+	}
+	if _, err := ParseStoredObservation(append(stored, ' ')); err == nil {
+		t.Fatal("stored accepted oversized body")
+	}
+}

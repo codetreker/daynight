@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	monitoring "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/monitoring"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -71,7 +72,7 @@ func monitoringQueryInput(fields map[string]json.RawMessage) ([]string, error) {
 }
 
 func (h *workersHandler) putMonitoring(w http.ResponseWriter, request *http.Request, principal model.Principal) {
-	logger := h.logger.With("user_id", principal.UserID)
+	logger := h.logger.With("user_id", principal.UserID, "protocol", "legacy-cas")
 	id, err := monitoringID(request.PathValue("workerId"))
 	if err == nil {
 		err = monitoringNoQuery(request)
@@ -97,6 +98,36 @@ func (h *workersHandler) putMonitoring(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	logger.InfoContext(request.Context(), "worker monitoring saved", "type", "resource", "component", "worker_monitoring", "phase", "write", "run_id", observation["runId"], "sequence", observation["sequence"], "request_id", httpx.RequestID(request.Context()))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, result)
+}
+
+func (h *workersHandler) postMonitoring(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+	logger := h.logger.With("user_id", principal.UserID, "protocol", "direct")
+	id, err := monitoringID(request.PathValue("workerId"))
+	if err == nil {
+		err = monitoringNoQuery(request)
+	}
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_monitoring", "validate", err)
+		return
+	}
+	logger = logger.With("worker_id", id)
+	raw, err := httpx.ReadJSONBodyLimit(w, request, monitoringRequestLimit, transport.JSONBodyReadTimeout)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_monitoring", "validate", err)
+		return
+	}
+	observation, err := monitoring.ParseDirectObservation(raw)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_monitoring", "validate", err)
+		return
+	}
+	result, sampleID, err := h.workers.SaveDirectMonitoring(request.Context(), principal, id, observation)
+	if err != nil {
+		httpx.WriteError(w, request, logger, "worker_monitoring", "write", err)
+		return
+	}
+	logger.InfoContext(request.Context(), "worker monitoring saved", "type", "resource", "component", "worker_monitoring", "phase", "write", "sample_id", sampleID, "request_id", httpx.RequestID(request.Context()))
 	httpx.WriteJSON(w, request, logger, http.StatusOK, result)
 }
 

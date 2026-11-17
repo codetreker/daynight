@@ -353,7 +353,7 @@ describe("minimal worker resource reconciliation", () => {
       expect(await readFile(journal, "utf8")).toBe("original archive journal");
       expect(archive.cleaned).not.toHaveBeenCalled();
       await coordinator.tick();
-      expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ phase: "archive" }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ phase: "archive" }));
     } finally { await coordinator.shutdown(); await manager.dispose(); }
   }, 30_000);
 
@@ -1191,7 +1191,7 @@ it("releases a stopped execution while its worktree remains held, without admitt
   try {
     await coordinator.tick();
     await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
-    await eventually(() => expect(monitoring.capture("1").capacity).toMatchObject({ quality: "current", occupied: 0, available: 1 }));
+    await eventually(() => expect(monitoring.capture().capacity).toMatchObject({ quality: "current", occupied: 0, available: 1 }));
     f.candidates.push(nextCandidate);
     await coordinator.tick();
     await eventually(() => expect([...f.grants.values()].some(value => value.id === uuid(101))).toBe(true));
@@ -1356,7 +1356,7 @@ it.each([{ stream: "stdout", mode: "reconcile" }, { stream: "stderr", mode: "shu
     }
     await expect(access(f.bind(owner).worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(f.store.getTask(original)?.status).toBe("active");
-    expect(monitoring.capture("1").capacity).toMatchObject({ occupied: 0, available: 1 });
+    expect(monitoring.capture().capacity).toMatchObject({ occupied: 0, available: 1 });
     f.candidates.push(...candidates);
     await coordinator.tick();
     expect([...f.grants.values()].some(value => value.id === original.taskId)).toBe(false);
@@ -1430,7 +1430,7 @@ it("reconciles a failed removal after the directory is deleted in the same coord
     await coordinator.tick();
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1 }));
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error" }));
-    expect(monitoring.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }) })]));
+    expect(monitoring.capture().currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }) })]));
     expect(f.store.getTask(owner)?.status).toBe("active");
     expect(worktreePaths(f.project.localPath)).toContain(path.normalize(cwd));
     f.candidates.push(healthyCandidate!); await coordinator.tick();
@@ -1441,7 +1441,7 @@ it("reconciles a failed removal after the directory is deleted in the same coord
     await coordinator.tick();
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
-    expect(monitoring.capture("2").lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
+    expect(monitoring.capture().lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
     await coordinator.tick();
     await eventually(() => expect(createWorktreeManifestStore(path.join(f.project.localPath, ".git")).read(owner.worktreeId)).toBeNull());
     expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(cwd));
@@ -1472,7 +1472,7 @@ it("releases legacy capacity on an observed empty resource set after restart whi
   const monitoring = createMonitoringObserver({ now: f.options.now }), coordinator = createWorkerCoordinator({ ...f.options, monitoring });
   try {
     await coordinator.tick(); await entered.promise;
-    expect(monitoring.capture("1").capacity).toMatchObject({ occupied: 0, available: 1 });
+    expect(monitoring.capture().capacity).toMatchObject({ occupied: 0, available: 1 });
     expect(f.store.getTask(owner)?.status).toBe("active");
     expect(f.worktrees.has(owner.claimId)).toBe(true);
     await coordinator.tick();
@@ -1746,7 +1746,7 @@ it("does not yield archive maintenance for a stopped reservation left in a stale
     finishRemoval.resolve();
     await eventually(() => expect(f.store.getCleanupSchedule(original)).toBeNull());
     finishObservation.resolve(); await nextRound;
-    expect(monitoring.capture("1").reservations).toContainEqual(expect.objectContaining({ occupied: false, scope: expect.objectContaining({ claimId: original.claimId }) }));
+    expect(monitoring.capture().reservations).toContainEqual(expect.objectContaining({ occupied: false, scope: expect.objectContaining({ claimId: original.claimId }) }));
     expect(coordinator.archiveYield()).toBe(false);
   } finally { finishRemoval.resolve(); finishObservation.resolve(); await coordinator.shutdown(); }
 });
@@ -1795,7 +1795,7 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
     expect(archive).toHaveBeenCalledOnce();
     expect(worktreePaths(f.project.localPath)).toContain(path.normalize(binding.worktreePath));
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error" }));
-    expect(monitoring.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }) })]));
+    expect(monitoring.capture().currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }) })]));
     expect(webStore.getTask(owner)?.status).toBe("active");
     expect(worktreePaths(f.project.localPath)).toContain(path.normalize(binding.worktreePath));
     f.candidates.push(healthyCandidate!); await coordinator.tick();
@@ -1807,7 +1807,7 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
     expect(archive).toHaveBeenCalledTimes(2);
-    expect(monitoring.capture("2").lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
+    expect(monitoring.capture().lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
     await coordinator.tick();
     await eventually(() => expect(createWorktreeManifestStore(path.join(f.project.localPath, ".git")).read(owner.worktreeId)).toBeNull());
     expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
@@ -1896,7 +1896,7 @@ it.each([
     expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
     expect(await readFile(journal)).toEqual(journalBytes); expect(await readFile(pending)).toEqual(pendingBytes);
     expect(archive).toHaveBeenCalledTimes(removalFails ? 2 : 1);
-    expect(monitoring.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: expect.objectContaining({ claimId: owner.claimId }) })]));
+    expect(monitoring.capture().currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: expect.objectContaining({ claimId: owner.claimId }) })]));
     expect(f.events.some(event => event.kind === "session-archive-ready")).toBe(false);
     expect(f.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: code, legacyError: "original archive failure", nextAttemptAt: now + 900_000 });
     await coordinator.shutdown(); await maintenance.close();
@@ -1916,6 +1916,6 @@ it.each([
     await eventually(() => expect(f.events.some(event => event.kind === "session-archive-ready")).toBe(true));
     expect(archive).toHaveBeenCalledTimes(removalFails ? 3 : 2);
     expect(await readFile(path.join(successorPath, "successor-marker"), "utf8")).toBe("untouched");
-    expect(monitoring.capture("2").currentFailures.some(item => item.component === "archive" && item.scope.kind === "claim" && item.scope.claimId === owner.claimId)).toBe(false);
+    expect(monitoring.capture().currentFailures.some(item => item.component === "archive" && item.scope.kind === "claim" && item.scope.claimId === owner.claimId)).toBe(false);
   } finally { signal.abort(); await maintenance.close(); await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
 }, 30_000);

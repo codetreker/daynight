@@ -7,6 +7,7 @@ export type ResourceIdentity = {
   network: string;
   ingressNetwork: string;
   postgresContainer: string;
+  redisContainer: string;
   applicationContainer: string;
   ownershipContainer: string;
   postgresVolume: string;
@@ -35,7 +36,7 @@ export const resourceIdentity = (runId: string): ResourceIdentity => {
   const name = `daynight-e2e-${runId}`;
   return {
     network: `${name}-network`, ingressNetwork: `${name}-ingress`,
-    postgresContainer: `${name}-postgres`, applicationContainer: `${name}-application`,
+    postgresContainer: `${name}-postgres`, redisContainer: `${name}-redis`, applicationContainer: `${name}-application`,
     ownershipContainer: `${name}-ownership`, postgresVolume: `${name}-postgres-data`,
     runtimeImage: `daynight-e2e-runtime:${runId}`,
   };
@@ -118,6 +119,7 @@ export const cleanupOwnedResources = async (options: {
   metadata: RecoveryMetadata;
   mode: 'normal' | 'recovery';
   applicationStarted: boolean;
+  redisStarted?: boolean;
   execute?: DockerCommand;
   deadline?: number;
 }): Promise<CleanupVerification & { failures: unknown[] }> => {
@@ -176,15 +178,22 @@ export const cleanupOwnedResources = async (options: {
     },
     async () => docker.remove('container', resources.ownershipContainer),
   ]));
+  await attempt(async () => {
+    if (options.mode !== 'normal' || !options.redisStarted) return;
+    const object = await docker.inspect('container', resources.redisContainer);
+    if (object === undefined) throw new Error('Redis disappeared before requested shutdown.');
+    const state = docker.state(object);
+    if (!state.running) throw new Error(`Redis exited before requested shutdown (exit=${state.exitCode}).`);
+  });
   for (const [kind, resource] of [
-    ['container', resources.postgresContainer], ['volume', resources.postgresVolume],
+    ['container', resources.redisContainer], ['container', resources.postgresContainer], ['volume', resources.postgresVolume],
     ['network', resources.ingressNetwork], ['network', resources.network], ['image', resources.runtimeImage],
   ] as const) await attempt(async () => docker.remove(kind, resource));
   const cleanupErrors = failures.map((error) => error instanceof Error ? error.message : String(error));
   const verificationErrors: string[] = [];
   const remaining: string[] = [];
   for (const [kind, resource] of [
-    ['container', resources.applicationContainer], ['container', resources.ownershipContainer], ['container', resources.postgresContainer],
+    ['container', resources.applicationContainer], ['container', resources.ownershipContainer], ['container', resources.postgresContainer], ['container', resources.redisContainer],
     ['volume', resources.postgresVolume], ['network', resources.network], ['network', resources.ingressNetwork], ['image', resources.runtimeImage],
   ] as const) {
     try { if (await docker.inspect(kind, resource) !== undefined) remaining.push(resource); }
