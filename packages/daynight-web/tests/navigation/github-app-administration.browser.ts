@@ -78,17 +78,38 @@ for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
   });
 }
 
-test('last administrator is protected and a server last-admin refusal is explicit', async ({ page }) => {
-  const state = await install(page); state.admins = [member(actor, '7', 'Alice')]; await page.goto(`/github-apps/${appId}/admins`);
-  await page.getByRole('button', { name: 'Remove', exact: true }).click();
-  let dialog = page.getByRole('dialog'); await expect(dialog).toContainText('must retain at least one administrator');
-  await expect(dialog.getByRole('button', { name: 'Remove administrator' })).toHaveCount(0); expect(state.writes).toHaveLength(0);
-  await dialog.getByRole('button', { name: 'Close' }).click();
-  state.admins.push(member(other, '8', 'Bob')); await page.reload();
+for (const [width, locale] of [[1280, 'en'], [320, 'en'], [1280, 'zh-CN'], [320, 'zh-CN']] as const) {
+  test(`sole administrator cannot be removed at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await install(page); state.admins = [member(actor, '7', 'A very long administrator name for a narrow screen')];
+    await page.setViewportSize({ width, height: 900 }); await page.goto(`/github-apps/${appId}/admins`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const remove = page.getByRole('button', { name: locale === 'en' ? 'Remove' : '移除', exact: true });
+    const invite = page.getByRole('button', { name: locale === 'en' ? 'Invite administrator' : '邀请管理员' });
+    await expect(remove).toBeDisabled(); await expect(invite).toBeEnabled();
+    await expect(page.getByText(locale === 'en' ? 'At least one App administrator must remain.' : '至少保留一名 App 管理员。', { exact: false })).toBeVisible();
+    await remove.scrollIntoViewIfNeeded(); const box = await remove.boundingBox(); expect(box).not.toBeNull(); await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await invite.focus(); await remove.evaluate((button: HTMLButtonElement) => button.focus()); await expect(invite).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(page.getByRole('button', { name: locale === 'en' ? 'Revoke' : '撤销', exact: true })).toBeFocused();
+    await page.keyboard.press('Shift+Tab'); await expect(invite).toBeFocused();
+    await expect(page.getByRole('dialog')).toHaveCount(0); expect(state.writes).toHaveLength(0);
+    expect(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth)).toBe(true);
+  });
+}
+
+test('removal updates the remaining control and a server last-admin refusal is explicit', async ({ page }) => {
+  const state = await install(page); await page.goto(`/github-apps/${appId}/admins`);
   const row = page.getByText('Bob', { exact: true }).locator('..').locator('..');
+  await row.getByRole('button', { name: 'Remove', exact: true }).click();
+  let dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Cancel' }).click(); expect(state.writes).toHaveLength(0);
+  await row.getByRole('button', { name: 'Remove', exact: true }).click(); dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Remove administrator' }).click();
+  await expect(page.getByRole('button', { name: 'Remove', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Remove', exact: true })).toBeDisabled(); expect(state.writes).toHaveLength(1);
+  state.admins.push(member(other, '8', 'Bob')); await page.reload();
   await row.getByRole('button', { name: 'Remove', exact: true }).click(); dialog = page.getByRole('dialog'); state.mode = 'last';
   await dialog.getByRole('button', { name: 'Remove administrator' }).click();
-  await expect(dialog).toContainText('must retain at least one administrator'); expect(state.writes).toHaveLength(1);
+  await expect(dialog).toContainText('must retain at least one administrator'); expect(state.writes).toHaveLength(2);
 });
 
 test('confirmed self-removal remains visible after access is lost', async ({ page }) => {
