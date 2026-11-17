@@ -149,7 +149,7 @@ describe("Worker configuration persistence", () => {
     expect((await readConfigurationCache(file, identity, new AbortController().signal)).cache).toEqual(store.current());
   });
 
-  it("freezes migration identities across write retries and persists schema 9", async () => {
+  it("freezes migration identities across write retries and persists schema 10", async () => {
     clock();
     const { file, entry } = await fixture(), state = observe(), encodings: string[] = [];
     await writeFile(file, JSON.stringify({ schemaVersion: 4, identity, desired: null, observationRevision: "0", nextFailureId: 1, items: [], nativeModes: {} }));
@@ -158,7 +158,7 @@ describe("Worker configuration persistence", () => {
     await advance(5_000); const store = entry.store = await loading;
     expect(encodings).toHaveLength(2); expect(encodings[0]).toBe(encodings[1]);
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(store.current());
-    expect(store.current().schemaVersion).toBe(9);
+    expect(store.current().schemaVersion).toBe(10);
   });
 
   it("retains the original schema 5 file and error when its atomic migration cannot be saved", async () => {

@@ -60,7 +60,7 @@ export type WorkerConfigurationManagerOptions = {
 };
 type Job = { readonly recordId: string; readonly key: WorkerCloudItemKey; readonly controller: AbortController; readonly promise: Promise<void>; proof: WorkerNativeProof | null; preparing: boolean };
 const nativeTools = (native: WorkerCloudNative): readonly Tool[] => native.agent === "codex" || native.agent === "copilot" ? [native.agent] : [];
-const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "enableSudoCleanup" || key.kind === "archiveSessions";
+const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "agentControlMode" || key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "enableSudoCleanup" || key.kind === "archiveSessions";
 const observedSource = (item: TrackedConfigurationItem): TrackedConfigurationItem["actualSource"] => ({ kind: "observed", recordId: item.recordId, generation: item.origin.generation, targetRevision: item.origin.targetRevision });
 const isJobCancellation = (error: unknown, signal: AbortSignal): boolean => {
   if (!signal.aborted) return false;
@@ -143,11 +143,23 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   const reconcile = (current: WorkerConfigurationCache, desired: ReceivedWorkerDesired | null, observationRevision: string, receipt = false, capturedRevision: string | null = null, capturedBaseRevision = current.authority.observationRevision): WorkerConfigurationCache => {
     const previous = configurationDesiredRevision(current);
     const stale = receipt && previous !== null && (desired !== null ? BigInt(desired.revision) < BigInt(previous) : (capturedRevision !== null && BigInt(capturedRevision) < BigInt(previous) || capturedBaseRevision !== current.authority.observationRevision));
-    const next = stale ? current : desiredTransition(current, desired, runningIds(), randomUUID);
+    let next = stale ? current : desiredTransition(current, desired, runningIds(), randomUUID);
     const observed = receipt && (stale || desired !== null) && BigInt(observationRevision) < BigInt(current.authority.observationRevision) ? current.authority.observationRevision : observationRevision;
     const reset = !receipt && BigInt(observed) < BigInt(current.authority.observationRevision);
+    const generation = reset ? randomUUID() : next.authority.generation;
+    if (reset) {
+      const previousMode = findItem(next, { kind: "agentControlMode" });
+      if (previousMode !== undefined) next = { ...next,
+        retainedItems: [...next.retainedItems, previousMode],
+        currentItems: next.currentItems.map(item => item !== previousMode ? item : {
+          ...item, recordId: randomUUID(), origin: { generation, targetRevision: item.value.targetRevision, source: "application" },
+          value: { ...item.value, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null },
+          backoffStep: 0, failureId: null, started: false, actualSource: null,
+        }),
+      };
+    }
     if (next.authority.observationRevision === observed && !reset) return next;
-    return { ...next, authority: { ...next.authority, generation: reset ? randomUUID() : next.authority.generation, observationRevision: observed } };
+    return { ...next, authority: { ...next.authority, generation, observationRevision: observed } };
   };
   const kick = (): void => {
     if (queued || stopped || fatal !== undefined || !synchronized || !storage.isReady()) return;
@@ -212,7 +224,6 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     const key = item.value.key, index = indexedApplications(), current = index.current.get(keyOf(key))?.recordId === item.recordId;
     if (!current && !(key.kind === "projectRemoval" && item.started)) return false;
     if (item.blockedByRemovalId !== null && index.records.get(item.blockedByRemovalId)?.value.state !== "applied") return false;
-    if (key.kind === "agentControlMode") return false;
     if (!supportsDesired(configurationDesired(cache)) && !(key.kind === "projectRemoval" && item.started)) return false;
     if (deferred.has(item.recordId)) return false;
     if (key.kind === "projectRemoval") return adapters.remove !== undefined && (item.started || item.blockedByRemovalId !== null || configurationProjects(cache)?.every(project => project.projectId !== key.projectId) === true);
@@ -412,7 +423,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         if (stopped) return current;
         let next = reconcile(current, parsed, revision ?? (parsed === null ? "0" : current.authority.observationRevision));
         if (remoteObservation !== undefined) next = { ...next, remoteObservation };
-        if (!synchronized && parsed?.known != null && supportsDesired(parsed.known)) next = { ...next, currentItems: next.currentItems.map(item => item.value.key.kind === "native" || item.value.key.kind === "projectNative" || item.value.key.kind === "projectPreparation"
+        if (!synchronized && parsed?.known != null && supportsDesired(parsed.known)) next = { ...next, currentItems: next.currentItems.map(item => item.value.key.kind === "agentControlMode" || item.value.key.kind === "native" || item.value.key.kind === "projectNative" || item.value.key.kind === "projectPreparation"
           ? { ...item, value: { ...item.value, state: "pending", error: null, nextAttemptAt: null } } : item) };
         return next;
       }, true, undefined, [], { kind: "authority-read", ...(syncId === undefined ? {} : { syncId }) }), signal);

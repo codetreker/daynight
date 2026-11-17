@@ -8,7 +8,7 @@ import { acceptConfigurationProjection, allConfigurationItems, configurationHasU
 const id = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const native: WorkerCloudNative = { agent: "codex", model: "original", args: [] };
 const desired = (revision = "1", projects: readonly string[] = []): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { agentControlMode: "web", maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) } });
-const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 9, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0", pendingApplication: target === null }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
+const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 10, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0", pendingApplication: target === null }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
 const received = (...args: Parameters<typeof desired>) => receiveWorkerDesired(JSON.stringify(desired(...args)));
 const tracked = (number: number, key: WorkerCloudItemKey, appliedValue: TrackedConfigurationItem["value"]["appliedValue"] = null): TrackedConfigurationItem => ({ recordId: id(number), origin: { generation: id(8000), targetRevision: "1", source: "application" }, value: { key, targetRevision: "1", appliedValue, state: appliedValue === null ? "pending" : "applied", error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, started: false, actualSource: appliedValue === null ? null : { kind: "observed", recordId: id(number), generation: id(8000), targetRevision: "1" }, blockedByRemovalId: null });
 const fault: WorkerCloudFailure = { code: "unavailable", category: "agent", phase: "validate", occurredAt: "2026-11-12T00:00:01Z" };
@@ -17,6 +17,19 @@ const options = { synchronized: true, localTools: { codex: { kind: "auto" as con
 const ids = () => { let value = 1000; return () => id(value++); };
 
 describe("Worker configuration fact transitions", () => {
+  it("requires a persisted mode item rather than deriving adoption from the desired value", () => {
+    const pending = transitionConfigurationDesired(empty(null), received(), new Set(), ids());
+    expect(findCurrentConfigurationItem(pending, { kind: "agentControlMode" })).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
+    expect(configurationSnapshot(pending, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
+    const applied = tracked(1, { kind: "agentControlMode" }, "web");
+    const cache = { ...pending, currentItems: pending.currentItems.map(item => item.value.key.kind === "agentControlMode" ? applied : item) };
+    expect(configurationSnapshot(cache, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBe("web");
+    expect(configurationSnapshot(cache, false, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
+    const unsupported = transitionConfigurationDesired(cache, receiveWorkerDesired(JSON.stringify({ ...desired("2"), value: { ...desired("2").value, agentControlMode: "herdr" } })), new Set(), ids());
+    const restored = transitionConfigurationDesired(unsupported, received("3"), new Set(), ids());
+    expect(findCurrentConfigurationItem(restored, { kind: "agentControlMode" })).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
+  });
+
   it.each(["empty", "applied A"] as const)("rebuilds newly understood same-revision authority B from an %s ledger", state => {
     const oldProject = id(70), nextProject = id(71), nextId = ids();
     let original = empty(null);

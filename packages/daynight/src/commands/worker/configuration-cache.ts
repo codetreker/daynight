@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { open } from "node:fs/promises";
 import { configurationJsonChunks, parseConfigurationJson } from "./configuration-json.js";
-import { freezeConfiguration } from "./configuration-model.js";
+import { applicableConfigurationDesired, configurationDesired, freezeConfiguration } from "./configuration-model.js";
 import type { WorkerConfigurationCache, WorkerConfigurationIdentity } from "./configuration-model.js";
 import { decodeConfigurationCache } from "./configuration-storage-decoder.js";
 import { transitionConfigurationDesired } from "./configuration-state.js";
@@ -9,21 +9,21 @@ import { transitionConfigurationDesired } from "./configuration-state.js";
 type CacheRead = { readonly cache: WorkerConfigurationCache; readonly migrated: boolean };
 
 export const createConfigurationCache = (identity: WorkerConfigurationIdentity): WorkerConfigurationCache => freezeConfiguration({
-  schemaVersion: 9, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null,
+  schemaVersion: 10, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null,
   nextFailureId: 1, projectionCursor: null, currentItems: [], retainedItems: [],
 });
 export const parseConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): CacheRead => {
   const decoded = decodeConfigurationCache(source, identity);
   const convertItems = (items: typeof decoded.cache.currentItems) => items.flatMap(item => {
-    if (item.value.key.kind === "agentControlMode") return [];
+    if (decoded.migrated && item.value.key.kind === "agentControlMode") return [];
     const { nativeMode, ...rest } = item;
-    if (decoded.migrated && (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && nativeMode !== "web") {
+    if (decoded.cache.schemaVersion !== 9 && decoded.cache.schemaVersion !== 10 && (item.value.key.kind === "native" || item.value.key.kind === "projectNative") && nativeMode !== "web") {
       return [{ ...rest, value: { ...item.value, appliedValue: null, state: "pending" as const, error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, actualSource: null }];
     }
     return [rest];
   });
   let cache: WorkerConfigurationCache = {
-    ...decoded.cache, schemaVersion: 9,
+    ...decoded.cache, schemaVersion: 10,
     authority: decoded.migrated ? { ...decoded.cache.authority, generation: randomUUID() } : decoded.cache.authority,
     projectionCursor: decoded.migrated ? null : decoded.cache.projectionCursor,
     currentItems: convertItems(decoded.cache.currentItems), retainedItems: convertItems(decoded.cache.retainedItems),
@@ -31,6 +31,17 @@ export const parseConfigurationCache = (source: unknown, identity: WorkerConfigu
   if (decoded.migration !== null && decoded.migration.received.known.value.agentControlMode === "web") {
     const { received, previousDesired } = decoded.migration;
     cache = transitionConfigurationDesired(cache, received, new Set(), randomUUID, previousDesired, true);
+  }
+  if (decoded.migrated && !cache.authority.pendingApplication && applicableConfigurationDesired(configurationDesired(cache)) !== null
+    && !cache.currentItems.some(item => item.value.key.kind === "agentControlMode")) {
+    // Historical mode confirmations do not prove adoption by this Web-only process.
+    // Preserve the old ledger and its target revision while adding a fresh obligation.
+    const targetRevision = cache.authority.applicationRevision!;
+    cache = { ...cache, currentItems: [...cache.currentItems, {
+      recordId: randomUUID(), origin: { generation: cache.authority.generation, targetRevision, source: "application" },
+      value: { key: { kind: "agentControlMode" }, targetRevision, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null },
+      backoffStep: 0, failureId: null, started: false, actualSource: null, blockedByRemovalId: null,
+    }] };
   }
   return { cache: freezeConfiguration(cache), migrated: decoded.migrated };
 };

@@ -23,7 +23,7 @@ export type TrackedConfigurationItem = {
   readonly blockedByRemovalId: string | null;
 };
 export type WorkerConfigurationCache = {
-  readonly schemaVersion: 9;
+  readonly schemaVersion: 10;
   readonly identity: WorkerConfigurationIdentity;
   readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string; readonly pendingApplication: boolean };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;

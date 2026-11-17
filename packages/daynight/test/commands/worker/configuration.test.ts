@@ -33,7 +33,7 @@ const legacyCache = async (file: string) => {
   const target = cache.authority.desiredJson === null ? null : JSON.parse(cache.authority.desiredJson);
   const nativeModes = Object.fromEntries([...records.values()].filter(entry => (entry.value.key.kind === "native" || entry.value.key.kind === "projectNative") && entry.value.appliedValue !== null).map(entry => [`${entry.value.key.kind}:${"projectId" in entry.value.key ? entry.value.key.projectId : ""}`, "web"]));
   const items = [...records.values()].map(entry => ({ value: entry.value, attempts: entry.backoffStep, failureId: entry.failureId, started: entry.started }));
-  if (target?.value.agentControlMode !== undefined) items.push({ value: { key: { kind: "agentControlMode" }, targetRevision: cache.authority.applicationRevision!, appliedValue: "web", state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
+  if (target?.value.agentControlMode !== undefined && !items.some(entry => entry.value.key.kind === "agentControlMode")) items.push({ value: { key: { kind: "agentControlMode" }, targetRevision: cache.authority.applicationRevision!, appliedValue: "web", state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
   return JSON.parse(JSON.stringify({ schemaVersion: 4, identity: cache.identity, desired: target, observationRevision: cache.authority.observationRevision, nextFailureId: cache.nextFailureId, nativeModes, items }));
 };
 const fixture = async (overrides: Partial<WorkerConfigurationManagerOptions> = {}) => {
@@ -62,6 +62,38 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration application", () => {
+  it("publishes Web adoption only after its checkpoint persists without native tools or projects", async () => {
+    const entered = deferred(), release = deferred();
+    const applyNative = vi.fn(async () => { throw new Error("Native tools are unavailable."); });
+    let gated = false;
+    const { manager, file } = await fixture({ applyNative, readToolSelectionKeys: () => ({}), persist: async (file, chunks) => {
+      const contents = [...chunks()].join("");
+      const checkpoint = JSON.parse(contents) as WorkerConfigurationCache;
+      if (!gated && checkpoint.currentItems.some(entry => entry.value.key.kind === "agentControlMode" && entry.value.state === "applied")) {
+        gated = true; entered.resolve(); await release.promise;
+      }
+      await replaceFileAtomically(file, contents, 0o600);
+    } });
+    await manager.receive(receivedDesired(desired("1", "original", false)));
+    try {
+      await entered.promise;
+      expect(manager.current().effective.agentControlMode).toBeNull();
+      expect(item(manager.current(), "agentControlMode")).toMatchObject({ state: "pending", appliedValue: null });
+    } finally { release.resolve(); }
+    await manager.settle();
+    expect(manager.current().effective.agentControlMode).toBe("web");
+    expect(manager.current().effective.native).toBeNull();
+    expect(applyNative).not.toHaveBeenCalled();
+    const saved = (await readConfigurationCache(file, identity, new AbortController().signal)).cache;
+    const mode = saved.currentItems.find(entry => entry.value.key.kind === "agentControlMode")!;
+    expect(mode.value).toMatchObject({ state: "applied", appliedValue: "web", targetRevision: "1" });
+    expect(mode.actualSource).toEqual({ kind: "observed", recordId: mode.recordId, generation: mode.origin.generation, targetRevision: "1" });
+    const report = manager.report(), context = manager.reportContext(report)!;
+    const index = report.observation!.items.findIndex(entry => entry.key.kind === "agentControlMode");
+    expect(report.observation!.items[index]).toEqual(mode.value);
+    expect(context.recordIds[index]).toBe(mode.recordId);
+  });
+
   it("persists and reports the applied archive setting, including a legacy projection", async () => {
     const { manager, file } = await fixture();
     const initial = desired("1", "original", false);
@@ -165,7 +197,7 @@ describe("Worker cloud configuration application", () => {
       JSON.parse = originalParse;
       JSON.stringify = originalStringify;
     }
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(9);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(10);
   });
 
   it("migrates a structurally valid historical native value larger than the current item limit", async () => {
@@ -183,7 +215,7 @@ describe("Worker cloud configuration application", () => {
     const actual = item(reopened.current(), "native")?.appliedValue as WorkerCloudNative;
     expect(actual.args).toHaveLength(2050);
     expect(actual.args[2049]).toBe("x".repeat(4096));
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(9);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(10);
   });
 
   it("invalidates only native proofs that depend on a changed tool selection", async () => {
@@ -307,7 +339,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     expect(reopened.current().effective.native).toBeNull();
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated).toMatchObject({ schemaVersion: 9, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
+    expect(migrated).toMatchObject({ schemaVersion: 10, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual(original);
     expect(migrated.currentItems.every(entry => !("nativeMode" in entry))).toBe(true);
     await reopened.receive(receivedDesired(original)); await reopened.settle();
@@ -330,7 +362,7 @@ describe("Worker cloud configuration application", () => {
     await manager.settle();
     expect(manager.current().effective.native).toEqual(initial.value.native);
     expect(manager.current().effective.agentControlMode).toBe("web");
-    expect(manager.current().items.some(entry => entry.key.kind === "agentControlMode")).toBe(false);
+    expect(item(manager.current(), "agentControlMode")).toMatchObject({ state: "applied", appliedValue: "web" });
   });
 
   it("retains an unsupported raw mode without applying it or accepting an old receipt", async () => {
@@ -401,7 +433,7 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated.schemaVersion).toBe(9);
+    expect(migrated.schemaVersion).toBe(10);
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
     expect(migrated.nextFailureId).toBe(saved.nextFailureId);
     expect(migrated.authority.observationRevision).toBe(saved.observationRevision);
@@ -411,7 +443,7 @@ describe("Worker cloud configuration application", () => {
     expect(reopened.current().effective.preferPlatformSpecificTasks).toBeNull();
     await reopened.receive(receivedDesired(target)); await reopened.settle();
     expect(reopened.current().effective.preferPlatformSpecificTasks).toBe(false);
-    expect(parseWorkerCloudReport(reopened.report(), { controlMode: true, toolPaths: true }).observation?.items).toHaveLength(1025);
+    expect(parseWorkerCloudReport(reopened.report(), { controlMode: true, toolPaths: true }).observation?.items).toHaveLength(1026);
     expect((await readConfigurationCache(first.file, identity, new AbortController().signal)).cache.retainedItems).toContainEqual(expect.objectContaining({ failureId: 1, started: true, value: expect.objectContaining({ key: { kind: "projectRemoval", projectId: "00000000-0000-4000-8000-000000000000" }, state: "error", lastFailure: failure }) }));
   });
 
@@ -445,7 +477,7 @@ describe("Worker cloud configuration application", () => {
     await reopened.configureProjectAdapters({ remove }); await reopened.settle();
     expect(reopened.current().synchronized).toBe(true);
     expect(reopened.current().desired).toEqual(expanded);
-    expect(parseWorkerCloudReport(reopened.report(), { controlMode: true, toolPaths: true }).observation!.items.length).toBeLessThanOrEqual(1025);
+    expect(parseWorkerCloudReport(reopened.report(), { controlMode: true, toolPaths: true }).observation!.items.length).toBeLessThanOrEqual(1026);
     const migrated = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
     expect(migrated.retainedItems.filter(entry => entry.failureId !== null)).toHaveLength(1019);
     if (started) {
@@ -513,7 +545,7 @@ describe("Worker cloud configuration application", () => {
     expect(reopened.current().synchronized).toBe(true);
     expect(reopened.current().desired?.revision).toBe("2");
     expect(item(reopened.current(), "projectPreparation")).toMatchObject({ state: "applied", appliedValue: true });
-    expect(reopened.report().observation!.items.length).toBeLessThanOrEqual(1025);
+    expect(reopened.report().observation!.items.length).toBeLessThanOrEqual(1026);
   });
   it("retains saturated local facts and advances only the accepted bounded projection across restart", async () => {
     const first = await fixture();
@@ -542,7 +574,7 @@ describe("Worker cloud configuration application", () => {
     const originalFailure = before.retainedItems.find(entry => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === id(1))!;
     expect(originalFailure).toMatchObject({ origin: { targetRevision: "1" }, failureId: 1, value: { state: "error", lastFailure: failure } });
     const unknown = reopened.report();
-    expect(unknown.observation!.items.length).toBeLessThanOrEqual(1025);
+    expect(unknown.observation!.items.length).toBeLessThanOrEqual(1026);
     await reopened.acknowledge(unknown,receivedReceipt( { desired: next, observationRevision: "0", observationAccepted: false }));
     const unconfirmed = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
     expect(unconfirmed.projectionCursor).toBe(before.projectionCursor);
@@ -563,7 +595,7 @@ describe("Worker cloud configuration application", () => {
     expect(resumed.projectionCursor).toBe(committed.projectionCursor);
     expect(afterRestart.current().items).toContainEqual(expect.objectContaining({ key: { kind: "projectRemoval", projectId: id(1021) }, state: "pending" }));
     await afterRestart.ensureProjectRemoval(id(1022));
-    expect(afterRestart.report().observation!.items.length).toBeLessThanOrEqual(1025);
+    expect(afterRestart.report().observation!.items.length).toBeLessThanOrEqual(1026);
   });
   it("applies independent values while native failure and unprepared projects remain truthful", async () => {
     const { manager, file, wait } = await fixture({ applyNative: async () => { throw new Error("secret native arguments must not be reported"); } });
