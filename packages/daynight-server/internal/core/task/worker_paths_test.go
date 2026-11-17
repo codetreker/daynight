@@ -8,11 +8,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func validDescriptor() WorkerDescriptor {
-	return WorkerDescriptor{ClaimID: "00000000-0000-4000-8000-000000000001", WorkerID: "00000000-0000-4000-8000-000000000002", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000003", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000004"}
+	return WorkerDescriptor{ClaimID: "00000000-0000-4000-8000-000000000001", WorkerID: "00000000-0000-4000-8000-000000000002", Machine: model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000003", Name: "machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: "00000000-0000-4000-8000-000000000004"}
 }
 func activeFixture(t *testing.T) (model.Task, *model.WorkerClaim) {
 	t.Helper()
@@ -26,9 +27,8 @@ func activeFixture(t *testing.T) (model.Task, *model.WorkerClaim) {
 }
 func TestWorkerClaimLifecycle(t *testing.T) {
 	d := validDescriptor()
-	d.AgentControlMode = ""
 	normal, err := CanonicalWorkerDescriptor(d)
-	if err != nil || normal.AgentControlMode != model.AgentControlModeHerdr {
+	if err != nil || normal.AgentControlMode != model.AgentControlModeWeb {
 		t.Fatal(normal, err)
 	}
 	bad := d
@@ -74,6 +74,82 @@ func TestWorkerClaimLifecycle(t *testing.T) {
 	fresh, err := AcquireWorker(model.Task{Properties: model.TaskProperties{}}, worker.UserID, normal, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil || fresh.Status != model.TaskInProgress {
 		t.Fatal(fresh, err)
+	}
+}
+
+func TestNewWorkerClaimsRequireExplicitWeb(t *testing.T) {
+	for _, agent := range []model.WorkerAgent{model.AgentCodex, model.AgentClaude, model.AgentCopilot} {
+		for _, mode := range []model.WorkerAgentControlMode{"", model.AgentControlModeHerdr, model.AgentControlModeWeb} {
+			descriptor := validDescriptor()
+			descriptor.Agent, descriptor.AgentControlMode = agent, mode
+			_, err := CanonicalWorkerDescriptor(descriptor)
+			if (err == nil) != (mode == model.AgentControlModeWeb) {
+				t.Fatalf("claim %s/%s: %v", agent, mode, err)
+			}
+		}
+	}
+}
+
+func TestHistoricalWorkerCannotUpdateButCanBeManuallyReleased(t *testing.T) {
+	current, worker := activeFixture(t)
+	historical := *worker
+	historical.AgentControlMode = model.AgentControlModeHerdr
+	historical.Herdr = &model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}
+	raw, err := taskproperty.EncodeWorker(&historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Properties["worker"] = raw
+	current.Properties["paused"] = json.RawMessage(`true`)
+	phase := model.WorkerExecuting
+	faultCode(t, WorkerUpdateAdmission(&historical, historical.UserID, historical.ClaimID, UpdateWorker{Phase: &phase}), "invalid_input")
+	faultCode(t, WorkerUpdateAdmission(&historical, "other", historical.ClaimID, UpdateWorker{Phase: &phase}), "forbidden")
+	candidate := CurrentWrite(current)
+	candidate.Title = "Updated title"
+	if err := AdmitCandidate(candidate); err != nil {
+		t.Fatalf("ordinary change to task with historical worker: %v", err)
+	}
+	encoded, err := taskproperty.Encode(candidate.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := taskproperty.Decode([]byte(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := taskproperty.Worker(decoded)
+	if err != nil || retained == nil || retained.AgentControlMode != model.AgentControlModeHerdr || retained.Herdr == nil || *retained.Herdr != *historical.Herdr {
+		t.Fatalf("historical worker changed: %#v %v", retained, err)
+	}
+	claim := historical.ClaimID
+	input := SetTaskStatus{Status: model.TaskDone, ClaimID: &claim}
+	_, _, err = StatusCandidate(t.Context(), nil, model.Principal{UserID: "other"}, current, input, &historical)
+	faultCode(t, err, "forbidden")
+	_, _, err = StatusCandidate(t.Context(), nil, model.Principal{UserID: historical.UserID}, current, input, &historical)
+	faultCode(t, err, "invalid_input")
+	completed := historical
+	completed.State = model.WorkerCompleted
+	current.Status = model.TaskDone
+	if _, changed, err := StatusCandidate(t.Context(), nil, model.Principal{UserID: historical.UserID}, current, input, &completed); err != nil || changed {
+		t.Fatalf("completed historical claim no-op: changed=%v err=%v", changed, err)
+	}
+	current.Status = model.TaskInProgress
+	for _, operation := range []struct {
+		name string
+		run  func(model.Task) (store.TaskWrite, error)
+	}{
+		{"release", ReleaseCandidate},
+		{"withdraw", WithdrawCandidate},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			values, err := operation.run(current)
+			if err != nil || values.Status != model.TaskTodo || string(values.Properties["paused"]) != "true" {
+				t.Fatalf("%s: %#v %v", operation.name, values, err)
+			}
+			if _, present := values.Properties["worker"]; present {
+				t.Fatal("historical worker retained")
+			}
+		})
 	}
 }
 func TestWorkerUpdatesValidateAndProtectOwner(t *testing.T) {
@@ -194,7 +270,7 @@ func TestWorkerFailurePathsAndChangedFields(t *testing.T) {
 		t.Fatal("active worker accepted")
 	}
 	current, worker = activeFixture(t)
-	input := UpdateWorker{Herdr: ptr(&model.WorkerHerdr{Session: "session", WorkspaceID: "workspace", PaneID: "pane"}), NativeSessionID: ptr(ptr("native"))}
+	input := UpdateWorker{Herdr: ptr[*model.WorkerHerdr](nil), NativeSessionID: ptr(ptr("native"))}
 	values, changed, err := WorkerUpdateCandidate(current, worker, worker.ClaimID, input)
 	if err != nil || !changed {
 		t.Fatal(values, changed, err)

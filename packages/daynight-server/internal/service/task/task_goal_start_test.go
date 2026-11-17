@@ -47,7 +47,7 @@ func TestChildStartCoordinatesGoalInSameTransaction(t *testing.T) {
 			values := taskcore.CurrentWrite(child)
 			values.Status = model.TaskInProgress
 			if entry.operation == "claim" {
-				worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: owner.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: clock}
+				worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, UserID: owner.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: clock}
 				values.Properties = testWithWorker(t, child.Properties, worker)
 			}
 			result := child

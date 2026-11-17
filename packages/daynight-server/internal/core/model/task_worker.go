@@ -36,6 +36,10 @@ func (mode WorkerAgentControlMode) Supports(agent WorkerAgent) bool {
 	return (mode == AgentControlModeHerdr || mode == AgentControlModeWeb) && agent.Valid()
 }
 
+func (mode WorkerAgentControlMode) SupportsNewClaim(agent WorkerAgent) bool {
+	return mode == AgentControlModeWeb && agent.Valid()
+}
+
 type WorkerPhase string
 
 const (

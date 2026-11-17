@@ -399,7 +399,7 @@ func TestTaskSourceRefusalsAndNoopsDoNotInvokeCapture(t *testing.T) {
 
 func sourceWorker(t *testing.T, state model.WorkerState, claimID, worktreeID string, phase model.WorkerPhase, claimedAt time.Time) model.TaskProperties {
 	t.Helper()
-	p, err := taskproperties.WithWorker(model.TaskProperties{}, &model.WorkerClaim{ClaimID: claimID, State: state, UserID: sourceUserID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: worktreeID, Phase: phase, ClaimedAt: claimedAt})
+	p, err := taskproperties.WithWorker(model.TaskProperties{}, &model.WorkerClaim{ClaimID: claimID, State: state, UserID: sourceUserID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: worktreeID, Phase: phase, ClaimedAt: claimedAt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestWorkerSourcePublishesOnlyLogicalTaskTransitions(t *testing.T) {
 			current.Properties = sourceWorker(t, model.WorkerActive, sourceClaimID, "88888888-8888-4888-8888-888888888888", model.WorkerPreparing, current.CreatedAt)
 			updated := current
 			updated.Version, updated.UpdatedAt = 8, current.UpdatedAt.Add(time.Second)
-			descriptor := taskcore.WorkerDescriptor{ClaimID: sourceClaimID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "99999999-9999-4999-8999-999999999999"}
+			descriptor := taskcore.WorkerDescriptor{ClaimID: sourceClaimID, WorkerID: "66666666-6666-4666-8666-666666666666", Machine: model.WorkerMachine{ID: "77777777-7777-4777-8777-777777777777", Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: "99999999-9999-4999-8999-999999999999"}
 			switch mode {
 			case "claim":
 				current.Status, current.Properties = model.TaskTodo, model.TaskProperties{}

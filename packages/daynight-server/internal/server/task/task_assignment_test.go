@@ -217,6 +217,9 @@ func assignmentHTTPAPI(t *testing.T, row model.Task) api.Task {
 		if err := json.Unmarshal(raw, &stored); err != nil {
 			t.Fatal(err)
 		}
+		if string(stored["agentControlMode"]) == `"web"` {
+			return result
+		}
 		legacy := make(map[string]json.RawMessage, 13)
 		for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"} {
 			legacy[field] = stored[field]
