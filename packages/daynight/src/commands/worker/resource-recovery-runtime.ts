@@ -24,6 +24,7 @@ import { createWorkerRemote } from "./remote.js";
 import { createWorkerGitManager } from "./worktrees.js";
 import type { WorktreeBinding } from "./types.js";
 import { recoverCompletedWebResource, type ResourceRecoveryRequest } from "./resource-recovery.js";
+import { withWebRecordingSource } from "./web-recording-source.js";
 
 const ordinaryFile = async (file: string): Promise<void> => {
   const stat = await lstat(file);
@@ -119,7 +120,7 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
         await verifyDirectories(matches[0]!.binding);
         return matches[0]!.binding;
       },
-      verifyStoppedArchive: async record => {
+      verifyStoppedArchive: async record => withWebRecordingSource(options.homeDirectory, record, () => web!.getTask(record), async () => {
         const stopped = await observer(record, operation);
         if (stopped.kind !== "stopped") throw new Error("The original registered execution stop is unconfirmed; resources remain retained.");
         const execution = record.webExecution!;
@@ -135,7 +136,7 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
             return fetch(input, init);
           },
         });
-      },
+      }, operation.signal),
       verifyPreserved: async binding => verifyRecoveryGitContent(binding, operation),
       removeSafely: async (owner, binding) => {
         await verifyDirectories(binding);

@@ -22,11 +22,11 @@ export type TrackedConfigurationItem = {
   readonly blockedByRemovalId: string | null;
 };
 export type WorkerConfigurationCache = {
-  readonly schemaVersion: 6;
+  readonly schemaVersion: 7;
   readonly identity: WorkerConfigurationIdentity;
   readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;
-  readonly hiddenCapabilitySources?: Readonly<Partial<Record<"agentControlMode" | "toolPaths", { readonly revision: string; readonly json: string }>>>;
+  readonly hiddenCapabilitySources?: Readonly<Partial<Record<"agentControlMode" | "toolPaths" | "archiveSessions", { readonly revision: string; readonly json: string }>>>;
   readonly nextFailureId: number;
   readonly projectionCursor: string | null;
   readonly currentItems: readonly TrackedConfigurationItem[];
@@ -39,6 +39,7 @@ export type WorkerConfigurationSnapshot = {
   readonly applicationRevision: string | null;
   readonly observationRevision: string;
   readonly retainedRecoveryLimit: number | null;
+  readonly retainedArchiveSessions: boolean | null;
   readonly items: readonly WorkerCloudItem[];
   readonly toolTargets: WorkerConfigurationToolTargets | null;
   readonly effective: {
@@ -47,6 +48,7 @@ export type WorkerConfigurationSnapshot = {
     readonly pollIntervalMs: number | null;
     readonly recoveryLimit: number | null;
     readonly preferPlatformSpecificTasks: boolean | null;
+    readonly archiveSessions: boolean | null;
     readonly native: WorkerCloudNative | null;
     readonly projects: readonly { readonly projectId: string; readonly native: WorkerCloudNative | null; readonly ready: boolean }[];
   };
@@ -87,7 +89,7 @@ export const configurationRetryDelays = [5_000, 10_000, 20_000, 40_000, 60_000] 
 export const configurationKey = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
 export const sameConfigurationValue = (first: unknown, second: unknown): boolean => isDeepStrictEqual(first, second);
 export const configurationSupportsMode = (desired: WorkerCloudDesired | null): boolean => desired !== null && Object.hasOwn(desired.value, "agentControlMode");
-export const configurationCapabilities = (value: WorkerCloudValue | undefined) => ({ controlMode: value !== undefined && Object.hasOwn(value, "agentControlMode"), toolPaths: value !== undefined && Object.hasOwn(value, "toolPaths") });
+export const configurationCapabilities = (value: WorkerCloudValue | undefined) => ({ controlMode: value !== undefined && Object.hasOwn(value, "agentControlMode"), toolPaths: value !== undefined && Object.hasOwn(value, "toolPaths"), archiveSessions: value !== undefined && Object.hasOwn(value, "archiveSessions") });
 export const parseConfigurationDesired = (value: WorkerCloudDesired, limits = true): WorkerCloudDesired => parseWorkerCloudDesired(value, limits, configurationCapabilities(value.value));
 export const freezeConfiguration = <T>(value: T): T => {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {

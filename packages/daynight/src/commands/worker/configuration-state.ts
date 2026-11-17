@@ -44,6 +44,7 @@ export const configurationTarget = (cache: WorkerConfigurationCache, key: Worker
   const desired = configurationDesired(cache);
   if (desired === null) return null;
   if (key.kind === "agentControlMode") return desired.value.agentControlMode === undefined ? null : desired.value.agentControlMode;
+  if (key.kind === "archiveSessions") return desired.value.archiveSessions ?? null;
   if (key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "native") return desired.value[key.kind];
   if (!("projectId" in key)) throw new TypeError("Worker configuration project key is invalid.");
   const projectId = key.projectId;
@@ -75,6 +76,7 @@ export const pruneConfigurationRetained = (cache: WorkerConfigurationCache, runn
     const projectId = projectOf(item);
     if (isRemoval(item)) return item.value.appliedValue !== null && removalProjects.has(projectId);
     if (item.value.appliedValue === null) return false;
+    if (item.value.key.kind === "archiveSessions" && configurationDesired(cache)?.value.archiveSessions === undefined) return true;
     if (configurationDesired(cache) === null) return true;
     return projectId !== null && removalProjects.has(projectId);
   });
@@ -143,6 +145,7 @@ export const transitionConfigurationDesired = (
   };
   for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"] as const) add({ kind });
   if (configurationSupportsMode(desired)) add({ kind: "agentControlMode" });
+  if (desired.value.archiveSessions !== undefined) add({ kind: "archiveSessions" });
   for (const project of desired.value.projects) {
     add({ kind: "projectPreparation", projectId: project.projectId }, !previousSelected.has(project.projectId));
     add({ kind: "projectNative", projectId: project.projectId });
@@ -184,13 +187,17 @@ export const configurationSnapshot = (
     return synchronized && desired !== null && mode !== null && typeof value === "object" && value !== null && item !== undefined && sameConfigurationValue(proofFor(cache, value, mode), validatedNative.get(item.recordId)) ? value : null;
   };
   const preference = applied({ kind: "preferPlatformSpecificTasks" });
+  const archive = applied({ kind: "archiveSessions" }) ?? configurationInheritanceSources(cache).get(configurationKey({ kind: "archiveSessions" }))?.value.appliedValue;
+  const retainedArchiveSessions = typeof archive === "boolean" ? archive
+    : desired !== null && desired.value.archiveSessions === undefined && cache.authority.applicationRevision !== null && cache.hiddenCapabilitySources?.archiveSessions === undefined ? true : null;
   const projects = synchronized && desired !== null ? desired.value.projects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
     ready: current.get(configurationKey({ kind: "projectPreparation", projectId: project.projectId }))?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !unfinishedRemovals.has(project.projectId) })) : [];
   const globalNative = native({ kind: "native" });
-  return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null,
+  return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null, retainedArchiveSessions,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: configurationToolTargets(cache, localTools), effective: {
       agentControlMode: desired?.value.agentControlMode == null || globalNative !== null || projects.some(project => project.native !== null) ? mode : null,
       maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,
+      archiveSessions: synchronized && desired !== null ? retainedArchiveSessions : null,
       native: globalNative, projects,
     } });
 };
@@ -222,8 +229,8 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
   const pendingFailures = latestFailures(cache);
   const candidates = cache.currentItems.flatMap(item => {
     const value = publicItem(item, pendingFailures);
-    parseWorkerCloudItem(value, false, configurationSupportsMode(desired));
-    try { parseWorkerCloudItem(value, true, configurationSupportsMode(desired)); }
+    parseWorkerCloudItem(value, false, configurationCapabilities(desired!.value));
+    try { parseWorkerCloudItem(value, true, configurationCapabilities(desired!.value)); }
     catch (error) {
       if (!(error instanceof ProtocolError)) throw error;
       // Structural history remains local until its carrier has a wire-representable actual value.
@@ -251,10 +258,10 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
   let nextCursor = cache.projectionCursor;
   const add = (candidate: typeof candidates[number]): boolean => {
     const comma = selected.length === 0 ? 0 : 1;
-    const nextNonMode = nonModeCount + (candidate.item.value.key.kind === "agentControlMode" ? 0 : 1);
+    const nextNonMode = nonModeCount + (candidate.item.value.key.kind === "agentControlMode" || candidate.item.value.key.kind === "archiveSessions" ? 0 : 1);
     const nextObservationBytes = observationBytes + storageBytes(candidate.encoded) + comma;
     let nextRequestBytes = requestBytes + Buffer.byteLength(candidate.encoded, "utf8") + comma;
-    if (selected.length >= (configurationSupportsMode(desired) ? 1026 : 1025) || nextNonMode > 1025 || nextObservationBytes > 4 * 1_048_576) return false;
+    if (selected.length >= (1025 + Number(configurationSupportsMode(desired)) + Number(desired!.value.archiveSessions !== undefined)) || nextNonMode > 1025 || nextObservationBytes > 4 * 1_048_576) return false;
     if (nextRequestBytes > WORKER_CONFIGURATION_REPORT_BYTES && options.telemetry !== undefined) {
       const trial = { ...base, observation: { ...base.observation!, items: [...selected.map(current => current.value), candidate.value] } };
       nextRequestBytes = Buffer.byteLength(stringifyApiJson(prepareWorkerReport({ ...options.telemetry, configuration: trial }, WORKER_CONFIGURATION_REPORT_BYTES).value), "utf8");

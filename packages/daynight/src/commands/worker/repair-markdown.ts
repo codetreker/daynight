@@ -19,6 +19,7 @@ import { uploadStoppedControllerArchive } from "../controller/archive-upload.js"
 import { runRepositoryGit } from "../../repository/git.js";
 import { createWorktreeManifestStore } from "./worktrees/manifest.js";
 import { retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
+import { withWebRecordingSource } from "./web-recording-source.js";
 
 export type WorkerMarkdownRepairTarget = { projectId: string; taskId: string; claimId: string; sessionId: string; worktreeId: string };
 const repairNextAction = (code: string): string => {
@@ -45,8 +46,9 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
     };
     const local = readLocal(), execution = local.webExecution;
     if (!execution || local.serverOrigin !== serverUrl || local.worktreeId !== target.worktreeId || execution.sessionId !== target.sessionId || local.cleanup?.kind !== "terminal" || !local.resources.worktree) throw new Error("Markdown repair requires the original retained terminal Web execution.");
+    return await withWebRecordingSource(context.homeDirectory(), local, readLocal, async () => {
     const ticket = await readLaunchTicket(context.homeDirectory(), execution.launchId);
-    if (ticket.serverOrigin !== serverUrl || ticket.projectId !== target.projectId || ticket.taskId !== target.taskId || ticket.claimId !== target.claimId || ticket.worktreeId !== target.worktreeId || ticket.workerId !== local.workerId || ticket.sessionId !== target.sessionId || ticket.executionId !== execution.executionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId || ticket.controllerId !== execution.controllerId || !await sameWorktreeLocation(ticket.cwd, local.resources.worktree.worktreePath)) throw new Error("The original launch ticket differs from the selected execution.");
+    if (ticket.serverOrigin !== serverUrl || ticket.projectId !== target.projectId || ticket.taskId !== target.taskId || ticket.claimId !== target.claimId || ticket.worktreeId !== target.worktreeId || ticket.workerId !== local.workerId || ticket.sessionId !== target.sessionId || ticket.executionId !== execution.executionId || ticket.executionGeneration !== execution.executionGeneration || ticket.controllerInstanceId !== execution.controllerInstanceId || ticket.controllerId !== execution.controllerId || !await sameWorktreeLocation(ticket.cwd, local.resources.worktree!.worktreePath)) throw new Error("The original launch ticket differs from the selected execution.");
     const original = controllerPayloadHash(local);
     const journalPath = path.join(controllerExecutionDirectory(context.homeDirectory(), execution.executionId), "journal.sqlite");
     const verify = async (): Promise<void> => {
@@ -94,6 +96,7 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
     if (repair.failures.length) return { kind: "known-session-operation", output: `${JSON.stringify({ ...target, ...repair, failures: repair.failures.map(item => ({ ...item, nextAction: repairNextAction(item.code) })), archive: "not-started" })}\n`, exitCode: 1, failureText: () => "Markdown repair results could not be printed; inspect the same original execution before retrying." };
     await verify();
     const archive = await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: serverConfiguration.serverToken!, signal: operation.signal });
-    return { kind: "known-session-operation", output: `${JSON.stringify({ ...target, ...repair, archive, cleanup: "owned-by-worker" })}\n`, exitCode: 0, failureText: () => "Archive result output failed; reconcile the original archive receipt before retrying." };
+    return { kind: "known-session-operation" as const, output: `${JSON.stringify({ ...target, ...repair, archive, cleanup: "owned-by-worker" })}\n`, exitCode: 0, failureText: () => "Archive result output failed; reconcile the original archive receipt before retrying." };
+    }, operation.signal);
   }, { operationLimits: { totalMs: 600_000 } });
 };

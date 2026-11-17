@@ -34,7 +34,7 @@ import { HerdrInputWaitingError } from "./agents.js";
 import { submitTerminalInput, type TerminalInput } from "./terminal-input.js";
 import { createHerdrRpcClient } from "./rpc.js";
 import { createHerdrInputSession } from "./input-session.js";
-import { createHerdrRecordingRuntime } from "./recording-runtime.js";
+import { createHerdrRecordingRuntime, HerdrRecordingAccessError } from "./recording-runtime.js";
 import { readHerdrTerminalSnapshot } from "./recording-sampler.js";
 import type { HerdrRecordingScreen } from "./recording-types.js";
 import { createHerdrArchiveApi, ensureHerdrRecordingResponsibility, type HerdrArchiveApi } from "./archive-api.js";
@@ -388,6 +388,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const archive = createHerdrRecordingArchive({ directory: path.join(options.paths.workerDirectory, "herdr-archives"), api: archiveApi });
   const recordingFailures = new Map<string, unknown>();
   const recording = createHerdrRecordingRuntime({ directory: recordingRoot,
+    discarded: record => archive.inspect(record)?.disposition != null,
     read: options.readRecording ?? (async (record, signal) => {
       const owner = identity(record), operation = createOperation({ signal, limits: { totalMs: 10_000 } });
       try {
@@ -409,6 +410,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     },
   });
   const recordingFailed = (record: HerdrLifecycleRecord, error: unknown): void => {
+    if (error instanceof HerdrRecordingAccessError) return;
     recordingFailures.set(record.sessionId, error);
     try { recording.source(record).fail(current(record).run.executionGeneration); } catch { /* Missing source is retained as a failure, never recreated. */ }
   };
@@ -421,13 +423,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const record = need(owner);
     try { recording.start(record); } catch (error) { recordingFailed(record, error); }
   };
-  const stopRecording = async (owner: Identity, commitBoundary = true): Promise<void> => {
+  const stopRecording = async (owner: Identity, commitBoundary = true, strict = false): Promise<void> => {
     const record = need(owner);
     let recovered: { segmentId: string; boundary: { endedAt: string; durationMs: string } }[];
     try {
       const boundary = await recording.stop(record);
       recovered = boundary ? [{ segmentId: record.segments.at(-1)!.segmentId, boundary }] : recording.recover(record);
-    } catch (error) { recordingFailed(record, error); return; }
+    } catch (error) {
+      if (strict) { recording.forget(record); throw error; }
+      recordingFailed(record, error); return;
+    }
     if (commitBoundary && recovered.length) update(owner, draft => { for (const value of recovered) { const segment = draft.segments.find(s => s.segmentId === value.segmentId)!; segment.endedAt = value.boundary.endedAt; segment.durationMs = value.boundary.durationMs; } });
   };
   const recordingResources = createHerdrRecordingResources({ directory: recordingRoot, archive, list: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && !store.retired(identity(record))),
@@ -453,6 +458,13 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     advance: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => { await settleSelection(); assertNativeRunStopped(args[0]); return recordingResources.advance(...args); }); },
     retry: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => { await settleSelection(); assertNativeRunStopped(args[0]); return recordingResources.retry(...args); }); },
     dispose: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => { await settleSelection(); assertNativeRunStopped(args[0]); return recordingResources.dispose(...args); }); },
+    selectDiscard: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => {
+      await settleSelection(); assertNativeRunStopped(args[0]);
+      const record = need(args[0]);
+      if (archive.inspect(record)?.disposition == null && (args[2]?.() ?? true) && record.segments.some(segment => segment.endedAt === null)) await finishStopLocally(args[0], true);
+      return recordingResources.selectDiscard(...args);
+    }); },
+    discard: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => { await settleSelection(); assertNativeRunStopped(args[0]); recording.forget(need(args[0])); await recordingResources.discard(...args); }); },
     cleaned: owner => {
       if (selectionEpoch !== settledSelectionEpoch) throw new Error("Native selection probe cleanup is unconfirmed; original resources must be retained.");
       if (recordingLocks.has(key(owner))) throw new Error("Recording maintenance is still in progress.");
@@ -553,9 +565,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     if (initial) return { ...receipt, observation: await confirmNativeSession(context, bindingFor(run), operation) };
     return receipt;
   };
-  const finishStop = async (owner: Identity, operation: Operation): Promise<void> => {
-    await settleSelection();
-    await stopRecording(owner);
+  const finishStopLocally = async (owner: Identity, strict = false): Promise<void> => {
+    // A prior capture failure can permanently mark the source corrupt. The
+    // confirmed native stop still supplies the lifecycle boundary needed for
+    // content deletion; do not require a corrupt source to become uploadable.
+    if (!strict || !recordingFailures.has(need(owner).sessionId)) await stopRecording(owner, true, strict);
     // Each segment ends at its own run boundary, including after interrupted closure.
     update(owner, draft => {
       for (const segment of draft.segments) {
@@ -566,7 +580,18 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         segment.durationMs = String(Math.max(0, Date.parse(segment.endedAt) - Date.parse(segment.startedAt)));
       }
     });
-    try { recording.closeRun(need(owner)); } catch (error) { recordingFailed(need(owner), error); }
+    // Discard needs a durable lifecycle boundary, not an upload seal for the
+    // source that is about to be removed.
+    if (!strict) try { recording.closeRun(need(owner)); } catch (error) { recordingFailed(need(owner), error); }
+  };
+  const finishStop = async (owner: Identity, operation: Operation): Promise<void> => {
+    await settleSelection();
+    let sourceUnknown = false;
+    try { if (archive.inspect(need(owner))?.disposition != null) return; }
+    catch { sourceUnknown = true; }
+    // Unknown disposition cannot authorize source access or a fabricated local
+    // segment boundary. The independent run ledger can still be published.
+    if (!sourceUnknown) await finishStopLocally(owner);
     await publish(owner, operation);
   };
   const prepareShutdownRecovery = async (owner: Identity, prior: SessionV2Payloads["control_state"] | null, operation: Operation): Promise<void> => {

@@ -40,7 +40,7 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 
 资源身份、控制意图、固定期限和重试策略可持久保存；“停止做过了”“删除做过了”等步骤状态不能授权跳过观察。一次清理调用返回临时的完成结果，只有本次观察满足全部资源目标才更新本机记录；终态原执行的停止观察独立决定执行容量。设计取舍见[资源状态决策](../../.agents/notes/archived/architecture/2026-11-04-worker-resource-state.md)。
 
-macOS Herdr 的执行槽随原运行停止证明释放。确认停止、选择清理及在途本地操作结束后，终态清理按原 Git 绑定删除 worktree 并结算本机行和计划；归档结果不构成删除门槛。独立归档队列保留原录制源和身份，继续封段、发布 ledger、冻结及上传；失败诊断直到归档真正恢复才解除。未确认停止、Git 归属或文件清理失败仍保留相应责任。采样、预算与处置规则由 [Herdr 录制设计](herdr-recording.md)拥有。
+macOS Herdr 的执行槽随原运行停止证明释放。确认停止、选择清理及在途本地操作结束后，终态清理按原 Git 绑定删除 worktree 并结算本机行和计划；归档结果不构成删除门槛。开启归档时，独立归档队列保留原录制源和身份，继续封段、发布 ledger、冻结及上传；失败诊断直到归档真正恢复才解除。未确认停止、Git 归属或文件清理失败仍保留相应责任。采样、预算与处置规则由 [Herdr 录制设计](herdr-recording.md)拥有。
 
 ## 归属清单与格式转换
 
@@ -145,13 +145,13 @@ Worker instance lock 下的 `copilot-tool-materializer.ts` 在 `<workerDirectory
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
 
-configuration.json 使用 schemaVersion=6，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
+configuration.json 使用 schemaVersion=7，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
 
 | 模块 | 责任 |
 | --- | --- |
 | configuration-model.ts | 缓存、记录与捕获的完整类型、从原始目标派生的 known 视图及共用值规则 |
 | api/worker-configuration-source.ts | 配置专用源文本载体、已知路径投影、完整资源/回执解析与无损 JSON 语义比较 |
-| configuration-cache.ts | schema 6 严格校验、版本 1–4→5→6 显式升级与冻结编码 factory |
+| configuration-cache.ts | schema 7 严格校验、版本 1–4→5→6→7 显式升级与冻结编码 factory |
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
 | configuration-persistence.ts | 初始化读取、串行冻结检查点、存储 readiness、I/O 重试及关闭所有权 |
@@ -161,7 +161,7 @@ configuration.json 使用 schemaVersion=6，保持单个 JSON 对象、原路径
 
 authority 保存本机 generation UUID、完整 desiredJson、applicationRevision 与 observationRevision；generation 不是服务端 epoch。desiredJson 是唯一持久目标，known 从同一源文本按已知路径严格派生。applicationRevision 标识最近已知目标变化，可以小于最新 desired.revision；currentItems 的必需已知项对应这个锚点。工具目标 revision、native/tool preparation 的比较与证明、confirmProjectPrepared、延后准备确认和新增移除 origin 均消费该锚点；报告 envelope 使用最新 desiredRevision，item 保留原 targetRevision。remoteObservation 单独存储最后一次明确 GET 的 {observationRevision,json}，可落后 authority.observationRevision，服务回退或 null 重置也保留此前快照，独立按其原 base/版本验证；receipt 不将本机新报告伪装成已读取的远端事实。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，retainedItems 保存原工作、停止、未知结果、失败或必要实际值。recordId 全局唯一，origin 保留原 generation、targetRevision 与 application/schema4 来源且不可改写；actualSource 独立表达真实来源，复用值不修改旧历史。schema4/successRevision:null 保留历史未知版本；nativeMode 不授予进程资格，blockedByRemovalId 必须同项目且无环。
 
-版本 1–4 经原结构转换并严格验证为 schema 5，再与既有 schema 5 一起转为 schema 6；正常运行只处理 6。已验证旧 desired 编码为 desiredJson，applicationRevision 取旧目标版本，无目标则均为 null；remoteObservation 为 null。原 identity、generation、recordId、origin、actualSource、失败预算、期限、游标和引用关系保持，applying 沿原重启规则恢复；版本 1 继续补 preferPlatformSpecificTasks:false 及已初始化目标的同名 pending/null 项。格式、scope 和损坏仍拒绝，历史结构超过新业务容量限制不清空责任。结果在原子保存前冻结，重试不重新生成身份，失败保留原文件与原错误。
+版本 1–4 经原结构转换并严格验证为 schema 5，再与既有 schema 5 一起转为 schema 6，最后转为 schema 7；正常运行只处理 7。schema 6 中此前未知的归档字段仅生成 pending/null，不制造已应用证据。已验证旧 desired 编码为 desiredJson，applicationRevision 取旧目标版本，无目标则均为 null；remoteObservation 为 null。原 identity、generation、recordId、origin、actualSource、失败预算、期限、游标和引用关系保持，applying 沿原重启规则恢复；版本 1 继续补 preferPlatformSpecificTasks:false 及已初始化目标的同名 pending/null 项。格式、scope 和损坏仍拒绝，历史结构超过新业务容量限制不清空责任。结果在原子保存前冻结，重试不重新生成身份，失败保留原文件与原错误。
 
 读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；未知目标与远端观测位于普通 JSON 字符串内部，guard 不解释其中的任意数字或键。真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
 
@@ -316,7 +316,7 @@ Worktree inspection 在核验清单、目录、唯一注册、common directory �
 
 遍历在进入目录、必要的权限修改后及各条目操作前后核对当前目录的路径与句柄，不重查全部祖先。目录权限修改绑定已打开的原 inode；观察到当前目录替换或归属变化即失败。显式录屏源处置通过独立 guard 在每次修改前核对来源及其根目录身份。Node 没有可移植的 openat/unlinkat 接口，路径操作与核验之间不是原子边界，受管写入进程停止仍是必要前提；该机制不是针对恶意并发路径改写的隔离。选择与代价见[局部遍历决策](../../.agents/notes/implemented/simplification/2026-11-12-worktree-local-traversal.md)。
 
-每步检查 operation 的取消与期限，已发出的文件系统操作和目录句柄关闭始终 await，不用超时竞速提前释放串行保护。失败后保留原错误与剩余资源，下一次从实际内容重新核验；无归属证明的非空内容继续受到保护。Web backend 在确认停止和关闭后尝试归档；任何归档失败都登记给独立维护并继续安全删除，不删除 Controller execution 目录中的源。登记或诊断失败也不能阻挡删除，真实文件错误按其阶段保留。shutdown 或调用方取消跳过后续归档与删除。清理失败保留文件责任和同 task 的旧 claim 屏障；原执行停止后执行名额独立释放，其他 task 仍按现有容量及串行调度规则推进。
+每步检查 operation 的取消与期限，已发出的文件系统操作和目录句柄关闭始终 await，不用超时竞速提前释放串行保护。失败后保留原错误与剩余资源，下一次从实际内容重新核验；无归属证明的非空内容继续受到保护。Web backend 在确认停止和关闭后按已应用的 archiveSessions 决定是否尝试归档；任何归档失败都登记给独立维护并继续安全删除，开启归档时保留 Controller execution 目录中的源。登记或诊断失败也不能阻挡删除，真实文件错误按其阶段保留。shutdown 或调用方取消跳过后续归档与删除。清理失败保留文件责任和同 task 的旧 claim 屏障；原执行停止后执行名额独立释放，其他 task 仍按现有容量及串行调度规则推进。
 
 资源扫描与清理 job 可交错。原 backend 所需停止及删除条件满足后，文件删除确认目录和对应 Git 注册缺失；随后 backend 结算、本地责任和清理调度完成，最后退休清单。原生 Herdr 的停止与文件结算不依赖归档：重启时核对原 lifecycle 及停止证明、本机行和调度、在途操作、目录与 Git 注册后退休清单。Legacy 不以进程内回执丢失要求历史停止证明：完整自有清单缺少原 claim、本地无未完成责任或清理调度、无 Web 或 durable Herdr 冲突、当前 Herdr workspace 和待停止责任缺席，且本进程原 job 已收尾时，核对原目录与精确 Git 注册均不存在后可退休孤立清单。已独立确认后继绑定原位置时，只按原清单身份退休元数据，不访问后继 cwd。仅剩清单的重试不重新停止或归档、不恢复执行槽或同 task 屏障；独立 release 正常返回前完成退休，失败报告已确认释放并保留元数据重试。已有 durable worktreeDeleted 后的本地结算只核对原 retained binding，不重新删除旧路径。仅 LocalTask.done 不证明 Web 或原生 Herdr 的归档条件，也不能单独替代 Git 资源观察。local-closed 不排除脱离 stdio 的后代之后继续写入。
 
@@ -340,7 +340,7 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 
 云端 `agentControlMode` 经过 mode/native 成组应用后成为新 claim 的模式来源；本地 `worker.agentControlMode` 省略为 herdr，仅用于初始化和旧服务兼容。coordinator 的 configurationFor 优先读取原 claim 已冻结 mode/native，再考虑当前默认资格；没有冻结值时不能以新模式重解释旧参数。canAdvanceProject 的项目移除和权限门禁仍先行。动态 needsHerdr/ensureHerdr 保留旧模式资源并按需初始化新 backend，不重启健康 Session。同 claim 始终沿用服务端模式；普通 summary 与 properties 更新不可改写。Web 运行 Codex stdio app-server、Claude Agent SDK 或 Copilot SDK 私有 runtime；其初始输入、原生控制、停止和恢复契约由 [Task Session 设计](task-session-protocol.md)拥有。
 
-主协调器仍从完整自有 claim 清单和实际资源对账，为两种模式合并计算容量与同 task 启动屏障。Herdr 保持进程内业务 jobs，macOS 另有持久 lifecycle，Linux/Windows 保持最小索引路径；两种模式共享独立持久清理调度；Web 在独立版本 3 的 `worker/web-executions.sqlite` 保存自己的冻结配置、执行身份、恢复预算、编排阻塞和清理意图，在 `controller/` 保存 ticket 与版本 13 的原生 journal。Web 版本 0 重置原 schema 和数据，因此其旧 completed 行不进入补归档库存；此重置不删除独立 execution 目录中的 ticket、journal 或待归档文件。版本 1→2 在迁移中删除 cleanup 的 input、baseline、result、error、agentStopped、workspaceClosed、mode、backendResourcesClosed、worktreeDeleted 字段；当前 parser 只接受 kind、startedAt、deadline。Controller 拥有的原生操作回执保持在 journal，本机库不复制清理进度。Worker 持原实例锁分别打开所需状态库，全部成功后才创建 coordinator；一库失败不回滚已提交的另一库，下次按各自版本恢复。原始 Web 执行状态缺失时保留责任并报错，不能使用 legacy Herdr 的 NULL ID 新建语义代替连续性。
+主协调器仍从完整自有 claim 清单和实际资源对账，为两种模式合并计算容量与同 task 启动屏障。Herdr 保持进程内业务 jobs，macOS 另有持久 lifecycle，Linux/Windows 保持最小索引路径；两种模式共享独立持久清理调度；Web 在独立版本 5 的 `worker/web-executions.sqlite` 保存自己的冻结配置、执行身份、恢复预算、编排阻塞和清理意图，在 `controller/` 保存 ticket 与版本 13 的原生 journal。Web 版本 0 重置原 schema 和数据，因此其旧 completed 行不进入补归档库存；此重置不删除独立 execution 目录中的 ticket、journal 或待归档文件。版本 1→2 在迁移中删除 cleanup 的 input、baseline、result、error、agentStopped、workspaceClosed、mode、backendResourcesClosed、worktreeDeleted 字段；版本 5 为现有 cleanup 加入默认 false 的 discardRecording；当前 parser 同时接受该标记。Controller 拥有的原生操作回执保持在 journal，本机库不复制清理进度。Worker 持原实例锁分别打开所需状态库，全部成功后才创建 coordinator；一库失败不回滚已提交的另一库，下次按各自版本恢复。原始 Web 执行状态缺失时保留责任并报错，不能使用 legacy Herdr 的 NULL ID 新建语义代替连续性。
 
 Web 原生恢复复用持久 `recovery.count`、`pauseReason` 和 `retryAuthorized`。只有实际原生恢复及显式 retry 消耗该预算；普通编排、Git 和报告失败不计入原生恢复次数，也不能以进程内失败累计锁存 recovery_limit。真实原生恢复受阻时按原 claim 保存诊断原因，保留次数和执行身份。暂停写入必须独立提交，不能在同一 SQLite 事务内随后抛错而回滚暂停事实。Herdr 的进程内失败计数保持独立。
 
@@ -368,7 +368,7 @@ Shutdown 在停止进程前识别已停止或失败的耗尽执行并保存暂�
 
 pauseReason=null 且 retryAuthorized=true 表示这次恢复已绑定当前 generation、仍在等待就绪。后续 tick 或重启只能观察并完成这一代，不能再次创建 generation。初始化保持 activity=initializing，Coordinator 继续发布 waiting；completeRecoveryRetry 仅在 ready/working 观察的原生身份及 generation 匹配后清除标记并恢复正常阶段。失败、停止或无法确认的结果重新持久暂停并清除标记。初始 assignment 沿用原操作回执，不因 retry 重发，也不为缺失原生身份创建替代会话。该恢复门禁与 task.properties.paused 的 Herdr 周期 ping 门禁互不替代。选择及代价见[持久恢复暂停决策](../../.agents/notes/archived/bug-fix/2026-11-04-web-recovery-pause.md)。
 
-Web 普通终止清理只在执行库保存 cleanup 的 kind、startedAt、deadline 和原生操作身份。每次从原 Controller journal 读取同一 cleanup operation 的回执，结合 OS 进程实例观察决定等待或停止，不在 Worker 库复制提交结果或资源完成状态。确认 Controller 和原生进程停止及关闭后尝试封存并上传 Session 文件归档；无论归档结果如何都继续安全删除 Git worktree 和本机结算。失败按原执行身份登记到独立维护，保留 Controller execution 目录中的 journal、pending-content、ticket 和上传意图及回执；真实 ready 仍须由归档验证取得。历史补归档由可取消且在退出时等待结束的独立维护任务拥有，普通轮询只请求一次尝试，不等待上传；维护运行期间重复请求合并，完成本身不唤醒调度。每次尝试最多处理一个旧 completed 执行；只要 ending 中仍有收尾责任、存在 archive 阶段的清理重试，或最近容量计算已占满 maxConcurrent，就跳过本轮补归档，为释放执行名额的清理让路。轮询检查后，后台尝试实际开始前再读取同一门禁，避免两者之间状态变化仍启动新归档。成功领取新 claim 后也刷新容量快照，避免刚占满名额仍启动补归档。进入让路状态时输出一次 session-archive-deferred，持续让路不重复输出；条件解除后恢复补归档，已经开始的补归档不被中断。已删除的 cwd 不妨碍从原 execution 目录补归档。Task 软删除后，仍具有效 PAT 和项目成员资格的原 Session owner 通过专用归档收尾接口取得 ready 回执；身份失效或上传失败继续保留源和责任，不将访问拒绝当作归档成功。执行容量由原执行停止观察独立决定。文件格式、完整性与只读读取由 [Task Session 设计](task-session-protocol.md#完成后的文件归档)定义。worker 退出直接停止拥有的执行并保留未完成责任。强制撤回先在服务端冻结原 Session 的普通写权限，worker 后续完整清单再收尾；没有立即停止的保证。
+Web 普通终止清理在执行库保存 cleanup 的 kind、startedAt、deadline、discardRecording 和原生操作身份。每次从原 Controller journal 读取同一 cleanup operation 的回执，结合 OS 进程实例观察决定等待或停止，不在 Worker 库复制提交结果或资源完成状态。确认 Controller 和原生进程停止及关闭后按已应用的 archiveSessions 决定是否封存并上传 Session 文件归档；无论归档结果如何都继续安全删除 Git worktree 和本机结算。开启时失败按原执行身份登记到独立维护，保留 Controller execution 目录中的 journal、pending-content 和上传意图及回执；真实 ready 仍须由归档验证取得。关闭时在原 cleanup 写入单向 discardRecording，done 且原 job 和 ending 退出后删除独立 execution 目录；历史 done 记录同样可选择，重新开启不撤销已选删除。backfill、repair 和删除在 Worker 目录内的源锁下串行，准入后再次核对标记；真实 ready 回执不因本机删除改变。实际值未知时保留未选择的源。历史补归档由可取消且在退出时等待结束的独立维护任务拥有，普通轮询只请求一次尝试，不等待上传；维护运行期间重复请求合并，完成本身不唤醒调度。每次尝试最多处理一个旧 completed 执行；只要 ending 中仍有收尾责任、存在 archive 阶段的清理重试，或最近容量计算已占满 maxConcurrent，就跳过本轮补归档，为释放执行名额的清理让路。轮询检查后，后台尝试实际开始前再读取同一门禁，避免两者之间状态变化仍启动新归档。成功领取新 claim 后也刷新容量快照，避免刚占满名额仍启动补归档。进入让路状态时输出一次 session-archive-deferred，持续让路不重复输出；条件解除后恢复补归档，已经开始的补归档不被中断。已删除的 cwd 不妨碍从原 execution 目录补归档。Task 软删除后，仍具有效 PAT 和项目成员资格的原 Session owner 通过专用归档收尾接口取得 ready 回执；身份失效或上传失败继续保留源和责任，不将访问拒绝当作归档成功。执行容量由原执行停止观察独立决定。文件格式、完整性与只读读取由 [Task Session 设计](task-session-protocol.md#完成后的文件归档)定义。worker 退出直接停止拥有的执行并保留未完成责任。强制撤回先在服务端冻结原 Session 的普通写权限，worker 后续完整清单再收尾；没有立即停止的保证。
 
 ## Herdr 与原生会话
 

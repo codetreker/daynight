@@ -48,7 +48,6 @@ coordination without establishing the requested behavior.
 
 The server persists and exchanges the target while preserving strict legacy
 projections. Application evidence remains a separately versioned observation;
-its absence is not evidence that the default was applied. A Worker must report
-its actual application, and runtime cleanup and Web controls require their own
-implementations and validation. No target save changes or deletes an existing
-cloud archive.
+its absence is not evidence that the target was applied. The Worker reports its
+actual application and follows the [recording discard decision](../feature/2026-11-17-worker-recording-discard.md).
+Saving a target does not change or delete an existing cloud archive.

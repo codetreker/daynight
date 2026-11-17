@@ -29,6 +29,38 @@ const setup = (remote?: Pick<WorkerRemote, "readTask" | "currentUserId">) => {
   return { root, directory, source, cwd, record, owner, target, archive, resource, active: (value: boolean) => { active = value; }, user: (value: string) => { user = value; }, failure: (value: unknown) => { readFailure = value; }, publishFailure: (value: unknown) => { publishFailure = value; }, onPublish: (value: () => void) => { onPublish = value; }, published: () => published };
 };
 describe("Herdr retained recording resources", () => {
+  it("retains the content-only intent across partial deletion without a remote read or worktree mutation", async () => {
+    const s = setup(), op = createOperation();
+    const failure = new Error("seal deletion interrupted");
+    const removeSeal = vi.spyOn(s.archive, "removeSourceData").mockImplementationOnce(() => { throw failure; });
+    try {
+      s.failure(new Error("offline"));
+      expect(await s.resource.selectDiscard(s.owner, op, () => false)).toBe(false);
+      expect(s.archive.inspect(s.record)).toBeNull();
+      expect(await s.resource.selectDiscard(s.owner, op, () => true)).toBe(true);
+      const intent = s.archive.inspect(s.record)!.disposition!;
+      expect(intent).toMatchObject({ action: "delete", phase: "intent", contentOnly: true });
+      expect(await s.resource.selectDiscard(s.owner, op, () => false)).toBe(true);
+      expect(existsSync(s.source)).toBe(true);
+      await expect(s.resource.discard(s.owner, op)).rejects.toBe(failure);
+      expect(existsSync(s.source)).toBe(false); expect(existsSync(s.cwd)).toBe(true);
+      expect(s.resource.resources()[0]).toMatchObject({ discardRecording: true, disposition: { completed: false } });
+      expect(await s.resource.advance(s.owner, op)).toBe(false);
+      await s.resource.discard(s.owner, op);
+      expect(s.archive.inspect(s.record)!.disposition).toMatchObject({ operationId: intent.operationId, phase: "completed", contentOnly: true });
+      expect(s.resource.resources()[0]).toMatchObject({ discardRecording: true, worktreeDeleted: false, state: "abandoned" });
+      expect(existsSync(s.cwd)).toBe(true); expect(s.published()).toBe(0);
+    } finally { removeSeal.mockRestore(); op.dispose(); }
+  });
+  it("refuses a changed source after selecting content-only deletion", async () => {
+    const s = setup(), op = createOperation();
+    try {
+      await s.resource.selectDiscard(s.owner, op);
+      renameSync(s.source, `${s.source}-old`); mkdirSync(s.source);
+      await expect(s.resource.discard(s.owner, op)).rejects.toThrow("replaced");
+      expect(existsSync(s.source)).toBe(true);
+    } finally { op.dispose(); }
+  });
   it("reports actual source bytes and stop evidence without restarting an execution", () => {
     const s = setup(), item = s.resource.resources()[0]!;
     expect(BigInt(item.sourceBytes)).toBeGreaterThan(15n); expect(item.stopped).toBe(true); expect(item.stopEvidence).toHaveLength(1); expect(item.worktreePath).toBe(s.cwd); expect(item.worktreeDeleted).toBe(false);

@@ -51,6 +51,22 @@ const setup = (name = "valid-archive") => {
   return { directory, record, source, remote, api, open, bodies, counts: () => ({ finalizes, uploads, reads }), time: (value: number) => { clock = value; }, loseFinalization: () => { loseFinalization = true; }, loseUpload: () => { loseUpload = true; }, permission: (value: boolean) => { permission = value; } };
 };
 describe("persistent Herdr archive finalization", () => {
+  it("keeps a genuine ready receipt while deleting the selected local seal", async () => {
+    const s = setup(), archive = s.open(), op = createOperation();
+    try {
+      const ready = await archive.advance(s.record, () => s.source), receipt = structuredClone(ready.receipt);
+      expect(ready.state).toBe("ready"); expect(s.counts().uploads).toBe(1);
+      const operationId = id(401);
+      expect(() => archive.disposition(s.record, { operationId, action: "delete", phase: "intent" })).toThrow("Ready archives");
+      archive.disposition(s.record, { operationId, action: "delete", phase: "intent", contentOnly: true });
+      archive.removeSourceData(s.record, op);
+      const result = archive.disposition(s.record, { operationId, action: "delete", phase: "completed", contentOnly: true });
+      expect(result.receipt).toEqual(receipt); expect(result.state).toBe("ready"); expect(result.worktreeDeleted).toBe(false);
+      expect(s.open().inspect(s.record)).toMatchObject({ receipt, state: "ready", disposition: { phase: "completed", contentOnly: true } });
+      expect(await s.open().advance(s.record, () => { throw new Error("must not read source"); })).toMatchObject({ receipt, state: "ready" });
+      expect(s.counts().uploads).toBe(1);
+    } finally { op.dispose(); }
+  });
   it.each([[1, 0], [0, 1], [1, 0, 1], [1, 0, 0, 1], [0, 0, 1], [1, 1], [2, 0]].map(counts => ({ counts })))("archives original recording across generation segment counts $counts", async ({ counts }) => {
     const s = setup(), originalRun = structuredClone(s.record.runs[0]!), originalSegment = structuredClone(s.record.segments[0]!);
     const options = { directory: path.join(s.directory, "recording-source"), owner: s.record.owner, sessionId: s.record.sessionId, claimId: s.record.claimId };

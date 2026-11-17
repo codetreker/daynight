@@ -167,7 +167,7 @@ it("reconciles an unknown cleanup IPC outcome from the controller operation jour
     journal.recordOperation(operationId, "confirmed");
     expect((await restored.cleanup(reopened.getTask(first.task)!, { kind: "terminal", deadline: 100, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: reopened.getTask(first.task)! }, onExecutionStopped: () => {} } })).complete).toBe(true);
     expect(request.mock.calls.filter(([, action]) => action.kind === "cleanup")).toHaveLength(1);
-    expect(reopened.getTask(first.task)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100 });
+    expect(reopened.getTask(first.task)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100, discardRecording: false });
   } finally { journal.close(); }
 });
 

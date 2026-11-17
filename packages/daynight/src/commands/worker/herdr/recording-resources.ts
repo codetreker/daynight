@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { ApiError } from "../../../api/client.js";
@@ -8,6 +9,7 @@ import type { WorkerRemote } from "../remote.js";
 import type { ResourceOwner } from "../types.js";
 import { assertHerdrDisposalTarget, removeHerdrSourceDirectory } from "../resource-disposal.js";
 import { canonicalSessionJson, decodeStrictSessionJson, uuid } from "../../../session/v2/values.js";
+import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import type { HerdrLifecycleRecord } from "./lifecycle-types.js";
 import { herdrLedgerHash } from "./lifecycle-store.js";
 import type { HerdrRecordingSnapshot } from "./recording-types.js";
@@ -65,7 +67,7 @@ export const createHerdrRecordingResources = (options: {
   const inspect = (record: HerdrLifecycleRecord): HerdrRetainedResource => {
     let state: HerdrArchiveState | null = null, error: string | null = null, bytes = "unknown", sourceFailure = false, journalFailure = false;
     try { state = options.archive.inspect(record); } catch (cause) { journalFailure = true; error = cause instanceof Error ? cause.message : String(cause); }
-    const directory = sourcePath(record), deleted = state?.disposition?.action === "delete" && state.disposition.phase === "completed";
+    const directory = sourcePath(record), deleted = state?.disposition?.action === "delete" && (state.disposition.phase === "completed" || state.disposition.contentOnly === true);
     try { bytes = String(BigInt(sourceBytes(directory)) + BigInt(options.archive.storageBytes(record))); }
     catch (cause) { sourceFailure = true; error ??= cause instanceof Error ? cause.message : String(cause); }
     if (!deleted) {
@@ -79,11 +81,12 @@ export const createHerdrRecordingResources = (options: {
       stopEvidence: record.runs.flatMap(run => run.run.stopProof ? [run.run.stopProof] : []),
       terminal: state !== null || record.runs.some(run => run.stopReason === "terminal"),
       worktreePath: record.cwd, sourcePath: directory, sourceBytes: bytes,
-      state: disposition?.phase === "completed" ? "abandoned" : journalFailure || sourceFailure && !state?.receipt ? "failed" : state?.state ?? "pending",
+      state: state?.receipt ? state.state : disposition?.phase === "completed" ? "abandoned" : journalFailure || sourceFailure && !state?.receipt ? "failed" : state?.state ?? "pending",
       error: error ?? state?.error ?? null,
       nextAttemptAt: journalFailure ? 0 : state?.nextAttemptAt ?? (sourceFailure && !state ? 0 : null),
       worktreeDeleted: state?.worktreeDeleted ?? false,
       disposition: disposition ? { operationId: disposition.operationId, action: disposition.action, completed: disposition.phase === "completed" } : null,
+      discardRecording: disposition?.contentOnly === true,
     };
   };
   const terminal = async (record: HerdrLifecycleRecord, operation: Operation): Promise<void> => {
@@ -108,8 +111,14 @@ export const createHerdrRecordingResources = (options: {
     if (requireSealed && !sealed(record)) throw new Error("The original recording segments are not closed.");
     return get(target, target.sessionId);
   };
-  const advance = async (owner: ResourceOwner, operation: Operation): Promise<boolean> => {
-    let record = get(owner); await terminal(record, operation);
+  const advance = async (owner: ResourceOwner, operation: Operation, shouldArchive?: () => boolean): Promise<boolean> => {
+    operation.check();
+    if (shouldArchive && !shouldArchive()) return false;
+    let record = get(owner);
+    // An unreadable archive journal still follows the existing stopped-ledger
+    // recovery path below; it cannot establish a deletion decision here.
+    try { if (options.archive.inspect(record)?.disposition != null) return false; } catch { /* Report and maintain the original ledger below. */ }
+    await terminal(record, operation);
     let previous: HerdrArchiveState | null;
     try { previous = options.archive.inspect(record); }
     catch (journalError) {
@@ -142,6 +151,39 @@ export const createHerdrRecordingResources = (options: {
       let record = await authorize(target, operation, false);
       if (!sealed(record)) { await options.publishStopped(record, operation); record = get(target, target.sessionId); }
       options.archive.retry(record); await advance(target, operation); return inspect(get(target, target.sessionId));
+    },
+    selectDiscard: async (owner, operation, shouldDiscard) => {
+      operation.check(); const record = get(owner);
+      const previous = options.archive.inspect(record)?.disposition;
+      if (previous) {
+        if (!previous.contentOnly) throw new Error("Another original disposal decision already owns these resources.");
+        return true;
+      }
+      if (shouldDiscard && !shouldDiscard()) return false;
+      if (!sealed(record)) throw new Error("The original stopped recording segments are not closed.");
+      const directory = sourcePath(record), currentIdentity = sourceIdentity(directory);
+      assertSourceOwner(directory, record);
+      options.archive.disposition(record, { operationId: randomUUID(), action: "delete", phase: "intent", sourceIdentity: currentIdentity, contentOnly: true });
+      return true;
+    },
+    discard: async (owner, operation) => {
+      operation.check(); const record = get(owner), intent = options.archive.inspect(record)?.disposition;
+      if (!intent?.contentOnly) throw new Error("The original content-only deletion decision is missing.");
+      if (intent.phase === "completed") return;
+      const directory = sourcePath(record), actual = sourceIdentity(directory);
+      if (actual !== null && actual !== intent.sourceIdentity) throw new Error("The recording source directory was replaced after the original deletion decision.");
+      if (actual !== null) {
+        const root = lstatSync(options.directory, { bigint: true });
+        if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("The recording root is not an original physical directory.");
+        await removeHerdrSourceDirectory(options.directory, directory, operation, { rootIdentity: `${root.dev}:${root.ino}`, sourceIdentity: actual });
+      }
+      if (!absent(directory)) throw new Error("The recording source removal was not confirmed.");
+      // Re-establish the parent barrier even when a previous attempt removed
+      // the directory before its durability could be confirmed.
+      if (!absent(options.directory)) syncDurableDirectory(options.directory);
+      options.archive.removeSourceData(record, operation);
+      operation.check();
+      options.archive.disposition(record, { operationId: intent.operationId, action: "delete", phase: "completed", contentOnly: true });
     },
     dispose: async (request, operation, removeWorktree, scope) => {
       const signal = scope === undefined ? operation.signal : scope.signal;

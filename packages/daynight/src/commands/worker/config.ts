@@ -31,6 +31,7 @@ export type WorkerConfiguration = ExecutionConfiguration & {
   maxConcurrent: number;
   pollIntervalMs: number;
   preferPlatformSpecificTasks: boolean;
+  archiveSessions: boolean;
   repositories: readonly WorkerRepositoryConfiguration[];
 };
 
@@ -44,6 +45,7 @@ export const workerConfigurationDefaults = Object.freeze({
   maxConcurrent: 1,
   pollIntervalMs: 60_000,
   preferPlatformSpecificTasks: false,
+  archiveSessions: true,
   recoveryLimit: 3,
   agent: "copilot" as const,
 });
@@ -73,6 +75,12 @@ const platformPreference = (worker: Record<string, unknown>): boolean => {
   if (!Object.hasOwn(worker, "preferPlatformSpecificTasks")) return workerConfigurationDefaults.preferPlatformSpecificTasks;
   if (typeof worker.preferPlatformSpecificTasks !== "boolean") throw new TypeError("worker.preferPlatformSpecificTasks must be a boolean.");
   return worker.preferPlatformSpecificTasks;
+};
+
+const archiveSessions = (worker: Record<string, unknown>): boolean => {
+  if (!Object.hasOwn(worker, "archiveSessions")) return workerConfigurationDefaults.archiveSessions;
+  if (typeof worker.archiveSessions !== "boolean") throw new TypeError("worker.archiveSessions must be a boolean.");
+  return worker.archiveSessions;
 };
 
 const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration, local?: WorkerLocalNativeOverrides): ExecutionConfiguration => {
@@ -146,7 +154,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     }
     return { ...agentConfiguration(repository, field, effective, local), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
-  return { ...effective, repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), preferPlatformSpecificTasks: platformPreference(worker), repositories };
+  return { ...effective, repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), preferPlatformSpecificTasks: platformPreference(worker), archiveSessions: archiveSessions(worker), repositories };
 };
 
 const readWorkerConfigurationSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {

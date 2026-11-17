@@ -55,7 +55,8 @@ export type WorkerCoordinatorOptions = {
   availableDiskBytes?: () => bigint;
   webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
   webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
-  archiveMaintenance?: Pick<ReturnType<typeof createWebArchiveMaintenance>, "recordLegacyFailure">;
+  archiveMaintenance?: Pick<ReturnType<typeof createWebArchiveMaintenance>, "recordLegacyFailure"> & Partial<Pick<ReturnType<typeof createWebArchiveMaintenance>, "discardLocal" | "discardOne">>;
+  archiveSessions?: () => boolean | null;
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
@@ -112,6 +113,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (options.monitoring !== undefined) try { action(options.monitoring); } catch { /* Local execution remains authoritative. */ }
   };
   let configuration = configurationView(options);
+  const archiveSessions = (): boolean | null => options.archiveSessions === undefined ? true : options.archiveSessions();
   const selected = (projectId: string): boolean => configuration.readyProjectIds === undefined ? configuration.repositories.some(repository => repository.project.projectId === projectId) : configuration.readyProjectIds.includes(projectId);
   const stoppedProjects = new Set<string>();
   const projectStops = new Map<string, Promise<void>>();
@@ -296,6 +298,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (operationId !== undefined) { observe(m => m.recover(operationId)); schedulerFailures.delete(phase); }
   };
   let archiveJob: Promise<void> | null = null;
+  const localDiscardJobs = new Map<string, Promise<void>>();
+  let webDiscardJob: Promise<void> | null = null;
+  const discardRetries = new Map<string, number>();
   let archiveCursor = "";
   const archiveObservationRetries = new Map<string, number>();
   const confirmedClaims = new Set<string>();
@@ -942,6 +947,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let binding: WorktreeBinding | undefined;
       await cleanup.advance({ owner, project: projectFor(owner), ...(local === null ? {} : { task: local }), onWorktreeSettled: result => { binding = result; } }, deleteWorktree ? { kind: "terminal", deadline: schedule!.deadline, immediateStop: false, scope: scope!, ...(signal === undefined ? {} : { signal }) } : { kind: "shutdown", deadline: now() + 600_000, immediateStop: true, ...(signal === undefined ? {} : { signal }) });
       signal?.throwIfAborted();
+      const archive = lifecycle()?.archive;
+      if (deleteWorktree && archiveSessions() === false && archive?.resources().some(resource => sameClaim(resource.owner, owner) && resource.owner.worktreeId === owner.worktreeId)) {
+        await cleanupOperation(operation => archive.selectDiscard(owner, operation, () => archiveSessions() === false), signal);
+      }
       if (deleteWorktree && local !== null && local.status !== "done" && executionCapacity.stopped(owner)) options.store.completeTask(owner);
       return binding;
     }
@@ -1382,9 +1391,46 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
     }
   };
+  const startLocalDiscard = (): void => {
+    if (shuttingDown) return;
+    const settled = (owner: ClaimIdentity): boolean => {
+      const identity = key(owner);
+      return !jobs.has(identity) && !ending.has(identity)
+        && options.store.getTask(owner)?.status === "done"
+        && options.store.getCleanupSchedule(owner) === null;
+    };
+    if (webDiscardJob === null && options.archiveMaintenance?.discardLocal !== undefined) {
+      const webJob = options.archiveMaintenance.discardLocal(settled, archiveSessions(), normalSignal).catch(error => {
+        if (!isWorkerCancellation(error, normalSignal)) options.emit({ kind: "cleanup-error", message: "Local Web recording maintenance failed; it will be retried.", error });
+      }).finally(() => { if (webDiscardJob === webJob) webDiscardJob = null; });
+      webDiscardJob = webJob;
+    }
+    const archive = lifecycle()?.archive;
+    if (!archive) return;
+    for (const resource of archive.resources()) {
+      const identity = key(resource.owner);
+      if (normalSignal.aborted) return;
+      if (localDiscardJobs.has(identity) || !resource.stopped || !settled(resource.owner) || (discardRetries.get(identity) ?? 0) > now()) continue;
+      if (resource.disposition?.completed || resource.disposition !== null && !resource.discardRecording) continue;
+      if (!resource.discardRecording && archiveSessions() !== false) continue;
+      const job = (async () => {
+        try {
+          if (!resource.discardRecording && !await cleanupOperation(operation => archive.selectDiscard(resource.owner, operation, () => archiveSessions() === false), normalSignal)) return;
+          if (!settled(resource.owner)) return;
+          await cleanupOperation(operation => archive.discard(resource.owner, operation), normalSignal);
+          discardRetries.delete(identity);
+        } catch (error) {
+          if (isWorkerCancellation(error, normalSignal)) return;
+          discardRetries.set(identity, now() + 60_000);
+          options.emit({ kind: "cleanup-error", identity: resource.owner, component: "archive", phase: "archive-backfill", message: "Local Herdr recording deletion remains pending; it will be retried.", error });
+        }
+      })().finally(() => { if (localDiscardJobs.get(identity) === job) localDiscardJobs.delete(identity); });
+      localDiscardJobs.set(identity, job);
+    }
+  };
   const advanceArchive = (inventory: ReadonlyMap<string, Task>, coveredProjects: ReadonlySet<string>): void => {
     const archive = lifecycle()?.archive;
-    if (!archive || archiveJob !== null || shuttingDown) return;
+    if (!archive || archiveJob !== null || shuttingDown || archiveSessions() !== true) return;
     const retained = archive.resources();
     for (const resource of retained) {
       if (!resource.stopped || resource.disposition !== null || resource.state === "ready" || resource.state === "unavailable" || !coveredProjects.has(resource.owner.projectId) || inventory.has(key(resource.owner))) continue;
@@ -1428,7 +1474,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (failure !== undefined) m.updateFailureRetry(failure, "running");
       });
       if (!isStopped(owner)) throw new Error("The retained original execution no longer has confirmed stop evidence.");
-      const ready = await cleanupOperation(operation => archive.advance(owner, operation), normalSignal);
+      if (archiveSessions() !== true) return;
+      const ready = await cleanupOperation(operation => archive.advance(owner, operation, () => archiveSessions() === true), normalSignal);
       if (maintenanceOnly && !ready) archiveObservationRetries.set(`${key(owner)}/${selected.sessionId}`, now() + ARCHIVE_REPAIR_PROBE_INTERVAL_MS);
       else archiveObservationRetries.delete(`${key(owner)}/${selected.sessionId}`);
       if (!ready) { observe(m => { const activity = monitoringActivities.get(monitoringKey), failure = monitoringFailures.get(monitoringKey); if (activity !== undefined) m.updateActivity(activity, { status: "waiting", waitReason: "unknown" }); if (failure !== undefined) m.updateFailureRetry(failure, "none"); }); return; }
@@ -1648,6 +1695,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     reconcileNeverStarted();
     reconcileDeletedArchives();
     launchCleanups();
+    startLocalDiscard();
     const inventoryConfiguration = configuration;
     const initialInvalidations = new Map(projectInvalidations);
     let observation: Awaited<ReturnType<typeof ownInventory>>;
@@ -2193,6 +2241,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         options.store.deleteCleanupSchedule(owner);
         if (binding !== undefined) { settledMetadata.set(key(owner), { worktreeId: owner.worktreeId, cwd: binding.worktreePath, sequence: ++settlementSequence }); await retireKnownMetadata(owner); }
       });
+      const settled = (): boolean => options.store.getTask(owner)?.status === "done"
+        && options.store.getCleanupSchedule(owner) === null && !jobs.has(key(owner)) && !ending.has(key(owner));
+      const web = options.webStore?.getTask(owner);
+      if (web != null) {
+        if (web.cleanup?.discardRecording && options.archiveMaintenance?.discardOne !== undefined) await options.archiveMaintenance.discardOne(web, settled, normalSignal);
+      } else {
+        const archive = lifecycle()?.archive;
+        const resource = archive?.resources().find(value => sameClaim(value.owner, owner) && value.owner.worktreeId === owner.worktreeId);
+        if (archive && resource?.discardRecording && !resource.disposition?.completed && settled()) {
+          await cleanupOperation(operation => archive.discard(owner, operation), normalSignal);
+        }
+      }
     },
     shutdown: async (): Promise<boolean> => {
       cancel();
@@ -2201,6 +2261,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await Promise.allSettled(preparationJobs.values());
       await Promise.allSettled(projectStops.values());
       await archiveJob;
+      await Promise.allSettled(localDiscardJobs.values());
+      await webDiscardJob;
       let complete = true;
       for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && options.webStore?.getTask(task) == null) {
         if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered) {

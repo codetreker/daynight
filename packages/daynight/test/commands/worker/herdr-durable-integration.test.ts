@@ -9,7 +9,7 @@ import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -701,6 +701,38 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
     expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
     expect(f.read().segments[0]!.endedAt).toBeNull();
+  });
+
+  it("recovers an interrupted local stop boundary before selecting deletion without publishing the ledger", async () => {
+    let blocked = false, localFailure = false;
+    const failure = new Error("probe cleanup unavailable");
+    const diskFailure = Object.assign(new Error("recording boundary unavailable"), { code: "ENOSPC" });
+    const open = recordingStoreModule.openHerdrRecordingStore;
+    vi.spyOn(recordingStoreModule, "openHerdrRecordingStore").mockImplementation(options => {
+      const source = open(options);
+      return { ...source, recoverSegment: segment => { if (localFailure) throw diskFailure; return source.recoverSegment(segment); } };
+    });
+    const verifier: NativeSelectionVerifier = { verify: async () => {}, settle: async () => { if (blocked) throw failure; }, close: async () => {} };
+    const f = fixture(false, false, verifier); f.register(); const binding = await f.prepare(); await f.start(binding);
+    blocked = true;
+    await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toBe(failure);
+    expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    expect(f.read().segments[0]!.endedAt).toBeNull();
+    const archive = f.facade.lifecycle!.archive!, source = archive.resources()[0]!.sourcePath;
+    await expect(archive.selectDiscard(f.context, operation())).rejects.toBe(failure);
+    expect(f.read().segments[0]!.endedAt).toBeNull(); expect(existsSync(source)).toBe(true);
+    blocked = false; f.settings.ledgerFailure = "before";
+    expect(await archive.selectDiscard(f.context, operation(), () => false)).toBe(false);
+    expect(f.read().segments[0]!.endedAt).toBeNull();
+    localFailure = true;
+    await expect(archive.selectDiscard(f.context, operation(), () => true)).rejects.toBe(diskFailure);
+    expect(f.read().segments[0]!.endedAt).toBeNull(); expect(existsSync(source)).toBe(true);
+    localFailure = false;
+    expect(await archive.selectDiscard(f.context, operation(), () => true)).toBe(true);
+    expect(f.read().segments[0]!.endedAt).not.toBeNull();
+    expect(archive.resources()[0]).toMatchObject({ discardRecording: true, disposition: { completed: false } });
+    await archive.discard(f.context, operation());
+    expect(existsSync(source)).toBe(false);
   });
 
   it("retains both native stop and probe cleanup failures after attempting owned stopping", async () => {
@@ -2094,6 +2126,66 @@ it("releases a deleted claim with an unacknowledged stopped ledger for the next 
   } finally { await coordinator.shutdown(); store.close(); }
 });
 
+it("publishes the stopped ledger despite an unreadable archive journal without accessing the recording source", async () => {
+  let observe = false, sourceAccesses = 0, blocked = false;
+  const open = recordingStoreModule.openHerdrRecordingStore;
+  vi.spyOn(recordingStoreModule, "openHerdrRecordingStore").mockImplementation(options => {
+    const source = open(options);
+    return { ...source,
+      recoverSegment: segment => { if (observe) sourceAccesses++; return source.recoverSegment(segment); },
+      closeRun: generation => { if (observe) sourceAccesses++; return source.closeRun(generation); },
+      fail: generation => { if (observe) sourceAccesses++; return source.fail(generation); },
+    };
+  });
+  const failure = new Error("probe cleanup unavailable");
+  const verifier: NativeSelectionVerifier = { verify: async () => {}, settle: async () => { if (blocked) throw failure; }, close: async () => {} };
+  const f = fixture(false, true, verifier); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const originalTask = await f.readTask();
+  f.changeTask({ status: "done", properties: { ...originalTask.properties, worker: { ...readWorkerClaim(originalTask.properties)!, state: "completed" } } });
+  blocked = true;
+  await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toBe(failure);
+  const record = f.read();
+  expect(record.runs[0]!.run.stopProof).not.toBeNull();
+  expect(record.segments[0]!.endedAt).toBeNull();
+  expect(record.publishedLedgerHash).not.toBe(herdrLedgerHash(record));
+  const journal = path.join(f.paths.workerDirectory, "herdr-archives", `${record.sessionId}.archive-state.json`);
+  const sourceJournal = path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId, "journal.jsonl");
+  const bytes = readFileSync(sourceJournal);
+  writeFileSync(journal, "invalid archive journal");
+  observe = true; blocked = false;
+  await expect(f.facade.lifecycle!.archive!.advance(f.context, operation())).rejects.toMatchObject({ name: "SessionV2Error" });
+  expect(f.read().publishedLedgerHash).toBe(herdrLedgerHash(f.read()));
+  expect(f.read().segments[0]!.endedAt).toBeNull();
+  expect(sourceAccesses).toBe(0); expect(readFileSync(sourceJournal)).toEqual(bytes);
+  expect(readFileSync(journal, "utf8")).toBe("invalid archive journal");
+  rmSync(journal); observe = false;
+  await f.facade.lifecycle!.archive!.advance(f.context, operation()).catch(() => {});
+  expect(f.read().segments[0]!.endedAt).not.toBeNull();
+});
+
+it("recovers a live recording after a transient archive journal access failure", async () => {
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const record = f.read(), directory = path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId);
+  const source = () => openHerdrRecordingStore({ directory, owner: record.owner, sessionId: record.sessionId, claimId: record.claimId });
+  await vi.waitFor(() => expect(source().status().runs[0]!.registeredFrameCount).toBe("1"));
+  const journal = path.join(f.paths.workerDirectory, "herdr-archives", `${record.sessionId}.archive-state.json`);
+  writeFileSync(journal, "invalid archive journal");
+  const task = await f.readTask();
+  f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  await f.facade.lifecycle!.stop(f.context, "terminal", operation());
+  expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+  expect(f.read().segments[0]!.endedAt).toBeNull();
+  expect(source().status().failed).toBe(false);
+  rmSync(journal);
+  await f.facade.lifecycle!.archive!.advance(f.context, operation());
+  const closed = source().snapshot();
+  expect(closed.runs[0]).toMatchObject({ closed: true, captureError: null });
+  expect(closed.files).toHaveLength(1);
+  expect(f.read().segments[0]!.endedAt).toBe(closed.segments[0]!.endedAt);
+  expect(f.read().publishedLedgerHash).toBe(herdrLedgerHash(f.read()));
+  expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ state: "pending", error: "Unexpected recording fixture message" });
+});
+
 it.each(["abandon", "delete-intent", "wrong-owner", "stop-unknown"] as const)("separates pending native stop from archive responsibility for %s", async failure => {
   const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
   const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
@@ -2240,6 +2332,54 @@ it("serializes original archive maintenance even when a queued operation is canc
     release(); await first; await disposal;
     expect(removals).toBe(1); expect(archive.resources()[0]!.disposition?.completed).toBe(true);
   } finally { release(); cancelledOperation.dispose(); await first.catch(() => {}); }
+});
+
+it("waits for an admitted archive operation before selecting and deleting the local recording", async () => {
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  f.settings.ledgerFailure = "none";
+  const state = f.api.state; f.api.state = async (...args) => { entered(); await gate; return state(...args); };
+  const archive = f.facade.lifecycle!.archive!, advancing = archive.advance(f.context, operation());
+  try {
+    await Promise.race([started, advancing.then(() => { throw new Error("Archive completed before the blocked state read."); })]);
+    let enabled = true;
+    const selecting = archive.selectDiscard(f.context, operation(), () => enabled);
+    await Promise.resolve();
+    expect(archive.resources()[0]!.disposition).toBeNull();
+    enabled = false;
+    release(); await advancing; expect(await selecting).toBe(false);
+    expect(archive.resources()[0]!.disposition).toBeNull();
+    enabled = true; expect(await archive.selectDiscard(f.context, operation(), () => enabled)).toBe(true);
+    const resource = archive.resources()[0]!;
+    expect(resource).toMatchObject({ discardRecording: true, disposition: { completed: false } });
+    await archive.discard(f.context, operation());
+    expect(archive.resources()[0]).toMatchObject({ discardRecording: true, disposition: { completed: true } });
+    expect(existsSync(resource.sourcePath)).toBe(false);
+  } finally { release(); await advancing.catch(() => {}); }
+});
+
+it("rechecks archive admission after waiting for the original recording lock", async () => {
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  f.settings.ledgerFailure = "none";
+  let reads = 0, enabled = true;
+  const state = f.api.state; f.api.state = async (...args) => { reads++; entered(); await gate; return state(...args); };
+  const archive = f.facade.lifecycle!.archive!, first = archive.advance(f.context, operation());
+  try {
+    await Promise.race([started, first.then(() => { throw new Error("Archive completed before the blocked state read."); })]);
+    const admission = vi.fn(() => enabled), queued = archive.advance(f.context, operation(), admission);
+    await Promise.resolve(); expect(admission).not.toHaveBeenCalled();
+    enabled = false; release(); await first; const before = reads;
+    expect(await queued).toBe(false); expect(admission).toHaveBeenCalledOnce(); expect(reads).toBe(before);
+  } finally { release(); await first.catch(() => {}); }
 });
 
 it("joins selection and completes stopped cleanup while archive network work is blocked", async () => {

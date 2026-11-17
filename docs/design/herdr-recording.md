@@ -32,7 +32,7 @@ metadata 准入使用与最终包相同的 canonical JSON 计算 owner、运行�
 
 合法未启用录制，或无采集错误且首帧前正常结束，取得带明确原因的 unavailable 终态回执。首帧前崩溃且没有持久正常结束的运行保留 failed，不能当作正常零帧。捕获故障零帧、缺失源、旧运行没有 recording responsibility 均不能走该分支。旧内容不被猜成零帧，也不补造历史录制责任。
 
-短暂失败持久退避 5 秒至 5 分钟，每轮最多一个历史归档。权限失效保留原 owner 并停止自动上传，需恢复原权限后显式 retry。永久损坏停止内容重试；必要时只继续收敛服务端 failed 状态。ready 后本地源继续保留，不新增自动 GC。
+短暂失败持久退避 5 秒至 5 分钟，每轮最多一个历史归档。权限失效保留原 owner 并停止自动上传，需恢复原权限后显式 retry。永久损坏停止内容重试；必要时只继续收敛服务端 failed 状态。archiveSessions 开启时 ready 后本地源继续保留。
 
 ## 资源门禁与人工处置
 
@@ -40,9 +40,11 @@ metadata 准入使用与最终包相同的 canonical JSON 计算 owner、运行�
 
 claim 登记先于 worktree 准备，因此已终态的登记可能从未创建任何资源。这类责任使用独立持久退休记录收敛：核验原 owner 的当前认证与原 claim 的权威终态，在原 claim 串行区间确认没有在途执行、准备、运行、采集段、注册或输入责任，并同时核对实际工作目录、Git 注册、录制源与归档源均不存在。空 `preparation` 和空 `runs` 本身不足以证明未创建 worktree；准备中断留下的目录或 Git 注册、读取错误及未知终态都继续保留责任。退休提交核对原生命周期版本，重启后幂等结束同一 claim 的本机任务与清理计划；退休记录禁止再次启动该 claim，并从保留资源与待停止集合中排除。本机任务和清理计划已收敛后，不再用历史路径阻止项目映射变更；收敛尚未完成时继续核验原路径并阻止新准入。此路径不删除文件，不生成 native stop proof、录制内容或 ready/unavailable receipt，也不触碰同 task 后继 claim 的资源。
 
-正常 worktree 清理核对原 owner、可信停止、在途本地操作和 Git 绑定，确认原目录及注册消失后结算本机任务与清理计划；不读取或修改 archive journal，也不要求 receipt。中断后重启依据原 lifecycle、实际 Git 结果及未完成的本机责任继续收敛，退休原 manifest 时保护已确认的后继目录。独立录制源、seal、上传身份及真实状态保留；归档队列只推进原 Session，不删除 worktree 或调用 `cleaned`。归档错误与清理错误分别报告，清理成功不恢复归档失败。纯封段或 ledger 补传不重新占据 worktree 清理责任或同 task 屏障。显式 delete 的持久处置记录仍独立收敛，不修改 ledger hash 或伪造服务端确认。人工 `worker resources` 列出原 claim/Session、停止证据、源与工作区、实际核验的 worktree 结果、归档状态和处置结果；命令格式由 [CLI 手册](../../packages/daynight/README.md)拥有。
+正常 worktree 清理核对原 owner、可信停止、在途本地操作和 Git 绑定，确认原目录及注册消失后结算本机任务与清理计划；工作树删除不要求 receipt。关闭归档时，结算本机任务前先持久选择本机录制删除。中断后重启依据原 lifecycle、实际 Git 结果及未完成的本机责任继续收敛，退休原 manifest 时保护已确认的后继目录。开启时独立录制源、seal、上传身份及真实状态保留；归档队列只推进原 Session，不删除 worktree 或调用 `cleaned`。归档错误与清理错误分别报告，清理成功不恢复归档失败。纯封段或 ledger 补传不重新占据 worktree 清理责任或同 task 屏障。显式 delete 的持久处置记录仍独立收敛，不修改 ledger hash 或伪造服务端确认。人工 `worker resources` 列出原 claim/Session、停止证据、源与工作区、实际核验的 worktree 结果、归档状态和处置结果；命令格式由 [CLI 手册](../../packages/daynight/README.md)拥有。
 
-显式处置要求匹配原 project/task/claim/session/worktree、已确认停止、当前原 owner 身份与终态 claim，以及操作 ID、动作和确认。abandon 停止重试并保留资源；delete 先持久处置意图，核对源目录 inode 身份，复用安全 Git 删除并删除所选源。原 owner PAT 的身份校验不能代替 claim 终态证明：任务读取的 `404/not_found` 可能隐藏已撤销的项目访问权限，必须拒绝处置；只有已核验的终态任务或明确且结果已确认的 `410/task_deleted` 才能作为远端结束证据。未知停止、错身份、仍可恢复的 active claim 和未确认请求均拒绝。处置记录与归档真相分开，不能伪造 ready 或 unavailable；不提供自动过期删除。
+关闭 archiveSessions 时，在原停止与本机完成之间持久记录 content-only disposition intent；工作树和本机结算、原任务 job 退出后，在 serializeRecording 下删除源目录及 seal，再写 completed。历史 done 记录按当前实际值选择，已选 intent 在重新开启后仍完成。原 source、prepare 和 finishStop 遇 intent 不再建源；真实 ready receipt 保留。已启动 Worker 在远端库存失败或上传让路时仍推进本机删除，失败保留原错误并按项重试。
+
+显式处置要求匹配原 project/task/claim/session/worktree、已确认停止、当前原 owner 身份与终态 claim，以及操作 ID、动作和确认。abandon 停止重试并保留资源；delete 先持久处置意图，核对源目录 inode 身份，复用安全 Git 删除并删除所选源。原 owner PAT 的身份校验不能代替 claim 终态证明：任务读取的 `404/not_found` 可能隐藏已撤销的项目访问权限，必须拒绝处置；只有已核验的终态任务或明确且结果已确认的 `410/task_deleted` 才能作为远端结束证据。未知停止、错身份、仍可恢复的 active claim 和未确认请求均拒绝。处置记录与归档真相分开，不能伪造 ready 或 unavailable；不提供自动过期删除；关闭归档时的本地删除遵循上述 content-only 规则。
 
 ## 验证边界
 

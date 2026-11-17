@@ -19,9 +19,9 @@ it("persists a distinct web execution without inventing Herdr resources or works
   close(store); const reopened = open(file);
   expect(reopened.initializeWebExecution(claim, 4).webExecution!.initialOperationId).toBe(operationId);
   const cleaning = reopened.beginCleanup(claim, { kind: "shutdown", deadline: 100 }, 5);
-  expect(cleaning.cleanup).toEqual({ kind: "shutdown", startedAt: 5, deadline: 100 });
+  expect(cleaning.cleanup).toEqual({ kind: "shutdown", startedAt: 5, deadline: 100, discardRecording: false });
   expect(reopened.getTask(claim)?.cleanup).toEqual(cleaning.cleanup);
-  expect(connect(file).pragma("user_version", { simple: true })).toBe(4);
+  expect(connect(file).pragma("user_version", { simple: true })).toBe(5);
 });
 
 it("migrates version-two records intact, persists independent blockers, and fences old readers", () => {
@@ -109,6 +109,23 @@ it("keeps completed versioned executions available for archive backfill after re
   expect(reopened.listUnfinishedTasks().map(task => task.claimId)).toEqual([active.claimId]);
 });
 
+it("migrates the previous cleanup format and preserves a one-way discard decision after completion", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.initializeWebExecution(claim, 2);
+  store.beginCleanup(claim, { kind: "terminal", deadline: 100 }, 3);
+  close(store);
+  const db = connect(file);
+  db.exec("UPDATE executions SET data=json_remove(data,'$.cleanup.discardRecording')");
+  db.pragma("user_version=4");
+  const upgraded = open(file);
+  expect(upgraded.getTask(claim)?.cleanup?.discardRecording).toBe(false);
+  upgraded.completeTask(claim, 4);
+  expect(upgraded.discardRecording(claim, 5).cleanup?.discardRecording).toBe(true);
+  close(upgraded);
+  expect(open(file).getTask(claim)?.cleanup?.discardRecording).toBe(true);
+});
+
 it.each([false, true])("migrates version-one cleanup receipts to resource intent without trusting their outcome (%s)", observed => {
   const { file, store, project, claim } = fixture();
   store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
@@ -123,10 +140,10 @@ it.each([false, true])("migrates version-one cleanup receipts to resource intent
   const events: unknown[] = [];
   const upgraded = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(upgraded);
   expect(upgraded.getTask(claim)).toEqual(original);
-  expect(upgraded.getTask(claim)?.cleanup).toEqual({ kind: "terminal", startedAt: 4, deadline: 100 });
+  expect(upgraded.getTask(claim)?.cleanup).toEqual({ kind: "terminal", startedAt: 4, deadline: 100, discardRecording: false });
   expect(upgraded.getTask(claim)?.webExecution?.cleanupOperationId).toBe(id(7));
-  expect(db.pragma("user_version", { simple: true })).toBe(4);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 4 }, { kind: "completed", fromVersion: 1, toVersion: 4 }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 5 }, { kind: "completed", fromVersion: 1, toVersion: 5 }]);
   close(upgraded);
   expect(open(file).getTask(claim)).toEqual(original);
 });
@@ -139,10 +156,10 @@ it("rebuilds the current unversioned schema and discards its execution records",
   const db = connect(file); db.pragma("user_version = 0");
   const events: unknown[] = [];
   const rebuilt = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(4);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.getTask(claim)).toBeNull();
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 4 }, { kind: "completed", fromVersion: 0, toVersion: 4 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 5 }, { kind: "completed", fromVersion: 0, toVersion: 5 }]);
   close(rebuilt); events.length = 0;
   const reopened = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
   expect(events).toEqual([]);
@@ -179,9 +196,9 @@ it("rejects newer and unknown nonzero table formats without deleting state", () 
   store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM executions").all();
-  db.pragma("user_version=5");
+  db.pragma("user_version=6");
   expect(() => open(file)).toThrow("unsupported-version");
-  expect(db.pragma("user_version", { simple: true })).toBe(5);
+  expect(db.pragma("user_version", { simple: true })).toBe(6);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
   db.pragma("user_version=4"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
   expect(() => open(file)).toThrow("invalid-format");

@@ -22,6 +22,8 @@ import type { Operation } from "../../../src/api/operation.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import type { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
+import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
+import { receiveWorkerDesired } from "../../../src/api/worker-configuration-source.js";
 
 const mocks = vi.hoisted(() => ({ submit: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn() }));
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
@@ -199,6 +201,48 @@ describe("worker synchronous management runtime ownership", () => {
     expect(remote.configuration).not.toHaveBeenCalled(); expect(mocks.probe).not.toHaveBeenCalled();
     expect(mocks.submit).toHaveBeenCalledOnce(); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     expect(await readFile(f.paths.configFile, "utf8")).toBe(staleManagedSource());
+  });
+
+  it.each([false, true, null])("uses persisted applied archive value %s during a real Web release", async value => {
+    const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
+    const { submitWorkerControl } = await vi.importActual<typeof import("../../../src/commands/worker/control.js")>("../../../src/commands/worker/control.js");
+    const f = await fixture("web"), worktreeId = uuid(9);
+    await mkdir(f.project.localPath);
+    if (value !== null) {
+      const manager = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity: { serverOrigin: origin, userId: uuid(6), workerId: uuid(4) }, signal: new AbortController().signal, applyNative: async () => {} });
+      const target = cloudTarget(false);
+      await manager.receive(receiveWorkerDesired(JSON.stringify({ ...target, value: { ...target.value, archiveSessions: value } })));
+      await manager.settle();
+      expect(manager.current().effective.archiveSessions).toBe(value);
+      await manager.stop();
+    }
+    const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
+    const web = openWebExecutionStore(webFile);
+    web.register({ ...f.task, worktreeId, project: f.project, serverOrigin: origin, workerId: uuid(4), userId: uuid(6), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+    web.close();
+    const remoteTask: Task = { type: "task", parentId: null, tags: [], id: f.task.taskId, projectId: f.project.projectId, title: "Original assignment", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 5n, properties: { worker: { claimId: f.task.claimId, workerId: uuid(4), machine: { id: uuid(5), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, userId: uuid(6), state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-12T00:00:00Z" } }, createdAt: "2026-11-12T00:00:00Z", updatedAt: "2026-11-12T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
+    const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => uuid(6)), authorizeControl: vi.fn(async () => {}), readTask: vi.fn(async () => remoteTask), release: vi.fn(async () => remoteTask), configuration: vi.fn() };
+    mocks.remote.mockReturnValue(remote);
+    mocks.git.mockReturnValue({ dispose: vi.fn(async () => {}), prepareRepository: vi.fn(async () => {}), resolveWorktreeBinding: vi.fn(async () => null), removeUnpublishedReservation: vi.fn(async () => {}) });
+    mocks.coordinator.mockImplementation(createWorkerCoordinator); mocks.submit.mockImplementation(submitWorkerControl);
+    await runWorkerControl(f);
+    expect(remote.configuration).not.toHaveBeenCalled();
+    expect(remote.release).toHaveBeenCalledOnce();
+    expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).archiveSessions!()).toBe(value);
+    const reopened = openWebExecutionStore(webFile);
+    try { expect(reopened.getTask(f.task)).toMatchObject({ status: "done", cleanup: { kind: "terminal", discardRecording: value === false } }); }
+    finally { reopened.close(); }
+    if (value === false) {
+      const manager = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity: { serverOrigin: origin, userId: uuid(6), workerId: uuid(4) }, signal: new AbortController().signal, applyNative: async () => {} });
+      const target = cloudTarget(false);
+      await manager.receive(receiveWorkerDesired(JSON.stringify({ ...target, revision: "9", value: { ...target.value, archiveSessions: true } })));
+      await manager.settle();
+      expect(manager.current().effective.archiveSessions).toBe(true);
+      await manager.stop();
+      const retained = openWebExecutionStore(webFile);
+      try { expect(retained.getTask(f.task)?.cleanup?.discardRecording).toBe(true); }
+      finally { retained.close(); }
+    }
   });
 
   it("retries a Web execution using its frozen record without fetching current cloud settings", async () => {

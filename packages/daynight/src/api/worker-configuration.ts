@@ -8,7 +8,7 @@ import { array, bool, fields, id, malformed, record, timestamp } from "./validat
 
 export type WorkerCloudNative = { readonly agent: "codex" | "copilot" | "claude"; readonly model: string | null; readonly args: readonly string[] };
 export type WorkerCloudProject = { readonly projectId: string; readonly nativeOverrides: Readonly<Partial<WorkerCloudNative>> };
-export type WorkerCloudValue = { readonly toolPaths?: WorkerCloudToolPaths; readonly agentControlMode?: AgentControlMode | null; readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean; readonly native: WorkerCloudNative; readonly projects: readonly WorkerCloudProject[] };
+export type WorkerCloudValue = { readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly agentControlMode?: AgentControlMode | null; readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean; readonly native: WorkerCloudNative; readonly projects: readonly WorkerCloudProject[] };
 export type WorkerCloudDesired = { readonly revision: string; readonly updatedAt: string; readonly value: WorkerCloudValue };
 export type WorkerCloudFailure = {
   readonly code: "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "invalid_configuration" | "io_error" | "unavailable";
@@ -16,7 +16,7 @@ export type WorkerCloudFailure = {
   readonly phase: "validate" | "prepare" | "apply" | "stop" | "persist";
   readonly occurredAt: string;
 };
-export type WorkerCloudItemKey = { readonly kind: "maxConcurrent" | "pollIntervalMs" | "recoveryLimit" | "preferPlatformSpecificTasks" | "agentControlMode" | "native" }
+export type WorkerCloudItemKey = { readonly kind: "maxConcurrent" | "pollIntervalMs" | "recoveryLimit" | "preferPlatformSpecificTasks" | "archiveSessions" | "agentControlMode" | "native" }
   | { readonly kind: "projectPreparation" | "projectRemoval" | "projectNative"; readonly projectId: string };
 export type WorkerCloudItem = {
   readonly key: WorkerCloudItemKey;
@@ -36,12 +36,12 @@ export type WorkerCloudReportReceipt = WorkerReportReceipt & { readonly configur
 export const parseWorkerControlMode = (value: unknown): AgentControlMode => value === "herdr" || value === "web" ? value : malformed();
 
 export const projectWorkerCloudReport = (report: WorkerCloudReport, options: WorkerConfigurationCapabilityInput = false): WorkerCloudReport => {
-  const { controlMode, toolPaths } = workerConfigurationCapabilities(options);
+  const { controlMode, toolPaths, archiveSessions } = workerConfigurationCapabilities(options);
   return {
     ...(controlMode ? { controlModeBootstrap: report.controlModeBootstrap ?? null } : {}),
     ...(toolPaths ? { toolPathsBootstrap: report.toolPathsBootstrap ?? null } : {}),
-    bootstrap: report.bootstrap === null ? null : Object.fromEntries(Object.entries(report.bootstrap).filter(([key]) => (controlMode || key !== "agentControlMode") && (toolPaths || key !== "toolPaths"))) as WorkerCloudValue,
-    observation: report.observation === null ? null : { ...report.observation, items: report.observation.items.filter(item => controlMode || item.key.kind !== "agentControlMode") },
+    bootstrap: report.bootstrap === null ? null : Object.fromEntries(Object.entries(report.bootstrap).filter(([key]) => (controlMode || key !== "agentControlMode") && (toolPaths || key !== "toolPaths") && (archiveSessions || key !== "archiveSessions"))) as WorkerCloudValue,
+    observation: report.observation === null ? null : { ...report.observation, items: report.observation.items.filter(item => (controlMode || item.key.kind !== "agentControlMode") && (archiveSessions || item.key.kind !== "archiveSessions")) },
   };
 };
 export const legacyWorkerCloudReport = (report: WorkerCloudReport): WorkerCloudReport => projectWorkerCloudReport(report);
@@ -77,8 +77,8 @@ export const parseWorkerCloudNative = (value: unknown, limits = true): WorkerClo
   return { agent: agent(data.agent), model: data.model === null ? null : nativeModel(data.model, limits), args: nativeArgs(data.args, limits) };
 };
 export const parseWorkerCloudValue = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudValue => {
-  const { controlMode, toolPaths } = workerConfigurationCapabilities(options);
-  const data = exact(value, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(controlMode ? ["agentControlMode"] : []), ...(toolPaths ? ["toolPaths"] : [])]);
+  const { controlMode, toolPaths, archiveSessions } = workerConfigurationCapabilities(options);
+  const data = exact(value, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(controlMode ? ["agentControlMode"] : []), ...(toolPaths ? ["toolPaths"] : []), ...(archiveSessions ? ["archiveSessions"] : [])]);
   const seen = new Set<string>();
   const projects = boundedArray(data.projects, limits ? 128 : Infinity, value => {
     const project = exact(value, ["projectId", "nativeOverrides"]), projectId = id(project.projectId);
@@ -91,7 +91,7 @@ export const parseWorkerCloudValue = (value: unknown, limits = true, options: Wo
       ...(Object.hasOwn(overrides, "args") ? { args: nativeArgs(overrides.args, limits) } : {}),
     } };
   });
-  return { ...(toolPaths ? { toolPaths: parseWorkerCloudToolPaths(data.toolPaths) } : {}), ...(controlMode ? { agentControlMode: data.agentControlMode === null ? null : parseWorkerControlMode(data.agentControlMode) } : {}), maxConcurrent: scalar(data.maxConcurrent, 1, limits ? 64 : Number.MAX_SAFE_INTEGER), pollIntervalMs: scalar(data.pollIntervalMs, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0, limits ? 10 : Number.MAX_SAFE_INTEGER), preferPlatformSpecificTasks: bool(data.preferPlatformSpecificTasks), native: parseWorkerCloudNative(data.native, limits), projects };
+  return { ...(archiveSessions ? { archiveSessions: bool(data.archiveSessions) } : {}), ...(toolPaths ? { toolPaths: parseWorkerCloudToolPaths(data.toolPaths) } : {}), ...(controlMode ? { agentControlMode: data.agentControlMode === null ? null : parseWorkerControlMode(data.agentControlMode) } : {}), maxConcurrent: scalar(data.maxConcurrent, 1, limits ? 64 : Number.MAX_SAFE_INTEGER), pollIntervalMs: scalar(data.pollIntervalMs, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0, limits ? 10 : Number.MAX_SAFE_INTEGER), preferPlatformSpecificTasks: bool(data.preferPlatformSpecificTasks), native: parseWorkerCloudNative(data.native, limits), projects };
 };
 export const parseWorkerCloudDesired = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudDesired => {
   const data = exact(value, ["revision", "updatedAt", "value"]);
@@ -106,7 +106,7 @@ export const parseWorkerCloudFailure = (value: unknown): WorkerCloudFailure => {
   return { code, category, phase, occurredAt: instant(data.occurredAt) };
 };
 export const parseWorkerCloudItem = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudItem => {
-  const { controlMode } = workerConfigurationCapabilities(options);
+  const { controlMode, archiveSessions } = workerConfigurationCapabilities(options);
   const data = exact(value, ["key", "targetRevision", "appliedValue", "state", "error", "lastFailure", "nextAttemptAt"]);
   const keyData = record(data.key), kind = keyData.kind;
   let key: WorkerCloudItemKey;
@@ -115,7 +115,7 @@ export const parseWorkerCloudItem = (value: unknown, limits = true, options: Wor
     key = { kind, projectId: id(keyData.projectId) };
   } else {
     exact(keyData, ["kind"]);
-    if (kind !== "maxConcurrent" && kind !== "pollIntervalMs" && kind !== "recoveryLimit" && kind !== "preferPlatformSpecificTasks" && kind !== "native" && !(controlMode && kind === "agentControlMode")) return malformed();
+    if (kind !== "maxConcurrent" && kind !== "pollIntervalMs" && kind !== "recoveryLimit" && kind !== "preferPlatformSpecificTasks" && kind !== "native" && !(controlMode && kind === "agentControlMode") && !(archiveSessions && kind === "archiveSessions")) return malformed();
     key = { kind };
   }
   const state = data.state;
@@ -129,7 +129,7 @@ export const parseWorkerCloudItem = (value: unknown, limits = true, options: Wor
       case "maxConcurrent": appliedValue = scalar(data.appliedValue, 1, limits ? 64 : Number.MAX_SAFE_INTEGER); break;
       case "pollIntervalMs": appliedValue = scalar(data.appliedValue, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647); break;
       case "recoveryLimit": appliedValue = scalar(data.appliedValue, 0, limits ? 10 : Number.MAX_SAFE_INTEGER); break;
-      case "preferPlatformSpecificTasks": appliedValue = bool(data.appliedValue); break;
+      case "archiveSessions": case "preferPlatformSpecificTasks": appliedValue = bool(data.appliedValue); break;
       default: if (data.appliedValue !== true) return malformed(); appliedValue = true;
     }
   }
@@ -138,11 +138,11 @@ export const parseWorkerCloudItem = (value: unknown, limits = true, options: Wor
     lastFailure: data.lastFailure === null ? null : parseWorkerCloudFailure(data.lastFailure), nextAttemptAt: data.nextAttemptAt === null ? null : instant(data.nextAttemptAt) };
 };
 export const parseWorkerCloudObservation = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudObservation => {
-  const { controlMode } = workerConfigurationCapabilities(options);
+  const { controlMode, archiveSessions } = workerConfigurationCapabilities(options);
   const data = exact(value, ["baseRevision", "desiredRevision", "items"]);
   const desiredRevision = parseWorkerCloudRevision(data.desiredRevision), seen = new Set<string>();
-  const items = boundedArray(data.items, limits ? controlMode ? 1026 : 1025 : Infinity, item => parseWorkerCloudItem(item, limits, options));
-  if (limits && items.filter(item => item.key.kind !== "agentControlMode").length > 1025) return malformed();
+  const items = boundedArray(data.items, limits ? 1025 + Number(controlMode) + Number(archiveSessions) : Infinity, item => parseWorkerCloudItem(item, limits, options));
+  if (limits && items.filter(item => item.key.kind !== "agentControlMode" && item.key.kind !== "archiveSessions").length > 1025) return malformed();
   for (const item of items) {
     const key = `${item.key.kind}:${"projectId" in item.key ? item.key.projectId : ""}`;
     if (seen.has(key) || BigInt(item.targetRevision) > BigInt(desiredRevision)) return malformed();
@@ -151,7 +151,7 @@ export const parseWorkerCloudObservation = (value: unknown, limits = true, optio
   return { baseRevision: parseWorkerCloudRevision(data.baseRevision, true), desiredRevision, items };
 };
 export const parseWorkerCloudReport = (value: unknown, options: WorkerConfigurationCapabilityInput = false): WorkerCloudReport => {
-  const { controlMode, toolPaths } = workerConfigurationCapabilities(options);
+  const { controlMode, toolPaths, archiveSessions } = workerConfigurationCapabilities(options);
   const data = exact(value, ["bootstrap", "observation", ...(controlMode ? ["controlModeBootstrap"] : []), ...(toolPaths ? ["toolPathsBootstrap"] : [])]);
   const bootstrap = data.bootstrap === null ? null : parseWorkerCloudValue(data.bootstrap, true, options);
   if (controlMode && bootstrap !== null && bootstrap.agentControlMode === null) return malformed();

@@ -58,7 +58,7 @@ it("does not renew another origin, or an unsubmitted launch", async () => {
 
 it("keeps grant maintenance eligible while cooperative cleanup observes a live controller", async () => {
   const f = fixture();
-  f.task.cleanup = { kind: "terminal", startedAt: 1, deadline: 600_001 };
+  f.task.cleanup = { kind: "terminal", startedAt: 1, deadline: 600_001, discardRecording: false };
   const running = f.run(); await vi.advanceTimersByTimeAsync(0);
   expect(f.refreshGrant).toHaveBeenCalledOnce();
   f.cancellation.abort(); await running;

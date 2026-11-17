@@ -2443,7 +2443,7 @@ cycles add no configuration GET; startup, unknown results, 400/protocol failures
 and capability discovery read first. Reporting keeps its 30-second single-flight
 scheduler, merged triggers and finite prompt batches.
 
-The Worker stores configuration facts in one schema 6
+The Worker stores configuration facts in one schema 7
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
 observation revision and local generation. The executable known view derives from
@@ -2471,8 +2471,9 @@ history with a lost successful revision remains explicitly unknown.
 Versions 1–4 retain their original conversion to validated schema 5; schema 5 then
 upgrades to schema 6 with its complete ledger, identities, provenance, references,
 mode and retry facts preserved. Its old target becomes `desiredJson`, its revision
-becomes `applicationRevision`, and `remoteObservation` starts null. Version 1
-retains its platform-preference migration. Migration publishes only after atomic
+becomes `applicationRevision`, and `remoteObservation` starts null. Schema 6
+upgrades to 7 without inferring an applied archive value from a previously
+unknown field. Version 1 retains its platform-preference migration. Migration publishes only after atomic
 save; failed saves retain the original file and error. Missing required fields,
 invalid scope and corrupt data remain failures. Genuine file I/O failures
 recover in the original storage scope. Reads and atomic writes process the outer
@@ -3021,9 +3022,12 @@ backoff and both errors without claiming that the latest decision is durable.
 
 After Web execution and backend closure are confirmed, archive failure or
 unavailability does not prevent safe worktree removal and local settlement.
-The original Controller execution directory and archive sources remain available
-for independent backfill using the original execution identity. A known incomplete
-archive enters a durable repair-required state: every 15 minutes the Worker checks
+When `archiveSessions` is true, the original Controller execution directory and
+archive sources remain available for independent backfill using the original
+execution identity. When false, a durable deletion decision releases the settled
+local recording directory; previously ready cloud content remains available. A
+decision already made remains in force after re-enabling the setting. A known
+incomplete archive enters a durable repair-required state: every 15 minutes the Worker checks
 the stopped generation and SQL projection error markers without materializing the
 complete timeline or reading resource bytes.
 A receipt still requires remote validation; it does not itself clear the repair
@@ -3470,9 +3474,10 @@ New claims are blocked at 20 retained worktrees or 2 GiB of pending recording
 source, or when the worker filesystem has less than 1 GiB available. Each round
 advances at most one historical Herdr archive. Temporary upload failures use
 5-second to 5-minute exponential backoff; permissions and permanent corruption
-require explicit attention. Other running tasks continue. Ready local sources
-are retained and still consume actual disk space; there is no automatic source
-expiry or garbage collection.
+require explicit attention. Other running tasks continue. With `archiveSessions`
+enabled, ready local sources remain and consume actual disk space. Disabling it
+selects settled recordings for local deletion, including ready copies, without
+changing their cloud receipts.
 
 After restoring the original owner's access or resolving a transient cause,
 request another archive attempt with the identities from inspection:

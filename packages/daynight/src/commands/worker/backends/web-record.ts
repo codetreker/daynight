@@ -85,8 +85,9 @@ const parseWebExecution = (value: unknown): WebExecutionState => {
   return data as WebExecutionState;
 };
 const parseCleanup = (value: unknown): CleanupState => {
-  const data = record(value, ["kind", "startedAt", "deadline"], "Cleanup intent");
-  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline") };
+  const data = record(value, ["kind", "startedAt", "deadline", "discardRecording"], "Cleanup intent");
+  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline"), discardRecording: bool(data.discardRecording, "Discard recording") };
+  if (result.kind !== "terminal" && result.discardRecording) throw new Error("Recording discard requires terminal cleanup.");
   if (result.deadline < result.startedAt || result.deadline - result.startedAt > 600_000) throw new Error("Cleanup deadline must be within ten minutes of its original start.");
   return result;
 };

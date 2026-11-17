@@ -720,6 +720,40 @@ it("ordinary shutdown retains history without publishing an ended archive", asyn
   expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
 
+it.each([true, false, null])("uses the applied archive value %s at terminal cleanup", async value => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 3);
+  task = f.store.initializeWebExecution(task, 4);
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "managed", launchSubmission: "acknowledged" }, 5);
+  task = f.store.beginCleanup(task, { kind: "terminal", deadline: 10 }, 6);
+  const source = await cleanupSource(f, task); task = source.task;
+  const archive = vi.fn(async () => {});
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, archiveSessions: () => value, request: source.request });
+  const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
+  expect(result.complete).toBe(true);
+  expect(archive).toHaveBeenCalledTimes(value === true ? 1 : 0);
+  expect(result.task.cleanup?.discardRecording).toBe(value === false);
+  expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+  expect(source.stopped).toHaveBeenCalledOnce();
+});
+
+it("keeps a selected deletion when archival is re-enabled during a cleanup retry", async () => {
+  const f = await fixture();
+  const source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  const task = f.store.beginCleanup(source.task, { kind: "terminal", deadline: 30 }, 5);
+  const archive = vi.fn(async () => {});
+  let enabled = false;
+  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(new Error("temporary removal failure"));
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, archiveSessions: () => enabled, request: source.request });
+  const request = { kind: "terminal" as const, deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } };
+  await expect(backend.cleanup(task, request)).rejects.toThrow();
+  expect(f.store.getTask(task)?.cleanup?.discardRecording).toBe(true);
+  enabled = true;
+  expect((await backend.cleanup(task, request)).complete).toBe(true);
+  expect(archive).not.toHaveBeenCalled();
+  expect(f.store.getTask(task)?.cleanup?.discardRecording).toBe(true);
+});
+
 it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execution without publishing an archive", async provider => {
   const f = await fixture(provider);
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 3);
@@ -762,7 +796,7 @@ it("cleanup stops the original bootstrap when its journal snapshot read fails", 
   expect(stop).toHaveBeenCalledWith(source.task.webExecution!.controllerProcess, expect.any(Number));
   expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]); expect(source.stopped).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  expect(f.store.getTask(source.task)?.cleanup).toEqual({ kind: "shutdown", startedAt: 6, deadline: 100 });
+  expect(f.store.getTask(source.task)?.cleanup).toEqual({ kind: "shutdown", startedAt: 6, deadline: 100, discardRecording: false });
 });
 
 it.each(["missing", "preceding-generation"] as const)("retains a submitted launch when its writer exited before committing (%s)", async journal => {
@@ -1196,12 +1230,12 @@ it("retries endpoint closure after native stop without replaying native cleanup"
   if (process.platform !== "win32") {
     await mkdir(endpoint);
     await expect(backend.cleanup(task, { kind: "terminal", deadline: 900_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "backend-close", cause: expect.objectContaining({ code: expect.stringMatching(/EISDIR|EPERM/) }) });
-    expect(f.store.getTask(task)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30 });
+    expect(f.store.getTask(task)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30, discardRecording: false });
     await rm(endpoint, { recursive: true });
   }
   const completed = await backend.cleanup(task, { kind: "terminal", deadline: 900_000, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(completed.complete).toBe(true);
-  expect(completed.task.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30 });
+  expect(completed.task.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 30, discardRecording: false });
   expect(source.request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
   expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
@@ -1227,7 +1261,7 @@ it("reobserves the endpoint without deleting a successor path after terminal com
   expect(source.stopped).toHaveBeenCalledTimes(2);
   expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
-  expect(f.store.getTask(completed)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100 });
+  expect(f.store.getTask(completed)?.cleanup).toEqual({ kind: "terminal", startedAt: 20, deadline: 100, discardRecording: false });
 });
 
 it("reports Git effect errors and settles using its confirmed absence", async () => {
@@ -1491,7 +1525,7 @@ it.each([240_000, 300_001])("bounds Web worktree removal to five minutes (durati
     expect((await outcome).complete).toBe(true);
   } else {
     expect(await outcome).toMatchObject({ stage: "worktree-removal", cause: { name: "OperationError", kind: "deadline" } });
-    expect(f.store.getTask(f.identity)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 600_005 });
+    expect(f.store.getTask(f.identity)?.cleanup).toEqual({ kind: "terminal", startedAt: 5, deadline: 600_005, discardRecording: false });
   }
 });
 

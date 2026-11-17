@@ -228,9 +228,10 @@ export const parseWorkerCloudBootstrap = async (
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
     recoveryLimit: Object.hasOwn(worker, "recoveryLimit") ? worker.recoveryLimit : workerConfigurationDefaults.recoveryLimit,
     preferPlatformSpecificTasks: Object.hasOwn(worker, "preferPlatformSpecificTasks") ? worker.preferPlatformSpecificTasks : workerConfigurationDefaults.preferPlatformSpecificTasks,
+    archiveSessions: Object.hasOwn(worker, "archiveSessions") ? worker.archiveSessions : workerConfigurationDefaults.archiveSessions,
     native: { agent: workerConfigurationDefaults.agent, model: null, args: [], ...nativeOverrides(worker) },
     projects: projects.sort((left, right) => left.projectId.localeCompare(right.projectId)),
-  }, true, { controlMode: true, toolPaths: true });
+  }, true, { controlMode: true, toolPaths: true, archiveSessions: true });
 };
 
 export const readWorkerCloudBootstrap = async (paths: WorkerPaths, resolveProject: WorkerBootstrapProjectResolver, signal: AbortSignal): Promise<WorkerCloudValue> =>

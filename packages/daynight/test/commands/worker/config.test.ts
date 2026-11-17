@@ -11,7 +11,7 @@ const paths = resolveWorkerPaths("/home/worker-user", path.posix);
 const remote = "https://git.example/team/project.git";
 const repo = { remote, path: "../checkout" };
 const parse = (worker: Record<string, unknown>) => parseWorkerConfiguration(stringify({ worker: { repositories: [repo], ...worker } }), paths, path.posix);
-const defaults = { repositoryRoot: "~/daynights", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 60_000, preferPlatformSpecificTasks: false, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [], repositories: [] };
+const defaults = { repositoryRoot: "~/daynights", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, maxConcurrent: 1, pollIntervalMs: 60_000, preferPlatformSpecificTasks: false, archiveSessions: true, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [], repositories: [] };
 const directories: string[] = [];
 const fixture = async (prefix: string) => {
   const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
@@ -56,6 +56,12 @@ describe("worker configuration", () => {
     expect(parse({}).preferPlatformSpecificTasks).toBe(false);
     expect(parse({ preferPlatformSpecificTasks: true }).preferPlatformSpecificTasks).toBe(true);
     expect(parse({ preferPlatformSpecificTasks: false }).preferPlatformSpecificTasks).toBe(false);
+  });
+
+  it("defaults archiveSessions to true and accepts only booleans", () => {
+    expect(parse({}).archiveSessions).toBe(true);
+    expect(parse({ archiveSessions: false }).archiveSessions).toBe(false);
+    for (const archiveSessions of [null, "false", 0]) expect(() => parse({ archiveSessions })).toThrow("worker.archiveSessions");
   });
 
   it("merges same-kind overrides field by field and permits explicit reset to native model defaults", () => {

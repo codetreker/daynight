@@ -1873,7 +1873,7 @@ it.each([
     expect(await readFile(pending)).toEqual(pendingBytes);
   });
   const signal = new AbortController();
-  const createMaintenance = () => createWebArchiveMaintenance({ homeDirectory: f.root, serverUrl: origin, signal: signal.signal, store: f.store, webStore, archive, probeArchive: async () => ({ kind: "attempt" }), emit: f.options.emit, monitoring });
+  const createMaintenance = () => createWebArchiveMaintenance({ homeDirectory: f.root, serverUrl: origin, workerId, signal: signal.signal, store: f.store, webStore, archive, probeArchive: async () => ({ kind: "attempt" }), emit: f.options.emit, monitoring });
   let maintenance = createMaintenance();
   const createBackend = () => createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, request: stopped.request, archive, onArchiveFailure: maintenance.recordFailure, jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} } });
   let backend = createBackend();

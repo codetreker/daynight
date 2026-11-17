@@ -79,6 +79,9 @@ worker:
   maxConcurrent: 1
   pollIntervalMs: 60000
   recoveryLimit: 3
+  # Initial Session archive setting, default true. Later changes are cloud managed.
+  # False releases settled local recording sources without deleting cloud archives.
+  archiveSessions: true
   # Initial acquisition policy; later edits belong to this Worker in My Workers.
   # Prefer tasks requiring this host platform across all selected Projects.
   preferPlatformSpecificTasks: false

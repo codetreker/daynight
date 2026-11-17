@@ -14,7 +14,7 @@ import type { Operation } from "../../../api/operation.js";
 import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 
 type Message<K extends SessionV2Message["type"]> = Extract<SessionV2Message, { type: K }>;
-export type HerdrArchiveDisposition = { operationId: string; action: "abandon" | "delete"; phase: "intent" | "completed"; at: number; sourceIdentity: string | null; archiveFiles: { name: string; identity: string }[] };
+export type HerdrArchiveDisposition = { operationId: string; action: "abandon" | "delete"; phase: "intent" | "completed"; at: number; sourceIdentity: string | null; archiveFiles: { name: string; identity: string }[]; contentOnly?: true };
 export type HerdrArchiveState = {
   schemaVersion: 1; owner: SessionV2Owner; sessionId: string; claimId: string;
   state: "pending" | "ready" | "unavailable" | "failed" | "permission_denied";
@@ -102,7 +102,8 @@ export const createHerdrRecordingArchive = (options: { directory: string; api: H
     if (state.sourceSha256 !== null) hash(state.sourceSha256);
     if (state.seal) { exact(state.seal, ["sha256", "byteLength", "completeness"]); hash(state.seal.sha256); seq(state.seal.byteLength); if (!["complete", "partial"].includes(state.seal.completeness)) corrupt("Invalid archive completeness."); }
     if (state.disposition) {
-      exact(state.disposition, ["operationId", "action", "phase", "at", "sourceIdentity", "archiveFiles"]); uuid(state.disposition.operationId); integer(state.disposition.at, 0, Number.MAX_SAFE_INTEGER);
+      exact(state.disposition, ["operationId", "action", "phase", "at", "sourceIdentity", "archiveFiles", ...(Object.hasOwn(state.disposition, "contentOnly") ? ["contentOnly"] : [])]); uuid(state.disposition.operationId); integer(state.disposition.at, 0, Number.MAX_SAFE_INTEGER);
+      if (state.disposition.contentOnly !== undefined && (state.disposition.contentOnly !== true || state.disposition.action !== "delete")) corrupt("Invalid content-only disposition.");
       if (state.disposition.sourceIdentity !== null && !/^\d+:\d+$/.test(state.disposition.sourceIdentity) || !["abandon", "delete"].includes(state.disposition.action) || !["intent", "completed"].includes(state.disposition.phase) || !Array.isArray(state.disposition.archiveFiles) || state.disposition.archiveFiles.length > 1000) corrupt("Invalid resource disposition.");
       for (const entry of state.disposition.archiveFiles) { exact(entry, ["name", "identity"]); if (!filePattern(record, true).test(entry.name) || !/^\d+:\d+$/.test(entry.identity)) corrupt("Invalid original archive source identity."); }
     }
@@ -284,13 +285,14 @@ export const createHerdrRecordingArchive = (options: { directory: string; api: H
     disposition: (record: HerdrLifecycleRecord, request: Omit<HerdrArchiveDisposition, "at" | "sourceIdentity" | "archiveFiles"> & { sourceIdentity?: string | null }): HerdrArchiveState => {
       stopped(record); uuid(request.operationId); const state = inspect(record) ?? initial(record);
       if (!["abandon", "delete"].includes(request.action) || !["intent", "completed"].includes(request.phase)) throw new Error("An explicit supported resource disposition is required.");
-      if (state.receipt) throw new Error("Ready archives are not failed-resource disposal targets.");
+      if (request.contentOnly === true && request.action !== "delete") throw new Error("Content-only disposition requires deletion.");
+      if (state.receipt && request.contentOnly !== true) throw new Error("Ready archives are not failed-resource disposal targets.");
       const previous = state.disposition;
-      if (previous && (previous.operationId !== request.operationId || previous.action !== request.action || request.sourceIdentity !== undefined && request.sourceIdentity !== previous.sourceIdentity)) throw new Error("An original resource disposition is already recorded.");
+      if (previous && (previous.operationId !== request.operationId || previous.action !== request.action || previous.contentOnly !== request.contentOnly || request.sourceIdentity !== undefined && request.sourceIdentity !== previous.sourceIdentity)) throw new Error("An original resource disposition is already recorded.");
       if (!previous && request.phase === "completed") throw new Error("Resource disposition must persist intent before changing files.");
       if (previous?.phase === "completed") return state;
       state.disposition = { ...request, sourceIdentity: previous?.sourceIdentity ?? request.sourceIdentity ?? null, archiveFiles: previous?.archiveFiles ?? ownedFiles(record, true).map(({ name, identity }) => ({ name, identity })), at: now() }; state.nextAttemptAt = null;
-      if (request.phase === "completed" && request.action === "delete") state.worktreeDeleted = true;
+      if (request.phase === "completed" && request.action === "delete" && request.contentOnly !== true) state.worktreeDeleted = true;
       return save(record, state);
     },
   };

@@ -44,8 +44,10 @@ cleanup result without another state machine.
 
 ## Consequences
 
-Failed archival remains visible and its source is retained without holding a
-settled worktree or same-task barrier. Recovery must preserve the original
+Failed archival remains visible and, while archival is enabled, its source is
+retained without holding a settled worktree or same-task barrier. The
+[recording discard decision](../feature/2026-11-17-worker-recording-discard.md)
+governs local deletion when archival is disabled. Recovery must preserve the original
 identity and cannot restart the Agent or replace lost recording evidence. A
 restart rechecks original ownership, stop evidence and Git state before retiring
 metadata, and cannot delete a successor's directory. Shutdown cancellation

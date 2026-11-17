@@ -8,9 +8,15 @@ import { openHerdrRecordingStore, type HerdrRecordingStore } from "./recording-s
 import { startHerdrRecordingSampler, type HerdrRecordingSampler } from "./recording-sampler.js";
 import type { HerdrRecordingBoundary, HerdrRecordingScreen } from "./recording-types.js";
 
+/** A disposition gate is independent of the recording's own integrity. */
+export class HerdrRecordingAccessError extends Error {
+  constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = "HerdrRecordingAccessError"; }
+}
+
 /** Owns capture lifetime; neither network connectivity nor viewers own recording. */
 export const createHerdrRecordingRuntime = (options: {
   directory: string;
+  discarded?(record: HerdrLifecycleRecord): boolean;
   read(record: HerdrLifecycleRecord, signal: AbortSignal): Promise<HerdrRecordingScreen>;
   publish(record: HerdrLifecycleRecord, frame: TerminalFrame, recorded: boolean, signal: AbortSignal): Promise<void>;
 }) => {
@@ -19,7 +25,14 @@ export const createHerdrRecordingRuntime = (options: {
   const latest = new Map<string, { record: HerdrLifecycleRecord; frame: TerminalFrame; recorded: boolean }>();
   const exhausted = new Map<string, { segmentId: string; base: HerdrRecordingBoundary; monotonicStart: number }>();
   const directory = (record: HerdrLifecycleRecord) => path.join(options.directory, record.sessionId);
+  const assertAvailable = (record: HerdrLifecycleRecord): void => {
+    let discarded: boolean | undefined;
+    try { discarded = options.discarded?.(record); }
+    catch (cause) { throw new HerdrRecordingAccessError("The original recording disposition cannot be read.", { cause }); }
+    if (discarded) throw new HerdrRecordingAccessError("The original recording was selected for local deletion.");
+  };
   const source = (record: HerdrLifecycleRecord): HerdrRecordingStore => {
+    assertAvailable(record);
     let store = stores.get(record.sessionId);
     if (!store) {
       if (!existsSync(directory(record))) throw new SessionV2Error("source_corrupt");
@@ -38,6 +51,7 @@ export const createHerdrRecordingRuntime = (options: {
     canAllocate,
     canPrepareRun: (record: HerdrLifecycleRecord): boolean => record.runs.length < SESSION_V2_LIMITS.maxRuns && (record.runs.length === 0 || canAllocate(record)) && herdrRecordingMetadataBudget(record, record.runs.length === 0 ? [] : source(record).metadata().gaps, "run") <= SESSION_V2_LIMITS.metadataMaxBytes,
     prepare(record: HerdrLifecycleRecord): void {
+      assertAvailable(record);
       const run = record.runs.at(-1); if (!run) throw new SessionV2Error("stale_fence");
       if (!stores.has(record.sessionId) && !existsSync(directory(record))) {
         if (record.runs.length !== 1 || record.segments.length !== 0) throw new SessionV2Error("source_corrupt");
@@ -106,6 +120,10 @@ export const createHerdrRecordingRuntime = (options: {
       }
     },
     closeRun(record: HerdrLifecycleRecord): void { source(record).closeRun(record.runs.at(-1)!.run.executionGeneration); },
+    forget(record: HerdrLifecycleRecord): void {
+      if (samplers.has(record.sessionId)) throw new Error("An active sampler still owns the original recording.");
+      stores.delete(record.sessionId); latest.delete(record.sessionId); exhausted.delete(record.sessionId);
+    },
     close(): void {
       for (const { sampler } of samplers.values()) sampler.cancel();
       samplers.clear(); latest.clear(); stores.clear(); exhausted.clear();
