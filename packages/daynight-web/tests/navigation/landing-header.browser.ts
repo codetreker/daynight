@@ -24,6 +24,14 @@ for (const state of ['pending', 'anonymous', 'unavailable', 'authenticated'] as 
         const geometry = await header.evaluate(element => ({ width: innerWidth, documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth), controls: [...element.querySelectorAll('a,select')].map(control => control.getBoundingClientRect()).filter(rect => rect.width > 0 && rect.height > 0).map(rect => ({ left: rect.left, right: rect.right })) }));
         expect(geometry.width).toBe(width); expect(geometry.documentWidth).toBeLessThanOrEqual(width); expect(geometry.controls.length).toBeGreaterThan(1);
         for (const bounds of geometry.controls) { expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeLessThanOrEqual(width); }
+        const brand = header.locator('.brand');
+        await expect(brand).toHaveAttribute('href', '/');
+        await expect(brand.locator('svg[aria-hidden="true"]')).toBeVisible();
+        const mark = await brand.locator('svg').boundingBox();
+        const link = await brand.boundingBox();
+        expect(mark).not.toBeNull(); expect(link).not.toBeNull();
+        expect(mark!.width).toBeGreaterThanOrEqual(16); expect(mark!.height).toBe(mark!.width);
+        expect(mark!.x).toBeGreaterThanOrEqual(link!.x); expect(mark!.x + mark!.width).toBeLessThanOrEqual(link!.x + link!.width);
         const skin = await language.evaluate(element => {
           const wrapper = element.closest('.native-select')!;
           const arrow = wrapper.querySelector('.native-select__arrow')!;

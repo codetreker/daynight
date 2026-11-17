@@ -31,3 +31,8 @@ type TeamMemberProfile struct {
 	Membership TeamMember
 	Profile    ProjectParticipantProfile
 }
+
+type TeamMemberCandidate struct {
+	UserID  string
+	Profile ProjectParticipantProfile
+}

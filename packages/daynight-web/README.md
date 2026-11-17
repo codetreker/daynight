@@ -394,6 +394,11 @@ background, border and text tokens and does not indicate a claim, activity or
 completion. Chain summaries do not aggregate a root value. Full task and graph
 decoders require an explicit boolean `allowAgents`; missing, null and nonboolean
 values fail.
+Ordinary Task rows hide the confirmed `no_session` text when their own
+`allowAgents` is false, without leaving an empty status container. Automatic
+Tasks retain the text; other observations, attention and independently admitted
+Session entries retain their normal behavior. Project and personal rows share
+this presentation without changing the observation or issuing another request.
 Task/graph resources require nullable requiredPlatform (null/windows/linux/macos),
 with no missing-key fallback. Rows and nodes retain read-only platform badges.
 The detail combines platform display and editing in one select in the left
@@ -435,7 +440,7 @@ Team settings share a heading, the current Team name, and horizontal General and
 Members & invitations links. Native links preserve direct access, reload and browser
 history; the navigation wraps on narrow screens. General displays the saved name
 with its rename action, the selectable Team ID with an adjacent copy button for every
-viewer, and a separate deletion panel at the bottom. Members & invitations contains
+viewer, and a separate deletion panel at the bottom. Its native disclosure starts closed and retains its state within the same Team settings instance across section, locale and background updates; operation errors remain visible outside it. Members & invitations contains
 the roster and its existing role, removal and self-departure actions, followed by
 admin-only invitation management. The
 [settings sections decision](../../.agents/notes/implemented/feature/2026-11-10-team-settings-sections.md)
@@ -2442,6 +2447,10 @@ its local asset references and ordinary files, prepares a complete staged copy,
 and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed validation
 or publication fails the build; a failed swap attempts to restore previous assets
 and reports both causes if rollback also fails.
+The shared decorative `BrandMark` uses the actual light or dark surface palette;
+its parent owns its name and navigation. The matching favicon is emitted as a
+hashed SVG in `/assets/` and adapts to the browser color scheme. See the
+[brand rules](../../docs/ui-design.md#brand-mark).
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean production server builds require this explicit build first.
 The Go module check uses its own unit-test Web resource overlay; see the
@@ -2466,9 +2475,12 @@ geometry or system-menu behavior.
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,
 and the statement checker with respective process limits of 1, 3, 5, 15 and 1
 minutes. Each limit includes process startup, reporting and exit. The Docker
-stage requires a Linux Docker engine and registry access; it verifies container
+stage requires a Linux Docker engine with Buildx and registry access. It runs
+the complete target with `--output=type=cacheonly`, verifying container
 installation, production compilation and asset publication using the actual
-build context. It starts no service or database and does not run Go validation.
+build context. The following checks consume no image, so the build retains only
+its cache and skips image export and loading. It starts no service or database
+and does not run Go validation.
 Vitest suppresses console output from passing tests, including diagnostics from
 expected failure scenarios, and retains console output from failing tests.
 `test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,

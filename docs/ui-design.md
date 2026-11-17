@@ -6,6 +6,17 @@ semantic color roles, exact palette, and their visual hierarchy. Product
 specifications and design documents own the behavior of specific interfaces
 and reference these rules.
 
+## Brand mark
+
+Use the D letter mark for Web brand entries: an independent vertical stem and
+rounded arc separated by clear space. The arc is `#7567e8`; the stem is
+`#b3a9ff` on dark surfaces and `color-mix(in srgb, #7567e8 76%, #fff)` on
+light surfaces. Preserve the two shapes and their separation in monochrome.
+The shared decorative `BrandMark` selects its palette for the actual surface;
+its parent retains the accessible name and navigation. Layouts own its size.
+The matching SVG favicon adapts its stem to the browser color scheme and is
+published as a hashed asset.
+
 ## Semantic color roles
 
 Keep lifecycle, activity, attention, operational health, policy, and interaction

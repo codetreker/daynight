@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { useLayoutEffect } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
@@ -16,5 +17,5 @@ export const OAuthStartErrorPage = () => {
     // The failed request's state and client parameters are not needed by this page.
     if (window.location.search !== '' || window.location.hash !== '') window.history.replaceState(window.history.state, '', window.location.pathname);
   }, [locale, m.title]);
-  return <div className="invite-page device-page"><div className="brand" aria-label="Daynight"><span className="brand-mark" aria-hidden="true" />daynight</div><main className="invite-card device-card consent-card" aria-labelledby="oauth-error-title"><LanguageSelector /><p className="eyebrow">{m.eyebrow}</p><h1 id="oauth-error-title">{m.title}</h1><div className="device-result" role="alert"><div className="device-result-mark" aria-hidden="true">×</div><p>{m.detail}</p><p className="result-detail">{m.noDelivery}</p></div></main></div>;
+  return <div className="invite-page device-page"><div className="brand" aria-label="Daynight"><BrandMark className="brand-mark" surface="light" />daynight</div><main className="invite-card device-card consent-card" aria-labelledby="oauth-error-title"><LanguageSelector /><p className="eyebrow">{m.eyebrow}</p><h1 id="oauth-error-title">{m.title}</h1><div className="device-result" role="alert"><div className="device-result-mark" aria-hidden="true">×</div><p>{m.detail}</p><p className="result-detail">{m.noDelivery}</p></div></main></div>;
 };

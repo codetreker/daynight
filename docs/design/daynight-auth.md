@@ -783,6 +783,14 @@ write_outcome_unknown，确认提交后的响应丢失不重复执行操作。Pe
 事务确认完成才输出结果。该路径不调用用户初始化或成员写入，也不把读取结果作为未来写操作的授权。
 [解析决策](../../.agents/notes/implemented/feature/2026-11-14-team-member-resolution.md)记录接口取舍。
 
+### Team 管理员候选搜索
+
+候选搜索在一个只读 Repeatable Read 快照中校验当前 Session、PAT 或 OAuth 凭据，读取 Team 和当前成员并要求普通 Team admin，然后读取全服务既有账号。空查询也执行准入，但不查询用户目录。每页重新授权；取消或快照完成失败抑制结果，不产生未知写入分类。
+
+core 规范化查询、校验专用 cursor 并以最后交付的 UUID 生成续页位置。cursor v1 绑定 Team、用户、凭据 ID 和类型、规范化查询的 SHA-256、limit 和位置；它不签名，也不授予访问权。PostgreSQL 以 `translate` 做 ASCII fold、`strpos` 做字面匹配，按 UUID 排序并读取 `limit+1`，保留真实 nullable 资料。页间使用新快照；可变资料和新增账号可能改变尚未遍历的结果。没有文本索引时返回条数有界，但扫描行数无界；头像容量可能使响应较大，不能截断合法资料。请求和错误日志不记录查询、cursor、凭据或资料。
+
+[候选搜索决策](../../.agents/notes/implemented/feature/2026-11-17-team-member-candidates.md)记录范围、分页和索引取舍；公开合同由[鉴权需求](../spec/daynight-auth.md#team-生命周期)拥有。
+
 ### Team 邀请
 
 Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。接受按 Team →
@@ -817,6 +825,7 @@ HTTP 认证逐请求读取当前会话/PAT 或固定 API OAuth family 并产生 
 | PATCH /api/v1/me | 当前 Session/PAT/API OAuth 本人，仅提交 name/avatarUrl 的非空 subset；缺省保持、null 清除，确认提交后返回原完整 api.User 与 no-store。 |
 | GET/POST /api/v1/teams | 本人成员资格过滤的 Team 分页；原子创建普通 Team 和创建者 admin。 |
 | GET/PATCH/DELETE /api/v1/teams/{teamId} | 详情含本人真实 membership；当前 admin 按元数据 version 改名或删除空普通 Team，删除另匹配名称原文。 |
+| POST /api/v1/teams/{teamId}/member-candidates/search | 普通 Team admin 按姓名或邮箱片段分页搜索既有账号资料；每页在同一快照重验凭据和权限。 |
 | GET / | 交付同一内嵌页面，显示公开推广页；可取消身份提示只改变导航，不授予私有访问。 |
 | GET /login | 交付同一内嵌页面，显示独立登录或将已有会话替换到有效目标。 |
 | GET /projects | 交付同一内嵌页面，认证后显示项目列表。 |
@@ -881,7 +890,9 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 草稿或导航变化、提交时已有待决导航或提交后出现过待决导航时保留对话框并提供已创建项目链接，
 不自动关闭或导航。暂停中不自动读取或重放创建。
 [创建结果决策](../../.agents/notes/implemented/bug-fix/2026-11-11-project-creation-result-ownership.md)记录取舍。
-账户页管理 PAT，项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
+账户页管理 PAT。撤销确认框通过共享 `ManagementDialog` 的 `initialFocus="cancel"` 及取消按钮的
+`data-dialog-cancel` 指定初始焦点；共享弹窗负责焦点循环、Escape 和返回入口。创建令牌仍以名称输入框为初始焦点。
+项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
 服务端在项目锁后独立复核角色与设置版本。设置按 user/project 键隔离，草稿不写入权威 Project；
 设置保存按实际派发与可信回执记录结果，本地 pending 不等待展示准入；确认、未知和已知拒绝保留各自分类。原 user/project owner 持有可取消的延迟发布，准入恢复后才安装结果或读取；较新的草稿不被旧回执重置。
 不确定 PATCH 先重读 Project 和当前 access，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。

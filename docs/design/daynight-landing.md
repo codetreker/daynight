@@ -33,7 +33,7 @@ LocaleProvider
 `demo.ts` 拥有稳定示例身份与依赖，`useNavigationIdentity.ts` 拥有公开导航提示。
 `styles/landing.css` 的选择器限制在
 `.landing-page` 下，避免全局 `h1`、`.button` 或 `.brand` 规则改变工作台与登录页。
-页面复现产品品牌、首屏价值说明、具体困扰、演示、个人与团队价值、上手和 FAQ。
+页面复现产品品牌、首屏价值说明、具体困扰、演示、个人与团队价值、上手和 FAQ。页首、页尾和内嵌演示使用共享 `BrandMark`，尺寸由官网样式决定；图形与配色遵循[品牌规则](../ui-design.md#brand-mark)。
 
 公开导航读取文档账户 owner 的确认结果更新登录/工作台入口。正文立即渲染，不等待身份。导航状态区分 unknown、anonymous、authenticated 与 error；unknown/error 提供中性的登录/工作台入口，错误另有本地化状态说明与工作台链接，不被当作匿名身份。该提示不列出项目，也不启动任务同步。
 

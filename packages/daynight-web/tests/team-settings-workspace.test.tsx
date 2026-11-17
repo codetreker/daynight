@@ -1,3 +1,4 @@
+import { expandTeamDelete } from "./helpers/teamDelete";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthenticatedApp } from "../src/app/AuthenticatedApp";
@@ -57,6 +58,23 @@ describe("Team settings workspace", () => {
     expect(window.location.pathname).toBe(general);
     expect(screen.getByRole("link", { name: "General" })).toHaveAttribute("aria-current", "page");
   });
+
+  it("retains the expanded delete area across sections and starts another Team collapsed", async () => {
+    const beta = "00000000-0000-4000-8000-000000000006";
+    const fetcher = install((url) => url === `/api/v1/teams/${beta}` ? json({ ...team("Beta"), id: beta, membership: { ...team().membership, teamId: beta } }) : undefined);
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: "Edit" }, { timeout: 20000 });
+    const details = document.querySelector<HTMLDetailsElement>("details.team-delete")!;
+    expect(details.open).toBe(false);
+    await expandTeamDelete(); await waitFor(() => expect(details.open).toBe(true));
+    go(members); await screen.findByRole("button", { name: "Leave Team" }, { timeout: 20000 });
+    go(general); await screen.findByRole("button", { name: "Edit" }, { timeout: 20000 });
+    expect(details.open).toBe(true);
+    go(`/teams/${beta}/settings`); await screen.findByText("Beta", { selector: ".team-settings-context" }, { timeout: 20000 });
+    await screen.findByRole("button", { name: "Edit" }, { timeout: 20000 });
+    const current = Array.from(document.querySelectorAll<HTMLDetailsElement>("details.team-delete")).find((element) => !element.closest("[hidden]"))!;
+    expect(current).not.toBe(details); expect(current.open).toBe(false);
+    expect(fetcher.mock.calls.some(([, init]) => init?.method && init.method !== "GET")).toBe(false);
+  }, 60000);
 
   it("retains the General editor and an unsent member confirmation across section changes", async () => {
     install(); render(<AuthenticatedApp />);
@@ -130,7 +148,7 @@ describe("Team settings workspace", () => {
   it.each([members, "/shared-projects"])("handles a delayed Team deletion while visiting %s", async (destination) => {
     const receipt = Promise.withResolvers<Response>();
     const fetcher = install((url, init) => url === `/api/v1/teams/${teamId}` && init?.method === "DELETE" ? receipt.promise : undefined);
-    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    render(<AuthenticatedApp />); await expandTeamDelete(); fireEvent.click(screen.getByText("Delete Team", { selector: "button" }));
     const confirmation = await screen.findByRole("dialog", { name: "Delete Team" });
     fireEvent.change(within(confirmation).getByLabelText("Enter the Team name to confirm"), { target: { value: "Alpha" } });
     fireEvent.click(within(confirmation).getByRole("button", { name: "Delete Team" }));

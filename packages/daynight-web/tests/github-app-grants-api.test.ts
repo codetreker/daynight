@@ -5,7 +5,7 @@ import { wireResponse } from "./helpers/wireJson";
 
 const app = "00000000-0000-4000-8000-000000000001", actor = "00000000-0000-4000-8000-000000000002", teamId = "00000000-0000-4000-8000-000000000003", grantId = "00000000-0000-4000-8000-000000000004", projectId = "00000000-0000-4000-8000-000000000005";
 const version = "9007199254740993", impactVersion = "9007199254740994", time = "2026-11-16T10:00:00Z";
-const team = { id: teamId, kind: "personal", name: null, version };
+const team = { id: teamId, kind: "personal", name: null, version, personalOwner: { userId: actor, name: "Alice" } };
 const grant = { id: grantId, appId: app, team, createdAt: time };
 const preview = { appId: app, version, targetTeam: team, grant: null };
 const impact = { appId: app, grantId, version, impactVersion, totalProjects: "2", visibleProjects: "1", hiddenProjects: "1", teams: [{ team: { id: teamId, kind: "personal", name: null }, projects: "2" }], nextCursor: null };
@@ -16,7 +16,7 @@ beforeEach(() => invalidateAuthRequests());
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("GitHub App Team grants API", () => {
-  it("reads bounded grants with exact Team projection and no private owner identity", async () => {
+  it("reads bounded grants with exact Team projection and minimal owner identity", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(wire({ items: [grant], nextCursor: "more" })).mockResolvedValueOnce(wire(grant));
     vi.stubGlobal("fetch", fetcher);
     expect(await listGitHubAppGrants(app, null, signal(), admission())).toEqual({ items: [grant], nextCursor: "more" });
@@ -28,6 +28,25 @@ describe("GitHub App Team grants API", () => {
     const bad = [{ items: [grant, grant], nextCursor: null }, { items: [{ ...grant, appId: teamId }], nextCursor: null }, { items: [{ ...grant, team: { ...team, name: "Private person" } }], nextCursor: null }, { items: [{ ...grant, team: { ...team, version: "9223372036854775808" } }], nextCursor: null }];
     const fetcher = vi.fn(); bad.forEach(item => fetcher.mockResolvedValueOnce(wire(item))); vi.stubGlobal("fetch", fetcher);
     for (const _ of bad) await expect(listGitHubAppGrants(app, null, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+  });
+  it("requires a minimal owner consistent with the Team kind", async () => {
+    const { personalOwner: _owner, ...missing } = team;
+    const ordinary = { ...team, kind: "ordinary", name: "Engineering", personalOwner: null };
+    const valid = [ordinary, ...[null, "", "\u2003", " Alice "].map(name => ({ ...team, personalOwner: { userId: actor, name } }))];
+    const invalid = [missing, { ...team, personalOwner: null }, { ...ordinary, personalOwner: team.personalOwner },
+      { ...team, personalOwner: { userId: "bad", name: null } }, { ...team, personalOwner: { userId: actor, name: 7 } },
+      { ...team, personalOwner: { userId: actor } }, { ...team, personalOwner: { ...team.personalOwner, email: "private" } }];
+    const fetcher = vi.fn(); [...valid, ...invalid].forEach(value => fetcher.mockResolvedValueOnce(wire({ ...grant, team: value })));
+    vi.stubGlobal("fetch", fetcher);
+    for (const value of valid) expect((await getGitHubAppGrant(app, grantId, signal(), admission())).team).toEqual(value);
+    for (const _ of invalid) await expect(getGitHubAppGrant(app, grantId, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+  });
+  it("rejects a preview whose grant owner differs from its target", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(wire({ ...preview, grant: { ...grant, team: { ...team, personalOwner: { ...team.personalOwner, userId: teamId } } } }))
+      .mockResolvedValueOnce(wire({ ...preview, grant: { ...grant, team: { ...team, personalOwner: { ...team.personalOwner, name: null } } } }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(previewGitHubAppGrant(app, teamId, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    await expect(previewGitHubAppGrant(app, teamId, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
   });
   it("normalizes the exact preview target and checks current grant against it", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(wire(preview)).mockResolvedValueOnce(wire({ ...preview, grant })).mockResolvedValueOnce(wire({ ...preview, targetTeam: { ...team, id: actor } })).mockResolvedValueOnce(wire({ ...preview, grant: { ...grant, team: { ...team, version: "2" } } }));

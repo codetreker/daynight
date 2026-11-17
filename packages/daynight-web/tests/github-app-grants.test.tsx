@@ -11,8 +11,9 @@ vi.mock('../src/api/github-app-grants', () => ({ listGitHubAppGrants: mocks.list
 vi.mock('../src/api/auth', () => ({ getProjectAccess: mocks.projectAccess }));
 vi.mock('../src/api/github-app-management', () => ({ getGitHubApp: mocks.app }));
 const appId = '59cb4a41-9b96-43cd-8fe3-cbaf394a51e8', userId = 'c0d0a6d2-539a-4a14-87e0-e9c2de6bd058', teamId = 'a7d416e6-fac3-4f72-a696-31c016bd90b8', other = '30000000-0000-4000-8000-000000000003', grantId = '30000000-0000-4000-8000-000000000004';
+const ownerId = '30000000-0000-4000-8000-000000000005';
 const stamp = '2026-01-01T00:00:00Z', version = '9007199254740993', impactVersion = '9007199254740994';
-const team = { id: teamId, kind: 'personal' as const, name: null, version }, grant = { id: grantId, appId, team, createdAt: stamp };
+const team = { id: teamId, kind: 'personal' as const, name: null, version, personalOwner: { userId: ownerId, name: 'Alice' } }, grant = { id: grantId, appId, team, createdAt: stamp };
 const preview = { appId, version, targetTeam: team, grant: null };
 const impact = { appId, grantId, version, impactVersion, totalProjects: '1', visibleProjects: '0', hiddenProjects: '1', teams: [{ team: { id: teamId, kind: 'personal' as const, name: null }, projects: '1' }], nextCursor: null };
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; };
@@ -27,12 +28,37 @@ beforeEach(() => {
 });
 
 describe('GitHub App Team access', () => {
+  it('uses the owner on every grant surface and does not revoke on cancel', async () => {
+    mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); });
+    const view = render(subject());
+    expect(await screen.findByText("Alice's Personal Team")).toBeVisible();
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke access' }));
+    let dialog = screen.getByRole('dialog'); expect(within(dialog).getByText("Alice's Personal Team")).toBeVisible();
+    expect(within(dialog).getByText(teamId)).toBeVisible(); fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); expect(mocks.revoke).not.toHaveBeenCalled();
+    await openAuthorization(); dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' }));
+    await within(dialog).findByText("Alice's Personal Team"); fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' }));
+    await within(dialog).findByText(/outcome is unknown/); fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' }));
+    await waitFor(() => expect(within(dialog).getByRole('status')).toHaveTextContent("Currently accessible grant: Alice's Personal Team")); expect(within(dialog).getByRole('status')).toHaveTextContent(teamId);
+    view.setLocale('zh-CN'); expect(within(dialog).getByRole('status')).toHaveTextContent('Alice 的个人 Team');
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Alice 的个人 Team'); expect(screen.getByRole('alert')).toHaveTextContent(teamId); expect(mocks.create).toHaveBeenCalledOnce();
+  });
+  it.each([null, '', '\u2003\u00a0'] as const)('uses the owner UUID for blank name %s', async name => {
+    mocks.list.mockResolvedValue({ items: [{ ...grant, team: { ...team, personalOwner: { userId: other, name } } }], nextCursor: null });
+    render(subject()); expect(await screen.findByText(`${other}'s Personal Team`)).toBeVisible(); expect(screen.getByText(teamId)).toBeVisible();
+  });
+  it('distinguishes two personal Team owners from the App administrator', async () => {
+    mocks.list.mockResolvedValue({ items: [grant, { ...grant, id: other, team: { ...team, id: other, personalOwner: { userId: other, name: 'Bob' } } }], nextCursor: null });
+    render(subject()); expect(await screen.findByText("Alice's Personal Team")).toBeVisible(); expect(screen.getByText("Bob's Personal Team")).toBeVisible();
+    expect(screen.getByText(teamId)).toBeVisible(); expect(screen.getByText(other)).toBeVisible();
+  });
   it('requires a verified target, preserves typed UUID, and submits frozen versions', async () => {
     mocks.create.mockImplementation(async (_app, input, _signal, access) => { access.onDispatch(); return { ...grant, id: input.id }; });
     render(subject()); await openAuthorization();
     const dialog = screen.getByRole('dialog'), field = within(dialog).getByLabelText('Team ID'), confirm = within(dialog).getByRole('button', { name: 'Grant access' });
     expect(confirm).toBeDisabled(); fireEvent.change(field, { target: { value: teamId.toUpperCase() } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' }));
-    await within(dialog).findByText('Personal Team', { selector: 'strong' }); expect(field).toHaveValue(teamId.toUpperCase()); expect(confirm).toBeEnabled();
+    await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' }); expect(field).toHaveValue(teamId.toUpperCase()); expect(confirm).toBeEnabled();
     fireEvent.click(confirm); await screen.findByText('Team access granted.');
     expect(mocks.preview.mock.calls[0]![1]).toBe(teamId); expect(mocks.create.mock.calls[0]![1]).toMatchObject({ version, teamId, teamVersion: version }); expect(mocks.create.mock.calls[0]![1].id).toMatch(/^[a-f0-9-]{36}$/); expect(onResult).toHaveBeenCalledWith('granted');
   });
@@ -42,7 +68,7 @@ describe('GitHub App Team access', () => {
     mocks.create.mockImplementation(async (_app, input, _signal, access) => { access.onDispatch(); hold = true; return { ...grant, id: input.id }; });
     mocks.revoke.mockImplementation(async (_app, id, _input, _signal, access) => { access.onDispatch(); hold = true; return { appId, grantId: id, revoked: true }; });
     render(subject());
-    if (kind === 'grant') { await openAuthorization(); const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' }); fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); }
+    if (kind === 'grant') { await openAuthorization(); const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' }); fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); }
     else { fireEvent.click(await screen.findByRole('button', { name: 'Revoke access' })); const dialog = screen.getByRole('dialog'); fireEvent.click(await within(dialog).findByRole('button', { name: 'Revoke access and disconnect' })); }
     const dialog = screen.getByRole('dialog'); await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled());
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); expect(screen.queryByRole('dialog')).toBeNull();
@@ -54,7 +80,7 @@ describe('GitHub App Team access', () => {
     scope = { ...scope, ready: async (signal: AbortSignal) => { signal.throwIfAborted(); if (hold) await pending.promise; signal.throwIfAborted(); } } as TaskCacheScope;
     mocks.create.mockImplementation(async (_app, input, _signal, access) => { access.onDispatch(); hold = true; return { ...grant, id: input.id }; });
     const view = render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled());
     view.rerender(subject(mode === 'inactive' ? { active: false } : { active: false, accessDenied: true }));
     hold = false; await act(async () => pending.resolve()); expect(onResult).toHaveBeenCalledOnce(); expect(onResult).toHaveBeenCalledWith('granted'); expect(screen.queryByText('Team access granted.')).toBeNull();
@@ -64,7 +90,7 @@ describe('GitHub App Team access', () => {
     scope = { ...scope, ready: async (signal: AbortSignal) => { signal.throwIfAborted(); if (fail) throw new Error('admission unavailable'); } } as TaskCacheScope;
     mocks.create.mockImplementation(async (_app, input, _signal, access) => { access.onDispatch(); fail = true; return { ...grant, id: input.id }; });
     render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText('The operation succeeded, but its result could not be displayed.');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); expect(screen.getByText('The operation succeeded, but its result could not be displayed.')).toBeVisible();
     fail = false; fireEvent.click(screen.getByRole('button', { name: 'Retry showing result' })); expect(await screen.findByText('Team access granted.')).toBeVisible(); expect(mocks.create).toHaveBeenCalledOnce(); log.mockRestore();
@@ -74,12 +100,12 @@ describe('GitHub App Team access', () => {
     render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog'), field = within(dialog).getByLabelText('Team ID');
     fireEvent.change(field, { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await waitFor(() => expect(mocks.preview).toHaveBeenCalledOnce());
     fireEvent.change(field, { target: { value: other } }); await act(async () => pending.resolve(preview));
-    expect(within(dialog).getByRole('button', { name: 'Grant access' })).toBeDisabled(); expect(within(dialog).queryByText('Personal Team', { selector: 'strong' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Grant access' })).toBeDisabled(); expect(within(dialog).queryByText("Alice's Personal Team", { selector: 'strong' })).toBeNull();
   });
   it('keeps unknown creation tied to its exact generated ID without replay', async () => {
     mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); }); mocks.get.mockRejectedValue(new ApiError('server', 404, 'not_found'));
     render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' })); await within(dialog).findByText(/does not establish the original operation/);
     expect(mocks.get.mock.calls[0]![1]).toBe(mocks.create.mock.calls[0]![1].id); expect(mocks.create).toHaveBeenCalledOnce();
@@ -88,17 +114,17 @@ describe('GitHub App Team access', () => {
   it('discards a late unknown check after finishing and starting a new unknown operation', async () => {
     const stale = deferred<typeof grant>(); mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); }); mocks.get.mockResolvedValueOnce(grant).mockReturnValueOnce(stale.promise);
     render(subject()); await openAuthorization(); let dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/); fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' })); await within(dialog).findByText(/does not establish the original operation/);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' })); await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2)); const signal = mocks.get.mock.calls[1]![2] as AbortSignal;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish review and decide again' })); expect(signal.aborted).toBe(true); await openAuthorization(); dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/); await act(async () => stale.resolve(grant));
     expect(within(dialog).queryByText(/does not establish the original operation/)).toBeNull(); expect(within(dialog).queryByRole('button', { name: 'Finish review and decide again' })).toBeNull(); expect(mocks.create).toHaveBeenCalledTimes(2);
   });
   it('cancels a check on close and ignores its late denial during a later check', async () => {
     const stale = deferred<typeof grant>(), next = deferred<typeof grant>(); mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); }); mocks.get.mockReturnValueOnce(stale.promise).mockReturnValueOnce(next.promise);
-    render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/); fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' })); await waitFor(() => expect(mocks.get).toHaveBeenCalledOnce()); const signal = mocks.get.mock.calls[0]![2] as AbortSignal;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' })); expect(signal.aborted).toBe(true); fireEvent.click(screen.getByRole('button', { name: 'Check current state' })); await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
     await act(async () => stale.reject(new ApiError('server', 404, 'not_found'))); expect(mocks.app).not.toHaveBeenCalled(); expect(screen.queryByText(/does not establish the original operation/)).toBeNull();
@@ -106,7 +132,7 @@ describe('GitHub App Team access', () => {
   });
   it('cancels an unknown check on host access denial', async () => {
     const stale = deferred<typeof grant>(); mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); }); mocks.get.mockReturnValue(stale.promise);
-    const view = render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    const view = render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/); fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' })); await waitFor(() => expect(mocks.get).toHaveBeenCalledOnce()); const signal = mocks.get.mock.calls[0]![2] as AbortSignal;
     view.rerender(subject({ accessDenied: true })); expect(signal.aborted).toBe(true); await act(async () => stale.resolve(grant)); expect(screen.queryByText(/does not establish the original operation/)).toBeNull(); expect(screen.queryByText(/Currently accessible grant/)).toBeNull();
   });
@@ -157,12 +183,12 @@ describe('GitHub App Team access', () => {
   it('rechecks the App when grant impact disappears during listing', async () => {
     mocks.impact.mockRejectedValue(new ApiError('server', 404, 'not_found')); mocks.app.mockRejectedValue(new ApiError('server', 404, 'not_found'));
     render(subject()); await waitFor(() => expect(unavailable).toHaveBeenCalled());
-    expect(screen.queryByText('Personal Team')).toBeNull();
+    expect(screen.queryByText("Alice's Personal Team")).toBeNull();
   });
   it('keeps confirmed permission loss and late results isolated across account change', async () => {
     const pending = deferred<typeof grant>(); mocks.create.mockImplementation((_app, _input, _signal, access) => { access.onDispatch(); return pending.promise; });
     const view = render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await waitFor(() => expect(mocks.create).toHaveBeenCalledOnce());
     scope = { ...scope, userId: other } as TaskCacheScope; view.rerender(subject()); await act(async () => pending.resolve(grant));
     expect(onResult).not.toHaveBeenCalled(); expect(screen.queryByText('Team access granted.')).toBeNull();
@@ -177,16 +203,16 @@ describe('GitHub App Team access', () => {
   it('retains the verified draft during a temporary admission check', async () => {
     const view = render(subject()); await openAuthorization();
     const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
-    view.rerender(subject({ admissionBlocked: true })); expect(within(dialog).getByLabelText('Team ID')).toHaveValue(teamId); expect(within(dialog).getByText('Personal Team', { selector: 'strong' })).toBeVisible(); expect(within(dialog).getByRole('button', { name: 'Grant access' })).toHaveAttribute('aria-disabled', 'true');
-    view.rerender(subject()); expect(within(dialog).getByLabelText('Team ID')).toHaveValue(teamId); expect(within(dialog).getByText('Personal Team', { selector: 'strong' })).toBeVisible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
+    view.rerender(subject({ admissionBlocked: true })); expect(within(dialog).getByLabelText('Team ID')).toHaveValue(teamId); expect(within(dialog).getByText("Alice's Personal Team", { selector: 'strong' })).toBeVisible(); expect(within(dialog).getByRole('button', { name: 'Grant access' })).toHaveAttribute('aria-disabled', 'true');
+    view.rerender(subject()); expect(within(dialog).getByLabelText('Team ID')).toHaveValue(teamId); expect(within(dialog).getByText("Alice's Personal Team", { selector: 'strong' })).toBeVisible();
   });
   it('clears protected data on host denial and publishes a later confirmed receipt', async () => {
     const pending = deferred<typeof grant>(); mocks.create.mockImplementation((_app, _input, _signal, access) => { access.onDispatch(); return pending.promise; });
     const view = render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await waitFor(() => expect(mocks.create).toHaveBeenCalledOnce());
-    view.rerender(subject({ active: false, accessDenied: true })); expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.queryByText('Personal Team')).toBeNull();
+    view.rerender(subject({ active: false, accessDenied: true })); expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.queryByText("Alice's Personal Team")).toBeNull();
     await act(async () => pending.resolve(grant)); expect(onResult).toHaveBeenCalledWith('granted'); expect(screen.queryByRole('dialog')).toBeNull();
   });
   it.each([true, false])('rechecks App after inaccessible Team preview (app accessible: %s)', async (appAccessible) => {
@@ -205,7 +231,7 @@ describe('GitHub App Team access', () => {
   it('does not classify an unknown grant as absent when App access is lost', async () => {
     mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); }); mocks.get.mockRejectedValue(new ApiError('server', 404, 'not_found')); mocks.app.mockRejectedValue(new ApiError('server', 404, 'not_found'));
     render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/); fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' }));
     await waitFor(() => expect(unavailable).toHaveBeenCalledOnce()); expect(screen.queryByText(/does not establish the original operation/)).toBeNull();
     expect(await screen.findByText('This App is currently unavailable; the original outcome remains unknown.')).toBeVisible(); expect(screen.queryByText(/original grant is currently unavailable or absent/)).toBeNull();
@@ -214,7 +240,7 @@ describe('GitHub App Team access', () => {
   it('retains the unknown observation across host permission loss and allows a new decision after recovery', async () => {
     mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); }); mocks.get.mockRejectedValue(new ApiError('server', 404, 'not_found')); mocks.app.mockRejectedValue(new ApiError('server', 404, 'not_found'));
     const view = render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/); fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' }));
     await screen.findByText('This App is currently unavailable; the original outcome remains unknown.'); view.rerender(subject({ active: false, accessDenied: true }));
     mocks.app.mockResolvedValue({}); view.rerender(subject()); await screen.findByText('This App is currently unavailable; the original outcome remains unknown.');
@@ -339,9 +365,9 @@ describe('GitHub App Team access', () => {
     mocks.create.mockImplementation(async (_app, _input, _signal, access) => { access.onDispatch(); throw new ApiError('network'); });
     const Host = () => { const [lost, setLost] = useState(false), [review, setReview] = useState<GitHubAppGrantUnknownReview | null>(null); return <><button onClick={() => setLost(true)}>Lose access</button><button onClick={() => setLost(false)}>Restore access</button><div hidden={lost}>{subject({ accessDenied: lost, onUnknownReviewChange: setReview })}</div>{lost && review && <div role="status">{review.state}<button onClick={review.check}>Review outcome</button>{review.finish && <button onClick={review.finish}>Finish review</button>}</div>}</>; };
     render(<Host />); await openAuthorization(); const dialog = screen.getByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText("Alice's Personal Team", { selector: 'strong' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText(/outcome is unknown/); fireEvent.click(screen.getByRole('button', { name: 'Lose access' }));
-    expect(await screen.findByText('app-unavailable')).toBeVisible(); expect(screen.queryByText('Personal Team')).toBeNull(); fireEvent.click(screen.getByRole('button', { name: 'Finish review' }));
+    expect(await screen.findByText('app-unavailable')).toBeVisible(); expect(screen.queryByText("Alice's Personal Team")).toBeNull(); fireEvent.click(screen.getByRole('button', { name: 'Finish review' }));
     expect(screen.queryByText('app-unavailable')).toBeNull(); fireEvent.click(screen.getByRole('button', { name: 'Restore access' })); await waitFor(() => expect(screen.getByRole('button', { name: 'Authorize Team' })).toBeEnabled()); expect(mocks.create).toHaveBeenCalledOnce();
   });
 

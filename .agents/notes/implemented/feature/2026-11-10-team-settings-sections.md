@@ -17,7 +17,7 @@ the default section at `/teams/{teamId}/settings`; Members & invitations uses
 `/teams/{teamId}/members`. Both share a Team settings heading, the current Team
 name and horizontal native navigation links, and both select the sidebar entry.
 General contains saved name and ID information plus a separate deletion panel at
-the bottom. The other section keeps the roster and admin-only invitations
+the bottom. The [deletion disclosure decision](2026-11-17-team-deletion-disclosure.md) owns its presentation and state. The other section keeps the roster and admin-only invitations
 together. Ordinary members can enter settings to read the directory and leave;
 Project grants do not confer Team access. The
 [Personal visibility decision](2026-11-05-personal-team-sidebar.md) continues to

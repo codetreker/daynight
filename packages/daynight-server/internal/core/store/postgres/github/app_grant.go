@@ -55,32 +55,42 @@ func (r *grantReader) Locate(ctx context.Context, appID, actor, grantID string) 
 }
 func readTeam(ctx context.Context, tx pgx.Tx, id string) (store.GitHubGrantTeam, error) {
 	var t store.GitHubGrantTeam
-	var personal *string
-	err := tx.QueryRow(ctx, `SELECT id::text,name,personal_user_id::text,version FROM teams WHERE id=$1`, id).Scan(&t.ID, &t.Name, &personal, &t.Version)
+	var personal, ownerID, ownerName *string
+	err := tx.QueryRow(ctx, `SELECT t.id::text,t.name,t.personal_user_id::text,t.version,u.id::text,u.name FROM teams t LEFT JOIN users u ON u.id=t.personal_user_id WHERE t.id=$1`, id).Scan(&t.ID, &t.Name, &personal, &t.Version, &ownerID, &ownerName)
 	if err != nil {
 		return t, pg.QueryError("read grant Team", err)
 	}
-	t.Kind = "ordinary"
-	if personal != nil {
-		t.Kind = "personal"
-		t.Name = nil
+	if err = grantTeamOwner(&t, personal, ownerID, ownerName); err != nil {
+		return t, pg.QueryError("read grant Team", err)
 	}
 	return t, nil
 }
 
-const grantProjection = `g.id::text,g.app_resource_id::text,t.id::text,t.name,t.personal_user_id::text,t.version,g.created_at`
+func grantTeamOwner(t *store.GitHubGrantTeam, personal, ownerID, ownerName *string) error {
+	t.Kind = "ordinary"
+	if personal != nil {
+		if ownerID == nil {
+			return fmt.Errorf("personal Team owner is missing")
+		}
+		t.Kind = "personal"
+		t.Name = nil
+		t.PersonalOwner = &store.GitHubGrantPersonalOwner{UserID: *ownerID, Name: ownerName}
+	}
+	return nil
+}
+
+const grantProjection = `g.id::text,g.app_resource_id::text,t.id::text,t.name,t.personal_user_id::text,t.version,g.created_at,u.id::text,u.name`
+const grantRelation = ` FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id LEFT JOIN users u ON u.id=t.personal_user_id `
 
 func scanGrant(row rowScanner) (store.GitHubTeamGrant, error) {
 	var g store.GitHubTeamGrant
-	var personal *string
-	err := row.Scan(&g.ID, &g.AppID, &g.Team.ID, &g.Team.Name, &personal, &g.Team.Version, &g.CreatedAt)
+	var personal, ownerID, ownerName *string
+	err := row.Scan(&g.ID, &g.AppID, &g.Team.ID, &g.Team.Name, &personal, &g.Team.Version, &g.CreatedAt, &ownerID, &ownerName)
 	if err != nil {
 		return g, err
 	}
-	g.Team.Kind = "ordinary"
-	if personal != nil {
-		g.Team.Kind = "personal"
-		g.Team.Name = nil
+	if err = grantTeamOwner(&g.Team, personal, ownerID, ownerName); err != nil {
+		return g, err
 	}
 	g.CreatedAt = g.CreatedAt.UTC()
 	return g, nil
@@ -95,7 +105,7 @@ func (r *grantReader) Preview(ctx context.Context, appID, actor, teamID string) 
 		return store.GitHubGrantPreview{}, err
 	}
 	p := store.GitHubGrantPreview{AppID: appID, Version: version, TargetTeam: t}
-	g, err := scanGrant(r.tx.QueryRow(ctx, `SELECT `+grantProjection+` FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id WHERE g.app_resource_id=$1 AND g.team_id=$2 AND g.revoked_at IS NULL`, appID, teamID))
+	g, err := scanGrant(r.tx.QueryRow(ctx, `SELECT `+grantProjection+grantRelation+`WHERE g.app_resource_id=$1 AND g.team_id=$2 AND g.revoked_at IS NULL`, appID, teamID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, nil
 	}
@@ -109,7 +119,7 @@ func (r *grantReader) Grant(ctx context.Context, appID, actor, grantID string) (
 	if _, err := readAdmin(ctx, r.tx, appID, actor); err != nil {
 		return store.GitHubTeamGrant{}, err
 	}
-	g, err := scanGrant(r.tx.QueryRow(ctx, `SELECT `+grantProjection+` FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id WHERE g.app_resource_id=$1 AND g.id=$2 AND g.revoked_at IS NULL`, appID, grantID))
+	g, err := scanGrant(r.tx.QueryRow(ctx, `SELECT `+grantProjection+grantRelation+`WHERE g.app_resource_id=$1 AND g.id=$2 AND g.revoked_at IS NULL`, appID, grantID))
 	if err != nil {
 		return g, pg.QueryError("read grant", err)
 	}
@@ -122,7 +132,7 @@ func (r *grantReader) Grants(ctx context.Context, appID, actor string, after *st
 	if _, err := readAdmin(ctx, r.tx, appID, actor); err != nil {
 		return store.GitHubGrantPage{}, err
 	}
-	rows, err := r.tx.Query(ctx, `SELECT `+grantProjection+` FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id WHERE g.app_resource_id=$1 AND g.revoked_at IS NULL AND ($2::uuid IS NULL OR g.id>$2) ORDER BY g.id LIMIT $3`, appID, after, limit+1)
+	rows, err := r.tx.Query(ctx, `SELECT `+grantProjection+grantRelation+`WHERE g.app_resource_id=$1 AND g.revoked_at IS NULL AND ($2::uuid IS NULL OR g.id>$2) ORDER BY g.id LIMIT $3`, appID, after, limit+1)
 	if err != nil {
 		return store.GitHubGrantPage{}, pg.QueryError("list grants", err)
 	}
@@ -188,14 +198,14 @@ func (w *grantWriter) Facts(ctx context.Context, actor string) (store.GitHubGran
 	return f, nil
 }
 func (w *grantWriter) Grant(ctx context.Context, id string) (store.GitHubTeamGrant, error) {
-	g, err := scanGrant(w.tx.QueryRow(ctx, `SELECT `+grantProjection+` FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id WHERE g.id=$1 AND g.team_id=$2 AND g.app_resource_id=$3 AND g.revoked_at IS NULL`, id, w.teamID, w.appID))
+	g, err := scanGrant(w.tx.QueryRow(ctx, `SELECT `+grantProjection+grantRelation+`WHERE g.id=$1 AND g.team_id=$2 AND g.app_resource_id=$3 AND g.revoked_at IS NULL`, id, w.teamID, w.appID))
 	if err != nil {
 		return g, pg.QueryError("read locked grant", err)
 	}
 	return g, nil
 }
 func (w *grantWriter) LiveGrant(ctx context.Context) (*store.GitHubTeamGrant, error) {
-	g, err := scanGrant(w.tx.QueryRow(ctx, `SELECT `+grantProjection+` FROM github_app_team_grants g JOIN teams t ON t.id=g.team_id WHERE g.team_id=$1 AND g.app_resource_id=$2 AND g.revoked_at IS NULL`, w.teamID, w.appID))
+	g, err := scanGrant(w.tx.QueryRow(ctx, `SELECT `+grantProjection+grantRelation+`WHERE g.team_id=$1 AND g.app_resource_id=$2 AND g.revoked_at IS NULL`, w.teamID, w.appID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

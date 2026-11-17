@@ -131,6 +131,52 @@ describe('shared task row', () => {
     expect(screen.queryByRole('button', { name: /Open Session/ })).toBeNull();
   });
 
+  it('updates the empty Session hint with permission and observation while preserving row identity and focus', () => {
+    const empty = { state: 'no_session' as const, needsAttention: null, canOpen: false };
+    const model = { ...base, status: 'in_progress' as const, allowAgents: false, paused: true, session: empty };
+    const view = renderWithLocale(tree(model), { locale: 'zh-CN' });
+    const title = screen.getByRole('link', { name: model.title });
+    const row = title.closest('.task-row')!;
+    title.focus();
+    expect(row.querySelector('.project-session-status')).toBeNull();
+    expect(row).toHaveTextContent('进行中'); expect(row).toHaveTextContent('worker host');
+    view.rerender(tree({ ...model, allowAgents: true }));
+    expect(row).toHaveTextContent('无当前 Session'); expect(title).toHaveFocus();
+    view.setLocale('en');
+    expect(row).toHaveTextContent('No current Session');
+    view.rerender(tree(model));
+    expect(row.querySelector('.project-session-status')).toBeNull();
+    view.rerender(tree({ ...model, session: { state: 'working', needsAttention: false, canOpen: true } }));
+    const action = within(row as HTMLElement).getByRole('button', { name: /Session working.*Open Session/ });
+    action.focus();
+    view.rerender(tree({ ...model, session: { state: null, needsAttention: false, canOpen: true } }));
+    expect(action).toHaveFocus();
+    view.rerender(tree(model));
+    expect(title).toHaveFocus(); expect(row.querySelector('.project-session-status')).toBeNull();
+  });
+
+  it('keeps attention and an independently allowed entrance when the empty detail is suppressed', () => {
+    const open = vi.fn();
+    const model = { ...base, allowAgents: false, session: { state: 'no_session' as const, needsAttention: true, canOpen: true } };
+    const view = renderWithLocale(tree(model, vi.fn(), open), { locale: 'en' });
+    const action = screen.getByRole('button', { name: /Needs attention.*Open Session/ });
+    expect(action).not.toHaveTextContent('No current Session');
+    fireEvent.click(action); expect(open).toHaveBeenCalledExactlyOnceWith(id, action);
+    view.rerender(tree({ ...model, session: { ...model.session, canOpen: false } }));
+    expect(screen.getByText('Needs attention')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /Open Session/ })).toBeNull();
+  });
+
+  it.each([
+    ['not_registered', 'Session not registered'], ['pending', 'Session pending'], ['working', 'Session working'],
+    ['notice', 'Session needs a response'], ['warning', 'Session needs checking'], ['unavailable', 'Session unavailable'],
+    ['unobserved', 'Session not observed'], ['expired', 'Session observation expired'],
+  ] as const)('retains %s for a manual task', (state, label) => {
+    renderWithLocale(tree({ ...base, allowAgents: false, session: { state, needsAttention: false, canOpen: false } }), { locale: 'en' });
+    expect(screen.getByText(label)).toBeVisible();
+    expect(screen.queryByRole('button', { name: /Open Session/ })).toBeNull();
+  });
+
 
   it('restores focus to the task title when a focused color retry disappears after recovery', async () => {
     colors.value = { ...colors.value, error: new Error('unavailable') };

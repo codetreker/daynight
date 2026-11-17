@@ -92,6 +92,22 @@ beforeEach(() => {
 });
 
 describe('account credentials', () => {
+  it.each(['zh-CN', 'en'] as const)('focuses cancel when reopening token revocation in %s', async (locale) => {
+    vi.mocked(auth.listTokens).mockResolvedValue([token]);
+    const view = account(); await tokensTab(); view.setLocale(locale);
+    const { account: labels, common } = messagesByLocale[locale].auth.management;
+    const opener = screen.getByRole('button', { name: labels.revokeLabel({ name: token.name }) });
+    for (const close of ['cancel', 'escape'] as const) {
+      opener.focus(); fireEvent.click(opener);
+      const dialog = screen.getByRole('dialog', { name: labels.revokeTitle });
+      expect(within(dialog).getByRole('button', { name: common.cancel })).toHaveFocus();
+      if (close === 'cancel') fireEvent.click(within(dialog).getByRole('button', { name: common.cancel }));
+      else fireEvent.keyDown(document, { key: 'Escape' });
+      expect(screen.queryByRole('dialog')).toBeNull(); expect(opener).toHaveFocus();
+      expect(auth.revokeToken).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(['https://example.test/avatar.png', 'data:image/png;base64,aW1hZ2U='])('passes the account avatar source to Identity: %s', (avatarUrl) => {
     render(<AccountPage user={{ ...user, avatarUrl }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
     const avatar = document.querySelector('.profile-info .management-avatar')!;
