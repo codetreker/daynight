@@ -1,6 +1,7 @@
 import { testIsolation } from "../../../../scripts/test-bootstrap.js";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delayNative } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveToolLaunch, toolCommand } from "../../../../src/platform/tool-executables.js";
 import { createOperation } from "../../../../src/api/operation.js";
@@ -8,22 +9,35 @@ import * as nativeJob from "../../../../src/commands/worker/bots/windows-job-lea
 import * as windowsJob from "../../../../src/commands/controller/windows-job.js";
 import * as processProof from "../../../../src/commands/controller/process-proof.js";
 import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "../../../../src/commands/worker/bots/cli-probe.js";
+import { captureProbeDeadline, withProbeGrace, type ExecHook } from "./cli-probe-clock.fixtures.js";
+
+const execHook = vi.hoisted((): ExecHook => ({ observe: undefined }));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  return { ...actual, execFile: new Proxy(actual.execFile, {
+    apply(target, receiver, args) {
+      return execHook.observe === undefined ? Reflect.apply(target, receiver, args) : execHook.observe(target, receiver, args);
+    },
+  }) };
+});
 
 const roots: string[] = [];
 const scopes: BotCliProbe[] = [];
 const observedJobs = new Map<BotCliProbe, windowsJob.ControllerJobLease>();
 const operations: ReturnType<typeof createOperation>[] = [];
-const fixture = async (tail = "console.log('help-result');", signal?: AbortSignal, requestMs = 5_000) => {
+const timingFailures: Error[] = [];
+const fixture = async (tail = "console.log('help-result');", signal?: AbortSignal, requestMs = 5_000, descendantReady = false) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../../.tmp");
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, "bot-probe-")); roots.push(root);
   const pidFile = path.join(root, "descendants");
-  const file = path.join(root, "wrapper.cjs");
-  await writeFile(file, `const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore'}); require('node:fs').appendFileSync(${JSON.stringify(pidFile)}, String(child.pid)+'\\n'); child.unref(); ${tail}\n`);
+  const file = path.join(root, "wrapper.cjs"), readyFile = path.join(root, "descendant-ready");
+  const childSource = `${descendantReady ? `require('node:fs').writeFileSync(${JSON.stringify(readyFile)}, String(process.pid));` : ""} setInterval(() => {}, 1000);`;
+  await writeFile(file, `const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(childSource)}], {stdio:'ignore'}); require('node:fs').appendFileSync(${JSON.stringify(pidFile)}, String(child.pid)+'\\n'); child.unref(); ${tail}\n`);
   const operation = createOperation({ ...(signal === undefined ? {} : { signal }), limits: { totalMs: 90_000, requestMs } }); operations.push(operation);
   const scope = await createBotCliProbe({ environment: process.env, cwd: root }, operation); scopes.push(scope);
   if (process.platform === "win32") observedJobs.set(scope, await windowsJob.acquireControllerJobLease(scope.ownership.launchId, scope.ownership.process!, Date.now() + 15_000));
-  return { root, file, pidFile, scope, operation };
+  return { root, file, pidFile, readyFile, scope, operation };
 };
 const checkStopped = async (scope: BotCliProbe) => {
   expect(scope.ownership.process).not.toBeNull();
@@ -42,7 +56,11 @@ const diagnostic = (stage: string, failure: unknown): void => {
   console.error(JSON.stringify({ fixture: "bot-cli-probe", stage, error: describe(failure) }));
 };
 beforeEach(() => {
-  if (process.platform !== "win32") return;
+  if (process.platform !== "win32") {
+    const stop = processProof.stopControllerProcesses;
+    vi.spyOn(processProof, "stopControllerProcesses").mockImplementation((...args) => withProbeGrace(stop, args, execHook, failure => timingFailures.push(failure)));
+    return;
+  }
   const capture = processProof.captureProcessProof;
   vi.spyOn(processProof, "captureProcessProof").mockImplementation(async (pid, timeoutMs) => {
     try { return await capture(pid, timeoutMs); }
@@ -76,8 +94,14 @@ afterEach(async () => {
   for (const operation of operations.splice(0)) operation.dispose();
   // Retain failed owners and their directories for the next cleanup attempt;
   // removing an open Windows cwd only hides the original failure with EBUSY.
-  if (failures.length !== 0) throw new AggregateError(failures, "Bot probe fixtures retain unconfirmed process ownership.");
-  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+  const traces = timingFailures.splice(0);
+  if (failures.length !== 0) throw new AggregateError([...failures, ...traces], "Bot probe fixtures retain unconfirmed process ownership.");
+  try { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); }
+  catch (error) {
+    if (traces.length !== 0) throw new AggregateError([error, ...traces], "Bot probe fixture removal and timing observation failed.", { cause: error });
+    throw error;
+  }
+  if (traces.length !== 0) throw new AggregateError(traces, "Bot probe timing observation failed after cleanup.");
 });
 
 describe("owned Bot CLI capability probes", () => {
@@ -110,9 +134,22 @@ describe("owned Bot CLI capability probes", () => {
   }, 120_000);
 
   it("stops the complete scope after a command deadline", async () => {
-    const f = await fixture("setInterval(() => {}, 1000);", undefined, 5_000);
-    await expect(f.scope.run(process.execPath, [f.file])).rejects.toThrow(/deadline/);
-    expect((await readFile(f.pidFile, "utf8")).trim()).not.toBe("");
+    const f = await fixture("setInterval(() => {}, 1000);", undefined, 5_000, true);
+    const timer = captureProbeDeadline(() => f.scope.run(process.execPath, [f.file]));
+    let pending = true;
+    void timer.result.then(() => { pending = false; }, () => { pending = false; });
+    try {
+      expect(timer.count).toBe(1); expect(timer.requested).toBe(5_000);
+      await vi.waitFor(async () => expect((await stat(f.readyFile)).isFile()).toBe(true), { timeout: 10_000, interval: 20 });
+      const pid = Number((await readFile(f.readyFile, "utf8")).trim());
+      expect((await readFile(f.pidFile, "utf8")).trim()).toBe(String(pid));
+      const proof = await processProof.captureProcessProof(pid);
+      expect(await processProof.inspectProcessProof(proof)).toBe("running");
+      expect(f.scope.ownership.targetStarted).toBe(true); expect(pending).toBe(true);
+      timer.markReady(); await timer.expire();
+      await expect(timer.result).rejects.toThrow(/deadline/);
+      expect((await readFile(f.pidFile, "utf8")).trim()).not.toBe("");
+    } finally { timer.restore(); }
     await f.scope.close(); await checkStopped(f.scope);
   }, 120_000);
 
@@ -214,4 +251,43 @@ setInterval(() => {}, 1000);`;
     await scope.close(); await checkStopped(scope);
   }, 120_000);
 
+});
+
+describe("probe deadline fixture delivery", () => {
+  it("rejects early, repeated and cleared deliveries", async () => {
+    const timer = captureProbeDeadline(() => new Promise<void>(resolve => setTimeout(resolve, 5_000)));
+    try {
+      await expect(timer.expire()).rejects.toThrow(/not eligible/);
+      timer.markReady(); await timer.expire(); await timer.result;
+      await expect(timer.expire()).rejects.toThrow(/not eligible/);
+    } finally { timer.restore(); }
+    let handle: NodeJS.Timeout | undefined;
+    const cleared = captureProbeDeadline(() => { handle = setTimeout(() => {}, 5_000); return Promise.resolve(); });
+    try {
+      clearTimeout(handle); cleared.markReady();
+      await expect(cleared.expire()).rejects.toThrow(/not eligible/);
+    } finally { cleared.restore(); }
+  });
+});
+
+
+describe("probe deadline fixture ownership", () => {
+  it("clears every placeholder when synchronous registration is not unique", async () => {
+    const schedule = globalThis.setTimeout;
+    const scheduleSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => schedule(callback, ms === 60_000 ? 20 : ms, ...args)) as typeof globalThis.setTimeout);
+    const cancelSpy = vi.spyOn(globalThis, "clearTimeout");
+    let first: NodeJS.Timeout | undefined, second: NodeJS.Timeout | undefined, calls = 0;
+    const timer = captureProbeDeadline(() => {
+      first = setTimeout(() => { calls++; }, 5_000);
+      second = setTimeout(() => { calls++; }, 5_000);
+      return Promise.resolve();
+    });
+    try {
+      expect(timer.count).toBe(2); timer.markReady();
+      await expect(timer.expire()).rejects.toThrow(/not eligible/);
+    } finally { timer.restore(); }
+    expect(cancelSpy).toHaveBeenCalledWith(first); expect(cancelSpy).toHaveBeenCalledWith(second);
+    await delayNative(40); expect(calls).toBe(0);
+    scheduleSpy.mockRestore(); cancelSpy.mockRestore();
+  });
 });
