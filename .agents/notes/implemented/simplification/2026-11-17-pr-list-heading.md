@@ -8,7 +8,7 @@ The PR list heading repeated the scope already conveyed by the project and list 
 
 ## Decision
 
-The heading contains the title, connection fact and refresh action. Synchronization information remains separate, as described in the [PR reading design](../../../docs/design/github-pr-reading.md#web-工作区与列表).
+The heading contains the title, connection fact and refresh action. Synchronization information remains separate, as described in the [PR reading design](../../../../docs/design/github-pr-reading.md#web-工作区与列表).
 
 ## Alternatives
 
