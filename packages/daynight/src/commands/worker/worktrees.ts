@@ -232,6 +232,31 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
   // When the leaf itself denies access, its Git pointer cannot be read. The
   // manifest, physical leaf and every accessible administrative pointer must
   // still identify one unlocked registration before privileged removal.
+  const confirmMissingRegistrationParent = async (target: string, operation: Operation): Promise<void> => {
+    // Keep every original component, including traversals across symlinks.
+    // A missing component followed by .. has no provable physical destination.
+    const root = path.parse(target).root;
+    if (!root || /[\r\n\0]/.test(target)) throw new Error("A Git registration pointer path is invalid.");
+    const parts = target.slice(root.length).split(path.sep).filter(part => part !== "" && part !== ".");
+    let cursor = root;
+    for (let index = 0; index < parts.length; index++) {
+      operation.check();
+      cursor = `${cursor}${cursor.endsWith(path.sep) ? "" : path.sep}${parts[index]}`;
+      let entry;
+      try { entry = await lstat(cursor, { bigint: true }); }
+      catch (error) {
+        if (!missing(error)) throw error;
+        if (parts.slice(index + 1).includes("..")) throw new Error("A missing Git registration pointer has unresolved parent traversal.", { cause: error });
+        return;
+      }
+      if (entry.isSymbolicLink()) {
+        // A dangling or inaccessible link is unknown, not a missing target.
+        const resolved = await stat(cursor, { bigint: true });
+        if (!resolved.isDirectory()) throw new Error("A Git registration pointer traverses a non-directory link.");
+      } else if (!entry.isDirectory()) throw new Error("A Git registration pointer traverses a non-directory.");
+    }
+    throw new Error("The missing Git registration pointer changed during inspection.");
+  };
   const inspectInaccessibleWorktree = async (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository, operation: Operation) => {
     operation.check();
     const manifest = manifestFor(project, owner, repository);
@@ -252,11 +277,20 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (await directory(admin) === null) throw new Error("A Git registration disappeared.");
       const pointer = await ordinaryFile(path.join(admin, "gitdir"));
       if (pointer === null) throw new Error("A Git registration has no pointer.");
+      if (pointer === "" || pointer.endsWith(path.sep) || /[\r\n\0]/.test(pointer)) throw new Error("A Git registration pointer path is invalid.");
       // Resolve the original traversal physically; normalizing link/.. first
       // could falsely identify an unrelated registration as the owned leaf.
-      if (path.basename(pointer) !== ".git") continue;
+      const basename = path.basename(pointer);
+      // Other names can be links or mounted aliases of the inaccessible pointer.
+      if (basename !== ".git") throw new Error("A Git registration target has an ambiguous or unexpected spelling.");
       const rawParent = path.isAbsolute(pointer) ? path.dirname(pointer) : `${admin}${path.sep}${path.dirname(pointer)}`;
-      const observed = await lstat(rawParent, { bigint: true });
+      let observed;
+      try { observed = await lstat(rawParent, { bigint: true }); }
+      catch (error) {
+        if (!missing(error)) throw error;
+        await confirmMissingRegistrationParent(rawParent, operation);
+        continue;
+      }
       const parent = await stat(rawParent, { bigint: true });
       if (!observed.isDirectory() || observed.isSymbolicLink() || !parent.isDirectory() || observed.dev !== parent.dev || observed.ino !== parent.ino) throw new Error("A Git registration pointer parent is not an ordinary directory.");
       if (`${parent.dev}:${parent.ino}` !== leaf) continue;

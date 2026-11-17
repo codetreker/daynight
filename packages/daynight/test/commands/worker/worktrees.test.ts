@@ -1156,6 +1156,71 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     } finally { execFileSync("sudo", ["-n", "rm", "-rf", "--", binding.worktreePath], { timeout: 10000 }); }
   });
 
+  it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO)).each(["absolute", "relative"])("cleans an inaccessible owned worktree beside an unrelated stale registration with a %s pointer", async format => {
+    const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }) });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const stale = path.join(f.root, "stale worktree");
+    git(f.repository, ["worktree", "add", "--detach", stale, "HEAD"]);
+    if (format === "relative") {
+      const admin = administrativeDirectory(stale);
+      await writeFile(path.join(admin, "gitdir"), `${path.relative(admin, path.join(stale, ".git"))}\n`);
+    }
+    await rm(stale, { recursive: true });
+    expect(worktreePaths(f.repository)).toContain(path.normalize(stale));
+    execFileSync("sudo", ["-n", "chown", "0", binding.worktreePath], { timeout: 10000 });
+    execFileSync("sudo", ["-n", "chmod", "700", binding.worktreePath], { timeout: 10000 });
+    try {
+      await adapter.removeWorktree(f.project, f.owner, {});
+      const registrations = worktreePaths(f.repository);
+      expect(registrations).not.toContain(path.normalize(binding.worktreePath));
+      expect(registrations).toContain(path.normalize(stale));
+      expect(git(f.repository, ["rev-parse", `refs/heads/${binding.branch}`])).not.toBe("");
+    } finally { execFileSync("sudo", ["-n", "rm", "-rf", "--", binding.worktreePath], { timeout: 10000 }); }
+  });
+
+  it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO)).each(["dangling", "missing-parent-traversal", "case-alias", "trailing-slash", "inaccessible-parent", "symlink-name", "hardlink-name"])("retains an inaccessible target when an unrelated registration has %s ambiguity", async kind => {
+    const f = await fixture(); let calls = 0;
+    const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const stale = path.join(f.root, "stale worktree");
+    git(f.repository, ["worktree", "add", "--detach", stale, "HEAD"]);
+    const admin = administrativeDirectory(stale), gitdir = path.join(admin, "gitdir"), original = await readFile(gitdir, "utf8");
+    await rm(stale, { recursive: true });
+    let pointer: string;
+    const rootOnly = path.join(f.root, "root-only");
+    if (kind === "dangling") {
+      const alias = path.join(f.root, "dangling"); await symlink(path.join(f.root, "missing"), alias);
+      pointer = `${alias}/.git`;
+    } else if (kind === "missing-parent-traversal") {
+      pointer = `${f.root}/missing/../repository/.worktrees/daynight/${f.owner.worktreeId}/.git`;
+    } else if (kind === "case-alias") pointer = `${binding.worktreePath}/.GIT`;
+    else if (kind === "trailing-slash") pointer = `${binding.worktreePath}/.git/`;
+    else if (kind === "inaccessible-parent") {
+      execFileSync("sudo", ["-n", "mkdir", "-p", path.join(rootOnly, "child")], { timeout: 10000 });
+      execFileSync("sudo", ["-n", "chmod", "700", rootOnly], { timeout: 10000 });
+      pointer = `${rootOnly}/child/.git`;
+    } else {
+      pointer = path.join(f.root, "other-name");
+      if (kind === "symlink-name") await symlink(path.join(binding.worktreePath, ".git"), pointer);
+      else await link(path.join(binding.worktreePath, ".git"), pointer);
+    }
+    await writeFile(gitdir, `${pointer}\n`);
+    execFileSync("sudo", ["-n", "chown", "0", binding.worktreePath], { timeout: 10000 });
+    execFileSync("sudo", ["-n", "chmod", "700", binding.worktreePath], { timeout: 10000 });
+    try {
+      const failure = await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error);
+      expect(failure).toBeInstanceOf(Error);
+      if (kind === "missing-parent-traversal") expect(errorText(failure)).toContain("unresolved parent traversal");
+      if (kind === "case-alias" || kind.endsWith("-name")) expect(errorText(failure)).toContain("ambiguous or unexpected spelling");
+      if (kind === "trailing-slash") expect(errorText(failure)).toContain("pointer path is invalid");
+      expect(calls).toBe(0);
+    } finally {
+      execFileSync("sudo", ["-n", "chown", String(process.getuid!()), binding.worktreePath], { timeout: 10000 });
+      if (kind === "inaccessible-parent") execFileSync("sudo", ["-n", "rm", "-rf", "--", rootOnly], { timeout: 10000 });
+      await writeFile(gitdir, original);
+    }
+  });
+
   it.skipIf(process.platform === "win32" || !(process.env.CI || process.env.DAYNIGHT_TEST_SUDO))("rejects an inaccessible registration with an unprovable symlink traversal", async () => {
     const f = await fixture(); let calls = 0;
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "20" }), runShellRemoval: async () => { calls++; } });
