@@ -50,7 +50,7 @@ func (d *configurationDAO) SetWorkerConfigurationObservation(_ context.Context, 
 }
 
 func configurationFixture() model.WorkerConfiguration {
-	return model.WorkerConfiguration{MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3,
+	return model.WorkerConfiguration{ArchiveSessions: new(true), MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
 }
 func configuredDAO(revision string) *configurationDAO {
@@ -293,7 +293,8 @@ func TestPutConfigurationRejectsUnencodableStoredOverride(t *testing.T) {
 
 func compatibilityConfiguration() model.WorkerConfiguration {
 	return model.WorkerConfiguration{
-		MaxConcurrent: 3, PollIntervalMs: 60000, RecoveryLimit: 0,
+		ArchiveSessions: new(true),
+		MaxConcurrent:   3, PollIntervalMs: 60000, RecoveryLimit: 0,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}},
 		Projects: []model.WorkerProjectConfiguration{},
 	}
@@ -672,6 +673,7 @@ const authorityUnknownProject = "ec000000-0000-4000-8000-000000000004"
 
 func authorityConfiguration(max int64, project string) model.WorkerConfiguration {
 	return model.WorkerConfiguration{
+		ArchiveSessions:             new(true),
 		PreferPlatformSpecificTasks: false,
 		MaxConcurrent:               max, PollIntervalMs: 60000, RecoveryLimit: 3,
 		Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},

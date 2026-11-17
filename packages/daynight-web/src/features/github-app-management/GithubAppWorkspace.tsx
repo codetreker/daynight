@@ -122,7 +122,7 @@ const AppList = ({ active, admission, admissionBlocked, onIdentityMismatch, acce
     {error !== null && <div className="notice error" role="alert">{m.failed} <button type="button" className="button" onClick={() => void load(false)}>{m.retry}</button></div>}
     {created && <p role="status">{m.created}</p>}
     {unknown && !open && <div className="notice warning" role="alert">{m.unknown} <button type="button" className="button" onClick={() => setOpen(true)}>{m.check}</button></div>}
-    <section className="panel"><header className="panel-heading"><h2>{m.list}</h2></header>
+    <section className="panel github-app-list-panel"><header className="panel-heading"><h2>{m.list}</h2></header>
       {(!page || !entryVerified.current) && loading && <p className="empty-inline" role="status">{m.loading}</p>}
       {page && entryVerified.current && (visibleItems.length === 0 ? <div className="empty-inline"><strong>{m.empty}</strong><p>{m.emptyHint}</p></div> : <ul className="github-app-list">{visibleItems.map(app => <li key={app.id}><div><h3>{app.name}</h3><p>App ID {app.githubAppId} · {app.githubSlug}</p><div className="github-app-summary"><span>{app.administrators} {m.administrators}</span><span>{app.authorizedTeams} {m.teams}</span></div></div><button className="button" type="button" onClick={() => navigate(`/github-apps/${app.id}`)}>{m.manage}</button></li>)}</ul>)}
       {entryVerified.current && page?.nextCursor && <div className="github-app-more"><button type="button" className="button" aria-disabled={loading || admissionBlocked} onClick={() => { if (!loading && !admissionBlocked) void load(true); }}>{m.more}</button></div>}

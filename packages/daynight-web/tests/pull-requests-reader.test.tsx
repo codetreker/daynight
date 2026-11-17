@@ -211,3 +211,83 @@ it('bounds dispatched requests and retains the current page on a timeout', async
   act(() => result.current.reconcile()); await act(async () => { vi.advanceTimersByTime(30_000); await flush(); });
   expect(result.current.error?.kind).toBe('network'); expect(result.current.page?.items[0]?.number).toBe('42'); expect(result.current.loading).toBe(false);
 });
+
+it('binds author pages and synthetic cursors to one exact account while retaining filters and counts', async () => {
+  const author = { id: '9007199254740997', login: 'author', loginAmbiguous: true };
+  let hold = false;
+  let observedAuthor = false;
+  const delayed = prDeferred<Response>();
+  const fetch = vi.fn(async (url: string) => {
+    if (isStatus(url)) return prResponse(prStatus());
+    const params = new URL(url, 'https://test').searchParams, selected = params.get('authorId');
+    if (hold && selected !== null) return delayed.promise;
+    if (selected === null) return prResponse(prPage(['42'], observedAuthor ? '2' : '1', 'second'));
+    observedAuthor = true;
+    const numbers = params.get('cursor') === 'second' ? ['31'] : ['40'];
+    return prResponse({ ...prPage(numbers, '2', 'second', params.get('cursor') === 'second' ? 'back' : null), authorId: selected, projectTotal: '25', items: numbers.map(number => ({ ...prPage([number], '2').items[0], author: { id: selected, login: author.login } })) });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const { result } = renderHook(() => usePullRequests(options()));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  act(() => result.current.setFilter('merged')); await waitFor(() => expect(result.current.loading).toBe(false));
+  act(() => result.current.setQuery('topic')); await waitFor(() => expect(result.current.loading).toBe(false));
+  hold = true; act(() => result.current.setAuthor(author));
+  expect(result.current.page).toBeNull(); expect(result.current.counts).toBeNull(); expect(result.current.pageNumber).toBe(1);
+  expect(result.current.filter).toBe('merged'); expect(result.current.query).toBe('topic');
+  hold = false;
+  await act(async () => { delayed.resolve(prResponse({ ...prPage(['40'], '2', 'second'), authorId: author.id, projectTotal: '25', items: [{ ...prPage(['40'], '2').items[0], author: { id: author.id, login: author.login } }] })); await delayed.promise; });
+  await waitFor(() => expect(result.current.page?.items[0]?.number).toBe('40'));
+  expect(result.current.counts?.all).toBe('1'); expect(result.current.projectTotal).toBe('25');
+  act(() => result.current.reconcile()); await waitFor(() => expect(result.current.loading).toBe(false));
+  act(() => result.current.next()); await waitFor(() => expect(result.current.pageNumber).toBe(2));
+  const calls = fetch.mock.calls.length;
+  act(() => result.current.setAuthor({ ...author })); expect(result.current.pageNumber).toBe(2); expect(fetch).toHaveBeenCalledTimes(calls);
+  act(() => result.current.previous()); await waitFor(() => expect(result.current.pageNumber).toBe(1));
+  const authorCalls = fetch.mock.calls.map(([url]) => new URL(url, 'https://test')).filter(url => url.searchParams.get('authorId') === author.id);
+  expect(authorCalls.every(url => url.searchParams.get('state') === 'merged' && url.searchParams.get('q') === 'topic')).toBe(true);
+  const synthetic = authorCalls.map(url => url.searchParams.get('cursor')).find(value => value?.startsWith('ey'));
+  expect(synthetic).toBeDefined();
+  expect(JSON.parse(atob(synthetic!.replaceAll('-', '+').replaceAll('_', '/')))).toMatchObject({ v: 2, authorId: author.id, upperNumber: '40', anchorNumber: '41' });
+  act(() => result.current.setAuthor(null));
+  expect(result.current.filter).toBe('merged'); expect(result.current.query).toBe('topic'); expect(result.current.page).toBeNull(); expect(result.current.counts).toBeNull();
+  expect(result.current.projectTotal).toBe('25');
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.page?.authorId).toBeNull();
+});
+
+it('retains author counts for query changes but rejects a late previous author response', async () => {
+  const author = { id: '100', login: 'first', loginAmbiguous: false }, other = { id: '200', login: 'second', loginAmbiguous: false };
+  const pending = prDeferred<Response>(); let holdFirst = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (isStatus(url)) return prResponse(prStatus());
+    const id = new URL(url, 'https://test').searchParams.get('authorId');
+    if (id === null) return prResponse(prPage(['42']));
+    if (id === author.id && holdFirst) return pending.promise;
+    const number = id === author.id ? '40' : '30';
+    return prResponse({ ...prPage([number], '3'), authorId: id, projectTotal: '3', items: [{ ...prPage([number], '3').items[0], author: { id, login: 'x' } }] });
+  }));
+  const { result } = renderHook(() => usePullRequests(options()));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  act(() => result.current.setAuthor(author)); await waitFor(() => expect(result.current.page?.authorId).toBe(author.id));
+  holdFirst = true; act(() => result.current.setQuery('q'));
+  expect(result.current.counts?.all).toBe('1'); expect(result.current.page).toBeNull();
+  act(() => result.current.setAuthor(other)); expect(result.current.counts).toBeNull();
+  await waitFor(() => expect(result.current.page?.authorId).toBe(other.id));
+  await act(async () => { pending.resolve(prResponse({ ...prPage(['90'], '20'), authorId: author.id, projectTotal: '3', items: [{ ...prPage(['90'], '20').items[0], author: { id: author.id, login: 'first' } }] })); await pending.promise; });
+  expect(result.current.author?.id).toBe(other.id); expect(result.current.page?.items[0]?.number).toBe('30');
+});
+
+it('reports a stale revision when a new author has no accepted page', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (isStatus(url)) return prResponse(prStatus());
+    const authorId = new URL(url, 'https://test').searchParams.get('authorId');
+    if (authorId === null) return prResponse(prPage(['42'], '5'));
+    return prResponse({ ...prPage(['40'], '4'), authorId, projectTotal: '1', items: [{ ...prPage(['40'], '4').items[0], author: { id: authorId, login: 'author' } }] });
+  }));
+  const { result } = renderHook(() => usePullRequests(options()));
+  await waitFor(() => expect(result.current.page?.revision).toBe('5'));
+  act(() => result.current.setAuthor({ id: '100', login: 'author', loginAmbiguous: false }));
+  await waitFor(() => expect(result.current.error?.kind).toBe('protocol'));
+  expect(result.current.page).toBeNull();
+  expect(result.current.loading).toBe(false);
+});

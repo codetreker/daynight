@@ -7,7 +7,7 @@ request cancellation, runtime API decoding, native browser routing and a pure
 dependency graph model with horizontal and vertical layouts. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
 Project navigation includes Overview, Task list, PR list and Tags. The independent PR
-workspace reads saved summaries in six-item cursor pages, filters by state and
+workspace reads saved summaries in six-item cursor pages, filters by state, creator and
 title/number, and opens the existing PR detail reader. Visible workspaces reconcile
 every 15 seconds; hidden sections retain filters, pages and selections while
 cancelling reads. Task graph errors do not block PR browsing. The
@@ -329,6 +329,9 @@ pages without removing earlier links on failure.
 Only the sidebar toggle stays in the footer. Desktop widths are 190px expanded and
 68px collapsed. The footer stays reachable on long pages and short viewports;
 icon entries retain accessible names, hover titles and selected route styling.
+`SidebarIcon` owns the nine decorative navigation SVGs and their shared 24×24
+canvas and 1.6 stroke. An 18×18px centered slot keeps their alignment stable;
+the scoped SVG color inherits the entry text color in each interaction state.
 The topbar avatar uses the authenticated profile image, cropped to a circle,
 and displays the account initial while loading or when the source is empty or
 fails. It opens an account menu whose Account settings item navigates to

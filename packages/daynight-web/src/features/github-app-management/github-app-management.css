@@ -1,7 +1,9 @@
+.github-app-list-panel .panel-heading h2 { font-size: 1.17em; font-weight: 700; }
 .github-app-list { list-style: none; padding: 0; margin: 0; }
 .github-app-list > li { display: flex; align-items: center; gap: 16px; padding: 18px 24px; border-top: 1px solid #e4e8ef; }
 .github-app-list > li > div { min-width: 0; flex: 1; }
 .github-app-list h3, .github-app-list p { margin: 0; overflow-wrap: anywhere; }
+.github-app-list h3 { font-size: 15px; font-weight: 650; }
 .github-app-list p, .github-app-meta { color: #556176; margin-top: 6px; }
 .github-app-summary { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; color: #556176; }
 .github-app-details dl { margin: 0; display: grid; gap: 18px; }
@@ -20,6 +22,9 @@
 .github-app-modal-form textarea { width: 100%; min-height: 100px; }
 .github-app-modal-form input { width: 100%; }
 .github-app-workspace .notice { margin: 12px 0; }
+@media (max-width: 600px) {
+  .github-app-list h3 { font-size: 14px; }
+}
 @media (max-width: 480px) {
   .github-app-list > li { align-items: flex-start; flex-wrap: wrap; padding: 16px; }
   .github-app-list > li > div { flex-basis: 100%; }

@@ -8,6 +8,7 @@ import (
 )
 
 const workerToolPathsHeader = "Daynight-Worker-Tool-Paths"
+const workerArchiveSessionsHeader = "Daynight-Worker-Archive-Sessions"
 
 func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error) {
 	var result workerprotocol.Capabilities
@@ -22,6 +23,12 @@ func workerCapabilities(header http.Header) (workerprotocol.Capabilities, error)
 		}
 		result.ToolPaths = true
 	}
+	if values, exists := header[workerArchiveSessionsHeader]; exists {
+		if len(values) != 1 || values[0] != "1" {
+			return result, httpx.InvalidInput("Unsupported Worker archive sessions protocol.")
+		}
+		result.ArchiveSessions = true
+	}
 	return result, nil
 }
 
@@ -31,5 +38,8 @@ func writeWorkerCapabilities(header http.Header, capabilities workerprotocol.Cap
 	}
 	if capabilities.ToolPaths {
 		header.Set(workerToolPathsHeader, "1")
+	}
+	if capabilities.ArchiveSessions {
+		header.Set(workerArchiveSessionsHeader, "1")
 	}
 }

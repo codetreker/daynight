@@ -19,7 +19,7 @@ const status = (changes: Partial<GitHubStatus> = {}): GitHubStatus => ({
   webhook: { running: false, lastReceivedAt: time, lastAttemptAt: time, lastSuccessAt: time, error: null }, ...changes,
 });
 const page = (items: readonly PullRequestSummary[], changes: Partial<PullRequestPage> = {}): PullRequestPage => ({
-  projectId, revision: '4', items, total: String(items.length), counts: { active: String(items.length), merged: '0', closed: '0', all: String(items.length) }, nextCursor: null, previousCursor: null, ...changes,
+  projectId, revision: '4', items, total: String(items.length), counts: { active: String(items.length), merged: '0', closed: '0', all: String(items.length) }, authorId: null, projectTotal: String(items.length), nextCursor: null, previousCursor: null, ...changes,
 });
 const options = (changes: Partial<PullRequestWorkspaceProps> = {}): PullRequestWorkspaceProps => ({ userId, projectId, active: true, canRead: true, onPrincipalMismatch: vi.fn(), ...changes });
 const response = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });

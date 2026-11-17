@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const personalId = '00000000-0000-4000-8000-000000000011';
@@ -7,11 +7,18 @@ const time = '2026-10-20T09:00:00Z';
 const longName = 'LongTeamNameWithoutAnySpaces'.repeat(12);
 const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : longName, version: 1, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
 
-const install = async (page: Page) => {
+const catalog = {
+  items: ['task.created', 'task.status_changed', 'task.paused', 'task.deleted', 'task.step_updated', 'task.thread_posted'].map(key => ({ key, wireType: `cc.daynight.${key}.v1`, schemaVersion: 1, resourceKind: 'project' })),
+  service: { configurationExpansionAvailable: true, dispatchEnabled: false },
+  limits: { policyVersion: '1', requestBytes: 262144, payloadBytes: 65536, maxAutomaticAttempts: 8, automaticWindowSeconds: 86400, maxManualOperations: 3, payloadRetentionSeconds: 2592000, operationMaxAgeSeconds: 300, operationFutureSkewSeconds: 60 },
+};
+
+const install = async (page: Page, webhooksAvailable = true) => {
   let projectReads = 0;
   await page.route('**/api/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': userId } });
+    if (path === '/api/v1/webhook-event-types' && webhooksAvailable) return send(catalog);
     if (path === '/api/v1/me') return send({ id: userId, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/teams') return send({ items: [team(teamId)], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}` || path === `/api/v1/teams/${personalId}`) return send(team(path.split('/').at(-1)!));
@@ -22,6 +29,67 @@ const install = async (page: Page) => {
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
   return () => projectReads;
+};
+
+
+// Read geometry from the real, styled navigation. Elements outside the scrollport
+// still participate in layout, so the complete column can be measured together.
+const expectIconColumn = async (sidebar: Locator) => {
+  const links = sidebar.locator('.sidebar-group > a.nav-button');
+  await expect(links).toHaveCount(9);
+  const icons = links.locator('.nav-icon');
+  await expect(icons.locator('svg')).toHaveCount(9);
+  const geometry = await links.evaluateAll(elements => elements.map(link => {
+    const slot = link.querySelector<HTMLElement>('.nav-icon')!;
+    const svg = slot.querySelector<SVGSVGElement>('svg')!;
+    const slotBox = slot.getBoundingClientRect();
+    const svgBox = svg.getBoundingClientRect();
+    const rowBox = link.getBoundingClientRect();
+    const iconStyle = getComputedStyle(svg);
+    const drawing = svg.getBBox();
+    const text = link.querySelector<HTMLElement>('.nav-text')!;
+    return {
+      slot: [slotBox.width, slotBox.height], svg: [svgBox.width, svgBox.height],
+      x: slotBox.x + slotBox.width / 2,
+      slotY: slotBox.y + slotBox.height / 2, svgY: svgBox.y + svgBox.height / 2,
+      rowY: rowBox.y + rowBox.height / 2,
+      svgX: svgBox.x + svgBox.width / 2,
+      iconColor: iconStyle.color, textColor: getComputedStyle(text).color,
+      drawing: [drawing.x, drawing.y, drawing.x + drawing.width, drawing.y + drawing.height],
+      viewBox: svg.getAttribute('viewBox'), stroke: iconStyle.stroke,
+      strokeWidth: iconStyle.strokeWidth, fill: iconStyle.fill,
+      hidden: slot.getAttribute('aria-hidden') === 'true' || svg.getAttribute('aria-hidden') === 'true',
+      focusable: svg.getAttribute('focusable'), tabIndex: svg.getAttribute('tabindex'),
+      label: link.getAttribute('aria-label'), title: link.getAttribute('title'),
+    };
+  }));
+  for (const icon of geometry) {
+    expect(icon.slot).toEqual([18, 18]);
+    expect(icon.svg).toEqual([18, 18]);
+    expect(icon.x).toBeCloseTo(geometry[0]!.x, 1);
+    expect(icon.svgX).toBeCloseTo(icon.x, 1);
+    expect(icon.slotY).toBeCloseTo(icon.rowY, 1);
+    expect(icon.svgY).toBeCloseTo(icon.rowY, 1);
+    expect(icon.viewBox).toBe('0 0 24 24');
+    expect(icon.drawing[0]!).toBeGreaterThanOrEqual(0.8);
+    expect(icon.drawing[1]!).toBeGreaterThanOrEqual(0.8);
+    expect(icon.drawing[2]!).toBeLessThanOrEqual(23.2);
+    expect(icon.drawing[3]!).toBeLessThanOrEqual(23.2);
+    expect(icon.stroke).toBe(icon.iconColor);
+    expect(icon.strokeWidth).toBe('1.6px');
+    expect(icon.fill).toBe('none');
+    expect(icon.iconColor).toBe(icon.textColor);
+    expect(icon.hidden).toBe(true);
+    expect(icon.focusable).toBe('false');
+    expect(icon.tabIndex === null || Number(icon.tabIndex) < 0).toBe(true);
+    expect(icon.label).toBeTruthy();
+    expect(icon.title).toBe(icon.label);
+  }
+};
+
+const expectIconState = async (link: Locator, color: string) => {
+  await expect(link.locator('.nav-icon svg')).toHaveCSS('color', color);
+  await expect(link.locator('.nav-text')).toHaveCSS('color', color);
 };
 
 for (const width of [320, 390, 768, 1360]) {
@@ -47,9 +115,11 @@ for (const width of [320, 390, 768, 1360]) {
       if (width <= 740) {
         expect((await sidebar.boundingBox())!.width).toBe(60);
         await expect(sidebar.getByRole('link', { name: chinese ? '进行中的任务' : 'In-progress tasks', exact: true })).toBeVisible();
+        await expectIconColumn(sidebar);
         await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(220);
       } else expect((await sidebar.boundingBox())!.width).toBe(190);
+      await expectIconColumn(sidebar);
       const selector = sidebar.locator('.team-switch');
       await expect(selector).toHaveAttribute('title', new RegExp(chinese ? '团队' : 'Team'));
       await expect(selector).toHaveAttribute('title', new RegExp(longName.trim().slice(0, 20)));
@@ -74,6 +144,11 @@ for (const width of [320, 390, 768, 1360]) {
       await expect(tasks).toHaveAttribute('href', '/my-tasks');
       await expect(tasks).toHaveAttribute('title', chinese ? '进行中的任务' : 'In-progress tasks');
       await expect(tasks).not.toHaveAttribute('aria-current');
+      await expectIconState(tasks, 'rgb(167, 176, 194)');
+      await tasks.hover();
+      await expectIconState(tasks, 'rgb(240, 241, 255)');
+      await page.mouse.move(width - 1, 0);
+      await expectIconState(tasks, 'rgb(167, 176, 194)');
       await expect(groups.nth(1).locator('a[href="/my-tasks"]')).toHaveCount(0);
       expect(await groups.nth(0).evaluate(group => {
         const selector = group.querySelector('.team-selector')!;
@@ -85,9 +160,12 @@ for (const width of [320, 390, 768, 1360]) {
       await selector.focus();
       await page.keyboard.press('Tab');
       await expect(tasks).toBeFocused();
+      await expectIconState(tasks, 'rgb(167, 176, 194)');
+      expect(await tasks.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
       await page.keyboard.press('Tab');
       await expect(groups.nth(0).getByRole('link', { name: chinese ? '项目' : 'Projects', exact: true })).toBeFocused();
       await expect(groups.nth(0).getByRole('link', { name: chinese ? '项目' : 'Projects', exact: true })).toHaveAttribute('aria-current', 'page');
+      await expectIconState(groups.nth(0).getByRole('link', { name: chinese ? '项目' : 'Projects', exact: true }), 'rgb(240, 241, 255)');
       await expect(groups.nth(1).locator('.nav-label')).toHaveText(chinese ? '我的' : 'My');
       await expect(groups.nth(2).locator('.nav-label')).toHaveText(chinese ? '工具' : 'Tools');
       const main = sidebar.locator('.sidebar-main');
@@ -115,13 +193,26 @@ for (const width of [320, 390, 768, 1360]) {
         await expect(selector.locator('.team-chevron')).toBeHidden();
         await expect(sidebar.locator('.sidebar-projects')).toBeHidden();
         await expect(tasks).toBeVisible();
+        await expectIconColumn(sidebar);
       }
       expect(reads()).toBe(before);
       if (width <= 740) await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
+      const layout = () => tasks.evaluate(link => {
+        const row = link.getBoundingClientRect();
+        const icon = link.querySelector('.nav-icon')!.getBoundingClientRect();
+        const text = link.querySelector('.nav-text')!.getBoundingClientRect();
+        return [row.width, row.height, icon.x - row.x, icon.y - row.y, text.x - row.x, text.y - row.y];
+      });
+      const beforeSelection = await layout();
       await tasks.click();
       await expect(page).toHaveURL(/\/my-tasks$/);
       await expect(tasks).toHaveAttribute('aria-current', 'page');
-      if (width <= 740) await expect(sidebar).not.toHaveAttribute('role', 'dialog');
+      await expectIconState(tasks, 'rgb(240, 241, 255)');
+      if (width <= 740) {
+        await expect(sidebar).not.toHaveAttribute('role', 'dialog');
+        await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
+      }
+      expect(await layout()).toEqual(beforeSelection);
     });
   }
 }
@@ -137,4 +228,28 @@ test('keeps the long Team breadcrumb link usable on settings at phone width', as
   await expect(teamLink).toBeVisible();
   expect(await breadcrumb.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+
+test('Personal GitHub Apps replaces Team settings and retains its selected icon', async ({ page }) => {
+  await install(page);
+  await page.goto(`/teams/${personalId}/github-apps`);
+  const sidebar = page.locator('.sidebar');
+  const personalApps = sidebar.getByRole('link', { name: 'GitHub Apps', exact: true });
+  await expect(personalApps).toHaveAttribute('href', `/teams/${personalId}/github-apps`);
+  await expect(personalApps).toHaveAttribute('aria-current', 'page');
+  await expect(sidebar.getByRole('link', { name: 'Team settings' })).toHaveCount(0);
+  await expectIconColumn(sidebar);
+  await expectIconState(personalApps, 'rgb(240, 241, 255)');
+});
+
+test('hides Webhooks when its capability is unavailable', async ({ page }) => {
+  await install(page, false);
+  const capability = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/webhook-event-types');
+  await page.goto(`/teams/${teamId}`);
+  expect((await capability).status()).toBe(404);
+  const sidebar = page.locator('.sidebar');
+  await expect(sidebar.getByRole('link', { name: 'Projects', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('link', { name: 'Webhooks' })).toHaveCount(0);
+  await expect(sidebar.locator('.sidebar-group > a.nav-button')).toHaveCount(8);
 });

@@ -107,7 +107,7 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 	}
 	configurationAware := protocol != ""
 	capabilities, err := workerCapabilities(request.Header)
-	if err == nil && (capabilities.ControlMode || capabilities.ToolPaths) && !configurationAware {
+	if err == nil && (capabilities.ControlMode || capabilities.ToolPaths || capabilities.ArchiveSessions) && !configurationAware {
 		err = httpx.InvalidInput("Worker extensions require the configuration protocol.")
 	}
 	if err != nil {

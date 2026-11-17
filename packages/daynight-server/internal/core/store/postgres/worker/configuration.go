@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const workerConfigurationProjection = `configuration_revision,configuration_updated_at,desired_configuration,configuration_observation_revision,configuration_observation`
+const workerConfigurationProjection = `configuration_revision,configuration_updated_at,desired_configuration,configuration_observation_revision,configuration_observation,archive_sessions`
 
 func scanWorkerConfiguration(row pgx.Row) (model.WorkerConfigurationResource, error) {
 	var resource model.WorkerConfigurationResource
@@ -22,7 +22,8 @@ func scanWorkerConfiguration(row pgx.Row) (model.WorkerConfigurationResource, er
 	var updatedAt *time.Time
 	var value, observation []byte
 	var observationRevision int64
-	if err := row.Scan(&revision, &updatedAt, &value, &observationRevision, &observation); err != nil {
+	var archive bool
+	if err := row.Scan(&revision, &updatedAt, &value, &observationRevision, &observation, &archive); err != nil {
 		return resource, err
 	}
 	resource.ObservationRevision = strconv.FormatInt(observationRevision, 10)
@@ -33,6 +34,7 @@ func scanWorkerConfiguration(row pgx.Row) (model.WorkerConfigurationResource, er
 		if err := json.Unmarshal(value, &resource.Desired.Value); err != nil {
 			return resource, err
 		}
+		resource.Desired.Value.ArchiveSessions = &archive
 	}
 	if observation != nil {
 		decoded, err := workerprotocol.DecodeStoredObservation(observation)
@@ -71,7 +73,12 @@ func (w *Writer) SetWorkerConfiguration(ctx context.Context, userID, workerID st
 		return model.WorkerDesiredConfiguration{}, pg.QueryError("encode worker configuration", err)
 	}
 	desired := model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(revision, 10), Value: value}
-	err = w.tx.QueryRow(ctx, `UPDATE workers SET configuration_revision=$3,configuration_updated_at=statement_timestamp(),desired_configuration=$4 WHERE user_id=$1 AND worker_id=$2 RETURNING configuration_updated_at`, userID, workerID, revision, encoded).Scan(&desired.UpdatedAt)
+	archive := true
+	if value.ArchiveSessions != nil {
+		archive = *value.ArchiveSessions
+	}
+	desired.Value.ArchiveSessions = &archive
+	err = w.tx.QueryRow(ctx, `UPDATE workers SET configuration_revision=$3,configuration_updated_at=statement_timestamp(),desired_configuration=$4,archive_sessions=$5 WHERE user_id=$1 AND worker_id=$2 RETURNING configuration_updated_at`, userID, workerID, revision, encoded, archive).Scan(&desired.UpdatedAt)
 	if err != nil {
 		return model.WorkerDesiredConfiguration{}, pg.QueryError("save worker configuration", err)
 	}

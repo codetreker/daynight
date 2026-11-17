@@ -25,6 +25,8 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 	normalized, err := ParseWorkerConfiguration(raw)
 	normalized.PreserveAgentControlMode = value.PreserveAgentControlMode
 	normalized.PreserveToolPaths = value.PreserveToolPaths
+	normalized.ArchiveSessions = value.ArchiveSessions
+	normalized.PreserveArchiveSessions = value.PreserveArchiveSessions
 	normalized.PreserveSudoCleanup = value.PreserveSudoCleanup
 	return normalized, err
 }
@@ -34,7 +36,9 @@ func normalizeStoredConfiguration(value model.WorkerConfiguration) (model.Worker
 	if err != nil {
 		return model.WorkerConfiguration{}, invalidInput("Stored Worker configuration is invalid.")
 	}
-	return parseWorkerConfiguration(raw, false)
+	normalized, err := parseWorkerConfiguration(raw, false)
+	normalized.ArchiveSessions = value.ArchiveSessions
+	return normalized, err
 }
 
 func configurationProjects(ctx context.Context, dao store.WorkerWriteDAO, userID string, current *model.WorkerDesiredConfiguration, value model.WorkerConfiguration) error {
@@ -91,6 +95,10 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	} else if clearsToolPaths(current.Desired.Value.ToolPaths, value.ToolPaths) {
 		return model.WorkerConfigurationResource{}, invalidInput("Adopted tool paths cannot be cleared.")
 	}
+	if value.PreserveArchiveSessions {
+		value.ArchiveSessions = current.Desired.Value.ArchiveSessions
+		value.PreserveArchiveSessions = false
+	}
 	if value.PreserveSudoCleanup {
 		value.EnableSudoCleanup = current.Desired.Value.EnableSudoCleanup
 		value.PreserveSudoCleanup = false
@@ -137,6 +145,11 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 			revision, _ = strconv.ParseInt(current.Desired.Revision, 10, 64)
 		} else {
 			value = *input.Bootstrap
+			if value.ArchiveSessions == nil {
+				archive := true
+				value.ArchiveSessions = &archive
+			}
+			value.PreserveArchiveSessions = false
 		}
 		original := value
 		if value.AgentControlMode == nil {

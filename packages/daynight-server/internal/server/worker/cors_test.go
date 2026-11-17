@@ -58,7 +58,7 @@ func assertWorkerBrowserResponse(t *testing.T, w *httptest.ResponseRecorder) {
 	if w.Header().Get("Access-Control-Allow-Origin") != workerBrowserOrigin || w.Header().Get("Access-Control-Allow-Credentials") != "" {
 		t.Fatalf("CORS headers: %v", w.Header())
 	}
-	for _, name := range []string{"Daynight-User-ID", "Daynight-Worker-Configuration", "Daynight-Worker-Control-Mode", "Daynight-Worker-Tool-Paths"} {
+	for _, name := range []string{"Daynight-User-ID", "Daynight-Worker-Configuration", "Daynight-Worker-Control-Mode", "Daynight-Worker-Tool-Paths", "Daynight-Worker-Archive-Sessions"} {
 		if !strings.Contains(w.Header().Get("Access-Control-Expose-Headers"), name) {
 			t.Fatalf("missing exposed Worker header %s", name)
 		}
@@ -76,6 +76,7 @@ func TestWorkerCORSConfigurationReportsPreserveProtocol(t *testing.T) {
 			headers.Set("daynight-worker-protocol", "1")
 			headers.Set("daynight-worker-control-mode", "1")
 			headers.Set("daynight-worker-tool-paths", "1")
+			headers.Set("daynight-worker-archive-sessions", "1")
 			if version == "2" {
 				headers.Set("daynight-worker-prompts", "[]")
 			}
@@ -119,7 +120,7 @@ func TestWorkerCORSConfigurationReportsPreserveProtocol(t *testing.T) {
 				t.Fatalf("Worker report: %d business=%d auth=%d %s", w.Code, businessCalls, *authCalls, w.Body.String())
 			}
 			assertWorkerBrowserResponse(t, w)
-			for name, value := range map[string]string{"Daynight-Worker-Configuration": version, "Daynight-Worker-Control-Mode": "1", "Daynight-Worker-Tool-Paths": "1", "Daynight-User-ID": defaultHTTPPrincipal().UserID} {
+			for name, value := range map[string]string{"Daynight-Worker-Configuration": version, "Daynight-Worker-Control-Mode": "1", "Daynight-Worker-Tool-Paths": "1", "Daynight-Worker-Archive-Sessions": "1", "Daynight-User-ID": defaultHTTPPrincipal().UserID} {
 				if w.Header().Get(name) != value {
 					t.Fatalf("Worker response %s=%s", name, w.Header().Get(name))
 				}
