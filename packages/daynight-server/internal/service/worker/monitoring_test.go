@@ -219,6 +219,24 @@ func TestDirectMonitoringService(t *testing.T) {
 	}
 }
 
+func TestSaveDirectMonitoringUsesBusinessRules(t *testing.T) {
+	events := []string{}
+	s, _ := monitorFixture(t, &events)
+	direct := monitoring.DirectObservation(serviceObservation(t))
+	delete(direct, "runId")
+	delete(direct, "sequence")
+	s.SetMonitoringStore(monitorStore{save: func(_ context.Context, id store.MonitoringIdentity, c store.MonitoringCandidate) (store.MonitoringReceipt, error) {
+		if id.UserID != serviceUser || id.WorkerID != serviceWorker || c.Sequence != "1" {
+			t.Fatalf("candidate identity: %+v %+v", id, c)
+		}
+		return store.MonitoringReceipt{ReceivedAt: serviceNow, ExpiresAt: serviceNow.Add(time.Hour)}, nil
+	}})
+	receipt, sample, err := s.SaveDirectMonitoring(context.Background(), servicePrincipal(), serviceWorker, direct)
+	if err != nil || sample == "" || receipt.ReceivedAt != serviceNow || receipt.ExpiresAt.Sub(receipt.ReceivedAt) != time.Hour {
+		t.Fatalf("receipt %+v %q %v", receipt, sample, err)
+	}
+}
+
 func TestDirectMonitoringRefusalsDoNotSave(t *testing.T) {
 	for _, kind := range []string{"principal", "worker", "claim", "input"} {
 		t.Run(kind, func(t *testing.T) {
