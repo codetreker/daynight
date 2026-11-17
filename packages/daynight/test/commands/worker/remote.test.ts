@@ -13,7 +13,7 @@ const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value)
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
 const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
-const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
+const worker: WorkerClaim = { ...descriptor, agentControlMode: "web", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({ type: "task", parentId: null,
   id, projectId: project, title: "Task", description: "", tags: [], status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, cancelledAt: null, version: 1n,
@@ -378,12 +378,12 @@ describe("worker remote API", () => {
       const url = new URL(request.url!, "http://localhost"); calls.push(url);
       const second = url.pathname.includes(secondProject);
       const later = url.searchParams.has("cursor");
-      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows", assignedTo: later ? null : uuid(80) };
+      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, later ? { ...worker, agentControlMode: "herdr", userId: uuid(99) } : worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows", assignedTo: later ? null : uuid(80) };
       respond(response, { items: [item], nextCursor: second || later ? null : "inventory cursor+/=" });
     });
     const remote = (await verifiedRemote(serverUrl));
     const result = await remote.ownInventory([{ projectId }, { projectId }, { projectId: secondProject }], workerId, signal());
-    expect(result.tasks.map(({ id }) => id)).toEqual([taskId, uuid(10), uuid(9)]);
+    expect(result.tasks.map(({ id }) => id)).toEqual([taskId, uuid(9)]);
     expect(result.coveredProjectIds).toEqual([projectId, secondProject]);
     expect(result.unavailableProjectIds).toEqual([]);
     expect(calls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([

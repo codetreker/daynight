@@ -113,7 +113,7 @@ it("keeps an already selected historical deletion after re-enabling archival", a
   const worker = openWorkerStore(path.join(root, "worker.sqlite"));
   const signal = new AbortController();
   const archive = vi.fn(async () => {}), probeArchive = vi.fn(async () => ({ kind: "attempt" as const }));
-  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: worker, webStore: store, archive, probeArchive, emit: () => {} });
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: worker, webStore: store, archive, probeArchive, emit: () => {} });
   let completed!: () => void;
   const deleted = new Promise<void>(resolve => { completed = resolve; });
   const original = worker.deleteArchiveBackfillSchedule;
@@ -150,7 +150,7 @@ it.each([false, null])("rechecks the effective switch (%s) after a backfill wait
   let count = 0, enabled: boolean | null = true;
   vi.spyOn(instanceLock, "acquireInstanceLockSync").mockImplementation((...args) => { if (++count === 2) blocked(); return original(...args); });
   const archive = vi.fn(async () => {}), probeArchive = vi.fn(async () => ({ kind: "attempt" as const }));
-  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: worker, webStore: store, archive, probeArchive, archiveSessions: () => { observed(); return enabled; }, emit: () => {} });
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: worker, webStore: store, archive, probeArchive, archiveSessions: () => { observed(); return enabled; }, emit: () => {} });
   try {
     const reading = withWebRecordingSource(root, task, () => store.getTask(task), async () => { entered(); await gate; });
     await active;
@@ -183,7 +183,7 @@ it("does not let a locked recording starve another selected deletion", async () 
   await writeFile(path.join(secondDir, "journal.sqlite"), "second");
   const worker = openWorkerStore(path.join(root, "worker.sqlite"));
   const signal = new AbortController();
-  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: () => {} });
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: () => {} });
   let release!: () => void, entered!: () => void, blocked!: () => void, firstDone!: () => void, secondDone!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const active = new Promise<void>(resolve => { entered = resolve; });
@@ -234,7 +234,7 @@ it("retains the original deletion error and retries after backoff without blocki
   const originalDelete = worker.deleteArchiveBackfillSchedule;
   let fail = true, now = Date.now();
   const removeRecording: typeof deleteWebRecording = async (...args) => { if (args[1].claimId === first.claimId && fail) { fail = false; throw failure; } return deleteWebRecording(...args); };
-  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit, removeRecording });
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit, removeRecording });
   vi.spyOn(Date, "now").mockImplementation(() => now);
   vi.spyOn(worker, "deleteArchiveBackfillSchedule").mockImplementation(identity => { originalDelete(identity); if (identity.executionId === first.webExecution!.executionId) firstDone(); else if (identity.executionId === second.webExecution!.executionId) secondDone(); });
   try {
@@ -267,7 +267,7 @@ it("keeps another Worker's recordings outside archive and deletion maintenance",
   let uploaded!: () => void;
   const uploadCalled = new Promise<void>(resolve => { uploaded = resolve; });
   const archive = vi.fn(async () => { uploaded(); });
-  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: worker, webStore: store, archive, probeArchive: async () => ({ kind: "attempt" }), emit: () => {} });
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: worker, webStore: store, archive, probeArchive: async () => ({ kind: "attempt" }), emit: () => {} });
   try {
     maintenance.request(() => false);
     await uploadCalled;
@@ -291,7 +291,7 @@ it("does not hide an I/O failure when shutdown begins during deletion", async ()
   const active = new Promise<void>(resolve => { entered = resolve; });
   const failure = Object.assign(new Error("filesystem failure"), { code: "EACCES" });
   const emit = vi.fn();
-  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit, removeRecording: async () => { entered(); await gate; throw failure; } });
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit, removeRecording: async () => { entered(); await gate; throw failure; } });
   try {
     await maintenance.discardLocal(() => true, true, signal.signal);
     await active;
@@ -314,7 +314,7 @@ it("resumes a partially failed recording deletion from its persistent marker aft
   const firstWorker = openWorkerStore(workerFile), failure = Object.assign(new Error("disk full"), { code: "ENOSPC" });
   let observed!: () => void;
   const failed = new Promise<void>(resolve => { observed = resolve; });
-  const first = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: firstWorker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: event => { if (event.error === failure) observed(); }, removeRecording: async () => { await rm(path.join(directory, "media"), { recursive: true }); throw failure; } });
+  const first = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: firstWorker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: event => { if (event.error === failure) observed(); }, removeRecording: async () => { await rm(path.join(directory, "media"), { recursive: true }); throw failure; } });
   await first.discardLocal(() => true, true, signal.signal);
   await failed;
   await first.close(); firstWorker.close(); close(store);
@@ -325,7 +325,7 @@ it("resumes a partially failed recording deletion from its persistent marker aft
   const deleted = new Promise<void>(resolve => { completed = resolve; });
   const original = secondWorker.deleteArchiveBackfillSchedule;
   vi.spyOn(secondWorker, "deleteArchiveBackfillSchedule").mockImplementation(identity => { original(identity); completed(); });
-  const second = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: secondWorker, webStore: reopened, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: () => {} });
+  const second = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: secondWorker, webStore: reopened, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: () => {} });
   try {
     expect(reopened.getTask(task)?.cleanup?.discardRecording).toBe(true);
     await second.discardLocal(() => true, true, signal.signal);
@@ -350,7 +350,7 @@ it("waits for one selected recording only and preserves a deletion failure", asy
   const worker = openWorkerStore(path.join(root, "worker.sqlite")), signal = new AbortController();
   const failure = Object.assign(new Error("filesystem failure"), { code: "EACCES" });
   let blocked = true;
-  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: () => {}, removeRecording: async (...args) => { if (blocked) { blocked = false; throw failure; } return deleteWebRecording(...args); } });
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(6), signal: signal.signal, store: worker, webStore: store, archive: async () => {}, probeArchive: async () => ({ kind: "attempt" }), emit: () => {}, removeRecording: async (...args) => { if (blocked) { blocked = false; throw failure; } return deleteWebRecording(...args); } });
   try {
     await expect(maintenance.discardOne(task, () => true, signal.signal)).rejects.toBe(failure);
     expect(await readFile(path.join(directory, "journal.sqlite"), "utf8")).toBe("journal");
@@ -359,5 +359,33 @@ it("waits for one selected recording only and preserves a deletion failure", asy
     expect(await readFile(path.join(siblingDir, "journal.sqlite"), "utf8")).toBe("sibling");
     const cancelled = new AbortController(); const reason = new Error("cancelled"); cancelled.abort(reason);
     await expect(maintenance.discardOne(sibling, () => true, cancelled.signal)).rejects.toBe(reason);
+  } finally { await maintenance.close(); worker.close(); }
+});
+
+it("does not archive or discard a completed recording owned by another user", async () => {
+  const { root, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const task = store.initializeWebExecution(claim, 2);
+  store.beginCleanup(claim, { kind: "terminal", deadline: 100 }, 3);
+  store.completeTask(claim, 4);
+  const directory = controllerExecutionDirectory(root, task.webExecution!.executionId);
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "journal.sqlite"), "original");
+  const worker = openWorkerStore(path.join(root, "worker.sqlite"));
+  const signal = new AbortController();
+  const archive = vi.fn(async () => {}), probeArchive = vi.fn(async () => ({ kind: "attempt" as const }));
+  const maintenance = createWebArchiveMaintenance({ homeDirectory: root, serverUrl: claim.serverOrigin, workerId: claim.workerId, userId: id(7), signal: signal.signal, store: worker, webStore: store, archive, probeArchive, emit: () => {} });
+  try {
+    await maintenance.discardLocal(() => true, false, signal.signal);
+    maintenance.request(() => false);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(store.getTask(task)?.cleanup?.discardRecording).toBe(false);
+    expect(await readFile(path.join(directory, "journal.sqlite"), "utf8")).toBe("original");
+    expect(probeArchive).not.toHaveBeenCalled();
+    expect(archive).not.toHaveBeenCalled();
+    await expect(maintenance.discardOne(store.getTask(task)!, () => true, signal.signal)).rejects.toThrow("identity changed");
+    const marked = store.discardRecording(store.getTask(task)!, 5);
+    await maintenance.discardOne(marked, () => true, signal.signal, id(6));
+    await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
   } finally { await maintenance.close(); worker.close(); }
 });

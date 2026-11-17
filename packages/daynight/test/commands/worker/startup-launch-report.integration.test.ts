@@ -17,7 +17,6 @@ import { createWebExecutionBackend } from "../../../src/commands/worker/backends
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { StartupObservation } from "../../../src/session/startup.js";
@@ -97,7 +96,7 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     claimId: task.claimId, executionGeneration: e.executionGeneration, controllerId: e.controllerId, controllerInstanceId: e.controllerInstanceId })) } as unknown as WorkerSessionApi;
   let clock = 10;
   const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => clock });
-  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), prepareWorktree: vi.fn<WorkerGitManager["prepareWorktree"]>(async (candidate, owner, operation, cwd, requireBranch, binding, allowRestore) => {
+  const git = { scanWorktrees: scanFromList, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []), prepareWorktree: vi.fn<WorkerGitManager["prepareWorktree"]>(async (candidate, owner, operation, cwd, requireBranch, binding, allowRestore) => {
     operation.check();
     expect(candidate).toMatchObject({ projectId: project.projectId, localPath: home });
     expect(owner).toMatchObject({ projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId, worktreeId: identity.worktreeId });
@@ -121,9 +120,9 @@ const fixture = async (journalIdentity: Partial<Pick<ControllerLaunchTicket, "ex
     candidates: async function* () {}, update } as unknown as WorkerRemote;
   const advance = vi.spyOn(backend, "advanceResult");
   const coordinator = createWorkerCoordinator({ store: workerStore, webStore: store, webBackend: { ...backend, cleanup: async input => ({ task: input, complete: true }) },
-    git, herdr: {} as WorkerHerdrAdapter, remote, serverOrigin: project.serverOrigin, workerId: task.workerId, platform: "linux",
+    git, remote, serverOrigin: project.serverOrigin, workerId: task.workerId, userId: identity.userId, platform: "linux",
     machine: { id: randomUUID(), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration,
-    maxConcurrent: 1, preferPlatformSpecificTasks: false, buildPrompt: () => "fixture", emit() {}, now: () => clock, verifyWebStartupReporting: async () => true });
+    maxConcurrent: 1, preferPlatformSpecificTasks: false, emit() {}, now: () => clock, verifyWebStartupReporting: async () => true });
   disposals.push(async () => { await coordinator.shutdown(); });
   const reconcile = async () => { await coordinator.tick(); await new Promise<void>(resolve => setImmediate(resolve)); };
   const launch = async () => {

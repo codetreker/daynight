@@ -21,8 +21,8 @@ export type WorkerControlRequest =
 
 type ControlCoordinator = {
   advanceRetry(identity: ClaimIdentity): Promise<WorkerInputWait | void>;
-  cleanupSource(identity: ClaimIdentity, settings: { deleteWorktree?: boolean }): Promise<ResourceOwner>;
-  completeSource(owner: ResourceOwner): Promise<void>;
+  cleanupSource(identity: ClaimIdentity, settings: { deleteWorktree?: boolean; ownerUserId?: string }): Promise<ResourceOwner>;
+  completeSource(owner: ResourceOwner, ownerUserId: string): Promise<void>;
 };
 const matchesTask = (task: Task, identity: { projectId: string; taskId: string }): boolean => task.projectId === identity.projectId && task.id === identity.taskId;
 export const submitWorkerControl = async (options: {
@@ -46,7 +46,7 @@ export const submitWorkerControl = async (options: {
   const exactVersion = (): void => {
     if (request.kind !== "retry" && observed.version !== request.version) throw new Error("The explicit task version no longer matches; make a new decision with the observed version.");
   };
-  if (worker === undefined || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent || worker.agentControlMode !== (source.agentControlMode ?? "herdr")) throw new Error("The source claim is no longer the exact active execution on this worker.");
+  if (worker === undefined || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent || source.agentControlMode !== "web" || worker.agentControlMode !== "web") throw new Error("The source claim is no longer the exact active execution on this worker.");
   await remote.authorizeControl(projectId, worker.userId, signal);
   if (request.kind === "retry") {
     if (principal !== worker.userId) throw new Error("Retry requires the original authenticated execution owner.");
@@ -58,10 +58,10 @@ export const submitWorkerControl = async (options: {
   }
   exactVersion();
   signal.throwIfAborted();
-  const owner = await coordinator.cleanupSource(identity, { deleteWorktree: false });
+  const owner = await coordinator.cleanupSource(identity, { deleteWorktree: false, ownerUserId: worker.userId });
   signal.throwIfAborted();
   await remote.release(projectId, request.taskId, { claimId: request.claimId, version: request.version, stoppedConfirmed: true }, signal);
-  try { await coordinator.completeSource(owner); }
+  try { await coordinator.completeSource(owner, worker.userId); }
   catch (cause) { throw new Error("Release was confirmed, but source cleanup remains incomplete.", { cause }); }
   return { task: store.getTask(identity), message: `${request.kind} completed for claim ${request.claimId}; its original execution stopped, and local cleanup follows the backend archive requirements.` };
 };

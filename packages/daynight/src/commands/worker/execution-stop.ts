@@ -13,7 +13,7 @@ export type ExecutionStoppedNotice = { attempt: CleanupAttempt; observation: Ext
 export type ExecutionStopObserver = (target: CleanupTarget, operation: Operation) => Promise<StopObservation>;
 export type TerminalCleanupContext = { attempt: CleanupAttempt; onExecutionStopped(notice: ExecutionStoppedNotice): void };
 export type CleanupRequest =
-  | { kind: "terminal"; deadline: number; immediateStop: boolean; scope: TerminalCleanupContext; signal?: AbortSignal }
+  | { kind: "terminal"; deadline: number; immediateStop: boolean; scope: TerminalCleanupContext; ownerUserId?: string; signal?: AbortSignal }
   | { kind: "shutdown"; deadline: number; immediateStop: true; signal?: AbortSignal };
 
 /** A verified execution source no longer identifies the original instance. */

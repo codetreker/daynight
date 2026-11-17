@@ -21,7 +21,7 @@ const time = "2026-10-27T00:00:00Z";
 const machine = { id: uuid(7), name: "source" };
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
-const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", agentControlMode: "herdr", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
+const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", agentControlMode: "web", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
 const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", tags: [], status: worker.state === "active" ? "in_progress" : "todo", version, properties: { worker, pullRequests: [] }, allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: worker.state === "active" ? time : null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ready: worker.state !== "active", dependsOn: [], externalDependsOn: [], blockedBy: [] });
 const fixture = (local = true) => {
   mkdirSync(root, { recursive: true });
@@ -31,7 +31,7 @@ const fixture = (local = true) => {
   const project = store.registerProject({ projectId, repoUrl: "https://github.com/example/repo.git", localPath: path.join(directory, "repository") });
   const identity = { projectId, taskId, claimId };
   const resourceOwner: ResourceOwner = { ...identity, worktreeId };
-  if (local) store.activateTask(store.registerPending({ ...identity, agent: "copilot" }));
+  if (local) store.activateTask(store.registerPending({ ...identity, agent: "copilot", agentControlMode: "web" }));
   let observed = remoteTask();
   const order: string[] = [];
   const coordinator = {
@@ -59,8 +59,8 @@ describe("synchronous worker source management", () => {
     const f = fixture();
     const result = await f.submit(request);
     expect(f.order.filter((entry) => entry !== "management-request")).toEqual(["stop-close", request.kind, "delete-done"]);
-    expect(f.coordinator.cleanupSource).toHaveBeenCalledWith(f.identity, { deleteWorktree: false });
-    expect(f.coordinator.completeSource).toHaveBeenCalledExactlyOnceWith(f.resourceOwner);
+    expect(f.coordinator.cleanupSource).toHaveBeenCalledWith(f.identity, { deleteWorktree: false, ownerUserId: owner });
+    expect(f.coordinator.completeSource).toHaveBeenCalledExactlyOnceWith(f.resourceOwner, owner);
     expect(result.task).toMatchObject({ status: "done", claimId, agent: "copilot", sessionId: null });
     const input = vi.mocked(f.remote.release).mock.calls[0]![2];
     expect(input).toMatchObject({ claimId, version: 8n, stoppedConfirmed: true });
@@ -93,6 +93,8 @@ describe("synchronous worker source management", () => {
     const f = fixture(); vi.mocked(f.remote.currentUserId).mockResolvedValue(uuid(90));
     await f.submit(release);
     expect(f.remote.authorizeControl).toHaveBeenCalledWith(projectId, owner, f.options.signal);
+    expect(f.coordinator.cleanupSource).toHaveBeenCalledWith(f.identity, { deleteWorktree: false, ownerUserId: owner });
+    expect(f.coordinator.completeSource).toHaveBeenCalledWith(f.resourceOwner, owner);
     expect(f.current().status).toBe("done");
   });
 
@@ -171,7 +173,7 @@ describe("synchronous worker source management", () => {
   it("does not grant a retry to an administrator or a pending local claim", async () => {
     const f = fixture(); vi.mocked(f.remote.currentUserId).mockResolvedValue(uuid(90));
     await expect(f.submit({ kind: "retry", taskId, claimId })).rejects.toThrow("original authenticated execution owner");
-    const pending = f.store.registerPending({ projectId, taskId: uuid(70), claimId: uuid(71), agent: "copilot" });
+    const pending = f.store.registerPending({ projectId, taskId: uuid(70), claimId: uuid(71), agent: "copilot", agentControlMode: "web" });
     vi.mocked(f.remote.currentUserId).mockResolvedValue(owner);
     f.observe({ ...remoteTask(), id: pending.taskId, properties: { worker: { ...claim, claimId: pending.claimId }, pullRequests: [] } });
     await expect(f.submit({ kind: "retry", taskId: pending.taskId, claimId: pending.claimId })).rejects.toThrow("pending work is started by worker run");

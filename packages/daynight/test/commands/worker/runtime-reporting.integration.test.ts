@@ -144,7 +144,7 @@ beforeEach(async () => {
   mocks.webBackend.mockReturnValue({ closeInput: vi.fn() });
   mocks.webOpen.mockImplementation(() => ({
     close: mocks.webClose,
-    listCompletedTasks: () => mocks.completed().map((task: object) => ({ workerId: uuid(4), worktreeId: uuid(5), resources: { worktree: null }, ...task })),
+    listCompletedTasks: () => mocks.completed().map((task: object) => ({ workerId: uuid(4), userId: uuid(6), worktreeId: uuid(5), resources: { worktree: null }, ...task })),
     getTask: (task: object) => task,
   }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -1592,7 +1592,7 @@ it.each(["ordinary", "markdown_projection_failed"] as const)("routes a terminal 
   const f = await fixture();
   let now = Date.parse(workerTelemetryTime);
   vi.spyOn(Date, "now").mockImplementation(() => now);
-  const task = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(4), serverOrigin: "https://daynight.example", repositoryPath: path.join(f.homeDirectory, "repo"), resources: { worktree: null }, webExecution: { executionId: uuid(11), launchId: uuid(12), controllerInstanceId: uuid(13), sessionId: uuid(14), executionGeneration: "1", launchSubmission: "submitted" } };
+  const task = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), userId: uuid(6), worktreeId: uuid(4), serverOrigin: "https://daynight.example", repositoryPath: path.join(f.homeDirectory, "repo"), resources: { worktree: null }, webExecution: { executionId: uuid(11), launchId: uuid(12), controllerInstanceId: uuid(13), sessionId: uuid(14), executionGeneration: "1", launchSubmission: "submitted" } };
   mocks.ticket.mockResolvedValue({ serverOrigin: task.serverOrigin, claimId: task.claimId, ...task.webExecution });
   mocks.archive.mockResolvedValue({ state: "ready" });
   const running = start(f);
@@ -1735,7 +1735,7 @@ it("retains Web stop observation causes and claim identity through runtime diagn
     expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", identity: owner, ...metadata, error });
     const coordinatorOptions = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
     await eventually(() => expect(coordinatorOptions.store.getProject({ projectId: owner.projectId })?.localPath).toBe(path.join(f.homeDirectory, "repo")));
-    const task = coordinatorOptions.store.registerPending({ ...owner, agent: "codex" });
+    const task = coordinatorOptions.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
     backendOptions.emit({ kind: "execution-stop-observation-error", message: "unknown", task: owner, ...metadata, error });
     expect(mocks.emit).toHaveBeenCalledWith({ kind: "execution-stop-observation-error", message: "unknown", task, identity: owner, ...metadata, error });
   } finally { f.signal.abort(); await running; }

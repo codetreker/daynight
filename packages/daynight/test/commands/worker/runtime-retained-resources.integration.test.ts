@@ -26,7 +26,7 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: () => false, activeToolSelections: () => [], close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn(), configuration: vi.fn(), managerOptions: vi.fn(), disableReporter: vi.fn() }));
+const mocks = vi.hoisted(() => ({ git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn(), configuration: vi.fn(), managerOptions: vi.fn(), disableReporter: vi.fn() }));
 vi.mock("../../../src/commands/worker/configuration.js", async original => {
   const actual = await original<typeof import("../../../src/commands/worker/configuration.js")>();
   return { ...actual, createWorkerConfigurationManager: async (...args: Parameters<typeof actual.createWorkerConfigurationManager>) => {
@@ -37,7 +37,6 @@ vi.mock("../../../src/commands/worker/reporter.js", async original => {
   const actual = await original<typeof import("../../../src/commands/worker/reporter.js")>();
   return { ...actual, createWorkerReporter: (...args: Parameters<typeof actual.createWorkerReporter>) => mocks.disableReporter() ? { trigger: () => {}, publishInventory: () => {}, recordClaim: () => {}, demandChanged: () => {}, stop: async () => {} } : actual.createWorkerReporter(...args) };
 });
-vi.mock("../../../src/commands/worker/herdr/durable.js", () => ({ createDurableWorkerHerdr: mocks.durable }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
@@ -110,10 +109,8 @@ it.each([false, true])("keeps frozen Web execution responsibility when native de
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
   mocks.remote.mockReturnValue(remote);
-  const lifecycle = { responsibilities: vi.fn(() => []), isStopped: vi.fn(() => false), close: vi.fn(), registerClaim: vi.fn(), assertCanAdvance: vi.fn(), hasPreparedRun: vi.fn(() => false), stop: vi.fn(async () => {}) };
-  mocks.durable.mockReturnValue({ lifecycle, tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []) }, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn(), attachment: {} });
   const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
-  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), listWorktreeManifests: vi.fn(async () => []), dispose }, { scanWorktrees: scanFromList }));
   const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
   mocks.webBackend.mockReturnValue({ advance, cleanup, closeInput: vi.fn() });
   const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
@@ -207,8 +204,6 @@ it("registers fresh stop verification after a failed startup read even when the 
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId, selectedProjectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
   mocks.remote.mockReturnValue(remote); mocks.probe.mockResolvedValue("0.164.0");
-  const lifecycle = { responsibilities: vi.fn(() => []), isStopped: vi.fn(() => false), close: vi.fn(), registerClaim: vi.fn(), assertCanAdvance: vi.fn(), hasPreparedRun: vi.fn(() => false), stop: vi.fn(async () => {}) };
-  mocks.durable.mockReturnValue({ lifecycle, tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []) }, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn(), attachment: {} });
   const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
   const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ owner, binding }] : [];
   mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(retainedBindings), listWorktreeManifests: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose }, { scanWorktrees: scanFromList }));
@@ -304,8 +299,6 @@ it("re-registers original stops after a null reset interrupts an accepted initia
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: store.listProjects().map(project => project.projectId), unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
   mocks.remote.mockReturnValue(remote);
-  const lifecycle = { responsibilities: vi.fn(() => []), isStopped: vi.fn(() => false), close: vi.fn(), registerClaim: vi.fn(), assertCanAdvance: vi.fn(), hasPreparedRun: vi.fn(() => false), stop: vi.fn(async () => {}) };
-  mocks.durable.mockReturnValue({ lifecycle, tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []) }, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn(), attachment: {} });
   const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ owner, binding }] : [];
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async (project: { localPath: string }) => { await mkdir(project.localPath, { recursive: true }); }), listWorktrees: vi.fn(retainedBindings), listWorktreeManifests: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose: vi.fn(async () => {}) }, { scanWorktrees: scanFromList }));
   const cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
