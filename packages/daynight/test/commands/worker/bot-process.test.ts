@@ -192,7 +192,8 @@ test("an abnormal stopped writer consumes one recovery attempt and a healthy lat
   expect(f.current().intent!.executionGeneration).toBe("2");
 });
 
-test.each(["reader_busy", "physical_capacity"] as const)("Bot recovery retains its original generation and budget while storage waits for %s", async reason => {
+test("Bot recovery retains its original generation and recovery allowance while readers remain", async () => {
+  const reason = "reader_busy" as const;
   const f = await recoveryFixture();
   f.patch({ lifecycle: "failed", error: "native connection lost" });
   f.deps.confirmStopped.mockResolvedValue(true);

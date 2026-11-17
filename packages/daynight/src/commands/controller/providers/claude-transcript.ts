@@ -8,20 +8,20 @@ import { ClaudeTranscriptJson, TranscriptBase64Decoder, type TranscriptLine } fr
 
 export class ClaudeTranscriptError extends Error {
   override readonly name = "ClaudeTranscriptError";
-  constructor(readonly code: "unauthorized" | "identity_changed" | "snapshot_changed" | "invalid_transcript" | "chain_gap" | "limit_exceeded" | "invalid_cursor" | "media_unavailable" | "closed", message: string) { super(message); }
+  constructor(readonly code: "unauthorized" | "identity_changed" | "snapshot_changed" | "invalid_transcript" | "chain_gap" | "limit_exceeded" | "invalid_cursor" | "media_unavailable" | "closed", message: string, options?: ErrorOptions) { super(message, options); }
 }
 export type ClaudeTranscriptMedia = { readonly mediaId: string; readonly path: readonly (string | number)[]; readonly mediaType: string; readonly byteLength: number; readonly state: "available" | "unavailable"; readonly error: string | null };
 export type ClaudeTranscriptRecord = { readonly value: Record<string, unknown>; readonly media: readonly ClaudeTranscriptMedia[]; readonly assistantBlockOffset: number | null; readonly rootInputUuid?: string | null };
 export type ClaudeTranscriptSnapshot = { readonly snapshotId: string; readonly historyEpoch: string; readonly nativeSessionId: string; readonly prefixBytes: number; readonly prefixSha256: string; readonly chainSha256: string; readonly records: number };
 export type ClaudeTranscriptPage = { readonly snapshotId: string; readonly records: readonly ClaudeTranscriptRecord[]; readonly cursor: string; readonly done: boolean };
-export type ClaudeTranscriptIndexReservation = { release(): void | Promise<void> };
+export type ClaudeTranscriptIndexLease = { release(): void | Promise<void> };
 export type ClaudeTranscriptOptions = {
   readonly nativeHome: string; readonly cwd: string; readonly nativeSessionId: string;
   /** A SessionStart hint is accepted only inside this home and for the exact root transcript. */
   readonly transcriptPath?: string;
   readonly indexDirectory: string;
-  /** The Controller checks combined index, journal and sidecar metadata before each write. */
-  readonly reserveIndex?: (additionalBytes: number) => void | ClaudeTranscriptIndexReservation | Promise<void | ClaudeTranscriptIndexReservation>;
+  /** Acquire exclusive ownership of each index write. */
+  readonly acquireIndexLease?: () => ClaudeTranscriptIndexLease | Promise<ClaudeTranscriptIndexLease>;
   readonly resumeCursor?: string;
   readonly signal?: AbortSignal;
 };
@@ -37,7 +37,7 @@ export interface ClaudeTranscriptReader {
 }
 type Row = { uuid: string; parent: string | null; type: string; message_id: string | null; timestamp: string; side: number; meta: number; team: number; ordinal: number; data: string; compact: string | null; tool_result: number; blocks: number };
 type MediaRow = { id: string; uuid: string; start: number; end: number; bytes: number; error: string | null };
-const MAX_INDEX = 134_217_728, MAX_RECORDS = 100_000, MAX_PAGE = 1_048_576 - 1024;
+const MAX_RECORDS = 100_000, MAX_PAGE = 1_048_576 - 1024;
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const sha = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const key = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.isWellFormed() && !value.includes("\0") && Buffer.byteLength(value) <= 1024;
@@ -78,7 +78,7 @@ class TranscriptIndex {
   constructor(readonly filename: string, private readonly options: ClaudeTranscriptOptions, private readonly cwd: string) {
     this.db = new Database(filename);
     try {
-    this.db.pragma("journal_mode = DELETE"); this.db.pragma("synchronous = FULL"); this.db.pragma("cache_size = -2048"); this.db.pragma("mmap_size = 0"); this.db.pragma("max_page_count = 32768");
+    this.db.pragma("journal_mode = DELETE"); this.db.pragma("synchronous = FULL"); this.db.pragma("cache_size = -2048"); this.db.pragma("mmap_size = 0");
     this.db.exec(`
       CREATE TABLE records(uuid TEXT PRIMARY KEY,parent TEXT,type TEXT NOT NULL,message_id TEXT,timestamp TEXT NOT NULL,side INTEGER NOT NULL,meta INTEGER NOT NULL,team INTEGER NOT NULL,ordinal INTEGER NOT NULL,data TEXT NOT NULL,compact TEXT,tool_result INTEGER NOT NULL,blocks INTEGER NOT NULL);
       CREATE INDEX parents ON records(parent);
@@ -94,14 +94,10 @@ class TranscriptIndex {
     `);
     } catch (error) { this.db.close(); throw error; }
   }
-  private async write<T>(additional: number, write: () => T): Promise<T> {
+  private async write<T>(write: () => T): Promise<T> {
     this.options.signal?.throwIfAborted();
-    const pages = this.db.pragma("page_count", { simple: true }) as number, size = this.db.pragma("page_size", { simple: true }) as number;
-    if (pages * size + additional > MAX_INDEX) fail("limit_exceeded", "Claude transcript index metadata limit exceeded.");
-    // DELETE-mode journaling may retain any preexisting page until commit.
-    // Reserve its complete upper bound as well as bounded database growth.
-    const permit = await this.options.reserveIndex?.(pages * (size + 8) + additional);
-    try { this.options.signal?.throwIfAborted(); return write(); } finally { if (permit) await permit.release(); }
+    const lease = await this.options.acquireIndexLease?.();
+    try { this.options.signal?.throwIfAborted(); return write(); } finally { if (lease) await lease.release(); }
   }
   async add(line: TranscriptLine): Promise<void> {
     const raw = line.value;
@@ -133,9 +129,7 @@ class TranscriptIndex {
     const data = JSON.stringify({ value, media });
     if (!data.isWellFormed() || Buffer.byteLength(data) > MAX_PAGE - 4096) fail("limit_exceeded", "Claude transcript record metadata exceeds the page limit.");
     const compact = raw.type === "system" && raw.subtype === "compact_boundary" ? JSON.stringify(object(raw.compactMetadata)) : null;
-    const previous = this.db.prepare("SELECT length(CAST(data AS BLOB))+COALESCE(length(CAST(compact AS BLOB)),0) AS bytes FROM records WHERE uuid=?").get(raw.uuid) as { bytes: number } | undefined;
-    // Include replaced payloads: DELETE journaling can be larger than the new record.
-    await this.write((Buffer.byteLength(data) + Buffer.byteLength(compact ?? "") + (previous?.bytes ?? 0)) * 4 + 65_536, () => this.db.transaction(() => {
+    await this.write(() => this.db.transaction(() => {
       this.db.prepare("DELETE FROM media WHERE uuid=?").run(raw.uuid);
       this.db.prepare("INSERT INTO records VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uuid) DO UPDATE SET parent=excluded.parent,type=excluded.type,message_id=excluded.message_id,timestamp=excluded.timestamp,side=excluded.side,meta=excluded.meta,team=excluded.team,ordinal=excluded.ordinal,data=excluded.data,compact=excluded.compact,tool_result=excluded.tool_result,blocks=excluded.blocks").run(raw.uuid, raw.parentUuid ?? null, raw.type, raw.type === "assistant" && key(message.id) ? message.id : null, typeof raw.timestamp === "string" ? raw.timestamp : "", raw.isSidechain ? 1 : 0, raw.isMeta ? 1 : 0, raw.teamName ? 1 : 0, this.ordinal, data, compact, raw.type === "user" && Array.isArray(content) && content.some(part => object(part).type === "tool_result") ? 1 : 0, Array.isArray(content) ? content.length : 0);
       for (const range of ranges) this.db.prepare("INSERT INTO media VALUES(?,?,?,?,?,?)").run(range.id, range.uuid, range.start, range.end, range.bytes, range.error);
@@ -160,14 +154,14 @@ class TranscriptIndex {
     }
   }
   private async reparent(row: Row, parent: string): Promise<void> {
-    await this.write((Buffer.byteLength(row.data) + Buffer.byteLength(row.compact ?? "")) * 4 + 65_536, () => this.db.prepare("UPDATE records SET parent=? WHERE uuid=?").run(parent, row.uuid));
+    await this.write(() => this.db.prepare("UPDATE records SET parent=? WHERE uuid=?").run(parent, row.uuid));
   }
   private async clearWalk(): Promise<void> {
-    // Bound rollback-journal growth even when a prior ancestry walk used many pages.
+    // Delete in batches to bound work per transaction.
     for (;;) {
       const rows = this.db.prepare("SELECT uuid FROM walk LIMIT 64").all() as { uuid: string }[];
       if (!rows.length) return;
-      await this.write(64 * 1024 * 4 + 65_536, () => this.db.transaction(() => { for (const row of rows) this.db.prepare("DELETE FROM walk WHERE uuid=?").run(row.uuid); })());
+      await this.write(() => this.db.transaction(() => { for (const row of rows) this.db.prepare("DELETE FROM walk WHERE uuid=?").run(row.uuid); })());
     }
   }
   async select(): Promise<{ count: number; hash: string }> {
@@ -189,8 +183,8 @@ class TranscriptIndex {
       await this.clearWalk(); let row = this.row(leaf.uuid);
       while (row) {
         if (this.db.prepare("SELECT 1 FROM walk WHERE uuid=?").get(row.uuid)) fail("chain_gap", "Claude transcript parent chain contains a cycle.");
-        const current = row; await this.write(65_536, () => this.db.prepare("INSERT INTO walk VALUES(?)").run(current.uuid));
-        if (row.type === "user" || row.type === "assistant") { await this.write(65_536, () => this.db.prepare("INSERT OR IGNORE INTO candidates VALUES(?,?,?)").run(current.uuid, current.ordinal, !current.side && !current.meta && !current.team ? 1 : 0)); break; }
+        const current = row; await this.write(() => this.db.prepare("INSERT INTO walk VALUES(?)").run(current.uuid));
+        if (row.type === "user" || row.type === "assistant") { await this.write(() => this.db.prepare("INSERT OR IGNORE INTO candidates VALUES(?,?,?)").run(current.uuid, current.ordinal, !current.side && !current.meta && !current.team ? 1 : 0)); break; }
         if (!row.parent) break; row = this.row(row.parent);
       }
     }
@@ -200,7 +194,7 @@ class TranscriptIndex {
     while (next !== null) {
       const row = this.row(next); if (!row) fail("chain_gap", "Claude transcript parent chain has a missing record.");
       if (this.db.prepare("SELECT 1 FROM chain WHERE uuid=?").get(next)) fail("chain_gap", "Claude transcript parent chain contains a cycle.");
-      await this.write(65_536, () => this.db.prepare("INSERT INTO chain VALUES(?,?)").run(reverse++, next)); next = row.parent;
+      await this.write(() => this.db.prepare("INSERT INTO chain VALUES(?,?)").run(reverse++, next)); next = row.parent;
     }
     let position = 0, rootInput: string | null = null;
     const add = async (row: Row) => {
@@ -208,7 +202,7 @@ class TranscriptIndex {
       if (!["user", "assistant", "system"].includes(row.type) || row.meta || row.side || row.team) return;
       if (++position > MAX_RECORDS) fail("limit_exceeded", "Claude transcript selected record limit exceeded.");
       const offset = row.message_id ? (this.db.prepare("SELECT COALESCE(SUM(r.blocks),0) AS count FROM selected s JOIN records r ON r.uuid=s.uuid WHERE r.message_id=?").get(row.message_id) as { count: number }).count : null;
-      await this.write(65_536, () => this.db.prepare("INSERT INTO selected VALUES(?,?,?,?)").run(position, row.uuid, offset, rootInput));
+      await this.write(() => this.db.prepare("INSERT INTO selected VALUES(?,?,?,?)").run(position, row.uuid, offset, rootInput));
     };
     for (const row of this.chain()) {
       if (row.type === "user" && !row.tool_result && !row.meta && !row.side && !row.team) rootInput = row.uuid;
@@ -262,7 +256,7 @@ export const openClaudeTranscript = async (options: ClaudeTranscriptOptions): Pr
     const directory = await lstat(options.indexDirectory);
     if (!directory.isDirectory() || process.platform !== "win32" && (directory.mode & 0o077) !== 0) fail("unauthorized", "Claude transcript index directory must be private.");
     const filename = path.join(options.indexDirectory, `claude-transcript-${randomUUID()}.sqlite`);
-    const permission = await options.reserveIndex?.(131_072);
+    const permission = await options.acquireIndexLease?.();
     let created: TranscriptIndex | undefined;
     try { try { created = new TranscriptIndex(filename, options, authorized.cwd); } finally { if (permission) await permission.release(); } }
     catch (error) {

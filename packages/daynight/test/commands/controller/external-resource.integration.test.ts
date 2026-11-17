@@ -7,14 +7,13 @@ import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
-import { controllerMetadataBudget } from "../../../src/commands/controller/media/metadata-budget.js";
 
 const roots: string[] = [], databases: Database.Database[] = [];
 const database = (file: string) => { const db = openControllerTestDatabase({ file, allowCreate: true, onMigration: () => {} }); databases.push(db); return db; };
 afterEach(async () => { for (const db of databases.splice(0)) closeControllerTestDatabase(db); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const sessionContent = (file: string, sessionId: string, db: Database.Database) => openSessionContent(file, sessionId, db, {
   read: action => db.inTransaction ? action() : db.transaction(action).deferred(),
-  assertWrite: additional => { if (!db.inTransaction) throw new Error("Publication requires the original write transaction."); controllerMetadataBudget(file, db).assert(additional); },
+  assertWrite: () => { if (!db.inTransaction) throw new Error("Publication requires the original write transaction."); },
 });
 const descriptor = (bytes: Uint8Array) => ({ resourceId: randomUUID(), status: "available" as const, name: "original.png", mediaType: "image/png", byteLength: String(bytes.byteLength), sha256: createHash("sha256").update(bytes).digest("hex"), error: null });
 

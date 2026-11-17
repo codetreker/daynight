@@ -4,7 +4,6 @@ import { createImageCaptureSource } from "./media/capture-source.js";
 import { createMarkdownSourceStore } from "./markdown/store.js";
 import type { MarkdownProjectionState } from "./markdown/projection.js";
 import { createNativeImageState } from "./media/native-state.js";
-import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { createImageHistorySource } from "./media/history-source.js";
 import { openControllerMediaStore, type ControllerMediaStore } from "./media/preparations.js";
 import type { ImageDecoder } from "./media/image-decoder.js";
@@ -80,7 +79,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: options.controllerProcess ?? null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
   let sessionContent!: SessionContent;
   let db!: Database.Database;
-  let metadataBudget!: ReturnType<typeof controllerMetadataBudget>;
   let quarantined = false, outboxWritesDisabled = false, writeDepth = 0;
   const assertUsable = (): void => { if (quarantined) throw new Error("Controller journal has an unresolved transaction; independent recovery is required."); };
   const assertOutboxWrites = (): void => { if (outboxWritesDisabled) throw new Error("Controller outbox writes are disabled after an accounting failure."); };
@@ -107,21 +105,16 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
-  const reserveContent = (additionalBytes: number, contentGrowth: number): void => {
-    metadataBudget.assert(additionalBytes, true, contentGrowth);
-  };
-  const assertTimelineWrite = (additionalBytes: number, contentGrowth = 0): void => {
+  const assertTimelineWrite = (): void => {
     assertUsable();
     assertControllerStoragePermit(permit, file);
     if (writeDepth === 0 || !db.inTransaction) throw new Error("SQL timeline publication requires the original Controller write transaction.");
-    if (additionalBytes > 0) reserveContent(additionalBytes, contentGrowth);
   };
   db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.onMigration), file: options.database ?? file, allowCreate: true });
   let initializationOutcome: SqliteOutcome = "not-started";
   try {
     runSqliteImmediate(db, () => {
       assertCurrentSqlite(db, controllerJournalFormat);
-      metadataBudget = controllerMetadataBudget(file, db);
       if (controllerTimelineCleanupPending(db)) throw new Error("Controller timeline maintenance must finish before writer initialization.");
       if (!db.memory) chmodSync(file, 0o600);
       const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
@@ -156,13 +149,12 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (existing === undefined && (sessionContent.timeline.totals().entryCount !== 0 || sessionContent.resourceFiles.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
     });
     initializationOutcome = "committed";
-  const outbox = openControllerOutbox(db, { assertWrite: () => { assertOutboxWrites(); assertTimelineWrite(0); } });
-  const markdownStore = createMarkdownSourceStore(db, { read, write: atomic }, metadataBudget);
+  const outbox = openControllerOutbox(db, { assertWrite: () => { assertOutboxWrites(); assertTimelineWrite(); } });
+  const markdownStore = createMarkdownSourceStore(db, { read, write: atomic });
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
-  const writeOperation = (operation: ControllerOperation): ControllerOperation => { metadataBudget.assert(Buffer.byteLength(JSON.stringify(operation)) + 16384, operation.state !== "accepted"); db.prepare("INSERT INTO operations(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value,acknowledged=0").run(operation.operationId, JSON.stringify(operation)); return operation; };
+  const writeOperation = (operation: ControllerOperation): ControllerOperation => { db.prepare("INSERT INTO operations(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value,acknowledged=0").run(operation.operationId, JSON.stringify(operation)); return operation; };
   const patchSnapshot = (patch: Partial<Omit<ControllerSnapshot, "executionId" | "claimId" | "testExecutionId" | "sessionId" | "executionGeneration" | "controllerInstanceId" | "windowsJobStopProof">>): ControllerSnapshot => atomic(() => {
-    metadataBudget.assert(16384, true);
     const current = getSnapshot();
     if (Object.hasOwn(patch, "windowsJobStopProof") || current.windowsJobStopProof !== undefined) throw new Error("A completed Windows Job stop proof cannot be patched by the Controller.");
     if (Object.keys(patch).some((key) => ["executionId", "claimId", "testExecutionId", "sessionId", "executionGeneration", "controllerInstanceId"].includes(key))) throw new Error("Controller identity cannot change within a generation.");
@@ -170,7 +162,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     const value = checkedSnapshot({ ...current, ...patch }); db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
   });
   const outboxBytes = (): number => read(() => outbox.byteLength());
-  const assertInputCapacity = (): void => { assertUsable(); metadataBudget.assert(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
+  const assertInputCapacity = (): void => { assertUsable(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
   const localContent = createLocalSessionContent(sessionContent, ticket.sessionId, { read, write: atomic });
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
     assertOutboxWrites();
@@ -180,7 +172,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }
     const encoded = JSON.stringify(payload);
     assertOutboxWrites();
-    if (encoded !== undefined) metadataBudget.assert(Buffer.byteLength(encoded) + 16384, true);
     if (encoded === undefined) throw new Error("Controller event must be serializable.");
     if (outboxBytes() + Buffer.byteLength(encoded) > maxOutboxBytes) {
       if (!options.contentOwnedLocally) throw new Error("Controller outbox capacity exceeded; event was not discarded.");
@@ -203,7 +194,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (entry.kind !== "user_message" || entry.origin !== undefined && entry.origin !== source.origin) throw new Error("Timeline update changed its original input origin.");
       entry = { ...entry, origin: source.origin };
     }
-    metadataBudget.assert(Buffer.byteLength(JSON.stringify(entry)) * 2 + 16384, true);
     const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
     void ignored; void ignoredSequence;
     const originals = db.prepare("SELECT i.image_id,i.resource_id,i.part_index FROM native_input_publication_images i JOIN native_input_publications p ON p.operation_id=i.operation_id WHERE json_extract(p.value,'$.receipt.identity.entryId')=?").all(entry.entryId) as { image_id: string; resource_id: string; part_index: number }[];
@@ -242,7 +232,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     const current = sessionContent.timeline.get(entryId);
     if (current && current.kind !== "user_message") throw new Error("Native input cannot replace another timeline kind.");
     if (!existing) {
-      metadataBudget.assert(Buffer.byteLength(entryId + operationId + origin) + 16384, true);
       db.prepare("INSERT INTO input_message_origins VALUES(?,?,?)").run(entryId, operationId, origin);
     }
     if (current) projectTimeline(current);
@@ -257,7 +246,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
   });
   const registerImageOccurrence = (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
-    metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
     const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
     if (nativeSource && (nativeSource.provider !== ticket.provider || nativeSource.nativeSessionId !== getSnapshot().nativeSessionId)) throw new Error("Image occurrence belongs to another native session.");
     const entry = sessionContent.timeline.get(occurrence.entryId);
@@ -281,10 +269,10 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       markdownStore.put("projection", state.entryId, state);
       return projectTimeline(entry);
     }),
-    ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
-    ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
-    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, reserveContent),
-    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
+    ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence }),
+    ...createNativeImageState(db, { read, write: atomic }),
+    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }),
+    ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity, assertUsable,
@@ -376,7 +364,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
         ? (({ origin: _origin, ...payload }) => payload)(input.payload) : input.payload;
       const hash = canonical === null ? controllerPayloadHash({ kind: input.kind, payload: hashPayload }) : createHash("sha256").update(canonical).digest("hex"); const existing = getOperation(input.operationId);
       if (existing !== null) { if (existing.payloadHash !== hash) throw new Error("The operation ID has different content."); return existing; }
-      metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) * 2 + 16384);
       if (input.kind === "initial" || input.kind === "send_message" || input.kind === "interaction_response" || input.kind === "execute_command" || input.kind === "update_setting") assertInputCapacity();
       if (canonical !== null) db.prepare("INSERT INTO input_intents VALUES(?,?,?)").run(input.operationId, canonical, hash);
       const { intent: _intent, ...operation } = input; void _intent;
@@ -387,7 +374,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       return row ?? null;
     }),
     recordInputObservation: (input: InputObservation): boolean => atomic(() => {
-      metadataBudget.assert(Buffer.byteLength(JSON.stringify(input)) + 16384, true);
       const observation = parseInputObservation(input), operation = getOperation(observation.operationId), snapshot = getSnapshot();
       const intent = db.prepare("SELECT sha256 FROM input_intents WHERE operation_id=?").get(observation.operationId) as { sha256: string } | undefined;
       if (!operation || !intent || intent.sha256 !== observation.intentSha256 || snapshot.nativeSessionId !== observation.nativeSessionId || ticket.provider !== observation.provider || !["dispatching", "unknown", "provider_accepted", "confirmed"].includes(operation.state)) return false;

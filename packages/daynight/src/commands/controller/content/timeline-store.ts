@@ -10,8 +10,8 @@ const columns = "id, CAST(entry_seq AS TEXT) AS entry_seq, CAST(revision AS TEXT
 type TimelineRow = { id: string; entry_seq: string; revision: string; kind: string; value: string; content_hash: string; byte_length: number };
 export type TimelineTotals = { readonly entryCount: number; readonly byteLength: number; readonly timelineBytes: number };
 export type TimelinePageQuery = { readonly direction: "tail" | "before" | "after"; readonly pivot: string | null; readonly limit: number };
-/** Zero checks original write ownership; a mutation also admits incoming UTF-8 bytes plus 16 KiB of SQLite overhead. */
-export type TimelineWriteContext = { readonly assertWrite: (additionalBytes: number, contentGrowth?: number) => void };
+/** Verify the caller owns the original write boundary. */
+export type TimelineWriteContext = { readonly assertWrite: () => void };
 
 const sequence = (value: string): bigint => {
   if (!/^[1-9][0-9]{0,18}$/.test(value) || BigInt(value) > MAX_SEQUENCE) throw new Error("Invalid SQL timeline sequence.");
@@ -43,7 +43,7 @@ const totals = (db: Database.Database): TimelineTotals => {
 };
 
 /** Publish one entry in the caller's transaction after its caller applies the appropriate admission. */
-const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unknown) => TimelineEntry, admit?: (updated: TimelineTotals, byteLength: number, contentGrowth: number) => void): void => {
+const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unknown) => TimelineEntry, admit?: (updated: TimelineTotals) => void): void => {
   if (!db.inTransaction) throw new Error("SQL timeline publication requires its original journal write transaction.");
   const entry = parse(JSON.parse(JSON.stringify(value))), entrySequence = sequence(entry.entrySeq), revision = sequence(entry.revision);
   const previous = getRow(db, entry.entryId), old = previous === undefined ? undefined : decode(previous);
@@ -54,7 +54,7 @@ const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unk
     return;
   }
   const current = totals(db), updated = totalSize(current.entryCount + (old === undefined ? 1 : 0), current.byteLength - (previous?.byte_length ?? 0) + byteLength);
-  admit?.(updated, byteLength, Math.max(0, byteLength - (previous?.byte_length ?? 0)));
+  admit?.(updated);
   db.prepare("INSERT INTO timeline_entries(id,entry_seq,revision,kind,value,content_hash,byte_length) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,kind=excluded.kind,value=excluded.value,content_hash=excluded.content_hash,byte_length=excluded.byte_length")
     .run(entry.entryId, entrySequence, revision, entry.kind, encoded, contentHash, byteLength);
   const result = db.prepare("UPDATE timeline_totals SET entry_count=?,byte_length=? WHERE id=1").run(updated.entryCount, updated.byteLength);
@@ -73,10 +73,9 @@ export const openTimelineStore = (db: Database.Database, context: TimelineWriteC
   if (db.inTransaction) validate(); else db.transaction(validate).deferred();
   const save = (value: TimelineEntry): void => {
     if (!db.inTransaction) throw new Error("SQL timeline publication requires its original journal write transaction.");
-    context.assertWrite(0);
-    publish(db, value, parseTimelineEntry, (updated, byteLength, contentGrowth) => {
+    context.assertWrite();
+    publish(db, value, parseTimelineEntry, updated => {
       if (updated.entryCount > MAX_ENTRIES || updated.timelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
-      context.assertWrite(byteLength + 16_384, contentGrowth);
     });
   };
   return {

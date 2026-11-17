@@ -42,7 +42,7 @@ test("valid large Claude history originals survive bounded helper reads, public 
       await transcript.write(',{"type":"text","text":"after"}]}}\n');
     } finally { await transcript.close(); }
     const encodedBytes = (await stat(transcriptPath)).size; expect(encodedBytes).toBeGreaterThan(32 * 1024 * 1024);
-    reader = await openClaudeTranscriptHelper({ nativeHome, cwd, nativeSessionId, transcriptPath, indexDirectory: journal.media().nativeIndexDirectory(), acquireIndexReservation: journal.acquireNativeIndexReservation, onSpawn: process => { child = process; } });
+    reader = await openClaudeTranscriptHelper({ nativeHome, cwd, nativeSessionId, transcriptPath, indexDirectory: journal.media().nativeIndexDirectory(), acquireIndexLease: journal.acquireNativeIndexLease, onSpawn: process => { child = process; } });
     const page = await reader.nextPage(), row = page.records.find(record => record.value.uuid === "output")!; expect(row.media).toHaveLength(5); await reader.acknowledge(page.cursor);
     for (const [index, media] of row.media.entries()) {
       expect(media.state).toBe("available");

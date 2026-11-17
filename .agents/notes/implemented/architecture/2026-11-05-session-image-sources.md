@@ -41,7 +41,7 @@ not delay native receipts. First source IO waits for complete, untruncated
 Markdown and its original position acknowledgement.
 
 Projection state, source intents, contexts and request admission use the existing
-journal's `image_runtime_state` and metadata budget. A source intent preserves
+journal's `image_runtime_state`. The [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission. A source intent preserves
 the original occurrence, locator, context and capture/attempt identity before
 position registration. Recovery repairs an interrupted registration and waits
 for the original position's service ACK and actual complete history before local

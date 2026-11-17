@@ -494,6 +494,10 @@ func rejectClientOperations(f *oauthFixture) clientOperations {
 			f.unexpected("parse metadata")
 			return core.ClientMetadata{}, nil
 		},
+		parseCIMDMetadata: func([]byte, string) (core.ClientMetadata, error) {
+			f.unexpected("parse CIMD metadata")
+			return core.ClientMetadata{}, nil
+		},
 		parseStoredMetadata: func([]byte, string) (core.ClientMetadata, error) {
 			f.unexpected("parse stored metadata")
 			return core.ClientMetadata{}, nil

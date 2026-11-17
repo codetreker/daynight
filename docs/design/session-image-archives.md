@@ -73,7 +73,7 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 | Session 实际内容 | `T+I+R+D+M ≤ 134217728` bytes；各项采用实际已接纳内容或最终事务中的实测候选。 |
 | schema3 timeline | 完整 UTF-8 编码最多 134217728 bytes、100000 entries；仍须满足 Session 总量。schema1/2 保持旧 67108864 bytes 边界。 |
 | manifest | 原字节最多 4194304、resources 最多 1000 项；available 项引用外置 blob，失败项没有 blob。 |
-| Controller 本地 | 原有 execution、stateDirectory、卷空闲和控制元数据准入独立于服务端总量；详见[公共协议与存储设计](session-image-contracts.md)。 |
+| Controller 本地 | 不设本地累计容量或卷空闲准入；真实存储错误独立于服务端内容限制；详见[公共协议与存储设计](session-image-contracts.md)。 |
 | 数据传输 | 图片块最多 524288 原字节；归档块最多 1048576 原字节；Session 媒体并发和控制帧限制保持。 |
 
 `T` 是完整规范 `{"entries":[...]}` 的字节数，已接受空正文为 14；完整索引可计算 `14 + sum(entry.b) + max(0,n−1)`。`I` 是规范 entries/occurrences 索引的字节数，不含 epoch、来源截止点等协调状态。`R` 按不同 available resourceId 求实际原件长度，`D` 是按 resourceId 排序的已提交 descriptor 规范集合，`M` 是实际发布的 manifest 长度；缺少对应已接纳内容的分量为零。相同 resourceId 的多处引用只算一次原件，不同 resourceId 即使摘要相同也分别计量。临时副本、数据库内部空间及不含内容的控制记录不计入总量。

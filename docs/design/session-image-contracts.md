@@ -236,7 +236,7 @@ Poll 先按当前 Session、claim/test execution 与 generation 筛选持久媒�
 
 旧账本中的完整 body/result 在 core 计算无 bytes 的等价元数据，并由 DAO 按读到的原 fence/body/result/error/complete 做精确 Expected CAS；冲突或 unknown 保留原身份与占用，不覆盖较新的结果。取消只结束该次 I/O 并等待执行单元退出；准备、unknown 和未完成清理继续保留其原身份及本机清理责任。
 
-Controller 释放原准备时，relay 与本地 release 使用同一存储错误分类，覆盖首次访问媒体目录以及实际释放；可恢复的文件访问/flush、SQLite busy/存储或元数据容量不足与身份、格式和安全拒绝分别处理。前者在 `action=release` 的响应中返回 `release_storage_unavailable`；短暂本地 reader 占用也使用该错误，真正 operation/native 引用仍拒绝为 `upload_in_use`。服务仅对 release 的该专用错误及既有 `rate_limited` 保持原持久请求 pending，沿同 requestId/action/body/fence 再次 offer；已经完成的成功或确定错误不被迟到暂拒改写，SQL 终态保护不放宽。未知、取消和重复暂拒期间保留原文件及本机物理计量；只有原远端 release 成功、本地文件删除及元数据提交全部确认才完成清理。`budget_exceeded`、`image_unavailable` 等通用错误不推断为可重试清理，其他 action 不因该专用 code 获得重放许可。
+Controller 释放原准备时，relay 与本地 release 使用同一存储错误分类，覆盖首次访问媒体目录以及实际释放；可恢复的文件访问/flush、SQLite busy 或存储失败与身份、格式和安全拒绝分别处理。前者在 `action=release` 的响应中返回 `release_storage_unavailable`；短暂本地 reader 占用也使用该错误，真正 operation/native 引用仍拒绝为 `upload_in_use`。服务仅对 release 的该专用错误及既有 `rate_limited` 保持原持久请求 pending，沿同 requestId/action/body/fence 再次 offer；已经完成的成功或确定错误不被迟到暂拒改写，SQL 终态保护不放宽。未知、取消和重复暂拒期间保留原文件；只有原远端 release 成功、本地文件删除及元数据提交全部确认才完成清理。`budget_exceeded`、`image_unavailable` 等通用错误不推断为可重试清理，其他 action 不因该专用 code 获得重放许可。
 
 ## 图片发送与 NativeProvider 入口
 
@@ -547,7 +547,7 @@ GET 通过原 Session 的历史读取 scope 复核认证、项目访问与 uploa
 
 ### 私有文件与 journal
 
-资源 descriptor、blob、pin 与 lease 由 `content/resource-files.ts` 统一拥有，路径不依赖正文表示。`content/session-content.ts` 组合这一文件拥有者与 journal v12 的 SQL 当前正文；释放资源前在原同步 SQL 读快照中核对当前正文和 `native_input_publication_images`，再由文件拥有者核对 pin/lease。[SQL 正文设计](session-sqlite-content.md)拥有当前行、编号转换、退休和压缩。
+资源 descriptor、blob、pin 与 lease 由 `content/resource-files.ts` 统一拥有，路径不依赖正文表示。`content/session-content.ts` 组合这一文件拥有者与 journal v13 的 SQL 当前正文；释放资源前在原同步 SQL 读快照中核对当前正文和 `native_input_publication_images`，再由文件拥有者核对 pin/lease。[SQL 正文设计](session-sqlite-content.md)拥有当前行、编号转换、退休和压缩。
 
 沿 `controllerExecutionDirectory`，媒体暂存与 pending-content 同属于原 execution，原件不写入 journal 的 Base64 字段。
 
@@ -597,7 +597,7 @@ Controller 的 `content/resource-files.ts` 负责 descriptor、blob、持久 pin
 
 具名 `publishNativeInputAssociation` 验证已存在的原接受证据及完整 intent，基于当前 entry 保留原生槽并绑定或追加原件，在同一事务提交 alias、实际引用、occurrence、真实 revision 和确切 outbox 水位。`queryNativeInputAssociation` 返回原不可变回执与当前视图；后续 capture 可以推进当前 revision，不能改变 publication revision。未知结果只查原身份，不重发原生输入。若 COMMIT 与 ROLLBACK 都未确认且连接仍有事务，隔离该连接的所有业务读取和写入；同连接的未提交行不能充当 committed 查询结果。关闭连接不清除原 writer 身份，后续由独立生命周期恢复核对。原生来源采集遵守位置 ACK、实际完整历史、来源授权、封存与 submit 顺序，不扩张为跨服务的分布式事务。Provider 接线由[Provider 设计](session-image-providers.md#copilot)拥有。存储的 canonical intent 不含传输 `requestId`；本地恢复仅补解析所需的该字段，再重核原 operationId、规范编码及 SHA，不改持久 intent，不把恢复对象当作新的发送请求。
 
-Controller 不设每 execution 或 stateDirectory 的媒体累计额度。原 `stateDirectory/controller/media/budget.sqlite` 不再创建、打开、读取、更新或释放；已有文件可留存，不影响运行，也不要求 journal 迁移。媒体准备、上传、封存、历史同步和维护均不执行卷剩余空间水位或未来写入峰值准入，也不为此扫描媒体目录或登记未落盘预留。真实文件系统与 SQLite 错误继续按原确定或未知结果语义暴露。控制元数据限额为 128 MiB，另有 8 MiB 结算余量，计入真实 SQLite sidecars 与 pending metadata。已提交 `timeline_totals.byte_length` 及与 `active_history_sync` 原身份、路径、长度匹配的完整 history 文件的实际字节另提供相应空间；未登记或不匹配的孤儿文件不豁免。正文写入、冻结副本与维护沿原元数据拥有者执行仍有效的元数据检查。关闭 Controller 不释放 native/resume 及未知引用；完整 execution 的删除仍须遵守原停止、归档与文件清理条件，真实删除及刷盘错误继续传播。
+Controller 不设媒体或元数据累计额度，不按卷剩余空间或未来写入峰值准入，也不为此扫描媒体目录或登记未落盘预留。原 `stateDirectory/controller/media/budget.sqlite` 不再访问；已有文件可留存。真实文件系统与 SQLite 错误继续按原确定或未知结果语义暴露。关闭 Controller 不释放 native/resume 及未知引用；完整 execution 的删除仍须遵守原停止、归档与文件清理条件，真实删除及刷盘错误继续传播。
 
 Decimal 用规范文本/bigint比较，仅在限额内转换文件API安全整数；正文受 schema3 128 MiB timeline 与100000 entries约束，图片原件按需读取，不预载全部图片。prepare 先持久包含完整 spec 和随机私有路径的 receiving 行，再创建并刷盘空文件和目录，全部成功才返回零偏移；创建或刷盘失败仍保留可精确回收的路径。缺行的旧随机文件不能凭猜测删除，仍计入实际占用。块顺序为 write → fsync → immediate transaction提交块及offset → 回执。恢复截断并刷盘未提交尾部；文件短于确认offset或已提交块hash损坏为明确失败，不倒退偏移冒充成功。rename持久源/目标目录，Windows实际flush/rename持久性须独立验证。
 
@@ -639,11 +639,11 @@ native accepted/confirmed、turn结束或进程停止都不证明未来不再读
 
 ### Controller 准入与回收
 
-每execution图片元数据最多10000 preparation attempts、1000 resource槽、100000 occurrences、200000 chunk边界、128MiB逻辑编码；另留8MiB只供已有结算/失败/GC。新增前预留整项最坏增量；碎块耗尽元数据明确拒绝，不能省略记录。终态且无重传资格的块历史可折叠tombstone，不能复用已终结身份。
+图片 preparation 不按累计行数或元数据总量拒绝；单条合法性、单次字节上限和协议计数限制仍生效。终态且无重传资格的块历史可折叠 tombstone，不能复用已终结身份。
 
 媒体写入不按卷空闲水位、来源或验证副本的未落盘预留、wire 暂存增长预测、历史预留或 execution 累计大小拒绝；真实 ENOSPC、权限、写入、提交及关闭错误仍须暴露。准备记录、文件、原身份和引用仍按原事务与耐久发布顺序保存；崩溃恢复须证明原writer停止并按文件/journal对账，不能凭TTL删除仍有引用的材料。
 
-每Controller最多2媒体块/1decoder，全局最多16媒体块/2decoder；Controller 媒体存储为 upload completion、native 与 Markdown staging 共用同一 FIFO decoder 准入，最多 32 项固定元数据等待，不排队保留块 body；单个 decoder 正忙时等待，队列满才拒绝新项。等待使用原有已持久 preparation/capture 身份与媒体预算，取得槽后才复制或解码，并复核当前 attempt、目标及原位置 ACK。取消移除尚未开始的项，活跃项必须等待实际 decoder 退出才归还槽；关闭媒体存储取消并 join 全部等待项、decoder 与来源 writer。暂时容量拒绝保持原服务媒体请求pending，按同requestId及原bytes再次offer；不能永久缓存rate_limited而使原upload无法完成。来源retry的reserved状态和原retry_capture请求在同事务持久化。控制/原生回执优先，块间让出事件循环；连接级请求失效时撤销其等待项，已经合法读取的本地封存可离线完成，提交仍等待当前连接与完整历史。实际活跃工作退出后才返槽。真实存储失败继续暴露，保留原身份与清理责任。长reader阻碍checkpoint时停止新媒体写入，留结算余量。
+每Controller最多2媒体块/1decoder，全局最多16媒体块/2decoder；Controller 媒体存储为 upload completion、native 与 Markdown staging 共用同一 FIFO decoder 准入，最多 32 项固定元数据等待，不排队保留块 body；单个 decoder 正忙时等待，队列满才拒绝新项。等待使用原有已持久 preparation/capture 身份，取得槽后才复制或解码，并复核当前 attempt、目标及原位置 ACK。取消移除尚未开始的项，活跃项必须等待实际 decoder 退出才归还槽；关闭媒体存储取消并 join 全部等待项、decoder 与来源 writer。暂时容量拒绝保持原服务媒体请求pending，按同requestId及原bytes再次offer；不能永久缓存rate_limited而使原upload无法完成。来源retry的reserved状态和原retry_capture请求在同事务持久化。控制/原生回执优先，块间让出事件循环；连接级请求失效时撤销其等待项，已经合法读取的本地封存可离线完成，提交仍等待当前连接与完整历史。实际活跃工作退出后才返槽。真实存储失败继续暴露，保留原身份与清理责任。
 
 物理去重仅同origin/owner/Session、hash+length+MIME候选再核全bytes；不合并逻辑resource计费、imageId/uploadId/actor资格。带pin原件/native与未提交唯一来源不淘汰。服务已有原件且无pin的本地object可LRU，保服务descriptor与出现映射。
 

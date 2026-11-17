@@ -40,8 +40,7 @@ export type NativeImageRuntime = {
   writeState(key: string, value: unknown): void;
   createSpool(maximumBytes: number): NativeMediaSpool;
   indexDirectory(): string;
-  reserveIndex(additionalBytes: number): void;
-  acquireIndexReservation(additionalBytes: number, owner?: ProcessProof): { release(): void };
+  acquireIndexLease(owner?: ProcessProof): { release(): void };
 };
 export type ProviderOptions = {
   toolLaunch?: import("../../../platform/tool-executables.js").ResolvedToolLaunch;

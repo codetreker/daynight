@@ -257,7 +257,7 @@ test("v11 capture migration preserves over-limit stored values while new input r
     const publication = JSON.parse((read.prepare("SELECT value FROM native_input_publications WHERE operation_id=?").get(operation) as { value: string }).value);
     expect(publication.slots[0].state).toEqual(state);
     expect(publication.receipt).toEqual({ original: true });
-    const source = createImageCaptureSource(read, { read: action => action(), write: action => action() }, () => ({} as never), {} as never);
+    const source = createImageCaptureSource(read, { read: action => action(), write: action => action() }, () => ({} as never));
     expect(source.getImageCaptureRequest(request.captureId)).toEqual(request);
     expect(() => source.registerImageCaptureRequest(request as ImageCaptureRequest)).toThrow("Invalid Daynight image protocol value");
   } finally { read.close(); }

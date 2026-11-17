@@ -405,6 +405,78 @@ func TestStartInvalidBrowserRequestUsesLocalErrorPage(t *testing.T) {
 	}
 }
 
+func TestLocalhostAuthorizationUsesRealClientRules(t *testing.T) {
+	for _, tc := range []struct {
+		name, registered, requested string
+		valid                       bool
+	}{
+		{"port selection", "http://localhost/callback", "http://localhost:49416/callback", true},
+		{"fixed port", "http://localhost:123/callback", "http://localhost:49416/callback", false},
+		{"different path", "http://localhost/callback", "http://localhost:49416/other", false},
+	} {
+		for _, accept := range []string{"application/json", "text/html"} {
+			t.Run(tc.name+"/"+accept, func(t *testing.T) {
+				f := newOAuthHTTPFixture(t)
+				admission := core.PublicAdmission{Writer: f.Store}
+				raw, err := json.Marshal(core.ClientMetadata{ClientID: "local", RedirectURIs: []string{tc.registered}, TokenEndpointAuthMethod: "none"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				clients, err := service.NewClients(f.Store, admission, map[string][]byte{"local": raw})
+				if err != nil {
+					t.Fatal(err)
+				}
+				svc, err := service.NewAuthorizations(f.Store, clients, admission, f.Origin)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.valid {
+					plan := newHTTPCallPlan(t, map[string]int{"insert": 1})
+					dao := &oauthHTTPAuthorizationDAO{t: t, plan: plan, insert: func(_ context.Context, a store.OAuthAuthorization, _ int, _ time.Time) (bool, error) {
+						var frozen core.ValidatedClient
+						if json.Unmarshal(a.Client, &frozen) != nil || frozen.SelectedExactRedirect != tc.requested || a.RedirectURI != tc.requested || len(frozen.Redirects) != 1 || frozen.Redirects[0] != tc.registered {
+							t.Error("authorization did not freeze the actual complete redirect")
+						}
+						return true, nil
+					}}
+					f.Store.WriteAuthorizationsCall = func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error) {
+						err := fn(oauthHTTPAuthorizationScope{authorizations: dao})
+						return oauthHTTPResult(t, store.TransactionCommitted, err, false)
+					}
+				}
+				adapter := NewAuthorizationHTTP(svc, f.Auth)
+				adapter.SetStartErrorPage(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte("local error"))
+				}))
+				digest := sha256.Sum256([]byte(strings.Repeat("v", 43)))
+				q := url.Values{"client_id": {"local"}, "redirect_uri": {tc.requested}, "response_type": {"code"}, "scope": {core.Scope}, "resource": {f.Origin + "/mcp"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(digest[:])}, "code_challenge_method": {"S256"}}
+				r := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+				r.RemoteAddr = "127.0.0.1:12345"
+				r.Header.Set("Accept", accept)
+				w := httptest.NewRecorder()
+				adapter.Start(w, r)
+				if tc.valid {
+					if w.Code != http.StatusSeeOther || !strings.HasPrefix(w.Header().Get("Location"), "/oauth/consent?request=") {
+						t.Fatalf("valid localhost: %d %v", w.Code, w.Header())
+					}
+				} else {
+					if w.Code != http.StatusBadRequest || w.Header().Get("Location") != "" {
+						t.Fatalf("untrusted redirect: %d %v", w.Code, w.Header())
+					}
+					if accept == "text/html" {
+						if w.Header().Get("X-OAuth-Error") != "invalid_client" || w.Body.String() != "local error" {
+							t.Fatal("browser invalid_client mapping changed")
+						}
+					} else if !strings.Contains(w.Body.String(), `"error":"invalid_client"`) {
+						t.Fatal("JSON invalid_client mapping changed")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestOAuthAuthorizationControlledHTTP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

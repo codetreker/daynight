@@ -51,6 +51,7 @@ func TestNewClientsBindsDefaultOperationsAndAdmissionInstance(t *testing.T) {
 		t.Fatal("constructor wiring incomplete")
 	}
 	sameFunction(t, first.operations.parseMetadata, core.ParseClientMetadata)
+	sameFunction(t, first.operations.parseCIMDMetadata, core.ParseCIMDClientMetadata)
 	sameFunction(t, first.operations.parseStoredMetadata, core.ParseStoredClientMetadata)
 	sameFunction(t, first.operations.freezeClient, core.FreezeClient)
 	for _, item := range []struct {
@@ -437,7 +438,7 @@ func TestClientsResolveCIMDUsesValidationCallbackAndDeadline(t *testing.T) {
 			want.ClientName = metadata.ClientName
 			want.Redirects = append([]string(nil), metadata.RedirectURIs...)
 			want.MetadataDeadline = deadline
-			c.operations.parseMetadata = func(data []byte, id string) (core.ClientMetadata, error) {
+			c.operations.parseCIMDMetadata = func(data []byte, id string) (core.ClientMetadata, error) {
 				f.step("parse")
 				f.equal(data, raw)
 				f.equal(id, requestedID)

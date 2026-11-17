@@ -49,7 +49,7 @@ const fixture = async (mode = "normal", history: unknown[] = []) => {
     onSpawn: value => { child = value; }, onState: value => states.push(value), onTimeline: entry => entries.push(structuredClone(entry)), onInputObserved: observation => { observations.push(observation); return true; },
     onImageOccurrence: () => true, imageOccurrenceAcknowledged: () => true,
     imageRuntime: { readState: key => state.get(key) ?? null, writeState: (key, value) => { state.set(key, structuredClone(value)); }, getIntent: id => intents.get(id) ?? null,
-      createSpool: maximum => openNativeMediaSpool(join(root, `spool-${sequence++}`), maximum, () => {}, () => {}), indexDirectory: () => root, reserveIndex: () => {}, acquireIndexReservation: () => ({ release() {} }) },
+      createSpool: maximum => openNativeMediaSpool(join(root, `spool-${sequence++}`), maximum, () => {}, () => {}), indexDirectory: () => root, acquireIndexLease: () => ({ release() {} }) },
     prepareImageCapture: async () => {},
     submitImageCapture: async ({ request, attemptId, outcome }) => { captures.push(request); return { captureId: request.captureId, attemptId, occurrence: request.occurrence, revision: "1", state: outcome.kind === "failed" ? "failed" : "committed", resourceId: outcome.kind === "failed" ? null : request.locator.kind === "resource" ? request.locator.resourceId : randomUUID(), resource: null, error: outcome.kind === "failed" ? outcome.error : null }; },
     queryImageCapture: vi.fn(), stageImageCapture: vi.fn(async input => ({ mediaType: "image/png" as const, byteLength: input.byteLength, sha256: input.sha256, width: 1, height: 1, frameCount: 1 })),

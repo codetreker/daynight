@@ -21,7 +21,8 @@ existing parsers rather than maintaining a separate persistent codec; ordinary
 protocol input retains the strict policy. Real storage and transaction failures
 remain visible.
 
-Ordinary new writes and stopped maintenance retain metadata admission. The
+The subsequent [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission
+from ordinary writes and stopped maintenance. The
 [media ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
 separately removes cumulative media reservations from those paths; the later
 [free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)

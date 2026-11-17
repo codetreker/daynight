@@ -9,7 +9,6 @@ import { withStoppedControllerStorage } from "./stopped-storage.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { parseSourceEvent, RELAY_LIMITS, type SourceEvent } from "../../session/controller-protocol.js";
 import { sessionBinding } from "../../session/protocol.js";
-import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 
 export type StoppedSourceTail = { sourceEpoch: string; batchId: string; events: readonly SourceEvent[] };
@@ -78,9 +77,6 @@ export const replayStoppedControllerHistory = async (options: {
       if (!events.length) throw new Error("Stopped history has no complete unacknowledged event tail.");
       const batch = { sourceEpoch: ticket.executionId, batchId, events };
       const encoded = JSON.stringify(batch);
-      // The stopped tail is a settlement copy; keep room for SQLite pages
-      // and their durability journal without discarding the original outbox.
-      controllerMetadataBudget(journalPath, db).assert(Buffer.byteLength(encoded) * 2 + 65536, true);
       db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(stateKey, encoded);
       return batch;
     }));

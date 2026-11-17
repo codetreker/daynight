@@ -23,8 +23,8 @@ The ledger removal originally retained the independent metadata policy,
 512 MiB free-space watermark and remaining-work disk peak estimates. The later
 [free-space and peak admission removal](2026-11-16-controller-free-space-admission-removal.md)
 removes that watermark and those estimates, including media scans and unwritten
-byte accounting used only for prediction. Metadata admission remains in force;
-maintenance checks actual metadata after cleanup.
+byte accounting used only for prediction. The later [metadata admission removal](2026-11-16-controller-metadata-admission-removal.md)
+removes the remaining cumulative metadata policy.
 
 Execution, Session, claim, generation, attempt and native identities retain
 their existing owners. Storage permits, reader barriers, stopping evidence,
@@ -74,7 +74,8 @@ failures continue to fail the operation. Existing media and execution
 files retain their original lifecycle and are not swept to satisfy admission.
 
 Single-image and message limits, archive and protocol limits, decoder memory and
-concurrency, outbox backpressure, logical content limits and metadata admission
-remain independently owned policies. Reintroducing a local
+concurrency, outbox backpressure, logical content limits remain independently owned policies. The later
+[metadata admission removal](2026-11-16-controller-metadata-admission-removal.md)
+removes the remaining cumulative metadata policy. Reintroducing a local
 cumulative quota would require an explicit policy decision and new accounting
 ownership, rather than reactivating stale `allocations` rows.

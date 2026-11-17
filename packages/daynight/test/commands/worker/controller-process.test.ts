@@ -101,10 +101,10 @@ test("keeps the original launch unsubmitted while another writer owns storage", 
   expect(native.spawn).toHaveBeenCalledOnce();
 });
 
-test("releases preflight storage after a capacity wait and submits only after admission", async () => {
-  const f = await fixture(), cause = new Error("Physical storage reservation is unavailable.");
-  native.prepare.mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause });
-  await expect(launchControllerProcess(f.options)).rejects.toMatchObject({ reason: "physical_capacity", cause });
+test("releases preflight storage after a reader wait and submits only after admission", async () => {
+  const f = await fixture(), cause = new Error("Previous readers remain active.");
+  native.prepare.mockReturnValueOnce({ kind: "waiting", reason: "reader_busy", cause });
+  await expect(launchControllerProcess(f.options)).rejects.toMatchObject({ reason: "reader_busy", cause });
   expect(native.spawn).not.toHaveBeenCalled();
   expect(f.order).not.toContain("submitting");
   await expect(launchControllerProcess(f.options)).resolves.toBe(f.snapshot);

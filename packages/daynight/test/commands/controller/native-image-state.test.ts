@@ -95,37 +95,46 @@ test("large wire allowances retain only the bytes actually written", async () =>
   } finally { await journal.stopMedia(); journal.close(); }
 });
 
-test("an index writer owns a durable shared metadata reservation until it explicitly joins", async () => {
+test("an index writer owns a durable lease until it explicitly joins", async () => {
   const f = await fixture(); let journal = f.open();
   try {
-    const lease = journal.acquireNativeIndexReservation(64 * 1_048_576);
-    expect(() => journal.media().reserveNativeIndex(80 * 1_048_576)).toThrow(/metadata/);
-    expect(() => journal.acquireNativeIndexReservation(1)).toThrow(/writer/);
+    const lease = journal.acquireNativeIndexLease();
+    expect(() => journal.acquireNativeIndexLease()).toThrow(/writer/);
     lease.release();
-    expect(() => journal.media().reserveNativeIndex(80 * 1_048_576)).not.toThrow();
-    journal.acquireNativeIndexReservation(64 * 1_048_576);
+    journal.acquireNativeIndexLease();
     await journal.stopMedia();
   } finally { journal.close(); }
   journal = f.open();
   try {
-    expect(() => journal.media().reserveNativeIndex(80 * 1_048_576)).toThrow(/metadata/);
-    expect(() => journal.acquireNativeIndexReservation(1)).toThrow(/writer/);
+    expect(() => journal.acquireNativeIndexLease()).toThrow(/writer/);
   } finally { await journal.stopMedia(); journal.close(); }
 });
 
-test("index reservations recover only after the original writer's process identity is proven stopped", async () => {
+test("a stale writer cannot release another writer's lease", async () => {
+  const f = await fixture(), journal = f.open();
+  try {
+    const lease = journal.acquireNativeIndexLease();
+    const db = new Database(f.file);
+    try { db.prepare("UPDATE image_runtime_state SET value=? WHERE key='native_index_reservation'").run(JSON.stringify({ id: randomUUID() })); }
+    finally { db.close(); }
+    expect(() => lease.release()).toThrow(/identity/);
+    expect(() => journal.acquireNativeIndexLease()).toThrow(/writer/);
+  } finally { await journal.stopMedia(); journal.close(); }
+});
+
+test("index leases recover only after the original writer's process identity is proven stopped", async () => {
   const f = await fixture(); let journal = f.open();
   const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
   const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
   try {
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     const owner = await captureProcessProof(child.pid!);
-    journal.acquireNativeIndexReservation(64 * 1_048_576, owner);
+    journal.acquireNativeIndexLease(owner);
     journal.close(); journal = f.open();
-    await expect(journal.reconcileNativeIndexReservation()).rejects.toThrow(/writer/);
-    expect(() => journal.acquireNativeIndexReservation(1)).toThrow(/writer/);
+    await expect(journal.reconcileNativeIndexLease()).rejects.toThrow(/writer/);
+    expect(() => journal.acquireNativeIndexLease()).toThrow(/writer/);
     child.stdin!.end(); await exited;
-    await journal.reconcileNativeIndexReservation();
-    const next = journal.acquireNativeIndexReservation(80 * 1_048_576); next.release();
+    await journal.reconcileNativeIndexLease();
+    const next = journal.acquireNativeIndexLease(); next.release();
   } finally { child.kill(); await exited; await journal.stopMedia(); journal.close(); }
 });
