@@ -57,12 +57,20 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
     if (path === `/api/v1/projects/${projectId}/members`) return send({ items: [], nextCursor: null, actorAccess: directAccessFixture(projectId) });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
     if (path === root) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
-    if (path === `${root}/sessions`) { state.historyReads++; if (state.holdHistory) await state.holdHistory; if (state.historyError) return failure(state.historyError); return send({ items: state.items, nextCursor: null }); }
+    if (path === `${root}/sessions`) {
+      state.historyReads++; if (state.holdHistory) await state.holdHistory; if (state.historyError) return failure(state.historyError);
+      if (scenario === 'herdr') {
+        const terminalArchive = v2('valid-archive', url.origin), bytes = JSON.stringify(terminalArchive);
+        const terminalRecord: SessionHistoryItem = { ...record, executionGeneration: terminalArchive.executionGeneration, agentControlMode: 'herdr', contentKind: 'terminal_recording', archive: state.archiveState === 'pending'
+          ? { state: 'pending', sha256: null, byteLength: null, completeness: null }
+          : { state: 'ready', sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: String(Buffer.byteLength(bytes)), completeness: terminalArchive.completeness } };
+        return url.searchParams.has('cursor') ? send({ items: [terminalRecord], nextCursor: null }) : send({ items: [other], nextCursor: 'next' });
+      }
+      return send({ items: state.items, nextCursor: null });
+    }
     if (scenario === 'herdr') {
-      const registration = v2('valid-registration', url.origin), owner = registration.payload.owner;
       const terminalArchive = v2('valid-archive', url.origin), bytes = JSON.stringify(terminalArchive);
       const status = { ...v2('valid-status', url.origin), payload: { ...v2('valid-status', url.origin).payload, sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: String(Buffer.byteLength(bytes)), completeness: terminalArchive.completeness, finalizationId: terminalArchive.finalizationId } };
-      if (path === `${root}/sessions/current`) { state.currentReads++; return send({ status: 'registered', protocol: registration.protocol, schemaVersion: 2, projectionVersion: 1, sessionId: source.sessionId, claimId: source.claimId, executionGeneration: '1', agentControlMode: 'herdr', contentKind: 'terminal_recording', owner, binding: registration.payload.binding, connectionEpoch: '1', connected: false, capabilities: registration.payload.capabilities, control: v2('valid-control', url.origin).payload, snapshot: v2('valid-snapshot', url.origin).payload, ledger: v2('valid-active-ledger', url.origin).payload, archive: status.payload, recording: [] }); }
       if (path === `${root}/sessions/${source.sessionId}/archive`) { state.archiveReads++; return send(state.archiveState === 'pending' ? v2('valid-status-pending', url.origin) : status); }
       if (path === `${root}/sessions/${source.sessionId}/archive/content`) return send(terminalArchive);
     }
@@ -201,6 +209,7 @@ test('completed Herdr reads its bound terminal archive without acquiring control
   await expect(page.locator('.terminal-recording input[type="range"]')).toBeVisible();
   await noSelector(page); await readonly(page);
   await page.screenshot({ path: info.outputPath('herdr-readonly-390.png') });
+  expect(state.historyReads).toBeGreaterThanOrEqual(2); expect(state.currentReads).toBe(0);
   expect(state.writes).toEqual([]); expect(state.channels).toBe(0); expect(state.sent).toEqual([]);
 });
 
@@ -222,6 +231,7 @@ test('terminal recording native zoom Escape cancels before leaving fullscreen', 
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false'); await expect(toggle).toBeFocused();
+  expect(state.historyReads).toBeGreaterThanOrEqual(2); expect(state.currentReads).toBe(0);
   expect(state.writes).toEqual([]); expect(state.channels).toBe(0); expect(state.sent).toEqual([]);
   await info.attach('native-recording-cancel', { body: JSON.stringify({ zoom: '125', height: 32, nativePopupObserved: true, firstEscapeRetainsFullscreen: true, secondEscapeRestoresFocus: true }), contentType: 'application/json' });
 });
