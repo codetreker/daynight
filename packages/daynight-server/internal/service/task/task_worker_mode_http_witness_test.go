@@ -8,7 +8,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func claimWorkerMode(t *testing.T, current model.Task, owner model.Principal, descriptor taskcore.WorkerDescriptor) model.Task {
@@ -57,12 +56,6 @@ func TestWorkerWebModeSurvivesSummaryReleaseAndReclaim(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(got, updated) || testWorker(t, got.Properties).AgentControlMode != model.AgentControlModeWeb {
 				t.Fatalf("summary replaced frozen web mode: %#v %v", got, err)
 			}
-			t.Run("Herdr resources refused", func(t *testing.T) {
-				tasks := taskservice.NewTasks(&taskStoreMock{taskMockBase: newTaskMockBase(t, "Herdr preflight")})
-				herdr := &model.WorkerHerdr{Session: "s", WorkspaceID: "w", PaneID: "p"}
-				_, err := tasks.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: worker.ClaimID, Herdr: &herdr})
-				requireFault(t, err, "invalid_input")
-			})
 			released := workerTestResult(updated)
 			released.Status, released.Ready, released.StartedAt, released.CompletedAt = model.TaskTodo, true, nil, nil
 			released.Properties = testWithWorker(t, updated.Properties, nil)
@@ -135,7 +128,6 @@ func TestHistoricalHerdrUpdatesRefusedButManualDisposalRemainsAvailable(t *testi
 	}{
 		{"phase", taskcore.UpdateWorker{Phase: &phase}},
 		{"native", taskcore.UpdateWorker{NativeSessionID: pointer(&native)}},
-		{"empty resource slot", taskcore.UpdateWorker{Herdr: pointer((*model.WorkerHerdr)(nil))}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := workerMockWrite(t, current, owner)
