@@ -281,7 +281,13 @@ func (f *configurationHTTPFixture) report(t *testing.T, current model.WorkerConf
 			called("desired")
 			configurationHTTPCheck(t, []string{user, worker}, []string{f.handler.principal.UserID, f.workerID})
 			configurationHTTPCheck(t, revision, int64(1))
-			configurationHTTPCheck(t, value, *expectedExchange.Bootstrap)
+			expectedValue := *expectedExchange.Bootstrap
+			if expectedValue.ArchiveSessions == nil {
+				enabled := true
+				expectedValue.ArchiveSessions = &enabled
+			}
+			expectedValue.PreserveArchiveSessions = false
+			configurationHTTPCheck(t, value, expectedValue)
 			return configurationHTTPCopy(t, *saved), nil
 		}
 	}

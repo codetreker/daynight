@@ -138,3 +138,77 @@ func TestStoredObservationBudgetIncludesPrivateSlot(t *testing.T) {
 		t.Fatalf("inline fits but stored slot exceeds budget: %v", err)
 	}
 }
+
+func TestStoredArchiveObservationPreservesOrderAndLegacyProjection(t *testing.T) {
+	mode := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "agentControlMode"}, AppliedValue: json.RawMessage(`"web"`)}
+	archive := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "archiveSessions"}, AppliedValue: json.RawMessage(`false`)}
+	base := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "maxConcurrent"}, AppliedValue: json.RawMessage(`3`)}
+	for _, items := range [][]model.WorkerConfigurationItem{{archive, mode, base}, {mode, archive, base}, {base, archive, mode}, {base, mode, archive}} {
+		value := model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: model.WorkerConfigurationObservation{Items: items}}
+		var encoded bytes.Buffer
+		if _, err := EncodeObservation(&encoded, value, math.MaxInt64); err != nil {
+			t.Fatal(err)
+		}
+		got, err := DecodeStoredObservation(encoded.Bytes())
+		if err != nil || !reflect.DeepEqual(got, &value) {
+			t.Fatalf("round trip %v: %+v %v", items, got, err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded.Bytes(), &fields); err != nil {
+			t.Fatal(err)
+		}
+		delete(fields, "archiveSessionsObservation") // Old decoder ignores the unknown slot.
+		legacyJSON, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy, err := DecodeStoredObservation(legacyJSON)
+		var expected []model.WorkerConfigurationItem
+		for _, item := range items {
+			if item.Key.Kind != "archiveSessions" {
+				expected = append(expected, item)
+			}
+		}
+		if err != nil || legacy == nil || !reflect.DeepEqual(legacy.Items, expected) {
+			t.Fatalf("legacy projection %s: %+v %v", legacyJSON, legacy, err)
+		}
+	}
+	for _, slot := range []string{`null`, `{}`, `{"index":-1,"item":{"key":{"kind":"archiveSessions"}}}`, `{"index":1,"item":{"key":{"kind":"archiveSessions"}}}`, `{"index":0,"item":{"key":{"kind":"archiveSessions","projectId":"p"}}}`, `{"index":0,"item":{"key":{"kind":"agentControlMode"}}}`} {
+		if got, err := DecodeStoredObservation([]byte(`{"items":[],"archiveSessionsObservation":` + slot + `}`)); err == nil || got != nil {
+			t.Fatalf("accepted malformed slot %s: %+v %v", slot, got, err)
+		}
+	}
+	duplicate := model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{archive, archive}}}
+	if _, err := EncodeObservation(io.Discard, duplicate, math.MaxInt64); err == nil {
+		t.Fatal("encoded duplicate archive evidence")
+	}
+	if got, err := DecodeStoredObservation([]byte(`{"items":[{"key":{"kind":"archiveSessions"}}],"archiveSessionsObservation":{"index":0,"item":{"key":{"kind":"archiveSessions"}}}}`)); err == nil || got != nil {
+		t.Fatalf("accepted duplicate stored archive evidence: %+v %v", got, err)
+	}
+}
+
+func TestStoredObservationBothSlotsFitExistingReserve(t *testing.T) {
+	at := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	failure := &model.WorkerConfigurationFailure{Code: "invalid_configuration", Category: "repository", Phase: "validate", OccurredAt: at}
+	item := func(kind, value string) model.WorkerConfigurationItem {
+		return model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: kind}, TargetRevision: "9223372036854775807", AppliedValue: json.RawMessage(value), State: "error", Error: failure, LastFailure: failure, NextAttemptAt: &at}
+	}
+	items := make([]model.WorkerConfigurationItem, 1024)
+	for i := range items {
+		items[i] = item("projectNative", `null`)
+	}
+	items = append(items, item("archiveSessions", `false`), item("agentControlMode", `"herdr"`))
+	observation := model.WorkerConfigurationObservation{BaseRevision: "9223372036854775807", DesiredRevision: "9223372036854775807", Items: items}
+	public, err := json.Marshal(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored bytes.Buffer
+	n, err := EncodeObservation(&stored, model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: observation, ReportedAt: at}, math.MaxInt64)
+	if err != nil || n-int64(len(public)) > 512 {
+		t.Fatalf("reportedAt and both slots exceed reserve: public=%d stored=%d err=%v", len(public), n, err)
+	}
+	if _, err := EncodeObservation(io.Discard, model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: observation, ReportedAt: at}, n-1); err == nil {
+		t.Fatal("combined slots bypassed the stored byte budget")
+	}
+}

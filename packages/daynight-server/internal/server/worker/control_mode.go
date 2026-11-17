@@ -26,6 +26,7 @@ type projectedConfiguration struct {
 	model.WorkerConfigurationWire
 	AgentControlMode any `json:"agentControlMode,omitempty"`
 	ToolPaths        any `json:"toolPaths,omitempty"`
+	ArchiveSessions  any `json:"archiveSessions,omitempty"`
 }
 
 type projectedDesiredConfiguration struct {
@@ -47,6 +48,9 @@ func projectDesiredConfiguration(desired *model.WorkerDesiredConfiguration, capa
 		// An interface holding a typed nil emits explicit null; omission belongs only to legacy clients.
 		value.AgentControlMode = desired.Value.AgentControlMode
 	}
+	if capabilities.ArchiveSessions {
+		value.ArchiveSessions = desired.Value.ArchiveSessions
+	}
 	return &projectedDesiredConfiguration{Revision: desired.Revision, UpdatedAt: desired.UpdatedAt, Value: value}
 }
 
@@ -58,11 +62,11 @@ type projectedConfigurationResource struct {
 
 func projectConfiguration(resource model.WorkerConfigurationResource, capabilities workerprotocol.Capabilities) projectedConfigurationResource {
 	observation := resource.Observation
-	if !capabilities.ControlMode && observation != nil {
+	if (!capabilities.ControlMode || !capabilities.ArchiveSessions) && observation != nil {
 		copied := *observation
 		copied.Items = make([]model.WorkerConfigurationItem, 0, len(observation.Items))
 		for _, item := range observation.Items {
-			if item.Key.Kind != "agentControlMode" {
+			if (item.Key.Kind != "agentControlMode" || capabilities.ControlMode) && (item.Key.Kind != "archiveSessions" || capabilities.ArchiveSessions) {
 				copied.Items = append(copied.Items, item)
 			}
 		}

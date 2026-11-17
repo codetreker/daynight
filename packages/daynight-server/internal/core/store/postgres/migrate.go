@@ -240,6 +240,9 @@ var githubAppsSQL string
 //go:embed migrations/077_github_app_cutover.sql
 var githubAppCutoverSQL string
 
+//go:embed migrations/078_worker_archive_sessions.sql
+var workerArchiveSessionsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -325,6 +328,7 @@ var schemaMigrations = []migration{
 	{version: 75, sql: previewSSOSQL},
 	{version: 76, sql: githubAppsSQL},
 	{version: 77, sql: githubAppCutoverSQL},
+	{version: 78, sql: workerArchiveSessionsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

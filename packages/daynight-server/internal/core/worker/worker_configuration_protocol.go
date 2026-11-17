@@ -17,12 +17,16 @@ func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerpr
 	if capabilities.ToolPaths {
 		keys = append(keys, "toolPaths")
 	}
+	if capabilities.ArchiveSessions {
+		keys = append(keys, "archiveSessions")
+	}
 	if _, err := configurationObject(raw, "configuration", false, keys...); err != nil {
 		return model.WorkerConfiguration{}, err
 	}
 	value, err := ParseWorkerConfiguration(raw)
 	value.PreserveAgentControlMode = !capabilities.ControlMode
 	value.PreserveToolPaths = !capabilities.ToolPaths
+	value.PreserveArchiveSessions = !capabilities.ArchiveSessions
 	return value, err
 }
 
@@ -60,6 +64,10 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 			if item.Key.Kind == "agentControlMode" {
 				if !capabilities.ControlMode {
 					return nil, invalidInput("Agent control mode observations require the control mode capability.")
+				}
+			} else if item.Key.Kind == "archiveSessions" {
+				if !capabilities.ArchiveSessions {
+					return nil, invalidInput("Archive sessions observations require the archive sessions capability.")
 				}
 			} else {
 				legacyItems++

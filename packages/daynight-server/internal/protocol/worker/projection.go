@@ -94,12 +94,12 @@ func EncodeItem(w io.Writer, snapshot model.WorkerSnapshot, max int64) (int64, e
 	return measure.JSON(w, "worker", max, Detail(snapshot), false)
 }
 
-// EncodeTelemetry and the configuration encoders use the exact JSON shapes
-// stored by the Worker DAO; those values do not carry a terminal newline.
+// EncodeTelemetry uses the exact JSON shape stored by the Worker DAO.
 func EncodeTelemetry(w io.Writer, value model.WorkerTelemetry, max int64) (int64, error) {
 	return measure.JSON(w, "worker.telemetry", max, model.WorkerTelemetryWire(value), false)
 }
 func EncodeConfiguration(w io.Writer, value model.WorkerConfiguration, max int64) (int64, error) {
+	// The fixed-size archive column is separate from the historical JSON budget.
 	return measure.JSON(w, "worker.configuration", max, model.WorkerConfigurationWire(value), false)
 }
 

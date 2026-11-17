@@ -2849,6 +2849,14 @@ application reports have separate CAS revisions. Partial outcomes preserve real
 applied values and closed failure metadata; a target save does not claim that
 the machine applied it. Reports without the marker keep their original format.
 
+`Daynight-Worker-Archive-Sessions: 1` independently negotiates the boolean
+`archiveSessions` target and its application observation. Existing and new
+Worker rows default to true. A legacy full PUT preserves the current value in
+the locked target transaction; an unnegotiated response omits the field and
+observation item. The target is stored in the `archive_sessions` column so an
+older service's JSON replacement cannot erase it. A saved target is not evidence
+that a Worker has applied it or released recording files.
+
 Configuration reads do not use the snapshot recent window or renew liveness.
 The authenticated account owns admission; active task claims are not a
 configuration prerequisite. No task fields, acquisition constraints or recovery
