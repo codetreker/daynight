@@ -87,6 +87,40 @@ const expectIconColumn = async (sidebar: Locator) => {
   }
 };
 
+const expectTeamSwitchGeometry = async (selector: Locator, height: number, expanded: boolean) => {
+  const geometry = await selector.evaluate(element => {
+    const button = element.getBoundingClientRect();
+    const avatar = element.querySelector<HTMLElement>('.team-avatar')!.getBoundingClientRect();
+    const arrow = element.querySelector<SVGSVGElement>('svg.team-chevron');
+    const arrowBox = arrow?.getBoundingClientRect();
+    const path = arrow?.querySelector('path');
+    const drawing = path?.getBBox();
+    const name = element.querySelector<HTMLElement>('.team-switch-name')!.getBoundingClientRect();
+    const center = (box: DOMRect) => (box.top + box.bottom) / 2;
+    return {
+      width: button.width, height: button.height, avatar: [avatar.width, avatar.height],
+      avatarCenter: center(avatar) - center(button), nameCenter: center(name) - center(button),
+      arrowCenter: arrowBox ? center(arrowBox) - center(button) : null,
+      arrowSize: arrowBox ? [arrowBox.width, arrowBox.height] : null,
+      viewBox: arrow?.getAttribute('viewBox'), hidden: arrow?.getAttribute('aria-hidden'), focusable: arrow?.getAttribute('focusable'),
+      drawingCenter: drawing ? [drawing.x + drawing.width / 2, drawing.y + drawing.height / 2] : null,
+    };
+  });
+  expect(geometry.height).toBe(height);
+  if (height === 44) expect(geometry.width).toBeGreaterThanOrEqual(44);
+  expect(geometry.avatar).toEqual([24, 24]);
+  expect(Math.abs(geometry.avatarCenter)).toBeLessThanOrEqual(1);
+  expect(geometry.viewBox).toBe('0 0 12 12');
+  expect(geometry.hidden).toBe('true');
+  expect(geometry.focusable).toBe('false');
+  if (expanded) {
+    expect(geometry.drawingCenter).toEqual([6, 6]);
+    expect(Math.abs(geometry.nameCenter)).toBeLessThanOrEqual(1);
+    expect(geometry.arrowSize).toEqual([12, 12]);
+    expect(Math.abs(geometry.arrowCenter!)).toBeLessThanOrEqual(1);
+  } else await expect(selector.locator('.team-chevron')).toBeHidden();
+};
+
 const expectIconState = async (link: Locator, color: string) => {
   await expect(link.locator('.nav-icon svg')).toHaveCSS('color', color);
   await expect(link.locator('.nav-text')).toHaveCSS('color', color);
@@ -116,11 +150,13 @@ for (const width of [320, 390, 768, 1360]) {
         expect((await sidebar.boundingBox())!.width).toBe(60);
         await expect(sidebar.getByRole('link', { name: chinese ? '进行中的任务' : 'In-progress tasks', exact: true })).toBeVisible();
         await expectIconColumn(sidebar);
+        await expectTeamSwitchGeometry(sidebar.locator('.team-switch'), 44, false);
         await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(220);
       } else expect((await sidebar.boundingBox())!.width).toBe(190);
       await expectIconColumn(sidebar);
       const selector = sidebar.locator('.team-switch');
+      await expectTeamSwitchGeometry(selector, width <= 740 ? 44 : 36, true);
       await expect(selector).toHaveAttribute('title', new RegExp(chinese ? '团队' : 'Team'));
       await expect(selector).toHaveAttribute('title', new RegExp(longName.trim().slice(0, 20)));
       await expect(selector).toHaveAttribute('aria-label', chinese ? `切换 Team: 团队, ${longName}` : `Switch Team: Team, ${longName}`);
@@ -190,7 +226,7 @@ for (const width of [320, 390, 768, 1360]) {
         await page.getByRole('button', { name: chinese ? '折叠侧栏' : 'Collapse sidebar' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(68);
         await expect(selector.locator('.team-switch-text')).toBeHidden();
-        await expect(selector.locator('.team-chevron')).toBeHidden();
+        await expectTeamSwitchGeometry(selector, 36, false);
         await expect(sidebar.locator('.sidebar-projects')).toBeHidden();
         await expect(tasks).toBeVisible();
         await expectIconColumn(sidebar);
@@ -252,4 +288,21 @@ test('hides Webhooks when its capability is unavailable', async ({ page }) => {
   await expect(sidebar.getByRole('link', { name: 'Projects', exact: true })).toBeVisible();
   await expect(sidebar.getByRole('link', { name: 'Webhooks' })).toHaveCount(0);
   await expect(sidebar.locator('.sidebar-group > a.nav-button')).toHaveCount(8);
+});
+
+
+test('keeps the Team switcher touch-sized on a wide coarse-pointer device', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1360, height: 800 }, hasTouch: true, isMobile: true });
+  try {
+    const page = await context.newPage();
+    await install(page);
+    await page.goto(`/teams/${teamId}`);
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    const selector = page.locator('.sidebar .team-switch');
+    await expectTeamSwitchGeometry(selector, 44, true);
+    await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+    await expectTeamSwitchGeometry(selector, 44, false);
+  } finally {
+    await context.close();
+  }
 });
