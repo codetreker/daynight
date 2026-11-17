@@ -40,8 +40,9 @@ The known Session identities also select independent drafts and receipts left
 by old Test URLs, since those pages can close before deletion and stop observing
 access. Account and Session prefixes preserve unrelated input.
 Account-scope guards filter late list/detail results across page remounts. Only
-both cleanup phases being completed produces a completion message; inaccessible
-resources remain distinct from confirmed cleanup. Session storage preserves the
+both cleanup phases being completed confirms completion; inaccessible
+resources remain distinct from confirmed cleanup. The [feedback decision](../bug-fix/2026-11-17-bot-deletion-feedback.md)
+defines its display lifetime. Session storage preserves the
 minimal request and result across reloads when available, with memory fallback.
 
 Independent current reads have no caller-supplied mutable fence. Their
