@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Operation } from "../../../src/api/operation.js";
-import * as commands from "../../../src/commands/worker/herdr/command.js";
-import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import * as commands from "../../../src/commands/worker/owned-command.js";
+import type { OwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { inspectWorkerEnvironment } from "../../../src/commands/worker/setup-environment.js";
@@ -32,7 +32,7 @@ const fixture = async () => {
   const hooks = { hooks: { SessionStart: [{ hooks: [{ type: "command", command: `bash ${quote(codexAsset)} session` }] }] } };
   await writeFile(path.join(codex, "hooks.json"), JSON.stringify(hooks));
   const copilotHooks = { sessionStart: [{ type: "command", bash: `bash ${quote(copilotAsset)}` }] };
-  const runCommand = vi.fn(async (command: HerdrCommand) => {
+  const runCommand = vi.fn(async (command: OwnedCommand) => {
     if (command.file === "claude") return { stdout: "2.1.247 (Claude Code)\n", stderr: "" };
     let stdout: string;
     if (command.file === "git") stdout = "git version 2.43.0\n";
@@ -59,9 +59,9 @@ afterEach(async () => {
 
 describe("worker setup environment inspection", () => {
   it("uses the default Windows hook runtime runner during public environment inspection", async () => {
-    const f = await fixture(), environment = { PATH: "/frozen/official/hook/path" }, runner = commands.runHerdrCommand;
-    const start = vi.spyOn(commands, "spawnHerdrProcess").mockImplementation((_file, _args, options) => spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(options.detached === false ? "5.1.26100.7628\n" : "")})`], { ...options, detached: true }));
-    const run = vi.spyOn(commands, "runHerdrCommand").mockImplementation((command, active, provided, options) => command.file === "powershell" ? runner(command, active, provided ?? start, options) : f.runCommand(command));
+    const f = await fixture(), environment = { PATH: "/frozen/official/hook/path" }, runner = commands.runOwnedCommand;
+    const start = vi.spyOn(commands, "spawnOwnedProcess").mockImplementation((_file, _args, options) => spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(options.detached === false ? "5.1.26100.7628\n" : "")})`], { ...options, detached: true }));
+    const run = vi.spyOn(commands, "runOwnedCommand").mockImplementation((command, active, provided, options) => command.file === "powershell" ? runner(command, active, provided ?? start, options) : f.runCommand(command));
     try {
       const checks = await inspectWorkerEnvironment(f.options, { environment, platform: "win32", nodeVersion: "24.22.1" });
       expect(checks.find(check => check.label === "powershell hook runtime")).toMatchObject({ status: "passed", detail: "5.1.26100.7628" });
@@ -226,7 +226,7 @@ describe("worker setup environment inspection", () => {
   it("awaits every launched probe's cleanup before propagating cancellation", async () => {
     const f = await fixture(); const controller = new AbortController();
     const started = deferred(); const cleaning = deferred(); const cleaned = deferred();
-    const runCommand = vi.fn(async (command: HerdrCommand, operation: Operation) => {
+    const runCommand = vi.fn(async (command: OwnedCommand, operation: Operation) => {
       started.resolve();
       await new Promise<void>((resolve) => operation.signal.addEventListener("abort", () => { resolve(); }, { once: true }));
       if (command.file === "git") { cleaning.resolve(); await cleaned.promise; }

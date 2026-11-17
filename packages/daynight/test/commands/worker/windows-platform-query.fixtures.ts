@@ -2,7 +2,7 @@ import { lstat, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Operation } from "../../../src/api/operation.js";
-import type { HerdrCommand, HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
+import type { OwnedCommand, OwnedSpawn } from "../../../src/commands/worker/owned-command.js";
 type Stage = "external-script" | "processes" | "console";
 type Checkpoint = "entry" | "cim-complete" | "projection-complete" | "type-complete" | "attach-complete" | "json-complete" | "assembly-complete" | "wmi-get-returned" | "envelope-complete" | "members-complete";
 /** Diagnostics never supply OS evidence. Retain only a complete allowlisted line,
@@ -250,13 +250,13 @@ export const decodeWindowsExternalScript = (stdout: string, observations: Window
  * OS observation, using its caller's explicit environment and the original
  * ten-second request limit.
  */
-export const runWindowsPlatformQuery = async (stage: Stage, input: HerdrCommand, operation: Operation, observations: WindowsQueryObservation[]): Promise<string> => {
-  const command = await import(new URL("../../../dist/commands/worker/herdr/command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr/command.js");
+export const runWindowsPlatformQuery = async (stage: Stage, input: OwnedCommand, operation: Operation, observations: WindowsQueryObservation[]): Promise<string> => {
+  const command = await import(new URL("../../../dist/commands/worker/owned-command.js", import.meta.url).href) as typeof import("../../../src/commands/worker/owned-command.js");
   const observation: WindowsQueryObservation = { stage, elapsedMs: 0, code: null, killed: null, signal: null, stdoutBytes: 0, stderrBytes: 0, closed: false, cleanupConfirmed: false, errorType: null, lastCheckpoint: null };
   const started = performance.now();
   const observeCheckpoint = createWindowsQueryCheckpointObserver(stage, value => { observation.lastCheckpoint = value; });
-  const start: HerdrSpawn = (file, args, options) => {
-    const child = command.spawnHerdrProcess(file, args, { ...options, ...(process.platform === "win32" ? { detached: false, windowsHide: false } : {}) });
+  const start: OwnedSpawn = (file, args, options) => {
+    const child = command.spawnOwnedProcess(file, args, { ...options, ...(process.platform === "win32" ? { detached: false, windowsHide: false } : {}) });
     child.stdout?.on("data", (value: Buffer) => { observation.stdoutBytes += value.length; });
     child.stderr?.on("data", (value: Buffer) => { observation.stderrBytes += value.length; observeCheckpoint(value); });
     child.once("close", (code, signal) => { observation.closed = true; if (typeof observation.code !== "string") observation.code = code; observation.signal = signal; observation.killed = child.killed; });
@@ -264,14 +264,14 @@ export const runWindowsPlatformQuery = async (stage: Stage, input: HerdrCommand,
     return child;
   };
   try {
-    const result = await command.runHerdrCommand(input, operation, start);
+    const result = await command.runOwnedCommand(input, operation, start);
     observation.cleanupConfirmed = observation.closed;
     if (!observation.closed) throw new Error("The independent Windows query close is unconfirmed.");
     observation.elapsedMs = Math.round(performance.now() - started);
     return result.stdout;
   } catch (error) {
-    observation.cleanupConfirmed = observation.closed && !command.hasUnconfirmedHerdrCommandCleanup(error);
-    observation.errorType = error instanceof command.HerdrCommandCleanupError ? "HerdrCommandCleanupError" : error instanceof command.HerdrCommandDeadlineError ? "HerdrCommandDeadlineError" : error instanceof command.HerdrCommandError ? "HerdrCommandError" : error instanceof RangeError ? "RangeError" : "Error";
+    observation.cleanupConfirmed = observation.closed && !command.hasUnconfirmedOwnedCommandCleanup(error);
+    observation.errorType = error instanceof command.OwnedCommandCleanupError ? "OwnedCommandCleanupError" : error instanceof command.OwnedCommandDeadlineError ? "OwnedCommandDeadlineError" : error instanceof command.OwnedCommandError ? "OwnedCommandError" : error instanceof RangeError ? "RangeError" : "Error";
     observation.elapsedMs = Math.round(performance.now() - started);
     // Error causes may include EncodedCommand and output. Keep only the bounded
     // observation, and preserve cleanup uncertainty in the caller's evidence.

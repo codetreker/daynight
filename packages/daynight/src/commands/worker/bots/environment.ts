@@ -7,7 +7,7 @@ import { prepareAgentCliAliases, type AgentCliAliasBinding, type PreparedAgentCl
 import { readAgentCliAliases } from "../../../config/agent-cli-aliases.js";
 import { resolveConfigurationPaths, type ConfigurationPaths } from "../../../config/paths.js";
 import { loadServerConfiguration, normalizeServerUrl } from "../../../config/server.js";
-import type { HerdrCommand, HerdrCommandResult } from "../herdr/command.js";
+import type { OwnedCommand, OwnedCommandResult } from "../owned-command.js";
 import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "./cli-probe.js";
 import { loadOperationFiles } from "../../task/session/private-files.js";
 
@@ -33,7 +33,7 @@ export type PreparedBotEnvironment = {
 export type BotEnvironmentDependencies = {
   fetch?: typeof globalThis.fetch;
   /** Overrides must join all descendants before settling, or reject BotCliProbeCleanupError with retryable ownership. */
-  runCommand?: (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
+  runCommand?: (command: OwnedCommand, operation: Operation) => Promise<OwnedCommandResult>;
 };
 
 export class BotEnvironmentCleanupError extends Error {
@@ -107,10 +107,10 @@ export const prepareBotEnvironment = async (
     delete environment.DAYNIGHT_CONTROLLER_TOKEN;
     aliases = await prepareAgentCliAliases({ aliases: configuredAliases, environment, stateDirectory: paths.stateDirectory });
     if (dependencies.runCommand === undefined) probe = await createBotCliProbe({ environment: aliases.environment, cwd: options.cwd }, operation);
-    const runCommand = dependencies.runCommand ?? ((command: HerdrCommand) => probe!.run(command.file, command.args));
+    const runCommand = dependencies.runCommand ?? ((command: OwnedCommand) => probe!.run(command.file, command.args));
     for (const query of queries) {
       operation.check();
-      let output: HerdrCommandResult;
+      let output: OwnedCommandResult;
       try { output = await runCommand({ file: "daynight", args: [...query, "--help"], environment: aliases.environment, cwd: options.cwd }, operation); }
       catch (error) {
         if (error instanceof BotCliProbeCleanupError) throw error;

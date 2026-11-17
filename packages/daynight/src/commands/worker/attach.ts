@@ -5,7 +5,7 @@ import { readHerdrLifecycleRecords } from "./herdr/lifecycle-store.js";
 import { createMacProcessControl } from "./herdr/native-macos.js";
 import type { HerdrLocalRun } from "./herdr/lifecycle-types.js";
 import { createHerdrInstance } from "./herdr/instance.js";
-import { spawnHerdrProcess } from "./herdr/command.js";
+import { spawnOwnedProcess } from "./owned-command.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { toolCommand, ToolSelectionError, verifyToolLaunch } from "../../platform/tool-executables.js";
 import { readHerdrSharedInstance } from "./herdr/shared-instance-store.js";
@@ -67,7 +67,7 @@ export const attachWorker = async (options: { homeDirectory: string }): Promise<
   // The explicit client connects only to an existing daemon, including if it exits after the probe.
   // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/main.rs#L573-L577
   const command = toolCommand(toolLaunch!, ["--session", "w", "client"]);
-  const child = spawnHerdrProcess(command.file, command.args, { env: environment, stdio: "inherit", detached: false, windowsHide: false, shell: false });
+  const child = spawnOwnedProcess(command.file, command.args, { env: environment, stdio: "inherit", detached: false, windowsHide: false, shell: false });
   const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM", "SIGHUP"];
   let failure: Error | undefined;
   const listeners = signals.map((signal) => {

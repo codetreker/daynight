@@ -30,7 +30,7 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { ApiError } from "../../api/client.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerCloudNative, ReceivedWorkerConfigurationResource } from "../../api/worker-configuration.js";
-import { probeNativeAgentVersion } from "./herdr/version-probe.js";
+import { probeNativeAgentVersion } from "./native-version.js";
 import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
 import { readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
@@ -50,7 +50,7 @@ import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
 import type { ExecutionConfiguration } from "./types.js";
 import { createSharedWorkerHerdr } from "./herdr/shared.js";
-import { hasUnconfirmedHerdrCommandCleanup } from "./herdr/command.js";
+import { hasUnconfirmedOwnedCommandCleanup } from "./owned-command.js";
 import type { WorkerHerdrAdapter } from "./herdr.js";
 import { createDurableWorkerHerdr } from "./herdr/durable.js";
 import { ensureWorkerIdentity } from "./identity.js";
@@ -1140,13 +1140,13 @@ export const runWorkerControl = async (options: {
         const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => manager.current().effective.agentControlMode ?? local.agentControlMode, snapshot: () => toolRuntime.manager.snapshot() } });
         const outcome = await syncWorkerConfigurationOnce({ operation, configuration: exchange, report: async () => {
           const sample = await telemetry.collect(operation);
-          const cleanupFailure = sample.issues.find(issue => hasUnconfirmedHerdrCommandCleanup(issue.error));
+          const cleanupFailure = sample.issues.find(issue => hasUnconfirmedOwnedCommandCleanup(issue.error));
           if (cleanupFailure !== undefined) throw cleanupFailure.error;
           return { ...sample.telemetry, taskInventory: null };
         } });
         if (outcome.promptError || retryPromptSource.current(projectId) === null) diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization is unavailable; new input remains waiting." });
       } catch (error) {
-        if (signal.aborted || inputSignal?.aborted || hasUnconfirmedHerdrCommandCleanup(error)) throw error;
+        if (signal.aborted || inputSignal?.aborted || hasUnconfirmedOwnedCommandCleanup(error)) throw error;
         diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
       } finally { operation.dispose(); }
     };

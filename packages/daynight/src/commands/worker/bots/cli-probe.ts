@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import type { Operation } from "../../../api/operation.js";
 import { captureProcessProof, confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "../../controller/process-proof.js";
 import { createWindowsBotJobLease, WindowsBotJobError, WindowsBotJobSetupError, type WindowsBotJobLease } from "./windows-job-lease.js";
-import type { HerdrCommandResult } from "../herdr/command.js";
+import type { OwnedCommandResult } from "../owned-command.js";
 import { botCliProbeChildSource } from "./cli-probe-child.js";
 
 export type BotCliProbeOwnership = {
@@ -24,7 +24,7 @@ export class BotCliProbeCleanupError extends Error {
 
 export type BotCliProbe = {
   readonly ownership: BotCliProbeOwnership;
-  run(file: string, args: readonly string[]): Promise<HerdrCommandResult>;
+  run(file: string, args: readonly string[]): Promise<OwnedCommandResult>;
   close(): Promise<void>;
 };
 

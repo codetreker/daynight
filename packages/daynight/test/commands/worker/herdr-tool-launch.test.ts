@@ -11,7 +11,7 @@ import { createToolLaunchMapping, posixToolMappingRc } from "../../../src/comman
 import * as launchInventory from "../../../src/commands/worker/herdr/tool-launch-inventory.js";
 import { advanceToolStartRequest, deferToolStartRequest, reserveToolStartRequest } from "../../../src/commands/worker/herdr/tool-launch-start.js";
 import { captureMappingProcessProof, parseLinuxProcessBirth } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
-import * as herdrCommands from "../../../src/commands/worker/herdr/command.js";
+import * as herdrCommands from "../../../src/commands/worker/owned-command.js";
 import * as metadata from "../../../src/commands/worker/herdr/windows-process-metadata.js";
 import * as processProofs from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 import { readToolManifest } from "../../../src/commands/worker/herdr/tool-launch-protocol.js";
@@ -72,7 +72,7 @@ const posixTree = async (proofs: processProofs.MappingProcessProof[], rows = pro
     return { ...proof };
   });
   const inspect = vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
-  const query = vi.spyOn(herdrCommands, "runHerdrCommand").mockImplementation(async command => {
+  const query = vi.spyOn(herdrCommands, "runOwnedCommand").mockImplementation(async command => {
     expect(command.file).toBe("/bin/ps");
     return { stdout: rows.map(row => `${row.pid} ${row.parentPid} ${row.processGroupId} S`).join("\n"), stderr: "" };
   });
@@ -114,7 +114,7 @@ describe("owned Herdr launch mapping", () => {
       return replacement;
     });
     vi.spyOn(processProofs, "inspectMappingProcessForCleanup").mockResolvedValue("running");
-    vi.spyOn(herdrCommands, "runHerdrCommand").mockImplementation(async command => {
+    vi.spyOn(herdrCommands, "runOwnedCommand").mockImplementation(async command => {
       expect(command.file).toBe("/bin/ps");
       const current = reused ? replacement : child;
       return { stdout: `${root.pid} ${root.parentPid} ${root.processGroupId} S\n${current.pid} ${current.parentPid} ${current.processGroupId} S\n`, stderr: "" };

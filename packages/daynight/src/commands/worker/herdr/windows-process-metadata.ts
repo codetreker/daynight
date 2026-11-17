@@ -1,7 +1,7 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { Operation } from "../../../api/operation.js";
-import { HerdrCommandDeadlineError } from "./command.js";
+import { OwnedCommandDeadlineError } from "../owned-command.js";
 
 export class WindowsProcessMetadataError extends Error {
   constructor(readonly stage: string, readonly code: number) {
@@ -83,7 +83,7 @@ const observationCheck = (operation: Operation): (() => void) => {
   // Keep the former command runner's acquisition allowance. No child process
   // or timer is needed; entered native calls are joined before rejecting.
   const deadline = performance.now() + Math.max(1, Math.floor(Math.min(10_000, operation.remainingMs(), operation.limits.requestMs)));
-  return () => { operation.check(); if (performance.now() >= deadline) throw new HerdrCommandDeadlineError(); };
+  return () => { operation.check(); if (performance.now() >= deadline) throw new OwnedCommandDeadlineError(); };
 };
 const releaseAfter = <T>(api: Kernel, handle: unknown, check: () => void, observe: () => T): T => {
   let value: T | undefined, failure: unknown, failed = false;

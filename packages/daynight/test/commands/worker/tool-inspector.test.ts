@@ -9,7 +9,7 @@ import { ToolSelectionManager } from "../../../src/commands/worker/tool-selectio
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 const controlled = vi.hoisted(() => ({ create: vi.fn(), command: vi.fn() }));
 vi.mock("../../../src/commands/worker/bots/cli-probe.js", async original => ({ ...await original<object>(), createBotCliProbe: controlled.create }));
-vi.mock("../../../src/commands/worker/herdr/command.js", async original => ({ ...await original<object>(), runHerdrCommand: controlled.command }));
+vi.mock("../../../src/commands/worker/owned-command.js", async original => ({ ...await original<object>(), runOwnedCommand: controlled.command }));
 const roots: string[] = [];
 const operation = () => createOperation({ limits: { totalMs: 20_000 } });
 const fixture = async (tool: "codex" | "copilot") => {

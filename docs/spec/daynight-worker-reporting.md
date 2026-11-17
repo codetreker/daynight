@@ -26,7 +26,7 @@ CLI 将当前运行包的 version 及启动时捕获一次的绝对 workingDirec
 
 ## 原生只读探测的清理与恢复
 
-本节适用于 `assistantHost` 的 Provider 预检与 `versions` 的原生版本采集。历史上发生清理失败与当前清理是否仍未确认是两个独立事实：`HerdrCommandCleanupError` 等历史错误类别不能单独证明当前仍有清理责任，也不能因时间经过自动失效。每次清理确认必须关联原探测、原 child 及其输出流，只能解除该次探测留下的阻塞。
+本节适用于 `assistantHost` 的 Provider 预检与 `versions` 的原生版本采集。历史上发生清理失败与当前清理是否仍未确认是两个独立事实：`OwnedCommandCleanupError` 等历史错误类别不能单独证明当前仍有清理责任，也不能因时间经过自动失效。每次清理确认必须关联原探测、原 child 及其输出流，只能解除该次探测留下的阻塞。
 
 | 原探测的清理事实 | 必须保持的结果 |
 |---|---|

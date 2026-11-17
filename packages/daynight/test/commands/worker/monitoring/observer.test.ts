@@ -10,8 +10,8 @@ import { ToolSelectionError, type ToolSelectionCode } from "../../../../src/plat
 import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-error.js";
 import { ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../../../../src/commands/worker/configuration-failure.js";
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
-import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
-import { HerdrCommandCleanupError, HerdrCommandDeadlineError, HerdrCommandError } from "../../../../src/commands/worker/herdr/command.js";
+import { NativeVersionOutputError } from "../../../../src/commands/worker/native-version.js";
+import { OwnedCommandCleanupError, OwnedCommandDeadlineError, OwnedCommandError } from "../../../../src/commands/worker/owned-command.js";
 import { classifyFailure, diagnostic, MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "../../../../src/commands/worker/monitoring/diagnostics.js";
 import { createMonitoringObserver, goJsonBytes } from "../../../../src/commands/worker/monitoring/observer.js";
 import type { DiagnosticCode } from "../../../../src/commands/worker/monitoring/types.js";
@@ -327,17 +327,17 @@ describe("safe monitoring diagnostics", () => {
 
   it("classifies trusted native probe failures without exposing command data or guessing aggregate causes", () => {
     const output = new NativeVersionOutputError("codex"); output.message = secret;
-    const deadline = new HerdrCommandDeadlineError(); deadline.message = secret;
-    const command = new HerdrCommandError(secret, 17, null, secret, { cause: new Error(secret) });
-    const spawn = new HerdrCommandError(secret, null, null, secret, { cause: new Error(secret) });
-    const signalOnly = new HerdrCommandError(secret, null, "SIGTERM", secret);
+    const deadline = new OwnedCommandDeadlineError(); deadline.message = secret;
+    const command = new OwnedCommandError(secret, 17, null, secret, { cause: new Error(secret) });
+    const spawn = new OwnedCommandError(secret, null, null, secret, { cause: new Error(secret) });
+    const signalOnly = new OwnedCommandError(secret, null, "SIGTERM", secret);
     const cases: [unknown, DiagnosticCode][] = [
       [output, "invalid-output"], [deadline, "timeout"], [command, "command-failed"],
-      [spawn, "unknown"], [signalOnly, "unknown"], [new HerdrCommandError(secret, 0, null, secret), "unknown"],
+      [spawn, "unknown"], [signalOnly, "unknown"], [new OwnedCommandError(secret, 0, null, secret), "unknown"],
       [new WorkerCleanupError("observation", command), "command-failed"],
       [new AggregateError([output, command], secret), "unknown"],
-      [new HerdrCommandCleanupError([deadline], command), "unknown"],
-      [{ name: "HerdrCommandError", exitCode: 17, stderr: secret }, "unknown"],
+      [new OwnedCommandCleanupError([deadline], command), "unknown"],
+      [{ name: "OwnedCommandError", exitCode: 17, stderr: secret }, "unknown"],
     ];
     for (const [error, code] of cases) expect(classifyFailure(error)).toEqual(diagnostic(code));
     expect(classifyFailure(command, true)).toEqual(diagnostic("outcome-unknown"));
