@@ -26,6 +26,26 @@ const fixture = async (options: Partial<WorkerConfigurationManagerOptions> = {})
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.stop(); for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe("Worker future configuration persistence", () => {
+  it("reidentifies an unknown sudo target in schema 7 without losing an applied archive choice", async () => {
+    const first = await fixture();
+    const target = receiveWorkerDesired(desired("1").json.replace('"value":{', '"value":{"archiveSessions":false,"enableSudoCleanup":true,'));
+    await first.manager.receive(target, "0"); await first.manager.settle();
+    const original = await first.read(); await first.manager.stop();
+    const source = { ...original, schemaVersion: 7,
+      currentItems: original.currentItems.filter(item => item.value.key.kind !== "enableSudoCleanup"),
+      retainedItems: original.retainedItems.filter(item => item.value.key.kind !== "enableSudoCleanup") };
+    await writeFile(first.file, JSON.stringify(source));
+    const second = await fixture({ file: first.file });
+    expect(second.manager.readCleanupPolicy()).toBeNull();
+    expect(second.manager.current().retainedArchiveSessions).toBe(false);
+    const migrated = await second.read();
+    expect(migrated.schemaVersion).toBe(8);
+    expect(migrated.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")?.value).toMatchObject({ state: "pending", appliedValue: null });
+    await second.manager.receive(target, "0"); await second.manager.settle();
+    expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "1" });
+    expect(second.manager.current().effective.archiveSessions).toBe(false);
+  });
+
   it("reidentifies a schema 6 unknown sudo target before application and preserves actual sources", async () => {
     const first = await fixture(), initial = desired("1");
     await first.manager.receive(initial, "0"); await first.manager.settle();
@@ -35,7 +55,7 @@ describe("Worker future configuration persistence", () => {
     await writeFile(first.file, JSON.stringify(source));
     const second = await fixture({ file: first.file });
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(7);
+    expect(migrated.schemaVersion).toBe(8);
     expect(migrated.authority.applicationRevision).toBe("2");
     expect(migrated.authority.generation).not.toBe(old.authority.generation);
     expect(migrated.retainedItems).toEqual(expect.arrayContaining([...old.currentItems]));

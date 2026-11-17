@@ -73,7 +73,7 @@ export const withStoppedControllerStorage = <T>(options: {
     outcome, connectionClosed: closed,
   });
   if (failed) {
-    if ((phase === "admission" || phase === "operation") && failure instanceof SqliteAccessError) throw new SqliteAccessError(failure.kind, failure.context, { cause: failure, outcome, connectionClosed: closed });
+    if (failure instanceof SqliteAccessError) throw new SqliteAccessError(failure.kind, failure.context, { cause: failure, outcome, connectionClosed: closed });
     if (failure instanceof Database.SqliteError || failure instanceof SyntaxError || failure instanceof AggregateError) throw new SqliteAccessError("operation-failed", { database: controllerJournalFormat.name, file: journalPath, phase: "stopped-storage" }, { cause: failure, outcome, connectionClosed: closed });
     throw failure;
   }

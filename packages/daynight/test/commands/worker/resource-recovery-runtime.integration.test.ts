@@ -81,7 +81,8 @@ const fixture = async () => {
   const exit = once(child, "exit"); child.kill("SIGTERM"); await exit;
   controller.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: now, nativeSessionId, activity: "stopped" }); controller.close();
   await writeFile(`${journalPath}.archive-receipt-${execution.executionGeneration}.json`, JSON.stringify(receipt));
-  record = web.beginCleanup(record, { kind: "terminal", deadline: Date.now() }, Date.now()); web.completeTask(record, Date.now()); web.close();
+  const cleanupStartedAt = Date.now();
+  record = web.beginCleanup(record, { kind: "terminal", deadline: cleanupStartedAt }, cleanupStartedAt); web.completeTask(record, Date.now()); web.close();
   return { home, owner, paths, binding, requests, rejectArchive: () => { wrongArchive = true; }, supersede: () => { successor = true; } };
 };
 

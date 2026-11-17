@@ -230,7 +230,7 @@ export const syncWorkerConfigurationOnce = async (options: {
     const captured = configuration.capture(report);
     capturedContext = configuration.reportContext?.(captured);
     let sent: WorkerCloudReport;
-    try { sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") })); }
+    try { sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap"), archiveSessions: captured.bootstrap?.archiveSessions !== undefined || captured.observation?.items.some(item => item.key.kind === "archiveSessions") === true })); }
     catch (error) { configuration.markNeedsRead?.(); throw error; }
     emit("succeeded");
     if (configuration.isCurrent?.(captured) === false) return dropped();

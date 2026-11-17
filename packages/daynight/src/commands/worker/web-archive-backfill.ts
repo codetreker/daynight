@@ -12,11 +12,14 @@ import type { openWebExecutionStore } from "./backends/web-store.js";
 import type { WebBackendOptions } from "./backends/web.js";
 import type { LocalTask } from "./backends/web-types.js";
 import type { ArchiveBackfillIdentity, CleanupScheduleRecord } from "./types.js";
+import { deleteWebRecording, WebRecordingDiscardedError, withWebRecordingSource } from "./web-recording-source.js";
 
 export const createWebArchiveMaintenance = (options: {
-  homeDirectory: string; serverUrl: string; signal: AbortSignal;
+  homeDirectory: string; serverUrl: string; workerId: string; signal: AbortSignal;
   store: ReturnType<typeof openWorkerStore>; webStore: ReturnType<typeof openWebExecutionStore>;
   archive: NonNullable<WebBackendOptions["archive"]>; probeArchive: NonNullable<WebBackendOptions["probeArchive"]>;
+  archiveSessions?: () => boolean | null;
+  removeRecording?: typeof deleteWebRecording;
   emit: (event: WorkerEvent) => void; monitoring?: ReturnType<typeof createMonitoringObserver>;
 }) => {
   const { store, webStore, serverUrl, archive, probeArchive, emit, monitoring } = options;
@@ -26,6 +29,9 @@ export const createWebArchiveMaintenance = (options: {
   const archiveFailures = new Map<string, string>();
   const archiveObservations = new Map<string, string>();
   const archiveActivities = new Map<string, string>();
+  const discardRetryAt = new Map<string, number>();
+  const discarded = new Set<string>();
+  const discardJobs = new Map<string, Promise<{ ok: true } | { error: unknown }>>();
   const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown, worktree?: FailureWorktree): unknown[] => {
     const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
     const next = new Date(nextAttemptAt).toISOString();
@@ -54,6 +60,7 @@ export const createWebArchiveMaintenance = (options: {
     return [];
   };
   const identityFor = (task: LocalTask): ArchiveBackfillIdentity => {
+    if (task.workerId !== options.workerId || task.serverOrigin !== serverUrl) throw new Error("The Web recording belongs to a different Worker or service.");
     const execution = task.webExecution;
     if (execution === null) throw new Error("Archive failure has no original execution identity.");
     return { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
@@ -105,7 +112,7 @@ export const createWebArchiveMaintenance = (options: {
       if (signal.aborted) return;
       const task = tasks[(previous + offset) % tasks.length]!;
       const execution = task.webExecution;
-      if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
+      if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || task.workerId !== options.workerId || task.cleanup?.discardRecording || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
       // Advance on failure as well as success so a damaged source cannot monopolize catch-up.
       lastArchiveAttempt = execution.executionId;
       const identity = { serverOrigin: serverUrl, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
@@ -121,15 +128,20 @@ export const createWebArchiveMaintenance = (options: {
           if (retained.nextAttemptAt > Date.now()) continue;
         }
         const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
-        const admission = await probeArchive(task, journalPath, signal);
-        if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
-        if (admission.kind === "complete") {
-          // Receipt admission alone does not establish that the source was repaired.
-          if (retained?.legacyError !== undefined) store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: null, nextAttemptAt: retained.nextAttemptAt });
-          else store.deleteArchiveBackfillSchedule(identity);
-          archiveRepairs.delete(execution.executionId);
-        }
-        await archive(task, journalPath, signal);
+        const attempted = await withWebRecordingSource(options.homeDirectory, task, () => webStore.getTask(task), async () => {
+          if (options.archiveSessions !== undefined && options.archiveSessions() !== true) return false;
+          const admission = await probeArchive(task, journalPath, signal);
+          if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
+          if (admission.kind === "complete") {
+            // Receipt admission alone does not establish that the source was repaired.
+            if (retained?.legacyError !== undefined) store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: null, nextAttemptAt: retained.nextAttemptAt });
+            else store.deleteArchiveBackfillSchedule(identity);
+            archiveRepairs.delete(execution.executionId);
+          }
+          await archive(task, journalPath, signal);
+          return true;
+        }, signal);
+        if (!attempted) break;
         signal.throwIfAborted();
         store.deleteArchiveBackfillSchedule(identity);
         backfilled.add(execution.executionId);
@@ -143,6 +155,7 @@ export const createWebArchiveMaintenance = (options: {
         emit({ kind: "session-archive-ready", message: `Completed session ${execution.sessionId} history is archived.` });
       } catch (error) {
         if (signal.aborted) throw error;
+        if (error instanceof WebRecordingDiscardedError) continue;
         recordFailure(task, error);
       }
       // Bound historical catch-up per reconciliation round.
@@ -156,10 +169,64 @@ export const createWebArchiveMaintenance = (options: {
   let closed = false;
   let shutdownFailure: unknown;
   let shutdownFailed = false;
+  const discardShutdownFailures: unknown[] = [];
   let failureId: string | undefined;
+  const startDiscard = (selected: LocalTask, isSettled: (task: LocalTask) => boolean, inputSignal: AbortSignal): Promise<{ ok: true } | { error: unknown }> => {
+    const execution = selected.webExecution!;
+    const existing = discardJobs.get(execution.executionId);
+    if (existing !== undefined) return existing;
+    const jobSignal = AbortSignal.any([inputSignal, controller.signal]);
+    const job: Promise<{ ok: true } | { error: unknown }> = (async () => {
+      try {
+        await (options.removeRecording ?? deleteWebRecording)(options.homeDirectory, selected, () => webStore.getTask(selected), isSettled, jobSignal);
+        store.deleteArchiveBackfillSchedule(identityFor(selected));
+        discardRetryAt.delete(execution.executionId);
+        discarded.add(execution.executionId);
+        return { ok: true as const };
+      } catch (error) {
+        if (!isWorkerCancellation(error, jobSignal)) {
+          if (jobSignal.aborted) discardShutdownFailures.push(error);
+          discardRetryAt.set(execution.executionId, Date.now() + 60_000);
+          try { emit({ kind: "cleanup-error", identity: selected, component: "archive", phase: "archive-backfill", message: "Local Web recording deletion remains pending; it will be retried.", error }); } catch { /* Reporting does not detach the deletion job. */ }
+        }
+        return { error };
+      }
+    })().finally(() => { discardJobs.delete(execution.executionId); });
+    discardJobs.set(execution.executionId, job);
+    return job;
+  };
   return {
     recordFailure,
     recordLegacyFailure,
+    async discardOne(task: LocalTask, isSettled: (task: LocalTask) => boolean, signal: AbortSignal): Promise<void> {
+      signal.throwIfAborted();
+      const current = webStore.getTask(task);
+      if (current === null || current.serverOrigin !== serverUrl || current.workerId !== options.workerId || task.serverOrigin !== current.serverOrigin || task.workerId !== current.workerId || current.worktreeId !== task.worktreeId || current.webExecution?.executionId !== task.webExecution?.executionId || current.webExecution?.executionGeneration !== task.webExecution?.executionGeneration || current.webExecution?.launchId !== task.webExecution?.launchId) throw new Error("The original Web recording identity changed.");
+      if (current.status !== "done" || current.cleanup?.kind !== "terminal") throw new Error("Web recording deletion requires completed terminal cleanup.");
+      if (!current.cleanup.discardRecording || current.webExecution === null || discarded.has(current.webExecution.executionId)) return;
+      if (!isSettled(current)) throw new Error("The original Web cleanup has not settled.");
+      const outcome = await startDiscard(current, isSettled, signal);
+      if ("error" in outcome) throw outcome.error;
+      signal.throwIfAborted();
+    },
+    async discardLocal(isSettled: (task: LocalTask) => boolean, archiveSessions: boolean | null, signal: AbortSignal): Promise<void> {
+      for (let task of webStore.listCompletedTasks()) {
+        if (signal.aborted) return;
+        if (task.serverOrigin !== serverUrl || task.workerId !== options.workerId || task.cleanup?.kind !== "terminal" || task.webExecution === null) continue;
+        const execution = task.webExecution;
+        if (discarded.has(execution.executionId) || discardJobs.has(execution.executionId)) continue;
+        if ((discardRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
+        try {
+          if (archiveSessions === false && !task.cleanup.discardRecording) task = webStore.discardRecording(task, Date.now());
+          if (!task.cleanup?.discardRecording || !isSettled(task)) continue;
+          void startDiscard(task, isSettled, signal);
+        } catch (error) {
+          if (signal.aborted) throw error;
+          discardRetryAt.set(execution.executionId, Date.now() + 60_000);
+          emit({ kind: "cleanup-error", identity: task, component: "archive", phase: "archive-backfill", message: "Local Web recording deletion remains pending; it will be retried.", error });
+        }
+      }
+    },
     request(shouldYield: () => boolean): void {
       if (closed || signal.aborted || pending !== undefined) return;
       // Reserve the slot before invoking any backfill code, including synchronous re-entry.
@@ -181,6 +248,11 @@ export const createWebArchiveMaintenance = (options: {
       closed = true;
       controller.abort(new Error("Archive maintenance is closing."));
       await pending;
+      await Promise.all(discardJobs.values());
+      if (discardShutdownFailures.length > 0) {
+        const failures = [...(shutdownFailed ? [shutdownFailure] : []), ...discardShutdownFailures];
+        throw failures.length === 1 ? failures[0] : new AggregateError(failures, "Archive maintenance failed during shutdown.", { cause: failures[0] });
+      }
       if (shutdownFailed) throw shutdownFailure;
     },
   };

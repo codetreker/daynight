@@ -3,10 +3,10 @@ import type { Tool, ToolContext, ToolPathChoice, ToolPaths } from "../platform/t
 
 export type { Tool, ToolContext, ToolPathChoice, ToolPaths } from "../platform/tool-path-choice.js";
 export type WorkerCloudToolPaths = Readonly<Record<Tool, ToolPathChoice | null>>;
-export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean };
+export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean; readonly archiveSessions?: boolean };
 export type WorkerConfigurationCapabilityInput = WorkerConfigurationCapabilities | boolean;
 export const workerConfigurationCapabilities = (value: WorkerConfigurationCapabilityInput = false): WorkerConfigurationCapabilities =>
-  typeof value === "boolean" ? { controlMode: value, toolPaths: false } : value;
+  typeof value === "boolean" ? { controlMode: value, toolPaths: false, archiveSessions: false } : value;
 export const TOOL_PATH_REPORT_BYTES = 256 * 1024;
 export type ToolPathErrorCode = "not_found" | "permission_denied" | "not_executable" | "invalid_path" | "unsupported_launcher" | "unrecognized_output" | "incompatible_runtime" | "probe_timeout" | "cleanup_unknown" | "tool_identity_changed" | "legacy_tool_identity_missing" | "io_error" | "unavailable";
 export type ToolPathActual = {

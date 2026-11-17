@@ -62,6 +62,18 @@ describe("Worker cloud configuration protocol", () => {
     expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items }, true, true)).toThrow(ProtocolError);
     expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items.slice(0, 1025), { ...item, key: { kind: "agentControlMode" }, appliedValue: "web" }] }, true, true).items).toHaveLength(1026);
   });
+  it("reserves separate slots for mode, sudo and archive without expanding ordinary items", () => {
+    const items = Array.from({ length: 1026 }, (_, n) => ({ ...item, key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, appliedValue: null, state: "pending" }));
+    const extensions = [
+      { ...item, key: { kind: "agentControlMode" }, appliedValue: "web" },
+      { ...item, key: { kind: "enableSudoCleanup" }, appliedValue: false },
+      { ...item, key: { kind: "archiveSessions" }, appliedValue: true },
+    ];
+    const capabilities = { controlMode: true, toolPaths: false, archiveSessions: true };
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items.slice(0, 1025), ...extensions] }, true, capabilities).items).toHaveLength(1028);
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items.slice(0, 1025), ...extensions.slice(0, 2)] }, true, true).items).toHaveLength(1027);
+    expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items, ...extensions] }, true, capabilities)).toThrow(ProtocolError);
+  });
   it("enforces byte, scalar, Project and observation limits before producing reports", () => {
     const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
     const projects = Array.from({ length: 129 }, (_, n) => ({ projectId: id(n), nativeOverrides: {} }));
@@ -156,6 +168,60 @@ describe("Worker cloud configuration protocol", () => {
 });
 
 describe("Worker cloud configuration client", () => {
+  it("negotiates the archive field and observation across client instances", async () => {
+    const operation = createOperation(); operations.push(operation);
+    const capability = { supported: false }, sent: RequestInit[] = [];
+    const headers = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Archive-Sessions": "1" };
+    const archiveDesired = { ...desired, value: { ...value, archiveSessions: false } };
+    const fetch = vi.fn(async (_url, init) => {
+      sent.push(init!);
+      return sent.length === 1
+        ? new Response(JSON.stringify({ error: { code: "not_found", message: "not found", requestId: workerId } }), { status: 404, headers })
+        : new Response(JSON.stringify({ ...receipt, configuration: { desired: archiveDesired, observationRevision: "0", observationAccepted: false } }), { headers });
+    }) as typeof globalThis.fetch;
+    const client = () => createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: userId, operation, fetch, workerArchiveSessions: capability });
+    await expect(client().getWorkerConfiguration(workerId)).rejects.toMatchObject({ status: 404 });
+    await client().reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, archiveSessions: false }, observation: null });
+    expect(new Headers(sent[0]!.headers).get("Daynight-Worker-Archive-Sessions")).toBe("1");
+    expect(new Headers(sent[1]!.headers).get("Daynight-Worker-Archive-Sessions")).toBe("1");
+    expect(JSON.parse(sent[1]!.body as string).configuration.bootstrap.archiveSessions).toBe(false);
+    const archiveItem = { ...item, key: { kind: "archiveSessions" }, appliedValue: false };
+    const opts = { controlMode: false, toolPaths: false, archiveSessions: true };
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [archiveItem] }, true, opts).items).toEqual([archiveItem]);
+    expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [archiveItem] })).toThrow();
+    expect(() => parseWorkerCloudValue({ ...value, archiveSessions: "false" }, true, opts)).toThrow();
+  });
+
+  it("projects the default bootstrap on a legacy service and refuses an unconfirmed response", async () => {
+    const calls: RequestInit[] = [];
+    const fetch = vi.fn(async (_url, init) => {
+      calls.push(init!);
+      return calls.length === 1 ? response(resource) : response({ ...receipt, configuration: { desired, observationRevision: "0", observationAccepted: false } });
+    }) as typeof globalThis.fetch;
+    const client = api(fetch);
+    await client.getWorkerConfiguration(workerId);
+    await client.reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, archiveSessions: true }, observation: null });
+    expect(new Headers(calls[1]!.headers).get("Daynight-Worker-Archive-Sessions")).toBeNull();
+    expect(JSON.parse(calls[1]!.body as string).configuration.bootstrap).not.toHaveProperty("archiveSessions");
+
+    const operation = createOperation(); operations.push(operation);
+    const capability = { supported: false };
+    const archiveDesired = { ...desired, value: { ...value, archiveSessions: false } };
+    const modernHeaders = { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Archive-Sessions": "1" };
+    const broken = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ desired: archiveDesired, observationRevision: "0", observation: null }), { headers: modernHeaders }))
+      .mockResolvedValueOnce(response({ ...receipt, configuration: { desired, observationRevision: "0", observationAccepted: false } }));
+    const negotiated = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: userId, operation, fetch: broken, workerArchiveSessions: capability });
+    await negotiated.getWorkerConfiguration(workerId);
+    await expect(negotiated.reportWorkerConfiguration(workerId, report, { bootstrap: null, observation: null })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(capability.supported).toBe(false);
+  });
+
+  it("does not silently submit a new disabled bootstrap to an unsupported service", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    expect(() => api(fetch).reportWorkerConfiguration(workerId, report, { bootstrap: { ...value, archiveSessions: false }, observation: null })).toThrow("does not support disabling");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("retains authenticated fresh-Worker capability discovery across API clients", async () => {
     const operation = createOperation(); operations.push(operation);
     const capability = { supported: false }, sent: RequestInit[] = [];

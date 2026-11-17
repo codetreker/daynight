@@ -73,6 +73,13 @@ describe("Worker cloud configuration sources", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
   });
 
+  it("imports the default archive setting and rejects malformed local settings", async () => {
+    const f = await fixture(), resolve = async () => ({ id: project.id }), signal = new AbortController().signal;
+    expect((await parseWorkerCloudBootstrap(f.source, f.paths, resolve, signal)).archiveSessions).toBe(true);
+    expect((await parseWorkerCloudBootstrap(stringify({ worker: { archiveSessions: false } }), f.paths, resolve, signal)).archiveSessions).toBe(false);
+    await expect(parseWorkerCloudBootstrap(stringify({ worker: { archiveSessions: "false" } }), f.paths, resolve, signal)).rejects.toThrow();
+  });
+
   it("retains actual read failures as file evidence and leaves cancellation unchanged", async () => {
     const f = await fixture();
     await rm(f.paths.configFile);

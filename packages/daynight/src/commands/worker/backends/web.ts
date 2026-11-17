@@ -32,6 +32,7 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { prepareControllerLaunchStorage } from "./controller-process.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+import { withWebRecordingSource } from "../web-recording-source.js";
 import { createWebInput, type WebAutomaticInputWait } from "./web-input.js";
 export type WebBackendOptions = {
   jobLeases?: ControllerJobLeases;
@@ -42,6 +43,7 @@ export type WebBackendOptions = {
   request?: typeof requestController;
   probeArchive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<ArchiveProbeResult>;
   archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
+  archiveSessions?: () => boolean | null;
   onArchiveFailure?: (task: LocalTask, error: unknown) => void;
   onUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => void;
 };
@@ -799,14 +801,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         const fileSignal = cleanupRequest.signal ?? new AbortController().signal;
         fileSignal.throwIfAborted();
         const project = { projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath };
-        if (launched) {
+        const archive = options.archiveSessions === undefined ? true : options.archiveSessions();
+        if (archive === false && !task.cleanup!.discardRecording) task = options.store.discardRecording(task, options.now());
+        if (launched && archive === true && !task.cleanup!.discardRecording) {
           stage = "archive";
           phase(task, { kind: "cleanup", phase: stage }, false);
           fileSignal.throwIfAborted();
           let archiveSucceeded = false;
           try {
             if (!options.archive) throw new Error("Session archive uploader is unavailable.");
-            await options.archive(task, journal(task), fileSignal);
+            await withWebRecordingSource(options.homeDirectory, task, () => options.store.getTask(task), () => options.archive!(task, journal(task), fileSignal), fileSignal);
             archiveSucceeded = true;
           } catch (error) {
             fileSignal.throwIfAborted();
@@ -918,7 +922,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         || task.webExecution.executionId !== input.webExecution.executionId || task.webExecution.executionGeneration !== input.webExecution.executionGeneration
         || task.webExecution.launchId !== input.webExecution.launchId || task.cleanup?.kind !== "terminal") throw new Error("Archive probing requires the original terminal execution.");
       if (!options.probeArchive) throw new Error("Archive condition probing is unavailable; the original source is retained.");
-      const result = await options.probeArchive(task, journal(task), signal);
+      const result = await withWebRecordingSource(options.homeDirectory, task, () => options.store.getTask(task), () => options.probeArchive!(task, journal(task), signal), signal);
       signal.throwIfAborted();
       return result;
     },

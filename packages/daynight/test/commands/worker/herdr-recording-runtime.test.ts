@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import archive from "../../session/fixtures/v2/valid-archive.json" with { type: "json" };
@@ -14,6 +14,18 @@ const setup = () => {
   const record = { owner: archive.owner, sessionId: archive.sessionId, claimId: archive.claimId, segments: archive.segments.map(s => ({ ...s, endedAt: null, durationMs: null, startedAt: new Date().toISOString(), gap: null })), runs: archive.runs.map(run => ({ run, phase: "active" })), cwd: directory } as unknown as HerdrLifecycleRecord;
   return { directory, record };
 };
+test("a selected deletion prevents opening or recreating a recording source", () => {
+  const f = setup(); let discarded = false;
+  const runtime = createHerdrRecordingRuntime({ directory: f.directory, discarded: () => discarded, read: async () => ({ width: 1, height: 1, rows: [[]] }), publish: async () => {} });
+  try {
+    runtime.prepare({ ...f.record, segments: [] });
+    discarded = true;
+    expect(() => runtime.source(f.record)).toThrow("selected for local deletion");
+    runtime.forget(f.record); rmSync(path.join(f.directory, f.record.sessionId), { recursive: true });
+    expect(() => runtime.prepare({ ...f.record, segments: [] })).toThrow("selected for local deletion");
+    expect(existsSync(path.join(f.directory, f.record.sessionId))).toBe(false);
+  } finally { runtime.close(); }
+});
 test("captures independently of offline publication and seals its own monotonic boundary", async () => {
   const f = setup(); const read = vi.fn(async () => ({ width: 1, height: 1, rows: [[]] }));
   const runtime = createHerdrRecordingRuntime({ directory: f.directory, read, publish: async () => { throw new Error("offline"); } });

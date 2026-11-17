@@ -171,6 +171,12 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       if (cleanup.kind !== "terminal") throw new Error("Web completion requires terminal cleanup intent.");
       return { ...task, status: "done" };
     }),
+    discardRecording: (identity: ClaimIdentity, now: number): LocalTask => atomic(() => {
+      const task = getTask(identity);
+      if (task === null || task.cleanup?.kind !== "terminal") throw new Error("Recording discard requires the original terminal execution.");
+      if (task.cleanup.discardRecording) return task;
+      return write({ ...task, cleanup: { ...task.cleanup, discardRecording: true }, updatedAt: integer(now, "Execution time") });
+    }),
     initializeWebExecution: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
       if (task.configuration?.agentControlMode !== "web" || task.status !== "active") throw new Error("Web execution requires its active frozen claim.");
       if (task.webExecution != null) return task;
@@ -242,7 +248,7 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       const existing = task.cleanup;
       if (existing !== null) return { ...task, cleanup: { ...existing, kind: existing.kind === "terminal" ? "terminal" : input.kind } };
       if (task.control !== null && input.kind !== "terminal") throw new Error("A source control intent requires terminal cleanup.");
-      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline }) };
+      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline, discardRecording: false }) };
     }),
 
   };

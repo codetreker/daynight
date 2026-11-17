@@ -37,6 +37,11 @@ const durableFile = (file: string, data: string): void => {
 };
 const bytes = (value: unknown): number => Buffer.byteLength(canonicalSessionJson(value));
 
+/** A verified, durable capture-failure marker in the original recording journal. */
+export class HerdrPersistedCaptureFailure extends SessionV2Error {
+  constructor(readonly executionGenerations: readonly string[]) { super("source_corrupt"); }
+}
+
 /**
  * Append-only, hash-linked index. Selection commits before file creation; file
  * fsync/rename commits before registration. A failed append never makes a frame
@@ -58,7 +63,7 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
   }
   if (!existsSync(journal) || !existsSync(framesDirectory) || !lstatSync(framesDirectory).isDirectory() || lstatSync(framesDirectory).isSymbolicLink()) corrupt();
   safeFile(journal);
-  const journalIdentity = lstatSync(journal); let journalLength = journalIdentity.size;
+  const journalIdentity = lstatSync(journal, { bigint: true }); let journalLength = journalIdentity.size;
   const runs = new Map<string, HerdrRecordingRun>(), segments = new Map<string, SegmentState>();
   const selected = new Map<string, Selected>(), files = new Map<string, FileRecord>(), indexes = new Map<string, SessionV2FrameIndex>();
   const gaps: SessionV2IntervalGap[] = [], pending = new Map<string, HerdrRecordingObservation>(), liveSequences = new Map<string, bigint>();
@@ -162,9 +167,9 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
     const body = { revision: String(revision + 1n), previous: chain, event }, line = { ...body, sha256: digest(canonicalSessionJson(body)) };
     const fd = openSync(journal, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
     try {
-      const current = fstatSync(fd);
+      const current = fstatSync(fd, { bigint: true });
       if (!current.isFile() || current.dev !== journalIdentity.dev || current.ino !== journalIdentity.ino || current.size !== journalLength) corrupt();
-      const data = `${canonicalSessionJson(line)}\n`; writeFileSync(fd, data); fsyncSync(fd); journalLength += Buffer.byteLength(data);
+      const data = `${canonicalSessionJson(line)}\n`; writeFileSync(fd, data); fsyncSync(fd); journalLength += BigInt(Buffer.byteLength(data));
     } catch (error) { failed = true; throw error; } finally { closeSync(fd); }
     apply(event); revision++; chain = line.sha256;
   };
@@ -183,6 +188,25 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
     const line = decodeStrictSessionJson(raw, 1024 * 1024) as JournalLine;
     if (!line || typeof line !== "object" || Object.keys(line).sort().join() !== "event,previous,revision,sha256" || line.revision !== String(revision + 1n) || line.previous !== chain || line.sha256 !== digest(canonicalSessionJson({ revision: line.revision, previous: line.previous, event: line.event }))) corrupt();
     apply(line.event); revision++; chain = line.sha256;
+  }
+  if (failed) {
+    // A visible journal is not itself proof that its last append survived a
+    // crash. Re-establish the file's durability before using the marker to
+    // select deletion, and reject replaced or concurrently changed journals.
+    const fd = openSync(journal, constants.O_RDWR | constants.O_NOFOLLOW);
+    let failure: unknown, failedConfirmation = false;
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      if (!before.isFile() || before.dev !== journalIdentity.dev || before.ino !== journalIdentity.ino || before.size !== journalLength) corrupt();
+      if (readFileSync(fd).toString("utf8") !== rawJournal) corrupt();
+      fsyncSync(fd);
+      const after = lstatSync(journal, { bigint: true });
+      if (!after.isFile() || after.isSymbolicLink() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) corrupt();
+    } catch (error) { failedConfirmation = true; failure = error; }
+    try { closeSync(fd); }
+    catch (error) { if (failedConfirmation) throw new AggregateError([failure, error], "Recording failure verification and journal close both failed.", { cause: failure }); throw error; }
+    if (failedConfirmation) throw failure;
+    throw new HerdrPersistedCaptureFailure([...runs.values()].filter(run => run.captureError === "source_corrupt").map(run => run.executionGeneration));
   }
   const readFrame = (file: FileRecord, synchronize = false): string => {
     const filename = path.join(framesDirectory, `${uuid(file.fileId)}.json`);
@@ -224,7 +248,7 @@ export const openHerdrRecordingStore = (options: HerdrRecordingIdentity & { dire
     safeFile(journal); safeFile(manifest);
     if (!same(decodeStrictSessionJson(readFileSync(manifest), 16_384), header)) corrupt();
     const raw = readFileSync(journal), text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
-    if (raw.byteLength !== journalLength || text !== "" && !text.endsWith("\n")) corrupt();
+    if (BigInt(raw.byteLength) !== journalLength || text !== "" && !text.endsWith("\n")) corrupt();
     let observedRevision = 0n, observedChain = digest(canonicalSessionJson(header));
     for (const value of text.split("\n")) {
       if (!value) continue;

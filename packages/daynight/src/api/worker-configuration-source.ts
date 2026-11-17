@@ -28,7 +28,7 @@ const tools = (source: string): string => project(source, ["codex", "copilot", "
 const desiredProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true): string => {
   const capabilities = workerConfigurationCapabilities(options);
   return project(source, ["revision", "updatedAt", "value"], { value: source => project(source,
-    ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(recognizeSudo ? ["enableSudoCleanup"] : []), ...(capabilities.controlMode ? ["agentControlMode"] : []), ...(capabilities.toolPaths ? ["toolPaths"] : [])],
+    ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(recognizeSudo ? ["enableSudoCleanup"] : []), ...(capabilities.controlMode ? ["agentControlMode"] : []), ...(capabilities.toolPaths ? ["toolPaths"] : []), ...(capabilities.archiveSessions ? ["archiveSessions"] : [])],
     { native, projects: source => arraySource(source, source => project(source, ["projectId", "nativeOverrides"], { nativeOverrides: native })), toolPaths: tools }) });
 };
 const knownJson = (source: string): unknown => {
@@ -49,22 +49,22 @@ const sourceOf = (value: unknown): string => {
 export const receiveWorkerDesired = (json: string, options?: WorkerConfigurationCapabilityInput, recognizeSudo = true): ReceivedWorkerDesired => {
   const root = jsonObjectSources(json), value = root.get("value");
   const members = value === undefined ? new Map<string, string>() : jsonObjectSources(value);
-  const capabilities = options ?? { controlMode: members.has("agentControlMode"), toolPaths: members.has("toolPaths") };
+  const capabilities = options ?? { controlMode: members.has("agentControlMode"), toolPaths: members.has("toolPaths"), archiveSessions: members.has("archiveSessions") };
   const enabled = workerConfigurationCapabilities(capabilities);
-  if (!enabled.controlMode && members.has("agentControlMode") || !enabled.toolPaths && members.has("toolPaths")) return malformed();
+  if (!enabled.controlMode && members.has("agentControlMode") || !enabled.toolPaths && members.has("toolPaths") || !enabled.archiveSessions && members.has("archiveSessions")) return malformed();
   return { json, known: parseWorkerCloudDesired(knownJson(desiredProjection(json, capabilities, recognizeSudo)), false, capabilities) };
 };
 const failure = (source: string): string => nullable(source, value => project(value, ["code", "category", "phase", "occurredAt"]));
 const observationProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true): string => project(source, ["baseRevision", "desiredRevision", "items", "reportedAt"], {
   items: source => {
-    const knownKinds = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", ...(recognizeSudo ? ["enableSudoCleanup"] : []), "native", "projectPreparation", "projectRemoval", "projectNative", ...(workerConfigurationCapabilities(options).controlMode ? ["agentControlMode"] : [])];
+    const knownKinds = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", ...(recognizeSudo ? ["enableSudoCleanup"] : []), "native", "projectPreparation", "projectRemoval", "projectNative", ...(workerConfigurationCapabilities(options).controlMode ? ["agentControlMode"] : []), ...(workerConfigurationCapabilities(options).archiveSessions ? ["archiveSessions"] : [])];
     if (!source.trimStart().startsWith("[")) return malformed();
     const items = jsonContainerSources(source).filter(source => {
       const key = jsonObjectSources(source).get("key");
       if (key === undefined) return malformed();
       const kind = jsonObjectSources(key).get("kind");
       if (kind === undefined || typeof JSON.parse(kind) !== "string") return malformed();
-      if (JSON.parse(kind) === "agentControlMode" && !workerConfigurationCapabilities(options).controlMode) return malformed();
+      if (JSON.parse(kind) === "agentControlMode" && !workerConfigurationCapabilities(options).controlMode || JSON.parse(kind) === "archiveSessions" && !workerConfigurationCapabilities(options).archiveSessions) return malformed();
       return knownKinds.includes(JSON.parse(kind) as string);
     }).map(source => project(source, ["key", "targetRevision", "appliedValue", "state", "error", "lastFailure", "nextAttemptAt"], {
       key: source => project(source, ["kind", "projectId"]),
@@ -75,17 +75,17 @@ const observationProjection = (source: string, options: WorkerConfigurationCapab
   },
 });
 export const validateWorkerRemoteObservation = (json: string, observationRevision: string, recognizeSudo = true): void => {
-  const projection = jsonObjectSources(observationProjection(json, true, recognizeSudo)), reportedAt = projection.get("reportedAt");
+  const projection = jsonObjectSources(observationProjection(json, { controlMode: true, toolPaths: true, archiveSessions: true }, recognizeSudo)), reportedAt = projection.get("reportedAt");
   if (reportedAt === undefined) return malformed();
   const instant = timestamp(knownJson(reportedAt));
   if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(instant)) return malformed();
-  const observation = parseWorkerCloudObservation(knownJson(objectSource([...projection].filter(([key]) => key !== "reportedAt"))), false, true);
+  const observation = parseWorkerCloudObservation(knownJson(objectSource([...projection].filter(([key]) => key !== "reportedAt"))), false, { controlMode: true, toolPaths: true, archiveSessions: true });
   if (BigInt(observation.baseRevision) + 1n !== BigInt(parseWorkerCloudRevision(observationRevision))) return malformed();
 };
 export const parseReceivedWorkerConfigurationResource = (value: unknown, options?: WorkerConfigurationCapabilityInput): ReceivedWorkerConfigurationResource => {
   const json = sourceOf(value), members = jsonObjectSources(json), desiredSource = members.get("desired"), observationSource = members.get("observation");
   const desired = desiredSource === undefined || desiredSource === "null" ? null : receiveWorkerDesired(desiredSource, options);
-  const capabilities = options ?? { controlMode: desired !== null && Object.hasOwn(desired.known.value, "agentControlMode"), toolPaths: desired !== null && Object.hasOwn(desired.known.value, "toolPaths") };
+  const capabilities = options ?? { controlMode: desired !== null && Object.hasOwn(desired.known.value, "agentControlMode"), toolPaths: desired !== null && Object.hasOwn(desired.known.value, "toolPaths"), archiveSessions: desired !== null && Object.hasOwn(desired.known.value, "archiveSessions") };
   const projection = project(json, ["desired", "observationRevision", "observation"], { desired: source => nullable(source, source => desiredProjection(source, capabilities)), observation: source => nullable(source, source => observationProjection(source, capabilities)) });
   const known = parseWorkerCloudResource(knownJson(projection), capabilities);
   return { json, desired, observationRevision: known.observationRevision, observationJson: observationSource === "null" ? null : observationSource! };
@@ -93,7 +93,7 @@ export const parseReceivedWorkerConfigurationResource = (value: unknown, options
 export const parseReceivedWorkerConfigurationReceipt = (value: unknown, options?: WorkerConfigurationCapabilityInput): ReceivedWorkerConfigurationReceipt => {
   const json = sourceOf(value), members = jsonObjectSources(json), desiredSource = members.get("desired");
   const desired = desiredSource === undefined || desiredSource === "null" ? null : receiveWorkerDesired(desiredSource, options);
-  const capabilities = options ?? { controlMode: desired !== null && Object.hasOwn(desired.known.value, "agentControlMode"), toolPaths: desired !== null && Object.hasOwn(desired.known.value, "toolPaths") };
+  const capabilities = options ?? { controlMode: desired !== null && Object.hasOwn(desired.known.value, "agentControlMode"), toolPaths: desired !== null && Object.hasOwn(desired.known.value, "toolPaths"), archiveSessions: desired !== null && Object.hasOwn(desired.known.value, "archiveSessions") };
   const known = parseWorkerCloudReceipt(knownJson(project(json, ["desired", "observationRevision", "observationAccepted"], { desired: source => nullable(source, source => desiredProjection(source, capabilities)) })), capabilities);
   return { json, desired, observationRevision: known.observationRevision, observationAccepted: known.observationAccepted };
 };
@@ -124,8 +124,8 @@ export const configurationJsonSourcesEqual = (left: string, right: string): bool
   return semanticKey(left) === semanticKey(right);
 };
 
-export type WorkerCapabilityKey = "agentControlMode" | "toolPaths";
-export const workerCapabilityKeys: readonly WorkerCapabilityKey[] = ["agentControlMode", "toolPaths"];
+export type WorkerCapabilityKey = "agentControlMode" | "toolPaths" | "archiveSessions";
+export const workerCapabilityKeys: readonly WorkerCapabilityKey[] = ["agentControlMode", "toolPaths", "archiveSessions"];
 
 export const desiredCapabilitySources = (json: string): ReadonlyMap<string, string> => {
   const value = jsonObjectSources(json).get("value");
@@ -133,7 +133,7 @@ export const desiredCapabilitySources = (json: string): ReadonlyMap<string, stri
   return jsonObjectSources(value);
 };
 
-// Only the two established negotiated projections may hide a whole member.
+// Only established negotiated projections may hide a whole member.
 export const configurationDesiredSourcesComparable = (left: string, right: string): boolean => {
   const leftRoot = jsonObjectSources(left), rightRoot = jsonObjectSources(right);
   const leftValue = desiredCapabilitySources(left), rightValue = desiredCapabilitySources(right);

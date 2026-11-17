@@ -45,6 +45,7 @@ const identityMatches = (value: unknown, identity: WorkerConfigurationIdentity):
 const requiredKeys = (desired: WorkerCloudDesired): WorkerCloudItemKey[] => {
   const keys: WorkerCloudItemKey[] = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"].map(kind => ({ kind }) as WorkerCloudItemKey);
   if (configurationSupportsMode(desired)) keys.push({ kind: "agentControlMode" });
+  if (desired.value.archiveSessions !== undefined) keys.push({ kind: "archiveSessions" });
   if (desired.value.enableSudoCleanup !== undefined) keys.push({ kind: "enableSudoCleanup" });
   for (const project of desired.value.projects) keys.push({ kind: "projectPreparation", projectId: project.projectId }, { kind: "projectNative", projectId: project.projectId });
   return keys;
@@ -136,9 +137,9 @@ const actualSource = (value: unknown): TrackedConfigurationItem["actualSource"] 
   if (kind !== "observed") throw new TypeError("Worker configuration cache has invalid actual-value provenance.");
   return { kind, recordId: uuid(source.recordId), generation: uuid(source.generation), targetRevision: parseWorkerCloudRevision(source.targetRevision) };
 };
-const parseTracked = (source: unknown, controlMode: boolean): TrackedConfigurationItem => {
+const parseTracked = (source: unknown, controlMode: boolean, archiveSessions = false): TrackedConfigurationItem => {
   const data = exact(source, ["recordId", "origin", "value", "backoffStep", "failureId", "started", "nativeMode", "actualSource", "blockedByRemovalId"]);
-  const origin = exact(data.origin, ["generation", "targetRevision", "source"]), value = parseWorkerCloudItem(data.value, false, controlMode);
+  const origin = exact(data.origin, ["generation", "targetRevision", "source"]), value = parseWorkerCloudItem(data.value, false, { controlMode, toolPaths: false, archiveSessions });
   const revision = parseWorkerCloudRevision(origin.targetRevision), backoffStep = counter(data.backoffStep, 0), failureId = data.failureId === null ? null : counter(data.failureId, 1);
   if ((origin.source !== "application" && origin.source !== "schema4") || revision !== value.targetRevision || backoffStep > configurationRetryDelays.length || typeof data.started !== "boolean" || data.started && value.key.kind !== "projectRemoval" || (value.lastFailure === null) !== (failureId === null)) throw new TypeError("Worker configuration cache has inconsistent application facts.");
   const provenance = actualSource(data.actualSource);
@@ -179,12 +180,12 @@ const parseSchema5 = (source: Record<string, unknown>, identity: WorkerConfigura
   identityMatches(data.identity, identity);
   const authority = exact(data.authority, ["generation", "desired", "observationRevision"]);
   const desired = authority.desired === null ? null : parseConfigurationDesired(authority.desired as WorkerCloudDesired, false);
-  if (preSudo && desired?.value.enableSudoCleanup !== undefined) throw new TypeError("Worker configuration cache has a future known field.");
+  if (preSudo && (desired?.value.enableSudoCleanup !== undefined || desired?.value.archiveSessions !== undefined)) throw new TypeError("Worker configuration cache has a future known field.");
   const observationRevision = parseWorkerCloudRevision(authority.observationRevision, true), nextFailureId = counter(data.nextFailureId, 1);
   if (desired === null && observationRevision !== "0") throw new TypeError("Worker configuration cache has an observation without a target.");
   if (!Array.isArray(data.currentItems) || !Array.isArray(data.retainedItems)) throw new TypeError("Worker configuration cache items must be arrays.");
-  const currentItems = data.currentItems.map(item => parseTracked(item, configurationSupportsMode(desired))), retainedItems = data.retainedItems.map(item => parseTracked(item, true));
-  if (preSudo && [...currentItems, ...retainedItems].some(item => item.value.key.kind === "enableSudoCleanup")) throw new TypeError("Worker configuration cache has a future application result.");
+  const currentItems = data.currentItems.map(item => parseTracked(item, configurationSupportsMode(desired), desired?.value.archiveSessions !== undefined)), retainedItems = data.retainedItems.map(item => parseTracked(item, true, true));
+  if (preSudo && [...currentItems, ...retainedItems].some(item => item.value.key.kind === "enableSudoCleanup" || item.value.key.kind === "archiveSessions")) throw new TypeError("Worker configuration cache has a future application result.");
   const keys = new Set<string>(), selected = new Set(desired?.value.projects.map(project => project.projectId));
   for (const item of currentItems) {
     const key = configurationKey(item.value.key);
@@ -202,7 +203,7 @@ const parseSchema5 = (source: Record<string, unknown>, identity: WorkerConfigura
 
 const upgradeSchema5 = (cache: Cache5): WorkerConfigurationCache => ({
   ...cache,
-  schemaVersion: 7,
+  schemaVersion: 8,
   authority: {
     generation: cache.authority.generation,
     desiredJson: cache.authority.desired === null ? null : [...configurationJsonChunks(cache.authority.desired)].join(""),
@@ -212,19 +213,31 @@ const upgradeSchema5 = (cache: Cache5): WorkerConfigurationCache => ({
   remoteObservation: null,
 });
 
-const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity): WorkerConfigurationCache => {
+const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity, legacy = false): WorkerConfigurationCache => {
   const data = exact(source, ["schemaVersion", "identity", "authority", "remoteObservation", "nextFailureId", "projectionCursor", "currentItems", "retainedItems", ...(Object.hasOwn(source, "hiddenCapabilitySources") ? ["hiddenCapabilitySources"] : [])]);
   identityMatches(data.identity, identity);
   const authority = exact(data.authority, ["generation", "desiredJson", "applicationRevision", "observationRevision"]);
   if (authority.desiredJson !== null && typeof authority.desiredJson !== "string") throw new TypeError("Worker configuration cache has an invalid desired source.");
-  const desired = authority.desiredJson === null ? null : receiveWorkerDesired(authority.desiredJson, undefined, data.schemaVersion !== 6).known;
+  const received = authority.desiredJson === null ? null : receiveWorkerDesired(authority.desiredJson);
+  const desired = received?.known ?? null;
   const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
   if ((desired === null) !== (applicationRevision === null) || desired !== null && BigInt(applicationRevision!) > BigInt(desired.revision)) throw new TypeError("Worker configuration cache has an invalid application revision.");
   // The execution ledger belongs to the last known target change, even when a
   // newer received document changed only fields this binary cannot execute.
+  if (!Array.isArray(data.currentItems)) throw new TypeError("Worker configuration cache items must be arrays.");
+  const currentKinds = new Set(data.currentItems.flatMap(item => {
+    if (typeof item !== "object" || item === null || !("value" in item) || typeof item.value !== "object" || item.value === null || !("key" in item.value) || typeof item.value.key !== "object" || item.value.key === null || !("kind" in item.value.key)) return [];
+    return [item.value.key.kind];
+  }));
+  if (data.schemaVersion === 6 && (currentKinds.has("enableSudoCleanup") || currentKinds.has("archiveSessions"))) throw new TypeError("Worker configuration cache has a future application result.");
+  const missingSudo = legacy && desired?.value.enableSudoCleanup !== undefined && !currentKinds.has("enableSudoCleanup");
+  const missingArchive = legacy && desired?.value.archiveSessions !== undefined && !currentKinds.has("archiveSessions");
+  const previousDesired = desired === null ? null : { ...desired, value: { ...desired.value } };
+  if (missingSudo) delete (previousDesired!.value as { enableSudoCleanup?: boolean }).enableSudoCleanup;
+  if (missingArchive) delete (previousDesired!.value as { archiveSessions?: boolean }).archiveSessions;
   const checked = parseSchema5({
     schemaVersion: 5, identity: data.identity,
-    authority: { generation: authority.generation, desired, observationRevision: authority.observationRevision },
+    authority: { generation: authority.generation, desired: previousDesired, observationRevision: authority.observationRevision },
     nextFailureId: data.nextFailureId, projectionCursor: data.projectionCursor, currentItems: data.currentItems, retainedItems: data.retainedItems,
   }, identity, applicationRevision ?? undefined, data.schemaVersion === 6);
   let remoteObservation: WorkerConfigurationCache["remoteObservation"] = null;
@@ -251,33 +264,28 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
     }
     hiddenCapabilitySources = parsed;
   }
-  return {
-    ...checked, schemaVersion: 7,
+  const parsed: WorkerConfigurationCache = {
+    ...checked, schemaVersion: 8,
     authority: { generation: checked.authority.generation, desiredJson: authority.desiredJson, applicationRevision, observationRevision: checked.authority.observationRevision },
     remoteObservation,
     ...(hiddenCapabilitySources === undefined ? {} : { hiddenCapabilitySources }),
   };
+  if (!missingSudo && !missingArchive) return parsed;
+  const native = parsed.currentItems.find(item => item.value.key.kind === "native");
+  const localMode = desired!.value.agentControlMode ?? native?.nativeMode ?? "herdr";
+  return transitionConfigurationDesired(parsed, received, localMode, new Set(), randomUUID, previousDesired, true);
 };
 
 export const createConfigurationCache = (identity: WorkerConfigurationIdentity): WorkerConfigurationCache => freezeConfiguration({
-  schemaVersion: 7, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null,
+  schemaVersion: 8, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null,
   nextFailureId: 1, projectionCursor: null, currentItems: [], retainedItems: [],
 });
 export const parseConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): CacheRead => {
   if (typeof source !== "object" || source === null || Array.isArray(source)) throw new TypeError("Worker configuration cache has an invalid structure.");
-  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 7;
+  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 8;
   let cache: WorkerConfigurationCache;
-  if (version === 6 || version === 7) {
-    cache = parseCurrent(data, identity);
-    if (version === 6 && cache.authority.desiredJson !== null) {
-      const previous = receiveWorkerDesired(cache.authority.desiredJson, undefined, false).known;
-      const received = receiveWorkerDesired(cache.authority.desiredJson);
-      if (received.known.value.enableSudoCleanup !== undefined) {
-        const native = cache.currentItems.find(item => item.value.key.kind === "native");
-        const localMode = received.known.value.agentControlMode ?? native?.nativeMode ?? "herdr";
-        cache = transitionConfigurationDesired(cache, received, localMode, new Set(), randomUUID, previous, true);
-      }
-    }
+  if (version === 6 || version === 7 || version === 8) {
+    cache = parseCurrent(data, identity, version !== 8);
   } else {
     cache = upgradeSchema5(parseSchema5(version === 5 ? data : upgradeLegacy(parseLegacy(data, identity), identity) as unknown as Record<string, unknown>, identity, undefined, true));
   }

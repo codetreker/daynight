@@ -10,6 +10,7 @@ export type CleanupState = {
   kind: "terminal" | "shutdown";
   startedAt: number;
   deadline: number;
+  discardRecording: boolean;
 };
 export type WebExecutionState = {
   executionId: string; registrationId: string; controllerId: string; controllerInstanceId: string; launchId: string;

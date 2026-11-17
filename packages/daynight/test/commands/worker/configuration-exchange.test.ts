@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, createApiClient } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
+import type { WorkerReport } from "../../../src/api/types.js";
 import type { WorkerCloudDesired, ReceivedWorkerDesired, ReceivedWorkerConfigurationReceipt, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, workerConfigurationRequestId } from "../../../src/commands/worker/configuration-exchange.js";
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
@@ -22,6 +23,17 @@ const deferred = <T = void>() => {
 const operations: Operation[] = [];
 const operation = (): Operation => { const current = createOperation({ limits: { totalMs: 10_000 } }); operations.push(current); return current; };
 afterEach(() => { for (const current of operations.splice(0)) current.dispose(); });
+
+it("sends a captured applied archive observation through the exchange", async () => {
+  const current = operation();
+  const item = { key: { kind: "archiveSessions" as const }, targetRevision: "1", appliedValue: false, state: "applied" as const, error: null, lastFailure: null, nextAttemptAt: null };
+  const captured: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [item] } };
+  const sent = vi.fn(async (_sample: WorkerReport, _body: WorkerCloudReport) => ({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target(), observationRevision: "1", observationAccepted: true }) }));
+  const accept = vi.fn(async () => {});
+  await syncWorkerConfigurationOnce({ operation: current, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: { capture: () => captured, send: sent, accept } });
+  expect(sent.mock.calls[0]![1]).toEqual(captured);
+  expect(accept).toHaveBeenCalledOnce();
+});
 
 it("keeps the actual HTTP request ID when a dispatched report response has invalid JSON", async () => {
   const current = operation(), requestId = "configuration-response-1";

@@ -804,6 +804,21 @@ describe("worker report publication boundaries", () => {
     expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
   });
 
+  it("continues settled local recording deletion when remote inventory fails", async () => {
+    const f = await fixture(), failure = new Error("offline");
+    const owner = { projectId: f.project.projectId, taskId: uuid(951), claimId: uuid(952), worktreeId: uuid(953) };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    const resource = { owner, sessionId: uuid(954), stopped: true, stopEvidence: [], terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, "source"), sourceBytes: "10", state: "ready", error: null, nextAttemptAt: null, worktreeDeleted: false, disposition: null, discardRecording: false };
+    const archive = { resources: () => [resource], selectDiscard: vi.fn(async () => true), discard: vi.fn(async () => {}), advance: vi.fn(), cleaned: vi.fn() };
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => true, archive, registerClaim: () => {}, assertCanAdvance: () => {} } });
+    vi.mocked(f.remote.ownInventory).mockRejectedValue(failure);
+    const coordinator = createWorkerCoordinator({ ...f.options, archiveSessions: () => false });
+    await expect(coordinator.tick()).rejects.toBe(failure);
+    await eventually(() => expect(archive.discard).toHaveBeenCalledOnce());
+    expect(archive.selectDiscard).toHaveBeenCalledOnce();
+    expect(archive.advance).not.toHaveBeenCalled();
+  });
+
   it("publishes a confirmed grant after durable registration and before resource preparation", async () => {
     const f = await fixture();
     const order: string[] = [];
@@ -2222,6 +2237,31 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.resources.has(row.claimId)).toBe(false); expect(f.worktrees.has(row.claimId)).toBe(true);
     await f.coordinator.completeSource(owner);
     expect(f.worktrees.has(row.claimId)).toBe(false); expect(f.store.getTask(row)?.status).toBe("done");
+  });
+
+  it("completes Web control without loading an unrelated retained Herdr backend", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const owner = { projectId: f.project.projectId, taskId: uuid(951), claimId: uuid(952), worktreeId: uuid(953) };
+    const config = { ...configuration, args: [], agentControlMode: "web" as const };
+    f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    f.store.activateTask(owner);
+    let task = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+    task = webStore.beginCleanup(task, { kind: "terminal", deadline: 100 }, 2);
+    const lifecycle = vi.fn((): WorkerHerdrAdapter["lifecycle"] => { throw new Error("Unrelated Herdr journal unavailable"); });
+    const herdr = { ...f.herdr, get lifecycle() { return lifecycle(); } } as WorkerHerdrAdapter;
+    const cleanup = vi.fn(async (_input: WebTask, request: import("../../../src/commands/worker/execution-stop.js").CleanupRequest) => {
+      if (request.kind !== "terminal") throw new Error("Expected terminal cleanup");
+      request.scope.onExecutionStopped({ attempt: request.scope.attempt, observation: { kind: "not-started", owner, observedAt: 1000 } });
+      return { task, complete: true };
+    });
+    const coordinator = createWorkerCoordinator({ ...f.options, herdr, hasHerdrJournal: true, globalConfiguration: config, repositories: [], webStore,
+      webBackend: { cleanup, advance: vi.fn(async value => value), observeExecutionStop: unknownStop } });
+    try {
+      await coordinator.completeSource(owner);
+      expect(f.store.getTask(owner)?.status).toBe("done");
+      expect(lifecycle).not.toHaveBeenCalled();
+    } finally { lifecycle.mockReturnValue(undefined); await coordinator.shutdown(); webStore.close(); }
   });
 
   it("retains control cleanup responsibility when the original stop is unknown", async () => {
@@ -3918,13 +3958,14 @@ describe("worker monitoring of coordinator jobs", () => {
     const owner = { projectId: f.project.projectId, taskId: uuid(975), claimId: uuid(985), worktreeId: uuid(995) };
     f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
     const retained = { owner, sessionId: uuid(1005), stopped: true, stopEvidence: archiveFixture.runs.map(run => run.stopProof), terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, "source"), sourceBytes: "10", state: "pending", error: null, nextAttemptAt: null, worktreeDeleted: true, disposition: null };
-    const archive = { resources: () => [retained], advance: vi.fn(async () => true), cleaned: vi.fn() };
+    const archive = { resources: () => [retained], advance: vi.fn(async (_owner: ResourceOwner, _operation: Operation, admit: () => boolean) => admit()), cleaned: vi.fn() };
     Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => true, archive, stop: vi.fn() } });
     const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true, monitoring: monitor });
     try {
       await coordinator.tick();
       await eventually(() => expect(archive.advance).toHaveBeenCalledOnce());
-      expect(archive.advance).toHaveBeenCalledWith(owner, expect.anything());
+      expect(archive.advance).toHaveBeenCalledWith(owner, expect.anything(), expect.any(Function));
+      expect(archive.advance.mock.calls[0]![2]()).toBe(true);
       expect(archive.cleaned).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
       expect(f.store.getTask(owner)?.status).toBe("done");

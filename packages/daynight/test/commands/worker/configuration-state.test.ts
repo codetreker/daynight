@@ -8,7 +8,7 @@ import { acceptConfigurationProjection, allConfigurationItems, configurationHasU
 const id = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const native: WorkerCloudNative = { agent: "codex", model: "original", args: [] };
 const desired = (revision = "1", projects: readonly string[] = []): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) } });
-const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 7, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0" }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
+const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 8, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0" }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
 const received = (...args: Parameters<typeof desired>) => receiveWorkerDesired(JSON.stringify(desired(...args)));
 const tracked = (number: number, key: WorkerCloudItemKey, appliedValue: TrackedConfigurationItem["value"]["appliedValue"] = null): TrackedConfigurationItem => ({ recordId: id(number), origin: { generation: id(8000), targetRevision: "1", source: "application" }, value: { key, targetRevision: "1", appliedValue, state: appliedValue === null ? "pending" : "applied", error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, started: false, nativeMode: key.kind === "native" || key.kind === "projectNative" ? "herdr" : null, actualSource: appliedValue === null ? null : { kind: "observed", recordId: id(number), generation: id(8000), targetRevision: "1" }, blockedByRemovalId: null });
 const fault: WorkerCloudFailure = { code: "unavailable", category: "agent", phase: "validate", occurredAt: "2026-11-12T00:00:01Z" };
@@ -17,6 +17,35 @@ const options = { synchronized: true, localMode: "herdr" as const, localTools: {
 const ids = () => { let value = 1000; return () => id(value++); };
 
 describe("Worker configuration fact transitions", () => {
+  it("retains the confirmed archive setting when the server omits its capability", () => {
+    const withArchive = { ...desired(), value: { ...desired().value, archiveSessions: false } };
+    const applied = tracked(1, { kind: "archiveSessions" }, false);
+    const original = { ...empty(withArchive), currentItems: [applied] };
+    const legacy = transitionConfigurationDesired(original, received("2"), "herdr", new Set(), ids());
+    expect(legacy.retainedItems).toContainEqual(applied);
+    expect(configurationSnapshot(legacy, true, new Map(), "herdr", options.localTools, valueProof).effective.archiveSessions).toBe(false);
+    expect(configurationSnapshot(legacy, false, new Map(), "herdr", options.localTools, valueProof).effective.archiveSessions).toBeNull();
+    expect(configurationSnapshot(legacy, false, new Map(), "herdr", options.localTools, valueProof).retainedArchiveSessions).toBe(false);
+    const pristine = transitionConfigurationDesired(empty(null), received("2"), "herdr", new Set(), ids());
+    expect(configurationSnapshot(pristine, true, new Map(), "herdr", options.localTools, valueProof).effective.archiveSessions).toBe(true);
+    expect(configurationSnapshot(pristine, false, new Map(), "herdr", options.localTools, valueProof).retainedArchiveSessions).toBe(true);
+    const restored = transitionConfigurationDesired(legacy, receiveWorkerDesired(JSON.stringify({ ...withArchive, revision: "3" })), "herdr", new Set(), ids());
+    expect(findCurrentConfigurationItem(restored, { kind: "archiveSessions" })?.value).toMatchObject({ state: "applied", appliedValue: false });
+  });
+
+  it("retains only an actual archive value before synchronization, including pending targets", () => {
+    const configured = { ...desired(), value: { ...desired().value, archiveSessions: false } };
+    const fresh = transitionConfigurationDesired(empty(null), receiveWorkerDesired(JSON.stringify(configured)), "herdr", new Set(), ids());
+    expect(configurationSnapshot(empty(null), false, new Map(), "herdr", options.localTools, valueProof).retainedArchiveSessions).toBeNull();
+    expect(configurationSnapshot(fresh, false, new Map(), "herdr", options.localTools, valueProof).retainedArchiveSessions).toBeNull();
+    const previouslyTrue = { ...empty(configured), currentItems: [tracked(4, { kind: "archiveSessions" }, true)] };
+    expect(configurationSnapshot(previouslyTrue, false, new Map(), "herdr", options.localTools, valueProof).retainedArchiveSessions).toBe(true);
+    const hidden = transitionConfigurationDesired(fresh, received("2"), "herdr", new Set(), ids());
+    expect(hidden.hiddenCapabilitySources?.archiveSessions).toBeDefined();
+    expect(configurationSnapshot(hidden, true, new Map(), "herdr", options.localTools, valueProof).effective.archiveSessions).toBeNull();
+    expect(configurationSnapshot(hidden, false, new Map(), "herdr", options.localTools, valueProof).retainedArchiveSessions).toBeNull();
+  });
+
   it("creates new current identities without rewriting an observed source or copying failure ownership", () => {
     const original = failed(tracked(1, { kind: "native" }, native));
     const cache = { ...empty(), currentItems: [original] };

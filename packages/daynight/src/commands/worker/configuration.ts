@@ -66,7 +66,7 @@ const nativeTools = (native: WorkerCloudNative, mode: AgentControlMode): readonl
   ...(native.agent === "codex" || native.agent === "copilot" ? [native.agent] : []), ...(mode === "herdr" ? ["herdr" as const] : []),
 ];
 const nativeMode = (cache: WorkerConfigurationCache, key: WorkerCloudItemKey): AgentControlMode | null => findItem(cache, key)?.nativeMode ?? null;
-const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "enableSudoCleanup";
+const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "enableSudoCleanup" || key.kind === "archiveSessions";
 const observedSource = (item: TrackedConfigurationItem): TrackedConfigurationItem["actualSource"] => ({ kind: "observed", recordId: item.recordId, generation: item.origin.generation, targetRevision: item.origin.targetRevision });
 const isJobCancellation = (error: unknown, signal: AbortSignal): boolean => {
   if (!signal.aborted) return false;
