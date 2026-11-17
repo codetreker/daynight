@@ -88,6 +88,11 @@ production Web reads the same Worker's observation, capacity and timestamps.
 The journey starts no native agent and does not replace normal tool preflight. The same resource IDs and content cross the clients
 and persist in the real database.
 
+A second account signs in through the same authentication path using the local
+provider. An ordinary Team administrator searches for that account in the Web,
+adds its exact UUID and verifies the persisted member role through the CLI and a
+Web reload.
+
 The same authenticated journey launches the compiled CLI's public Test Session
 Controller with an environment-owned Codex stdio peer. The peer replaces only
 the upstream native agent: the production adapter, source authority checks,

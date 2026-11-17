@@ -10,6 +10,8 @@ import { ManagementDialog } from "../management/ManagementDialog";
 import { TeamInvitations } from "../management/TeamInvitations";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { OperationPublicationError, useOperation } from "./TeamManagement";
+import { TeamMemberSearch } from "./member-search/TeamMemberSearch";
+import { useTeamMemberAddition } from "./member-search/useTeamMemberAddition";
 
 const messages = (zh: boolean) => zh ? {
   members: "成员", description: "Team 角色会继承到该 Team 的项目。", role: "Team 角色", action: "操作", personal: "Personal Team 的成员和角色固定。", lastAdmin: "至少保留一名 Admin。", leave: "退出 Team", remove: "移除", change: "修改 Team 角色", cancel: "取消", close: "关闭", save: "确认修改", confirmRemove: "移除成员", loading: "正在读取", failed: "无法读取成员。", retry: "重试", rejected: "操作失败，请核对后重试。", conflict: "成员或权限已变化，请重新核对后操作。", unknown: "结果未知。请核对当前状态；无法确认原操作是否成功。", check: "查看当前状态", pending: "正在提交", effect: "Team 继承权限将变化；已有 Project 单独授权保持不变。", from: "角色变更", id: "请求 ID：", unavailable: "此 Team 不可用或你没有访问权限。", storage: "无法清除已保存的 Team 选择，请重试。", current: "当前成员状态", absent: "当前不是 Team 成员。"
@@ -40,14 +42,19 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
   if (!active || admissionBlocked) fresh.current = false;
   const [invitationGuard, setInvitationGuard] = useState({ retain: false, lock: false });
   const invitationGuardRef = useRef(invitationGuard); invitationGuardRef.current = invitationGuard;
+  const [additionGuard, setAdditionGuard] = useState({ retain: false, lock: false });
+  const additionGuardRef = useRef(additionGuard); additionGuardRef.current = additionGuard;
+  const rosterEpoch = useRef(0), additionRosterEpoch = useRef(0);
+  const rosterReadSequence = useRef(0), appliedRosterRead = useRef(0), additionResponseReadSequence = useRef(0);
   const read = useRef<AbortController | null>(null), op = useOperation(admission);
   const callbacks = useRef({ onUnavailable, onChanged, onLeft }); callbacks.current = { onUnavailable, onChanged, onLeft };
   const operation = useRef(op); operation.current = op;
   const activeRef = useRef(active); activeRef.current = active;
   const guardCallback = useRef(onGuardChange); guardCallback.current = onGuardChange;
-  useEffect(() => { guardCallback.current?.(op.pending || op.publicationPending || op.result?.kind === "unknown" || op.publicationError !== null || invitationGuardRef.current.retain); }, [op.pending, op.publicationPending, op.result, op.publicationError, invitationGuard.retain]);
+  useEffect(() => { guardCallback.current?.(op.pending || op.publicationPending || op.result?.kind === "unknown" || op.publicationError !== null || invitationGuardRef.current.retain || additionGuardRef.current.retain); }, [op.pending, op.publicationPending, op.result, op.publicationError, invitationGuard.retain, additionGuard.retain]);
   const load = useCallback(async (reason: ReadReason = "reconcile") => {
     read.current?.abort(); const controller = new AbortController(); read.current = controller;
+    const readSequence = ++rosterReadSequence.current;
     const signal = AbortSignal.any([controller.signal, admission.signal]);
     ++permissionEpoch.current; fresh.current = false; setPermissionReady(false);
     setReconciling(reason === "reconcile");
@@ -61,14 +68,14 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
       if (!roster.some((member) => member.userId === admission.userId)) throw new ApiError("protocol");
       const selected = actionRef.current;
       if (selected !== null && !roster.some((member) => member.userId === selected.member.userId && member.version === selected.member.version && member.role === selected.member.role)) setStale(true);
-      loaded.current = true; fresh.current = true; setPermissionReady(true); setPermissionRevision(permissionEpoch.current); setAccessDenied(false); setTeam(current); latestMembers.current = roster; setMembers(roster); return true;
+      loaded.current = true; fresh.current = true; setPermissionReady(true); setPermissionRevision(permissionEpoch.current); setAccessDenied(false); setTeam(current); latestMembers.current = roster; appliedRosterRead.current = readSequence; setMembers(roster); return true;
     } catch (failure) {
       if (signal.aborted || admission.isInvalidated) return;
       try { await admission.ready(signal); } catch { return; }
       if (signal.aborted || admission.isInvalidated) return;
       const denied = failure instanceof ApiError && failure.kind === "server" && ((failure.status === 404 && failure.code === "not_found") || (failure.status === 403 && failure.code === "forbidden"));
       if (denied) { setAccessDenied(true); loaded.current = false; setTeam(null); latestMembers.current = null; setMembers(null); }
-      const result = failure instanceof ApiError && failure.kind === "server" && failure.status === 404 && failure.code === "not_found" && !operation.current.guarded() && !invitationGuardRef.current.retain ? callbacks.current.onUnavailable?.() : undefined;
+      const result = failure instanceof ApiError && failure.kind === "server" && failure.status === 404 && failure.code === "not_found" && !operation.current.guarded() && !invitationGuardRef.current.retain && !additionGuardRef.current.retain ? callbacks.current.onUnavailable?.() : undefined;
       if (result !== "forgotten") { setStorageError(result === "storage_error"); setError(failure); }
     } finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) { setLoading(false); setReconciling(false); } } }
   }, [admission, teamId, onIdentityMismatch]);
@@ -83,10 +90,38 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
   const admin = team?.kind === "ordinary" && actor?.role === "admin";
   const unknown = op.result?.kind === "unknown";
   const unavailable = accessDenied || preferenceDenied;
-  const locked = unavailable || loading || reconciling || error !== null || op.pending || unknown || op.publicationError !== null || invitationGuard.lock || !active;
-  const open = (next: Action) => { if (locked) return; op.clear(); onStart?.(); setStale(false); setObserved(false); selectAction(next); };
+  const addition = useTeamMemberAddition({
+    teamId, admission, onIdentityMismatch, admin: Boolean(admin) && !unavailable,
+    getPermissionRevision,
+    canStart: () => Boolean(admin) && !unavailable && active && !admissionBlocked && !loading && !reconciling && error === null && fresh.current && !operation.current.guarded() && !operation.current.publishing() && !operation.current.publicationPending && !invitationGuardRef.current.lock,
+    onStart: () => { additionRosterEpoch.current = rosterEpoch.current; onStart?.(); },
+    onResponse: () => { additionResponseReadSequence.current = rosterReadSequence.current; },
+    onGuardChange: (retain, lock) => {
+      additionGuardRef.current = { retain, lock };
+      guardCallback.current?.(retain || invitationGuardRef.current.retain || operation.current.guarded() || operation.current.publicationPending || operation.current.publishing());
+      setAdditionGuard(previous => previous.retain === retain && previous.lock === lock ? previous : { retain, lock });
+    },
+    onReceipt: ({ membership }) => {
+      const currentRoster = latestMembers.current;
+      if (!loaded.current || !currentRoster || !currentRoster.some(member => member.userId === admission.userId)) return false;
+      const current = currentRoster.find(member => member.userId === membership.userId);
+      const safe = current ? current.createdAt === membership.createdAt && current.version <= membership.version : rosterEpoch.current === additionRosterEpoch.current && appliedRosterRead.current <= additionResponseReadSequence.current;
+      if (safe) {
+        read.current?.abort();
+        const next = [...currentRoster.filter(member => member.userId !== membership.userId), membership].sort((a, b) => a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0);
+        latestMembers.current = next; ++rosterEpoch.current; setMembers(next);
+      }
+      callbacks.current.onChanged(true);
+      if (activeRef.current) void load("background");
+      return true;
+    },
+    onPermissionChange: () => { if (activeRef.current) void load(); callbacks.current.onChanged(false); },
+    onCheck: () => load(),
+  });
+  const locked = unavailable || loading || reconciling || error !== null || op.pending || op.publicationPending || op.publishing() || unknown || op.publicationError !== null || invitationGuard.lock || additionGuard.lock || !active;
+  const open = (next: Action) => { if (locked || additionGuardRef.current.lock || invitationGuardRef.current.lock) return; op.clear(); onStart?.(); setStale(false); setObserved(false); selectAction(next); };
   const submit = () => {
-    if (!action || locked || stale || authRequestsPaused() || !fresh.current || !team || team.kind !== "ordinary" || !actor) return;
+    if (!action || locked || additionGuardRef.current.lock || invitationGuardRef.current.lock || stale || authRequestsPaused() || !fresh.current || !team || team.kind !== "ordinary" || !actor) return;
     if (action.kind === "role" && !admin || action.kind === "remove" && !admin && action.member.userId !== admission.userId) return;
     const navigation = browserNavigation().snapshot();
     guardCallback.current?.(true);
@@ -113,7 +148,7 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
         if (change.kind === "role" && member.userId === change.membership.userId && member.createdAt === change.membership.createdAt && member.version <= change.membership.version) return [{ ...member, ...change.membership }];
         return [member];
       }) ?? null;
-      latestMembers.current = next; setMembers(next);
+      latestMembers.current = next; ++rosterEpoch.current; setMembers(next);
       callbacks.current.onChanged(true); if (activeRef.current) void load();
     };
     if (action.kind === "role") void op.run((signal, dispatched) => setTeamMemberRole(admission.userId, action.member, action.role, signal, onIdentityMismatch, dispatched), (receipt) => success(receipt.actorRole, { kind: "role", membership: receipt.membership }), reject);
@@ -131,12 +166,15 @@ export const TeamMembersPanel = ({ teamId, active = true, admissionBlocked = fal
     {(action === null || unavailable) && unknown && <button className="button" type="button" disabled={loading || reconciling} onClick={() => void load()}>{m.check}</button>}
     {unavailable && !op.pending && action !== null && <button className="button" type="button" onClick={() => selectAction(null)}>{m.close}</button>}
     {unavailable && op.pending && <div role="status">{m.pending}</div>}
-    {!unavailable && team && members && <section className="panel"><header className="panel-heading"><div><h2>{m.members}</h2><p>{team.kind === "personal" ? m.personal : m.description}</p></div></header><div className="team-members-list">{members.map((member) => {
+    <OperationPublicationError operation={addition.operation} zh={locale === "zh-CN"} />
+    {admin && addition.success && <p role="status">{addition.success.added ? (locale === "zh-CN" ? "已添加成员" : "Member added") : (locale === "zh-CN" ? "该账号已经是成员" : "This account is already a member")}: <code>{addition.success.targetId}</code></p>}
+    {addition.unknown && <div className="notice error" role="alert"><p>{m.unknown}</p>{addition.targetId && <p><code>{addition.targetId}</code></p>}{addition.error instanceof ApiError && addition.error.requestId !== null && <p>{m.id}<code>{addition.error.requestId}</code></p>}{!unavailable && <button className="button" type="button" disabled={!active || loading || reconciling || addition.checking} onClick={addition.check}>{m.check}</button>}{addition.observed && !unavailable && <p>{m.current}: {members?.some(member => member.userId === addition.targetId) ? (locale === "zh-CN" ? "当前是 Team 成员。" : "Currently a Team member.") : m.absent}</p>}</div>}
+    {!unavailable && team && members && <section className="panel"><header className="panel-heading"><div><h2>{m.members}</h2><p>{team.kind === "personal" ? m.personal : m.description}</p></div>{admin && <TeamMemberSearch teamId={teamId} admission={admission} active={active} admissionBlocked={admissionBlocked} permissionReady={permissionReady && fresh.current} permissionRevision={permissionRevision} getPermissionRevision={getPermissionRevision} onIdentityMismatch={onIdentityMismatch} onPermissionChange={() => { if (activeRef.current) void load(); callbacks.current.onChanged(false); }} members={members} addition={addition} onAdd={addition.add} onCheck={addition.check} />}</header><div className="team-members-list">{members.map((member) => {
       const self = member.userId === admission.userId, last = member.role === "admin" && admins === 1;
       const identity = { ...member.profile, userId: member.userId };
       return <div className="team-member-row" key={member.userId}><Identity user={identity} self={self} /><div className="team-member-role"><label className="visually-hidden" htmlFor={`team-role-${teamId}-${member.userId}`}>{m.role}: {identityName(identity)}</label><NativeSelect id={`team-role-${teamId}-${member.userId}`} density="filter" wrapperClassName="role-select" value={member.role} disabled={locked || !admin || last} onChange={(event) => open({ kind: "role", member, role: event.target.value as TeamRole })}><option value="member">{roles.member}</option><option value="admin">{roles.admin}</option></NativeSelect></div>{last && team.kind === "ordinary" && <div className="team-member-caption">{m.lastAdmin}</div>}<div className="team-member-actions"><button className="button quiet" type="button" disabled={locked || team.kind === "personal" || last || !self && !admin} onClick={() => open({ kind: "remove", member })}>{self ? m.leave : m.remove}</button></div></div>;
     })}</div></section>}
-    <TeamInvitations teamId={teamId} teamName={team?.name ?? ""} active={active} admissionBlocked={admissionBlocked} permissionReady={permissionReady && fresh.current && !admissionBlocked && !unavailable} permissionRevision={permissionRevision} getPermissionRevision={getPermissionRevision} onRoute={onRoute} editable={!unavailable && Boolean(admin) && !loading && !reconciling && !op.pending && !unknown && error === null} actorRole={unavailable || team?.kind !== "ordinary" ? null : actor?.role ?? null} unavailable={unavailable} admission={admission} onIdentityMismatch={onIdentityMismatch} onPermissionChange={() => { if (activeRef.current) void load(); callbacks.current.onChanged(false); }} onGuardChange={(retain, lock) => { invitationGuardRef.current = { retain, lock }; guardCallback.current?.(retain || operation.current.guarded() || operation.current.publicationPending); setInvitationGuard((previous) => previous.retain === retain && previous.lock === lock ? previous : { retain, lock }); }} />
+    <TeamInvitations teamId={teamId} teamName={team?.name ?? ""} active={active} admissionBlocked={admissionBlocked} permissionReady={permissionReady && fresh.current && !admissionBlocked && !unavailable} permissionRevision={permissionRevision} getPermissionRevision={getPermissionRevision} onRoute={onRoute} editable={!unavailable && Boolean(admin) && !loading && !reconciling && !op.pending && !op.publicationPending && !op.publishing() && !unknown && !additionGuard.lock && error === null} canManage={() => !additionGuardRef.current.lock && !operation.current.guarded() && !operation.current.publishing() && !operation.current.publicationPending} actorRole={unavailable || team?.kind !== "ordinary" ? null : actor?.role ?? null} unavailable={unavailable} admission={admission} onIdentityMismatch={onIdentityMismatch} onPermissionChange={() => { if (activeRef.current) void load(); callbacks.current.onChanged(false); }} onGuardChange={(retain, lock) => { invitationGuardRef.current = { retain, lock }; guardCallback.current?.(retain || additionGuardRef.current.retain || operation.current.guarded() || operation.current.publicationPending || operation.current.publishing()); setInvitationGuard((previous) => previous.retain === retain && previous.lock === lock ? previous : { retain, lock }); }} />
     {action && <ManagementDialog title={action.kind === "role" ? m.change : action.member.userId === admission.userId ? m.leave : m.confirmRemove} busy={op.pending} suspended={!active || unavailable} onClose={() => selectAction(null)} footer={<><button className="button" type="button" disabled={op.pending} onClick={() => selectAction(null)}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading || reconciling} onClick={() => { setObserved(false); void load().then((ok) => { if (ok) setObserved(true); }); }}>{m.check}</button> : <button className={`button ${action.kind === "remove" ? "danger" : "primary"}`} type="button" disabled={locked || stale} onClick={submit}>{op.pending ? m.pending : action.kind === "role" ? m.save : action.member.userId === admission.userId ? m.leave : m.confirmRemove}</button>}</>}>
       <OperationPublicationError operation={op} zh={locale === "zh-CN"} />
       <Identity user={{ ...action.member.profile, userId: action.member.userId }} self={action.member.userId === admission.userId} />

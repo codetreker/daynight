@@ -67,13 +67,20 @@ const parseMembership = (value: unknown, teamId: string, extra: readonly string[
   return { teamId, userId: id(data.userId), role: data.role, version: data.version, createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
 };
 const nullableString = (value: unknown): string | null => value === null ? null : string(value);
+export const parseTeamMemberProfile = (value: unknown): TeamMember["profile"] => {
+  const profile = record(value); exact(profile, ["name", "email", "avatarUrl"]);
+  return { name: nullableString(profile.name), email: nullableString(profile.email), avatarUrl: nullableString(profile.avatarUrl) };
+};
+export const parseTeamMember = (value: unknown, teamId: string): TeamMember => ({
+  ...parseMembership(value, teamId, ["profile"]), profile: parseTeamMemberProfile(record(value).profile),
+});
 const decodeMembers = async (response: Response): Promise<unknown> => {
   const text = await response.text();
   const data = record(JSON.parse(text));
   if (Array.isArray(data.items)) data.items = jsonContainerSources(jsonObjectSources(text).get("items")!).map(parseApiJson);
   return data;
 };
-const decodeMemberReceipt = async (response: Response): Promise<unknown> => {
+export const decodeMemberReceipt = async (response: Response): Promise<unknown> => {
   const text = await response.text();
   const data = record(JSON.parse(text));
   if (Object.hasOwn(data, "membership")) data.membership = parseApiJson(jsonObjectSources(text).get("membership")!);
@@ -84,11 +91,7 @@ export const listTeamMembers = (teamId: string, userId: string, signal: AbortSig
   const team = requestId(teamId), user = requestId(userId);
   return teamRead(`/api/v1/teams/${team}/members`, user, signal, onMismatch, (value) => {
     const data = record(value); exact(data, ["items"]);
-    const items = array(data.items, (item) => {
-      const membership = parseMembership(item, team, ["profile"]);
-      const profile = record(record(item).profile); exact(profile, ["name", "email", "avatarUrl"]);
-      return { ...membership, profile: { name: nullableString(profile.name), email: nullableString(profile.email), avatarUrl: nullableString(profile.avatarUrl) } };
-    });
+    const items = array(data.items, (item) => parseTeamMember(item, team));
     if (new Set(items.map((item) => item.userId)).size !== items.length || !items.some((item) => item.userId === user)) return malformed();
     return items;
   }, decodeMembers);

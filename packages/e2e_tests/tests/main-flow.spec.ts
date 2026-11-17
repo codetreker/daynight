@@ -8,6 +8,7 @@ import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
 import { verifyPreviewFlow } from "./preview-flow.ts";
 import { verifyWorkerMonitoring } from "./worker-monitoring.ts";
+import { verifyTeamMemberFlow } from "./team-member-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
@@ -41,6 +42,8 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     await page.getByRole("button", { name: "Authorize CLI", exact: true }).click();
     expect((await login.finished).exitCode).toBe(0);
   } finally { await login.stop(); }
+
+  await verifyTeamMemberFlow(page);
 
   const initialTokens = await page.request.get(`${topology.baseURL}/api/v1/me/tokens`);
   expect(initialTokens.status()).toBe(200);

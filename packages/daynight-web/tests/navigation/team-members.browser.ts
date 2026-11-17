@@ -636,3 +636,68 @@ test('narrow viewport and Chinese dialog retain usable controls', async ({ page 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
 });
+
+test('member search keeps identities and keyboard interaction readable across languages and widths', async ({ page }) => {
+  await install(page);
+  const target = '00000000-0000-4000-8000-000000000075';
+  await page.route(`**/api/v1/teams/${teamId}/member-candidates/search`, route => route.fulfill({ json: { items: [{ userId: target, profile: { name: 'Alexandra Morgan-Williams Long Name', email: 'alexandra.long.email@example.test', avatarUrl: null } }], nextCursor: null, actorRole: 'admin' }, headers: { 'Daynight-User-ID': alice } }));
+  await start(page);
+  for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const input = page.getByRole('searchbox', { name: locale === 'en' ? 'Search and add members' : '搜索并添加成员' });
+    await input.fill('alex');
+    const popup = page.getByRole('dialog', { name: locale === 'en' ? 'Search users and add to team' : '搜索用户并添加到团队' });
+    await expect(popup.getByText('Alexandra Morgan-Williams Long Name')).toBeVisible();
+    await popup.locator('summary').click(); await expect(popup.getByText(target, { exact: true })).toBeVisible();
+    const bounds = await popup.boundingBox(); expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await input.focus(); await input.press('Enter'); await expect(popup.getByText('Alexandra Morgan-Williams Long Name')).toBeVisible();
+    await input.press('Escape'); await expect(popup).toBeHidden(); await expect(input).toBeFocused();
+    await input.fill('');
+  }
+});
+
+test('member search resumes an interrupted query after a background permission check', async ({ page }) => {
+  const api = await install(page);
+  const target = '00000000-0000-4000-8000-000000000075';
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let calls = 0;
+  await page.route(`**/api/v1/teams/${teamId}/member-candidates/search`, async route => {
+    calls++;
+    if (calls === 1) { started.resolve(); await release.promise; }
+    await route.fulfill({ json: { items: [{ userId: target, profile: { name: 'Alex Candidate', email: 'alex@example.test', avatarUrl: null } }], nextCursor: null, actorRole: 'admin' }, headers: { 'Daynight-User-ID': alice } }).catch(() => {});
+  });
+  await start(page);
+  const input = page.getByRole('searchbox', { name: 'Search and add members' });
+  await input.fill('alex'); await started.promise;
+  await foreground(page, api); release.resolve();
+  await expect(page.getByText('Alex Candidate')).toBeVisible();
+  expect(calls).toBeGreaterThanOrEqual(2); await expect(input).toHaveValue('alex'); await expect(input).toBeFocused();
+});
+
+test('member search retains its page during account-change waiting and sends no new requests', async ({ page, context }) => {
+  await install(page);
+  const target = '00000000-0000-4000-8000-000000000075'; let searches = 0;
+  await page.route(`**/api/v1/teams/${teamId}/member-candidates/search`, route => {
+    searches++;
+    return route.fulfill({ json: { items: [{ userId: target, profile: { name: 'Alex Candidate', email: 'alex@example.test', avatarUrl: null } }], nextCursor: null, actorRole: 'admin' }, headers: { 'Daynight-User-ID': alice } });
+  });
+  await start(page);
+  const input = page.getByRole('searchbox', { name: 'Search and add members' });
+  await input.fill('alex');
+  const popup = page.getByRole('dialog', { name: 'Search users and add to team' });
+  await expect(popup.getByText('Alex Candidate')).toBeVisible(); await expect(input).toBeFocused();
+  const other = await context.newPage();
+  try {
+    await other.route('**/api/v1/me', route => route.fulfill({ json: { id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }, headers: { 'Daynight-User-ID': alice } }));
+    await other.goto('/projects');
+    await other.evaluate(id => localStorage.setItem('daynight.activeUser', JSON.stringify(id)), bob);
+    await page.bringToFront();
+    await expect(page.getByText('Account changed', { exact: true })).toBeVisible();
+    await expect(input).toHaveValue('alex'); await expect(input).toBeFocused(); await expect(popup.getByText('Alex Candidate')).toBeVisible();
+    const before = searches;
+    await input.fill('another'); await page.waitForTimeout(500);
+    expect(searches).toBe(before); await expect(input).toHaveValue('another'); await expect(input).toBeFocused();
+  } finally { await other.close(); }
+});
