@@ -1,9 +1,10 @@
 import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { GraphTask, Project, TaskStatus } from "../../api/types";
 import { navigate } from "../../app/router";
 import { browserNavigation } from "../../app/navigation";
+import { useBrowserLocation } from "../../app/browser-location";
 import { useProjectHistory } from "../../app/use-page-history";
 import { ProjectDraftHost } from "../task-detail/TaskDraftNavigation";
 import { OverlayOwnerContext } from "../../app/overlay";
@@ -87,6 +88,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const { activeView: preferredView, onViewChange, issue: tabIssue } = useTaskView(projectId);
   const displayedGoal = useRef<string | null>(null);
   const isDisplayedGoal = useCallback((witness: string) => displayedGoal.current === witness, []);
+  const location = useBrowserLocation();
+  const navigation = browserNavigation();
+  const navigationBusy = useSyncExternalStore(navigation.subscribeDecision, navigation.isBusy);
   const history = useProjectHistory(viewer.userId, projectId, true, { section: preferredSection, view: preferredView }, viewer, isDisplayedGoal);
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
@@ -397,11 +401,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     else if (section === "prs") prPosition.current = window.scrollY;
   }, [section, savePosition, snapshotReady]);
 
-  const selectSection = useCallback((next: ProjectSection) => {
+  const selectSection = useCallback((next: ProjectSection, onCommit?: () => void) => {
     if (next === section) return;
     history.select({ ...selection, section: next, projectGraphWitness: null }, false, () => {
       saveSectionPosition();
       onSectionChange(next);
+      onCommit?.();
     });
   }, [section, saveSectionPosition, onSectionChange, history.select, selection]);
 
@@ -414,25 +419,26 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   useEffect(() => clearTargetHighlight, [clearTargetHighlight]);
 
 
-  const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
+  const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement, fromFragment = false) => {
+    const select: typeof history.select = (next, replace, onCommit) => history.select(next, replace, onCommit, fromFragment);
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
     if (detailSelection === null) pausedOrigin.current = null;
     if (task.parentId === null && detailSelection === null && (activeView === "chains" || activeView === "goals") && openGraphTarget !== null) {
       const representative = snapshot.index.componentByTask.get(id)!;
       if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
-        history.select({ ...selection, projectGraphWitness: null, detail: { id, source: "summary", insideProjectGraph: false,
+        select({ ...selection, projectGraphWitness: null, detail: { id, source: "summary", insideProjectGraph: false,
           navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
           restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false; setNotice(null);
         });
-      } else history.select({ ...selection, projectGraphWitness: id });
+      } else select({ ...selection, projectGraphWitness: id });
       return;
     }
     if (task.parentId !== null) {
-      if (snapshot.summaries.get(task.parentId)?.type !== "goal") { setNotice({ kind: "overview-target-unavailable" }); return; }
+      if (snapshot.summaries.get(task.parentId)?.type !== "goal") { if (fromFragment) select(selection, true); setNotice({ kind: "overview-target-unavailable" }); return; }
       const insideProjectGraph = detailSelection?.insideProjectGraph === true || openGraphTarget !== null && trigger.closest(".task-chain-dialog") !== null;
       const goalId = task.parentId;
-      history.select({ ...selection, detail: { id: goalId, source: "summary", insideProjectGraph,
+      select({ ...selection, detail: { id: goalId, source: "summary", insideProjectGraph,
         navigation: { tab: "description", path: null }, goalChildren: { graphRootId: null, task: { id, navigation: { tab: "overview", path: null } } } } }, false, () => {
         if (originalTrigger.current === null) originalTrigger.current = trigger;
         setNotice(null);
@@ -443,7 +449,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     const members = [...snapshot.index.components.get(representative)!.memberIds]
       .map((member) => snapshot.index.nodes.get(member)!).filter((member) => member.parentId === null);
     if (detailSelection !== null && (tagFilter.invalid || !members.some((member) => matchesTaskTags(snapshot, member, tagFilter.value)))) {
-      history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: detailSelection.insideProjectGraph && openGraphTarget !== null,
+      select({ ...selection, detail: { id, source: "summary", insideProjectGraph: detailSelection.insideProjectGraph && openGraphTarget !== null,
         navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
         if (originalTrigger.current === null) originalTrigger.current = trigger;
         setNotice(null);
@@ -456,22 +462,23 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (originalTrigger.current === null) originalTrigger.current = trigger;
       if (search.applied !== null) search.clear();
       setNotice(null); setAssigneeFilter({ kind: "all" }); setStatusFilter(ALL_TASK_STATUSES);
-      if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
-      if (view !== activeView) onViewChange(view);
+      if (section !== "tasks") { saveSectionPosition(); if (!fromFragment) onSectionChange("tasks"); }
+      if (!fromFragment && view !== activeView) onViewChange(view);
       setNavigationWitness(id);
     };
-    if (section === "tasks" && activeView === view && graphWitness === null && detailSelection === null) commit();
-    else history.select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
+    if (section === "tasks" && activeView === view && graphWitness === null && detailSelection === null && !fromFragment) commit();
+    else select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
   }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, setStatusFilter, tagFilter.value, tagFilter.invalid, section, saveSectionPosition, onSectionChange, onViewChange]);
 
-  const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement) => {
+  const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement, fromFragment = false) => {
+    const select: typeof history.select = (next, replace, onCommit) => history.select(next, replace, onCommit, fromFragment);
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
     if (detailSelection === null) pausedOrigin.current = null;
     const representative = snapshot.index.componentByTask.get(id)!;
     if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
-      if (task.parentId !== null) onNavigateExternalTask(id, trigger);
-      else history.select({ ...selection, projectGraphWitness: null, detail: { id, source: "summary", insideProjectGraph: false,
+      if (task.parentId !== null) onNavigateExternalTask(id, trigger, fromFragment);
+      else select({ ...selection, projectGraphWitness: null, detail: { id, source: "summary", insideProjectGraph: false,
         navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
         restoreRequested.current = false;
         if (originalTrigger.current === null) originalTrigger.current = trigger;
@@ -480,21 +487,21 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       return;
     }
     if (task.parentId !== null) {
-      if (snapshot.summaries.get(task.parentId)?.type !== "goal") { setNotice({ kind: "overview-target-unavailable" }); return; }
+      if (snapshot.summaries.get(task.parentId)?.type !== "goal") { if (fromFragment) select(selection, true); setNotice({ kind: "overview-target-unavailable" }); return; }
       const insideProjectGraph = detailSelection?.insideProjectGraph === true || openGraphTarget !== null && trigger.closest(".task-chain-dialog") !== null;
-      history.select({ ...selection, detail: { id: task.parentId, source: "summary", insideProjectGraph,
+      select({ ...selection, detail: { id: task.parentId, source: "summary", insideProjectGraph,
         navigation: { tab: "description", path: null }, goalChildren: { graphRootId: representative, task: null } } }, false, () => {
         if (originalTrigger.current === null) originalTrigger.current = trigger;
         setNotice(null);
       });
     } else {
       const view = activeView === "goals" ? "goals" : "chains";
-      history.select({ ...selection, section: "tasks", view, projectGraphWitness: id, detail: null }, false, () => {
+      select({ ...selection, section: "tasks", view, projectGraphWitness: id, detail: null }, false, () => {
         if (detailSelection !== null) suppressRestore.current = true;
         if (originalTrigger.current === null) originalTrigger.current = trigger;
         setNotice(null);
-        if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
-        if (activeView !== view) onViewChange(view);
+        if (section !== "tasks") { saveSectionPosition(); if (!fromFragment) onSectionChange("tasks"); }
+        if (!fromFragment && activeView !== view) onViewChange(view);
       });
     }
   }, [snapshot, onNavigateExternalTask, detailSelection, openGraphTarget, history.select, selection, activeView, section, saveSectionPosition, onSectionChange, onViewChange]);
@@ -563,16 +570,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     })();
   }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
+  const attemptedFragment = useRef<typeof location | null>(null);
   useEffect(() => {
-    if (snapshot === null || (!window.location.hash.startsWith("#task=") && !window.location.hash.startsWith("#chain="))) return;
-    const chain = window.location.hash.startsWith("#chain=");
-    const value = new URLSearchParams(window.location.hash.slice(1)).get(chain ? "chain" : "task");
+    if (navigationBusy || snapshot === null || (!location.hash.startsWith("#task=") && !location.hash.startsWith("#chain=")) || attemptedFragment.current === location) return;
+    attemptedFragment.current = location;
+    const chain = location.hash.startsWith("#chain=");
+    const value = new URLSearchParams(location.hash.slice(1)).get(chain ? "chain" : "task");
     const id = value === null ? null : canonicalId(value);
-    browserNavigation().clearFragment();
-    if (id === null || !snapshot.index.nodes.has(id)) { setNotice({ kind: "overview-target-unavailable" }); return; }
-    if (chain) onNavigateExternalChain(id, heading.current!);
-    else onNavigateExternalTask(id, heading.current!);
-  }, [snapshot, onNavigateExternalTask, onNavigateExternalChain]);
+    if (id === null || !snapshot.index.nodes.has(id)) { browserNavigation().clearFragment(); setNotice({ kind: "overview-target-unavailable" }); return; }
+    if (chain) onNavigateExternalChain(id, heading.current!, true);
+    else onNavigateExternalTask(id, heading.current!, true);
+  }, [snapshot, location, navigationBusy, onNavigateExternalTask, onNavigateExternalChain]);
 
   useLayoutEffect(() => {
     if (navigationWitness === null || snapshot === null || section !== "tasks") return;
@@ -674,7 +682,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         <button className="button" type="button" onClick={projectRead.retry}>{projects.retry}</button>
       </section>}
       <div className="project-layout">
-        <ProjectSectionTabs section={section} onChange={selectSection} />
+        <ProjectSectionTabs projectId={projectId} section={section} onChange={selectSection} />
         <div className="project-section-content">
           {sectionIssue !== null && <p className="snapshot-notice" role="status">{preferences.section[sectionIssue.kind]}</p>}
           {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}

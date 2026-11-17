@@ -76,6 +76,7 @@ export class BrowserNavigation {
   snapshot = (): BrowserLocation => this.location;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   decision = (): Decision | null => this.pending;
+  isBusy = (): boolean => this.pending !== null || this.restoring;
   subscribeDecision = (listener: () => void): (() => void) => { this.decisions.add(listener); return () => { this.decisions.delete(listener); }; };
   private notifyDecision(): void { for (const listener of this.decisions) listener(); }
   private toLocation(entry: Entry): BrowserLocation { return { pathname: entry.url.pathname, search: entry.url.search, hash: entry.url.hash, entryId: entry.entryId, view: entry.view }; }
@@ -95,6 +96,15 @@ export class BrowserNavigation {
       [namespace]: { session: this.session, index, entryId, ...(view === undefined ? {} : { view }), ...(overviewView(url, view) ? { resumeUrl: url.href } : {}) } }, '', url.href);
     this.urls.set(index, { url: url.href, entryId });
   }
+  private replaceNativeState(url: URL): void {
+    let state: unknown = this.browser.history.state;
+    if (typeof state === 'object' && state !== null) {
+      const preserved: Record<string, unknown> = { ...state };
+      delete preserved[namespace];
+      state = preserved;
+    }
+    this.browser.history.replaceState(state, '', url.href);
+  }
   /** Scrub a consumed fragment without treating cleanup as a new route or numbering native entries. */
   clearFragment(): void {
     const current = this.readEntry();
@@ -102,15 +112,7 @@ export class BrowserNavigation {
     const url = new URL(current.url);
     url.hash = '';
     if (current.index !== null) this.writeState('replaceState', url, current.index, current.entryId!, current.view);
-    else {
-      let state: unknown = this.browser.history.state;
-      if (typeof state === 'object' && state !== null) {
-        const preserved: Record<string, unknown> = { ...state };
-        delete preserved[namespace];
-        state = preserved;
-      }
-      this.browser.history.replaceState(state, '', url.href);
-    }
+    else this.replaceNativeState(url);
     this.observed = this.readEntry();
     this.adopt(this.observed);
   }
@@ -147,14 +149,15 @@ export class BrowserNavigation {
     const retired = [...this.drafts].filter((draft) => sameScope(draft.scope, scope));
     if (retired.length === 0) return;
     for (const draft of retired) this.drafts.delete(draft);
+    const wasBusy = this.isBusy();
     if (this.pending?.drafts.some((draft) => sameScope(draft.scope, scope))) {
       this.pending = null;
-      this.notifyDecision();
     }
     for (const draft of retired) draft.discard();
     // A history destination has already arrived; revocation never keeps private content mounted.
     this.restoring = false;
     this.afterRestore = null;
+    if (wasBusy && !this.isBusy()) this.notifyDecision();
     this.observed = this.readEntry();
     this.adopt(this.observed);
   }
@@ -173,11 +176,21 @@ export class BrowserNavigation {
     }, this.blockers(url, view));
   }
   /** Commit a reading choice only after the same admission used by route changes. */
-  setView(view: PageHistoryState, options: { readonly replace?: boolean; readonly onCommit?: () => void } = {}): void {
-    if (sameValue(this.accepted.view, view)) return;
-    const url = new URL(this.accepted.url);
+  setView(view: PageHistoryState, options: { readonly to?: string; readonly replace?: boolean; readonly preserveNative?: boolean; readonly onCommit?: () => void } = {}): void {
+    const url = new URL(options.to ?? this.accepted.url, this.accepted.url);
+    if (url.origin !== this.browser.location.origin) throw new DOMException('Application navigation requires the same origin.', 'SecurityError');
+    if (url.href === this.accepted.url.href && sameValue(this.accepted.view, view)) return;
     this.request(() => {
       const current = this.readEntry();
+      if (current.index === null && options.replace && options.preserveNative) {
+        // Fragment consumption updates the native entry without creating an application segment.
+        // Its reading remains in this window only and is never placed in foreign history state.
+        this.replaceNativeState(url);
+        this.observed = { url, index: null, entryId: null, view };
+        this.adopt(this.observed);
+        options.onCommit?.();
+        return;
+      }
       if (current.index === null) { this.session = crypto.randomUUID(); this.urls.clear(); }
       const index = current.index === null ? 0 : options.replace ? current.index : current.index + 1;
       this.writeState(options.replace ? 'replaceState' : 'pushState', url, index,
@@ -218,10 +231,10 @@ export class BrowserNavigation {
     if (pending === null) return;
     const history = pending.kind === 'history';
     this.pending = null;
+    if (history) this.restoring = true;
     this.notifyDecision();
     if (history) {
       this.afterRestore = onRestored === undefined ? null : { drafts: pending.drafts, run: onRestored };
-      this.restoring = true;
       this.restore();
     } else onRestored?.();
   };
@@ -229,6 +242,7 @@ export class BrowserNavigation {
     this.restoring = false;
     const callback = this.afterRestore;
     this.afterRestore = null;
+    this.notifyDecision();
     callback?.run();
   }
   private restore(): void {

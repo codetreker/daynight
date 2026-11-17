@@ -16,7 +16,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
   const gate = Promise.withResolvers<void>();
   const state = { hold: false, started: false, writes: [] as string[], bodies: [] as unknown[], tags: [{ ...tag }], colors: new Map([[tagId, '#D85656']]) };
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
-  await page.route('**/api/v1/**', async route => {
+  await page.context().route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/colors/resolve')) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
@@ -185,5 +185,78 @@ test('delete preview focuses cancellation and does not write when dismissed', as
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
     expect(state.writes).toEqual([]);
+  } finally { release(); }
+});
+
+for (const width of [1280, 390, 320]) {
+  test(`project section URLs use real links and browser history (${width}px)`, async ({ page }) => {
+    const { state, release } = await install(page, 'en');
+    try {
+      await page.setViewportSize({ width, height: 800 });
+      await page.addInitScript(id => localStorage.setItem(`daynight:project-section:${id}`, JSON.stringify('tags')), projectId);
+      await page.goto(`/projects/${projectId}?tab=overview`);
+      const tabs = page.getByRole('tablist', { name: 'Project views' });
+      const overview = tabs.getByRole('tab', { name: 'Overview', exact: true });
+      const tasks = tabs.getByRole('tab', { name: 'Task list', exact: true });
+      const prs = tabs.getByRole('tab', { name: 'PR list', exact: true });
+      const tags = tabs.getByRole('tab', { name: 'Tags', exact: true });
+      await expect(overview).toHaveAttribute('aria-selected', 'true');
+      for (const [tab, name] of [[overview, 'overview'], [tasks, 'tasks'], [prs, 'prs'], [tags, 'tags']] as const)
+        await expect(tab).toHaveAttribute('href', `/projects/${projectId}?tab=${name}`);
+      const before = await page.evaluate(() => history.length);
+      await tasks.click();
+      await expect(page).toHaveURL(new RegExp(`\\?tab=tasks$`));
+      await expect(tasks).toHaveAttribute('aria-selected', 'true');
+      await tasks.click();
+      expect(await page.evaluate(() => history.length)).toBe(before + 1);
+      await prs.click();
+      await expect(page).toHaveURL(new RegExp(`\\?tab=prs$`));
+      await page.goBack();
+      await expect(tasks).toHaveAttribute('aria-selected', 'true');
+      await expect(page).toHaveURL(new RegExp(`\\?tab=tasks$`));
+      await page.goForward();
+      await expect(prs).toHaveAttribute('aria-selected', 'true');
+      await page.reload();
+      await expect(prs).toHaveAttribute('aria-selected', 'true');
+      await prs.focus();
+      await page.keyboard.press('End');
+      await expect(tags).toBeFocused();
+      await expect(tags).toHaveAttribute('aria-selected', 'true');
+      expect(await tags.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(state.writes).toEqual([]);
+    } finally { release(); }
+  });
+}
+
+test('project section links open a new tab without navigating the source', async ({ page }) => {
+  const { release } = await install(page, 'en');
+  try {
+    await page.goto(`/projects/${projectId}?tab=overview`);
+    const tags = page.getByRole('tablist', { name: 'Project views' }).getByRole('tab', { name: 'Tags', exact: true });
+    const [opened] = await Promise.all([page.context().waitForEvent('page'), tags.click({ modifiers: ['Control'] })]);
+    try {
+      await expect(opened).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=tags$`));
+      await expect(opened.getByRole('tablist', { name: 'Project views' }).getByRole('tab', { name: 'Tags', exact: true })).toHaveAttribute('aria-selected', 'true');
+      await expect(page).toHaveURL(new RegExp(`\\?tab=overview$`));
+    } finally { await opened.close(); }
+  } finally { release(); }
+});
+
+test('direct section URLs override preferences and bare entry normalizes without adding history', async ({ page }) => {
+  const { release } = await install(page, 'en');
+  try {
+    await page.addInitScript(id => localStorage.setItem(`daynight:project-section:${id}`, JSON.stringify('tags')), projectId);
+    for (const [tab, label] of [['overview', 'Overview'], ['tasks', 'Task list'], ['prs', 'PR list'], ['tags', 'Tags']] as const) {
+      await page.goto(`/projects/${projectId}?tab=${tab}`);
+      await expect(page.getByRole('tablist', { name: 'Project views' }).getByRole('tab', { name: label, exact: true })).toHaveAttribute('aria-selected', 'true');
+    }
+    await page.goto(`/projects/${projectId}?other=retained`);
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?other=retained&tab=tags$`));
+    await expect(page.getByRole('tablist', { name: 'Project views' }).getByRole('tab', { name: 'Tags', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=tags$`));
+    await page.goto(`/projects/${projectId}?tab=tags&tab=tasks`);
+    await expect(page.getByRole('tablist', { name: 'Project views' })).toHaveCount(0);
   } finally { release(); }
 });
