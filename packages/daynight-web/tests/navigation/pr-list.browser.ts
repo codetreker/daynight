@@ -197,6 +197,13 @@ test('a background sync status change preserves filtering, pagination and the op
   await expect(page.locator('.pr-row')).toHaveCount(6);
   await panel.getByRole('button', { name: 'Next', exact: true }).click();
   await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  const language = page.getByRole('combobox', { name: '语言 / Language' });
+  await language.selectOption('zh-CN');
+  await expect(panel.locator('.pr-connected')).toHaveText('已连接');
+  await expect(filter).toHaveValue('all'); await expect(search).toHaveValue('Pull request');
+  await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  await language.selectOption('en');
+  await expect(panel.locator('.pr-connected')).toHaveText('Connected');
   await page.locator('.pr-row').first().click();
   const dialog = page.getByRole('dialog'), raw = dialog.getByRole('checkbox', { name: 'Raw Markdown' });
   await raw.check();
