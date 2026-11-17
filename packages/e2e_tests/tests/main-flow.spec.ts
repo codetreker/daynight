@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { test, expect, topology, cli, cliEnvironment } from "./fixtures.ts";
-import { startCommand } from "../src/command.ts";
+import { test, expect, topology, cli, cliEnvironment, startOwnedCommand } from "./fixtures.ts";
 import { verifyCompletionFlow } from "./completion-flow.ts";
 import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
@@ -23,7 +22,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   let output = "";
   let resolveAuthorization: (value: { uri: string; code: string }) => void = () => {};
   const authorization = new Promise<{ uri: string; code: string }>((resolve) => { resolveAuthorization = resolve; });
-  const login = startCommand(process.execPath, [topology.cliEntry, "login", "--no-browser"], {
+  const login = await startOwnedCommand(process.execPath, [topology.cliEntry, "login", "--no-browser"], {
     cwd: topology.cliConfigDirectory,
     env: cliEnvironment,
     timeoutMs: 60_000,

@@ -59,6 +59,13 @@ The Redis container has no published port or persistent volume and is included
 in the exact owner-checked cleanup and absence proof. Existing receipts without
 its identity must be cleaned by their original runner rather than inferred.
 
+Worker product journeys also register their original runner and gated process
+identities before the test can launch a detached Controller. Parent cleanup and
+independent recovery verify and stop the original processes before removing the
+fixture or its private execution evidence. A missing or conflicting proof keeps
+the responsibility visible instead of turning process absence into a guessed
+successful cleanup. The product E2E guide owns the recovery procedure.
+
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
 remain with their established owners. Preparation may retrieve pinned build
@@ -95,5 +102,7 @@ not claim an offline build. The upstream source pin and local provider must be
 reviewed when UniAuth's protocol changes.
 
 Per-run cleanup remains part of success, and source/artifact identities bound
-the retained result. The independent hosted job does not replace module, installed CLI or deployment
+the retained result. A failed process observation can retain private fixture
+state until its original ownership can be established; it is excluded from CI
+artifact uploads. The independent hosted job does not replace module, installed CLI or deployment
 checks; module-only fixture changes do not schedule a complete product journey.

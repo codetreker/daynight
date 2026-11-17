@@ -8,6 +8,8 @@ export type CommandOptions = {
   signal?: AbortSignal;
   timeoutMs: number;
   onOutput?: (channel: 'stdout' | 'stderr', chunk: string) => void;
+  stdin?: 'pipe';
+  stopOwnedGroup?: (pid: number) => Promise<void>;
 };
 
 export type CommandResult = { stdout: string; stderr: string; exitCode: number };
@@ -15,6 +17,8 @@ export type ManagedCommand = {
   readonly pid: number;
   finished: Promise<CommandResult>;
   stopProcesses: () => Promise<void>;
+  writeInput: (data: string) => Promise<void>;
+  endInput: () => void;
   stop: () => Promise<void>;
 };
 
@@ -26,10 +30,22 @@ export class CommandFailure extends Error {
     this.result = result;
   }
 }
+export class CommandStopUnconfirmedError extends Error {
+  constructor(cause: unknown) { super('Command process stop was not confirmed.', { cause }); this.name = 'CommandStopUnconfirmedError'; }
+}
+export class CommandTimeoutError extends Error {
+  constructor(timeoutMs: number, command: string) { super(`Command timed out after ${timeoutMs}ms: ${command}`); this.name = 'CommandTimeoutError'; }
+}
 
 const outputLimit = 1024 * 1024;
 const graceMs = 500;
 const closeDeadlineMs = 5_000;
+let activeCommands = 0;
+let unconfirmedCommand = false;
+export const markCommandOutcomeUnconfirmed = (): void => { unconfirmedCommand = true; };
+export const assertCommandQuiescence = (): void => {
+  if (activeCommands !== 0 || unconfirmedCommand) throw new Error('Command lifecycle or external request outcome remains unconfirmed.');
+};
 const delay = async (milliseconds: number): Promise<void> => {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 };
@@ -76,7 +92,8 @@ export const startCommand = (command: string, args: readonly string[], options: 
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error('Command timeoutMs must be a positive finite number.');
   options.signal?.throwIfAborted();
 
-  const child = spawn(command, args, { cwd: options.cwd, env: options.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { cwd: options.cwd, env: options.env, detached: true, stdio: [options.stdin === 'pipe' ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+  activeCommands++;
   const output = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   const failures: unknown[] = [];
   let settled = false;
@@ -89,7 +106,9 @@ export const startCommand = (command: string, args: readonly string[], options: 
   const stopGroup = (): Promise<void> => {
     if (teardown !== undefined) return teardown;
     teardown = (async () => {
-      if (child.pid !== undefined && signalGroup(child.pid, 'SIGTERM')) {
+      if (child.pid !== undefined && options.stopOwnedGroup !== undefined) {
+        await options.stopOwnedGroup(child.pid);
+      } else if (child.pid !== undefined && signalGroup(child.pid, 'SIGTERM')) {
         const deadline = performance.now() + graceMs;
         while (signalGroup(child.pid, 0) && performance.now() < deadline) await delay(20);
         signalGroup(child.pid, 'SIGKILL');
@@ -101,7 +120,7 @@ export const startCommand = (command: string, args: readonly string[], options: 
         }
       }
       await waitForClose(closed);
-    })();
+    })().catch((cause) => { unconfirmedCommand = true; throw new CommandStopUnconfirmedError(cause); });
     // Keep cleanup failures in the completion result while callers await output.
     void teardown.catch((error) => { failures.push(error); });
     return teardown;
@@ -109,6 +128,7 @@ export const startCommand = (command: string, args: readonly string[], options: 
 
   const fail = (error: unknown): void => {
     if (settled) return;
+    unconfirmedCommand = true;
     failures.push(error);
     void stopGroup();
   };
@@ -123,10 +143,11 @@ export const startCommand = (command: string, args: readonly string[], options: 
       else process[channel].write(data);
     } catch (error) { fail(error); }
   };
-  child.stdout.on('data', (data: Buffer) => collect('stdout', data));
-  child.stderr.on('data', (data: Buffer) => collect('stderr', data));
-  child.stdout.once('error', fail);
-  child.stderr.once('error', fail);
+  child.stdin?.on('error', fail);
+  child.stdout!.on('data', (data: Buffer) => collect('stdout', data));
+  child.stderr!.on('data', (data: Buffer) => collect('stderr', data));
+  child.stdout!.once('error', fail);
+  child.stderr!.once('error', fail);
   child.once('error', fail);
   child.once('exit', (code, signal) => {
     resolveExit({ code, signal });
@@ -138,11 +159,12 @@ export const startCommand = (command: string, args: readonly string[], options: 
   });
 
   const abort = (): void => {
+    unconfirmedCommand = true;
     const reason = options.signal!.reason;
     fail(reason instanceof Error ? reason : new Error('Command cancelled.', { cause: reason }));
   };
   options.signal?.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(() => fail(new Error(`Command timed out after ${options.timeoutMs}ms: ${command}`)), options.timeoutMs);
+  const timer = setTimeout(() => { unconfirmedCommand = true; fail(new CommandTimeoutError(options.timeoutMs, command)); }, options.timeoutMs);
 
   const finished = (async (): Promise<CommandResult> => {
     const result = await exited;
@@ -161,6 +183,7 @@ export const startCommand = (command: string, args: readonly string[], options: 
   })();
   // The same promise remains rejectable when the owner observes it later.
   void finished.catch(() => {});
+  void finished.then(() => { activeCommands--; }, () => { activeCommands--; });
 
   return {
     get pid(): number {
@@ -169,6 +192,11 @@ export const startCommand = (command: string, args: readonly string[], options: 
     },
     finished,
     stopProcesses: stopGroup,
+    endInput: () => { child.stdin?.end(); },
+    writeInput: async (data: string): Promise<void> => {
+      if (child.stdin === null) throw new Error('Command input is unavailable.');
+      await new Promise<void>((resolve, reject) => child.stdin!.write(data, (error) => error ? reject(error) : resolve()));
+    },
     stop: async (): Promise<void> => {
       await stopGroup();
       await finished;
@@ -178,6 +206,9 @@ export const startCommand = (command: string, args: readonly string[], options: 
 
 export const runCommand = async (command: string, args: readonly string[], options: CommandOptions): Promise<CommandResult> => {
   const result = await startCommand(command, args, options).finished;
-  if (result.exitCode !== 0) throw new CommandFailure(command, result);
+  if (result.exitCode !== 0) {
+    if (command === 'docker') unconfirmedCommand = true;
+    throw new CommandFailure(command, result);
+  }
   return result;
 };

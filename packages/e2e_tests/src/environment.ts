@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { get as httpsGet } from 'node:https';
 import { createServer, type Server } from 'node:net';
 import path from 'node:path';
-import { runCommand, type CommandResult } from './command.ts';
+import { assertCommandQuiescence, runCommand, type CommandResult } from './command.ts';
 import { cleanupOwnedResources, createDockerAccess, resourceIdentity, writeCleanupReceipt, type ResourceIdentity, type RecoveryMetadata } from './recovery.ts';
 export { cleanupApplication, type CleanupReceipt, type ResourceIdentity } from './recovery.ts';
 
@@ -172,6 +172,8 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
     applicationStarted = true;
     await ready(authURL);
   } catch (error) {
+    try { assertCommandQuiescence(); }
+    catch (cause) { throw new AggregateError([error, cause], 'Environment setup outcome is unconfirmed; original resources and evidence are retained.', { cause: error }); }
     try { await close(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Environment setup and cleanup failed.', { cause: error }); }
     throw error;

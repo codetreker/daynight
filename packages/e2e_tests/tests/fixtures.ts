@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test as base, expect } from "@playwright/test";
-import { runCommand } from "../src/command.ts";
+import { CommandFailure, type CommandOptions } from "../src/command.ts";
+import { startOwnedAuxiliary } from "../src/fixture-owner.ts";
 
 export type Topology = { baseURL: string; authURL: string; proxyURL: string; cliEntry: string; cliConfigDirectory: string };
 const runDirectory = process.env.DAYNIGHT_E2E_RUN_DIRECTORY;
@@ -10,7 +11,14 @@ export const topology = JSON.parse(readFileSync(path.join(runDirectory, "environ
 // Node's color-conflict warning would corrupt the image decoder's stderr protocol.
 const { FORCE_COLOR: _forcedColor, ...environment } = process.env;
 export const cliEnvironment = { ...environment, DN_CONFIG_DIR: topology.cliConfigDirectory };
-export const cli = async (args: string[]) => await runCommand(process.execPath, [topology.cliEntry, ...args], {
+const repository = path.resolve(import.meta.dirname, "../../..");
+export const startOwnedCommand = async (command: string, args: readonly string[], options: CommandOptions, independentController = false) => startOwnedAuxiliary({ repository, runDirectory, command, args, options, independentController });
+export const runOwnedCommand = async (command: string, args: readonly string[], options: CommandOptions) => {
+  const result = await (await startOwnedCommand(command, args, options)).finished;
+  if (result.exitCode !== 0) throw new CommandFailure(command, result);
+  return result;
+};
+export const cli = async (args: string[]) => await runOwnedCommand(process.execPath, [topology.cliEntry, ...args], {
   cwd: topology.cliConfigDirectory, env: cliEnvironment, timeoutMs: 30_000,
 });
 export const test = base;

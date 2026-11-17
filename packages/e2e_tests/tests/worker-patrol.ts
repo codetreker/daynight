@@ -1,31 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { runCommand, startCommand, type ManagedCommand } from "../src/command.ts";
+import type { ManagedCommand } from "../src/command.ts";
+import { markFixtureStopped, prepareFixtureOwnership, registerFixtureClaim, registerFixtureIdentity, startOwnedFixture } from "../src/fixture-owner.ts";
 import { prepareWorkerFixtureConfiguration } from "../src/worker-config.ts";
-import { FixtureWorkerStopError, finalizeFixtureRoot, loadFixtureStopProofs, readFixtureExecutions, stopFixtureWorker, stopRecordedFixtureExecutions, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
-import { cli, cliEnvironment, expect, topology } from "./fixtures.ts";
+import { stopFixtureWorker, type FixtureExecutionIdentity } from "../src/worker-cleanup.ts";
+import { cli, cliEnvironment, expect, runOwnedCommand, topology } from "./fixtures.ts";
 
 type Task = { id: string; version: number; status: string; assignedTo: string | null; session?: { lifecycle?: string }; properties: { paused?: boolean; worker?: { claimId: string; workerId: string; worktreeId: string; nativeSessionId: string | null; state: string } } };
 type PeerEvent = { method: string; threadId: string; text?: string };
 
 // The native peer is controlled; Worker, Controller, Server, relay and PostgreSQL are real.
 export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToken: string }): Promise<void> => {
-  const retained = path.resolve(import.meta.dirname, "../../../.tmp/product-e2e-retained");
-  await mkdir(retained, { recursive: true, mode: 0o700 });
-  const root = await mkdtemp(path.join(retained, "worker-"));
+  const checkout = path.resolve(import.meta.dirname, "../../.."), runDirectory = process.env.DAYNIGHT_E2E_RUN_DIRECTORY;
+  if (runDirectory === undefined) throw new Error("Fixture requires its original E2E run.");
+  const root = await prepareFixtureOwnership(checkout, runDirectory);
   const repository = path.join(root, "repository"), bare = path.join(root, "remote.git"), peer = path.join(root, "codex.mjs"), log = path.join(root, "peer.jsonl");
-  const git = async (cwd: string, args: string[]) => runCommand("git", args, { cwd, env: cliEnvironment, timeoutMs: 30_000 });
+  const git = async (cwd: string, args: string[]) => runOwnedCommand("git", args, { cwd, env: cliEnvironment, timeoutMs: 30_000 });
   let worker: ManagedCommand | undefined, exited = false, output = "";
-  let stopConfirmed = true, workerGroupStopped = true, scenarioFailure: unknown;
+  let scenarioFailure: unknown;
   let workerConfigDirectory: string | undefined, identity: FixtureExecutionIdentity | undefined;
   const workerId = randomUUID();
   const stop = async (): Promise<void> => {
     if (!worker) return;
     const original = worker; worker = undefined;
-    try { await stopFixtureWorker(original, exited); stopConfirmed = true; workerGroupStopped = true; }
-    catch (error) { workerGroupStopped = error instanceof FixtureWorkerStopError && error.groupStopped; throw error; }
+    await stopFixtureWorker(original, exited);
+    await markFixtureStopped(checkout, runDirectory);
   };
   try {
     await git(root, ["init", "--bare", bare]);
@@ -54,20 +54,20 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     workerConfigDirectory = await prepareWorkerFixtureConfiguration(root, { ...server, workerId, repositoryRoot: path.join(root, "repositories"),
       peer, projectId, remote, repository });
     identity = { projectId, taskId, workerId, userId: task.assignedTo, serverOrigin: server.serverUrl, repository };
+    await registerFixtureIdentity(checkout, runDirectory, identity);
     const entries = async (): Promise<PeerEvent[]> => {
       try { return (await readFile(log, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as PeerEvent); }
       catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
     };
-    const start = () => {
+    const start = async () => {
       exited = false;
-      worker = startCommand(process.execPath, [topology.cliEntry, "worker", "run"], { cwd: root,
+      worker = await startOwnedFixture({ repository: checkout, runDirectory, command: process.execPath, args: [topology.cliEntry, "worker", "run"], options: { cwd: root,
         env: { ...cliEnvironment, DN_CONFIG_DIR: workerConfigDirectory, ...(process.env.DAYNIGHT_E2E_WORKER_GIT_DIR ? { PATH: `${process.env.DAYNIGHT_E2E_WORKER_GIT_DIR}${path.delimiter}${process.env.PATH}` } : {}), CODEX_HOME: path.join(root, "native"), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 180_000,
-        onOutput: (_channel, chunk) => { output += chunk; } });
-      stopConfirmed = false; workerGroupStopped = false;
+        onOutput: (_channel, chunk) => { output += chunk; } } });
       void worker.finished.then(() => { exited = true; }, () => { exited = true; });
     };
     const events = async () => { if (exited) throw new Error(`Worker exited unexpectedly:\n${output}`); return entries(); };
-    start();
+    await start();
     await expect.poll(async () => (await events()).filter(event => event.method === "turn/start").length, { timeout: 90_000, intervals: [1_000] }).toBeGreaterThanOrEqual(2);
     const firstTurns = (await entries()).filter(event => event.method === "turn/start");
     expect(firstTurns[0]!.text).toContain("Assignment:");
@@ -77,9 +77,10 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     expect(first.status).toBe("in_progress"); expect(workerClaim).toMatchObject({ state: "active", nativeSessionId: expect.any(String) });
     const original = { claimId: workerClaim!.claimId, workerId: workerClaim!.workerId, worktreeId: workerClaim!.worktreeId, nativeSessionId: workerClaim!.nativeSessionId, state: "active" };
     identity.claimId = original.claimId;
+    await registerFixtureClaim(checkout, runDirectory, original.claimId);
     await stop();
     const stopped = await readTask(); expect(stopped.properties.worker).toMatchObject(original);
-    start();
+    await start();
     await expect.poll(async () => (await events()).filter(event => event.method === "thread/resume").length, { timeout: 90_000, intervals: [1_000] }).toBe(1);
     await expect.poll(async () => {
       const current = await events(), index = current.findIndex(event => event.method === "thread/resume");
@@ -112,15 +113,6 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
   finally {
     const failures: unknown[] = [];
     try { await stop(); } catch (error) { failures.push(error); }
-    try {
-      await finalizeFixtureRoot({ root, stopConfirmed, workerGroupStopped, recover: async () => {
-        if (workerConfigDirectory === undefined || identity === undefined) throw new Error("Fixture Worker ownership is unavailable.");
-        const dist = path.dirname(topology.cliEntry);
-        const load = (name: string) => import(pathToFileURL(path.join(dist, name)).href);
-        const proofs = await loadFixtureStopProofs(load);
-        await stopRecordedFixtureExecutions(await readFixtureExecutions(workerConfigDirectory), identity, workerConfigDirectory, proofs, Date.now() + 15_000);
-      } });
-    } catch (error) { failures.push(error); }
     if (scenarioFailure !== undefined) failures.unshift(scenarioFailure);
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Fixture execution or cleanup failed.");
