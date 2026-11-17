@@ -32,7 +32,7 @@ try {
   await manager.stop();
   manager = undefined;
   const persisted = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(persisted.schemaVersion, 6);
+  assert.equal(persisted.schemaVersion, 7);
   assert.equal(persisted.authority.desiredJson, desiredJson);
   assert.deepEqual(persisted.remoteObservation, { observationRevision: "1", json: observationJson });
   manager = await createWorkerConfigurationManager(options);

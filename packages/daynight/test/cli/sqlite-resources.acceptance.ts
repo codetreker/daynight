@@ -44,6 +44,7 @@ it("ships exact SQL resources and executes installed stores and canonical timeli
     expect(installedResources).toEqual(source);
   }
   expect(count).toBe(expectedCount);
+  expect(expectedResources.find(({ directory }) => directory === "commands/worker/backends/sqlite")!.source).toHaveProperty("005-discard-recording.sql");
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("011-outbox-accounting.sql");
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("013-native-index-lease.sql");
   expect(existsSync(path.join(installed, "dist/commands/controller/content/timeline-schema.sql"))).toBe(false);
@@ -67,7 +68,7 @@ const { controllerJournalWriteOptions } = await load("commands/controller/storag
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
-  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 4, ["executions", "orchestration_blockers"]],
+  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 5, ["executions", "orchestration_blockers"]],
   ["commands/controller/journal-format.js", "controllerJournalFormat", 13, ["execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "operations", "outbox", "outbox_totals", "timeline_entries", "timeline_totals"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
@@ -116,5 +117,5 @@ try {
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 13, 1, 13]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 5, 13, 1, 13]);
 });
