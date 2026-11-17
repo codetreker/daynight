@@ -55,6 +55,20 @@ describe("workspace sidebar", () => {
     expect(screen.queryByRole("link", { name: "Webhooks" })).toBeNull();
   });
 
+  it("keeps each main navigation icon decorative and each link named", () => {
+    render(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" />);
+    const nav = screen.getByRole("navigation", { name: "Main navigation" });
+    const links = Array.from(nav.querySelectorAll(".nav-button"));
+    expect(links).toHaveLength(9);
+    for (const link of links) {
+      expect(link.getAttribute("title")).toBe(link.getAttribute("aria-label"));
+      const slot = link.querySelector(".nav-icon");
+      expect(slot).toHaveAttribute("aria-hidden", "true");
+      expect(slot?.querySelector("svg")).toHaveAttribute("focusable", "false");
+      expect(slot?.querySelectorAll("svg")).toHaveLength(1);
+    }
+  });
+
   it("offers Personal Team access to authorized GitHub Apps", () => {
     const personalId = "00000000-0000-4000-8000-000000000701";
     render(<Harness selectedTeamId={personalId} visibilityTeamId={personalId} route={{ kind: "teamGitHubApps", teamId: personalId }} />);

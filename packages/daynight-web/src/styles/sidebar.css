@@ -6,7 +6,8 @@
 .auth-shell .sidebar .brand { padding: 0 12px 32px; white-space: nowrap; }
 .auth-shell .sidebar .brand-name { overflow: hidden; }
 .auth-shell .sidebar .nav-button { width: 100%; font-size: 12px; gap: 10px; }
-.auth-shell .sidebar .nav-icon { flex: none; width: 18px; text-align: center; font-size: 18px; line-height: 1; }
+.auth-shell .sidebar .nav-icon { flex: none; display: grid; place-items: center; width: 18px; height: 18px; line-height: 0; }
+.auth-shell .sidebar .nav-icon svg { display: block; width: 18px; height: 18px; color: inherit; }
 .auth-shell .sidebar-projects { margin: 4px 0 0 22px; border-left: 1px solid #ffffff1a; padding-left: 8px; }
 .auth-shell .sidebar-projects[hidden] { display: none; }
 .auth-shell .sidebar-project-list { list-style: none; margin: 0; padding: 0; }
