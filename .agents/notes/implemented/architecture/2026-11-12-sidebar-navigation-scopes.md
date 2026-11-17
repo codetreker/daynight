@@ -13,12 +13,16 @@ scope other than the selected sidebar Team.
 
 The sidebar uses one scrolling navigation for the Team or Personal space, My,
 and Tools. The [in-progress tasks placement](2026-11-17-in-progress-tasks-sidebar-position.md)
-places one account-scoped entry before Projects within the first group. A type
-label distinguishes the selected scope, and project lists use the neutral Projects
-title with the confirmed scope separately. Direct
+places one account-scoped entry before Projects within the first group. Project
+lists use the neutral Projects title with the confirmed scope separately. Direct
 Project breadcrumbs do not infer ownership from the sidebar. Account and tool
 entries retain their own resource scopes; Webhooks keeps its independent owner
 selection and catalog gate.
+
+The original design used a visible type label to distinguish the selected scope.
+The [single-line selector decision](../simplification/2026-11-17-single-line-team-selector.md)
+replaces that label while retaining the known type in the accessible name and
+title.
 
 `WorkspaceSidebar` owns layout and drawer lifecycle, `WorkspaceNavigation`
 composes the fixed routes and derives their active state, and

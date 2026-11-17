@@ -290,8 +290,9 @@ restoration or failure and is independent of the selected Team. My contains My
 GitHub Apps, Shared with me, My Workers and Assistants; Tools contains Webhooks
 and Test sessions. Webhooks starts at
 `/webhooks?owner=personal` and retains its independent owner selection and catalog
-gate. The selector shows the known Team or Personal space type above its name; an
-unknown type leaves that line empty. Project list headings and document titles use
+gate. The expanded selector displays an avatar, a single-line name and an arrow,
+with no type row or reserved blank line; its accessible name and title retain the
+full name and known type. Project list headings and document titles use
 Projects, with the confirmed scope in the eyebrow. Direct project breadcrumbs do
 not infer ownership from the sidebar Team. The Team trigger
 opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
