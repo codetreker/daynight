@@ -32,29 +32,93 @@ describe('GitHub App management', () => {
   });
   it('discards credentials and isolates a late write after account replacement', async () => {
     const pending = deferred<GitHubApp>(); mocks.update.mockImplementation((_id, _input, _signal, admission) => { admission.onDispatch(); return pending.promise; });
-    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Edit configuration' }));
+    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Change private key' }));
     const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: 'PRIVATE DRAFT' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Verify and save' })); await waitFor(() => expect(mocks.update).toHaveBeenCalledOnce());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save private key' })); await waitFor(() => expect(mocks.update).toHaveBeenCalledOnce());
     const replacement = { ...scope, userId: 'f9c9b0ee-8f25-4b89-a6a4-d75aee7dc633' } as TaskCacheScope;
     scope = replacement; view.rerender(subject()); await act(async () => pending.resolve({ ...app, version: '9007199254740994' }));
-    expect(screen.queryByDisplayValue('PRIVATE DRAFT')).toBeNull(); expect(screen.queryByText('Configuration saved.')).toBeNull();
+    expect(screen.queryByDisplayValue('PRIVATE DRAFT')).toBeNull(); expect(screen.queryByText('Private key saved.')).toBeNull();
   });
   it('omits blank secrets and submits the exact observed version', async () => {
     mocks.update.mockImplementation(async (_id, input, _signal, admission) => { admission.onDispatch(); return { ...app, name: input.name, version: '9007199254740994' }; });
-    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Edit configuration' }));
-    const dialog = screen.getByRole('dialog'); expect(within(dialog).getByLabelText('Private key')).toHaveValue(''); expect(within(dialog).getByLabelText('Webhook secret')).toHaveValue('');
-    fireEvent.change(within(dialog).getByLabelText('Registration name'), { target: { value: 'Renamed' } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify and save' }));
-    await screen.findByText('Configuration saved.'); expect(mocks.update.mock.calls[0]![1]).toEqual({ version: '9007199254740993', name: 'Renamed' });
+    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Edit name' }));
+    const dialog = screen.getByRole('dialog'); expect(within(dialog).queryByLabelText('Private key')).toBeNull(); expect(within(dialog).queryByLabelText('Webhook secret')).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText('Registration name'), { target: { value: 'Renamed' } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Save name' }));
+    await screen.findByText('Name saved.'); expect(mocks.update.mock.calls[0]![1]).toEqual({ version: '9007199254740993', name: 'Renamed' });
+  });
+  it('does not send an unchanged name', async () => {
+    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Edit name' }));
+    const dialog = screen.getByRole('dialog'); fireEvent.click(within(dialog).getByRole('button', { name: 'Save name' }));
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+  it('isolates credential drafts, refuses blank input and submits only the selected field', async () => {
+    mocks.update.mockImplementation(async (_id, _input, _signal, admission) => { admission.onDispatch(); return { ...app, version: '9007199254740994' }; });
+    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Change private key' }));
+    let dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByLabelText('Webhook secret')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save private key' })); expect(mocks.update).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: 'PRIVATE DRAFT' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change Webhook secret' })); dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByLabelText('Private key')).toBeNull(); expect(within(dialog).getByLabelText('Webhook secret')).toHaveValue('');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save Webhook secret' })); expect(mocks.update).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText('Webhook secret'), { target: { value: '  secret  ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save Webhook secret' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mocks.update.mock.calls[0]![1]).toEqual({ version: '9007199254740993', webhookSecret: '  secret  ' });
+    expect(mocks.update.mock.calls[0]![3]).toEqual(expect.objectContaining({ userId }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change private key' })); dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByLabelText('Private key')).toHaveValue('');
+    fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: 'NEW KEY' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save private key' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(2));
+    expect(mocks.update.mock.calls[1]![1]).toEqual({ version: '9007199254740994', privateKeyPem: 'NEW KEY' });
+  });
+  it('does not repeat a pending or unknown credential write or allow another editor to bypass it', async () => {
+    const pending = deferred<GitHubApp>(); mocks.update.mockImplementation((_id, _input, _signal, admission) => { admission.onDispatch(); return pending.promise; });
+    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Change Webhook secret' }));
+    const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Webhook secret'), { target: { value: 'uncertain' } });
+    const submit = within(dialog).getByRole('button', { name: 'Save Webhook secret' }); fireEvent.click(submit); fireEvent.click(submit);
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledOnce()); expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    await act(async () => pending.reject(new ApiError('network'))); await within(dialog).findByText(/result is unknown/i);
+    expect(within(dialog).getByLabelText('Webhook secret')).toHaveValue('uncertain');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.getByText(/result is unknown/i)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Change private key' }));
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(mocks.update).toHaveBeenCalledOnce();
+  });
+  it('retains a confirmed receipt across dialog closure while admission recovery is pending', async () => {
+    const recovery = deferred<void>(); let blocked = false;
+    scope = { ...scope, ready: async (signal: AbortSignal) => { signal.throwIfAborted(); if (blocked) await recovery.promise; signal.throwIfAborted(); } } as TaskCacheScope;
+    mocks.update.mockImplementation(async (_id, _input, _signal, admission) => {
+      admission.onDispatch(); blocked = true; return { ...app, version: '9007199254740994' };
+    });
+    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Change Webhook secret' }));
+    const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Webhook secret'), { target: { value: 'confirmed-secret' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save Webhook secret' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledOnce());
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Change private key' }));
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(mocks.update).toHaveBeenCalledOnce();
+    blocked = false; await act(async () => recovery.resolve());
+    await screen.findByText('Webhook secret saved.');
+    fireEvent.click(screen.getByRole('button', { name: 'Change private key' }));
+    const next = screen.getByRole('dialog'); fireEvent.change(within(next).getByLabelText('Private key'), { target: { value: 'next key' } });
+    fireEvent.click(within(next).getByRole('button', { name: 'Save private key' }));
+    await waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(2));
+    expect(mocks.update.mock.calls[1]![1]).toEqual({ version: '9007199254740994', privateKeyPem: 'next key' });
+    await act(async () => recovery.resolve());
   });
   it('retains a draft after a version conflict and requires a fresh decision', async () => {
     const failure = new ApiError('server', 409, 'version_conflict');
     mocks.update.mockImplementation(async (_id, _input, _signal, admission) => { admission.onDispatch(); throw failure; });
-    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Edit configuration' }));
-    const dialog = screen.getByRole('dialog'), name = within(dialog).getByLabelText('Registration name'); fireEvent.change(name, { target: { value: 'Draft name' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Verify and save' }));
-    expect(await within(dialog).findByRole('button', { name: 'Review current state' })).toBeVisible(); expect(name).toHaveValue('Draft name'); expect(mocks.update).toHaveBeenCalledOnce();
+    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Change private key' }));
+    const dialog = screen.getByRole('dialog'), key = within(dialog).getByLabelText('Private key'); fireEvent.change(key, { target: { value: 'Draft key' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save private key' }));
+    expect(await within(dialog).findByRole('button', { name: 'Review current state' })).toBeVisible(); expect(key).toHaveValue('Draft key'); expect(mocks.update).toHaveBeenCalledOnce();
     mocks.get.mockResolvedValue({ ...app, version: '9007199254740994', name: 'Other name' }); fireEvent.click(within(dialog).getByRole('button', { name: 'Review current state' }));
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Verify and save' })).toBeEnabled()); expect(name).toHaveValue('Draft name'); expect(mocks.update).toHaveBeenCalledOnce();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save private key' })).toBeEnabled()); expect(key).toHaveValue('Draft key'); expect(mocks.update).toHaveBeenCalledOnce();
   });
   it('keeps an unknown registration distinct after checking its generated ID and never replays it', async () => {
     mocks.create.mockImplementation(async (_input, _signal, admission) => { admission.onDispatch(); throw new ApiError('network'); });
@@ -132,20 +196,20 @@ describe('GitHub App management', () => {
   });
 
   it('keeps the editor and focus during a temporary admission block and its recovery read', async () => {
-    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Edit configuration' }));
+    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Change Webhook secret' }));
     const dialog = screen.getByRole('dialog'), secret = within(dialog).getByLabelText('Webhook secret') as HTMLInputElement;
     fireEvent.change(secret, { target: { value: 'retained-secret' } }); secret.focus(); secret.setSelectionRange(2, 6);
     const reads = mocks.get.mock.calls.length, pending = deferred<GitHubApp>(); mocks.get.mockReturnValue(pending.promise);
     view.rerender(subject({ admissionBlocked: true }));
     expect(screen.getByRole('dialog')).toBe(dialog); expect(secret).toBeVisible(); expect(secret).toBeEnabled(); expect(secret).toHaveFocus();
     expect(secret).toHaveValue('retained-secret'); expect([secret.selectionStart, secret.selectionEnd]).toEqual([2, 6]);
-    expect(within(dialog).getByRole('button', { name: 'Verify and save' })).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify and save' })); expect(mocks.get).toHaveBeenCalledTimes(reads); expect(mocks.update).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole('button', { name: 'Save Webhook secret' })).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(within(dialog).getByRole('button', { name: 'Save Webhook secret' })); expect(mocks.get).toHaveBeenCalledTimes(reads); expect(mocks.update).not.toHaveBeenCalled();
     fireEvent.change(secret, { target: { value: 'edited-locally' } });
     view.rerender(subject()); await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(reads + 1));
     expect(screen.getByRole('dialog')).toBe(dialog); expect(secret).toBeVisible(); expect(secret).toHaveFocus(); expect(secret).toHaveValue('edited-locally');
-    expect(within(dialog).getByRole('button', { name: 'Verify and save' })).toHaveAttribute('aria-disabled', 'true');
+    expect(within(dialog).getByRole('button', { name: 'Save Webhook secret' })).toHaveAttribute('aria-disabled', 'true');
     await act(async () => pending.resolve({ ...app }));
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Verify and save' })).toHaveAttribute('aria-disabled', 'false'));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save Webhook secret' })).toHaveAttribute('aria-disabled', 'false'));
     expect(secret).toHaveFocus(); expect(secret).toHaveValue('edited-locally'); expect(mocks.update).not.toHaveBeenCalled();
   });
 

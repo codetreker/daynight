@@ -7,7 +7,9 @@
 .github-app-details dl { margin: 0; display: grid; gap: 18px; }
 .github-app-details dl > div { display: grid; grid-template-columns: minmax(100px, 180px) minmax(0, 1fr); gap: 12px; }
 .github-app-details dt { color: #556176; }
-.github-app-details dd { margin: 0; overflow-wrap: anywhere; }
+.github-app-details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.github-app-credential { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.github-app-modal-form code { overflow-wrap: anywhere; word-break: break-word; }
 .github-app-webhook { margin-top: 24px; border-top: 1px solid #e4e8ef; padding-top: 20px; }
 .github-app-webhook code, .github-app-impact code { overflow-wrap: anywhere; word-break: break-word; }
 .github-app-impact ul { list-style: none; padding: 0; }
