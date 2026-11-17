@@ -28,7 +28,7 @@
 | Worker workingDirectory、native arg | 各 4 KiB |
 | Worker OS type、arch、release、version | 分别 64、64、256、1024 bytes |
 | Worker CPU model | 512 bytes |
-| Worker native args、projects、claims、observation items | 分别 128、128、256、1027 项；观察项中原非 mode、非 sudo 项最多 1025，另有 sudo 和协商 mode 各一个名额 |
+| Worker native args、projects、claims、observation items | 分别 128、128、256、1028 项；观察项中除 mode、archiveSessions 和 sudo 外最多 1025 项，三者各有一个独立名额 |
 | Worker telemetry、configuration、完整单项编码 | 各 4 MiB |
 | Worker maxConcurrent、pollIntervalMs、recoveryLimit | 分别 1–64、1000–60000、0–10 |
 

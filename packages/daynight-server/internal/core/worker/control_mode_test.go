@@ -227,12 +227,29 @@ func TestControlModeMergeChecksFinalEncodedBudget(t *testing.T) {
 	if _, err := NormalizeConfiguration(value); err != nil {
 		t.Fatalf("boundary configuration rejected: %v", err)
 	}
-	web := model.AgentControlModeWeb
 	ctx, principal := context.Background(), model.Principal{UserID: "user"}
+	legacy := value
+	legacy.ArchiveSessions = nil
+	legacy.PreserveArchiveSessions = true
+	legacy.MaxConcurrent = 2
 	dao := configuredDAO("1")
+	dao.current.Desired.Value = value
+	result, err := PutConfiguration(ctx, dao, principal, "worker", 1, legacy)
+	if err != nil || result.Desired.Revision != "2" || result.Desired.Value.ArchiveSessions == nil || !*result.Desired.Value.ArchiveSessions {
+		t.Fatalf("boundary legacy replacement: %+v %v", result, err)
+	}
+	bootstrap := value
+	bootstrap.ArchiveSessions = nil
+	dao = &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}}
+	receipt, err := ExchangeConfiguration(ctx, dao, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &bootstrap})
+	if err != nil || receipt.Desired.Value.ArchiveSessions == nil || !*receipt.Desired.Value.ArchiveSessions {
+		t.Fatalf("boundary bootstrap: %+v %v", receipt, err)
+	}
+	web := model.AgentControlModeWeb
+	dao = configuredDAO("1")
 	dao.current.Desired.Value.AgentControlMode = &web
 	value.PreserveAgentControlMode = true
-	_, err := PutConfiguration(ctx, dao, principal, "worker", 1, value)
+	_, err = PutConfiguration(ctx, dao, principal, "worker", 1, value)
 	requireFault(t, err, "invalid_input")
 	if dao.desiredWrites != 0 {
 		t.Fatal("over-budget merged replacement persisted")
@@ -248,11 +265,11 @@ func TestControlModeMergeChecksFinalEncodedBudget(t *testing.T) {
 }
 
 func TestControlModeObservationBudgetPreservesLegacyProjection(t *testing.T) {
-	document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(MaxObservationItems-2, "0"), "controlModeBootstrap": nil}
+	document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(MaxObservationItems-3, "0"), "controlModeBootstrap": nil}
 	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err != nil {
 		t.Fatalf("legacy collection rejected: %v", err)
 	}
-	document["observation"] = configurationCapacityObservationDocument(MaxObservationItems-1, "0")
+	document["observation"] = configurationCapacityObservationDocument(MaxObservationItems-2, "0")
 	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err == nil {
 		t.Fatal("1026 non-mode entries would exceed legacy projection")
 	}

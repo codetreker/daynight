@@ -33,6 +33,7 @@ func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	workerID := testutil.QueryID(90)
 	configuration := func(max int64) model.WorkerConfiguration {
 		return model.WorkerConfiguration{
+			ArchiveSessions:             new(true),
 			PreferPlatformSpecificTasks: false, MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
 			Native:   model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
 			Projects: []model.WorkerProjectConfiguration{{ProjectID: project.ID, NativeOverrides: map[string]json.RawMessage{}}},
@@ -262,7 +263,8 @@ func TestWorkerHistoricalConfigurationStoreReadback(t *testing.T) {
 	workerID := testutil.QueryID(90)
 	configuration := func(max int64, withProject bool) model.WorkerConfiguration {
 		value := model.WorkerConfiguration{
-			MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
+			ArchiveSessions: new(true),
+			MaxConcurrent:   max, PollIntervalMs: 60000, RecoveryLimit: 3,
 			PreferPlatformSpecificTasks: false,
 			Native:                      model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
 			Projects:                    []model.WorkerProjectConfiguration{},

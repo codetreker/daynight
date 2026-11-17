@@ -53,6 +53,19 @@ func TestWorkerEncodingMatchesProduction(t *testing.T) {
 	}
 }
 
+func TestConfigurationBudgetRetainsBaseShape(t *testing.T) {
+	enabled := false
+	value := model.WorkerConfiguration{ArchiveSessions: &enabled, Native: model.WorkerNativeConfiguration{Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
+	var out bytes.Buffer
+	n, err := EncodeConfiguration(&out, value, math.MaxInt64)
+	if err != nil || n != int64(out.Len()) || bytes.Contains(out.Bytes(), []byte(`"archiveSessions"`)) {
+		t.Fatalf("unexpected base configuration encoding: %s %d %v", out.Bytes(), n, err)
+	}
+	if _, err := EncodeConfiguration(io.Discard, value, n-1); err == nil {
+		t.Fatal("base configuration exceeded its budget")
+	}
+}
+
 func TestWorkerProjectionStates(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("x", 3600))
 	text := "model"
