@@ -1,3 +1,4 @@
+import { BrandMark } from "../ui/BrandMark";
 import { useLayoutEffect, useRef, type MouseEvent } from 'react';
 import { useBrowserLocation } from './browser-location';
 import { TaskDetailPage } from '../features/task-detail/TaskDetailPage';
@@ -36,7 +37,7 @@ const AppView = () => {
       <a className="skip-link" href="#main-content">{m.skipToContent}</a>
       <aside className="sidebar" aria-label={m.workspaceNavigation}>
         <a className="brand" href="/projects" onClick={goToProjects} aria-label={m.projectHome}>
-          <span className="brand-mark" aria-hidden="true" />daynight
+          <BrandMark className="brand-mark" surface="dark" />daynight
         </a>
         <nav aria-label={m.mainNavigation}>
           <p className="nav-label">{m.workspace}</p>

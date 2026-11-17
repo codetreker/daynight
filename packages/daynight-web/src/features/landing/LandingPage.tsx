@@ -1,3 +1,4 @@
+import { BrandMark } from "../../ui/BrandMark";
 import { AccountSyncNotice } from "../auth/AccountSyncNotice";
 import { AccountRefreshNotice } from "../auth/AccountRefreshNotice";
 import { useLayoutEffect } from "react";
@@ -11,7 +12,7 @@ import "../../styles/landing.css";
 const Arrow = ({ diagonal = false }: { readonly diagonal?: boolean }) => <span className="arrow" aria-hidden="true">{diagonal ? "↗" : "→"}</span>;
 const Brand = () => {
   const { messages: { landing } } = useI18n();
-  return <a className="brand" href="/" aria-label={landing.navigation.home}><span className="mark" aria-hidden="true" />daynight</a>;
+  return <a className="brand" href="/" aria-label={landing.navigation.home}><BrandMark className="mark" surface="light" />daynight</a>;
 };
 
 export const LandingPage = () => {

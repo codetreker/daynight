@@ -14,7 +14,7 @@
 .landing-page .eyebrow { color:var(--indigo); font-size:12px; font-weight:750; letter-spacing:.14em; line-height:1.5; }
 .landing-page .muted { color:var(--muted); }
 .landing-page .brand { color:var(--ink); padding:0; display:inline-flex; align-items:center; gap:10px; font-size:22px; font-weight:750; letter-spacing:-.7px; }
-.landing-page .mark { width:29px; height:29px; display:inline-block; border-radius:50%; background:linear-gradient(90deg,#bcb9ff 50%,#5c5ce0 50%); transform:rotate(-26deg); flex-shrink:0; }
+.landing-page .mark { width:29px; height:29px; display:inline-block; flex-shrink:0; }
 .landing-page .arrow { display:inline-block; margin-left:12px; font-size:19px; line-height:1; }
 .landing-page .button { gap:0; white-space:normal; display:inline-flex; align-items:center; justify-content:center; border-radius:8px; min-height:48px; padding:13px 20px; font-size:14px; font-weight:650; border:1px solid var(--line); line-height:1.5; background:white; }
 .landing-page .button.primary { color:white; background:var(--indigo); border-color:var(--indigo); box-shadow:0 5px 16px #5c5ce01a; }
