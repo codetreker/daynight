@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { useBrowserLocation } from './browser-location';
 import { browserNavigation } from './navigation';
-import { accountHistory, emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readAccountHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type AccountTab, type MyTasksReading, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
+import { emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
 import { parseAuthRoute, parseRoute } from './router';
 import type { TaskCacheScope } from '../features/task-cache/project-cache';
 
@@ -104,33 +104,6 @@ export function useMyTasksHistory(userId: string, active: boolean, scope: TaskCa
     } });
   };
   return { selection, select, error };
-}
-
-/** The active account page consumes only admitted, identity-bound selections. */
-export function useAccountHistory(userId: string, active: boolean) {
-  const location = useBrowserLocation();
-  const navigation = browserNavigation();
-  const retained = useRef<{ userId: string; tab: AccountTab }>({ userId, tab: 'profile' });
-  if (retained.current.userId !== userId) retained.current = { userId, tab: 'profile' };
-  const onPage = active && location.pathname === '/account';
-  let selected: AccountTab | null = null;
-  let error = false;
-  if (onPage) {
-    try { selected = readAccountHistory(location.view, userId); }
-    catch { error = true; }
-  }
-  const tab = !onPage || location.entryId === null ? retained.current.tab : selected ?? 'profile';
-  useLayoutEffect(() => {
-    if (!onPage || error) return;
-    retained.current.tab = tab;
-    if (location.entryId !== null && selected === null) navigation.setView(accountHistory(userId, tab), { replace: true });
-  }, [onPage, error, tab, selected, location.entryId, navigation, userId]);
-  const select = (next: AccountTab, replace = false) => {
-    if (!onPage || error) return;
-    if (location.entryId !== null && selected === null) navigation.setView(accountHistory(userId, tab), { replace: true });
-    if (next !== tab) navigation.setView(accountHistory(userId, next), { replace });
-  };
-  return { tab, select, error };
 }
 
 /** Project entries hold the complete reading position, while preferences remain user actions. */

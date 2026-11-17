@@ -184,6 +184,22 @@ describe("explicit login destinations", () => {
   });
 });
 
+describe("Account settings routes", () => {
+  it("parses explicit selections and preserves them through login", () => {
+    for (const [search, tab] of [["", "profile"], ["?tab=profile", "profile"], ["?tab=tokens", "tokens"], ["?tab=prompt", "prompt"], ["?other=value&tab=prompt&authError=login_failed", "prompt"]] as const) {
+      expect(parseAuthRoute("/account", search)).toEqual({ kind: "account", selection: { kind: "tab", tab } });
+      const path = `/account${search}`;
+      expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: path })}`)).toBe(path);
+      expect(new URL(loginUrl(path), window.location.origin).searchParams.get("returnPath")).toBe(path);
+    }
+  });
+  it("retains account context for empty, unknown and duplicate selections", () => {
+    for (const search of ["?tab=", "?tab=unknown", "?tab=%ZZ", "?tab=tokens&tab=tokens", "?tab=profile&tab=prompt"]) {
+      expect(parseAuthRoute("/account", search)).toEqual({ kind: "account", selection: { kind: "invalid" } });
+    }
+  });
+});
+
 describe("Project settings routes", () => {
   const path = `/projects/${projectId}/settings`;
 

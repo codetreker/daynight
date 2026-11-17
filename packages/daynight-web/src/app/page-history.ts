@@ -3,7 +3,6 @@ import { isAttachmentPath } from '../api/parse';
 import type { TaskDetailNavigation } from './router';
 import type { ProjectSection, TaskView } from '../features/projects/useProjectViewPreferences';
 
-export type AccountTab = 'profile' | 'tokens' | 'prompt';
 export type WorkerSection = 'overview' | 'configuration' | 'prompt';
 export type ResourceReading = { readonly id: string; readonly navigation: TaskDetailNavigation };
 export type GoalChildren = { readonly graphRootId: string | null; readonly task: ResourceReading | null };
@@ -27,8 +26,7 @@ type HistoryEnvelope<Key extends string, Selection> = {
   readonly pageKey: Key;
   readonly selection: Selection;
 };
-export type PageHistoryState = HistoryEnvelope<'account', { readonly tab: AccountTab }>
-  | HistoryEnvelope<`worker:${string}`, { readonly workerId: string; readonly section: WorkerSection }>
+export type PageHistoryState = HistoryEnvelope<`worker:${string}`, { readonly workerId: string; readonly section: WorkerSection }>
   | HistoryEnvelope<`project:${string}`, ProjectReading>
   | HistoryEnvelope<'my-tasks', MyTasksReading>
   | HistoryEnvelope<`resource:${string}/${string}`, ResourcePageReading>;
@@ -46,18 +44,6 @@ const resourceKey = (projectId: string, taskId: string): `resource:${string}/${s
 
 /** Empty selections contain no resource data, only the absence of nested readers. */
 export const emptyResourceReading = (): ResourcePageReading => ({ goalChildren: null, externalGoal: null });
-
-/** Returns null for a missing or differently scoped selection; rejects malformed state. */
-export function readAccountHistory(value: unknown, userId: string): AccountTab | null {
-  if (value === undefined) return null;
-  if (!record(value) || !exact(value, ['version', 'userId', 'pageKey', 'selection']) || value.version !== 1 || typeof value.userId !== 'string' || canonicalId(value.userId) !== value.userId || typeof value.pageKey !== 'string') throw new Error('Invalid page navigation state.');
-  if (value.userId !== userId || value.pageKey !== 'account') return null;
-  const selection = value.selection;
-  if (!record(selection) || !exact(selection, ['tab']) || (selection.tab !== 'profile' && selection.tab !== 'tokens' && selection.tab !== 'prompt')) throw new Error('Invalid account navigation state.');
-  return selection.tab;
-}
-
-export const accountHistory = (userId: string, tab: AccountTab): PageHistoryState => ({ version: 1, userId, pageKey: 'account', selection: { tab } });
 
 /** Read only the selection for the current identity and resource; malformed matching state is an error. */
 export function readResourceHistory(value: unknown, userId: string, projectId: string, taskId: string): ResourcePageReading | null {

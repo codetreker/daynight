@@ -265,12 +265,12 @@ describe('Worker pages in the authenticated workspace', () => {
       return defaults(url);
     });
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole('button', { name: 'User prompt' }));
+    fireEvent.click(await screen.findByRole('link', { name: 'User prompt' }));
     const field = await screen.findByRole('textbox', { name: 'Prompt text' });
     fireEvent.change(field, { target: { value: 'account instructions' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Profile' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Profile' }));
     expect(field).not.toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
+    fireEvent.click(screen.getByRole('link', { name: 'User prompt' }));
     expect(screen.getByRole('textbox', { name: 'Prompt text' })).toBe(field);
     fireEvent.click(within(field.closest('form')!).getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toBe(1));
@@ -278,8 +278,8 @@ describe('Worker pages in the authenticated workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard and leave' }));
     expect(writeSignal?.aborted).toBe(false);
     act(() => navigate('/account'));
-    expect(screen.getByRole('button', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
-    fireEvent.click(screen.getByRole('button', { name: 'User prompt' }));
+    expect(screen.getByRole('link', { name: 'Profile' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('link', { name: 'User prompt' }));
     expect(await screen.findByRole('textbox', { name: 'Prompt text' })).toBe(field);
     await act(async () => pending.resolve(json({ scope: 'user', scopeId: owner, revision: '1', text: 'account instructions', updatedAt: observedAt })));
     expect(writes).toBe(1);

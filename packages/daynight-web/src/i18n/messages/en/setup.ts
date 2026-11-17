@@ -36,7 +36,7 @@ export const setup: SetupMessages = {
     verifySuccess: "The read-only team_list call succeeds and returns the teams your account can access. An empty list is a valid result.",
     manual: "MCP installation manual",
     tokens: "Manage tokens and app authorizations",
-    accountNote: "Open your account and select Tokens to manage tokens and authorized apps.",
+    accountNote: "Manage tokens and authorized apps in your account.",
     pat: "For a client that supports HTTP headers but not OAuth, put an existing PAT in its secret or environment settings as Authorization: Bearer <PAT>.",
   },
   stepsLabel: "Setup steps",

@@ -150,7 +150,7 @@ describe("MCP setup guide", () => {
       expect(value.command).not.toContain("daynight login");
     }
     expect(screen.getByRole("link", { name: /安装手册|installation manual/i })).toHaveAttribute("href", "/mcp");
-    expect(screen.getByRole("link", { name: /管理令牌|Manage tokens/i })).toHaveAttribute("href", "/account");
+    expect(screen.getByRole("link", { name: /管理令牌|Manage tokens/i })).toHaveAttribute("href", "/account?tab=tokens");
     expect(screen.getByText(/Authorization: Bearer <PAT>/)).toBeVisible();
     expect(screen.queryAllByRole("textbox")).toHaveLength(0);
   });

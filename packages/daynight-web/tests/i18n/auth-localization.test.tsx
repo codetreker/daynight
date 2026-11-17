@@ -109,7 +109,7 @@ describe("authentication language changes", () => {
     const fetcher = install((url) => url === "/api/v1/me/tokens" ? failure(503, "internal_error") : defaults(url));
     const interaction = userEvent.setup();
     renderWithLocale(<AuthenticatedApp />, { locale: "en" });
-    await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+    await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
     const alert = await screen.findByRole("alert");
     const requestId = within(alert).getByText("auth-locale-request");
     await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
@@ -118,7 +118,7 @@ describe("authentication language changes", () => {
     expect(screen.getByRole("alert")).toBe(alert);
     expect(alert).toHaveTextContent(zhCN.auth.management.common.operationFailed);
     expect(within(alert).getByText("auth-locale-request")).toBe(requestId);
-    expect(screen.getByRole("button", { name: zhCN.auth.management.account.tokensTab })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: zhCN.auth.management.account.tokensTab })).toHaveAttribute("aria-current", "page");
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.account);
     expect(fetcher).toHaveBeenCalledTimes(requests);
     expect(screen.queryByText("Untrusted server detail")).toBeNull();
@@ -130,7 +130,7 @@ describe("authentication language changes", () => {
     const fetcher = install((url, init) => url === "/api/v1/me/tokens" && init?.method === "POST" ? pending.promise : defaults(url));
     const interaction = userEvent.setup();
     const view = renderWithLocale(<AuthenticatedApp />, { locale: "en" });
-    await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+    await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
     await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.createToken }));
     const dialog = screen.getByRole("dialog", { name: en.auth.management.account.createTitle });
     const input = within(dialog).getByLabelText(/Token name/);
@@ -327,7 +327,7 @@ describe("authentication language changes", () => {
     if (kind === "token") {
       window.history.replaceState(null, "", "/account");
       view = renderWithLocale(<AuthenticatedApp />, { locale: "en" });
-      await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+      await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
       await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.revokeLabel({ name: "Raw 令牌" }) }));
       await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
     } else {
@@ -403,7 +403,7 @@ describe("authentication language changes", () => {
     });
     const interaction = userEvent.setup();
     const { setLocale } = renderWithLocale(<AuthenticatedApp />, { locale: "en", getStorage: () => { throw new Error("storage unavailable"); } });
-    await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
+    await interaction.click(await screen.findByRole("link", { name: en.auth.management.account.tokensTab }));
     await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.createToken }));
     const creating = screen.getByRole("dialog");
     await interaction.type(within(creating).getByLabelText(/Token name/), "Raw device");

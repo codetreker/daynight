@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
-import { accountHistory, emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readAccountHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading } from '../src/app/page-history';
-import { useAccountHistory, useMyTasksHistory, useProjectHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
+import { emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading } from '../src/app/page-history';
+import { useMyTasksHistory, useProjectHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 
 const user = '00000000-0000-4000-8000-000000000001';
@@ -28,7 +28,7 @@ describe('standalone resource reading history', () => {
     expect(readResourceHistory(state, user, project, root)).toEqual(selection);
     expect(readResourceHistory(state, other, project, root)).toBeNull();
     expect(readResourceHistory(state, user, project, child)).toBeNull();
-    expect(readResourceHistory(accountHistory(user, 'tokens'), user, project, root)).toBeNull();
+    expect(readResourceHistory(workerHistory(user, '00000000-0000-4000-8000-000000000011', 'configuration'), user, project, root)).toBeNull();
     for (const bad of [
       { ...state, selection: { ...selection, draft: 'secret' } },
       { ...state, selection: { ...selection, goalChildren: { ...selection.goalChildren, graphRootId: 'bad' } } },
@@ -133,7 +133,7 @@ describe('personal overview reading history', () => {
     const state = myTasksHistory(user, selection);
     expect(readMyTasksHistory(state, user)).toEqual(selection);
     expect(readMyTasksHistory(state, other)).toBeNull();
-    expect(readMyTasksHistory(accountHistory(user, 'profile'), user)).toBeNull();
+    expect(readMyTasksHistory(workerHistory(user, '00000000-0000-4000-8000-000000000011', 'overview'), user)).toBeNull();
     for (const bad of [
       { ...selection, draft: 'secret' }, { ...selection, projectPages: { [project]: 0 } },
       { ...selection, projectPages: { bad: 2 } }, { ...selection, projectPages: { [project]: 1.5 } },
@@ -360,95 +360,6 @@ describe('Project reading history', () => {
   });
 });
 
-describe('account reading history', () => {
-  it('validates recognized state and isolates account and page scope', () => {
-    expect(readAccountHistory(undefined, user)).toBeNull();
-    expect(readAccountHistory(accountHistory(user, 'tokens'), user)).toBe('tokens');
-    expect(readAccountHistory(accountHistory(other, 'prompt'), user)).toBeNull();
-    expect(readAccountHistory({ ...accountHistory(user, 'prompt'), pageKey: 'worker' }, user)).toBeNull();
-    for (const bad of [null, {}, { ...accountHistory(user, 'tokens'), version: 2 },
-      { ...accountHistory(user, 'tokens'), userId: 'invalid' },
-      { ...accountHistory(user, 'tokens'), selection: { tab: 'unknown' } },
-      { ...accountHistory(user, 'tokens'), selection: { tab: 'tokens', draft: 'secret' } }]) {
-      expect(() => readAccountHistory(bad, user)).toThrow();
-    }
-  });
-
-  it('initializes each controlled visit and restores same-URL selections without duplicate entries', () => {
-    const navigation = browserNavigation(), length = history.length;
-    const { result } = renderHook(() => useAccountHistory(user, true));
-    expect(result.current.tab).toBe('profile');
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'profile'));
-    expect(history.length).toBe(length);
-    const profile = history.state;
-    act(() => result.current.select('tokens'));
-    const tokens = history.state;
-    expect(result.current.tab).toBe('tokens');
-    expect(history.length).toBe(length + 1);
-    act(() => result.current.select('tokens'));
-    expect(history.length).toBe(length + 1);
-    arrival(profile);
-    expect(result.current.tab).toBe('profile');
-    arrival(tokens);
-    expect(result.current.tab).toBe('tokens');
-    act(() => navigation.navigate('/projects'));
-    act(() => navigation.navigate('/account'));
-    expect(result.current.tab).toBe('profile');
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'profile'));
-  });
-
-  it('keeps hidden owners from reading or overwriting another page or identity', () => {
-    const navigation = browserNavigation();
-    const { result, rerender } = renderHook(({ active, identity }) => useAccountHistory(identity, active), { initialProps: { active: true, identity: user } });
-    act(() => result.current.select('prompt'));
-    rerender({ active: false, identity: user });
-    act(() => navigation.navigate('/projects', false, accountHistory(other, 'tokens')));
-    const foreign = navigation.snapshot().view;
-    act(() => result.current.select('profile'));
-    expect(result.current.tab).toBe('prompt');
-    expect(navigation.snapshot().view).toEqual(foreign);
-    rerender({ active: true, identity: user });
-    expect(navigation.snapshot().view).toEqual(foreign);
-    act(() => navigation.navigate('/account', false, accountHistory(other, 'tokens')));
-    expect(result.current.tab).toBe('profile');
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'profile'));
-  });
-
-  it('keeps the selection on a native unnumbered same-page entry without writing it', () => {
-    const navigation = browserNavigation();
-    const { result } = renderHook(() => useAccountHistory(user, true));
-    act(() => result.current.select('prompt'));
-    const replace = vi.spyOn(history, 'replaceState');
-    act(() => { history.pushState({ foreign: true }, '', '/account#native'); dispatchEvent(new PopStateEvent('popstate')); });
-    expect(result.current.tab).toBe('prompt');
-    expect(navigation.snapshot().entryId).toBeNull();
-    expect(history.state).toEqual({ foreign: true });
-    expect(replace).not.toHaveBeenCalled();
-  });
-
-  it('resets the retained selection when the authenticated identity changes on a native entry', () => {
-    const { result, rerender } = renderHook(({ identity }) => useAccountHistory(identity, true), { initialProps: { identity: user } });
-    act(() => result.current.select('prompt'));
-    act(() => { history.pushState(null, '', '/account#native'); dispatchEvent(new PopStateEvent('popstate')); });
-    expect(result.current.tab).toBe('prompt');
-    rerender({ identity: other });
-    expect(result.current.tab).toBe('profile');
-    expect(history.state).toBeNull();
-  });
-
-  it('exposes malformed recognized state and does not replace it or accept a selection', () => {
-    const navigation = browserNavigation();
-    const { result } = renderHook(() => useAccountHistory(user, true));
-    const state = { ...history.state, __daynightNavigation: { ...history.state.__daynightNavigation, view: { ...accountHistory(user, 'tokens'), selection: { tab: 'bad' } } } };
-    arrival(state);
-    expect(result.current.error).toBe(true);
-    act(() => result.current.select('prompt'));
-    expect(navigation.snapshot().view).toEqual(state.__daynightNavigation.view);
-    expect(history.state).toEqual(state);
-  });
-});
-
-
 describe('Worker reading history', () => {
   const worker = '00000000-0000-4000-8000-000000000011';
   const otherWorker = '00000000-0000-4000-8000-000000000012';
@@ -490,9 +401,9 @@ describe('Worker reading history', () => {
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
     arrival(prompt, path); expect(result.current.section).toBe('prompt');
     rerender({ identity: user, active: false });
-    act(() => navigation.navigate('/account', false, accountHistory(user, 'tokens')));
+    act(() => navigation.navigate('/account', false, workerHistory(user, '00000000-0000-4000-8000-000000000011', 'configuration')));
     act(() => result.current.select('overview'));
-    expect(navigation.snapshot().view).toEqual(accountHistory(user, 'tokens'));
+    expect(navigation.snapshot().view).toEqual(workerHistory(user, '00000000-0000-4000-8000-000000000011', 'configuration'));
     rerender({ identity: other, active: true });
     act(() => navigation.navigate(path, false, workerHistory(user, worker, 'configuration')));
     expect(result.current.section).toBe('overview');
