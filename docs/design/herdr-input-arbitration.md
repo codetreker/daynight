@@ -1,12 +1,12 @@
 # Herdr 严格终端输入与持久仲裁
 
-本文拥有 macOS Worker 的输入派发、人工控制与交还机制。运行、进程出生身份和停止证明由 [Herdr 生命周期](herdr-worker-lifecycle.md)拥有；消息格式、租约与容量常量由 [Session v2 契约](../spec/session-v2.md)拥有。
+本文记录保留源码中的旧输入派发、人工控制与交还机制；Worker coordinator 不再调用这些路径。运行、进程出生身份和停止证明由 [Herdr 生命周期](herdr-worker-lifecycle.md)拥有；消息格式、租约与容量常量由 [Session v2 契约](../spec/session-v2.md)拥有。
 
 ## 范围与准入
 
 所有 macOS Daynight 输入由同一 `HerdrInputArbiter` 派发：首次 assignment、自动 continuation、服务端转发的 paste/keys、终态 cleanup prompt。`durable.ts` 不调用 legacy `agent.prompt` 输入路径；`launch` 只启动进程，原 daemon、shell、native agent 的身份和运行 ledger 可靠提交后才开放输入。Linux/Windows legacy 与 Web Controller 保留各自既有路径。
 
-macOS Worker 将输入仲裁与[持续录制及归档](herdr-recording.md)组合后声明 Session observe/control/archive 能力。输入组件的独立传输成功仍不证明页面端到端验收；控制结果不改变录制与归档的完整性。
+此前 macOS Worker 组合输入仲裁与录制归档后声明 Session observe/control/archive 能力。本机录制与归档消费者现已删除；[历史录像](herdr-recording.md)保留只读访问。
 
 ## 按用途读取输入状态
 

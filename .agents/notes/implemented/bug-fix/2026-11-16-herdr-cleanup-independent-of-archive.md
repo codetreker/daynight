@@ -26,9 +26,9 @@ retain their respective responsibilities.
 
 This partially replaces the archived [recording finalization decision](../../archived/architecture/2026-11-04-herdr-recording-finalization.md),
 which coupled worktree deletion to a durable receipt. The [manifest decision](../architecture/2026-11-12-worktree-manifest-adoption.md)
-continues to protect original and successor bindings. The current mechanisms are
-owned by the [recording design](../../../../docs/design/herdr-recording.md) and
-[Worker design](../../../../docs/design/daynight-worker.md).
+protected original and successor bindings. The Herdr recording and archive
+execution mechanisms have since been removed; the [Web-only runtime decision](../architecture/2026-11-17-worker-web-runtime-composition.md)
+records the current ownership boundary.
 
 ## Alternatives
 
