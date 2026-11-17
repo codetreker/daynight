@@ -59,10 +59,7 @@ const calls = (mock: typeof mocks.ordinary, file: string) => mock.mock.calls.fil
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks();
   originalEnvironment = process.env;
-  process.env = { ...process.env };
-  vi.stubEnv("PATH", environment.PATH);
-  vi.stubEnv("PATHEXT", undefined);
-  vi.stubEnv("DN_CONFIG_DIR", undefined);
+  process.env = { ...environment };
   let tick = 0;
   mocks.cpus.mockImplementation(() => [{ model: "Fixture CPU", times: { idle: ++tick * 80, user: tick * 20 } }]);
   mocks.ordinary.mockImplementation(output); mocks.assistant.mockImplementation(output);
