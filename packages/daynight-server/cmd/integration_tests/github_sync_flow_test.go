@@ -261,8 +261,8 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		t.Fatalf("re-enable: %+v", status)
 	}
 	waitTitle("Updated while off")
-	// Migration 77 changes data only. With every old process drained, restore
-	// the version 76 ledger and a real legacy binding before restarting Server.
+	// With every old process drained, restore the version 76 schema, ledger
+	// and a real legacy binding before restarting Server.
 	f.restart(func() {
 		db, err := pgxpool.New(f.context, f.databaseURL)
 		if err != nil {
@@ -276,6 +276,12 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		defer tx.Rollback(f.context)
 		if _, err = tx.Exec(f.context, `UPDATE project_github SET enabled=true, sync_enabled=true, app_id=13, installation_id=99, app_resource_id=NULL, team_grant_id=NULL, credential_version=NULL, installation_account_login='example', access_state='available' WHERE project_id=$1`, project.ID); err != nil {
 			t.Fatal(err)
+		}
+		if _, err = tx.Exec(f.context, `DROP INDEX project_pull_requests_author_number`); err != nil {
+			t.Fatal(err)
+		}
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version=78`); err != nil || result.RowsAffected() != 1 {
+			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version=77`); err != nil || result.RowsAffected() != 1 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
