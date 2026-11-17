@@ -13,16 +13,16 @@ had been removed could lose the main Session entry despite retaining history.
 
 ## Decision
 
-The main entry follows the actual task lifecycle. Active claims retain their
-existing Web or Herdr reader. Completed claims resolve their original Session
-with the corresponding read-only current API and use the fixed archive reader.
+The main entry follows the actual task lifecycle. Active Web claims retain their native reader. Completed Web claims resolve their
+original Session through current. Herdr claims resolve their original Session
+through paginated history and use the fixed archive reader.
 A missing current registration remains a recoverable state, never a reason to
 substitute another claim's history. With no claim, the latest actual catalogue
 entry is read-only history. Only a complete empty observation permits hiding the
 Session tab; loading, failure and denial remain separate states.
 
 The registry enforces one Session per project/task/claim across both backends.
-Current reads bind that identity after the Worker is completed. Release removes current ownership; the [release decision](2026-11-12-release-clears-ownership.md) leaves its Session in history.
+Native current reads bind that identity after the Worker is completed. Release removes current ownership; the [release decision](2026-11-12-release-clears-ownership.md) leaves its Session in history.
 They require the selected Task Session tab and a visible document under the
 [current-read visibility decision](../architecture/2026-11-08-task-current-read-visibility.md);
 no-claim catalogue discovery remains independently responsible for entry presence. Native
@@ -50,6 +50,9 @@ The [requirements](../../../../docs/spec/task-sessions.md#执行身份与页面�
 and [shared entry design](../../../../docs/design/herdr-session-web.md#页面与身份)
 own current behavior and mechanisms.
 
+The [read-only terminal history decision](2026-11-17-web-terminal-history.md)
+replaces the Herdr current reader while retaining claim-bound selection.
+
 ## Alternatives
 
 **Keep the compact selector.** It preserves deliberate selection in the main
@@ -62,8 +65,8 @@ there is no claim, but a newly claimed execution may not yet have registered.
 Selecting an older claim would present the wrong conversation as current.
 
 **Use startup metadata as the common identity source.** The Web startup report
-contains a Session ID but does not provide the Herdr contract. Both protocols
-already provide claim-bound current reads, so a second cross-protocol identity
+contains a Session ID but does not provide the Herdr contract. The protocols at that time
+provided claim-bound current reads, so a second cross-protocol identity
 source would create unnecessary disagreement and fallback rules.
 
 ## Consequences
