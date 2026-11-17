@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 )
@@ -86,6 +87,17 @@ func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
 	}
 	if response.Header().Get("Content-Type") != "application/json" {
 		t.Fatal(response.Header())
+	}
+}
+
+func TestTerminalHistoryRequiresExplicitProtocol(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	for _, protocol := range []string{"", sp.Protocol} {
+		response := terminalRequest(f.h, http.MethodGet, f.base, "", protocol)
+		assertProjectError(t, response, http.StatusBadRequest, "unsupported_protocol")
+	}
+	if got := f.calls.TotalCalls(); got != 0 {
+		t.Fatalf("history request with v1 protocol called the service %d times", got)
 	}
 }
 
