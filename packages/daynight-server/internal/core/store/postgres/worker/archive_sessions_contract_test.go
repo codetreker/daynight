@@ -45,6 +45,7 @@ func TestArchiveSessionsLockedLegacyWrite(t *testing.T) {
 	disabled := false
 	selected := current.Desired.Value
 	selected.ArchiveSessions = &disabled
+	selected.EnableSudoCleanup = true
 	if _, err := coreworker.PutConfiguration(ctx, a, model.Principal{UserID: user}, id, 1, selected); err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +57,7 @@ func TestArchiveSessionsLockedLegacyWrite(t *testing.T) {
 	legacy := initial
 	legacy.ArchiveSessions = nil
 	legacy.PreserveArchiveSessions = true
+	legacy.PreserveSudoCleanup = true
 	legacy.MaxConcurrent = 5
 	go func() {
 		value, err := coreworker.PutConfiguration(ctx, b, model.Principal{UserID: user}, id, 1, legacy)
@@ -81,7 +83,7 @@ func TestArchiveSessionsLockedLegacyWrite(t *testing.T) {
 	}
 	if err := db.ReadSnapshot(ctx, func(s SnapshotScope) error {
 		got, err := s.WorkerDAO().WorkerConfiguration(ctx, user, id)
-		if err == nil && (got.Desired.Revision != "3" || got.Desired.Value.MaxConcurrent != 5 || got.Desired.Value.ArchiveSessions == nil || *got.Desired.Value.ArchiveSessions) {
+		if err == nil && (got.Desired.Revision != "3" || got.Desired.Value.MaxConcurrent != 5 || got.Desired.Value.ArchiveSessions == nil || *got.Desired.Value.ArchiveSessions || !got.Desired.Value.EnableSudoCleanup) {
 			t.Errorf("persisted: %+v", got)
 		}
 		return err

@@ -2,7 +2,7 @@ import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "../
 import { WindowsProcessProofError } from "../../controller/windows-process-proof.js";
 import { MappingProcessProofAcquisitionError } from "./tool-launch-process-proof.js";
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
-import { readCodexConfiguration } from "./codex-config.js";
+import { readCodexConfiguration } from "../codex-configuration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { ExecutionSourceConflictError } from "../execution-stop.js";
 import type { CleanupTarget, StopObservation } from "../execution-stop.js";

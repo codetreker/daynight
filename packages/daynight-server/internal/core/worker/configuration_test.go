@@ -203,6 +203,46 @@ func TestPutConfigurationPreferenceToggleUsesConfigurationRevision(t *testing.T)
 	}
 }
 
+func TestSudoCleanupOmissionAndBootstrap(t *testing.T) {
+	ctx, principal := context.Background(), model.Principal{UserID: "user"}
+	d := configuredDAO("3")
+	d.current.Desired.Value.EnableSudoCleanup = true
+	value := configurationFixture()
+	value.PreserveSudoCleanup = true
+	got, err := PutConfiguration(ctx, d, principal, "worker", 3, value)
+	if err != nil || !got.Desired.Value.EnableSudoCleanup || got.Desired.Revision != "3" || d.desiredWrites != 0 {
+		t.Fatalf("omitted no-op: %+v %v", got, err)
+	}
+	value.MaxConcurrent = 2
+	_, err = PutConfiguration(ctx, d, principal, "worker", 2, value)
+	requireFault(t, err, "version_conflict")
+	if d.desiredWrites != 0 {
+		t.Fatal("conflict wrote configuration")
+	}
+	got, err = PutConfiguration(ctx, d, principal, "worker", 3, value)
+	if err != nil || !got.Desired.Value.EnableSudoCleanup || got.Desired.Value.PreserveSudoCleanup || got.Desired.Revision != "4" {
+		t.Fatalf("omitted update: %+v %v", got, err)
+	}
+	d.current = got
+	value.PreserveSudoCleanup = false
+	got, err = PutConfiguration(ctx, d, principal, "worker", 4, value)
+	if err != nil || got.Desired.Value.EnableSudoCleanup || got.Desired.Revision != "5" {
+		t.Fatalf("explicit false: %+v %v", got, err)
+	}
+	d = &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}}
+	old := configurationFixture()
+	receipt, err := ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &old})
+	if err != nil || receipt.Desired.Value.EnableSudoCleanup || receipt.Desired.Revision != "1" {
+		t.Fatalf("old bootstrap: %+v %v", receipt, err)
+	}
+	d = configuredDAO("7")
+	d.current.Desired.Value.EnableSudoCleanup = true
+	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &old})
+	if err != nil || !receipt.Desired.Value.EnableSudoCleanup || d.desiredWrites != 0 {
+		t.Fatalf("late bootstrap changed desired: %+v %v", receipt, err)
+	}
+}
+
 func TestPutConfigurationFailuresAndExhaustion(t *testing.T) {
 	ctx, principal, value := context.Background(), model.Principal{UserID: "user"}, configurationFixture()
 	sentinel := errors.New("database failure")

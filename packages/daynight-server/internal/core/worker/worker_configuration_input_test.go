@@ -236,6 +236,38 @@ func TestWorkerConfigurationPreferenceApplicationAcceptsBothBooleanValues(t *tes
 	}
 }
 
+func TestSudoCleanupConfigurationAndObservation(t *testing.T) {
+	for _, value := range []any{false, true} {
+		document := configurationInputDocument()
+		document["enableSudoCleanup"] = value
+		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
+		if err != nil || parsed.EnableSudoCleanup != value {
+			t.Fatalf("configuration %v: %+v %v", value, parsed, err)
+		}
+		item := configurationInputItem("enableSudoCleanup", value)
+		exchange, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item)))
+		if err != nil || string(exchange.Observation.Items[0].AppliedValue) != fmt.Sprint(value) {
+			t.Fatalf("observation %v: %+v %v", value, exchange, err)
+		}
+	}
+	for _, value := range []any{nil, "false", 1, []any{}} {
+		document := configurationInputDocument()
+		document["enableSudoCleanup"] = value
+		if _, err := ParseWorkerConfiguration(configurationInputJSON(t, document)); err == nil {
+			t.Fatalf("invalid configuration accepted: %v", value)
+		}
+		item := configurationInputItem("enableSudoCleanup", value)
+		if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err == nil {
+			t.Fatalf("invalid applied observation accepted: %v", value)
+		}
+	}
+	item := configurationInputItem("enableSudoCleanup", nil)
+	item["state"] = "pending"
+	if _, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, configurationInputExchange(item))); err != nil {
+		t.Fatalf("pending null rejected: %v", err)
+	}
+}
+
 func TestWorkerConfigurationInputRejectsInvalidExchange(t *testing.T) {
 	cases := map[string]func(map[string]any){
 		"missing bootstrap":        func(v map[string]any) { delete(v, "bootstrap") },

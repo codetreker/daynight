@@ -10,7 +10,7 @@ import type { WorkerReport, WorkerTaskReference, WorkerTelemetry } from "../../.
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-source.js";
 import type { WorkerPromptSelector } from "../../../src/api/worker-configuration.js";
-import { HerdrCommandCleanupError, runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError, runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
@@ -49,11 +49,11 @@ const timedOutProbe = async (terminationFailure?: Error) => {
   const spawn = vi.fn(() => child);
   const operation = createOperation({ limits: { totalMs: 100, requestMs: 10 } });
   try {
-    const result = runHerdrCommand({ file: "codex", args: ["--version"], environment: {} }, operation, spawn, { cleanupWithinDeadline: true })
+    const result = runOwnedCommand({ file: "codex", args: ["--version"], environment: {} }, operation, spawn, { cleanupWithinDeadline: true })
       .catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(100);
     const error = await result;
-    expect(error).toBeInstanceOf(HerdrCommandCleanupError);
+    expect(error).toBeInstanceOf(OwnedCommandCleanupError);
     return { child, error, spawn };
   } finally { operation.dispose(); }
 };
@@ -253,7 +253,7 @@ it("keeps cleanup uncertainty visible and prevents replacement attempts after ca
   const f = fixture(), blocked = deferred<WorkerTelemetrySample>();
   f.collect.mockImplementationOnce(() => blocked.promise);
   const reporter = f.start();
-  const uncertainty = new HerdrCommandCleanupError([new Error("private process output")], undefined);
+  const uncertainty = new OwnedCommandCleanupError([new Error("private process output")], undefined);
   const stopping = reporter.stop();
   const rejected = expect(stopping).rejects.toBe(uncertainty);
   blocked.reject(uncertainty); await rejected;
@@ -264,7 +264,7 @@ it("keeps cleanup uncertainty visible and prevents replacement attempts after ca
 
 it("keeps reporting partial probe failures while retaining genuine cleanup uncertainty", async () => {
   const f = fixture();
-  const uncertainty = new HerdrCommandCleanupError([new Error("private process output")], undefined);
+  const uncertainty = new OwnedCommandCleanupError([new Error("private process output")], undefined);
   f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: uncertainty }] });
   const reporter = f.start(); await settle(); await vi.advanceTimersByTimeAsync(60_000);
   expect(f.collect).toHaveBeenCalledTimes(3); expect(f.send).toHaveBeenCalledTimes(3);
@@ -276,7 +276,7 @@ it("preserves cleanup uncertainty returned as a field issue during cancellation"
   const f = fixture(), blocked = deferred<WorkerTelemetrySample>();
   f.collect.mockImplementationOnce(() => blocked.promise);
   const reporter = f.start();
-  const uncertainty = new HerdrCommandCleanupError([new Error("private process output")], undefined);
+  const uncertainty = new OwnedCommandCleanupError([new Error("private process output")], undefined);
   const stopping = reporter.stop(); const rejected = expect(stopping).rejects.toBe(uncertainty);
   blocked.resolve({ telemetry, issues: [{ component: "codex", code: "unavailable", error: uncertainty }] });
   await rejected;
@@ -286,8 +286,8 @@ it("preserves cleanup uncertainty returned as a field issue during cancellation"
 
 it("preserves each distinct cleanup failure without accumulating repeated cached issues", async () => {
   const f = fixture();
-  const codex = new HerdrCommandCleanupError([new Error("private codex output")], undefined);
-  const copilot = new HerdrCommandCleanupError([new Error("private copilot output")], undefined);
+  const codex = new OwnedCommandCleanupError([new Error("private codex output")], undefined);
+  const copilot = new OwnedCommandCleanupError([new Error("private copilot output")], undefined);
   f.collect.mockResolvedValue({ telemetry, issues: [
     { component: "codex", code: "unavailable", error: codex }, { component: "copilot", code: "unavailable", error: copilot },
   ] });
@@ -321,7 +321,7 @@ it.each(["no close", "exit only", "another child", "termination failed", "legacy
   async (kind) => {
     const f = fixture(), terminationFailure = new Error("Cannot terminate owned process");
     const probe = await timedOutProbe(kind === "termination failed" ? terminationFailure : undefined);
-    const failure = kind === "legacy error" ? new HerdrCommandCleanupError([new Error("Cleanup has no acknowledgement")], undefined) : probe.error;
+    const failure = kind === "legacy error" ? new OwnedCommandCleanupError([new Error("Cleanup has no acknowledgement")], undefined) : probe.error;
     f.collect.mockResolvedValue({ telemetry, issues: [{ component: "codex", code: "unavailable", error: failure }] });
     const reporter = f.start(); await settle();
     if (kind === "exit only") probe.child.emit("exit", 0, null);

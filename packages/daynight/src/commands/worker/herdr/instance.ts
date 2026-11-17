@@ -14,8 +14,8 @@ import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../..
 import type { WorkerPaths } from "../paths.js";
 import { createHerdrRpcClient, herdrIpcAddress } from "./rpc.js";
 import type { HerdrRpcResult } from "./rpc.js";
-import { runHerdrCommand, spawnHerdrProcess, terminateOwnedHerdrProcess } from "./command.js";
-import type { HerdrSpawn } from "./command.js";
+import { runOwnedCommand, spawnOwnedProcess, terminateOwnedProcess } from "../owned-command.js";
+import type { OwnedSpawn } from "../owned-command.js";
 import { optionalOwnedJson, posixToolMappingRc, publishOwnedJson } from "./tool-launch.js";
 
 const session = "w";
@@ -263,7 +263,7 @@ export const assertCodexIntegrationHome = (environment: NodeJS.ProcessEnv, root:
 };
 const killOwnedChild = (owned: OwnedChild): void => {
   if (owned.closed || owned.child.pid === undefined) return;
-  terminateOwnedHerdrProcess(owned.child);
+  terminateOwnedProcess(owned.child);
 };
 
 export const createHerdrInstance = (options: {
@@ -271,7 +271,7 @@ export const createHerdrInstance = (options: {
   executable?: string;
   toolLaunch?: ResolvedToolLaunch;
   environment?: NodeJS.ProcessEnv;
-  spawnProcess?: HerdrSpawn;
+  spawnProcess?: OwnedSpawn;
   onDaemonSpawn?: (pid: number) => Promise<void>;
   retainOnStartupFailure?: boolean;
   isolatedRun?: boolean;
@@ -295,7 +295,7 @@ export const createHerdrInstance = (options: {
   for (const key of ["HOME", "USERPROFILE", "CODEX_HOME", "CODEX_SQLITE_HOME", "COPILOT_HOME"]) {
     if (environment[key] !== undefined) attachmentEnvironment[key] = environment[key];
   }
-  const start = options.spawnProcess === undefined ? spawnHerdrProcess : options.spawnProcess;
+  const start = options.spawnProcess === undefined ? spawnOwnedProcess : options.spawnProcess;
   const rpc = createHerdrRpcClient(paths.apiEndpoint);
   let owned: OwnedChild | null = null;
   let starting: Promise<HerdrInstanceReady> | null = null;
@@ -344,7 +344,7 @@ export const createHerdrInstance = (options: {
   };
   const version = async (operation: Operation): Promise<void> => {
     await verifyLaunch(operation);
-    const result = await runHerdrCommand({ ...command(["--version"]), environment }, operation, start);
+    const result = await runOwnedCommand({ ...command(["--version"]), environment }, operation, start);
     const match = /^herdr\s+(\S+)\s*$/.exec(result.stdout);
     if (match === null || valid(match[1]) === null || !gte(match[1]!, "0.9.5")) throw new Error("Herdr 0.9.5 or newer is required before starting the private instance.");
   };

@@ -9,7 +9,7 @@ import (
 func TestWorkerArchiveSessionsMigration(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:78]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:79]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}

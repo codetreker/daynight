@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { OperationError } from "../../../src/api/operation.js";
 import { ToolSelectionError, type ToolSelectionCode } from "../../../src/platform/tool-executables.js";
 import { classifyConfigurationFailure, ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../../../src/commands/worker/configuration-failure.js";
-import { HerdrCommandDeadlineError, HerdrCommandError } from "../../../src/commands/worker/herdr/command.js";
-import { NativeVersionOutputError } from "../../../src/commands/worker/herdr/version-probe.js";
+import { OwnedCommandDeadlineError, OwnedCommandError } from "../../../src/commands/worker/owned-command.js";
+import { NativeVersionOutputError } from "../../../src/commands/worker/native-version.js";
 import type { WorkerCloudFailure } from "../../../src/api/worker-configuration.js";
 
 const secret = "secret /private/path prompt $(command output)";
@@ -93,13 +93,13 @@ describe("configuration failure classification", () => {
   });
 
   it("recognizes existing native output, deadline and confirmed command failures", () => {
-    const output = new NativeVersionOutputError("codex"), deadline = new HerdrCommandDeadlineError();
+    const output = new NativeVersionOutputError("codex"), deadline = new OwnedCommandDeadlineError();
     output.message = secret; deadline.message = secret;
     expect(classifyConfigurationFailure(output)).toEqual({ code: "invalid_output", reason: "invalid_output" });
     expect(classifyConfigurationFailure(deadline)).toEqual({ code: "timeout", reason: "timeout" });
-    expect(classifyConfigurationFailure(new HerdrCommandError(secret, 17, null, secret))).toEqual({ code: "command_failed", reason: "command_failed" });
+    expect(classifyConfigurationFailure(new OwnedCommandError(secret, 17, null, secret))).toEqual({ code: "command_failed", reason: "command_failed" });
     for (const exit of [null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(classifyConfigurationFailure(new HerdrCommandError(secret, exit, null, secret))).toEqual({ code: "unavailable", reason: "unavailable" });
+      expect(classifyConfigurationFailure(new OwnedCommandError(secret, exit, null, secret))).toEqual({ code: "unavailable", reason: "unavailable" });
     }
   });
 });

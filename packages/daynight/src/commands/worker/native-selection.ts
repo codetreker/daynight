@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { probeResourceKey, toolCommand, verifyToolLaunch, ToolSelectionError, type ResolvedToolLaunch } from "../../platform/tool-executables.js";
-import { runHerdrCommand } from "./herdr/command.js";
-import { parseNativeAgentVersion } from "./herdr/version-probe.js";
+import { runOwnedCommand } from "./owned-command.js";
+import { parseNativeAgentVersion } from "./native-version.js";
 import { createCodexProbeOwner, joinNativeProbeCleanup, type CodexProbeOwner } from "./codex-probe-owner.js";
 import { withinOperation } from "../../platform/tool-io.js";
 import type { Operation } from "../../api/operation.js";
@@ -156,13 +156,13 @@ export const createWorkerToolInspector = (options: { cwd: string; environment: N
         let version: string;
         if (launch.tool === "copilot" && launch.context === "web") version = await verifier.status(request(launch), operation);
         else {
-          const result = await runHerdrCommand({ ...toolCommand(launch, launch.tool === "copilot" ? ["--no-auto-update", "--version"] : ["--version"]), environment: options.environment, cwd: options.cwd }, operation);
+          const result = await runOwnedCommand({ ...toolCommand(launch, launch.tool === "copilot" ? ["--no-auto-update", "--version"] : ["--version"]), environment: options.environment, cwd: options.cwd }, operation);
           if (launch.tool === "herdr") {
             const match = /^herdr (\d+\.\d+\.\d+)(?:\s|$)/m.exec(result.stdout);
             if (!match) throw new ToolSelectionError(launch.tool, launch.context, "probe", "unrecognized_output"); version = match[1]!;
           } else version = parseNativeAgentVersion(launch.tool, result.stdout);
           if (launch.tool === "codex" && launch.context === "web") {
-            const help = await runHerdrCommand({ ...toolCommand(launch, ["app-server", "--stdio", "--help"]), environment: options.environment, cwd: options.cwd }, operation);
+            const help = await runOwnedCommand({ ...toolCommand(launch, ["app-server", "--stdio", "--help"]), environment: options.environment, cwd: options.cwd }, operation);
             if (!["app-server", "--stdio"].every(flag => help.stdout.includes(flag))) throw new ToolSelectionError(launch.tool, launch.context, "probe", "incompatible_runtime");
           }
         }

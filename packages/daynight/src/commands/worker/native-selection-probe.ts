@@ -10,11 +10,11 @@ import { createOperation } from "../../api/operation.js";
 import { parseWorkerCloudNative, type WorkerCloudNative } from "../../api/worker-configuration.js";
 import { assertNativeModelSelection, NativeCapabilityError, validateNativeModelObservation, type NativeModelObservation } from "../controller/providers/native-selection.js";
 import { record, string } from "../controller/providers/native-rpc.js";
-import { withCodexConfigurationRpc } from "./herdr/codex-config.js";
+import { withCodexConfigurationRpc } from "./codex-configuration.js";
 import { normalizeWorkerNative } from "./native-overrides.js";
 import { createNativeSelectionFs } from "./native-selection-fs.js";
 import { buildHerdrAgentArguments } from "./herdr/arguments.js";
-import { hasHerdrCommandCleanupFailure } from "./herdr/command.js";
+import { hasOwnedCommandCleanupFailure } from "./owned-command.js";
 import { parseProviderArguments } from "../controller/providers/projection.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { parseResolvedToolLaunch } from "../../platform/tool-launch-record.js";
@@ -136,7 +136,7 @@ const readNativeCapabilities = async (native: WorkerCloudNative, mode: "web" | "
   catch (error) {
     if (error instanceof ToolSelectionError) throw error;
     if (error instanceof Error && "code" in error && ["capability_error", "limit_exceeded", "cleanup_unknown"].includes(String(error.code))) throw error;
-    if (hasHerdrCommandCleanupFailure(error)) throw new NativeCapabilityError("cleanup_unknown", "Native capability probe cleanup is unconfirmed.", { cause: error });
+    if (hasOwnedCommandCleanupFailure(error)) throw new NativeCapabilityError("cleanup_unknown", "Native capability probe cleanup is unconfirmed.", { cause: error });
     throw new NativeCapabilityError("capability_error", error instanceof Error ? error.message : "Native capability discovery failed.", { cause: error });
   }
 };

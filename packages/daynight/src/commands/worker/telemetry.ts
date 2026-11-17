@@ -7,10 +7,10 @@ import { performance } from "node:perf_hooks";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerCPU, WorkerDisk, WorkerExecutableProbe, WorkerMachine, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
-import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandDeadlineError, HerdrCommandError, runHerdrCommand, spawnHerdrProcess } from "./herdr/command.js";
+import { hasOwnedCommandCleanupFailure, hasUnconfirmedOwnedCommandCleanup, OwnedCommandDeadlineError, OwnedCommandError, runOwnedCommand, spawnOwnedProcess } from "./owned-command.js";
 import { createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrRuntimeVersionObserver, HerdrVersionUnavailableError } from "./herdr/runtime-version.js";
-import { NativeVersionOutputError, probeNativeAgentVersion } from "./herdr/version-probe.js";
+import { NativeVersionOutputError, probeNativeAgentVersion } from "./native-version.js";
 import type { WorkerPaths } from "./paths.js";
 import { captureCodexProbeEnvironment, createCodexProbeOwner } from "./codex-probe-owner.js";
 import type { CodexProbeOwner } from "./codex-probe-owner.js";
@@ -29,9 +29,9 @@ class SampleError extends Error {
 const codeOf = (error: unknown): WorkerProbeCode => {
   if (error instanceof HerdrVersionUnavailableError) return "unavailable";
   if (error instanceof SampleError) return error.code;
-  if (error instanceof OperationError || error instanceof HerdrCommandDeadlineError) return "timeout";
+  if (error instanceof OperationError || error instanceof OwnedCommandDeadlineError) return "timeout";
   if (error instanceof NativeVersionOutputError) return "invalid_output";
-  if (error instanceof HerdrCommandError) return "command_failed";
+  if (error instanceof OwnedCommandError) return "command_failed";
   if (error instanceof Error && "code" in error) {
     if (error.code === "EACCES" || error.code === "EPERM") return "permission_denied";
     if (error.code === "ENOENT" || error.code === "ENOTDIR") return "not_found";
@@ -165,7 +165,7 @@ export const createWorkerTelemetryCollector = (options: {
             // A missing close acknowledgement leaves ownership uncertain; starting a replacement could leak another process tree.
             if (previous?.cleanupUncertain === true) {
               const error = previous.issue!.error;
-              if (hasUnconfirmedHerdrCommandCleanup(error)) {
+              if (hasUnconfirmedOwnedCommandCleanup(error)) {
                 issues.push({ component: agent, code: "unavailable", error });
                 cached = true;
                 return { state: "error", checkedAt: new Date().toISOString(), code: "unavailable" };
@@ -179,11 +179,11 @@ export const createWorkerTelemetryCollector = (options: {
               if (previous.issue !== undefined) issues.push(previous.issue);
               return previous.probe;
             }
-            return { state: "ok", checkedAt, value: await probeNativeAgentVersion({ agent, environment: probeEnvironment, cwd: options.workingDirectory, runCommand: (command, childOperation) => runHerdrCommand(command, childOperation, spawnHerdrProcess, { cleanupWithinDeadline: true }) }, collection) };
+            return { state: "ok", checkedAt, value: await probeNativeAgentVersion({ agent, environment: probeEnvironment, cwd: options.workingDirectory, runCommand: (command, childOperation) => runOwnedCommand(command, childOperation, spawnOwnedProcess, { cleanupWithinDeadline: true }) }, collection) };
           };
           result = agent === "codex" ? await codexProbes.observe({ file: agent, environment: probeEnvironment, workingDirectory: options.workingDirectory }, collection, observeVersion) : await observeVersion();
         } catch (error) {
-          cleanupUncertain = hasHerdrCommandCleanupFailure(error);
+          cleanupUncertain = hasOwnedCommandCleanupFailure(error);
           try {
             if (!cleanupUncertain && hasCode(error, "ENOENT") && await executableMissing(agent, probeEnvironment, options.workingDirectory, collection)) result = { state: "not_installed", checkedAt };
             else { const code = cleanupUncertain ? "unavailable" : codeOf(error); issue = { component: agent, code, error }; result = { state: "error", checkedAt, code }; }
@@ -222,7 +222,7 @@ export const createWorkerTelemetryCollector = (options: {
         try { operation.check(); }
         catch (error) { failures.unshift(error); }
         if (failures.length !== 0) {
-          const cleanup = issues.filter((issue) => hasHerdrCommandCleanupFailure(issue.error)).map((issue) => issue.error);
+          const cleanup = issues.filter((issue) => hasOwnedCommandCleanupFailure(issue.error)).map((issue) => issue.error);
           const errors = [...new Set([...failures, ...cleanup])];
           if (errors.length > 1) throw new AggregateError(errors, "Worker telemetry failed after joining native probes.", { cause: failures[0] });
           throw errors[0];

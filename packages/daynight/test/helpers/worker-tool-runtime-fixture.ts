@@ -3,7 +3,7 @@ import { createOperation } from "../../src/api/operation.js";
 import type { WorkerCloudNative } from "../../src/api/worker-configuration.js";
 import type { AgentControlMode } from "../../src/api/types.js";
 import type { ExecutionConfiguration } from "../../src/commands/worker/types.js";
-import { probeNativeAgentVersion } from "../../src/commands/worker/herdr/version-probe.js";
+import { probeNativeAgentVersion } from "../../src/commands/worker/native-version.js";
 
 /** Configuration orchestration fixtures supply their probe outcome and never discover tools on the host. */
 export const createWorkerToolSelectionFixture = (options: { workerDirectory: string; cwd: string; environment: NodeJS.ProcessEnv }) => ({

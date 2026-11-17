@@ -21,15 +21,15 @@ it("compares both runners in independent budgets and records only bounded output
 
 it("stops further probes when the original runner cannot confirm cleanup", async () => {
   let calls = 0;
-  const result = await runPreparationProbeSequence({ marker, inventory }, async () => { calls++; return { stdout: "", stderr: "", closed: false, errorType: "HerdrCommandCleanupError" }; });
+  const result = await runPreparationProbeSequence({ marker, inventory }, async () => { calls++; return { stdout: "", stderr: "", closed: false, errorType: "OwnedCommandCleanupError" }; });
   expect(calls).toBe(1);
   expect(result).toHaveLength(1);
-  expect(result[0]).toMatchObject({ closed: false, errorType: "HerdrCommandCleanupError" });
+  expect(result[0]).toMatchObject({ closed: false, errorType: "OwnedCommandCleanupError" });
 });
 
 it("keeps unavailable output unknown and starts no further probes after cancellation", async () => {
   let cancelled = false;
-  const result = await runPreparationProbeSequence({ marker, inventory }, async () => { cancelled = true; return { stdout: "", stderr: "", closed: true, outputCaptured: false, errorType: "HerdrCommandDeadlineError" }; }, () => cancelled);
+  const result = await runPreparationProbeSequence({ marker, inventory }, async () => { cancelled = true; return { stdout: "", stderr: "", closed: true, outputCaptured: false, errorType: "OwnedCommandDeadlineError" }; }, () => cancelled);
   expect(result).toHaveLength(1);
   expect(result[0]).toMatchObject({ stdoutBytes: null, stderrBytes: null, closed: true });
   expect(result[0]?.markerMatches).toBeUndefined();

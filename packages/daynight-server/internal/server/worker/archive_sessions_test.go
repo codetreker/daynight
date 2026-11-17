@@ -17,7 +17,8 @@ func TestArchiveSessionsHTTPProjection(t *testing.T) {
 		enabled := false
 		value := configurationHTTPModel(t, configurationHTTPValue())
 		value.ArchiveSessions = &enabled
-		observation := &model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "2", Items: []model.WorkerConfigurationItem{{Key: model.WorkerConfigurationItemKey{Kind: "archiveSessions"}, TargetRevision: "2", AppliedValue: json.RawMessage(`false`), State: "applied"}, {Key: model.WorkerConfigurationItemKey{Kind: "maxConcurrent"}, TargetRevision: "2", AppliedValue: json.RawMessage(`3`), State: "applied"}}}, ReportedAt: capacityObservedAt}
+		value.EnableSudoCleanup = true
+		observation := &model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "2", Items: []model.WorkerConfigurationItem{{Key: model.WorkerConfigurationItemKey{Kind: "archiveSessions"}, TargetRevision: "2", AppliedValue: json.RawMessage(`false`), State: "applied"}, {Key: model.WorkerConfigurationItemKey{Kind: "enableSudoCleanup"}, TargetRevision: "2", AppliedValue: json.RawMessage(`true`), State: "applied"}, {Key: model.WorkerConfigurationItemKey{Kind: "maxConcurrent"}, TargetRevision: "2", AppliedValue: json.RawMessage(`3`), State: "applied"}}}, ReportedAt: capacityObservedAt}
 		f.operations.configuration = func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error) {
 			return model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "2", UpdatedAt: capacityObservedAt, Value: value}, ObservationRevision: "1", Observation: observation}, nil
 		}
@@ -27,10 +28,10 @@ func TestArchiveSessionsHTTPProjection(t *testing.T) {
 		}
 		response := controlModeRequest(t, f, "GET", "/configuration", "", headers)
 		body := response.Body.String()
-		if response.Code != 200 || (response.Header().Get(workerArchiveSessionsHeader) == "1") != aware || strings.Contains(body, `"archiveSessions":false`) != aware || strings.Contains(body, `"kind":"archiveSessions"`) != aware || strings.Contains(body, "archiveSessionsObservation") {
+		if response.Code != 200 || (response.Header().Get(workerArchiveSessionsHeader) == "1") != aware || strings.Contains(body, `"archiveSessions":false`) != aware || strings.Contains(body, `"kind":"archiveSessions"`) != aware || !strings.Contains(body, `"enableSudoCleanup":true`) || !strings.Contains(body, `"kind":"enableSudoCleanup"`) || strings.Contains(body, "archiveSessionsObservation") {
 			t.Fatalf("projection aware=%v: %d %s %v", aware, response.Code, body, response.Header())
 		}
-		if len(observation.Items) != 2 {
+		if len(observation.Items) != 3 {
 			t.Fatal("projection changed the source observation")
 		}
 		f.operations.configuration = func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error) {

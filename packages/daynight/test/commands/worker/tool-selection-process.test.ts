@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { expect, test } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { toolCommand } from "../../../src/platform/tool-executables.js";
-import { runHerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { runOwnedCommand } from "../../../src/commands/worker/owned-command.js";
 import { ToolSelectionManager } from "../../../src/commands/worker/tool-selection.js";
 
 test("real child processes use the selected recipe while old frozen execution stays on A", async () => {
@@ -16,7 +16,7 @@ test("real child processes use the selected recipe while old frozen execution st
     await chmod(file, 0o755); return file;
   };
   const manager = new ToolSelectionManager({ cwd: root, environment: process.env, readActiveSelections: () => [], probe: {
-    check: async launch => ({ version: (await runHerdrCommand({ ...toolCommand(launch, ["--version"]), cwd: root, environment: process.env }, operation)).stdout.trim() }), close: async () => {},
+    check: async launch => ({ version: (await runOwnedCommand({ ...toolCommand(launch, ["--version"]), cwd: root, environment: process.env }, operation)).stdout.trim() }), close: async () => {},
   } });
   try {
     const first = await script("A"), second = await script("B");
@@ -25,8 +25,8 @@ test("real child processes use the selected recipe while old frozen execution st
     expect(manager.observationFor(frozen)?.version).toBe("1.0.0");
     target(second, "2"); const next = await manager.selectForNewExecution("codex", "web", operation);
     expect(next.selectionKey).not.toBe(frozen.selectionKey); expect(manager.observationFor(next)?.version).toBe("2.0.0");
-    expect((await runHerdrCommand({ ...toolCommand(frozen, []), cwd: root, environment: process.env }, operation)).stdout.trim()).toBe("A");
-    expect((await runHerdrCommand({ ...toolCommand(next, []), cwd: root, environment: process.env }, operation)).stdout.trim()).toBe("B");
+    expect((await runOwnedCommand({ ...toolCommand(frozen, []), cwd: root, environment: process.env }, operation)).stdout.trim()).toBe("A");
+    expect((await runOwnedCommand({ ...toolCommand(next, []), cwd: root, environment: process.env }, operation)).stdout.trim()).toBe("B");
     await rm(first); await expect(manager.verifyFrozen(frozen, operation)).rejects.toMatchObject({ code: "tool_identity_changed" });
     expect((await manager.selectForNewExecution("codex", "web", operation)).selectionKey).toBe(next.selectionKey);
   } finally { try { await manager.close(operation); } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); } }

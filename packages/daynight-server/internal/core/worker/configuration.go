@@ -27,6 +27,7 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 	normalized.PreserveToolPaths = value.PreserveToolPaths
 	normalized.ArchiveSessions = value.ArchiveSessions
 	normalized.PreserveArchiveSessions = value.PreserveArchiveSessions
+	normalized.PreserveSudoCleanup = value.PreserveSudoCleanup
 	return normalized, err
 }
 
@@ -97,6 +98,10 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if value.PreserveArchiveSessions {
 		value.ArchiveSessions = current.Desired.Value.ArchiveSessions
 		value.PreserveArchiveSessions = false
+	}
+	if value.PreserveSudoCleanup {
+		value.EnableSudoCleanup = current.Desired.Value.EnableSudoCleanup
+		value.PreserveSudoCleanup = false
 	}
 	value, err = NormalizeConfiguration(value)
 	if err != nil {

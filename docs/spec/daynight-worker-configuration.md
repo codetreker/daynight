@@ -15,7 +15,7 @@
 
 ## 目标配置
 
-基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。独立能力协商分别决定 agentControlMode、toolPaths 和 archiveSessions 的必需字段。服务端输入拒绝未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON。Worker 对成功响应的未知内容遵循下述保留规则，已知字段校验保持严格。
+基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。非 null 目标在直接配置响应中始终提供 enableSudoCleanup；写入可省略，省略时按下述规则保留或初始化。独立能力协商分别决定 agentControlMode、toolPaths 和 archiveSessions 的必需字段。服务端输入拒绝未知、重复、其他必填字段缺失、非法 UTF-8/NUL、错误类型和尾随 JSON。Worker 对成功响应的未知内容遵循下述保留规则，已知字段校验保持严格。
 
 | 字段 | 语义 |
 | --- | --- |
@@ -23,6 +23,7 @@
 | pollIntervalMs | 1000..60000 的整数，单位毫秒 |
 | recoveryLimit | 0..10 的整数 |
 | preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
+| enableSudoCleanup | 布尔值；默认 false，保存目标不代表 Worker 已应用或执行 sudo |
 | agentControlMode | 协商后为 herdr 或 web；已有旧目标尚未采纳时可为 null，不是第三种模式 |
 | toolPaths | 工具能力协商后为固定三键 codex/copilot/herdr，各项为未采纳 null、显式自动或显式路径 |
 | archiveSessions | 归档能力协商后为布尔值，默认 true；false 表示关闭 Session 归档 |
@@ -33,7 +34,7 @@
 
 model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 字节。项目覆盖遵循相同限制。本地候选及云端目标共享这些数值和集合限制。
 
-项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、仓库本机路径、服务连接与凭据及 Worker 身份不属于目标配置。agentControlMode、toolPaths 与 archiveSessions 是 Worker 级目标，不允许项目 nativeOverrides 覆盖。新完整 bootstrap 必须提供 herdr 或 web；PUT 可保留尚未采纳的 null，但不能将已采纳模式清空。
+项目列表规范化后比较语义值。preferPlatformSpecificTasks 是每个 Worker 独立的运行设置，首次本地候选省略时为 false；云端完整目标必须显式提供布尔值。开启后对所有已选且可领取项目的后续新领取生效，各类别独立保留项目轮转与项目内创建顺序，具体调度行为由 [Worker 需求](daynight-worker.md#w-05调度与全局并发)拥有。repositoryRoot、仓库本机路径、服务连接与凭据及 Worker 身份不属于目标配置。agentControlMode、toolPaths、enableSudoCleanup 与 archiveSessions 是 Worker 级目标，不允许项目 nativeOverrides 覆盖。新完整 bootstrap 必须提供 herdr 或 web；PUT 可保留尚未采纳的 null，但不能将已采纳模式清空。
 
 ### 工具路径三态
 
@@ -47,9 +48,15 @@ Worker 对配置 GET、普通报告回执及 prompts 联合回执使用配置专
 
 known 仅从已知路径投影并按原合同严格验证，未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
 
-仅未知字段、更高 revision 或 updatedAt 变化时，Worker 更新完整目标并保持已知应用身份、applicationRevision 与在途工作；已知目标变化才正常应用。报告 observation.desiredRevision 使用最新收到版本，item.targetRevision 仍为真实应用目标版本。同 revision 的 desired 必须在双方可见内容上 JSON 语义相等：对象成员顺序无关，数组顺序有关，等值十进制数字写法相等且不经浮点舍入。既有能力协商可使 agentControlMode 或 toolPaths 仅在一方出现；双方均可见时仍完整比较，包括未知子树。此前收到、因同版本投影被隐藏的字段保留为历史源事实，不作为当前目标或应用证据；同版本再次出现时核对该事实，版本变化或权威重置不得将旧事实当作新目标。其他语义差异为协议错误。投影变化按当前收到的目标重新协调已知项。迟到较低回执不回退目标；回执暴露较低目标或观测计数时 Worker 重新执行认证 GET，以确认并恢复服务状态。缓存格式、应用版本消费者和恢复由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#云端接收与本机提交)拥有。
+仅未知字段、更高 revision 或 updatedAt 变化时，Worker 更新完整目标并保持已知应用身份、applicationRevision 与在途工作；已知目标变化才正常应用。报告 observation.desiredRevision 使用最新收到版本，item.targetRevision 仍为真实应用目标版本。同 revision 的 desired 必须在双方可见内容上 JSON 语义相等：对象成员顺序无关，数组顺序有关，等值十进制数字写法相等且不经浮点舍入。既有能力协商可使 agentControlMode 或 toolPaths 仅在一方出现；双方均可见时仍完整比较，包括未知子树。支持归档能力的客户端应对 archiveSessions 使用相同的同版本投影规则。此前收到、因同版本投影被隐藏的字段保留为历史源事实，不作为当前目标或应用证据；同版本再次出现时核对该事实，版本变化或权威重置不得将旧事实当作新目标。其他语义差异为协议错误。投影变化按当前收到的目标重新协调已知项。迟到较低回执不回退目标；回执暴露较低目标或观测计数时 Worker 重新执行认证 GET，以确认并恢复服务状态。缓存格式、应用版本消费者和恢复由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#云端接收与本机提交)拥有。
 
-本项未知内容保留不新增能力协商；既有 agentControlMode/toolPaths 的发送准入与服务端严格输入合同继续有效。支持扩展容忍的客户端必须先实际采用，服务随后才能直接增加新字段；未打补丁的旧严格客户端不因此取得兼容能力。
+本项未知内容保留不新增能力协商；既有 agentControlMode/toolPaths 的发送准入与服务端严格输入合同继续有效；archiveSessions 同样使用独立能力协商。支持扩展容忍的客户端必须先实际采用，服务随后才能直接增加新字段；未打补丁的旧严格客户端不因此取得兼容能力。
+
+## 兼容基线与上线
+
+服务直接返回 enableSudoCleanup，不为该字段新增能力头或端点。上线前须确认需要持续使用的 Worker 已运行支持未知配置保留的版本，Web 已采用相应兼容版本，仍打开的严格旧页面已刷新。代码合入或发版本身不能证明这些客户端已实际采用；尚未打补丁的严格旧客户端不属于新增字段后的支持基线。若仍需支持它们，服务应保持原格式直到兼容基线就绪。
+
+兼容但尚不认识该字段的 Worker 保留目标，继续处理已知配置，并不把未知目标报告为已应用。兼容 Web 在修改已知字段时保留该值。新服务提供目标不表示 Worker 已具备 sudo 清理实现，也不表示生产环境已经启用它。
 
 ## 首次导入与编辑
 
@@ -57,7 +64,7 @@ known 仅从已知路径投影并按原合同严格验证，未知 observation k
 
 网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同。网页先明确 Codex 时，随后 bootstrap 只填仍未采纳的 Copilot/Herdr；bootstrap 先提交时，旧 revision 的网页 PUT 冲突，不能自动重放。已保存的非 null choice 不被候选覆盖；恢复 auto 后本地旧路径不再出现。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
 
-PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取时的目标版本，为 1..9223372036854775807 的规范十进制字符串，不接受前导零、符号、小数或指数。版本不符为 409 version_conflict；规范值相同不递增目标版本或修改时间。目标尚未导入时返回 409 configuration_not_initialized，不能通过 PUT 创建它；revision:"0" 不是合法创建操作。达到最大正 int64 后需要真实变化时为 409 version_exhausted，同值 no-op 仍有效。
+PUT 使用 {revision,value} 替换已初始化目标。若 value 省略 enableSudoCleanup，服务在目标版本检查与同一事务内保留当前值；显式 false 是关闭，null 和非布尔值无效。首次 bootstrap 省略该字段时初始化为 false，已有目标不被后续完整 bootstrap 覆盖。revision 是读取时的目标版本，为 1..9223372036854775807 的规范十进制字符串，不接受前导零、符号、小数或指数。版本不符为 409 version_conflict；规范值相同不递增目标版本或修改时间。目标尚未导入时返回 409 configuration_not_initialized，不能通过 PUT 创建它；revision:"0" 不是合法创建操作。达到最大正 int64 后需要真实变化时为 409 version_exhausted，同值 no-op 仍有效。
 
 新增或修改的项目条目必须可访问。原样保留或删除已选但后来失权的条目，不阻塞其他配置编辑；不能获取失权项目的名称或仓库信息。
 
@@ -65,9 +72,9 @@ PUT 使用 {revision,value} 完整替换已初始化目标。revision 是读取�
 
 配置 GET、HEAD、PUT 及带配置的 Worker 报告使用独立请求头 Daynight-Worker-Control-Mode: 1。服务明确回显同名响应头才表示支持；它不替代 Daynight-Worker-Configuration: 1/2，不改变 prompt 结果、认证、Origin、principal 或 CAS。配置页面与 API 同源使用，不为该能力新增跨源准入。
 
-未协商请求仍使用原严格结构：GET 和报告回执省略 agentControlMode，配置资源观测省略同名项。旧 PUT 在目标 CAS 和同一事务锁内保留当前模式，只替换原协议字段。旧存储记录缺失模式通过专用旧格式解码成为未采纳状态；新写入合同不因升级而放宽。
+未协商模式的请求仍省略对应扩展：GET 和报告回执省略 agentControlMode，配置资源观测省略同名项。旧 PUT 在目标 CAS 和同一事务锁内保留当前模式，只替换原协议字段。旧存储记录缺失模式通过专用旧格式解码成为未采纳状态；新写入合同不因升级而放宽。
 
-已经持久化 mode 应用观测后，仍在运行的旧服务必须提供旧严格客户端可解析的配置响应。旧服务后续报告若替换了模式证据，该实际值保持尚未确认，直到新的 Worker 报告，不能重建伪 applied 状态。迁移后旧二进制重启受迁移版本检查约束。
+已经持久化 mode 应用观测后，未协商的客户端不会收到 mode 项；新增直接字段的兼容基线仍按上述要求执行。仍在运行的旧服务后续报告若替换了模式证据，该实际值保持尚未确认，直到新的 Worker 报告，不能重建伪 applied 状态。迁移后旧二进制重启受迁移版本检查约束。
 
 新客户端未收到回显时按旧合同解析并继续本机模式，不向旧服务发送新正文。运行中的 Worker 必须继续探测服务升级或回退，并按新读取的能力构造后续报告，不自动重放结果未知的请求。Web 禁用该字段并提供升级说明，其他字段保持可编辑。支持能力的旧目标尚未采纳时显示等待同步，不能将默认 herdr 当作实际已应用。
 
@@ -97,19 +104,20 @@ Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2�
 
 ## 应用观测
 
-每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。本批 items 最多 1026 个不同 key，其中除 agentControlMode 和 archiveSessions 外最多 1025 项；未协商任何扩展项时最多 1025 项。两种扩展项共同使用总条数额度，应用值遵循目标配置相同的字段与数值限制。
+每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。本批 items 最多 1028 个不同 key，其中除 agentControlMode、archiveSessions 和 enableSudoCleanup 外最多 1025 项；三种项各有一个独立名额。未协商模式和归档能力时最多 1026 项。应用值遵循目标配置相同的字段与数值限制。
 
 | kind | appliedValue |
 | --- | --- |
 | maxConcurrent、pollIntervalMs、recoveryLimit | 对应合法标量或 null |
 | preferPlatformSpecificTasks | true 或 false 表示已应用的优先策略；尚无确认值时为 null |
+| enableSudoCleanup | true 或 false 表示实际应用的清理设置；尚无确认值时为 null |
 | agentControlMode | herdr 或 web 表示已应用模式；尚无确认值时为 null |
 | archiveSessions | true 或 false 表示已应用的归档设置；尚无确认值时为 null |
 | native、projectNative | 完整 native 元组或 null |
 | projectPreparation | true 表示已准备；没有可确认结果时为 null |
 | projectRemoval | true 表示已移除/停止；没有可确认结果时为 null |
 
-null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false 和 archiveSessions:false 分别表示已应用的关闭设置，不能解释为缺少结果。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
+null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false、enableSudoCleanup:false 和 archiveSessions:false 分别表示对应设置已应用关闭，不能解释为缺少结果。服务不会因保存或初始化目标而生成应用观察；不认识这些字段的兼容 Worker 不报告对应项。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
 
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 
@@ -155,7 +163,7 @@ baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 
 
 Web 对成功配置响应保留完整未知目标和未知观测项，已知字段仍按类型、范围、必填和身份规则严格校验；未知项不生成控件或应用成功。编辑已知字段时保留同一目标版本下未修改的未知数据，包括无法由 JavaScript number 精确表示的数值。明确移除项目时一并移除该项目的未知内容；保留的项目按 projectId 对齐。回执和未知结果查询核对完整目标语义，不能只比较已知字段。后台读取不将新版本基底静默用于旧草稿。
 
-服务端增加未来配置字段前，必须确认需要持续使用的 Web 已使用兼容版本，仍打开的严格旧页面已刷新；部署新资源本身不会更新已打开页面。服务端当前请求准入及已有模式、工具能力投影保持原合同。
+服务端增加未来配置字段前，必须确认需要持续使用的 Web 已使用兼容版本，仍打开的严格旧页面已刷新；部署新资源本身不会更新已打开页面。服务端当前请求准入及模式、工具和归档能力投影保持各自合同。
 
 表单保留项目覆盖的字段存在性、model:null 与 args:[]，并区分目标、尚未确认的实际值和每项结果。比较目标时保留各项 targetRevision 与实际值：值未变的独立项可沿用成功；模式应用仍需要同名观测，缺失项不得被其它字段成功覆盖，项目准备/native 还需核对当前目标观测及后续移除版本；已移除项目的 projectRemoval 保留自己的状态和版本，结果仍应显示。observation.reportedAt 表示服务器接纳本批应用结果的时刻，不能以机器上报时间或保存目标的时间替代它。配置反馈使用最近接纳的整批观测，缺少当前目标项时保持 pending，不跨批拼接旧项来宣称完整成功。
 
@@ -171,4 +179,4 @@ Web 对成功配置响应保留完整未知目标和未知观测项，已知字�
 
 Worker 本机检查点的临时文件 I/O 故障独立于服务端事务错误：在原实例所有权中等待并重试同一冻结结果，未保存应用不公开，已知报告回执不因等待者取消失去归属。格式、身份和其它确定错误仍拒绝；新执行准入服从存储 readiness，原执行与停止事实继续保留。应用错误只从实际受控类型或操作边界映射为上述闭合词汇；本机阶段、原记录/目标与当前权威关联、远端/本地确定性和五分钟摘要由[报告诊断需求](daynight-worker-reporting.md#配置交换)拥有，不增加 wire 字段或更改 API 错误外壳。完整本机恢复及关闭合同由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#临时存储恢复与准入)拥有。
 
-验证覆盖账号与 Origin、闭合字段、继承/null/[]、完整版本范围、并发导入、独立 CAS、相同值 no-op、过期窗口、当前项目权限、旧格式及存在运行中任务时的接入。归档配置还验证真实迁移与默认值、旧 PUT 保值、严格旧投影、布尔观测和旧报告替换后的证据撤销。Web 保存验证覆盖准入前取消、派发后未确认、可信确认后的发布失败、暂停中的本地收尾和保留草稿、恢复发布与较新编辑，以及 owner 替换或销毁时的取消。服务端接纳应用观测不代替真实 Worker 应用验证。
+验证覆盖账号与 Origin、闭合字段、继承/null/[]、完整版本范围、并发导入、独立 CAS、相同值 no-op、过期窗口、当前项目权限、旧格式及存在运行中任务时的接入。归档配置还验证真实迁移与默认值、旧 PUT 保值、未协商时归档字段和观测项的省略、布尔观测和旧报告替换后的证据撤销。兼容客户端对直接返回的 enableSudoCleanup 按未知内容保留规则处理；不把归档能力投影误认为所有历史严格客户端都能接受 sudo 字段。Web 保存验证覆盖准入前取消、派发后未确认、可信确认后的发布失败、暂停中的本地收尾和保留草稿、恢复发布与较新编辑，以及 owner 替换或销毁时的取消。服务端接纳应用观测不代替真实 Worker 应用验证。

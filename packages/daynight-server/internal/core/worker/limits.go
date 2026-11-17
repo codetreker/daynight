@@ -26,7 +26,7 @@ const (
 	MaxNativeArgBytes         = 4 << 10
 	MaxProjects               = 128
 	MaxInventoryClaims        = 256
-	MaxObservationItems       = 1026
+	MaxObservationItems       = 1028
 	MaxTelemetryJSONBytes     = 4 << 20
 	MaxConfigurationJSONBytes = 4 << 20
 	MaxWorkerJSONBytes        = 4 << 20
@@ -208,7 +208,7 @@ func AdmitObservation(value model.WorkerConfigurationObservation) error {
 			continue
 		}
 		switch item.Key.Kind {
-		case "preferPlatformSpecificTasks":
+		case "preferPlatformSpecificTasks", "enableSudoCleanup", "archiveSessions":
 			var enabled bool
 			if err := configurationDecode(item.AppliedValue, &enabled); err != nil {
 				return err

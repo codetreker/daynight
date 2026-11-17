@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
-import { parseNativeAgentVersion, probeNativeAgentVersion } from "../../../src/commands/worker/herdr/version-probe.js";
+import { parseNativeAgentVersion, probeNativeAgentVersion } from "../../../src/commands/worker/native-version.js";
 
 describe("pure native agent version probes", () => {
   it.each([

@@ -17,7 +17,7 @@ import type { WorkerConfigurationManager } from "../../../src/commands/worker/co
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
-import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
 import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -82,7 +82,7 @@ vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...awa
 vi.mock("../../../src/commands/worker/prompts.js", async original => ({ ...await original<object>(), buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/native-version.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: mocks.webOpen }));
 vi.mock("../../../src/commands/worker/backends/web.js", async original => ({ ...await original<object>(), createWebExecutionBackend: mocks.webBackend }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
@@ -1274,7 +1274,7 @@ describe("worker runtime configuration reporting", () => {
 
   it("preserves reporter cleanup uncertainty as the runtime result while completing resource teardown", async () => {
     const f = await fixture();
-    const failure = new HerdrCommandCleanupError([new Error("unjoined process")], new Error("probe failed"));
+    const failure = new OwnedCommandCleanupError([new Error("unjoined process")], new Error("probe failed"));
     collect.mockResolvedValue({ telemetry: workerTelemetry, issues: [{ component: "codex", code: "command_failed", error: failure }] });
     const running = start(f); const rejected = expect(running).rejects.toBe(failure);
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce()); await eventually(() => expect(report).toHaveBeenCalled());

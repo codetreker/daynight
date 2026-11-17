@@ -112,7 +112,7 @@ describe("Herdr native Windows process metadata", () => {
     const active = createOperation({ limits: { totalMs: 20_000, requestMs: limit === "request" ? 1000 : 15_000 } });
     operations.push(active);
     f.times.mockImplementation((_handle, creation: Buffer) => { creation.writeBigUInt64LE(fileTime); f.now = limit === "request" ? 1001 : 10_001; return 1; });
-    await expect(metadata.readWindowsProcessMetadata(4101, active)).rejects.toMatchObject({ name: "HerdrCommandDeadlineError" });
+    await expect(metadata.readWindowsProcessMetadata(4101, active)).rejects.toMatchObject({ name: "OwnedCommandDeadlineError" });
     expect(active.remainingMs()).toBeGreaterThan(0);
     expect(f.close).toHaveBeenCalledExactlyOnceWith(processHandle);
   });
@@ -186,7 +186,7 @@ describe("Herdr native Windows process inventory", () => {
   it("rejects a snapshot's late request result before the total operation expires", async () => {
     f.next.mockReset().mockImplementationOnce((_handle, data: Buffer) => { entry(data, 4101, 4000); return 1; }).mockImplementation(() => { f.now = 1001; return 0; });
     const active = operation();
-    await expect(metadata.captureWindowsProcessInventory(active)).rejects.toMatchObject({ name: "HerdrCommandDeadlineError" });
+    await expect(metadata.captureWindowsProcessInventory(active)).rejects.toMatchObject({ name: "OwnedCommandDeadlineError" });
     expect(active.remainingMs()).toBeGreaterThan(0);
     expect(f.close).toHaveBeenCalledExactlyOnceWith(snapshotHandle);
   });

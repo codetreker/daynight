@@ -13,7 +13,7 @@ import (
 )
 
 func TestArchiveLegacyClientContract(t *testing.T) {
-	// These complete responses are also checked with the pre-extension CLI parser.
+	// These complete responses retain the established unnegotiated archive projection.
 	check := func(name string, body []byte) {
 		t.Helper()
 		want, err := os.ReadFile("testdata/archive-legacy-" + name + ".json")

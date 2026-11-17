@@ -143,7 +143,8 @@ func TestStoredArchiveObservationPreservesOrderAndLegacyProjection(t *testing.T)
 	mode := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "agentControlMode"}, AppliedValue: json.RawMessage(`"web"`)}
 	archive := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "archiveSessions"}, AppliedValue: json.RawMessage(`false`)}
 	base := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "maxConcurrent"}, AppliedValue: json.RawMessage(`3`)}
-	for _, items := range [][]model.WorkerConfigurationItem{{archive, mode, base}, {mode, archive, base}, {base, archive, mode}, {base, mode, archive}} {
+	sudo := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "enableSudoCleanup"}, AppliedValue: json.RawMessage(`true`)}
+	for _, items := range [][]model.WorkerConfigurationItem{{archive, mode, sudo, base}, {mode, archive, base, sudo}, {base, archive, sudo, mode}, {sudo, base, mode, archive}} {
 		value := model.WorkerConfigurationReportedObservation{WorkerConfigurationObservation: model.WorkerConfigurationObservation{Items: items}}
 		var encoded bytes.Buffer
 		if _, err := EncodeObservation(&encoded, value, math.MaxInt64); err != nil {
@@ -193,11 +194,11 @@ func TestStoredObservationBothSlotsFitExistingReserve(t *testing.T) {
 	item := func(kind, value string) model.WorkerConfigurationItem {
 		return model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: kind}, TargetRevision: "9223372036854775807", AppliedValue: json.RawMessage(value), State: "error", Error: failure, LastFailure: failure, NextAttemptAt: &at}
 	}
-	items := make([]model.WorkerConfigurationItem, 1024)
+	items := make([]model.WorkerConfigurationItem, 1025)
 	for i := range items {
 		items[i] = item("projectNative", `null`)
 	}
-	items = append(items, item("archiveSessions", `false`), item("agentControlMode", `"herdr"`))
+	items = append(items, item("archiveSessions", `false`), item("enableSudoCleanup", `false`), item("agentControlMode", `"herdr"`))
 	observation := model.WorkerConfigurationObservation{BaseRevision: "9223372036854775807", DesiredRevision: "9223372036854775807", Items: items}
 	public, err := json.Marshal(observation)
 	if err != nil {

@@ -5,7 +5,7 @@ import { syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
 import { stopWindowsBootstrapProcess, WindowsProcessProofError } from "../../controller/windows-process-proof.js";
 import { captureMappingProcessProof as captureProcessProof, inspectMappingProcessForCleanup as inspectProcessProof, MappingProcessProofAcquisitionError, validLinuxBirthToken, type MappingProcessProof as ProcessProof } from "./tool-launch-process-proof.js";
-import { runHerdrCommand } from "./command.js";
+import { runOwnedCommand } from "../owned-command.js";
 import { mappingFiles, optionalOwnedJson, publishOwnedJson } from "./tool-launch-protocol.js";
 import { parseToolReceipt } from "./tool-launch-protocol.js";
 import type { HerdrToolLaunchManifest, HerdrToolLaunchReceipt } from "./tool-launch-protocol.js";
@@ -36,7 +36,7 @@ const assertWindowsBirthChain = (proofs: readonly ProcessProof[]): void => {
 };
 const inventory = async (environment: NodeJS.ProcessEnv, operation: Operation): Promise<Inventory[]> => {
   if (process.platform === "win32") return captureWindowsProcessInventory(operation);
-  const result = await runHerdrCommand({ file: "/bin/ps", args: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="], environment: { ...environment, LC_ALL: "C" } }, operation);
+  const result = await runOwnedCommand({ file: "/bin/ps", args: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat="], environment: { ...environment, LC_ALL: "C" } }, operation);
   return result.stdout.split("\n").filter(row => row.trim() !== "").flatMap(row => {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(row);
     if (match === null) throw new Error("The original Herdr process inventory could not be interpreted.");
