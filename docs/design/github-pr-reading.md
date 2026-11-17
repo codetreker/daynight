@@ -36,4 +36,4 @@ PR 列表由独立圆角卡片组成，沿用任务列表的中性表面、间�
 
 `PullRequestDetailDialog` 接收当前 userId、Project、PR number 和关闭回调，独立读取详情，不复用 Task UUID 详情。调用方负责 Project 读取资格与后台核对时机；核对中的读取可暂停，已展示的对话框和交互状态保持挂载。身份或资格撤销时清除详情并取消请求。响应通过用户身份头和目标编号校验，读取 generation 及精确 revision 防止旧结果覆盖新观察。读取失败与空正文分别呈现，恢复性失败保留已显示数据。
 
-详情显示状态、作者、源与目标分支、完整 SHA、时间及 GitHub 外链，缺失作者或来源明确标识。description 使用基础 Markdown 和 GFM，图片不加载，raw HTML、Mermaid 和嵌入内容不执行；原文以文本节点展示。后台内容更新保留对话框、原文选择、焦点和阅读位置。列表负责挂载和调度核对；切换 tab 时关闭原生 modal 的可见性与滚动锁，保持组件和原文状态，返回时恢复同一详情。关闭详情以 preventScroll 返回仍可见的原列表行，否则回到 PR tab。
+详情显示状态、作者、源与目标分支、完整 SHA、时间及 GitHub 外链，缺失作者或来源明确标识。description 使用[公共 Markdown 渲染器](shared-markdown.md)，包含受限静态 Mermaid 图表；来源图片不加载，raw HTML 和嵌入内容不执行。原文以文本节点展示。后台内容更新保留对话框、原文选择、焦点和阅读位置。列表负责挂载和调度核对；切换 tab 时关闭原生 modal 的可见性与滚动锁，保持组件和原文状态，返回时恢复同一详情。关闭详情以 preventScroll 返回仍可见的原列表行，否则回到 PR tab。

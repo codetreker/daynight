@@ -1,11 +1,10 @@
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
 import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { legacySubagentActivity } from './legacy-subagent-activity';
-import '../../ui/markdown/markdown.css';
 import './session-timeline.css';
 import { SessionMarkdown } from './SessionMarkdown';
 import type { ImagePart, ImageUnavailablePart, MarkdownImageMetadata } from '../../../../daynight/src/session/image-values';
-import type { ChatImagePresentation } from '../../ui/ChatMarkdown';
+import type { MarkdownImagePresentation } from '../../ui/markdown/types';
 import { timelineNativeLabels, useTimelineMessages } from './timeline-messages';
 import type { InteractionResponse, MessagePart, SessionInteraction, TimelineEntry } from '../../api/types';
 import { sessionRespondGate, hasPendingResponse, type SessionState } from './state';
@@ -118,7 +117,7 @@ type EntryProps = {
   readonly onInvalidImageBindings: InvalidImageBindings | undefined;
 };
 type PartProps = Pick<EntryProps, 'resources' | 'active' | 'onLoadResource' | 'resourceAccess'> & { readonly entryId: string; readonly onInvalidBindings: () => void };
-function partImage(part: ImagePart | ImageUnavailablePart, presentation: ChatImagePresentation, props: PartProps) {
+function partImage(part: ImagePart | ImageUnavailablePart, presentation: MarkdownImagePresentation, props: PartProps) {
   return <SessionResourceView resource={part.type === 'image' ? props.resources.get(part.resourceId) : undefined} label={part.label} active={props.active} resourceAccess={props.resourceAccess} onLoad={props.onLoadResource} onInvalidResource={props.onInvalidBindings} presentation={presentation} mediaKey={`${props.entryId}/${part.imageId}`} {...(part.type === 'image_unavailable' ? { error: part.error.message } : {})} />;
 }
 function BoundMarkdown({ text, metadata, ...props }: PartProps & { readonly text: string; readonly metadata: MarkdownImageMetadata }) {

@@ -1,10 +1,17 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { providerDisplayEntry } from '../../daynight/src/commands/controller/provider-display';
 import { SessionMarkdown } from '../src/features/task-agent-session/SessionMarkdown';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
+vi.mock('../src/ui/markdown/mermaid/MermaidDiagram', () => ({ MermaidDiagram: ({ source }: { source: string }) => <div data-testid="diagram">{source}</div> }));
+
 const render = createLocaleRender('en');
 const base = { entryId: '11111111-1111-4111-8111-111111111111', revision: '1' };
+
+it('routes Session Mermaid through the shared diagram owner', () => {
+  const view = render(<SessionMarkdown text={'```mermaid\nflowchart LR\nA-->B\n```'} />);
+  expect(view.getByTestId('diagram')).toHaveTextContent('flowchart LR');
+});
 const converted = (kind: 'user_message' | 'assistant_message' | 'reasoning', text: string): string => {
   const entry = providerDisplayEntry(kind === 'reasoning' ? { ...base, kind, text } : { ...base, kind, content: [{ type: 'text', text }] });
   if (entry.kind === 'reasoning') return entry.text;

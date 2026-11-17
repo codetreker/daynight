@@ -8,6 +8,7 @@ import { AssistantTaskRecords } from '../src/features/bots/AssistantTaskRecords'
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botDefinition, botId } from './helpers/bots';
 
+vi.mock('../src/ui/markdown/mermaid/MermaidDiagram', () => ({ MermaidDiagram: ({ source }: { source: string }) => <div data-testid="diagram">{source}</div> }));
 vi.mock(import('../src/api/assistant-tasks'), async importOriginal => ({ ...await importOriginal(), listAssistantTaskItems: vi.fn(), listAssistantTaskRecords: vi.fn() }));
 const taskId = botId(30);
 const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Coordination', purpose: '', scope: '', application: '', kind: 'once', state: 'active', takeover: 'manual', trigger: null, version: '7', manualVersion: '2', claimGeneration: '0', claimState: 'unowned', holderBotId: null, credentialOperationId: null, claimedAt: null, renewedAt: null, leaseUntil: null, observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME };
@@ -15,6 +16,11 @@ const manual: Manual = { taskId, version: '2', body: 'Current **manual**', rules
 const initial: Manual = { ...manual, version: '1', body: 'Original manual', source: 'initial', proposalId: null };
 const appendix: AssistantTaskAppendix = { id: botId(32), taskId, text: 'Reference note', sourceRecords: [botId(40)], authorBotId: botId(1), state: 'active', version: '1', createdAt: BOT_TIME, updatedAt: BOT_TIME };
 const proposal: AssistantTaskProposal = { id: botId(33), taskId, baseVersion: '2', body: 'New manual', rules: [], reason: 'Two observed successes', evidenceRecords: [botId(40)], authorBotId: botId(1), widens: true, status: 'pending', decisionNote: '', createdAt: BOT_TIME, decidedAt: null };
+
+it('routes proposal Mermaid through the shared diagram owner', () => {
+  renderWithLocale(<AssistantTaskProposalPanel taskVersion="7" proposals={[{ ...proposal, body: '```mermaid\nflowchart LR\nA-->B\n```' }]} disabled={false} onDecide={vi.fn()} />, { locale: 'en' });
+  expect(screen.getByTestId('diagram')).toHaveTextContent('flowchart LR');
+});
 const record = (n: number, itemId: string | null, kind: AssistantTaskRecord['kind']): AssistantTaskRecord => ({ id: botId(n), taskId, itemId, kind, author: 'bot', authorBotId: botId(1), text: `Evidence ${n}`, refs: [], createdAt: BOT_TIME });
 beforeEach(() => { vi.mocked(listAssistantTaskItems).mockReset(); vi.mocked(listAssistantTaskRecords).mockReset(); });
 

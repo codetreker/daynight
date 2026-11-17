@@ -1,10 +1,10 @@
-# 公共 Markdown 文档渲染设计
+# 公共 Markdown 渲染设计
 
-[要求](../spec/shared-markdown.md)拥有文档渲染和图表的可见行为。`MarkdownView` 位于 `packages/daynight-web/src/ui/markdown/`，提供可独立使用的 document 资源模式；Task、Goal、Steps 和附件通过 `MarkdownContent` 适配。聊天仍由 `ui/ChatMarkdown.tsx` 独立渲染。
+[要求](../spec/shared-markdown.md)拥有公共渲染和图表的可见行为。`MarkdownView` 位于 `packages/daynight-web/src/ui/markdown/`，提供 document 和 chat 资源模式；Task、Goal、Steps 和附件通过 `MarkdownContent` 适配，Discussion、Session、PR 描述和提案通过同目录的 `ChatMarkdown` 薄适配器使用公共内核。
 
 ## 模块与资源
 
-`MarkdownView` 固定 `react-markdown` 与 GFM，拥有公共节点、实例上下文、脚注和公共 CSS。稳定的节点组件处理链接、图片、脚注标题、表格与代码块；只有 Mermaid fenced block 交给图表模块。组件直接导入公共排版、代码、表格、脚注和图表样式，描述卡片及附件图片错误与重试外壳由各 feature 拥有。公共 `Messages.markdown` 提供表格、脚注和 Mermaid 双语文案。
+`MarkdownView` 固定 `react-markdown` 与 GFM，拥有公共节点、实例上下文、脚注和公共 CSS。稳定的节点组件处理链接、图片、脚注标题、表格与代码块；只有 Mermaid fenced block 交给图表模块。组件直接导入公共排版、代码、表格、脚注和图表样式，场景通过 `--markdown-*` 参数保留密度和字体差异；描述卡片、消息气泡及附件图片错误与重试外壳由各 feature 拥有。公共 `Messages.markdown` 提供表格、脚注和 Mermaid 双语文案。
 
 调用者提供 document 资源模式：`paused`、`resolveUrl(sourceUrl)`、可选 `onLinkClick(sourceUrl, event)` 与 `renderImage({sourceUrl, url, alt, title})`。`sourceUrl` 是解析器 URI normalize 后、业务转换前的值；转换结果再经过 `defaultUrlTransform`，拒绝结果不能由来源地址恢复为图片加载地址。每次处理使用 WeakMap 将原 HAST 节点与来源关联，避免从预览地址反推附件路径。公共层不读取业务数据、权限或凭据。
 
@@ -12,10 +12,12 @@
 
 `MarkdownContent` 以来源 URL 分类附件相对图片，使用根或文件目录构造资源规则；附件路径保护、导航、图片请求、失败与重试继续由[附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。公共节点与 components map 保持稳定，普通父级更新与语言切换不以回调身份重建图块或图片。
 
+聊天模式以 AST text 子节点实现可见软换行，保留原文与图片位置。它只放行 HTTP(S)、mailto 和本实例生成的脚注链接，不向图片回调提供原始 URL。无图片能力的调用者显示不可用；受控模式先核验每个给定 UTF-16 半开范围是否对应真实 image 或有 definition 的 imageReference，再允许整组回调；任一无效时整组不呈现并在提交后通知。未绑定节点仍可存在并显示不可用。链接内绘制图片视觉，链接后按 AST 顺序绘制动作，拒绝链接也不丢失动作。Session 的摘要、revision、scope、资源准入及 frame 生命周期仍由 [Session 图片设计](session-image-browser.md#markdown-映射与链接图片)拥有，公共位置核验不授予访问资格。
+
 ## Mermaid 图表
 
 `MarkdownView` 将 `mermaid` fenced block 交给共享图表组件，普通 Markdown
-无需等待 Mermaid 12.2.0 的动态加载。来源仍以任务根或附件文件目录解析，不改变
+无需等待 Mermaid 12.2.0 的动态加载。文档来源以任务根或附件文件目录解析，聊天资源遵守自身准入，不改变
 存储格式或权限。显式稳定类型表约束[要求](../spec/shared-markdown.md#markdown-图表)中的
 15 类入口和 SDK 识别、解析及绘制 ID；SDK 新增类型不会自动开放。默认流程图使用
 Dagre，显式 `flowchart-elk` 使用 SDK 内置布局，其他类型使用各自布局。
@@ -67,4 +69,4 @@ DOM，也不调用 `bindFunctions`。Event Modeling 的合法 XHTML 标签保留
 
 ## 验证
 
-真实解析器测试覆盖语法、脚注隔离、安全 URL 与表格；附件集成测试覆盖根、目录、导航、暂停与单图重试。图表测试覆盖真实 SDK 类型、预算、队列及资源生命周期；真实浏览器验证图像绘制、双语和窄屏局部滚动。受控绘图测试不能代替真实 SDK 与浏览器绘制。
+真实解析器测试覆盖文档与聊天换行、语法、脚注隔离、安全 URL、图片范围与表格；附件集成测试覆盖根、目录、导航、暂停与单图重试，Session 测试覆盖绑定、资源准入与 frame 生命周期。图表测试覆盖真实 SDK 类型、预算、队列及资源生命周期；真实浏览器验证图像绘制、双语和窄屏局部滚动。受控绘图测试不能代替真实 SDK 与浏览器绘制。

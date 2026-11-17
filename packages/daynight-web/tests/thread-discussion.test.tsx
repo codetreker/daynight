@@ -8,6 +8,8 @@ import { TaskDiscussion } from '../src/features/task-thread/TaskDiscussion';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 
+vi.mock('../src/ui/markdown/mermaid/MermaidDiagram', () => ({ MermaidDiagram: ({ source }: { source: string }) => <div data-testid="diagram">{source}</div> }));
+
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const projectId = id(100), taskId = id(200);
 const message = (value: number, body: string, extra: Partial<ThreadMessage> = {}): ThreadMessage => ({ id: id(value), author: { userId: TEST_VIEWER_ID, displayName: 'Alice', Agent: false }, body, createdAt: `2026-11-03T08:${String(value).padStart(2, '0')}:00.123Z`, ...extra });
@@ -18,6 +20,12 @@ const Harness = ({ active = true, occupied = () => {}, admissionBlocked = false,
   return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice', avatarUrl: null }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} parentUnavailable={parentUnavailable} /></div></CurrentAccountProvider>;
 };
 const render = (ui = <Harness />) => renderWithLocale(ui, { locale: 'zh-CN', taskCache: true });
+
+it('routes Discussion Mermaid through the shared diagram owner', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => page([message(1, '```mermaid\nflowchart LR\nA-->B\n```')])));
+  render();
+  expect(await screen.findByTestId('diagram')).toHaveTextContent('flowchart LR');
+});
 
 it('round trips the Discussion deep link through the runtime route parser', () => {
   const url = taskDetailUrl(projectId, taskId, { tab: 'discussion', path: null });

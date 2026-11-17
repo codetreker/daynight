@@ -37,16 +37,7 @@
 .thread-message-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .15s; }
 .thread-message:hover .thread-message-actions, .thread-message:focus-within .thread-message-actions { opacity: 1; }
 .thread-message-actions .thread-icon-button { width: 25px; height: 25px; border-radius: 4px; }
-.thread-message-markdown { font-size: 12px; line-height: 1.85; color: #45516a; overflow-wrap: anywhere; min-width: 0; }
-.thread-message-markdown p { margin: 5px 0; }
-.thread-message-markdown p:first-child { margin-top: 2px; }
-.thread-message-markdown code { font: 10px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f2f3f7; border-radius: 3px; padding: 2px 4px; color: #5e587c; }
-.thread-message-markdown pre { max-width: 100%; background: #f7f8fa; border: 1px solid #edf0f4; border-radius: 6px; padding: 12px; overflow-x: auto; margin: 10px 0; color: #45516a; tab-size: 2; }
-.thread-message-markdown pre code { background: none; padding: 0; color: inherit; white-space: pre; }
-.thread-message-markdown ul { padding-left: 19px; margin: 5px 0; }
-.thread-message-markdown li { margin: 2px 0; }
-.thread-message-markdown strong { font-weight: 600; color: #37445b; }
-.thread-message-markdown .markdown-table { overflow-x: auto; max-width: 100%; }
+.thread-message-markdown { --markdown-paragraph-margin: 5px 0; --markdown-first-paragraph-margin-top: 2px; --markdown-pre-margin: 10px 0; --markdown-list-indent: 19px; --markdown-list-margin: 5px 0; --markdown-item-margin: 2px 0; --markdown-strong-weight: 600; --markdown-strong-color: #37445b; }
 .thread-reply-quote { display: block; width: 100%; max-width: 710px; text-align: left; border: 0; border-left: 2px solid #d7d6ef; border-radius: 0 4px 4px 0; background: #f8f8fc; padding: 7px 10px; margin: 4px 0 8px; color: #8890a0; font-size: 11px; overflow: hidden; cursor: pointer; }
 .thread-reply-quote:hover { background: #f1f1fc; }
 .thread-reply-quote strong { font-weight: 550; color: #7771a4; margin-right: 6px; }
@@ -125,8 +116,7 @@
   .thread-agent-badge { font-size: 8px; }
   .thread-message-actions { opacity: 1; gap: 0; }
   .thread-message-actions .thread-icon-button { width: 22px; height: 22px; }
-  .thread-message-markdown { font-size: 12px; line-height: 1.85; }
-  .thread-message-markdown pre { padding: 9px; }
+  .thread-message-markdown { --markdown-pre-padding: 9px; }
   .thread-reply-quote { padding: 6px 8px; font-size: 10px; }
   .thread-composer-wrap { padding: 0 13px 13px; }
   .thread-composer textarea { min-height: 69px; padding: 10px 12px; font-size: 12px; }

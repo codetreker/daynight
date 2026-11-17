@@ -12,10 +12,56 @@ vi.mock('../src/ui/markdown/mermaid/MermaidDiagram', () => ({
 }));
 
 const render = createLocaleRender('en');
-const resources = (overrides: Partial<MarkdownResources> = {}): MarkdownResources => ({
+const resources = (overrides: Partial<Extract<MarkdownResources, { kind: 'document' }>> = {}): MarkdownResources => ({
   kind: 'document', paused: false, resolveUrl: value => value,
   renderImage: ({ url, alt, title }) => <img src={url} alt={alt} title={title} />,
   ...overrides,
+});
+
+it('uses chat line breaks, safe links, local footnotes and the common diagram renderer', () => {
+  const text = 'First\nsecond [external](https://example.com) [refused](file:///secret) [local](#manual) and note[^x].\n\n[^x]: Footnote\n\n`one\ntwo`\n\n```mermaid\nflowchart LR\nA-->B\n```\n\n![photo](https://example.com/image.png)';
+  const view = render(<MarkdownView text={text} resources={{ kind: 'chat', images: { kind: 'unavailable' } }} />);
+  expect(view.container.querySelector('p br')).not.toBeNull();
+  expect(screen.getByRole('link', { name: 'external' })).toHaveAttribute('target', '_blank');
+  expect(screen.getByRole('link', { name: 'external' })).toHaveAttribute('rel', 'noopener noreferrer');
+  expect(screen.queryByRole('link', { name: 'refused' })).toBeNull();
+  expect(screen.queryByRole('link', { name: 'local' })).toBeNull();
+  const footnote = view.container.querySelector<HTMLAnchorElement>('a[data-footnote-ref]')!;
+  expect(view.container.querySelector(`[id="${footnote.hash.slice(1)}"]`)).not.toBeNull();
+  expect(view.container.querySelector('code')).toHaveTextContent('one two');
+  expect(screen.getByTestId('diagram')).toHaveTextContent('flowchart LR');
+  expect(view.container.querySelector('img')).toBeNull();
+  expect(screen.getByText('photo — Resource unavailable')).toBeVisible();
+});
+
+it('matches controlled ranges before callbacks and keeps linked actions outside rejected links', () => {
+  const image = '![a](file:///secret)', text = `😀 [${image}](file:///private)\n\n![ref][x]\n\n[x]: https://example.com/image.png`;
+  const start = text.indexOf(image), reference = text.indexOf('![ref][x]');
+  const positions = [{ start, end: start + image.length }, { start: reference, end: reference + '![ref][x]'.length }];
+  const draw = vi.fn((node: { start: number; end: number; alt: string }, presentation: string) => <span data-presentation={presentation}>{node.alt}:{presentation}</span>);
+  const invalid = vi.fn();
+  const view = render(<MarkdownView text={text} resources={{ kind: 'chat', images: { kind: 'controlled', positions, render: draw, onInvalid: invalid } }} />);
+  expect(invalid).not.toHaveBeenCalled();
+  expect(draw).toHaveBeenCalledWith({ ...positions[0], alt: 'a' }, 'linked');
+  expect(draw).toHaveBeenCalledWith({ ...positions[0], alt: 'a' }, 'actions');
+  expect(draw).toHaveBeenCalledWith({ ...positions[1], alt: 'ref' }, 'standalone');
+  expect(screen.queryByRole('link')).toBeNull();
+  expect(view.container.querySelector('img')).toBeNull();
+  expect(view.container.querySelector('[data-presentation="linked"]')?.compareDocumentPosition(view.container.querySelector('[data-presentation="actions"]')!)! & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(draw.mock.calls.every(([node]) => Object.keys(node).sort().join(',') === 'alt,end,start')).toBe(true);
+});
+
+it('rejects the entire controlled binding set before rendering and reports once for equivalent input', () => {
+  const source = '![a](image:a)', text = `${source} \`![fake](image:b)\``;
+  const positions = [{ start: 0, end: source.length }, { start: text.indexOf('![fake]'), end: text.indexOf('![fake]') + '![fake](image:b)'.length }];
+  const draw = vi.fn(), invalid = vi.fn();
+  const content = (ranges: typeof positions) => <MarkdownView text={text} resources={{ kind: 'chat', images: { kind: 'controlled', positions: ranges, render: draw, onInvalid: invalid } }} />;
+  const view = render(content(positions));
+  expect(draw).not.toHaveBeenCalled();
+  expect(invalid).toHaveBeenCalledTimes(1);
+  view.rerender(content(positions.map(range => ({ ...range, unrelated: 'changed' }))));
+  expect(draw).not.toHaveBeenCalled();
+  expect(invalid).toHaveBeenCalledTimes(1);
 });
 
 it('renders document semantics, named table and only Mermaid fenced blocks as diagrams', () => {

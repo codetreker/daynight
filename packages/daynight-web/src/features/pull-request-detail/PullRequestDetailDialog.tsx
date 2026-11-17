@@ -4,7 +4,7 @@ import type { ApiError } from '../../api/client';
 import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../../app/overlay';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { ChatMarkdown } from '../../ui/ChatMarkdown';
+import { ChatMarkdown } from '../../ui/markdown/ChatMarkdown';
 import { captureReadingText, readingTextTop, type ReadingTextAnchor } from '../../ui/reading-text-anchor';
 import { dialogFocusables } from '../task-detail/focus';
 import { usePullRequestDetail } from './usePullRequestDetail';
