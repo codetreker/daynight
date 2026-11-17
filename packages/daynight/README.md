@@ -2644,32 +2644,28 @@ original mixed compatible category shares the unrestricted category's rotation. 
 pending rows have startup priority, with stable task-ID order inside each Project; they can use multiple free slots in one round,
 rotating Projects after each successful slot allocation.
 
-The full startup prompt states that the task has sufficient authorization for
-completion and instructs the agent not to ask again about procedural authorization,
-such as whether merging the PR is authorized. Task scope, independent pauses or
-revocations, and CI, review and merge gates still apply.
+The full startup prompt and the continuation and periodic ping inputs share
+execution guidance. The agent preserves the original assignment and its
+confirmed goal, scope, acceptance, commitments and authorization, investigates
+problems and records significant adjustments. A watchdog may wake it while the
+original assignment and automatic continuation conditions remain valid.
 
-Startup, recovery or continuation, and periodic ping prompts share an
-autonomous execution policy. The agent checks the task, repository constraints
-and evidence, adjusts its approach, steps and task decisions, investigates failed
-approaches and chooses feasible alternatives, and records significant deviations
-and their reasons. It preserves confirmed business goals, scope, acceptance,
-external commitments and authorization. Ordinary information gaps, unavailable
-tools, failed approaches, recoverable errors and obsolete steps alone do not
-trigger a pause.
+After startup, recovery, a wake-up or a wait, the agent checks the current state.
+It inspects current-HEAD CI failures, review feedback, discussions and approvals,
+then reads failure logs and fixes actionable issues within scope before waiting.
+Pending approval does not prevent fixing CI. When no actionable work remains,
+it uses bounded waits and checks again; ordinary CI and review waits do not
+justify pausing or ending the turn.
 
-A request for a specific human decision requires an evidenced severe design
-conflict: confirmed requirements or architecture constraints cannot all be met,
-no feasible compatible alternative exists, and resolution requires changing a
-confirmed constraint. Before waiting, the agent records the evidence, affected
-requirements, alternatives considered and decision needed, then sets its own
-task's `paused` property to true with an observed exact version and confirms the
-same assignment and pause. It retains session context; the user chooses how to
-respond. After verifying resolution, the original assignment and permission to
-resume, it clears the pause and confirms false or absence before continuing.
-Independent user pauses, restrictions and revocations, `allowAgents=false`, and
-claim or assignment changes remain binding. The [Worker execution contract](../../docs/spec/daynight-worker.md)
-owns readback, failure and conflict handling.
+A genuine blocker that cannot be resolved autonomously and requires external
+input, permission, resources or a decision calls for recorded evidence, attempted
+solutions and the next step. The agent sets and confirms its task's `paused`
+property, keeps it in progress and returns control to the scheduler. Before
+resuming it verifies the original assignment, resolution and authorization and
+clears and confirms its own pause. Independent pauses, restrictions, revocations,
+`allowAgents=false`, and claim or assignment changes remain binding. The
+[Worker execution contract](../../docs/spec/daynight-worker.md) owns the runtime
+and input boundaries.
 
 The Worker appends the latest confirmed personal user, project and Worker prompt
 texts to newly assembled startup, recovery and continuation inputs, in that
@@ -2680,13 +2676,8 @@ Already assembled inputs retain their original delivery identity. See the
 [prompt contract](../../docs/spec/worker-prompts.md#worker-输入) for the text,
 synchronization and input limits.
 
-Pending PR review, required reviewer approval and CI remain ongoing execution,
-including reviews performed by a person. Pending results and polling timeouts
-do not justify setting `properties.paused=true`, requesting user intervention
-or ending the turn. The agent monitors results and continues delivery while
-honoring independent user pauses, restrictions and revocations. Fixed native
-full access and folder trust apply to every fresh/resumed process; task delivery
-remains within its business authorization.
+Fixed native full access and folder trust apply to every fresh/resumed process;
+task delivery remains within its business authorization.
 
 Web execution sends the initial assignment before patrol. On Worker restart or
 Controller replacement it reconstructs the full assignment using the current
