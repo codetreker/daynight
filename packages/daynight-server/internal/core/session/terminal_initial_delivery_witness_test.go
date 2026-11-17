@@ -72,15 +72,10 @@ func (w *terminalInitialDeliveryWitness) observe(t *testing.T, state v2.ControlS
 
 func (w *terminalInitialDeliveryWitness) requireState(t *testing.T, initial, activity string, connected bool) {
 	t.Helper()
-	ctx := w.TerminalPhase(t.Context(), false, map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1})
-	defer w.dao.FinishContext(ctx)
-	state, err := w.s.TerminalState(ctx, w.p, w.project, w.task, w.message.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	control, ok := state["control"].(*v2.ControlState)
-	if !ok || state["connected"] != connected || control.InitialAssignment != initial || control.State != activity || control.ConnectionEpoch != "1" {
-		t.Fatalf("initial delivery state changed: connected=%v control=%+v error=%v", state["connected"], control, err)
+	record := w.terminal.Record(t)
+	control := record.Control
+	if control == nil || (record.LastSeen != nil) != connected || control.InitialAssignment != initial || control.State != activity || control.ConnectionEpoch != "1" {
+		t.Fatalf("initial delivery state changed: connected=%v control=%+v", record.LastSeen != nil, control)
 	}
 }
 

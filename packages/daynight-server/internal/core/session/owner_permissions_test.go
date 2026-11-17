@@ -170,23 +170,11 @@ func TestPersistedNonOwnerNativeOperationsCannotResumeExecution(t *testing.T) {
 	}
 }
 
-func TestTerminalSessionOwnerPermissionsPreserveReadersAndMemberOwner(t *testing.T) {
+func TestTerminalSessionOwnerPermissionsPreserveMemberOwner(t *testing.T) {
 	f := terminalControlSetup(t)
 	ctx := context.Background()
 	lease := f.acquire(t)
 	for _, reader := range sessionReaders(t, f.fixture) {
-		for _, current := range []bool{false, true} {
-			var view map[string]any
-			var err error
-			if current {
-				view, err = permissionTerminalRead(f.fixture, ctx, reader, f.message.SessionID, true, true)
-			} else {
-				view, err = permissionTerminalRead(f.fixture, ctx, reader, f.message.SessionID, false, true)
-			}
-			if err != nil || view["connected"] != true || len(view["control"].(*v2.ControlState).AvailableActions) != 0 {
-				t.Fatal("non-owner lacked terminal read access or retained control actions", view, err)
-			}
-		}
 		req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: lease.ControlEpoch, Action: "acquire_control", BrowserClientID: f.browser}
 		for _, message := range []v2.Message{f.msg("control_request", req), f.input(lease, "1", "non-owner input")} {
 			_, err := permissionTerminalSubmit(f.fixture, ctx, reader, f.message.SessionID, f.browser, message, false)

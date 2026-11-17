@@ -160,7 +160,7 @@ func TestOAuthPurposeChecksFixedFamilyAndPreservesActor(t *testing.T) {
 func TestArchiveOAuthReadPurposesRetainOwnerAndProducerRestrictions(t *testing.T) {
 	for _, profile := range []string{"api", "mcp"} {
 		for _, independent := range []bool{false, true} {
-			for _, mode := range []ArchiveMode{ArchiveV1Read, ArchiveV2Read, ArchiveV1Upload, ArchiveV2Upload} {
+			for _, mode := range []ArchiveMode{ArchiveV1Read, ArchiveV2Read, ArchiveV1Upload} {
 				t.Run(profile+string(rune('0'+mode))+map[bool]string{true: "independent", false: "task"}[independent], func(t *testing.T) {
 					e := NewEngine(nil)
 					op, _ := e.BeginOperation()
@@ -175,7 +175,7 @@ func TestArchiveOAuthReadPurposesRetainOwnerAndProducerRestrictions(t *testing.T
 						project, task = "", ""
 						dao.metadata.Project, dao.metadata.Task, dao.metadata.Test = "", "", true
 					}
-					if mode == ArchiveV2Read || mode == ArchiveV2Upload {
+					if mode == ArchiveV2Read {
 						dao.metadata.Backend = "herdr"
 					}
 					scope := historyAuthorizationScope{dao}

@@ -180,7 +180,7 @@ func (s *Execution) TerminalArchiveStatus(ctx context.Context, p model.Principal
 }
 
 func (s *Execution) readTerminalObject(ctx context.Context, op *ArchiveOperation, path string, hash string, size string) (data []byte, result error) {
-	if op == nil || op.execution != s || op.closed || (op.mode != ArchiveV2Read && op.mode != ArchiveV2Upload) {
+	if op == nil || op.execution != s || op.closed || op.mode != ArchiveV2Read {
 		return nil, errors.New("invalid archive operation")
 	}
 	if s.files == nil {

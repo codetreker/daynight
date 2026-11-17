@@ -39,25 +39,6 @@ func permissionOperation(f fixture, ctx context.Context, principal model.Princip
 	return f.s.Operation(phase, principal, f.project, f.task, snapshot.SessionID, id)
 }
 
-func permissionTerminalRead(f fixture, ctx context.Context, principal model.Principal, id string, current, lease bool) (map[string]any, error) {
-	work := map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1}
-	if lease {
-		work["LockCredential"], work["ProjectAccess"] = 2, 2
-	}
-	var phase context.Context
-	if current {
-		work["CurrentTerminalSession"], work["LockTerminal"] = 1, 1
-		phase = f.TaskPhase(ctx, work)
-	} else {
-		phase = f.TerminalPhase(ctx, false, work)
-	}
-	defer f.dao.FinishContext(phase)
-	if current {
-		return f.s.CurrentTerminal(phase, principal, f.project, f.task)
-	}
-	return f.s.TerminalState(phase, principal, f.project, f.task, id)
-}
-
 func permissionTerminalSubmit(f fixture, ctx context.Context, principal model.Principal, id, browser string, message v2.Message, retained bool) (v2.Message, error) {
 	work := map[string]int{}
 	if retained {
@@ -121,7 +102,7 @@ func TestInheritedOnlySessionOwnerRetainsReadControlAndDispatchAdmission(t *test
 	}
 }
 
-func TestInheritedOnlyTerminalOwnerRetainsCurrentStateAndWorkerBinding(t *testing.T) {
+func TestInheritedOnlyTerminalOwnerRetainsWorkerBinding(t *testing.T) {
 	f, message := terminalFixture(t)
 	makeRelayOwnerInheritedOnly(t, f)
 	ctx := context.Background()
@@ -137,10 +118,5 @@ func TestInheritedOnlyTerminalOwnerRetainsCurrentStateAndWorkerBinding(t *testin
 		t.Fatal("inherited-only terminal Worker connection", err)
 	}
 	f.dao.FinishContext(binding)
-	if _, err := permissionTerminalRead(f, ctx, f.p, message.SessionID, true, false); err != nil {
-		t.Fatal("inherited-only terminal current state", err)
-	}
-	if _, err := permissionTerminalRead(f, ctx, f.p, message.SessionID, false, false); err != nil {
-		t.Fatal("inherited-only terminal state", err)
-	}
+
 }

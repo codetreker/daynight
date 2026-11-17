@@ -9,7 +9,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -20,7 +19,6 @@ const (
 	ArchiveV1Read ArchiveMode = iota + 1
 	ArchiveV1Upload
 	ArchiveV2Read
-	ArchiveV2Upload
 )
 
 // ArchiveOperation owns one instance and one original-owner permit until Close.
@@ -133,7 +131,7 @@ func (s *Execution) BeginArchiveReserved(ctx context.Context, p model.Principal,
 		return nil, err
 	}
 	defer reservation.release()
-	if mode < ArchiveV1Read || mode > ArchiveV2Upload {
+	if mode < ArchiveV1Read || mode > ArchiveV2Read {
 		return nil, errors.New("invalid archive mode")
 	}
 	if err := ctx.Err(); err != nil {
@@ -214,17 +212,6 @@ func (op *ArchiveOperation) PutArchive(ctx context.Context, data []byte) (sp.Arc
 	return out, err
 }
 
-func (op *ArchiveOperation) PutTerminalArchive(ctx context.Context, data []byte) (v2.Message, error) {
-	op.mu.Lock()
-	defer op.mu.Unlock()
-	if err := op.check(ArchiveV2Upload); err != nil {
-		return v2.Message{}, err
-	}
-	out, err := op.execution.putTerminalArchive(ctx, op, data)
-	op.markCommit(err)
-	return out, err
-}
-
 // SetArchivePreflight binds archive admission to the application's short metadata scope.
 func (s *Execution) SetArchivePreflight(run ArchivePreflightRunner) { s.archivePreflightRun = run }
 
@@ -260,8 +247,8 @@ func (op *Operation) ArchivePreflight(ctx context.Context, scope store.SessionSc
 	if err != nil {
 		return "", err
 	}
-	v2Mode := mode == ArchiveV2Read || mode == ArchiveV2Upload
-	upload := mode == ArchiveV1Upload || mode == ArchiveV2Upload
+	v2Mode := mode == ArchiveV2Read
+	upload := mode == ArchiveV1Upload
 	if (v2Mode && m.Backend != "herdr") || (!v2Mode && m.Backend != "web") || m.Project != project || m.Task != taskID || (project == "") != m.Test {
 		return "", conflict()
 	}

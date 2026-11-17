@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -119,41 +118,6 @@ func TestArchiveResidencySharedRootAndSingleConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = retained.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestTerminalArchiveReadbackWithSingleConnection(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	f := newServiceFixture(t)
-	id, data := readyTerminalArchive(t, f)
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = files.Close() })
-	config := f.db.Pool.Config().Copy()
-	config.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	engine := core.NewEngine(files)
-	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
-	service := New(&postgres.Store{Pool: pool}, engine)
-	if _, err = service.PutTerminalArchive(ctx, f.owner, f.project, f.task, id, data); err != nil {
-		t.Fatalf("upload and nested readback: %v", err)
-	}
-	content, err := service.TerminalArchiveContent(ctx, f.owner, f.project, f.task, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(content.Data, data) {
-		t.Fatal("archive bytes changed")
-	}
-	if err = content.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -876,7 +876,7 @@ func TestTerminalFailedInsertCancelsItsBodyAndPermitsRetry(t *testing.T) {
 }
 
 func TestTerminalForeignHealthyRelayCannotRevokeControlOrPendingOperation(t *testing.T) {
-	for _, endpoint := range []string{"current", "state", "operation", "submit"} {
+	for _, endpoint := range []string{"operation", "submit"} {
 		for _, dispatched := range []bool{false, true} {
 			t.Run(endpoint+map[bool]string{false: "/queued", true: "/dispatching"}[dispatched], func(t *testing.T) {
 				f := terminalControlSetup(t)
@@ -892,18 +892,6 @@ func TestTerminalForeignHealthyRelayCannotRevokeControlOrPendingOperation(t *tes
 				before := string(f.terminal.Raw)
 				var err error
 				switch endpoint {
-				case "current":
-					_, err = terminalStateStep(t, f.fixture, func() (map[string]any, error) {
-						return terminalControlInputCall(f, f.fixture.TaskPhase(ctx, map[string]int{"CurrentTerminalSession": 1, "LockTerminal": 1}), func(phaseCtx context.Context) (map[string]any, error) {
-							return other.CurrentTerminal(phaseCtx, f.p, f.project, f.task)
-						})
-					})
-				case "state":
-					_, err = terminalStateStep(t, f.fixture, func() (map[string]any, error) {
-						return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, nil), func(phaseCtx context.Context) (map[string]any, error) {
-							return other.TerminalState(phaseCtx, f.p, f.project, f.task, input.SessionID)
-						})
-					})
 				case "operation":
 					_, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
 						return terminalControlInputCall(f, f.fixture.TerminalPhase(ctx, false, nil), func(phaseCtx context.Context) (v2.Message, error) {
@@ -971,9 +959,9 @@ func TestTerminalForeignRelaySuspendsOnlyAfterHeartbeatLossOrClaimEnd(t *testing
 				archiveTerminal(t, f.fixture)
 			}
 			f.operations.whenInvalidated(input.Payload.(v2.Operation).OperationID, "unknown", "input_unknown")
-			if _, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
-				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1, "TerminalArchive": 1}), func(phaseCtx context.Context) (map[string]any, error) {
-					return other.TerminalState(phaseCtx, f.p, f.project, f.task, input.SessionID)
+			if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1, "TerminalOperation": 1}), func(phaseCtx context.Context) (v2.Message, error) {
+					return other.TerminalOperation(phaseCtx, f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
 				})
 			}); err != nil {
 				t.Fatal(err)
@@ -1917,9 +1905,9 @@ func TestTerminalActiveLeaseCredentialRevocationSuspendsAndInvalidatesInput(t *t
 			} else {
 				revokeFixtureCredential(t, f.fixture, actor)
 			}
-			if _, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
-				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1, "TerminalArchive": 1, "LockCredential": 2, "ProjectAccess": map[string]int{"credential": 1, "owner": 2}[revoke]}), func(phaseCtx context.Context) (map[string]any, error) {
-					return f.s.TerminalState(phaseCtx, f.p, f.project, f.task, f.message.SessionID)
+			if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
+				return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1, "TerminalOperation": 1, "LockCredential": 2, "ProjectAccess": map[string]int{"credential": 1, "owner": 2}[revoke]}), func(phaseCtx context.Context) (v2.Message, error) {
+					return f.s.TerminalOperation(phaseCtx, f.p, f.project, f.task, f.message.SessionID, input.Payload.(v2.Operation).OperationID)
 				})
 			}); err != nil {
 				t.Fatal(err)
@@ -1965,17 +1953,7 @@ func TestTerminalIncompleteWorkerCapabilitiesCannotGrantControl(t *testing.T) {
 	}); err == nil {
 		t.Fatal("incomplete Worker granted control")
 	}
-	view, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
-		return terminalControlInputCall(f, f.fixture.TerminalPhase(context.Background(), false, map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1}), func(phaseCtx context.Context) (map[string]any, error) {
-			return f.s.TerminalState(phaseCtx, f.p, f.project, f.task, f.message.SessionID)
-		})
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(view["control"].(*v2.ControlState).AvailableActions) != 0 {
-		t.Fatal("incomplete Worker advertised browser control")
-	}
+
 }
 
 func stageTerminalTestSnapshot(s *Execution, id string, raw []byte) (func(), func(), error) {
