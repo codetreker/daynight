@@ -9,7 +9,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pginternal "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5"
@@ -651,45 +650,6 @@ func (tx *DAO) InsertRecordingEvidence(ctx context.Context, id string, generatio
 	return nil
 }
 
-func (tx *DAO) TerminalOperation(ctx context.Context, id, operationID string) (store.TerminalOperation, error) {
-	out := store.TerminalOperation{SessionID: id, OperationID: operationID}
-	var result []byte
-	var kind string
-	err := tx.tx.QueryRow(ctx, `SELECT command,receipt,actor_user_id::text,credential_id::text,credential_kind,body_hash,dispatch_epoch,deadline FROM session_operations WHERE session_id=$1 AND operation_id=$2`, id, operationID).Scan(&out.Command, &result, &out.Actor.UserID, &out.Actor.CredentialID, &kind, &out.Hash, &out.Epoch, &out.Deadline)
-	if err != nil {
-		return store.TerminalOperation{}, pginternal.QueryError("read terminal operation", err)
-	}
-	out.Actor.Kind = model.CredentialKind(kind)
-	if err := json.Unmarshal(result, &out.Result); err != nil {
-		return store.TerminalOperation{}, pginternal.QueryError("decode terminal result", err)
-	}
-	return out, nil
-}
-
-func (tx *DAO) InsertTerminalOperation(ctx context.Context, o store.TerminalOperation) error {
-	raw, err := json.Marshal(o.Result)
-	if err != nil {
-		return pginternal.QueryError("encode terminal result", err)
-	}
-	_, err = tx.tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,deadline) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, o.SessionID, o.OperationID, o.Seq, o.Hash, o.Command, o.Actor.UserID, o.Actor.CredentialID, string(o.Actor.Kind), raw, o.Deadline)
-	if err != nil {
-		return pginternal.QueryError("insert terminal operation", err)
-	}
-	return nil
-}
-
-func (tx *DAO) SetTerminalOperationResult(ctx context.Context, id string, result v2.OperationResult) error {
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return pginternal.QueryError("encode terminal result", err)
-	}
-	_, err = tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=$3 WHERE session_id=$1 AND operation_id=$2`, id, result.OperationID, raw)
-	if err != nil {
-		return pginternal.QueryError("set terminal result", err)
-	}
-	return nil
-}
-
 func (tx *DAO) InvalidateTerminalOperations(ctx context.Context, id string) error {
 	_, err := tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=jsonb_build_object('operationId',operation_id::text,'state',CASE WHEN receipt->>'state'='queued' THEN 'rejected' ELSE 'unknown' END,'errorCode',CASE WHEN receipt->>'state'='queued' THEN 'stale_fence' ELSE 'input_unknown' END) WHERE session_id=$1 AND receipt->>'state' IN ('queued','dispatching')`, id)
 	if err != nil {
@@ -704,27 +664,6 @@ func (tx *DAO) ExpireTerminalOperations(ctx context.Context, id string, now time
 		return pginternal.QueryError("expire terminal operations", err)
 	}
 	return nil
-}
-
-func (tx *DAO) QueuedTerminalOperation(ctx context.Context, id string) ([]string, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT operation_id::text FROM session_operations WHERE session_id=$1 AND receipt->>'state'='queued' ORDER BY operation_seq LIMIT 1`, id)
-	if err != nil {
-		return nil, pginternal.QueryError("read queued terminal operation", err)
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, pginternal.QueryError("read queued terminal operation", err)
-	}
-	return ids, nil
-}
-
-func (tx *DAO) TerminalViewerOperationPending(ctx context.Context, id, user, client string) (bool, error) {
-	var pending bool
-	err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND actor_user_id=$2 AND command->'request'->>'browserClientId'=$3 AND receipt->>'state' IN ('queued','dispatching'))`, id, user, client).Scan(&pending)
-	if err != nil {
-		return false, pginternal.QueryError("read terminal viewer operation", err)
-	}
-	return pending, nil
 }
 
 func (tx *DAO) InsertBotSession(ctx context.Context, r store.SessionRegistration) (bool, error) {

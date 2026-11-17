@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -152,7 +151,7 @@ func testSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T, db *postgres.S
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
 	mustQueryExec(t, db, `UPDATE tasks SET allow_agents=true WHERE id=$1`, task.ID)
 	id, claim, registration, instance := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	operationID, evidenceID, finalID, client := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	operationID, expiredID, evidenceID, finalID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		if _, err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
@@ -180,52 +179,30 @@ func testSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T, db *postgres.S
 		if err != nil || !allowed {
 			t.Fatalf("automation permission: %v %v", allowed, err)
 		}
-		op := store.TerminalOperation{SessionID: id, OperationID: operationID, Seq: 1, Hash: []byte("terminal"), Actor: principal, Command: []byte(`{"request":{"browserClientId":"` + client + `"}}`), Result: v2.OperationResult{OperationID: operationID, State: "queued"}, Deadline: now.Add(time.Minute)}
-		if err := dao.InsertTerminalOperation(ctx, op); err != nil {
-			return err
-		}
+		return nil
+	})
+	// Historical operations are inserted directly: active terminal input no longer
+	// has a producer, while refresh and retirement still settle retained rows.
+	for _, row := range []struct {
+		id, state string
+		seq       int
+		deadline  time.Time
+	}{
+		{operationID, "dispatching", 1, now.Add(time.Minute)},
+		{expiredID, "queued", 2, now.Add(-time.Second)},
+	} {
+		mustQueryExec(t, db, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,deadline) VALUES($1,$2,$3,$4,'{}',$5,$6,$7,jsonb_build_object('operationId',$2::uuid::text,'state',$8::text),$9)`, id, row.id, row.seq, []byte("terminal"), principal.UserID, principal.CredentialID, string(principal.Kind), row.state, row.deadline)
+	}
+	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		pending, err := dao.TerminalInputPending(ctx, id)
 		if err != nil || !pending {
 			t.Fatalf("pending input: %v %v", pending, err)
 		}
-		pending, err = dao.TerminalViewerOperationPending(ctx, id, principal.UserID, client)
-		if err != nil || !pending {
-			t.Fatalf("viewer input: %v %v", pending, err)
-		}
-		queued, err := dao.QueuedTerminalOperation(ctx, id)
-		if err != nil || !reflect.DeepEqual(queued, []string{operationID}) {
-			t.Fatalf("queued: %v %v", queued, err)
-		}
-		loaded, err := dao.TerminalOperation(ctx, id, operationID)
-		if err != nil || loaded.Result.State != "queued" || loaded.Actor.UserID != principal.UserID {
-			t.Fatalf("terminal operation: %+v %v", loaded, err)
-		}
-		if err := dao.SetSessionOperationEpoch(ctx, id, operationID, 1); err != nil {
-			return err
-		}
-		if err := dao.SetTerminalOperationResult(ctx, id, v2.OperationResult{OperationID: operationID, State: "dispatching"}); err != nil {
+		if err := dao.ExpireTerminalOperations(ctx, id, now); err != nil {
 			return err
 		}
 		if err := dao.InvalidateTerminalOperations(ctx, id); err != nil {
 			return err
-		}
-		loaded, err = dao.TerminalOperation(ctx, id, operationID)
-		if err != nil || loaded.Result.State != "unknown" {
-			t.Fatalf("dispatch uncertainty: %+v %v", loaded, err)
-		}
-		op.OperationID = uuid.NewString()
-		op.Seq = 2
-		op.Result = v2.OperationResult{OperationID: op.OperationID, State: "queued"}
-		op.Deadline = now.Add(-time.Second)
-		if err := dao.InsertTerminalOperation(ctx, op); err != nil {
-			return err
-		}
-		if err := dao.ExpireTerminalOperations(ctx, id, now); err != nil {
-			return err
-		}
-		loaded, err = dao.TerminalOperation(ctx, id, op.OperationID)
-		if err != nil || loaded.Result.State != "rejected" {
-			t.Fatalf("queued expiry: %+v %v", loaded, err)
 		}
 		hash := strings.Repeat("b", 64)
 		if err := dao.InsertRecordingEvidence(ctx, id, 1, evidenceID, 7, hash); err != nil {
@@ -256,4 +233,14 @@ func testSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T, db *postgres.S
 		}
 		return nil
 	})
+	for _, want := range []struct{ id, state, code string }{
+		{operationID, "unknown", "input_unknown"},
+		{expiredID, "rejected", "input_busy"},
+	} {
+		var state, code string
+		err := db.Pool.QueryRow(ctx, `SELECT receipt->>'state',receipt->>'errorCode' FROM session_operations WHERE session_id=$1 AND operation_id=$2`, id, want.id).Scan(&state, &code)
+		if err != nil || state != want.state || code != want.code {
+			t.Fatalf("terminal operation %s: state=%s code=%s error=%v", want.id, state, code, err)
+		}
+	}
 }

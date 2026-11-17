@@ -2260,7 +2260,7 @@ The regular `internal/server/session` suite executes actual routes and
 callbacks, supplied through the private `serviceCalls` binding. Protocol
 component cases assemble the real Session service, engine and identity service
 with controlled DAO facts; they retain channel fences, serialization, startup
-evidence and terminal recovery. Tests verify context, canonical addresses,
+evidence. Tests verify context, canonical addresses,
 fences, inputs, outputs and call counts without a database or gateway.
 
 Configured calls are required, and unknown, extra or missing calls fail.
@@ -2288,7 +2288,7 @@ Production intervals and the 120-second archive policy keep separate default
 checks; opt-in full-duration archive probes remain under [Coverage](#coverage).
 
 Service tests control lower work and transaction completion before the finisher.
-Core tests retain preflight-before-residency and terminal initial-delivery rules;
+Core tests retain preflight-before-residency rules;
 Store tests retain failed-disconnect rollback, physical connection return and
 zero legacy content rows after native ledger writes. Fixture shutdown drains
 actual routes and validates callback/lease completion. Normal shutdown permits

@@ -7,7 +7,6 @@ import (
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/google/uuid"
@@ -115,31 +114,4 @@ func TestDeletedProjectRetiresWebRelayAndLeavesIndependentSessions(t *testing.T)
 			}
 		})
 	}
-}
-
-func TestDeletedProjectRetiresTerminalRelay(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	f := newServiceFixture(t)
-	f.service.SetOrigin("https://daynight.example")
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{agentControlMode}','"herdr"')::text WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
-		t.Fatal(err)
-	}
-	pane := "pane"
-	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: f.registration.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: f.project, TaskID: f.task, WorkerID: f.registration.WorkerID, WorktreeID: f.registration.WorktreeID, OwnerUserID: f.owner.UserID, ServerOrigin: "https://daynight.example", Provider: "codex"}, Binding: v2.Binding{InstanceID: "instance", SessionID: "herdr", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_one"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	if _, err := f.service.RegisterTerminal(ctx, f.owner, f.project, f.task, m); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.PollTerminal(ctx, f.owner, f.project, f.task, m.SessionID, m.Envelope, "1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{state}','"completed"')::text WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := projectservice.NewProjects(f.db, f.service.engine).Delete(ctx, f.owner, f.project)
-	if err != nil || !receipt.Deleted {
-		t.Fatalf("delete: %+v %v", receipt, err)
-	}
-	_, err = f.service.PollTerminal(ctx, f.owner, f.project, f.task, m.SessionID, m.Envelope, "1")
-	requireServiceError(t, err, "not_found")
 }

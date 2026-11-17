@@ -39,7 +39,6 @@ type Engine struct {
 	instance              string
 	content               contentBroker
 	terminalMutex         sync.Mutex
-	terminalPending       map[string]map[string]*terminalBodyWrite
 	terminalFrames        map[string]*terminalFrameWrite
 	terminalFrameWrites   map[string]*terminalFrameWrite
 	admissionMutex        sync.Mutex

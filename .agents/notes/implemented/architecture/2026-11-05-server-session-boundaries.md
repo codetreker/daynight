@@ -47,6 +47,7 @@ operations.
 
 ## Consequences
 
-The durable ledger remains separate from transient content and terminal input.
+The durable ledger remains separate from transient Web content. Terminal control
+input is no longer staged; see the [terminal control removal](../simplification/2026-11-18-remove-terminal-control-relay.md).
 Transactions must complete or discard every Operation, including panic and
 cancellation paths. The PostgreSQL backend remains the sole SQL implementation.

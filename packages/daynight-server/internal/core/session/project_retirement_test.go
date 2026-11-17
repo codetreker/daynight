@@ -56,7 +56,7 @@ func TestProjectRetirementBatchesAndRetainsHistoricalState(t *testing.T) {
 	}
 }
 
-func TestProjectRetirementTicketsFenceDelayedPublishAndPreserveReplacements(t *testing.T) {
+func TestProjectRetirementTicketsPreserveReplacements(t *testing.T) {
 	s := NewEngine(nil)
 	project := "project"
 	other := "other"
@@ -65,19 +65,14 @@ func TestProjectRetirementTicketsFenceDelayedPublishAndPreserveReplacements(t *t
 	s.live["other"] = &liveCell{value: newLive(sp.Snapshot{Identity: sp.Identity{ProjectID: other}})}
 	request := &pendingContent{projectID: project, reply: make(chan contentReply, 1)}
 	s.content.pending = map[string]*pendingContent{"pending": request}
-	r := &terminalRecord{Envelope: v2.Envelope{SessionID: "terminal", ClaimID: "claim", ExecutionGeneration: "1"}, Owner: v2.Owner{ProjectID: project}, ConnectionEpoch: "1"}
-	exec := &Execution{Engine: s}
-	publish, _, err := exec.stageTerminalSnapshot(r, []byte("old"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	frame := &terminalFrameWrite{projectID: project, raw: []byte("old")}
+	s.terminalFrames = map[string]*terminalFrameWrite{"terminal": frame}
 	ticket := s.CaptureProjectRetirement(project)
-	publish()
 	replacement := &liveCell{value: newLive(sp.Snapshot{Identity: sp.Identity{ProjectID: other}})}
 	s.live["replacement"] = replacement
 	ticket.Retire()
 	if s.live["old"] != nil || s.live["other"] == nil || s.live["replacement"] != replacement || s.terminalFrames["terminal"] != nil {
-		t.Fatal("ticket retired wrong objects or missed committed reservation")
+		t.Fatal("ticket retired wrong objects")
 	}
 	if len(s.content.pending) != 0 {
 		t.Fatal("content request retained")
@@ -85,25 +80,14 @@ func TestProjectRetirementTicketsFenceDelayedPublishAndPreserveReplacements(t *t
 	if reply := <-request.reply; reply.err == nil {
 		t.Fatal("content waiter was not released")
 	}
-	publish()
-	if s.terminalFrames["terminal"] != nil {
-		t.Fatal("late frame republished")
-	}
-
-	publish2, _, err := exec.stageTerminalSnapshot(r, []byte("captured"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	old := &terminalFrameWrite{projectID: project, raw: []byte("captured")}
+	s.terminalFrames["terminal"] = old
 	ticket2 := s.CaptureProjectRetirement(project)
-	publish3, _, err := exec.stageTerminalSnapshot(r, []byte("replacement"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	publish2()
-	publish3()
+	replacementFrame := &terminalFrameWrite{projectID: project, raw: []byte("replacement")}
+	s.terminalFrames["terminal"] = replacementFrame
 	ticket2.Retire()
-	if got := s.terminalFrames["terminal"]; got == nil || string(got.raw) != "replacement" {
-		t.Fatal("ticket removed new reservation")
+	if s.terminalFrames["terminal"] != replacementFrame {
+		t.Fatal("ticket removed new frame")
 	}
 }
 

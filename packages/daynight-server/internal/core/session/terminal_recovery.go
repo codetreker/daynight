@@ -6,11 +6,3 @@ type terminalAutomationRecovery struct {
 	State       v2.AutomationRecoveryState
 	Invalidated bool
 }
-
-func invalidateAutomationRecoveries(r *terminalRecord) {
-	for _, permit := range r.AutomationRecoveries {
-		if permit.State.Consumed == nil {
-			permit.Invalidated = true
-		}
-	}
-}

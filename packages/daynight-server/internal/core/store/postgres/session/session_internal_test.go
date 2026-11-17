@@ -187,7 +187,6 @@ func TestSessionQueriesPreserveScanAndIterationFailures(t *testing.T) {
 				_, err := dao.UnreconciledSessionOperations(t.Context(), "session", 1)
 				return err
 			},
-			"queued terminal operation": func(dao *DAO) error { _, err := dao.QueuedTerminalOperation(t.Context(), "session"); return err },
 		} {
 			t.Run(stage+"/"+name, func(t *testing.T) {
 				rows := &failedRows{}
