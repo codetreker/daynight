@@ -171,7 +171,7 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	if !ok || authorFirst["authorId"] != "9007199254740997" || authorFirst["projectTotal"] != "5" || authorFirst["total"] != "3" || authorCounts["active"] != "2" || authorCounts["closed"] != "1" || authorCounts["merged"] != "0" || authorCounts["all"] != "3" {
 		t.Fatalf("author page metadata differs: %+v", authorFirst)
 	}
-	authorItems, ok := authorFirst["items"].([]any)
+	authorItems, ok = authorFirst["items"].([]any)
 	if !ok || len(authorItems) != 1 {
 		t.Fatalf("author page items differ: %+v", authorFirst)
 	}
