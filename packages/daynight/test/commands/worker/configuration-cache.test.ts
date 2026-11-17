@@ -21,7 +21,7 @@ const value = (key: WorkerCloudItemKey): WorkerCloudItem["appliedValue"] => {
     case "maxConcurrent": return 4;
     case "pollIntervalMs": return 1500;
     case "recoveryLimit": return 2;
-    case "preferPlatformSpecificTasks": case "projectPreparation": case "projectRemoval": return true;
+    case "enableSudoCleanup": case "preferPlatformSpecificTasks": case "projectPreparation": case "projectRemoval": return true;
     case "agentControlMode": return "web";
   }
 };
@@ -36,7 +36,7 @@ const currentKeys: WorkerCloudItemKey[] = [
   { kind: "native" }, { kind: "agentControlMode" }, { kind: "projectPreparation", projectId }, { kind: "projectNative", projectId },
 ];
 const cache = (): WorkerConfigurationCache => ({
-  schemaVersion: 6, identity, authority: { generation, desiredJson: JSON.stringify(desired), applicationRevision: "10", observationRevision: "9" }, remoteObservation: null, nextFailureId: 6,
+  schemaVersion: 7, identity, authority: { generation, desiredJson: JSON.stringify(desired), applicationRevision: "10", observationRevision: "9" }, remoteObservation: null, nextFailureId: 6,
   projectionCursor: uuid(90), currentItems: currentKeys.map((key, n) => tracked(10 + n, key)), retainedItems: [],
 });
 const legacy = (version: 1 | 2 | 3 | 4) => {
@@ -59,10 +59,30 @@ afterEach(async () => { for (const folder of directories.splice(0)) await rm(fol
 describe("Worker configuration cache", () => {
   it("creates an immutable uninitialized cache with a fresh local generation", () => {
     const first = createConfigurationCache(identity), second = createConfigurationCache(identity);
-    expect(first).toMatchObject({ schemaVersion: 6, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
+    expect(first).toMatchObject({ schemaVersion: 7, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
     expect(first.authority.generation).not.toBe(second.authority.generation);
     expect(Object.isFrozen(first.authority)).toBe(true);
     expect(parseConfigurationCache(first, identity)).toEqual({ cache: first, migrated: false });
+  });
+
+  it("upgrades schema 6 without reidentifying an absent sudo target", () => {
+    const source = { ...cache(), schemaVersion: 6 };
+    const result = parseConfigurationCache(source, identity);
+    expect(result.migrated).toBe(true);
+    expect(result.cache).toEqual({ ...source, schemaVersion: 7 });
+    expect(result.cache.currentItems.some(item => item.value.key.kind === "enableSudoCleanup")).toBe(false);
+  });
+
+  it.each([true, false])("reidentifies a schema 6 sudo target %s as pending", enabled => {
+    const previous = cache();
+    const desiredJson = JSON.stringify({ ...desired, revision: "11", value: { ...desired.value, enableSudoCleanup: enabled } });
+    const source = { ...previous, schemaVersion: 6, authority: { ...previous.authority, desiredJson } };
+    const { cache: upgraded, migrated } = parseConfigurationCache(source, identity);
+    expect(migrated).toBe(true);
+    expect(upgraded.authority.applicationRevision).toBe("11");
+    expect(upgraded.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")?.value).toMatchObject({ state: "pending", appliedValue: null, targetRevision: "11" });
+    expect(upgraded.retainedItems).toEqual(previous.currentItems);
+    expect(parseConfigurationCache(upgraded, identity)).toEqual({ cache: upgraded, migrated: false });
   });
 
   it("preserves observed success provenance and a cursor whose record has retired", () => {
@@ -130,7 +150,7 @@ describe("Worker configuration cache", () => {
   it.each([1, 2, 3, 4] as const)("explicitly upgrades schema %i without inventing a prior success revision", version => {
     const source = legacy(version), result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache.schemaVersion).toBe(6);
+    expect(result.cache.schemaVersion).toBe(7);
     expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual({ ...source.desired, value: { ...source.desired.value, preferPlatformSpecificTasks: version === 1 ? false : desired.value.preferPlatformSpecificTasks } });
     expect(result.cache.authority).toMatchObject({ applicationRevision: "10", observationRevision: "9" });
     expect(result.cache.remoteObservation).toBeNull();
@@ -180,7 +200,7 @@ describe("Worker configuration cache", () => {
   });
 
   const invalid: readonly [string, (input: WorkerConfigurationCache) => unknown][] = [
-    ["unknown schema", input => ({ ...input, schemaVersion: 7 })],
+    ["unknown schema", input => ({ ...input, schemaVersion: 8 })],
     ["unknown fields", input => ({ ...input, extra: true })],
     ["missing application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: null } })],
     ["future application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: "11" } })],
@@ -195,6 +215,7 @@ describe("Worker configuration cache", () => {
     ["duplicate record IDs", input => ({ ...input, retainedItems: [input.currentItems[0]] })],
     ["duplicate current keys", input => ({ ...input, currentItems: [...input.currentItems, { ...input.currentItems[0], recordId: uuid(80) }] })],
     ["missing required row", input => ({ ...input, currentItems: input.currentItems.slice(1) })],
+    ["sudo result without a target", input => ({ ...input, currentItems: [...input.currentItems, tracked(83, { kind: "enableSudoCleanup" })] })],
     ["future current row", input => ({ ...input, currentItems: [...input.currentItems, tracked(81, { kind: "projectRemoval", projectId }, "11")] })],
     ["unselected current project", input => ({ ...input, currentItems: [...input.currentItems, tracked(82, { kind: "projectNative", projectId: previousProjectId })] })],
     ["mismatched origin revision", input => ({ ...input, currentItems: [{ ...input.currentItems[0], origin: { ...input.currentItems[0]!.origin, targetRevision: "9" } }, ...input.currentItems.slice(1)] })],

@@ -2,7 +2,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readRegistrationIndex, registrationsFor, scanRepositoryWorktrees, type RegistrationIndex, type WorktreeScan } from "./worktree-scan.js";
 import { resolveGitDirectory } from "./worktree-paths.js";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, stat, unlink } from "node:fs/promises";
 import { OperationError, type Operation } from "../../api/operation.js";
 import { cleanupOperation } from "../cleanup-operation.js";
 import { canonicalId } from "../../api/parse.js";
@@ -12,7 +12,9 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
-import { removeWorktreeContents } from "./remove-worktree-contents.js";
+import { removeWorktreeContents, WorktreePermissionError } from "./remove-worktree-contents.js";
+import { runShellWorktreeRemoval } from "./shell-worktree-removal.js";
+import { assertNoWorktreeMounts } from "./worktree-mounts.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
 import { bindingForManifest, managedNamespace, retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
 import { sameResourceOwner } from "./resource-owner.js";
@@ -31,6 +33,7 @@ export type WorkerRepository = { root: string; commonDirectory: string; rootIden
 export type OwnedWorktree = { owner: ResourceOwner; binding: WorktreeBinding };
 export type WorktreeCleanupOutcome = { kind: "absent"; effectErrors: readonly unknown[] };
 export type WorktreeCleanupOptions = { signal?: AbortSignal };
+export type WorkerCleanupPolicy = { readonly enableSudoCleanup: boolean; readonly revision: string };
 
 /** The Git manager and execution backends share the selected task target. */
 export const selectedWorktreePath = (repositoryRoot: string, worktreeId: string): string => path.join(managedNamespace(repositoryRoot), uuid(worktreeId, "Worktree ID"));
@@ -73,11 +76,13 @@ class WorktreeCleanupInProgressError extends Error {
   constructor() { super("Task worktree cleanup is already in progress."); }
 }
 
-export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm; prepareFormat?: (project: WorkerProject, repository: WorkerRepository, operation: Operation) => Promise<void> }) => {
+export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; startOwnedGit?: typeof startOwnedRepositoryGit; reportPending?: (pending: WorkerGitPending) => void; reportSettled?: (pending: WorkerGitPending, settlement: GitSettlement) => void; removeDirectory?: typeof rm; prepareFormat?: (project: WorkerProject, repository: WorkerRepository, operation: Operation) => Promise<void>; readCleanupPolicy?: () => WorkerCleanupPolicy | null; runShellRemoval?: typeof runShellWorktreeRemoval }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
   const runGit = options.runGit === undefined ? runRepositoryGit : options.runGit;
   const startOwnedGit = options.startOwnedGit ?? startOwnedRepositoryGit;
   const removeDirectory: typeof rm = options.removeDirectory ?? (target => unlink(target));
+  const optionsForCleanupPolicy = options.readCleanupPolicy;
+  const optionsForShellRemoval = options.runShellRemoval ?? runShellWorktreeRemoval;
   const closing = new AbortController();
   const preparations = new Set<Promise<unknown>>();
   const handles = new Set<OwnedRepositoryGit>();
@@ -223,6 +228,50 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (branch !== `refs/heads/${binding.branch}`) throw new WorktreePreconditionError("branch_mismatch", "The task worktree no longer uses its original task branch.");
     }
     return { manifest, binding, leaf, registration };
+  };
+  // When the leaf itself denies access, its Git pointer cannot be read. The
+  // manifest, physical leaf and every accessible administrative pointer must
+  // still identify one unlocked registration before privileged removal.
+  const inspectInaccessibleWorktree = async (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository, operation: Operation) => {
+    operation.check();
+    const manifest = manifestFor(project, owner, repository);
+    if (manifest === null) throw new Error("The original worktree manifest is missing.");
+    const binding = bindingForManifest(project.localPath, repository.commonDirectory, manifest);
+    const leaf = await directory(binding.worktreePath);
+    if (leaf === null) throw new Error("The original worktree directory is missing.");
+    try { await ordinaryFile(path.join(binding.worktreePath, ".git")); throw new Error("The worktree pointer is accessible; its prior failure cannot authorize privileged cleanup."); }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM"))) throw error;
+    }
+    const family = path.join(repository.commonDirectory, "worktrees");
+    const matches: Registration[] = [];
+    for (const entry of await readdir(family, { withFileTypes: true })) {
+      operation.check();
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("A Git registration is not an ordinary directory.");
+      const admin = path.join(family, entry.name);
+      if (await directory(admin) === null) throw new Error("A Git registration disappeared.");
+      const pointer = await ordinaryFile(path.join(admin, "gitdir"));
+      if (pointer === null) throw new Error("A Git registration has no pointer.");
+      // Resolve the original traversal physically; normalizing link/.. first
+      // could falsely identify an unrelated registration as the owned leaf.
+      if (path.basename(pointer) !== ".git") continue;
+      const rawParent = path.isAbsolute(pointer) ? path.dirname(pointer) : `${admin}${path.sep}${path.dirname(pointer)}`;
+      const observed = await lstat(rawParent, { bigint: true });
+      const parent = await stat(rawParent, { bigint: true });
+      if (!observed.isDirectory() || observed.isSymbolicLink() || !parent.isDirectory() || observed.dev !== parent.dev || observed.ino !== parent.ino) throw new Error("A Git registration pointer parent is not an ordinary directory.");
+      if (`${parent.dev}:${parent.ino}` !== leaf) continue;
+      const marker = await ordinaryFile(path.join(admin, "locked"));
+      if (marker !== null) throw new WorktreeValidationError("The task worktree has an external Git lock; it was retained.");
+      const common = await ordinaryFile(path.join(admin, "commondir"));
+      if (common === null || common === "" || /[\r\n\0]/.test(common)) throw new Error("The task worktree common-directory pointer is invalid.");
+      const rawCommon = path.isAbsolute(common) ? common : `${admin}${path.sep}${common}`;
+      const commonObserved = await lstat(rawCommon, { bigint: true }), commonInfo = await stat(rawCommon, { bigint: true });
+      if (!commonObserved.isDirectory() || commonObserved.isSymbolicLink() || !commonInfo.isDirectory() || commonObserved.dev !== commonInfo.dev || commonObserved.ino !== commonInfo.ino || `${commonInfo.dev}:${commonInfo.ino}` !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
+      matches.push({ directory: admin, marker, pointer, common: repository.commonDirectory });
+    }
+    if (matches.length !== 1) throw new Error("The inaccessible task worktree registration is missing or ambiguous.");
+    operation.check();
+    return { manifest, binding, leaf, registration: matches[0]! };
   };
   const removeEmptyDirectory = async (target: string, operation: Operation): Promise<void> => {
     operation.check();
@@ -457,9 +506,10 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (scan.quarantined.length > 0) throw scan.quarantined[0]!.error;
       return scan.validated;
     },
-    removeWorktree: async (project: WorkerProject, owner: ResourceOwner, options: WorktreeCleanupOptions): Promise<WorktreeCleanupOutcome> => {
+    removeWorktree: async (project: WorkerProject, owner: ResourceOwner, options: WorktreeCleanupOptions, policy: WorkerCleanupPolicy | null): Promise<WorktreeCleanupOutcome> => {
       let key: string | undefined;
       let effectError: unknown;
+      let recoveredPermissionError: unknown;
       let failed = false;
       try {
         try {
@@ -469,14 +519,51 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
             if (removing.has(key)) { key = undefined; throw new WorktreeCleanupInProgressError(); }
             removing.add(key);
             const effect = async (): Promise<void> => {
-              let result = await inspectWorktree(project, owner, repository, operation, true);
+              let result: Awaited<ReturnType<typeof inspectWorktree>>;
+              try { result = await inspectWorktree(project, owner, repository, operation, true); }
+              catch (ordinaryError) {
+                if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;
+                try {
+                  operation.check();
+                  const original = await inspectInaccessibleWorktree(project, owner, repository, operation);
+                  const paths = [repository.root, repository.commonDirectory, path.join(repository.root, ".worktrees"), path.dirname(original.binding.worktreePath), original.binding.worktreePath, original.registration.directory];
+                  const identities = await Promise.all(paths.map(directory));
+                  if (identities.some(identity => identity === null) || identities[0] !== repository.rootIdentity || identities[1] !== repository.commonIdentity || identities[4] !== original.leaf || identities[3]!.split(":")[0] !== identities[4]!.split(":")[0]) throw new Error("Worktree ownership directories or device cannot be established.");
+                  await assertNoWorktreeMounts(await realpath(original.binding.worktreePath));
+                  operation.check();
+                  const confirmed = await inspectInaccessibleWorktree(project, owner, repository, operation);
+                  const confirmedIdentities = await Promise.all(paths.map(directory));
+                  if (JSON.stringify(original) !== JSON.stringify(confirmed) || JSON.stringify(identities) !== JSON.stringify(confirmedIdentities)) throw new Error("Worktree ownership changed before privileged removal.");
+                  await optionsForShellRemoval(repository.root, original.binding.worktreePath, operation);
+                  recoveredPermissionError = ordinaryError;
+                  operation.check();
+                  result = await inspectWorktree(project, owner, repository, operation, true);
+                } catch (error) { throw new AggregateError([ordinaryError, error], `Inaccessible worktree cleanup failed (configuration revision ${policy.revision}).`, { cause: ordinaryError }); }
+              }
               if (result === null) throw new Error("The original worktree manifest is missing; resource removal cannot be authorized.");
               if (result.registration === null) {
                 if (result.leaf !== null) await removeEmptyReservation(repository, result.manifest.directoryName, operation);
                 return;
               }
               if (result.leaf !== null && await ordinaryFile(path.join(result.binding.worktreePath, ".git")) === null) {
-                await removeEmptyDirectory(result.binding.worktreePath, operation);
+                try { await removeEmptyDirectory(result.binding.worktreePath, operation); }
+                catch (ordinaryError) {
+                  if (policy?.enableSudoCleanup !== true || process.platform === "win32" || !(ordinaryError instanceof Error && "code" in ordinaryError && (ordinaryError.code === "EACCES" || ordinaryError.code === "EPERM"))) throw ordinaryError;
+                  try {
+                    operation.check();
+                    const original = result;
+                    const paths = [repository.root, repository.commonDirectory, path.join(repository.root, ".worktrees"), path.dirname(original.binding.worktreePath), original.binding.worktreePath, original.registration.directory];
+                    const identities = await Promise.all(paths.map(directory));
+                    if (identities.some(identity => identity === null) || identities[0] !== repository.rootIdentity || identities[1] !== repository.commonIdentity || identities[4] !== original.leaf || identities[3]!.split(":")[0] !== identities[4]!.split(":")[0]) throw new Error("Worktree ownership directories or device cannot be established.");
+                    await assertNoWorktreeMounts(await realpath(original.binding.worktreePath));
+                    operation.check();
+                    const confirmed = await inspectWorktree(project, owner, repository, operation, true);
+                    if (JSON.stringify(original) !== JSON.stringify(confirmed) || JSON.stringify(identities) !== JSON.stringify(await Promise.all(paths.map(directory)))) throw new Error("The empty worktree changed before privileged removal.");
+                    await optionsForShellRemoval(repository.root, original.binding.worktreePath, operation);
+                    recoveredPermissionError = ordinaryError;
+                    operation.check();
+                  } catch (error) { throw new AggregateError([ordinaryError, error], `Empty worktree cleanup failed (configuration revision ${policy.revision}).`, { cause: ordinaryError }); }
+                }
                 result = await inspectWorktree(project, owner, repository, operation, true);
               }
               if (result?.registration === null || result === null) return;
@@ -489,7 +576,9 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   directories.set(target, identity);
                 }
                 directories.set(binding.worktreePath, leaf);
+                if (directories.get(path.dirname(binding.worktreePath))!.split(":")[0] !== leaf.split(":")[0]) throw new Error("The task worktree is on a different device from its namespace.");
                 const metadata = new Map<string, string>();
+                let pointerRemoved = false;
                 for (const target of [path.join(binding.worktreePath, ".git"), ...["gitdir", "commondir"].map(name => path.join(registration.directory, name))]) {
                   const contents = await ordinaryFile(target);
                   if (contents === null) throw new Error(`Worktree metadata ${target} disappeared.`);
@@ -500,19 +589,46 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
                   const current = manifestFor(project, owner, repository);
                   if (current === null || current.directoryName !== manifest.directoryName) throw new Error("The worktree manifest changed during cleanup.");
                   for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
-                  for (const [target, contents] of metadata) if (await ordinaryFile(target) !== contents) throw new Error(`Worktree metadata ${target} changed during cleanup.`);
+                  for (const [target, contents] of metadata) {
+                    if (target === path.join(binding.worktreePath, ".git") && pointerRemoved) {
+                      if (await ordinaryFile(target) !== null || (await readdir(binding.worktreePath)).length !== 0) throw new Error("The unlinked worktree is no longer empty.");
+                    } else if (await ordinaryFile(target) !== contents) throw new Error(`Worktree metadata ${target} changed during cleanup.`);
+                  }
                   if (await ordinaryFile(path.join(registration.directory, "locked")) !== null) throw new Error("The worktree acquired a Git lock during cleanup.");
                   operation.check();
                 };
                 const confirmed = await inspectWorktree(project, owner, repository, operation, true);
                 if (confirmed?.leaf !== leaf || confirmed.registration?.directory !== registration.directory) throw new Error("The task worktree changed before cleanup.");
                 await verifyOwnership();
-                await removeWorktreeContents({ target: binding.worktreePath, expectedIdentity: leaf, operation }, removeDirectory);
-                await verifyOwnership();
-                await unlink(path.join(binding.worktreePath, ".git"));
-                operation.check();
-                for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
-                await removeEmptyDirectory(binding.worktreePath, operation);
+                try {
+                  await removeWorktreeContents({ target: binding.worktreePath, expectedIdentity: leaf, operation }, removeDirectory);
+                  await verifyOwnership();
+                  try { await unlink(path.join(binding.worktreePath, ".git")); }
+                  catch (error) {
+                    if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw new WorktreePermissionError("Worktree Git pointer removal was denied.", { cause: error });
+                    throw error;
+                  }
+                  pointerRemoved = true;
+                  operation.check();
+                  for (const [target, identity] of directories) if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
+                  try { await removeEmptyDirectory(binding.worktreePath, operation); }
+                  catch (error) {
+                    if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw new WorktreePermissionError("Worktree directory removal was denied.", { cause: error });
+                    throw error;
+                  }
+                } catch (ordinaryError) {
+                  if (!(ordinaryError instanceof WorktreePermissionError) || policy?.enableSudoCleanup !== true || process.platform === "win32") throw ordinaryError;
+                  try {
+                    operation.check();
+                    await verifyOwnership();
+                    await assertNoWorktreeMounts(await realpath(binding.worktreePath));
+                    operation.check();
+                    await verifyOwnership();
+                    await (optionsForShellRemoval)(repository.root, binding.worktreePath, operation);
+                    operation.check();
+                    recoveredPermissionError = ordinaryError;
+                  } catch (error) { throw new AggregateError([ordinaryError, error], `Ordinary and privileged worktree removal failed (configuration revision ${policy.revision}).`, { cause: ordinaryError }); }
+                }
               }
               operation.check();
               result = await inspectWorktree(project, owner, repository, operation, true);
@@ -529,12 +645,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         } catch (error) {
           if (error instanceof WorktreeCleanupInProgressError) throw error;
           failed = true;
-          effectError = error;
+          effectError = recoveredPermissionError === undefined ? error : new AggregateError([recoveredPermissionError, error], `Worktree permission recovery and subsequent cleanup failed (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
         }
         const checkCancellation = (): void => {
           if (!options.signal?.aborted) return;
           const cancellation = new OperationError("cancelled", { cause: options.signal.reason });
           if (failed) throw new AggregateError([effectError, cancellation], "Worktree cleanup failed before cancellation.", { cause: effectError });
+          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, cancellation], `Worktree cleanup was cancelled after permission recovery (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
           throw cancellation;
         };
         checkCancellation();
@@ -553,12 +670,15 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
           }, options.signal);
         } catch (observationError) {
           if (failed) throw new AggregateError([effectError, observationError], "Worktree cleanup and its postcondition observation failed.", { cause: effectError });
+          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, observationError], `Worktree observation failed after permission recovery (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
           throw observationError;
         }
         checkCancellation();
         if (!absent) {
           if (failed) throw effectError;
-          throw new Error("The original task worktree removal is incomplete.");
+          const error = new Error("The original task worktree removal is incomplete.");
+          if (recoveredPermissionError !== undefined) throw new AggregateError([recoveredPermissionError, error], `Worktree cleanup is incomplete after permission recovery (configuration revision ${policy!.revision}).`, { cause: recoveredPermissionError });
+          throw error;
         }
         return { kind: "absent", effectErrors: failed ? [effectError] : [] };
       } finally { if (key !== undefined) removing.delete(key); }
@@ -612,8 +732,10 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     listWorktrees: (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false) => tracked(operation, scoped => manager.listWorktrees(project, scoped, allowMissingRepository, includeOtherProjects)),
     removeWorktree: (project: WorkerProject, owner: ResourceOwner, options: WorktreeCleanupOptions) => {
       if (closing.signal.aborted) return Promise.reject(closing.signal.reason);
+      const currentPolicy = optionsForCleanupPolicy?.() ?? null;
+      const policy = currentPolicy === null ? null : { ...currentPolicy };
       const signal = options.signal === undefined ? closing.signal : AbortSignal.any([options.signal, closing.signal]);
-      const promise = Promise.resolve().then(() => manager.removeWorktree(project, owner, { signal }));
+      const promise = Promise.resolve().then(() => manager.removeWorktree(project, owner, { signal }, policy));
       preparations.add(promise);
       void promise.then(() => preparations.delete(promise), () => preparations.delete(promise));
       return promise;

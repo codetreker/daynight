@@ -66,7 +66,7 @@ const nativeTools = (native: WorkerCloudNative, mode: AgentControlMode): readonl
   ...(native.agent === "codex" || native.agent === "copilot" ? [native.agent] : []), ...(mode === "herdr" ? ["herdr" as const] : []),
 ];
 const nativeMode = (cache: WorkerConfigurationCache, key: WorkerCloudItemKey): AgentControlMode | null => findItem(cache, key)?.nativeMode ?? null;
-const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks";
+const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks" || key.kind === "enableSudoCleanup";
 const observedSource = (item: TrackedConfigurationItem): TrackedConfigurationItem["actualSource"] => ({ kind: "observed", recordId: item.recordId, generation: item.origin.generation, targetRevision: item.origin.targetRevision });
 const isJobCancellation = (error: unknown, signal: AbortSignal): boolean => {
   if (!signal.aborted) return false;
@@ -430,6 +430,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   if (options.signal.aborted) halt();
   return {
     current: (): WorkerConfigurationSnapshot => snapshot(cache, usable(), validatedNative, localMode, localTools, proofFor),
+    readCleanupPolicy: (): { readonly enableSudoCleanup: boolean; readonly revision: string } | null => {
+      const item = findItem(cache, { kind: "enableSudoCleanup" });
+      if (configurationDesired(cache)?.value.enableSudoCleanup === undefined || item?.actualSource?.kind !== "observed" || typeof item.value.appliedValue !== "boolean") return null;
+      return { enableSudoCleanup: item.value.appliedValue, revision: item.actualSource.targetRevision };
+    },
     hasAuthority: (): boolean => synchronized,
     isReady: (): boolean => !stopped && fatal === undefined && storage.isReady(),
     waitReady: (signal: AbortSignal = options.signal): Promise<void> => inputReady(signal),

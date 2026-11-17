@@ -25,10 +25,10 @@ const nullable = (source: string, map: (source: string) => string): string => so
 const tools = (source: string): string => project(source, ["codex", "copilot", "herdr"], Object.fromEntries(["codex", "copilot", "herdr"].map(key => [key, (source: string) => nullable(source, value => {
   return project(value, ["kind", "path"]);
 })])));
-const desiredProjection = (source: string, options: WorkerConfigurationCapabilityInput): string => {
+const desiredProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true): string => {
   const capabilities = workerConfigurationCapabilities(options);
   return project(source, ["revision", "updatedAt", "value"], { value: source => project(source,
-    ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(capabilities.controlMode ? ["agentControlMode"] : []), ...(capabilities.toolPaths ? ["toolPaths"] : [])],
+    ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(recognizeSudo ? ["enableSudoCleanup"] : []), ...(capabilities.controlMode ? ["agentControlMode"] : []), ...(capabilities.toolPaths ? ["toolPaths"] : [])],
     { native, projects: source => arraySource(source, source => project(source, ["projectId", "nativeOverrides"], { nativeOverrides: native })), toolPaths: tools }) });
 };
 const knownJson = (source: string): unknown => {
@@ -46,18 +46,18 @@ const sourceOf = (value: unknown): string => {
   jsonObjectSources(value.json);
   return value.json;
 };
-export const receiveWorkerDesired = (json: string, options?: WorkerConfigurationCapabilityInput): ReceivedWorkerDesired => {
+export const receiveWorkerDesired = (json: string, options?: WorkerConfigurationCapabilityInput, recognizeSudo = true): ReceivedWorkerDesired => {
   const root = jsonObjectSources(json), value = root.get("value");
   const members = value === undefined ? new Map<string, string>() : jsonObjectSources(value);
   const capabilities = options ?? { controlMode: members.has("agentControlMode"), toolPaths: members.has("toolPaths") };
   const enabled = workerConfigurationCapabilities(capabilities);
   if (!enabled.controlMode && members.has("agentControlMode") || !enabled.toolPaths && members.has("toolPaths")) return malformed();
-  return { json, known: parseWorkerCloudDesired(knownJson(desiredProjection(json, capabilities)), false, capabilities) };
+  return { json, known: parseWorkerCloudDesired(knownJson(desiredProjection(json, capabilities, recognizeSudo)), false, capabilities) };
 };
 const failure = (source: string): string => nullable(source, value => project(value, ["code", "category", "phase", "occurredAt"]));
-const observationProjection = (source: string, options: WorkerConfigurationCapabilityInput): string => project(source, ["baseRevision", "desiredRevision", "items", "reportedAt"], {
+const observationProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true): string => project(source, ["baseRevision", "desiredRevision", "items", "reportedAt"], {
   items: source => {
-    const knownKinds = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projectPreparation", "projectRemoval", "projectNative", ...(workerConfigurationCapabilities(options).controlMode ? ["agentControlMode"] : [])];
+    const knownKinds = ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", ...(recognizeSudo ? ["enableSudoCleanup"] : []), "native", "projectPreparation", "projectRemoval", "projectNative", ...(workerConfigurationCapabilities(options).controlMode ? ["agentControlMode"] : [])];
     if (!source.trimStart().startsWith("[")) return malformed();
     const items = jsonContainerSources(source).filter(source => {
       const key = jsonObjectSources(source).get("key");
@@ -74,8 +74,8 @@ const observationProjection = (source: string, options: WorkerConfigurationCapab
     return `[${items.join(",")}]`;
   },
 });
-export const validateWorkerRemoteObservation = (json: string, observationRevision: string): void => {
-  const projection = jsonObjectSources(observationProjection(json, true)), reportedAt = projection.get("reportedAt");
+export const validateWorkerRemoteObservation = (json: string, observationRevision: string, recognizeSudo = true): void => {
+  const projection = jsonObjectSources(observationProjection(json, true, recognizeSudo)), reportedAt = projection.get("reportedAt");
   if (reportedAt === undefined) return malformed();
   const instant = timestamp(knownJson(reportedAt));
   if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(instant)) return malformed();
