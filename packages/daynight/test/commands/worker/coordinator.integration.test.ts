@@ -674,91 +674,96 @@ it.each(["recover", "next-generation", "automatic-generation", "same-task", "ind
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
   const f = await fixture(), webStore = openWebExecutionStore(path.join(f.root, "web.sqlite"));
-  await mkdir(f.project.localPath, { recursive: true });
-  const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
-  git("init", "--initial-branch=main");
-  git("-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed");
-  git("remote", "add", "origin", f.project.repoUrl);
-  const bare = path.join(f.root, "origin.git");
-  execFileSync("git", ["clone", "--bare", f.project.localPath, bare], { cwd: f.root, stdio: "pipe", timeout: 10_000 });
-  git("config", `url.${bare}.insteadOf`, f.project.repoUrl);
-  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp"), prepareFormat });
-  const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(170), worktreeId: uuid(171) };
-  const sibling = { projectId: f.project.projectId, taskId: uuid(172), claimId: uuid(173), worktreeId: uuid(174) };
-  const operation = createOperation(); let binding: WorktreeBinding, badBinding: WorktreeBinding;
-  try { await manager.prepareRepository(f.project, operation); binding = await manager.prepareWorktree(f.project, owner, operation); badBinding = await manager.prepareWorktree(f.project, sibling, operation); }
-  finally { operation.dispose(); }
-  if (scenario === "same-task") {
-    const manifests = createWorktreeManifestStore(binding.commonDirectory), previous = manifests.read(sibling.worktreeId)!;
-    manifests.remove(previous); manifests.publish({ ...previous, taskId: owner.taskId });
-  }
-  await writeFile(path.join(badBinding.worktreePath, ".git"), "damaged pointer\n");
-  f.grant(f.candidates[0]!, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", agentControlMode: "web", machine: f.options.machine, platform: "linux" });
-  const local = f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
-  if (scenario !== "pending") f.store.activateTask(local);
-  const config = { ...configuration, toolLaunch: frozenToolLaunch() };
-  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
-  record = webStore.bindWorktree(record, binding, 2);
-  record = webStore.initializeWebExecution(record, 3);
-  record = webStore.updateWebExecution(record, { sessionId: uuid(175), initialPrompt: "managed", ...(scenario === "first-generation" ? {} : { launchSubmission: "acknowledged" as const }) }, 4);
-  let stopped: Awaited<ReturnType<typeof stoppedWebExecution>> | undefined;
-  if (scenario !== "first-generation") {
-    record = webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(176) }, 5);
-    stopped = await stoppedWebExecution(f, webStore, record);
-    record = stopped.task;
-    const journalFile = path.join(controllerExecutionDirectory(f.root, record.webExecution!.executionId), "journal.sqlite");
-    await mkdir(path.dirname(journalFile), { recursive: true });
-    const journal = lifecycle.openControllerLifecycleStore(journalFile, stopped.ticket, { onMigration() {} });
-    const { executionId: _executionId, claimId: _claimId, sessionId: _sessionId, executionGeneration: _generation, controllerInstanceId: _instance, ...snapshotPatch } = stopped.snapshot;
-    try { journal.patchSnapshot(snapshotPatch); } finally { journal.close(); }
-    if (scenario === "next-generation") {
-      record = webStore.authorizeRecoveryRetry(record, 8);
-      record = webStore.beginWebGeneration(record, stopped.snapshot, 9);
-      record = webStore.pauseRecovery(record, "Original generation preparation failed.", 10);
-      record = webStore.authorizeRecoveryRetry(record, 11);
-    } else if (scenario === "automatic-generation") {
-      record = webStore.beginRecovery(record, 8);
-      record = webStore.beginWebGeneration(record, stopped.snapshot, 9);
-    }
-  }
-  if (scenario === "index-schedule" || scenario === "journal-schedule") {
-    const otherProject = { ...f.project, projectId: uuid(180), localPath: path.join(f.root, "other-project") };
-    f.store.registerProject(otherProject);
-    vi.mocked(f.remote.ownInventory).mockImplementation(async () => ({ tasks: [...f.grants.values()], coveredProjectIds: [owner.projectId], unavailableProjectIds: [] }));
-    const other = { projectId: otherProject.projectId, taskId: owner.taskId, claimId: uuid(181), worktreeId: uuid(182) };
-    if (scenario === "index-schedule") {
-      f.store.completeTask(f.store.registerPending({ ...other, agent: "codex", agentControlMode: "web" }));
-      f.store.saveCleanupSchedule(other, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
-    } else {
-      let completed = webStore.register({ ...other, project: otherProject, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
-      completed = webStore.beginCleanup(completed, { kind: "terminal", deadline: 1000 }, 2);
-      completed = webStore.completeTask(completed, 3);
-      f.store.saveCleanupSchedule(other, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null }, completed);
-    }
-  }
-  const scheduleReads = vi.spyOn(f.store, "listCleanupSchedules");
-  const manifestReads = vi.spyOn(manager, "listWorktreeManifests");
-  const verifyEntered = Promise.withResolvers<void>(), finishVerify = Promise.withResolvers<void>();
-  const verify = manager.verifyWorktree.bind(manager);
-  if (scenario === "cancel" || scenario === "target-disappears") vi.spyOn(manager, "verifyWorktree").mockImplementation(async (...args) => {
-    const found = await verify(...args); verifyEntered.resolve();
-    if (scenario === "cancel") { await finishVerify.promise; args[2].check(); }
-    else await rm(binding.worktreePath, { recursive: true, force: true });
-    return found;
-  });
-  const stop = new AbortController();
-  const interruption = new Error("Second generation reached after stopped proof.");
-  const prepare = vi.fn(async (value: WebTask) => {
-    if (scenario === "next-generation" || scenario === "automatic-generation" || value.webExecution!.executionGeneration !== "1") throw interruption;
-    return stopped!.ticket;
-  });
-  const launcher = { prepare, launch: vi.fn(async () => {}), refreshGrant: vi.fn() };
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now,
-    ...(stopped === undefined ? {} : { request: stopped.request }), jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} } });
-  const advance = vi.spyOn(backend, "advanceResult");
-  const coordinator = createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend: { ...backend, cleanup: vi.fn(async value => ({ task: value, complete: true })) },
-    repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, signal: stop.signal, verifyWebServer: async () => {} });
+  const stop = new AbortController(), finishVerify = Promise.withResolvers<void>();
+  let disposeManager: (() => Promise<unknown>) | undefined, shutdownCoordinator: (() => Promise<unknown>) | undefined;
+  let failure: unknown, failed = false;
   try {
+    await mkdir(f.project.localPath, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
+    git("init", "--initial-branch=main");
+    git("-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed");
+    git("remote", "add", "origin", f.project.repoUrl);
+    const bare = path.join(f.root, "origin.git");
+    execFileSync("git", ["clone", "--bare", f.project.localPath, bare], { cwd: f.root, stdio: "pipe", timeout: 10_000 });
+    git("config", `url.${bare}.insteadOf`, f.project.repoUrl);
+    const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp"), prepareFormat });
+    disposeManager = () => manager.dispose();
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(170), worktreeId: uuid(171) };
+    const sibling = { projectId: f.project.projectId, taskId: uuid(172), claimId: uuid(173), worktreeId: uuid(174) };
+    const operation = createOperation(); let binding: WorktreeBinding, badBinding: WorktreeBinding;
+    try { await manager.prepareRepository(f.project, operation); binding = await manager.prepareWorktree(f.project, owner, operation); badBinding = await manager.prepareWorktree(f.project, sibling, operation); }
+    finally { operation.dispose(); }
+    if (scenario === "same-task") {
+      const manifests = createWorktreeManifestStore(binding.commonDirectory), previous = manifests.read(sibling.worktreeId)!;
+      manifests.remove(previous); manifests.publish({ ...previous, taskId: owner.taskId });
+    }
+    const damagedPointer = path.join(badBinding.worktreePath, ".git");
+    await rm(damagedPointer); await writeFile(damagedPointer, "damaged pointer\n");
+    f.grant(f.candidates[0]!, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", agentControlMode: "web", machine: f.options.machine, platform: "linux" });
+    const local = f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    if (scenario !== "pending") f.store.activateTask(local);
+    const config = { ...configuration, toolLaunch: frozenToolLaunch() };
+    let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+    record = webStore.bindWorktree(record, binding, 2);
+    record = webStore.initializeWebExecution(record, 3);
+    record = webStore.updateWebExecution(record, { sessionId: uuid(175), initialPrompt: "managed", ...(scenario === "first-generation" ? {} : { launchSubmission: "acknowledged" as const }) }, 4);
+    let stopped: Awaited<ReturnType<typeof stoppedWebExecution>> | undefined;
+    if (scenario !== "first-generation") {
+      record = webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(176) }, 5);
+      stopped = await stoppedWebExecution(f, webStore, record);
+      record = stopped.task;
+      const journalFile = path.join(controllerExecutionDirectory(f.root, record.webExecution!.executionId), "journal.sqlite");
+      await mkdir(path.dirname(journalFile), { recursive: true });
+      const journal = lifecycle.openControllerLifecycleStore(journalFile, stopped.ticket, { onMigration() {} });
+      const { executionId: _executionId, claimId: _claimId, sessionId: _sessionId, executionGeneration: _generation, controllerInstanceId: _instance, ...snapshotPatch } = stopped.snapshot;
+      try { journal.patchSnapshot(snapshotPatch); } finally { journal.close(); }
+      if (scenario === "next-generation") {
+        record = webStore.authorizeRecoveryRetry(record, 8);
+        record = webStore.beginWebGeneration(record, stopped.snapshot, 9);
+        record = webStore.pauseRecovery(record, "Original generation preparation failed.", 10);
+        record = webStore.authorizeRecoveryRetry(record, 11);
+      } else if (scenario === "automatic-generation") {
+        record = webStore.beginRecovery(record, 8);
+        record = webStore.beginWebGeneration(record, stopped.snapshot, 9);
+      }
+    }
+    if (scenario === "index-schedule" || scenario === "journal-schedule") {
+      const otherProject = { ...f.project, projectId: uuid(180), localPath: path.join(f.root, "other-project") };
+      f.store.registerProject(otherProject);
+      vi.mocked(f.remote.ownInventory).mockImplementation(async () => ({ tasks: [...f.grants.values()], coveredProjectIds: [owner.projectId], unavailableProjectIds: [] }));
+      const other = { projectId: otherProject.projectId, taskId: owner.taskId, claimId: uuid(181), worktreeId: uuid(182) };
+      if (scenario === "index-schedule") {
+        f.store.completeTask(f.store.registerPending({ ...other, agent: "codex", agentControlMode: "web" }));
+        f.store.saveCleanupSchedule(other, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+      } else {
+        let completed = webStore.register({ ...other, project: otherProject, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+        completed = webStore.beginCleanup(completed, { kind: "terminal", deadline: 1000 }, 2);
+        completed = webStore.completeTask(completed, 3);
+        f.store.saveCleanupSchedule(other, { deadline: 1000, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null }, completed);
+      }
+    }
+    const scheduleReads = vi.spyOn(f.store, "listCleanupSchedules");
+    const manifestReads = vi.spyOn(manager, "listWorktreeManifests");
+    const verifyEntered = Promise.withResolvers<void>();
+    const verify = manager.verifyWorktree.bind(manager);
+    if (scenario === "cancel" || scenario === "target-disappears") vi.spyOn(manager, "verifyWorktree").mockImplementation(async (...args) => {
+      const found = await verify(...args); verifyEntered.resolve();
+      if (scenario === "cancel") { await finishVerify.promise; args[2].check(); }
+      else await rm(binding.worktreePath, { recursive: true, force: true });
+      return found;
+    });
+    const interruption = new Error("Second generation reached after stopped proof.");
+    const prepare = vi.fn(async (value: WebTask) => {
+      if (scenario === "next-generation" || scenario === "automatic-generation" || value.webExecution!.executionGeneration !== "1") throw interruption;
+      return stopped!.ticket;
+    });
+    const launcher = { prepare, launch: vi.fn(async () => {}), refreshGrant: vi.fn() };
+    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now,
+      ...(stopped === undefined ? {} : { request: stopped.request }), jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} } });
+    const advance = vi.spyOn(backend, "advanceResult");
+    const coordinator = createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend: { ...backend, cleanup: vi.fn(async value => ({ task: value, complete: true })) },
+      repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, signal: stop.signal, verifyWebServer: async () => {} });
+    shutdownCoordinator = () => coordinator.shutdown();
     await coordinator.tick();
     if (scenario === "cancel") { await verifyEntered.promise; stop.abort(new Error("cancel original execution")); finishVerify.resolve(); await coordinator.shutdown(); }
     else if (scenario === "recover" || scenario === "next-generation" || scenario === "automatic-generation") {
@@ -785,5 +790,15 @@ it.each(["recover", "next-generation", "automatic-generation", "same-task", "ind
     }
     expect(f.remote.claim).not.toHaveBeenCalled();
     expect(await readFile(path.join(badBinding.worktreePath, ".git"), "utf8")).toBe("damaged pointer\n");
-  } finally { finishVerify.resolve(); stop.abort(); await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
+  } catch (error) { failed = true; failure = error; }
+  finally {
+    finishVerify.resolve(); stop.abort();
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of [shutdownCoordinator, disposeManager, () => webStore.close()]) {
+      if (cleanup === undefined) continue;
+      try { await cleanup(); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length > 0) throw new AggregateError(failed ? [failure, ...cleanupErrors] : cleanupErrors, "Fixture cleanup failed.");
+    if (failed) throw failure;
+  }
 }, 30_000);
