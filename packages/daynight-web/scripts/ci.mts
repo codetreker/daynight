@@ -39,7 +39,7 @@ export const runCi = async (mode: string, cancellation: AbortController,
   };
   await run('pnpm', ['web:typecheck'], { timeoutMs: 60_000 });
   await run('pnpm', ['--filter', '@codetreker/daynight-web', 'test:harness'], { timeoutMs: 180_000 });
-  await run('docker', ['build', '--progress=plain', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.'], { timeoutMs: 300_000 });
+  await run('docker', ['build', '--progress=plain', '--output=type=cacheonly', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.'], { timeoutMs: 300_000 });
   await run('pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage'], {
     env: { ...process.env, VITEST_MAX_WORKERS: '4' }, timeoutMs: 900_000,
   });

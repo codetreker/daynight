@@ -34,7 +34,7 @@ test('quality mode checks workspace types and the production Docker context befo
   assert.deepEqual(observed.calls.map(({ file, args }) => [file, args]), [
     ['pnpm', ['web:typecheck']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'test:harness']],
-    ['docker', ['build', '--progress=plain', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.']],
+    ['docker', ['build', '--progress=plain', '--output=type=cacheonly', '--target', 'web', '--file', 'deployment/localhost/Dockerfile', '.']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'node', 'scripts/coverage.mts']],
   ]);
