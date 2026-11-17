@@ -48,9 +48,11 @@ existing mode and tool negotiation may omit their fields without changing the
 stored revision. When both expose a field, its unknown subtree is compared too.
 The cache retains same-revision hidden source fragments as historical facts,
 not executable targets, and checks them when that revision exposes them again.
-Other conflicting content is a protocol error. A late lower receipt settles only its captured observation and cannot
-replace a newer desired document. Known target changes or authority rollback
-renew generation; ordinary receipt and unknown-only installation do not.
+Other conflicting content is a protocol error. A late lower receipt settles only
+its captured observation and cannot replace a newer desired document. Lower
+receipt counters schedule an authenticated read so an actual service rollback
+can still converge. Known target changes or authority rollback renew generation;
+ordinary receipt and unknown-only installation do not.
 The [Worker design](../../../../docs/design/daynight-worker.md#云端接收与本机提交)
 owns the mechanism, and the [configuration contract](../../../../docs/spec/daynight-worker-configuration.md#worker-响应的未知内容保留)
 owns consumer behavior.

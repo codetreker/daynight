@@ -202,6 +202,76 @@ it("uses a rejected observation's canonical receipt for a new report without rep
   expect(f.manager.acknowledge).toHaveBeenCalledTimes(2);
 });
 
+it.each([
+  ["desired", target("3"), "9"],
+  ["observation", target("5"), "1"],
+  ["null target", null, "0"],
+] as const)("reads after a rejected receipt with an older %s", async (_kind, received, revision) => {
+  const f = fixture(); f.replace({ desired: target("5"), observationRevision: "9" });
+  // The actual manager fences a late receipt and retains its current authority.
+  f.manager.acknowledge.mockResolvedValueOnce("persisted");
+  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: received, observationRevision: revision, observationAccepted: false }) });
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false });
+  await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
+  expect(f.manager.current()).toMatchObject({ desired: { revision: "5" }, observationRevision: "9" });
+  expect(f.read).not.toHaveBeenCalled();
+  await exchange.prepare!(operation());
+  expect(f.read).toHaveBeenCalledOnce();
+  expect(f.manager.receive).toHaveBeenCalledOnce();
+});
+
+it("keeps the authority read pending when an ignored late receipt is followed by a failed read", async () => {
+  const f = fixture(); f.replace({ desired: target("5"), observationRevision: "9" });
+  f.manager.acknowledge.mockResolvedValueOnce("ignored");
+  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target("3"), observationRevision: "1", observationAccepted: false }) });
+  const failure = new Error("authority unavailable"); f.read.mockRejectedValueOnce(failure);
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false });
+  await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
+  expect(f.manager.current()).toMatchObject({ desired: { revision: "5" }, observationRevision: "9" });
+  await expect(exchange.prepare!(operation())).rejects.toBe(failure);
+  expect(f.manager.current()).toMatchObject({ desired: { revision: "5" }, observationRevision: "9" });
+  await exchange.prepare!(operation());
+  expect(f.read).toHaveBeenCalledTimes(2);
+  expect(f.manager.receive).toHaveBeenCalledOnce();
+});
+
+it("keeps the authority read pending when bootstrap cleanup fails after a fenced receipt", async () => {
+  const f = fixture(); f.replace({ desired: target("5"), observationRevision: "9" });
+  f.manager.acknowledge.mockResolvedValueOnce("ignored");
+  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target("3"), observationRevision: "1", observationAccepted: false }) });
+  const failure = new Error("bootstrap cleanup failed");
+  const bootstrap = { prepare: vi.fn(async () => null), invalidate: vi.fn(), clear: vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(failure).mockResolvedValue(undefined) };
+  const exchange = createWorkerConfigurationExchange({ ...f, bootstrap, needsRead: false });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).rejects.toBe(failure);
+  await exchange.prepare!(operation());
+  expect(f.read).toHaveBeenCalledOnce();
+});
+
+it("reads after an accepted late receipt reports older authority", async () => {
+  const f = fixture(); f.replace({ desired: target("3"), observationRevision: "0" });
+  f.send.mockImplementationOnce(async () => {
+    f.replace({ generation: "new-authority", desired: target("5"), observationRevision: "9" });
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target("3"), observationRevision: "1", observationAccepted: true }) };
+  });
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false });
+  await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
+  expect(f.manager.current()).toMatchObject({ desired: { revision: "5" }, observationRevision: "9" });
+  await exchange.prepare!(operation());
+  expect(f.read).toHaveBeenCalledOnce();
+});
+
+it("reads after a late null bootstrap receipt is fenced by a newer target", async () => {
+  const f = fixture(); f.replace({ desired: null, observationRevision: "0" });
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false });
+  const sent = exchange.capture({ ...workerTelemetry, taskInventory: null });
+  expect(sent.observation).toBeNull();
+  f.replace({ generation: "new-authority", desired: target("5"), observationRevision: "9" });
+  expect(await exchange.accept(sent, receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }), operation())).toBe("ignored");
+  expect(f.manager.current()).toMatchObject({ desired: { revision: "5" }, observationRevision: "9" });
+  await exchange.prepare!(operation());
+  expect(f.read).toHaveBeenCalledOnce();
+});
+
 it.each([false, true])("invalidates a refused bootstrap only when its rejection is certain (unknown: %s)", async unknown => {
   const f = fixture(); f.replace({ desired: null, observationRevision: "0" });
   const bootstrap = { prepare: vi.fn(async () => target().value), invalidate: vi.fn(), clear: vi.fn(async () => {}) };

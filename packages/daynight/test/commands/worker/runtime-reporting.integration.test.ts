@@ -11,6 +11,7 @@ import { OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport } from "../../../src/api/types.js";
 import type { WorkerCloudDesired, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt } from "../../../src/api/worker-configuration.js";
+import { decodeWorkerCloudJsonSource, parseReceivedWorkerConfigurationReceipt, parseReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
@@ -270,6 +271,47 @@ describe("worker runtime configuration reporting", () => {
     const persisted = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { desiredJson: string; observationRevision: string } };
     expect(JSON.parse(persisted.authority.desiredJson)).toEqual(target);
     expect(persisted.authority.observationRevision).toBe(String(observationRevision));
+  });
+
+  it.each([false, true])("reads authority after an older rejected receipt (receipt is late: %s)", async late => {
+    const f = await fixture(), readEntered = deferred<void>(), releaseRead = deferred<void>(), secondSent = deferred<void>(), releaseSecond = deferred<void>();
+    const original: WorkerCloudDesired = { ...target, revision: "5", value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const rolledBack: WorkerCloudDesired = { ...original, revision: "3", value: { ...original.value, maxConcurrent: 3 } };
+    target = original; observationRevision = 9n;
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    const confirmed = late ? original : rolledBack, cursor = late ? "9" : "1";
+    const capabilities = { controlMode: true, toolPaths: true };
+    const resource = (desired: WorkerCloudDesired, revision: string) => parseReceivedWorkerConfigurationResource(decodeWorkerCloudJsonSource(JSON.stringify({ desired, observationRevision: revision, observation: {
+      baseRevision: String(BigInt(revision) - 1n), desiredRevision: desired.revision, reportedAt: workerTelemetryTime, items: [],
+    } })), capabilities);
+    const receipt = (desired: WorkerCloudDesired, revision: string, accepted: boolean) => parseReceivedWorkerConfigurationReceipt(decodeWorkerCloudJsonSource(JSON.stringify({ desired, observationRevision: revision, observationAccepted: accepted })), capabilities);
+    remote.configuration.mockImplementationOnce(async () => resource(original, "9"))
+      .mockImplementation(async () => { readEntered.resolve(); await releaseRead.promise; return resource(confirmed, cursor); });
+    report.mockImplementation(async (_workerId, _body, configuration) => {
+      if (report.mock.calls.length === 1) return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receipt(rolledBack, "1", false) };
+      secondSent.resolve(); await releaseSecond.promise;
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receipt(confirmed, String(BigInt(cursor) + 1n), true) };
+    });
+    const running = start(f);
+    try {
+      await eventually(() => expect(mocks.exchangeStage.mock.calls.some(([event]) => event.phase === "receipt-accept" && event.status === "succeeded")).toBe(true));
+      const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+      expect(manager.current()).toMatchObject({ desired: { revision: "5" }, observationRevision: "9" });
+      const reporter = mocks.createdReporter.mock.calls[0]![0] as ReturnType<typeof createWorkerReporter>;
+      reporter.trigger();
+      await eventually(() => expect(remote.configuration).toHaveBeenCalledTimes(2));
+      await readEntered.promise;
+      expect(manager.current()).toMatchObject({ desired: { revision: "5" }, observationRevision: "9" });
+      expect(report).toHaveBeenCalledTimes(1);
+      releaseRead.resolve();
+      await eventually(() => expect(report.mock.calls.length).toBeGreaterThanOrEqual(2));
+      await secondSent.promise;
+      expect(report.mock.calls[1]![2].observation).toMatchObject({ desiredRevision: confirmed.revision, baseRevision: cursor });
+      expect(manager.current().desired).toEqual(confirmed);
+    } finally {
+      releaseRead.resolve(); releaseSecond.resolve();
+      f.signal.abort(); await running;
+    }
   });
 
   it("discards telemetry collected across a canonical generation change before sending", async () => {

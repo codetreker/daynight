@@ -2078,7 +2078,9 @@ Worker identity, and optional
 `agentModel` / `agentReasoningEffort` overrides stay local. An authenticated
 configuration GET installs the complete current cloud target and observation
 baseline, including lower counters or an uninitialized target. Matching report
-receipts retain a newer target when an older response arrives. Desired content
+receipts retain a newer target when an older response arrives. A receipt with
+lower target or observation counters triggers an authenticated GET to determine
+whether the service actually rolled back. Desired content
 under the same revision must be semantically equal wherever both negotiated
 projections expose it. Existing mode and tool fields may be absent from one
 projection; conflicting visible content still fails as a protocol error. Known target changes and authority rollback renew the local

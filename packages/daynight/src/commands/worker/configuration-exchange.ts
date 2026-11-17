@@ -166,6 +166,12 @@ export const createWorkerConfigurationExchange = (options: {
       try { outcome = await manager.acknowledge(captured, receipt, operation.signal, syncId); acknowledgements.set(captured, outcome); }
       catch (error) { if (requiresAuthorityRead(error)) needsRead = true; throw error; }
       const current = manager.current();
+      // An older receipt may be late, or the service may have rolled back.
+      // Only an authenticated read can distinguish them.
+      if (
+        BigInt(receipt.observationRevision) < BigInt(current.observationRevision)
+        || current.desired !== null && (receipt.desired === null || BigInt(receipt.desired.known.revision) < BigInt(current.desired.revision))
+      ) needsRead = true;
       if (current.desired !== null) {
         bootstrap = null;
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
