@@ -1,15 +1,19 @@
 import { useRef, useState } from 'react';
-import { ApiError, previewLoginUrl } from '../../../api/client';
+import { ApiError, authRequestsPaused, previewLoginUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import type { Attachment } from '../../../api/types';
 import { MarkdownContent } from '../MarkdownContent';
 import { attachmentKind, resolveAttachmentUrl } from './model';
 
+export type NativePreviewSource = { readonly updatedAt: string; readonly reloadRevision: number };
+
 export type AttachmentPreviewState = {
+  readonly scope: string;
   readonly path: string | null;
   readonly status: 'idle' | 'loading' | 'ready' | 'error';
   readonly text: string | null;
   readonly error: unknown;
+  readonly nativeSource?: NativePreviewSource;
 };
 
 type AttachmentPreviewProps = {
@@ -26,8 +30,9 @@ const TrustedFrame = ({ url, title, paused }: { readonly url: string; readonly t
   const m = messages.inspection.attachments;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [loadedFrame, setLoadedFrame] = useState(false);
-  const started = useRef(!paused);
-  if (!paused) started.current = true;
+  const canStart = !paused && !authRequestsPaused();
+  const started = useRef(canStart);
+  if (canStart) started.current = true;
   const established = () => {
     const frame = frameRef.current;
     if (frame === null) return false;
@@ -37,13 +42,13 @@ const TrustedFrame = ({ url, title, paused }: { readonly url: string; readonly t
     } catch { return true; }
   };
   const loaded = () => {
-    if (paused && !loadedFrame && !established()) return;
+    if (!canStart && !loadedFrame && !established()) return;
     setLoadedFrame(true);
   };
 
   return <div className="attachment-native">
     {!loadedFrame && !paused && <p className="attachment-state attachment-native-state" role="status">{m.previewLoading}</p>}
-    {started.current && <iframe className="attachment-frame" ref={frameRef} src={paused && !loadedFrame && !established() ? undefined : url} title={title} tabIndex={0} onLoad={loaded} />}
+    {started.current && <iframe className="attachment-frame" ref={frameRef} src={!canStart && !loadedFrame && !established() ? undefined : url} title={title} tabIndex={0} onLoad={loaded} />}
   </div>;
 };
 
@@ -79,7 +84,11 @@ const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, paused
   );
   if (kind === 'text') return <pre className="attachment-text">{preview.text}</pre>;
   if (kind === 'image') return <ImagePreview key={url} url={url} path={attachment.path} paused={paused} />;
-  if (kind === 'pdf' || kind === 'html') return <TrustedFrame key={url} url={url} title={m.frameTitle({ kind: kind === 'pdf' ? 'PDF' : 'HTML', path: attachment.path })} paused={paused} />;
+  if (kind === 'pdf' || kind === 'html') {
+    if (preview.nativeSource === undefined) return null;
+    const key = JSON.stringify([preview.scope, preview.path, preview.nativeSource.updatedAt, preview.nativeSource.reloadRevision, url]);
+    return <TrustedFrame key={key} url={url} title={m.frameTitle({ kind: kind === 'pdf' ? 'PDF' : 'HTML', path: attachment.path })} paused={paused} />;
+  }
   return <p className="attachment-state">{m.unsupportedPreview}</p>;
 };
 

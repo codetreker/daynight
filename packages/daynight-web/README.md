@@ -2286,10 +2286,13 @@ events from a replaced source or attempt cannot update its replacement. The
 records ownership and classification trade-offs. Text, JSON and source previews
 preserve text and newlines. Selected image previews use native image loading with
 error/retry feedback; PDF and HTML use native iframes.
-HTML/PDF first check preview availability with HEAD and never decode a HEAD error
-as a JSON body. The frame then performs normal resource requests. HEAD success
-does not prove that native content has rendered; integrated acceptance must
-observe actual HTML interaction and PDF output.
+HTML/PDF load directly from the Task preview origin once metadata is admitted and
+remote operations are enabled. The preview document reports HTTP errors with a
+request ID and same-URL retry; transport failures retain the browser's behavior.
+The parent header offers Reload before Download, disabled during remote pause.
+Reload replaces only the current native document without changing its URL. Ready
+and iframe load do not prove content rendering; integrated acceptance observes
+actual HTML interaction and PDF output.
 
 HTML loads the Task-specific origin generated from the public preview metadata.
 CSS, JS, images and relative fetches follow browser URL rules. Files of one Task

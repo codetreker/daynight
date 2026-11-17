@@ -16,6 +16,7 @@ export default defineConfig({
   reporter: [["list"], ["json", { outputFile: path.join(runDirectory, "results", "playwright.json") }]],
   use: {
     headless: true,
+    channel: "chromium",
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
     locale: "en-US",

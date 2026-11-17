@@ -27,11 +27,12 @@
 @media(max-height:500px) and (max-width:600px){.task-detail-fullscreen .attachment-preview-header,.task-detail-has-claim .attachment-preview-header{flex-wrap:wrap}.task-detail-fullscreen .attachment-preview-header>.attachment-file-information:first-child,.task-detail-has-claim .attachment-preview-header>.attachment-file-information:first-child{flex:1 1 100%}.task-detail-fullscreen .attachment-preview-actions,.task-detail-has-claim .attachment-preview-actions{flex-wrap:wrap}}
 @media(max-height:300px) and (max-width:600px){
 .attachment-preview-header,.task-detail-fullscreen .attachment-preview-header,.task-detail-has-claim .attachment-preview-header{display:grid;grid-template-columns:minmax(0,1fr) max-content;gap:2px;padding:2px 4px}
-.attachment-preview-header>.attachment-file-information:first-child{grid-column:1/-1;display:flex;gap:4px;align-items:baseline}
+.attachment-preview-header>.attachment-file-information:first-child{grid-column:1;grid-row:1;display:flex;gap:4px;align-items:baseline}
 .attachment-preview-header h5,.attachment-preview-header p{min-width:0;line-height:1.1;margin:0}
 .attachment-preview-header h5{flex:1 1 auto}.attachment-preview-header p{flex:0 1 auto}
-.attachment-timestamps{grid-template-columns:max-content minmax(0,1fr);column-gap:3px;row-gap:0;line-height:1.1;font-size:8px}.attachment-timestamps dt:not(:first-child){margin-top:0}.attachment-timestamps dd{white-space:nowrap}
-.attachment-preview-actions,.task-detail-fullscreen .attachment-preview-actions,.task-detail-has-claim .attachment-preview-actions{gap:2px;margin:0;flex-wrap:nowrap}
+.attachment-timestamps{grid-column:1/-1;grid-row:2;grid-template-columns:max-content minmax(0,1fr);column-gap:3px;row-gap:0;line-height:1.1;font-size:8px}.attachment-timestamps dt:not(:first-child){margin-top:0}.attachment-timestamps dd{white-space:nowrap}
+.attachment-preview-actions,.task-detail-fullscreen .attachment-preview-actions,.task-detail-has-claim .attachment-preview-actions{grid-column:2;grid-row:1;gap:2px;margin:0;flex-wrap:wrap}
+.attachment-preview-open-label{display:none}
 .task-detail-fullscreen .attachment-preview-actions .button,.task-detail-has-claim .attachment-preview-actions .button,.attachment-preview-actions .button{font-size:9px;padding:2px 3px}
 }
 

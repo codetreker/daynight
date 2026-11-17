@@ -237,6 +237,7 @@ export type InspectionMessages = {
     readonly created: string;
     readonly lastModified: string;
     readonly download: string;
+    readonly reloadPreview: string;
     readonly openInNewTab: string;
     readonly missing: string;
     readonly returnToTask: string;

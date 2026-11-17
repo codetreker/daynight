@@ -467,17 +467,30 @@ reader，使用暂停代次及请求身份拒绝迟到结果，结束本地 busy
 HTML 继续在 Task origin 的普通 iframe 中执行，不与主站或其他 Task 共享 origin。
 
 覆盖成功增加预览 revision；删除成功仅在目标为当前选择时清空预览，删除其他路径
-保留当前预览内容及组件身份，刷新清单不会额外增加其 revision。手动刷新发现所选文件的 `updatedAt` 改变时重新请求正文；
-`path/updatedAt` 作为预览组件身份，使同路径的图片和 frame 重新挂载。HTTP 的
+保留当前预览内容及组件身份，刷新清单不会额外增加其 revision。手动刷新发现所选文件的
+`updatedAt` 改变时更新内容；图片继续以 `path/updatedAt` 管理组件身份。HTTP 的
 `Cache-Control: no-store` 保持可覆盖路径的当前读取语义。
+
+HTML/PDF 在所选元数据准入、组件启用且未暂停时发布可挂载快照，不发主站 HEAD；
+仅文本和 Markdown 异步读取正文。原生快照携带 `updatedAt` 和 `reloadRevision`，与
+scope/path 一起无歧义序列化作为 frame 身份，实际 src URL 变化也会建立新文档。外层
+wrapper 对原生预览使用稳定 path key，避免实时元数据和快照各自触发重建。相同清单、
+普通元数据刷新、页签及全屏切换保持 frame；显式重载、文件版本变化及成功覆盖建立
+新文档。暂停保留快照及其原生身份，同身份恢复不重载。
+
+成功覆盖已准入的当前 scope/path 时，`useAttachments` 在写入所有权检查后使用 PUT 返回
+的 Attachment 更新权威所选元数据，并在同周期更新列表、选择、revision 和写状态，再启动
+清单刷新。默认和要求完整清单的调用方均在刷新 pending 时保留已准入快照；不伪造
+complete 或 cursor。新路径和未经确认的 URL 选择仍遵守完整清单准入。相同返回元数据
+不再次重载，失败或未知写入不提前发布成功。
 
 | 类型 | 预览机制 |
 |---|---|
 | Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 图表组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
 | 图片 | 原生 img 的加载、错误和重试状态 |
-| PDF | HEAD 检查后交给浏览器原生 iframe |
+| PDF | 直接交给 Task origin 的浏览器原生 iframe |
 | 文本、JSON、源码 | 原始文本节点与 pre，保留换行 |
-| HTML | 主站 HEAD 检查后在 Task origin 的普通 iframe 中加载执行 |
+| HTML | 直接在 Task origin 的普通 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
 `MarkdownContent` 将 URL 转换、图片分类与链接激活接入[公共 Markdown 视图](shared-markdown.md)，
@@ -510,9 +523,12 @@ HTML 入口使用 Task origin，例如：
 https://<taskId>.preview.daynight.cc/api/v1/projects/{projectId}/tasks/{taskId}/preview/mockup/index.html
 ```
 
-HTML/PDF 的 HEAD 可用性检查只判断响应状态和 requestId，不尝试读取不存在的 JSON
-body。成功后 frame 正常 GET 文件和其资源；HEAD 仅证明入口可用，实际 HTML
-交互和 PDF 绘制仍需由真实 frame 验证。入口中的 `./assets/style.css`、
+HTML/PDF 的 frame 直接 GET 文件和其资源。ready 表示可建立源，frame 的 load 只结束
+导航等待提示，均不能证明 HTTP 成功或实际绘制。服务器能够响应的业务错误由预览域
+文档错误页保留状态、requestId 和同 URL 重试；传输失败由浏览器表现。父页在下载前
+提供本地重载按钮，保留 URL 的编码、query 和 fragment，不增加 cache-busting 参数；
+暂停时按钮禁用，点击处理也同步检查暂停，防止渲染与点击间的竞态。父页不使用跨域
+load/error 猜测状态，也不增加探测、消息桥或超时推断。入口中的 `./assets/style.css`、
 `./assets/app.js` 和相对 fetch URL 按浏览器规则读取同目录结构，不改写文件内容；
 以 `/` 开头的地址指向 Task origin 根目录。普通 iframe 不使用 sandbox，Web 不提供
 Service Worker 或离线文件系统；同一 Task 文件共享 origin，与主站和其他 Task 隔离。[鉴权架构](daynight-auth.md)在附件请求准入时验证凭据，并在文件 I/O 前检查项目成员。
@@ -690,7 +706,10 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
   既有 project 选择、帮助及补全。
 - Web：详情页签与状态保留、共用完整附件页的两种展示、独立模式地址同步与前进后退、
   项目页嵌入模式和独立页子层选择的前进后退、单文件操作、相对资源、真实内容绘制、唯一纵向滚动与读至
-  结尾、键盘与原生 frame 行为，以及失败恢复和切换文件时的过期请求取消。
+  结尾、键盘与原生 frame 行为，以及失败恢复和切换文件时的过期请求取消。记录 HTML/PDF 主文档
+  请求的 method、origin 和 path，确认直接 GET 且无同文件主站 HEAD；验证同时间戳覆盖、显式重载、
+  版本变化、两种库存准入下延迟刷新时的单次文档重建，以及失败写入和暂停竞态。错误页、SSO、
+  传输失败恢复与已建立文档保留分别验证，load 不代替实际 HTML 交互或 PDF 绘制。
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 

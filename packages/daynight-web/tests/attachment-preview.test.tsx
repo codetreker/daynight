@@ -9,7 +9,7 @@ import { dialogFocusables } from '../src/features/task-detail/focus';
 const render = createLocaleRender('zh-CN');
 
 const attachment = (path: string, contentType: string): Attachment => ({ path, contentType, sizeBytes: 10, createdAt: '2026-10-21T00:00:00Z', updatedAt: '2026-10-21T00:00:00Z' });
-const ready: AttachmentPreviewState = { path: 'docs/guide.md', status: 'ready', text: null, error: null };
+const ready: AttachmentPreviewState = { scope: 'p/t', path: 'docs/guide.md', status: 'ready', text: null, error: null, nativeSource: { updatedAt: '2026-10-21T00:00:00Z', reloadRevision: 0 } };
 const root = '/api/v1/projects/p/tasks/t/preview/';
 const preview = (file: Attachment, changes: Partial<AttachmentPreviewState> = {}) => <AttachmentPreview attachment={file} preview={{ ...ready, ...changes }} url={`${root}${file.path}`} previewRoot={root} onRetry={vi.fn()} />;
 

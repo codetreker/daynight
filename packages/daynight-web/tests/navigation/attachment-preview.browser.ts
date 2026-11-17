@@ -31,15 +31,16 @@ const files = [
   { path: longPath, contentType: 'text/plain', sizeBytes: 4, createdAt: time, updatedAt: time },
 ];
 
-async function install(page: Page, linked = false, claimed = false, description?: string) {
+async function install(page: Page, linked = false, claimed = false, description?: string, goal = false) {
   const worker = { claimId: successorId, state: 'active', userId: TEST_VIEWER_ID, workerId: projectId, machine: { id: projectId, name: 'Worker machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: taskId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
-  const task = detailFixture(projectId, taskId, { title: 'Attachment reading', version: 5n, ...(description === undefined ? {} : { description }), ...(claimed ? { status: 'in_progress', startedAt: time, ready: false, assignedTo: TEST_VIEWER_ID, allowAgents: true, properties: { worker } } : {}) });
+  const task = detailFixture(projectId, taskId, { title: 'Attachment reading', version: 5n, ...(goal ? { type: 'goal' as const, ready: false, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } } : {}), ...(description === undefined ? {} : { description }), ...(claimed ? { status: 'in_progress', startedAt: time, ready: false, assignedTo: TEST_VIEWER_ID, allowAgents: true, properties: { worker } } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Linked successor', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false });
   const graph = graphFixture(linked ? [task, successor] : [task]);
-  const state = { writes: [] as string[], resources: [] as string[], accessReads: 0, holdAccess: null as Promise<void> | null, files: files.map(file => ({ ...file })) };
+  const state = { writes: [] as string[], resources: [] as string[], requests: [] as { method: string; origin: string; path: string }[], accessReads: 0, holdAccess: null as Promise<void> | null, files: files.map(file => ({ ...file })) };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    if (path.startsWith(`${root}/preview/`)) state.requests.push({ method: request.method(), origin: url.origin, path });
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === '/api/v1/me') {
@@ -441,6 +442,146 @@ test('native HTML preview preserves frame ownership and returns focus after clos
   expect(state.writes).toEqual([]);
 });
 
+test('native document navigations use the Task host and reload the current URL after a transport failure', async ({ page }) => {
+  const state = await install(page);
+  let fail = true;
+  const navigations: { method: string; origin: string; path: string }[] = [];
+  await page.route('**/preview/interactive.html', route => {
+    const request = route.request(), url = new URL(request.url());
+    navigations.push({ method: request.method(), origin: url.origin, path: url.pathname });
+    if (fail) { fail = false; return route.abort('failed'); }
+    return route.fulfill({ contentType: 'text/html', body: html });
+  });
+  const { attachments } = await openDialog(page);
+  await attachments.getByRole('button', { name: /^interactive\.html/ }).click();
+  await expect.poll(() => navigations.length).toBe(1);
+  const reload = attachments.getByRole('button', { name: 'Reload', exact: true });
+  await expect(reload).toBeVisible();
+  await reload.click();
+  await expect(attachments.locator('iframe').contentFrame().locator('#counter')).toHaveText('0');
+  await expect.poll(() => navigations.length).toBe(2);
+  expect(navigations).toEqual([1, 2].map(() => ({ method: 'GET', origin: `http://${taskId}.preview.localhost:8787`, path: `${root}/preview/interactive.html` })));
+  expect(state.requests.filter(request => request.path.endsWith('/interactive.html'))).toEqual([]);
+});
+
+for (const mode of ['dialog', 'reader'] as const) {
+  for (const timestamp of ['same', 'changed'] as const) {
+    test(`native overwrite rebuilds exactly once with ${timestamp} timestamp in ${mode}`, async ({ page }) => {
+      const state = await install(page);
+      const item = state.files.find(file => file.path === 'interactive.html')!;
+      const updated = { ...item, updatedAt: timestamp === 'same' ? item.updatedAt : '2026-10-21T09:00:00Z' };
+      const inventory = Promise.withResolvers<void>();
+      let listReads = 0, content = 'Before overwrite', gets = 0;
+      await page.route(url => url.pathname === `${root}/attachments`, async route => {
+        if (++listReads > 1) await inventory.promise;
+        await route.fulfill({ contentType: 'application/json', body: stringifyWireJson({ items: listReads > 1 ? state.files.map(file => file.path === item.path ? updated : file) : state.files, nextCursor: null }), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      });
+      await page.route('**/attachments/files/interactive.html', route => {
+        content = 'After overwrite';
+        return route.fulfill({ status: 201, contentType: 'application/json', body: stringifyWireJson(updated), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      });
+      await page.route('**/preview/interactive.html', route => {
+        gets++;
+        return route.fulfill({ contentType: 'text/html', body: `<p>${content}</p>` });
+      });
+      try {
+        const attachments = mode === 'dialog' ? (await openDialog(page)).attachments : (await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/interactive.html`), page.locator('.task-attachments'));
+        if (mode === 'dialog') await attachments.getByRole('button', { name: /^interactive\.html/ }).click();
+        const frame = attachments.locator('iframe');
+        await expect(frame.contentFrame().getByText('Before overwrite')).toBeVisible();
+        const original = await frame.elementHandle();
+        await attachments.locator('.attachment-upload-disclosure summary').click();
+        await attachments.locator('input[type=file]').setInputFiles({ name: 'interactive.html', mimeType: 'text/html', buffer: Buffer.from('new content') });
+        await attachments.getByRole('button', { name: 'Upload file', exact: true }).click();
+        await expect(frame.contentFrame().getByText('After overwrite')).toBeVisible();
+        await expect.poll(() => listReads).toBe(2);
+        expect(gets).toBe(2);
+        const replaced = await frame.elementHandle();
+        expect(await original!.evaluate(element => element.isConnected)).toBe(false);
+        inventory.resolve();
+        await expect(attachments.getByRole('button', { name: 'Refresh attachments' })).toBeEnabled();
+        expect(await replaced!.evaluate(element => element.isConnected)).toBe(true);
+        expect(gets).toBe(2);
+        await original!.dispose(); await replaced!.dispose();
+      } finally { inventory.resolve(); }
+    });
+  }
+}
+
+for (const entry of ['detail', 'reader'] as const) {
+  for (const filename of ['interactive.html', 'brief.pdf'] as const) {
+    test(`Goal ${entry} directly requests ${filename} from its Task host`, async ({ page }) => {
+      const state = await install(page, false, false, undefined, true);
+      if (entry === 'reader') await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/${filename}`);
+      else {
+        await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=attachments`);
+        await page.locator('.task-attachments').getByRole('button', { name: new RegExp(`^${filename.replace('.', '\\.')}`) }).click();
+      }
+      const frame = page.locator('.task-attachments iframe');
+      await expect(frame).toHaveAttribute('src', `http://${taskId}.preview.localhost:8787${root}/preview/${filename}`);
+      if (filename.endsWith('.html')) await expect(frame.contentFrame().locator('#counter')).toHaveText('0');
+      else await expect.poll(async () => hasPaintedPdfMarker(await page.evaluate(readPdfPixels, (await frame.screenshot()).toString('base64'))), { timeout: 20_000 }).toBe(true);
+      expect(state.requests.filter(request => request.path.endsWith(`/${filename}`))).toEqual([{ method: 'GET', origin: `http://${taskId}.preview.localhost:8787`, path: `${root}/preview/${filename}` }]);
+    });
+  }
+}
+
+for (const item of [{ path: 'interactive.html', type: 'text/html', body: html }, { path: 'brief.pdf', type: 'application/pdf', body: pdf }]) {
+  test(`embedded ${item.path} exposes a document error and retries the same URL`, async ({ page }) => {
+    await install(page);
+    const requests: string[] = [];
+    await page.route(`**/preview/${item.path}`, route => {
+      requests.push(route.request().url());
+      if (requests.length === 1) return route.fulfill({ status: 403, contentType: 'text/html', body: '<h1>Preview unavailable</h1><p>Request ID: fixture-request</p><a id="retry" href="">Retry preview</a>' });
+      return route.fulfill({ contentType: item.type, body: item.body });
+    });
+    const { attachments } = await openDialog(page);
+    await attachments.getByRole('button', { name: new RegExp(`^${item.path.replace('.', '\\.')}`) }).click();
+    const frame = attachments.locator('iframe');
+    await expect(frame.contentFrame().getByText('Request ID: fixture-request')).toBeVisible();
+    await frame.contentFrame().getByRole('link', { name: 'Retry preview' }).click();
+    await expect.poll(() => requests.length).toBe(2);
+    expect(requests[1]).toBe(requests[0]);
+    if (item.path.endsWith('.html')) await expect(frame.contentFrame().locator('#counter')).toHaveText('0');
+    else await expect.poll(async () => hasPaintedPdfMarker(await page.evaluate(readPdfPixels, (await frame.screenshot()).toString('base64'))), { timeout: 20_000 }).toBe(true);
+  });
+}
+
+for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 320, height: 240 }, { width: 844, height: 390 }]) {
+  for (const locale of ['en', 'zh-CN'] as const) {
+    test(`native reload is visible and keyboard reachable at ${viewport.width}x${viewport.height} (${locale})`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await install(page);
+      await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
+      await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/interactive.html`);
+      const reload = page.getByRole('button', { name: locale === 'en' ? 'Reload' : '重新加载', exact: true });
+      const download = page.getByRole('link', { name: locale === 'en' ? 'Download' : '下载', exact: true });
+      const open = page.getByRole('link', { name: locale === 'en' ? 'Open in new tab' : '在新标签页打开', exact: true });
+      for (const action of [reload, download, open]) {
+        await expect(action).toBeVisible();
+        await expect(action).toBeInViewport({ ratio: 1 });
+      }
+      await reload.focus();
+      await expect(reload).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(download).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(open).toBeFocused();
+      const boxes = await page.locator('.attachment-preview-header').evaluate(header => {
+        const bounds = (selector: string) => [...header.querySelectorAll(selector)].map(element => {
+          const box = element.getBoundingClientRect();
+          return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+        });
+        return { actions: bounds('.attachment-preview-actions .button'), times: bounds('.attachment-timestamps dt, .attachment-timestamps time') };
+      });
+      expect(boxes.actions).toHaveLength(3);
+      expect(boxes.times).toHaveLength(4);
+      for (const action of boxes.actions) for (const time of boxes.times) {
+        expect(action.right <= time.left || time.right <= action.left || action.bottom <= time.top || time.bottom <= action.top).toBe(true);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+  }
+}
+
 test('preserves an interactive HTML document before its pending subresource finishes', async ({ page }) => {
   const state = await install(page);
   const imageGate = Promise.withResolvers<void>();
@@ -500,7 +641,7 @@ test('foreground return preserves actual text selection and preview scroll', asy
 // pixels distinguishes a rendered page from an iframe that merely loaded.
 test('native PDF preview paints its document in the browser', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
-  await install(page);
+  const state = await install(page);
   const { attachments } = await openDialog(page);
   await attachments.getByRole('button', { name: /^brief\.pdf/ }).click();
   const frame = attachments.locator('iframe');
@@ -509,6 +650,7 @@ test('native PDF preview paints its document in the browser', async ({ page }) =
     const png = await frame.screenshot({ animations: 'disabled' });
     return hasPaintedPdfMarker(await page.evaluate(readPdfPixels, png.toString('base64')));
   }, { message: 'PDF preview paints the fixture rectangle', timeout: 20_000, intervals: [100, 250, 500] }).toBe(true);
+  expect(state.requests.filter(request => request.path.endsWith('/brief.pdf'))).toEqual([{ method: 'GET', origin: `http://${taskId}.preview.localhost:8787`, path: `${root}/preview/brief.pdf` }]);
 });
 
 for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {

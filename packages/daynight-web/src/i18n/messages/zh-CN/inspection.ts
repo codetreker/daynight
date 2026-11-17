@@ -160,7 +160,7 @@ export const inspection: InspectionMessages = {
     invalidPath: "请输入有效的相对文件路径，使用 / 分隔目录，不含空段、. 或 ..。", invalidReference: "此附件引用无效或超出了任务附件根目录。", writeError: "附件操作失败，请检查后重试。",
     loading: "正在加载附件…", listError: "附件列表加载失败。", incompleteList: "附件列表尚未完整加载，以下仅显示已读取的文件。",
     retry: "重试附件", empty: "暂无附件，上传文件后即可在这里浏览。", files: "附件文件", choosePreview: "选择文件查看预览或下载。",
-    preview: "附件预览", fileMetadata: ({ contentType, size }) => `${contentType} · ${size}`, download: "下载", deleting: "正在删除…", delete: "删除",
+    preview: "附件预览", fileMetadata: ({ contentType, size }) => `${contentType} · ${size}`, download: "下载", reloadPreview: "重新加载", deleting: "正在删除…", delete: "删除",
     created: "创建时间", lastModified: "最后修改时间",
     fileActions: ({ path }) => `更多操作：${path}`, deleteTitle: "删除附件？", deleteConfirmation: "确认删除此附件？此操作无法撤销。", cancelDelete: "取消", confirmDelete: "删除附件",
     previewLoading: "正在加载预览…", previewLoadError: "无法加载文件预览，请重试或下载文件。", previewReadError: "无法读取文件预览，请重试或下载文件。",

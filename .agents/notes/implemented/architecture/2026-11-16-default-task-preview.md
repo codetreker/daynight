@@ -15,7 +15,9 @@ for sessions established before a preview credential exists.
 Web constructs preview URLs from the published preview origin and the Task or
 Goal ID. Main-site preview GET redirects to that Task host on every main mux;
 HEAD remains an authenticated main-site file check and downloads retain attachment
-and nosniff. HTML, PDF, images and attachment-relative Markdown resources use the
+and nosniff. Default Web HTML/PDF loading goes directly to the Task host, as
+explained by the [direct loading decision](2026-11-17-direct-native-preview.md).
+HTML, PDF, images and attachment-relative Markdown resources use the
 Task origin. Files of one Task share an origin; different Tasks and the main
 application do not. The [Task host decision](2026-11-16-task-preview-host.md)
 owns host dispatch, credential checks and document error recovery.

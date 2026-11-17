@@ -10,7 +10,7 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 
 const render = createLocaleRender('zh-CN');
 const item: Attachment = { path: 'site/index.html', contentType: 'text/html', sizeBytes: 10, createdAt: '2026-10-21T00:00:00Z', updatedAt: '2026-10-21T00:00:00Z' };
-const fixture = (): AttachmentApi => ({ list: vi.fn(async () => ({ items: [item], nextCursor: null })), checkPreview: vi.fn(async () => {}), readText: vi.fn(async () => ''), put: vi.fn(), remove: vi.fn() });
+const fixture = (): AttachmentApi => ({ list: vi.fn(async () => ({ items: [item], nextCursor: null })), readText: vi.fn(async () => ''), put: vi.fn(), remove: vi.fn() });
 const panels = (api: AttachmentApi, task = 'first') => <TaskDetailPanels key={task} overview={<a href="#overview">Overview link</a>} attachments={<TaskAttachments projectId="project" taskId={task} api={api} urls={{ page: (path) => `/reader/${path}`, previewRoot: "/fixtures/", preview: (path) => `/fixtures/${path}`, download: (path) => `/fixtures/${path}` }} />} />;
 
 describe('task detail panels', () => {
@@ -102,7 +102,6 @@ describe('task detail panels', () => {
     expect(input.files?.[0]).toBe(source);
     expect(directory).not.toHaveAttribute('open');
     expect(api.list).toHaveBeenCalledTimes(1);
-    expect(api.checkPreview).toHaveBeenCalledTimes(1);
     view.rerender(panels(api, 'second'));
     expect(screen.getByRole('tab', { name: '概览' })).toHaveAttribute('aria-selected', 'true');
     expect(view.container.querySelector('iframe')).toBeNull();

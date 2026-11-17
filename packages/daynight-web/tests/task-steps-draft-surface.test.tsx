@@ -20,7 +20,7 @@ const otherId = '20000000-0000-4000-8000-000000000002';
 const detail = detailFixture(projectId, taskId, { title: 'Current task', description: 'Private confirmed text', version: 5n });
 const other = detailFixture(projectId, otherId);
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const api = { list: vi.fn(async () => ({ items: [], nextCursor: null })), put: vi.fn(), remove: vi.fn(), readText: vi.fn(), checkPreview: vi.fn() };
+const api = { list: vi.fn(async () => ({ items: [], nextCursor: null })), put: vi.fn(), remove: vi.fn(), readText: vi.fn() };
 afterEach(() => { cleanup(); browserNavigation().dispose(); vi.restoreAllMocks(); });
 
 it.each((['edit', 'delete'] as const).flatMap(action => (['identity', 'project'] as const).map(retirement => ({ action, retirement }))))('rejects a late $action receipt after $retirement retirement', async ({ action, retirement }) => {

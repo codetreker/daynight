@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { buildArtifacts } from "./build.ts";
+import { browserCommandOptions } from "./browser.ts";
 import { assertCommandQuiescence, CommandFailure, runCommand } from "./command.ts";
 import { startEnvironment, type CleanupReceipt, type Environment } from "./environment.ts";
 import { initializeRunOwnership, recoverRunOwnership, startOwnedPlaywright } from "./fixture-owner.ts";
@@ -122,14 +123,15 @@ try {
   await writeFile(path.join(descriptor.cliConfigDirectory, "config.yml"), `serverUrl: ${environment.baseURL}\n`, { mode: 0o600 });
   await writeFile(path.join(runDirectory, "environment.json"), `${JSON.stringify(descriptor, null, 2)}\n`, { mode: 0o600 });
   const resolver = path.join(repository, "packages/e2e_tests/src/resolve-local.cjs");
-  const playwright = await startOwnedPlaywright({ repository, runDirectory, command: "pnpm", args: ["--filter", "@codetreker/daynight-e2e", "exec", "playwright", "test"], options: {
-    cwd: repository,
-    env: { ...process.env, DAYNIGHT_E2E_RUN_DIRECTORY: runDirectory, NODE_EXTRA_CA_CERTS: path.join(artifacts.directory, "daynight-ca.pem"), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${JSON.stringify(resolver)}` },
+  const browserOptions = browserCommandOptions(runDirectory);
+  const playwright = await startOwnedPlaywright({ repository, runDirectory, command: process.execPath, args: [fileURLToPath(import.meta.resolve("@playwright/test/cli")), "test", "--config", path.join(repository, "packages/e2e_tests/playwright.config.ts")], options: {
+    ...browserOptions,
+    env: { ...browserOptions.env, DAYNIGHT_E2E_RUN_DIRECTORY: runDirectory, NODE_EXTRA_CA_CERTS: path.join(artifacts.directory, "daynight-ca.pem"), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${JSON.stringify(resolver)}` },
     signal: cancellation.signal,
     timeoutMs: 300_000,
   } });
   const playwrightResult = await playwright.finished;
-  if (playwrightResult.exitCode !== 0) throw new CommandFailure("pnpm", playwrightResult);
+  if (playwrightResult.exitCode !== 0) throw new CommandFailure("playwright", playwrightResult);
   manifest.status = "passed";
 } catch (error) {
   failures.push(error);

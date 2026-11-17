@@ -530,9 +530,6 @@ export const attachmentPreviewRoot = (projectId: string, taskId: string): string
   return `${origin.origin}${attachmentTaskUrl(projectId, task)}/preview/`;
 };
 
-export const attachmentPreviewHeadUrl = (projectId: string, taskId: string, path: string): string =>
-  `${attachmentTaskUrl(projectId, taskId)}/preview/${encodedAttachmentPath(path)}`;
-
 export const attachmentPreviewUrl = (projectId: string, taskId: string, path: string): string =>
   `${attachmentPreviewRoot(projectId, taskId)}${encodedAttachmentPath(path)}`;
 
@@ -590,15 +587,4 @@ export const readAttachmentText = async (projectId: string, taskId: string, path
     if (isAbortError(error)) throw error;
     throw new ApiError("network", response.status, "network", null, error);
   }
-};
-
-export const checkAttachmentPreview = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<void> => {
-  const response = await request(attachmentPreviewHeadUrl(projectId, taskId, path), signal, { method: "HEAD" });
-  responseSignal(response, signal).throwIfAborted();
-  if (!response.ok) {
-    const header = response.headers.get("X-Request-ID");
-    const requestId = header !== null && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(header) ? header : null;
-    throw new ApiError("server", response.status, response.status === 401 ? "unauthenticated" : "server", requestId);
-  }
-  if (response.status !== 200) throw new ApiError("protocol", response.status);
 };
