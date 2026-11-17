@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { authRequestsPaused } from '../../api/client';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 
@@ -10,9 +10,10 @@ export function useBotRead<T>(key: string, enabled: boolean, load: (scope: TaskC
   const [state, setState] = useState<ReadState<T>>(empty);
   const action = useRef<() => void>(() => {});
   const refresh = useCallback(() => action.current(), []);
-  useEffect(() => {
-    let live = true, controller: AbortController | null = null;
-    const allowed = () => live && enabled && !scope.isInvalidated && !authRequestsPaused() && document.visibilityState !== 'hidden';
+  useLayoutEffect(() => {
+    let live = true, controller: AbortController | null = null, timer: ReturnType<typeof setInterval> | null = null;
+    const eligible = () => live && enabled && !scope.isInvalidated && document.visibilityState !== 'hidden';
+    const allowed = () => eligible() && !authRequestsPaused();
     const run = async () => {
       if (!allowed() || controller) return;
       const attempt = new AbortController(); controller = attempt;
@@ -20,26 +21,41 @@ export function useBotRead<T>(key: string, enabled: boolean, load: (scope: TaskC
       setState(old => ({ ...(old.scope === scope && old.key === key ? old : empty()), busy: true }));
       try {
         await scope.ready(signal);
+        if (!allowed() || signal.aborted) return;
         const value = await load(scope, signal);
         await scope.ready(signal);
         if (allowed() && !signal.aborted) setState({ scope, key, value, error: null, busy: false, stale: false });
       } catch (error) {
         if (allowed() && !signal.aborted) setState(old => ({ ...old, busy: false, stale: true, error }));
-      } finally { if (controller === attempt) controller = null; }
+      } finally {
+        if (controller === attempt) {
+          controller = null;
+          if (!allowed() || signal.aborted) setState(old => old.scope === scope && old.key === key && old.busy ? { ...old, busy: false } : old);
+        }
+      }
     };
     const cancel = () => {
-      controller?.abort(); controller = null;
-      setState(old => ({ ...(old.scope === scope && old.key === key ? old : empty()), busy: false }));
+      if (!controller) return;
+      controller.abort(); controller = null;
+      setState(old => old.scope === scope && old.key === key && old.busy ? { ...old, busy: false } : old);
     };
-    const visibility = () => { cancel(); void run(); };
-    const invalidate = () => { cancel(); setState(empty()); };
+    const stop = () => { if (timer !== null) clearInterval(timer); timer = null; cancel(); };
+    const sync = () => {
+      if (!eligible()) { stop(); return; }
+      if (timer !== null) return;
+      void run();
+      timer = setInterval(() => { if (!allowed()) cancel(); else void run(); }, 5_000);
+    };
+    const invalidate = () => { stop(); setState(empty()); };
+    const visibility = () => {
+      if (eligible() && timer !== null) void run();
+      else sync();
+    };
     action.current = () => { void run(); };
-    if (!allowed()) cancel();
-    void run();
-    const timer = setInterval(() => { if (!allowed()) cancel(); else void run(); }, 5_000);
+    sync();
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
-    return () => { live = false; controller?.abort(); clearInterval(timer); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); action.current = () => {}; };
+    return () => { live = false; stop(); document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); action.current = () => {}; };
   }, [scope, key, enabled, load]);
   const current = state.scope === scope && state.key === key && !scope.isInvalidated ? state : empty();
   return { ...current, refresh };

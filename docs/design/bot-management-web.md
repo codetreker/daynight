@@ -64,7 +64,9 @@ Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select
 
 ## 读取与展示
 
-`useBotRead` 分别管理列表和 defaults。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。账户变化等待刷新保留同 scope、同 key 已确认的值，实际失败保留上次值并标记 stale。
+`useBotRead` 分别管理列表、defaults 和助手任务的普通读取。资源 key 与账号 scope 共同约束结果；`useBotDetail` 另按 Bot ID 和选择代次隔离详情。两个 hook 各自管理读取周期：`enabled`、可见性和有效 scope 允许周期启动，详情还要求非空 Bot ID。启动时立即读取并只持有一个五秒 interval；停用、隐藏、scope abort、资源变化或卸载时撤销入口、清除 interval 并取消当前 GET 或详情 ticket。提交后的布局阶段撤销旧周期，setup 才建立新的网络资源。恢复可读时建立新周期并立即读取，手动 refresh 只运行已有入口，不增加 timer 或并发请求。
+
+每次读取在等待 `scope.ready` 后、调用 loader 前及发布结果前重新检查生命周期和 signal；旧请求只收尾自己的 controller 或 ticket，不干扰新周期。`authRequestsPaused` 仍控制实际读取准入，恢复由父级 `readEnabled` 和页面生命周期驱动。正常取消不记为失败；空闲取消不重复发布相同状态。同 scope、同 key 已确认的值在临时停用时保留，实际失败保留上次值并标记 stale。读取生命周期的取舍见[决策记录](../../.agents/notes/implemented/bug-fix/2026-11-17-bot-read-poll-lifecycle.md)。
 
 选中详情由既有 `useBotDetail` / `BotDetailCache` 管理，按账号 scope、选择对象和请求代次隔离。页面传实际三席 pane 的 Bot ID 集合；新选择可读取自己的缓存详情与 `displayBinding`，但上次选择的确认不能成为本次 `actionBinding`。普通五秒轮询开始保留确认，真实网络、协议或服务错误撤确认，取消不产生成功或失败。`confirmed` 与 actionBinding 使用同一当前确认规则；无 Session 的启动详情仍可得到确认，不把空 binding 误解释成持续加载。
 
