@@ -22,6 +22,8 @@ type WorkerConfiguration struct {
 	PreserveToolPaths bool                    `json:"-"`
 	// Legacy replacements retain the locked cloud mode without synthesizing a default.
 	PreserveAgentControlMode    bool                         `json:"-"`
+	PreserveSudoCleanup         bool                         `json:"-"`
+	EnableSudoCleanup           bool                         `json:"enableSudoCleanup"`
 	PreferPlatformSpecificTasks bool                         `json:"preferPlatformSpecificTasks"`
 	MaxConcurrent               int64                        `json:"maxConcurrent"`
 	PollIntervalMs              int64                        `json:"pollIntervalMs"`

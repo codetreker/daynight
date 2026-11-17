@@ -13,6 +13,36 @@ import (
 	"testing"
 )
 
+func TestSudoCleanupProtocolOmission(t *testing.T) {
+	document := configurationInputDocument()
+	for _, entry := range []struct {
+		value                      any
+		present, preserve, enabled bool
+	}{
+		{nil, false, true, false}, {false, true, false, false}, {true, true, false, true},
+	} {
+		if entry.present {
+			document["enableSudoCleanup"] = entry.value
+		} else {
+			delete(document, "enableSudoCleanup")
+		}
+		value, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{})
+		if err != nil || value.PreserveSudoCleanup != entry.preserve || value.EnableSudoCleanup != entry.enabled {
+			t.Fatalf("protocol value %v: %+v %v", entry.value, value, err)
+		}
+		normalized, err := NormalizeConfiguration(value)
+		if err != nil || normalized.PreserveSudoCleanup != entry.preserve {
+			t.Fatalf("normalization lost omission: %+v %v", normalized, err)
+		}
+	}
+	for _, invalid := range []any{nil, "false", 1} {
+		document["enableSudoCleanup"] = invalid
+		if _, err := ParseWorkerConfigurationProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{}); err == nil {
+			t.Fatalf("accepted %v", invalid)
+		}
+	}
+}
+
 func TestControlModeConfigurationAndExchangeInput(t *testing.T) {
 	for _, mode := range []any{"herdr", "web", nil} {
 		document := configurationInputDocument()
@@ -218,11 +248,11 @@ func TestControlModeMergeChecksFinalEncodedBudget(t *testing.T) {
 }
 
 func TestControlModeObservationBudgetPreservesLegacyProjection(t *testing.T) {
-	document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(MaxObservationItems-1, "0"), "controlModeBootstrap": nil}
+	document := map[string]any{"bootstrap": nil, "observation": configurationCapacityObservationDocument(MaxObservationItems-2, "0"), "controlModeBootstrap": nil}
 	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err != nil {
 		t.Fatalf("legacy collection rejected: %v", err)
 	}
-	document["observation"] = configurationCapacityObservationDocument(MaxObservationItems, "0")
+	document["observation"] = configurationCapacityObservationDocument(MaxObservationItems-1, "0")
 	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err == nil {
 		t.Fatal("1026 non-mode entries would exceed legacy projection")
 	}
@@ -233,6 +263,13 @@ func TestControlModeObservationBudgetPreservesLegacyProjection(t *testing.T) {
 	items[len(items)-1] = modeItem
 	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err != nil {
 		t.Fatalf("1025 old entries plus mode rejected: %v", err)
+	}
+	sudoItem := configurationInputItem("enableSudoCleanup", true)
+	sudoItem["targetRevision"] = "1"
+	items = append(items, sudoItem)
+	observation["items"] = items
+	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: true}); err != nil {
+		t.Fatalf("legacy entries plus mode and sudo rejected: %v", err)
 	}
 	delete(document, "controlModeBootstrap")
 	if _, err := ParseWorkerConfigurationExchangeProtocol(configurationInputJSON(t, document), workerprotocol.Capabilities{ControlMode: false}); err == nil {

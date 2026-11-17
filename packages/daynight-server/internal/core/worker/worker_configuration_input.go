@@ -139,7 +139,7 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
-	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "agentControlMode", "toolPaths")
+	fields, err := configurationObject(raw, "configuration", true, "maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", "agentControlMode", "toolPaths", "enableSudoCleanup")
 	if err != nil {
 		return value, err
 	}
@@ -162,6 +162,11 @@ func parseWorkerConfiguration(raw json.RawMessage, admit bool) (model.WorkerConf
 	}
 	if err := configurationDecode(fields["preferPlatformSpecificTasks"], &value.PreferPlatformSpecificTasks); err != nil {
 		return value, err
+	}
+	if rawSudo, ok := fields["enableSudoCleanup"]; ok {
+		if err := configurationDecode(rawSudo, &value.EnableSudoCleanup); err != nil {
+			return value, err
+		}
 	}
 	value.MaxConcurrent, err = configurationInteger(fields["maxConcurrent"], 1, workerSafeInteger)
 	if err != nil {
@@ -325,7 +330,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item is invalid.")
 		}
 		projectKind := slices.Contains([]string{"projectPreparation", "projectRemoval", "projectNative"}, item.Key.Kind)
-		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "agentControlMode"}, item.Key.Kind) {
+		if !projectKind && !slices.Contains([]string{"maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "enableSudoCleanup", "native", "agentControlMode"}, item.Key.Kind) {
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
@@ -354,7 +359,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			switch item.Key.Kind {
 			case "agentControlMode":
 				_, err = configurationControlMode(item.AppliedValue)
-			case "preferPlatformSpecificTasks":
+			case "preferPlatformSpecificTasks", "enableSudoCleanup":
 				var enabled bool
 				err = configurationDecode(item.AppliedValue, &enabled)
 			case "native", "projectNative":
