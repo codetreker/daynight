@@ -168,7 +168,9 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const providerImages = journal.providerImageCapabilities?.(qualified ?? { expectedNativeSessionId: s.nativeSessionId, modelId: ticket.configuration.model, controlsRevision: s.controls?.revision ?? null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } });
     return { ...(providerImages ? { providerImages } : {}), nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
+  let inputFailed = false;
   const fail = (error: unknown) => {
+    inputFailed = true;
     if (isOutboxFailure(error) && accountingFailure === undefined) { stopForAccountingFailure(error); return; }
     const message = error instanceof Error ? error.message : String(error); diagnostic(error);
     try {
@@ -444,9 +446,11 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   const workerReady = (deadline: number, initial: boolean): WorkerInputResult | null => {
     if (Date.now() >= deadline) return { kind: "waiting", reason: "expired" };
     if (stopping || cleaning) return { kind: "waiting", reason: "cleaning" };
+    const snapshot = journal.getSnapshot();
+    if (inputFailed || ["paused", "failed", "stopping", "stopped"].includes(snapshot.lifecycle)) return { kind: "waiting", reason: "unavailable" };
     if (!provider) return { kind: "waiting", reason: "initializing" };
     if (!synchronized) return { kind: "waiting", reason: "disconnected" };
-    const snapshot = journal.getSnapshot();
+    if (snapshot.startup?.state !== "ready") return { kind: "waiting", reason: "initializing" };
     if (snapshot.activity === "initializing") return { kind: "waiting", reason: "initializing" };
     if (snapshot.activity === "waiting_input") return { kind: "waiting", reason: "waiting_input" };
     if (snapshot.activity === "working" || snapshot.currentTurnId !== null) return { kind: "waiting", reason: "working" };
