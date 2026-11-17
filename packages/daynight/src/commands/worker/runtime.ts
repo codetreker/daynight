@@ -747,7 +747,7 @@ export const runWorker = async (options: {
       return effective.native?.agent === "copilot" || effective.projects.some(project => project.native?.agent === "copilot") || (bots?.requiresCopilot() ?? false);
     };
     bots = createWorkerBotHost({ ...options, selectToolLaunch: toolRuntime.selectToolLaunch, toolObservationFor: toolRuntime.toolObservationFor, toolRuntimeRoot: toolRuntime.toolRuntimeRoot, toolInspector: toolRuntime.hostInspector, toolLaunchForHost: agent => toolRuntime.manager.currentSelection(agent, "web"), copilotRequired, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
-      canAdmitNewExecution: () => { const current = manager.current(); return manager.isReady() && current.selectedProjects !== null && current.effective.native !== null && current.effective.recoveryLimit !== null; },
+      canAdmitNewExecution: () => { const current = manager.current(); return manager.isReady() && current.effective.agentControlMode === "web" && current.selectedProjects !== null && current.effective.native !== null && current.effective.recoveryLimit !== null; },
       configuration: () => {
         const effective = manager.current().effective;
         // Assistant capability collection owns per-Provider Web argument failures.
@@ -821,7 +821,8 @@ export const runWorker = async (options: {
             reporter!.publishInventory(complete ? inventory : null);
           },
           configurationComplete: () => {
-            return manager.isReady() && manager.current().selectedProjects !== null && unobservedLocalMappings.size === 0;
+            const current = manager.current();
+            return manager.isReady() && current.effective.agentControlMode === "web" && current.selectedProjects !== null && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
           requestReconcile: reconcileWake.request,
