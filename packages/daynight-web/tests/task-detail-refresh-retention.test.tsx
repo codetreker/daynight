@@ -204,7 +204,7 @@ it.each(['preparing', 'dispatched', 'confirmed'] as const)('retains the shared T
   vi.stubGlobal('fetch', fetcher);
   const attachmentApi: AttachmentApi = {
     list: vi.fn(async () => ({ items: [file], nextCursor: null })),
-    readText: vi.fn(async () => 'Alice attachment preview'), checkPreview: vi.fn(async () => {}),
+    readText: vi.fn(async () => 'Alice attachment preview'),
     put: vi.fn(async () => file), remove: vi.fn(async () => {}),
   };
   const caller = new AbortController();

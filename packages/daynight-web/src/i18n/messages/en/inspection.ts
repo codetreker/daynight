@@ -178,7 +178,7 @@ export const inspection: InspectionMessages = {
     choosePreview: "Select a file to preview or download it.", preview: "Attachment preview",
     fileMetadata: ({ contentType, size }) => `${contentType} · ${size}`,
     created: "Created", lastModified: "Last modified",
-    download: "Download", deleting: "Deleting…", delete: "Delete",
+    download: "Download", reloadPreview: "Reload", deleting: "Deleting…", delete: "Delete",
     fileActions: ({ path }) => `More actions: ${path}`, deleteTitle: "Delete attachment?", deleteConfirmation: "Delete this attachment? This action cannot be undone.", cancelDelete: "Cancel", confirmDelete: "Delete attachment", previewLoading: "Loading preview…",
     previewLoadError: "Unable to load the file preview. Try again or download the file.",
     previewReadError: "Unable to read the file preview. Try again or download the file.", retryPreview: "Retry preview",

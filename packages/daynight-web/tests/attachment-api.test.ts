@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, attachmentPageUrl, checkAttachmentPreview, attachmentContentType, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl, attachmentPreviewHeadUrl, previewLoginUrl, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../src/api/client";
+import { ApiError, attachmentPageUrl, attachmentContentType, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl, previewLoginUrl, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../src/api/client";
 import { isAttachmentPath, parseAttachment, parseAttachmentPage } from "../src/api/parse";
 
 const project = "10000000-0000-0000-0000-00000000000a";
@@ -138,31 +138,6 @@ describe("attachment transport", () => {
     const aborted = new DOMException("Aborted", "AbortError");
     fetcher.mockResolvedValue({ ok: true, status: 200, text: async () => { throw aborted; } });
     await expect(readAttachmentText(project, task, item.path, signal())).rejects.toBe(aborted);
-  });
-});
-
-describe("native preview availability", () => {
-  it("checks the fixed preview URL with bodyless HEAD and cancellation", async () => {
-    const response = new Response(null);
-    const parse = vi.spyOn(response, "json");
-    const fetcher = mock(response);
-    const abortSignal = signal();
-    await expect(checkAttachmentPreview(project, task, item.path, abortSignal)).resolves.toBeUndefined();
-    expect(fetcher).toHaveBeenCalledExactlyOnceWith(attachmentPreviewHeadUrl(project, task, item.path), { method: "HEAD", signal: expect.any(AbortSignal), cache: "no-store", credentials: "same-origin", redirect: "error" });
-    expect(parse).not.toHaveBeenCalled();
-  });
-  it("retains status and safe request IDs without expecting an error response body", async () => {
-    const response = new Response(null, { status: 500, headers: { "X-Request-ID": "preview-1" } });
-    const parse = vi.spyOn(response, "json");
-    const fetcher = mock(response);
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "server", status: 500, code: "server", requestId: "preview-1" });
-    expect(parse).not.toHaveBeenCalled();
-    fetcher.mockResolvedValue(new Response(null, { status: 404, headers: { "X-Request-ID": "invalid request id" } }));
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "server", status: 404, requestId: null });
-    fetcher.mockResolvedValue(new Response(null, { status: 404 }));
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "server", status: 404, requestId: null });
-    fetcher.mockResolvedValue(new Response(null, { status: 204 }));
-    await expect(checkAttachmentPreview(project, task, item.path, signal())).rejects.toMatchObject({ kind: "protocol", status: 204 });
   });
 });
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, authRequestsPaused, authRequestsPauseRevision, checkAttachmentPreview, isAbortError, listAttachments, putAttachment, readAttachmentText, removeAttachment, subscribeAuthPause, waitForAuthRequests } from "../../../api/client";
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, listAttachments, putAttachment, readAttachmentText, removeAttachment, subscribeAuthPause, waitForAuthRequests } from "../../../api/client";
 import type { Attachment } from "../../../api/types";
+import type { NativePreviewSource } from "./AttachmentPreview";
 import { attachmentKind, attachmentTree } from "./model";
 
 export type AttachmentApi = {
@@ -8,10 +9,9 @@ export type AttachmentApi = {
   readonly put: typeof putAttachment;
   readonly remove: typeof removeAttachment;
   readonly readText: typeof readAttachmentText;
-  readonly checkPreview: typeof checkAttachmentPreview;
 };
 
-export const attachmentApi: AttachmentApi = { list: listAttachments, put: putAttachment, remove: removeAttachment, readText: readAttachmentText, checkPreview: checkAttachmentPreview };
+export const attachmentApi: AttachmentApi = { list: listAttachments, put: putAttachment, remove: removeAttachment, readText: readAttachmentText };
 
 type ListState = {
   readonly scope: string;
@@ -26,6 +26,7 @@ type PreviewState = {
   readonly status: "idle" | "loading" | "ready" | "error";
   readonly text: string | null;
   readonly error: unknown;
+  readonly nativeSource?: NativePreviewSource;
 };
 type WriteState = { readonly scope: string; readonly status: "idle" | "saving" | "deleting"; readonly error: unknown };
 const initialList = (scope: string): ListState => ({ scope, items: [], loading: true, complete: false, error: null });
@@ -158,20 +159,22 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     if (paused || authRequestsPaused()) return cleanup;
     if (preservePreviewOnResume.current) {
       preservePreviewOnResume.current = false;
-      if (preview.scope === scope && preview.path === path && preview.status === "ready") return cleanup;
+      if (preview.scope === scope && preview.path === path && preview.status === "ready" &&
+        (selectedKind !== "html" && selectedKind !== "pdf" ||
+          preview.nativeSource?.updatedAt === selectedUpdatedAt && preview.nativeSource?.reloadRevision === previewRevision)) return cleanup;
     }
     setPreview(initialPreview(scope, path));
     if (!enabled || path === null || selectedKind === undefined) return cleanup;
     const pauseRevision = authRequestsPauseRevision();
     const usesText = selectedKind === "text" || selectedKind === "markdown";
-    if (!usesText && selectedKind !== "html" && selectedKind !== "pdf") {
-      setPreview({ scope, path, status: "ready", text: null, error: null });
+    if (!usesText) {
+      const nativeSource = selectedKind === "html" || selectedKind === "pdf" ? { updatedAt: selectedUpdatedAt!, reloadRevision: previewRevision } : undefined;
+      setPreview({ scope, path, status: "ready", text: null, error: null, ...(nativeSource === undefined ? {} : { nativeSource }) });
       return cleanup;
     }
     void (async () => {
       try {
-        const text = usesText ? await api.readText(projectId, taskId, path, controller.signal) : null;
-        if (!usesText) await api.checkPreview(projectId, taskId, path, controller.signal);
+        const text = await api.readText(projectId, taskId, path, controller.signal);
         if (!controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope) setPreview({ scope, path, status: "ready", text, error: null });
       } catch (error) {
         if (!controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && currentScope.current === scope && !isAbortError(error)) setPreview({ scope, path, status: "error", text: null, error });
@@ -181,7 +184,7 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
   }, [api, projectId, taskId, scope, selectedPath, selectedKind, selectedUpdatedAt, previewRevision, enabled, paused, resumeRevision]);
 
   const select = useCallback((path: string | null) => setSelection({ scope, path }), [scope]);
-  const retryPreview = useCallback(() => setPreviewRevision((value) => value + 1), []);
+  const retryPreview = useCallback(() => { if (!authRequestsPaused()) setPreviewRevision((value) => value + 1); }, []);
   const mutate = useCallback(async (path: string, file: File | null): Promise<boolean> => {
     if (!enabled || authRequestsPaused() || writeRequest.current !== null) return false;
     const controller = new AbortController();
@@ -191,10 +194,15 @@ export const useAttachments = (projectId: string, taskId: string, api: Attachmen
     const owns = () => !controller.signal.aborted && !authRequestsPaused() && pauseRevision === authRequestsPauseRevision() && generation === writeGeneration.current && currentScope.current === scope;
     setWrite({ scope, status: file === null ? "deleting" : "saving", error: null });
     try {
-      if (file === null) await api.remove(projectId, taskId, path, controller.signal);
-      else await api.put(projectId, taskId, path, file, controller.signal);
+      const attachment = file === null ? (await api.remove(projectId, taskId, path, controller.signal), null) : await api.put(projectId, taskId, path, file, controller.signal);
       if (!owns()) return false;
-      if (file !== null) setSelection({ scope, path });
+      if (attachment !== null) {
+        if (selectedMetadata.current.scope === scope && selectedMetadata.current.path === path && selectedMetadata.current.attachment !== undefined) {
+          selectedMetadata.current = { scope, path, attachment };
+        }
+        setList((prior) => ({ ...prior, items: [...prior.items.filter((item) => item.path !== path), attachment].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) }));
+        setSelection({ scope, path });
+      }
       else setSelection((prior) => prior.scope === scope && prior.path === path ? { scope, path: null } : prior);
       if (file !== null) setPreviewRevision((value) => value + 1);
       else setList((prior) => ({ ...prior, items: prior.items.filter((item) => item.path !== path) }));

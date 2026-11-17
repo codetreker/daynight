@@ -557,7 +557,7 @@ describe('unified Session and managed records', () => {
   it('shares the attachment sidebar and reader while preserving ordinary file drafts', async () => {
     const api = fixture();
     const stamp = '2026-11-03T10:00:00Z';
-    const attachments = { list: vi.fn(async () => ({ items: [{ path: 'report.txt', contentType: 'text/plain', sizeBytes: 12, createdAt: stamp, updatedAt: stamp }], nextCursor: null })), readText: vi.fn(async () => 'Original attachment'), checkPreview: vi.fn(), put: vi.fn(), remove: vi.fn() };
+    const attachments = { list: vi.fn(async () => ({ items: [{ path: 'report.txt', contentType: 'text/plain', sizeBytes: 12, createdAt: stamp, updatedAt: stamp }], nextCursor: null })), readText: vi.fn(async () => 'Original attachment'), put: vi.fn(), remove: vi.fn() };
     render(<TaskDetailReading projectId={projectId} taskId={taskId} api={attachments} description="[Read report](report.txt)" overview={node => node}
       sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection}>{render}</ManagedSessionRecords>} />);
     fireEvent.click(screen.getByRole('tab', { name: 'Attachments' }));

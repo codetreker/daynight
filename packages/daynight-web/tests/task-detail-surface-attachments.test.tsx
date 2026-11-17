@@ -33,7 +33,6 @@ const fixture = (items: readonly Attachment[]): AttachmentApi => {
   return {
   list: vi.fn(async () => ({ items: [...files.values()], nextCursor: null })),
   readText: vi.fn(async (_project, _task, path) => `Contents of ${path}`),
-  checkPreview: vi.fn(async () => {}),
   put: vi.fn(async (_project, _task, path) => { const item = file(path); files.set(path, item); return item; }),
   remove: vi.fn(async (_project, _task, path) => { files.delete(path); }),
   };

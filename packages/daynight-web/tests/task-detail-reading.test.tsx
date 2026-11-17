@@ -23,8 +23,7 @@ const deferred = <T,>() => {
 };
 const fixture = (items: readonly Attachment[] = [file('plan.md')]): AttachmentApi => ({
   list: vi.fn(async () => ({ items, nextCursor: null })),
-  readText: vi.fn(async (_project, _task, path) => `# Preview ${path}`),
-  checkPreview: vi.fn(async () => {}), put: vi.fn(), remove: vi.fn(),
+  readText: vi.fn(async (_project, _task, path) => `# Preview ${path}`), put: vi.fn(), remove: vi.fn(),
 });
 const reading = (api: AttachmentApi, description = '[方案](plan.md)', id = taskId) => <TaskDetailReading key={id} projectId={projectId} taskId={id} api={api} description={description} overview={(content) => <section aria-label="描述">{content}</section>} />;
 const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概览' }));
@@ -186,7 +185,6 @@ describe('task description reading', () => {
     fireEvent.click(screen.getByRole('link', { name: '原型' }));
     expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
     expect(pane()).toHaveFocus();
-    expect(api.checkPreview).toHaveBeenCalledOnce();
     expect(api.list).toHaveBeenCalledOnce();
   });
 
@@ -209,35 +207,19 @@ describe('task description reading', () => {
     expect(path).toHaveValue('draft/未提交.txt');
     expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
     expect(api.list).toHaveBeenCalledOnce();
-    expect(api.checkPreview).toHaveBeenCalledOnce();
     expect(api.put).not.toHaveBeenCalled();
   });
 
-  it('keeps an HTML frame unmounted when inventory resolution starts its availability check', async () => {
+  it('mounts the HTML frame only after its inventory resolves', async () => {
     const item = file('mockui/index.html', 'text/html');
     const inventory = deferred<AttachmentPage>();
-    const availability = deferred<void>();
     const title = 'HTML 预览：mockui/index.html';
-    const framesAtCheck: (HTMLElement | null)[] = [];
-    const api = {
-      ...fixture([item]),
-      list: vi.fn(() => inventory.promise),
-      checkPreview: vi.fn(() => {
-        framesAtCheck.push(screen.queryByTitle(title));
-        return availability.promise;
-      }),
-    };
+    const api = { ...fixture([item]), list: vi.fn(() => inventory.promise) };
     render(reading(api, '[原型](mockui/index.html)'));
     fireEvent.click(screen.getByRole('link', { name: '原型' }));
     expect(screen.queryByTitle(title)).toBeNull();
-    expect(api.checkPreview).not.toHaveBeenCalled();
     await act(async () => { inventory.resolve({ items: [item], nextCursor: null }); });
-    expect(framesAtCheck).toEqual([null]);
-    expect(screen.queryByTitle(title)).toBeNull();
-    expect(within(pane()).getByRole('status')).toHaveTextContent('正在加载预览');
-    await act(async () => { availability.resolve(); });
     expect(await screen.findByTitle(title)).toBeVisible();
-    expect(api.checkPreview).toHaveBeenCalledOnce();
     expect(api.list).toHaveBeenCalledOnce();
   });
 

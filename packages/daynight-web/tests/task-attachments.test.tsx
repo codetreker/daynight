@@ -22,7 +22,6 @@ const fixture = (initial: readonly Attachment[] = []) => {
   const api: AttachmentApi = {
     list: vi.fn(async () => ({ items: [...files.values()], nextCursor: null })),
     readText: vi.fn(async (_project, _task, path) => `Contents of ${path}`),
-    checkPreview: vi.fn(async () => {}),
     put: vi.fn(async (_project, _task, path, source) => {
       const item = { ...file(path, source.type), sizeBytes: source.size, updatedAt: new Date(Date.now() + ++revision).toISOString() };
       files.set(path, item);
@@ -184,6 +183,51 @@ describe('task attachments', () => {
       expect(screen.getByRole('img', { name: 'image.png' })).toBe(image);
       expect(image).toBeVisible();
     } finally { act(() => resume()); }
+  });
+
+  it('keeps the native frame through pause selection changes and blocks reload in the render/click race', async () => {
+    const api = fixture([file('site.html', 'text/html'), file('other.txt')]);
+    open(api);
+    fireEvent.click(await findFileButton(/^site\.html/));
+    const frame = await screen.findByTitle('HTML 预览：site.html');
+    const reload = screen.getByRole('button', { name: '重新加载' });
+    fireEvent.load(frame);
+    let resume!: () => void;
+    try {
+      act(() => { resume = pauseAuthRequests(); fireEvent.click(reload); });
+      expect(reload).toBeDisabled();
+      expect(screen.getByTitle('HTML 预览：site.html')).toBe(frame);
+      fireEvent.click(fileButton(/^other\.txt/));
+      fireEvent.click(fileButton(/^site\.html/));
+      expect(screen.getByTitle('HTML 预览：site.html')).toBe(frame);
+    } finally { await act(async () => { resume(); }); }
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(frame);
+    expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled();
+  });
+
+  it('rebuilds the native document on same-timestamp overwrite and real metadata change, but not a failed write or identical refresh', async () => {
+    const item = file('site.html', 'text/html');
+    const api = fixture([item]);
+    vi.mocked(api.put).mockResolvedValueOnce(item).mockRejectedValueOnce(new Error('unknown write'));
+    open(api);
+    fireEvent.click(await findFileButton(/^site\.html/));
+    const original = await screen.findByTitle('HTML 预览：site.html');
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(original);
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    await userEvent.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'site.html', { type: 'text/html' }));
+    fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
+    await waitFor(() => expect(screen.getByTitle('HTML 预览：site.html')).not.toBe(original));
+    const replaced = screen.getByTitle('HTML 预览：site.html');
+    await userEvent.upload(screen.getByLabelText('选择一个文件'), new File(['failed'], 'site.html', { type: 'text/html' }));
+    fireEvent.submit(screen.getByLabelText('目标相对路径').closest('form')!);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2));
+    await screen.findByRole('alert');
+    expect(screen.getByTitle('HTML 预览：site.html')).toBe(replaced);
+    vi.mocked(api.list).mockResolvedValueOnce({ items: [{ ...item, updatedAt: '2026-10-22T00:00:00Z' }], nextCursor: null });
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(screen.getByTitle('HTML 预览：site.html')).not.toBe(replaced));
   });
 
   it('cancels a preview and resumes it even when pause and resume share a render', async () => {
@@ -502,17 +546,15 @@ describe('task attachments', () => {
     expect(screen.getByText(/image\/svg\+xml/)).toHaveAttribute('title', expect.stringContaining('image/svg+xml'));
   });
 
-  it('retries HTML availability failures before mounting its native frame and reloads successful overwrites', async () => {
+  it('reloads only the native document on request and successful overwrite', async () => {
     const api = fixture([file('site/index.html', 'text/html')]);
-    const checkPreview = vi.fn().mockRejectedValueOnce(new Error('private native preview')).mockResolvedValue(undefined);
-    open({ ...api, checkPreview });
+    open(api);
     fireEvent.click(await findFileButton(/index.html/));
-    expect(await screen.findByRole('alert')).toHaveTextContent('无法读取文件预览');
-    expect(screen.queryByTitle('HTML 预览：site/index.html')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '重试预览' }));
-    const oldFrame = await screen.findByTitle('HTML 预览：site/index.html');
-    fireEvent.load(oldFrame);
-    expect(checkPreview).toHaveBeenCalledTimes(2);
+    const first = await screen.findByTitle('HTML 预览：site/index.html');
+    fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
+    const oldFrame = screen.getByTitle('HTML 预览：site/index.html');
+    expect(oldFrame).not.toBe(first);
+    expect(api.list).toHaveBeenCalledTimes(1);
     const user = userEvent.setup();
     await user.click(screen.getByText('上传文件', { selector: 'summary' }));
     await user.upload(screen.getByLabelText('选择一个文件'), new File(['<p>new</p>'], 'index.html', { type: 'text/html' }));
@@ -522,7 +564,6 @@ describe('task attachments', () => {
     await user.click(screen.getByRole('button', { name: '上传文件' }));
     await waitFor(() => expect(screen.getByTitle('HTML 预览：site/index.html')).not.toBe(oldFrame));
     expect(screen.getByTitle('HTML 预览：site/index.html')).toHaveAttribute('src', 'https://00000000-0000-4000-8000-000000000001.preview.daynight.test/api/v1/projects/00000000-0000-4000-8000-000000000100/tasks/00000000-0000-4000-8000-000000000001/preview/site/index.html');
-    expect(checkPreview).toHaveBeenCalledTimes(3);
   });
 
   it('requires a full-path menu and confirmation, defaults to Cancel, and sends no mutation on dismissal', async () => {

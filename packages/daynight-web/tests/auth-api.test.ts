@@ -2,7 +2,7 @@ import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole, updateTokenExpiry } from "../src/api/auth";
-import { ApiError, cancelAuthNetworkRequests, checkAttachmentPreview, deleteTask, getTask, invalidateAuthRequests, listProjects, pauseAuthRequests, readAttachmentText, request, subscribeUnauthorized } from "../src/api/client";
+import { ApiError, cancelAuthNetworkRequests, deleteTask, getTask, invalidateAuthRequests, listProjects, pauseAuthRequests, readAttachmentText, request, subscribeUnauthorized } from "../src/api/client";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const userId = "20000000-0000-0000-0000-00000000000b";
@@ -593,16 +593,13 @@ describe("auth API failures", () => {
 });
 
 describe("shared unauthorized notifications", () => {
-  it("notifies on an actual 401 even when its JSON body is malformed, including attachment HEAD", async () => {
+  it("notifies on an actual 401 even when its JSON body is malformed, for malformed responses", async () => {
     const listener = vi.fn();
     const unsubscribe = subscribeUnauthorized(listener);
     try {
-      const fetcher = mock(new Response("malformed", { status: 401, headers: { "Content-Type": "application/json" } }));
+      mock(new Response("malformed", { status: 401, headers: { "Content-Type": "application/json" } }));
       await expect(me(signal())).rejects.toMatchObject({ kind: "protocol", status: 401 });
       expect(listener).toHaveBeenCalledTimes(1);
-      fetcher.mockResolvedValue(new Response(null, { status: 401, headers: { "X-Request-ID": "head-1" } }));
-      await expect(checkAttachmentPreview(projectId, userId, "index.html", signal())).rejects.toMatchObject({ kind: "server", status: 401, code: "unauthenticated", requestId: "head-1" });
-      expect(listener).toHaveBeenCalledTimes(2);
     } finally { unsubscribe(); }
   });
 

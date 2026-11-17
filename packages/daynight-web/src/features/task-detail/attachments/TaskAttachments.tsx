@@ -5,7 +5,7 @@ import type { Attachment } from '../../../api/types';
 import type { AttachmentPreviewState } from './AttachmentPreview';
 import { AttachmentActionMenu, AttachmentDeleteDialog, type AttachmentActionTarget } from './AttachmentActions';
 import { AttachmentPreview } from './AttachmentPreview';
-import { attachmentTree, isAttachmentPath, type AttachmentNode } from './model';
+import { attachmentKind, attachmentTree, isAttachmentPath, type AttachmentNode } from './model';
 import { useAttachments, type AttachmentApi, type AttachmentController } from './useAttachments';
 import '../../../styles/attachments.css';
 
@@ -223,13 +223,16 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
                   <dt>{m.lastModified}</dt><dd><time dateTime={selected.updatedAt}>{format.dateTime(selected.updatedAt)}</time></dd>
                 </dl>
                 <div className="attachment-preview-actions">
+                  {(attachmentKind(selected) === 'html' || attachmentKind(selected) === 'pdf') && <button className="button" type="button" disabled={paused} onClick={attachments.retryPreview}>{m.reloadPreview}</button>}
                   <a className="button" href={paused ? undefined : urls === undefined ? attachmentDownloadUrl(projectId, taskId, selected.path) : urls.download(selected.path)} download={paused ? undefined : true} aria-disabled={paused || undefined} role={paused ? "link" : undefined} tabIndex={paused ? 0 : undefined}>{m.download}</a>
                   <a className="button" href={paused ? undefined : urls === undefined ? attachmentPageUrl(projectId, taskId, selected.path) : urls.page(selected.path)} aria-disabled={paused || undefined} role={paused ? "link" : undefined} tabIndex={paused ? 0 : undefined} target="_blank" rel="noopener noreferrer" aria-label={m.openInNewTab} title={m.openInNewTab}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg><span className="attachment-preview-open-label">{m.openInNewTab}</span></a>
                 </div>
               </header>}
               {previews.map(({ attachment, preview }) => {
                 const hidden = attachment.path !== selected?.path;
-                return <div key={`${attachment.path}/${attachment.updatedAt}`} hidden={hidden} style={hidden ? undefined : { display: 'contents' }}><AttachmentPreview attachment={attachment} preview={preview} paused={paused} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, attachment.path) : urls.preview(attachment.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} /></div>;
+                const kind = attachmentKind(attachment);
+                const key = kind === 'html' || kind === 'pdf' ? JSON.stringify([attachment.path]) : JSON.stringify([attachment.path, attachment.updatedAt]);
+                return <div key={key} hidden={hidden} style={hidden ? undefined : { display: 'contents' }}><AttachmentPreview attachment={attachment} preview={preview} paused={paused} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, attachment.path) : urls.preview(attachment.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} /></div>;
               })}
             </section>
           </div>
