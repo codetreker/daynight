@@ -208,8 +208,8 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     deps.emit({
       kind: waiting ? "waiting" : started ? "started" : "reconnected",
       task,
-      message: pending ? pendingInput.get(identity)!.continuation ? "The recovery input is waiting in this worker process; use daynight worker attach to resolve the native screen." : "The first managed input is waiting in this worker process; use daynight worker attach to resolve the native screen."
-        : blocked ? "The native agent is waiting for input; use daynight worker attach."
+      message: pending ? pendingInput.get(identity)!.continuation ? "The recovery input is waiting in this worker process." : "The first managed input is waiting in this worker process."
+        : blocked ? "The native agent is waiting for input."
         : started ? "Started the managed task conversation."
         : "Connected to the existing agent without repeating its managed assignment.",
     });

@@ -25,7 +25,6 @@ daynight logout                      # 撤销并清除当前 CLI 凭据
 daynight worker                     # worker 帮助
 daynight worker setup               # 环境检查、agent 与 Project 选择
 daynight worker run
-daynight worker attach
 daynight review                     # review 帮助
 daynight review run
 daynight review list                 # 同 review ls

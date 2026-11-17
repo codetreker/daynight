@@ -2,13 +2,11 @@ import { statfs } from "node:fs/promises";
 import { canonicalId } from "../../api/parse.js";
 import { retainedWorktreePathInScope } from "./worktrees/paths.js";
 import type { WorkerStore } from "./store.js";
-import type { HerdrDisposalRequest, HerdrResourceTarget, HerdrRetainedResource } from "./herdr/resource-types.js";
-
-export type WorkerResourceCommandRequest = { kind: "list" } | ({ kind: "recover" } & import("./resource-recovery.js").ResourceRecoveryRequest) | ({ kind: "retry" } & HerdrResourceTarget) | ({ kind: "dispose" } & HerdrDisposalRequest);
+import type { HerdrDisposalRequest, HerdrRetainedResource } from "./herdr/resource-types.js";
 
 export const assertHerdrResourceBudget = (resources: readonly HerdrRetainedResource[], availableBytes: bigint): void => {
   const retained = resources.filter(value => !value.worktreeDeleted);
-  if (retained.length >= 20) throw new Error("Herdr retained worktree budget reached (20); inspect worker resources before acquiring another claim.");
+  if (retained.length >= 20) throw new Error("Herdr retained worktree budget reached (20); resolve retained resources before acquiring another claim.");
   let pendingBytes = 0n;
   for (const resource of resources) {
     if (!/^(0|[1-9][0-9]*)$/.test(resource.sourceBytes)) throw new Error("The retained recording source size is unknown; new claims are blocked.");

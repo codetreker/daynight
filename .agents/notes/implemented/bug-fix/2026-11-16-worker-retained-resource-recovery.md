@@ -52,7 +52,7 @@ original journals rather than reconstructing a successful stop.
 **Reuse ordinary execution retry.** Retry requires an unfinished original claim
 and addresses native execution. It cannot safely reclaim a terminal, completed
 Web execution's surviving worktree. Unfinished journals already have automatic
-reconciliation, and Herdr retains its existing resource handling.
+reconciliation. The separate [manual Herdr command removal](../simplification/2026-11-17-remove-herdr-manual-commands.md) retains Web recovery.
 
 **Reopen completed cleanup and delete on a later poll.** This would change durable
 execution state and separate the operator's preservation check from deletion.

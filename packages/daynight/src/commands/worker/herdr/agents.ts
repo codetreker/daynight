@@ -113,7 +113,7 @@ export class HerdrInputWaitingError extends HerdrAgentActionError {
 }
 export class HerdrInputBlockedError extends HerdrInputWaitingError {
   constructor(readonly blocker: NativeInputBlocker) {
-    super("native_blocked", `The native agent has ${blocker === "menu" ? "an open menu" : "disabled input"}; use daynight worker attach to resolve it.`);
+    super("native_blocked", `The native agent has ${blocker === "menu" ? "an open menu" : "disabled input"}.`);
     this.name = "HerdrInputBlockedError";
   }
 }
