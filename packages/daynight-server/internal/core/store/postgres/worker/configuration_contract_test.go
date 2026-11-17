@@ -263,7 +263,8 @@ func TestWorkerHistoricalConfigurationStoreReadback(t *testing.T) {
 	workerID := testutil.QueryID(90)
 	configuration := func(max int64, withProject bool) model.WorkerConfiguration {
 		value := model.WorkerConfiguration{
-			MaxConcurrent: max, PollIntervalMs: 60000, RecoveryLimit: 3,
+			ArchiveSessions: new(true),
+			MaxConcurrent:   max, PollIntervalMs: 60000, RecoveryLimit: 3,
 			PreferPlatformSpecificTasks: false,
 			Native:                      model.WorkerNativeConfiguration{Agent: model.AgentCodex, Model: nil, Args: []string{}},
 			Projects:                    []model.WorkerProjectConfiguration{},
