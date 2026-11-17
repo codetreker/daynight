@@ -8,7 +8,7 @@ import { createLifecycle } from './lifecycle.ts';
 import { providerClientId, providerClientSecret, startProvider } from './provider.ts';
 import { writeServerConfig } from './server-config.ts';
 
-type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string };
+type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string; redisURL: string };
 type ServerConfiguration = { appId: string; appSecret: string };
 const runDirectory = '/run';
 const artifacts = '/opt/e2e';
@@ -133,6 +133,7 @@ const main = async (): Promise<void> => {
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Runtime public ports are invalid.');
   }
   if (typeof configuration.databaseURL !== 'string' || configuration.databaseURL === '') throw new Error('Runtime database connection is missing.');
+  if (typeof configuration.redisURL !== 'string' || configuration.redisURL === '') throw new Error('Runtime Redis connection is missing.');
   await removeDefaultRoutes();
   await mkdir(path.join(runDirectory, 'logs'), { recursive: true });
   await mkdir(path.join(runDirectory, 'private', 'storage'), { recursive: true, mode: 0o700 });
@@ -154,7 +155,7 @@ const main = async (): Promise<void> => {
     PATH: process.env.PATH,
     HTTPS_PROXY: proxyURL,
     HTTP_PROXY: proxyURL,
-    NO_PROXY: '127.0.0.1,localhost,postgres',
+    NO_PROXY: '127.0.0.1,localhost,postgres,redis',
     SSL_CERT_FILE: path.join(artifacts, 'provider-ca.pem'),
   };
   launch('uniauth', path.join(artifacts, 'uniauth'), {
@@ -180,6 +181,7 @@ const main = async (): Promise<void> => {
   await mkdir(imageTemporaryDirectory, { recursive: true, mode: 0o700 });
   launch('daynight', path.join(artifacts, 'daynight-server'), {
     ...environment,
+    DAYNIGHT_REDIS_URL: configuration.redisURL,
     DAYNIGHT_IMAGE_NODE_PATH: process.execPath,
     DAYNIGHT_IMAGE_HELPER_PATH: path.join(artifacts, 'image-validator', 'image-validation-helper.js'),
     DAYNIGHT_IMAGE_MANIFEST_PATH: path.join(artifacts, 'image-validator', 'image-validation-manifest.json'),

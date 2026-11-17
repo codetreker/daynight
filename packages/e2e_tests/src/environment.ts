@@ -23,6 +23,7 @@ export type Environment = {
 };
 
 const postgresImage = 'postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650';
+const redisImage = 'redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53';
 const pause = async (milliseconds: number, signal?: AbortSignal): Promise<void> => {
   signal?.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
@@ -101,11 +102,12 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
   const metadata: RecoveryMetadata = { schemaVersion: 1, runId, directoryId: path.basename(options.runDirectory), ownerUid: owner.uid, ownerGid: owner.gid };
   await writeCleanupReceipt(options.runDirectory, { ...metadata, resourceIdentity: resources, state: 'pending', verified: false, resourcesAbsent: false, remaining: [], verificationErrors: [], cleanupErrors: [] });
   let applicationStarted = false;
+  let redisStarted = false;
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (closing !== undefined) return closing;
     closing = (async () => {
-      const cleanup = await cleanupOwnedResources({ ...options, resources, metadata, mode: 'normal', applicationStarted });
+      const cleanup = await cleanupOwnedResources({ ...options, resources, metadata, mode: 'normal', applicationStarted, redisStarted });
       const { failures, ...verification } = cleanup;
       try { await writeCleanupReceipt(options.runDirectory, { ...metadata, resourceIdentity: resources, state: verification.verified ? 'complete' : 'failed', ...verification }); }
       catch (error) { failures.push(error); }
@@ -123,7 +125,8 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
     await docker(['build', '--label', `daynight.e2e.run=${runId}`, '--file', path.join(options.repository, 'packages/e2e_tests/Dockerfile.runtime'), '--tag', resources.runtimeImage, options.artifactsDirectory], options.signal, 10 * 60_000);
     const password = randomBytes(24).toString('hex');
     const databaseURL = `postgres://daynight:${password}@postgres:5432/daynight?sslmode=disable`;
-    await writeFile(path.join(options.runDirectory, 'private', 'runtime.json'), `${JSON.stringify({ serverPort, authPort, proxyPort, databaseURL })}\n`, { mode: 0o600 });
+    const redisURL = 'redis://redis:6379/0';
+    await writeFile(path.join(options.runDirectory, 'private', 'runtime.json'), `${JSON.stringify({ serverPort, authPort, proxyPort, databaseURL, redisURL })}\n`, { mode: 0o600 });
     const postgresEnvironment = path.join(options.runDirectory, 'private', 'postgres.env');
     await writeFile(postgresEnvironment, `POSTGRES_USER=daynight\nPOSTGRES_PASSWORD=${password}\nPOSTGRES_DB=daynight\n`, { mode: 0o600 });
     await docker(['run', '--detach', '--name', resources.postgresContainer, '--label', `daynight.e2e.run=${runId}`, '--network', resources.network, '--network-alias', 'postgres', '--env-file', postgresEnvironment, '--mount', `type=volume,src=${resources.postgresVolume},dst=/var/lib/postgresql`, postgresImage], options.signal);
@@ -137,6 +140,30 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
       await pause(100, options.signal);
     }
     if (!postgresReady) throw new Error('Isolated PostgreSQL did not become ready.');
+    await docker(['run', '--detach', '--name', resources.redisContainer, '--label', `daynight.e2e.run=${runId}`, '--network', resources.network, '--network-alias', 'redis',
+      redisImage, 'redis-server', '--save', '', '--appendonly', 'no', '--maxmemory', '64mb', '--maxmemory-policy', 'noeviction'], options.signal);
+    redisStarted = true;
+    try {
+      const redisDeadline = performance.now() + 60_000;
+      let redisReady = false;
+      while (performance.now() < redisDeadline) {
+        options.signal?.throwIfAborted();
+        await running(resources.redisContainer);
+        const result = await access.result(['exec', resources.redisContainer, 'redis-cli', 'ping'], 2_000);
+        if (result.exitCode === 0 && result.stdout.trim() === 'PONG') { redisReady = true; break; }
+        await pause(100, options.signal);
+      }
+      if (!redisReady) throw new Error('Isolated Redis did not become ready.');
+    } catch (error) {
+      let detail = '';
+      try {
+        if (await access.inspect('container', resources.redisContainer) !== undefined) {
+          const logs = await access.result(['logs', '--tail', '100', resources.redisContainer], 5_000);
+          detail = logs.exitCode === 0 ? `${logs.stdout}${logs.stderr}` : `Log collection failed: ${logs.stderr}`;
+        }
+      } catch (logError) { detail = `Log collection failed: ${String(logError)}`; }
+      throw new Error(`Isolated Redis readiness failed. ${detail}`, { cause: error });
+    }
     await docker(['create', '--pull', 'never', '--name', resources.applicationContainer, '--label', `daynight.e2e.run=${runId}`, '--network', resources.ingressNetwork, '--cap-add', 'NET_ADMIN',
       '--publish', `127.0.0.1:${serverPort}:${serverPort}`, '--publish', `127.0.0.1:${authPort}:${authPort}`, '--publish', `127.0.0.1:${proxyPort}:${proxyPort}`,
       '--mount', `type=bind,src=${path.resolve(options.runDirectory)},dst=/run`, resources.runtimeImage], options.signal);

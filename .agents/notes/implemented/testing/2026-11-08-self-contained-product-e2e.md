@@ -28,7 +28,7 @@ and checks renamed and deleted catalog entries across clients. Module and store
 tests retain the error, concurrency and capacity matrices.
 
 Every run owns an internal database network, a private ingress bridge, a
-PostgreSQL instance and data volume, an application container, private
+PostgreSQL instance and data volume, an ephemeral Redis monitoring store, an application container, private
 credentials and storage. Public addresses are
 loopback-only ports. Inside the application container, local forwarders preserve
 those same public origin identities while production services retain their
@@ -55,6 +55,9 @@ Preparation and execution steps are individually bounded; their declared
 maxima include cleanup and upload and remain below the job limit. Recovery
 preserves the original scenario and cleanup receipt instead of turning an
 interrupted run green. Artifact uploads include only results and logs.
+The Redis container has no published port or persistent volume and is included
+in the exact owner-checked cleanup and absence proof. Existing receipts without
+its identity must be cleaned by their original runner rather than inferred.
 
 The framework owns its process, provider and cleanup tests. Product journeys
 stay normal and sequential; module boundaries, concurrency and stress suites
@@ -74,6 +77,10 @@ self-contained repeatable run and couples failures to another environment.
 **Call internal product functions or use a domain host.** This can validate a
 focused module contract but omits complete startup, routing, authentication and
 production resource assembly. It does not establish the cross-client journey.
+
+**Use a shared or simulated monitoring store.** A shared Redis would couple runs
+and weaken resource ownership; a simulated API would not establish that the real
+Server can read monitoring through its configured store.
 
 ## Consequences
 
