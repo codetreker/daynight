@@ -7,7 +7,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 // ErrSessionProjectNotFound identifies a tombstoned project in scoped Session access.
@@ -67,17 +66,6 @@ type SessionOperation struct {
 	SessionID, OperationID string
 	Command                sp.Command
 	Receipt                sp.Operation
-	Actor                  model.Principal
-	Hash                   []byte
-	Epoch                  *int64
-	Seq                    int64
-	Deadline               time.Time
-}
-
-type TerminalOperation struct {
-	SessionID, OperationID string
-	Command                []byte
-	Result                 v2.OperationResult
 	Actor                  model.Principal
 	Hash                   []byte
 	Epoch                  *int64
@@ -179,11 +167,6 @@ type SessionDAO interface {
 	FindTerminalRegistration(context.Context, string, string, string, string, string) (string, error)
 	InsertTerminal(context.Context, TerminalRegistration) error
 	InsertRecordingEvidence(context.Context, string, int64, string, int64, string) error
-	TerminalOperation(context.Context, string, string) (TerminalOperation, error)
-	InsertTerminalOperation(context.Context, TerminalOperation) error
-	SetTerminalOperationResult(context.Context, string, v2.OperationResult) error
 	InvalidateTerminalOperations(context.Context, string) error
 	ExpireTerminalOperations(context.Context, string, time.Time) error
-	QueuedTerminalOperation(context.Context, string) ([]string, error)
-	TerminalViewerOperationPending(context.Context, string, string, string) (bool, error)
 }

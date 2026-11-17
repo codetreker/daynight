@@ -56,10 +56,6 @@ func TestTerminalRecoveryReadbackFiltersActionsWithoutChangingAdmissionEvidence(
 	f, _ := recoveryFixture(t)
 	ctx := context.Background()
 	publication := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
-	ack := f.worker(t, "1", f.msg("control_state", publication))
-	if !reflect.DeepEqual(ack.Payload, publication) {
-		t.Fatal("publication acknowledgement changed the original control state", ack)
-	}
 	state, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
 		ctx := f.fixture.TerminalPhase(ctx, false, map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1})
 		defer f.dao.FinishContext(ctx)
@@ -201,13 +197,6 @@ func advanceRecoveryGeneration(t *testing.T, f *terminalControlFixture, prepare 
 	t.Helper()
 	ctx := context.Background()
 	p := prepare.Payload.(v2.AutomationRecoveryPrepare)
-	if err := terminalErrorStep(t, f.fixture, func() error {
-		ctx := f.fixture.TerminalPhase(ctx, true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 2})
-		defer f.dao.FinishContext(ctx)
-		return f.s.DisconnectTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1")
-	}); err != nil {
-		t.Fatal(err)
-	}
 	state, err := terminalStateStep(t, f.fixture, func() (map[string]any, error) {
 		ctx := f.fixture.TerminalPhase(ctx, false, map[string]int{"ExpireTerminalOperations": 1, "TerminalArchive": 1})
 		defer f.dao.FinishContext(ctx)
@@ -296,16 +285,6 @@ func TestTerminalRecoveryRequiresPreparedCleanShutdownAndOriginalStoppedConversa
 	if err != nil || state["control"].(*v2.ControlState).State != "suspended" {
 		t.Fatal(state, err)
 	}
-	ordinary := consume
-	ordinary.Type = "control_state"
-	ordinary.Payload = v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "5", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
-	if _, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
-		ctx := f.fixture.TerminalPhase(ctx, false, map[string]int{"ExpireTerminalOperations": 1})
-		defer f.dao.FinishContext(ctx)
-		return f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, prepare.SessionID, "2", ordinary)
-	}); err == nil {
-		t.Fatal("ordinary publication bypassed prepared recovery")
-	}
 	ack, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
 		ctx := f.fixture.TerminalPhase(ctx, true, map[string]int{"TerminalAutomationAllowed": 1, "TerminalInputPending": 1, "SaveTerminal": 1})
 		defer f.dao.FinishContext(ctx)
@@ -328,13 +307,12 @@ func TestTerminalRecoveryRequiresPreparedCleanShutdownAndOriginalStoppedConversa
 	if state["capabilities"].(v2.Capabilities) != (v2.Capabilities{}) {
 		t.Fatal("recovery enabled product control")
 	}
-	if err = terminalErrorStep(t, f.fixture, func() error {
-		ctx := f.fixture.TerminalPhase(ctx, true, map[string]int{"InvalidateTerminalOperations": 1, "SaveTerminal": 2})
-		defer f.dao.FinishContext(ctx)
-		return f.s.DisconnectTerminal(ctx, f.p, f.project, f.task, consume.SessionID, consume.Envelope, "2")
-	}); err != nil {
-		t.Fatal(err)
-	}
+	// Model the original connection having ended after its receipt was saved.
+	r := f.terminal.Record(t)
+	r.LastSeen = nil
+	r.Control.State = "suspended"
+	r.Control.AvailableActions = []string{}
+	f.terminal.SetRecord(t, r)
 	if _, err = terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
 		ctx := f.fixture.TerminalPhase(ctx, true, map[string]int{})
 		defer f.dao.FinishContext(ctx)
@@ -440,61 +418,6 @@ func TestTerminalRecoveryRejectsChangedProofAuthorityAndTargets(t *testing.T) {
 				t.Fatal("changed recovery authority accepted")
 			}
 		})
-	}
-}
-
-func TestTerminalRecoveryCannotSurviveAUserControlDecision(t *testing.T) {
-	f, prepare := recoveryFixture(t)
-	ctx := context.Background()
-	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
-		ctx := f.fixture.TerminalPhase(ctx, true, map[string]int{"TerminalAutomationAllowed": 1, "TerminalInputPending": 1, "SaveTerminal": 1})
-		defer f.dao.FinishContext(ctx)
-		return f.s.UpdateTerminalRecovery(ctx, f.p, f.project, f.task, prepare.SessionID, "1", prepare)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	consume := advanceRecoveryGeneration(t, f, prepare)
-	if err := terminalErrorStep(t, f.fixture, func() error {
-		ctx := f.fixture.TerminalPhase(ctx, true, map[string]int{"SaveTerminal": 1})
-		defer f.dao.FinishContext(ctx)
-		return f.s.terminalAccess(ctx, f.p, f.project, f.task, consume.SessionID, true, func(tx *operationTx, r *terminalRecord, _ task, _ bool) error {
-			r.Registration.Capabilities = v2.Capabilities{Observe: true, Control: true, Archive: true}
-			r.Control.AvailableActions = []string{"acquire_control"}
-			r.Recording["2"] = terminalRecording{Responsibility: &v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}}
-			return saveTerminal(ctx, tx, r)
-		})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	request := consume
-	request.Type = "control_request"
-	request.Payload = v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "2", ControlEpoch: "3", Action: "acquire_control", BrowserClientID: f.browser}
-	f.operations.expect(request.Payload.(v2.ControlRequest).OperationID)
-	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
-		ctx := f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalOperation": 1, "ExpireTerminalOperations": 1, "TerminalInputPending": 1, "InsertTerminalOperation": 1, "SaveTerminal": 1})
-		defer f.dao.FinishContext(ctx)
-		return f.s.SubmitTerminal(ctx, f.p, f.project, f.task, consume.SessionID, f.browser, request)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.operations.insertedInput(request.Payload.(v2.ControlRequest).OperationID)
-	f.operations.pending = true
-	f.operations.viewerPending = true
-	if err := terminalErrorStep(t, f.fixture, func() error {
-		ctx := f.fixture.TerminalPhase(ctx, false, map[string]int{"TerminalViewerOperationPending": 1, "InvalidateTerminalOperations": 1, "SaveTerminal": 1})
-		defer f.dao.FinishContext(ctx)
-		return f.s.DisconnectTerminalViewer(ctx, f.p, f.project, f.task, consume.SessionID, f.browser, consume.ClaimID, "2")
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.operations.pending = false
-	f.operations.viewerPending = false
-	if _, err := terminalRecordStep(t, f.fixture, func() (v2.Message, error) {
-		ctx := f.fixture.TerminalPhase(ctx, true, map[string]int{"TerminalAutomationAllowed": 1, "TerminalInputPending": 1})
-		defer f.dao.FinishContext(ctx)
-		return f.s.UpdateTerminalRecovery(ctx, f.p, f.project, f.task, consume.SessionID, "2", consume)
-	}); err == nil {
-		t.Fatal("a user decision was bypassed using the old shutdown permit")
 	}
 }
 

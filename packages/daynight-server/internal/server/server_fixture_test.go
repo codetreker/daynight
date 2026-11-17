@@ -2197,21 +2197,6 @@ func (d sessionHTTPRejectedDAO) InsertRecordingEvidence(a0 context.Context, a1 s
 	panic("unconfigured SessionDAO.InsertRecordingEvidence")
 }
 
-func (d sessionHTTPRejectedDAO) TerminalOperation(a0 context.Context, a1 string, a2 string) (store.TerminalOperation, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalOperation")
-	panic("unconfigured SessionDAO.TerminalOperation")
-}
-
-func (d sessionHTTPRejectedDAO) InsertTerminalOperation(a0 context.Context, a1 store.TerminalOperation) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InsertTerminalOperation")
-	panic("unconfigured SessionDAO.InsertTerminalOperation")
-}
-
-func (d sessionHTTPRejectedDAO) SetTerminalOperationResult(a0 context.Context, a1 string, a2 v2.OperationResult) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SetTerminalOperationResult")
-	panic("unconfigured SessionDAO.SetTerminalOperationResult")
-}
-
 func (d sessionHTTPRejectedDAO) InvalidateTerminalOperations(a0 context.Context, a1 string) error {
 	unexpectedHTTPCall(d.t, "SessionDAO.InvalidateTerminalOperations")
 	panic("unconfigured SessionDAO.InvalidateTerminalOperations")
@@ -2220,16 +2205,6 @@ func (d sessionHTTPRejectedDAO) InvalidateTerminalOperations(a0 context.Context,
 func (d sessionHTTPRejectedDAO) ExpireTerminalOperations(a0 context.Context, a1 string, a2 time.Time) error {
 	unexpectedHTTPCall(d.t, "SessionDAO.ExpireTerminalOperations")
 	panic("unconfigured SessionDAO.ExpireTerminalOperations")
-}
-
-func (d sessionHTTPRejectedDAO) QueuedTerminalOperation(a0 context.Context, a1 string) ([]string, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.QueuedTerminalOperation")
-	panic("unconfigured SessionDAO.QueuedTerminalOperation")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalViewerOperationPending(a0 context.Context, a1 string, a2 string, a3 string) (bool, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalViewerOperationPending")
-	panic("unconfigured SessionDAO.TerminalViewerOperationPending")
 }
 
 func (d sessionHTTPRejectedDAO) TerminalArchive(a0 context.Context, a1 string) (v2.ArchiveStatus, *v2.Receipt, string, error) {

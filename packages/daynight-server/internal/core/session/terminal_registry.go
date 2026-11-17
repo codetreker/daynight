@@ -381,9 +381,6 @@ func (s *Execution) FinalizeTerminal(ctx context.Context, p model.Principal, pro
 		}
 		afterCommit(tx, func() {
 			s.forgetTerminalSnapshot(id)
-			s.terminalMutex.Lock()
-			delete(s.terminalPending, id)
-			s.terminalMutex.Unlock()
 		})
 		out = terminalEnvelope(r, "generation_ledger", v2.GenerationLedger{Runs: r.Runs, FinalizationID: r.FinalizationID})
 		return nil
