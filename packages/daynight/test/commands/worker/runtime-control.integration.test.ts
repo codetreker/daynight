@@ -1,3 +1,4 @@
+import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -49,7 +50,7 @@ afterEach(async () => {
 });
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject: vi.fn(async () => ({ id: uuid(1) })) });
+  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => (receivedResource({ desired: null, observationRevision: "0", observation: null }))), resolveProject: vi.fn(async () => ({ id: uuid(1) })) });
   mocks.git.mockReturnValue({ prepareRepository: vi.fn(), dispose: vi.fn(async () => {}) });
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn() });
   mocks.prompt.mockReturnValue("prompt");
@@ -84,7 +85,7 @@ describe("worker synchronous management runtime ownership", () => {
       if (projectId === unavailable.projectId) throw new Error("Project unavailable");
       return { id: projectId };
     });
-    mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject });
+    mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => (receivedResource({ desired: null, observationRevision: "0", observation: null }))), resolveProject });
     const request = { kind: "retry" as const, taskId: f.task.taskId, claimId: f.task.claimId };
     await runWorkerControl({ ...f, request });
     expect(resolveProject).toHaveBeenCalledOnce();
@@ -245,9 +246,9 @@ describe("worker synchronous management runtime ownership", () => {
     const owner = { projectId: f.project.projectId, taskId: f.task.taskId, claimId: f.task.claimId, worktreeId };
     let remoteTask: Task = { type: "task", parentId: null, tags: [], id: f.task.taskId, projectId: f.project.projectId, title: "Original assignment", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 5n, properties: { pullRequests: [], paused: false, worker: { claimId: f.task.claimId, workerId: uuid(4), machine: { id: uuid(5), name: "original" }, platform: platform === "win32" ? "windows" : "linux", agent: "codex", agentControlMode: "herdr", worktreeId, userId: uuid(6), state: "active", phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-11-12T00:00:00Z" } }, createdAt: "2026-11-12T00:00:00Z", updatedAt: "2026-11-12T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false };
     const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => uuid(6)), authorizeControl: vi.fn(async () => {}), readTask: vi.fn(async () => remoteTask),
-      configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), claim: vi.fn(), ownInventory: vi.fn(),
+      configuration: vi.fn(async () => (receivedResource({ desired: null, observationRevision: "0", observation: null }))), claim: vi.fn(), ownInventory: vi.fn(),
       update: vi.fn(async (_task: Task, update: object) => { remoteTask = { ...remoteTask, properties: { ...remoteTask.properties, worker: { ...readWorkerClaim(remoteTask.properties)!, ...update } } }; return remoteTask; }),
-      reportConfiguration: vi.fn(async (_workerId: string, _report: unknown, _native: unknown, _operation: unknown, selectors: readonly WorkerPromptSelector[]) => ({ observedAt: "2026-11-12T00:00:00Z", lastReportedAt: "2026-11-12T00:00:00Z", configuration: { desired: null, observationRevision: "0", observationAccepted: false }, prompts: { ok: true as const, results: selectors.map(({ key }) => ({ key, status: "value" as const, value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? uuid(6) : uuid(4), revision: "0", text: "", updatedAt: null } })) } })),
+      reportConfiguration: vi.fn(async (_workerId: string, _report: unknown, _native: unknown, _operation: unknown, selectors: readonly WorkerPromptSelector[]) => ({ observedAt: "2026-11-12T00:00:00Z", lastReportedAt: "2026-11-12T00:00:00Z", configuration: receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }), prompts: { ok: true as const, results: selectors.map(({ key }) => ({ key, status: "value" as const, value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? uuid(6) : uuid(4), revision: "0", text: "", updatedAt: null } })) } })),
     };
     remote.readTask.mockImplementation(async () => {
       if (remote.readTask.mock.calls.length < 3) return remoteTask;
@@ -321,7 +322,7 @@ describe("worker synchronous management runtime ownership", () => {
     const f = await fixture();
     await writeFile(f.paths.configFile, staleManagedSource());
     const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockResolvedValue({ desired: cloudTarget(false), observationRevision: "0", observation: null });
+    remote.configuration.mockResolvedValue(receivedResource({ desired: cloudTarget(false), observationRevision: "0", observation: null }));
     mocks.submit.mockResolvedValueOnce({ task: f.task, message: "retry completed" });
     const request = { kind: "retry" as const, taskId: f.task.taskId, claimId: f.task.claimId };
     await runWorkerControl({ ...f, request });
@@ -338,7 +339,7 @@ describe("worker synchronous management runtime ownership", () => {
     const f = await fixture();
     await writeFile(f.paths.configFile, staleManagedSource());
     const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockResolvedValue({ desired: cloudTarget(true), observationRevision: "0", observation: null });
+    remote.configuration.mockResolvedValue(receivedResource({ desired: cloudTarget(true), observationRevision: "0", observation: null }));
     mocks.submit.mockResolvedValueOnce({ task: f.task, message: "retry completed" });
     await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
@@ -362,7 +363,7 @@ describe("worker synchronous management runtime ownership", () => {
     const remote = mocks.remote(); mocks.remote.mockClear();
     const reportConfiguration = vi.fn(async (_workerId: string, _report: unknown, _native: unknown, _operation: unknown, selectors: readonly WorkerPromptSelector[]) => ({
       observedAt: "2026-11-09T00:00:00Z", lastReportedAt: "2026-11-09T00:00:00Z",
-      configuration: { desired: null, observationRevision: "0", observationAccepted: false },
+      configuration: receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }),
       prompts: { ok: true as const, results: selectors.map(({ key }) => ({ key, status: "value" as const, value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? uuid(6) : uuid(4), revision: "0", text: "", updatedAt: null } })) },
     }));
     remote.reportConfiguration = reportConfiguration;

@@ -55,7 +55,7 @@ PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标�
 
 独立 Daynight-Worker-Control-Mode: 1 请求与回显控制 mode 字段及观测项的严格解析和投影，不依赖配置协议 1/2。未协商时去除 mode 及同名观测，保持旧严格消费者可读；新客户端只有确认回显才发送 controlModeBootstrap。模式能力不改变账号、Origin、principal、配置 CAS 和报告身份校验。
 
-Daynight-Worker-Tool-Paths: 1 同样独立协商。HTTP 在业务调用前拒绝重复值和非 1；显式能力选项分别控制 mode 与 tools 的严格解析，不能为滚动升级开放任意未知字段。protocol DTO 在编码前选择投影，旧配置省略 toolPaths、旧详情省略 telemetry.toolPaths；列表只验证并回显能力，维持摘要。客户端工具能力绑定认证 origin/principal，由配置 GET 或已认证 404 确认，不能由报告响应或包版本推断可发送扩展。合法报告回执缺少 mode 或 toolPaths 任一投影时，运行时在下一次报告准备阶段重新读取配置；mode 已存在不停止工具能力发现。字段缺失只安排认证读取，不授予能力；下一次报告按读取结果重新构造，不重放结果未知的写入。
+Daynight-Worker-Tool-Paths: 1 同样独立协商。HTTP 在业务调用前拒绝重复值和非 1；显式能力选项分别控制 mode 与 tools 的服务端严格输入解析。Worker 的成功响应通过配置专用源文本保留未知字段；这不放宽服务端写入准入或新增能力协商，具体机制由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。protocol DTO 在编码前选择投影，旧配置省略 toolPaths、旧详情省略 telemetry.toolPaths；列表只验证并回显能力，维持摘要。客户端工具能力绑定认证 origin/principal，由配置 GET 或已认证 404 确认，不能由报告响应或包版本推断可发送扩展。合法报告回执缺少 mode 或 toolPaths 任一投影时，运行时在下一次报告准备阶段重新读取配置；mode 已存在不停止工具能力发现。字段缺失只安排认证读取，不授予能力；下一次报告按读取结果重新构造，不重放结果未知的写入。
 
 Daynight-Worker-Archive-Sessions: 1 独立协商布尔目标与同名观测项。协议 codec 对未协商请求保留原闭合投影，确认后严格解析布尔值；服务回显能力，重复或无效头在业务调用前拒绝。旧 PUT 的值来自锁内实际列而非旧 GET。归档观测的私有槽与 mode 槽都按保存的序号还原，替换报告不保留未提供的旧证据。
 

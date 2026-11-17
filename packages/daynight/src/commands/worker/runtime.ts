@@ -29,7 +29,7 @@ import { repositoryLocation, resolveRepositoryRoot } from "../../repository/loca
 import { repositoryIdentity } from "../../repository/identity.js";
 import { ApiError } from "../../api/client.js";
 import { ProtocolError } from "../../api/parse.js";
-import type { WorkerCloudNative, WorkerCloudResource } from "../../api/worker-configuration.js";
+import type { WorkerCloudNative, ReceivedWorkerConfigurationResource } from "../../api/worker-configuration.js";
 import { probeNativeAgentVersion } from "./herdr/version-probe.js";
 import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
@@ -362,19 +362,19 @@ export const runWorker = async (options: {
     observeMonitoring(m => m.setPhase("configuration"));
     const currentPromptSource = createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId });
     promptSource = currentPromptSource;
-    const readCloudConfiguration = async (readSignal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource> => {
+    const readCloudConfiguration = async (readSignal: AbortSignal, operation?: Operation): Promise<ReceivedWorkerConfigurationResource> => {
       try { return operation === undefined ? await remote.configuration(workerId, readSignal) : await remote.configuration(workerId, readSignal, operation); }
       catch (error) {
         if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
-        return { desired: null, observationRevision: "0", observation: null };
+        return { json: '{"desired":null,"observationRevision":"0","observation":null}', desired: null, observationRevision: "0", observationJson: null };
       }
     };
-    let resource: WorkerCloudResource | undefined;
+    let resource: ReceivedWorkerConfigurationResource | undefined;
     const initialSyncId = randomUUID();
     configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
     try {
       resource = await readCloudConfiguration(signal);
-      configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: "pending", received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
+      configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: "pending", received: { desiredRevision: resource.desired?.known.revision ?? null, observationRevision: resource.observationRevision } });
     }
     catch (error) {
       const requestId = workerConfigurationRequestId(error);
@@ -616,12 +616,12 @@ export const runWorker = async (options: {
     });
     if (resource !== undefined) {
       const previous = configuration.current();
-      await configuration.receive(resource.desired, resource.observationRevision, signal, initialSyncId);
+      await configuration.receive(resource.desired, resource.observationRevision, signal, initialSyncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
       const current = configuration.current();
       configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted",
         source: { state: current.desired === null ? "uninitialized" : "initialized", generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision },
         previousSource: { state: "unread", generation: previous.generation, desiredRevision: previous.desired?.revision ?? null, observationRevision: previous.observationRevision },
-        received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
+        received: { desiredRevision: resource.desired?.known.revision ?? null, observationRevision: resource.observationRevision } });
     }
     const manager = configuration;
     const proofSignature = () => JSON.stringify(([ ["codex", "web"], ["copilot", "web"], ["codex", "herdr"], ["copilot", "herdr"], ["herdr", "herdr"] ] as const).map(([tool, context]) => toolRuntime.manager.currentSelection(tool, context)?.selectionKey));
@@ -1008,7 +1008,7 @@ export const runWorkerControl = async (options: {
   let configurationInitialization: Promise<WorkerConfigurationManager> | undefined;
   let controlPromptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let controlBootstrap: ReturnType<typeof createWorkerConfigurationBootstrap> | undefined;
-  let controlResource: WorkerCloudResource | undefined;
+  let controlResource: ReceivedWorkerConfigurationResource | undefined;
   const failures: unknown[] = [];
   const selectionVerifier = createNativeSelectionVerifier();
   try {
@@ -1057,7 +1057,7 @@ export const runWorkerControl = async (options: {
     const targetProjectId = sources[0]!.projectId;
     const frozenRetry = options.request.kind === "retry" && sources.length === 1 && (sources[0]!.agentControlMode === "web" || store.getNativeConfiguration(sources[0]!) !== null);
     if (options.request.kind !== "release" && !frozenRetry) {
-      let resource: WorkerCloudResource;
+      let resource: ReceivedWorkerConfigurationResource;
       const syncId = randomUUID();
       configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
       try { resource = await remote.configuration(workerId, signal); }
@@ -1067,9 +1067,9 @@ export const runWorkerControl = async (options: {
           configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(requestId === undefined ? {} : { requestId }), error });
           throw error;
         }
-        resource = { desired: null, observationRevision: "0", observation: null };
+        resource = { json: '{"desired":null,"observationRevision":"0","observation":null}', desired: null, observationRevision: "0", observationJson: null };
       }
-      configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: resource.desired === null ? "not_attempted" : "pending", received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
+      configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: resource.desired === null ? "not_attempted" : "pending", received: { desiredRevision: resource.desired?.known.revision ?? null, observationRevision: resource.observationRevision } });
       controlResource = resource;
       if (resource.desired === null) {
         const initial = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
@@ -1090,12 +1090,12 @@ export const runWorkerControl = async (options: {
       } else {
         configurationManager = await initializeConfiguration();
         const previous = configurationManager.current();
-        await configurationManager.receive(resource.desired, resource.observationRevision, signal, syncId);
+        await configurationManager.receive(resource.desired, resource.observationRevision, signal, syncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
         const current = configurationManager.current();
         configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted",
           source: { state: "initialized", generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision },
           previousSource: { state: "unread", generation: previous.generation, desiredRevision: previous.desired?.revision ?? null, observationRevision: previous.observationRevision },
-          received: { desiredRevision: resource.desired.revision, observationRevision: resource.observationRevision } });
+          received: { desiredRevision: resource.desired.known.revision, observationRevision: resource.observationRevision } });
         await configurationManager.settle(signal);
         const effective = configurationManager.current().effective;
         if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.preferPlatformSpecificTasks === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
@@ -1123,7 +1123,7 @@ export const runWorkerControl = async (options: {
       const operation = createOperation({ signal: inputSignal === undefined ? signal : AbortSignal.any([signal, inputSignal]), limits: { totalMs: 15_000, requestMs: 10_000 } });
       try {
         const manager = await waitForConfigurationOperation(initializeConfiguration(), operation.signal);
-        if (controlResource !== undefined && !manager.current().synchronized) await manager.receive(controlResource.desired, controlResource.observationRevision, operation.signal);
+        if (controlResource !== undefined && !manager.current().synchronized) await manager.receive(controlResource.desired, controlResource.observationRevision, operation.signal, undefined, controlResource.observationJson === null ? null : { observationRevision: controlResource.observationRevision, json: controlResource.observationJson });
         controlBootstrap ??= createWorkerConfigurationBootstrap({ paths, identity: { serverOrigin: serverUrl, userId, workerId }, signal, resolveProject: remote.resolveProject });
         const exchange = createWorkerConfigurationExchange({ manager, needsRead: controlResource === undefined, bootstrap: controlBootstrap, prompts: retryPromptSource,
           onStage: configurationDiagnostics!.exchange,
@@ -1131,7 +1131,7 @@ export const runWorkerControl = async (options: {
             try { return await remote.configuration(workerId, current.signal, current); }
             catch (error) {
               if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
-              return { desired: null, observationRevision: "0", observation: null };
+              return { json: '{"desired":null,"observationRevision":"0","observation":null}', desired: null, observationRevision: "0", observationJson: null };
             }
           },
           send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),

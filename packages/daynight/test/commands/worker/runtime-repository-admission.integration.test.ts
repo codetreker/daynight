@@ -1,3 +1,4 @@
+import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -88,10 +89,10 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const report = vi.fn(async (_workerId: string, _body: unknown, configuration: WorkerCloudReport) => {
     const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
     if (observationAccepted) observationRevision++;
-    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(observationRevision), observationAccepted } };
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: String(observationRevision), observationAccepted }) };
   });
   const remote = {
-    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), reportConfiguration: report, report: vi.fn(),
+    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "0", observation: null }))), reportConfiguration: report, report: vi.fn(),
     project: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selectedProject.repoUrl })), resolveProject: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selectedProject.repoUrl })),
     ownInventory: vi.fn(async () => [task]), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };

@@ -34,6 +34,13 @@ func DefaultConnection(projectID string) Connection {
 	return Connection{ProjectID: projectID, Version: 1, PollIntervalMinutes: 5, AccessState: "unknown"}
 }
 
+// Author is a canonical saved author and its database ordering key.
+type Author struct {
+	ID             int64
+	Login, NameKey string
+	LoginAmbiguous bool
+}
+
 // PullRequestSummary deliberately excludes the potentially large description.
 type PullRequestSummary struct {
 	ProjectID                        string

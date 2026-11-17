@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { receiveWorkerDesired } from "../../../src/api/worker-configuration-source.js";
 import { parseWorkerCloudReport, projectWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItemKey, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
 import type { TrackedConfigurationItem, WorkerConfigurationCache, WorkerNativeProof } from "../../../src/commands/worker/configuration-model.js";
@@ -6,8 +7,9 @@ import { acceptConfigurationProjection, allConfigurationItems, configurationHasU
 
 const id = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const native: WorkerCloudNative = { agent: "codex", model: "original", args: [] };
-const desired = (revision = "1", projects: readonly string[] = []): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) } });
-const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 5, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desired: target, observationRevision: "0" }, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
+const desired = (revision = "1", projects: readonly string[] = []): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) } });
+const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 6, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0" }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
+const received = (...args: Parameters<typeof desired>) => receiveWorkerDesired(JSON.stringify(desired(...args)));
 const tracked = (number: number, key: WorkerCloudItemKey, appliedValue: TrackedConfigurationItem["value"]["appliedValue"] = null): TrackedConfigurationItem => ({ recordId: id(number), origin: { generation: id(8000), targetRevision: "1", source: "application" }, value: { key, targetRevision: "1", appliedValue, state: appliedValue === null ? "pending" : "applied", error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, started: false, nativeMode: key.kind === "native" || key.kind === "projectNative" ? "herdr" : null, actualSource: appliedValue === null ? null : { kind: "observed", recordId: id(number), generation: id(8000), targetRevision: "1" }, blockedByRemovalId: null });
 const fault: WorkerCloudFailure = { code: "unavailable", category: "agent", phase: "validate", occurredAt: "2026-11-12T00:00:01Z" };
 const failed = (item: TrackedConfigurationItem, failureId = 1, occurredAt = fault.occurredAt): TrackedConfigurationItem => ({ ...item, failureId, value: { ...item.value, state: "error", error: { ...fault, occurredAt }, lastFailure: { ...fault, occurredAt }, nextAttemptAt: "2026-11-12T00:00:10Z" }, backoffStep: 1 });
@@ -18,7 +20,7 @@ describe("Worker configuration fact transitions", () => {
   it("creates new current identities without rewriting an observed source or copying failure ownership", () => {
     const original = failed(tracked(1, { kind: "native" }, native));
     const cache = { ...empty(), currentItems: [original] };
-    const next = transitionConfigurationDesired(cache, desired("2"), "herdr", new Set(), ids());
+    const next = transitionConfigurationDesired(cache, received("2"), "herdr", new Set(), ids());
     const current = findCurrentConfigurationItem(next, { kind: "native" })!;
     expect(current.recordId).not.toBe(original.recordId);
     expect(current.origin).toEqual({ generation: next.authority.generation, targetRevision: "2", source: "application" });
@@ -32,7 +34,7 @@ describe("Worker configuration fact transitions", () => {
 
   it("retains a running old stop and blocks new stop verification and preparation for a reselected project", () => {
     const projectId = id(70), stop = { ...tracked(1, { kind: "projectRemoval", projectId }), started: true, value: { ...tracked(1, { kind: "projectRemoval", projectId }).value, state: "applying" as const } };
-    const next = transitionConfigurationDesired({ ...empty(), currentItems: [stop] }, desired("2", [projectId]), "herdr", new Set([stop.recordId]), ids());
+    const next = transitionConfigurationDesired({ ...empty(), currentItems: [stop] }, received("2", [projectId]), "herdr", new Set([stop.recordId]), ids());
     expect(next.retainedItems).toContainEqual(stop);
     expect(findCurrentConfigurationItem(next, { kind: "projectPreparation", projectId })).toMatchObject({ blockedByRemovalId: stop.recordId, value: { state: "pending", appliedValue: null } });
     expect(findCurrentConfigurationItem(next, { kind: "projectRemoval", projectId })).toMatchObject({ blockedByRemovalId: stop.recordId, value: { targetRevision: "2", state: "pending" } });
@@ -44,7 +46,7 @@ describe("Worker configuration fact transitions", () => {
     let current = { ...empty(), currentItems: [original] } as WorkerConfigurationCache;
     const newId = ids();
     for (let revision = 2; revision <= 10; revision++) {
-      current = transitionConfigurationDesired(current, desired(String(revision), [projectId]), "herdr", new Set([original.recordId]), newId);
+      current = transitionConfigurationDesired(current, received(String(revision), [projectId]), "herdr", new Set([original.recordId]), newId);
       expect(current.retainedItems).toEqual([original]);
       expect(findCurrentConfigurationItem(current, { kind: "projectRemoval", projectId })?.blockedByRemovalId).toBe(original.recordId);
     }
@@ -67,7 +69,7 @@ describe("Worker configuration fact transitions", () => {
 
   it("retains an unstarted removal failure without inventing a stop requirement for a selected project", () => {
     const projectId = id(70), stop = failed(tracked(1, { kind: "projectRemoval", projectId }));
-    const next = transitionConfigurationDesired({ ...empty(), currentItems: [stop] }, desired("2", [projectId]), "herdr", new Set(), ids());
+    const next = transitionConfigurationDesired({ ...empty(), currentItems: [stop] }, received("2", [projectId]), "herdr", new Set(), ids());
     expect(next.retainedItems).toContainEqual(stop);
     expect(findCurrentConfigurationItem(next, { kind: "projectRemoval", projectId })).toBeUndefined();
     expect(projectConfigurationReport(next, options).failures).toEqual([]);
@@ -75,7 +77,7 @@ describe("Worker configuration fact transitions", () => {
 
   it("verifies a historical applied-plus-started stop before retiring its original bits", () => {
     const projectId = id(70), stop = { ...tracked(1, { kind: "projectRemoval", projectId }, true), started: true };
-    const next = transitionConfigurationDesired({ ...empty(), currentItems: [stop] }, desired("2", [projectId]), "herdr", new Set(), ids());
+    const next = transitionConfigurationDesired({ ...empty(), currentItems: [stop] }, received("2", [projectId]), "herdr", new Set(), ids());
     const verification = findCurrentConfigurationItem(next, { kind: "projectRemoval", projectId })!;
     expect(verification).toMatchObject({ blockedByRemovalId: stop.recordId, value: { state: "pending" } });
     expect(next.retainedItems).toContainEqual(stop);
@@ -89,7 +91,7 @@ describe("Worker configuration fact transitions", () => {
   it("preserves real values and unfinished failures when the target becomes null", () => {
     const value = tracked(1, { kind: "native" }, native), stop = { ...failed(tracked(2, { kind: "projectRemoval", projectId: id(70) })), started: true };
     const next = transitionConfigurationDesired({ ...empty(), currentItems: [value, stop] }, null, "herdr", new Set(), ids());
-    expect(next.authority.desired).toBeNull();
+    expect(next.authority.desiredJson).toBeNull();
     expect(next.currentItems).toEqual([]);
     expect(next.retainedItems).toEqual([value, stop]);
     expect(projectConfigurationReport(next, options).report.observation).toBeNull();
@@ -112,8 +114,8 @@ describe("Worker configuration projection acceptance", () => {
     for (const [cache, bootstrap] of [[empty(null), null], [empty(null), legacyCandidate], [empty(), legacyCandidate]] as const) {
       const projection = projectConfigurationReport(cache, { ...options, localMode: "web", bootstrap });
       expect(projection.report).toMatchObject({ controlModeBootstrap: "web", toolPathsBootstrap: options.localTools });
-      expect(parseWorkerCloudReport(projectWorkerCloudReport(projection.report))).toEqual({ bootstrap: cache.authority.desired === null ? bootstrap : null,
-        observation: cache.authority.desired === null ? null : { baseRevision: "0", desiredRevision: "1", items: [] } });
+      expect(parseWorkerCloudReport(projectWorkerCloudReport(projection.report))).toEqual({ bootstrap: cache.authority.desiredJson === null ? bootstrap : null,
+        observation: cache.authority.desiredJson === null ? null : { baseRevision: "0", desiredRevision: "1", items: [] } });
     }
   });
 

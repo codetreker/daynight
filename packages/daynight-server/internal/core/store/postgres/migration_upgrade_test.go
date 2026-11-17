@@ -246,7 +246,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	rows := func() []string {
 		t.Helper()
 		var result []string
-		if err := pool.QueryRow(ctx, `SELECT array_agg((to_jsonb(w) || jsonb_build_object('desired_configuration',desired_configuration-'preferPlatformSpecificTasks'))::text ORDER BY worker_id) FROM workers w`).Scan(&result); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT array_agg(((to_jsonb(w)-'archive_sessions') || jsonb_build_object('desired_configuration',desired_configuration-'preferPlatformSpecificTasks'))::text ORDER BY worker_id) FROM workers w`).Scan(&result); err != nil {
 			t.Fatal(err)
 		}
 		return result
