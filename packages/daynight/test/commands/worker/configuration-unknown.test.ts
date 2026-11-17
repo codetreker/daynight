@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseReceivedWorkerConfigurationReceipt, parseReceivedWorkerConfigurationResource, receiveWorkerDesired } from "../../../src/api/worker-configuration.js";
@@ -26,6 +26,94 @@ const fixture = async (options: Partial<WorkerConfigurationManagerOptions> = {})
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.stop(); for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe("Worker future configuration persistence", () => {
+  it("reidentifies a schema 6 unknown sudo target before application and preserves actual sources", async () => {
+    const first = await fixture(), initial = desired("1");
+    await first.manager.receive(initial, "0"); await first.manager.settle();
+    const old = await first.read();
+    await first.manager.stop();
+    const source = { ...old, schemaVersion: 6, authority: { ...old.authority, desiredJson: initial.json.replace('"revision":"1"', '"revision":"2"').replace('"value":{', '"value":{"enableSudoCleanup":true,') } };
+    await writeFile(first.file, JSON.stringify(source));
+    const second = await fixture({ file: first.file });
+    const migrated = await second.read();
+    expect(migrated.schemaVersion).toBe(7);
+    expect(migrated.authority.applicationRevision).toBe("2");
+    expect(migrated.authority.generation).not.toBe(old.authority.generation);
+    expect(migrated.retainedItems).toEqual(expect.arrayContaining([...old.currentItems]));
+    const sudo = migrated.currentItems.find(item => item.value.key.kind === "enableSudoCleanup");
+    expect(sudo?.value).toMatchObject({ state: "pending", appliedValue: null, targetRevision: "2" });
+    expect(second.manager.readCleanupPolicy()).toBeNull();
+    for (const original of old.currentItems.filter(item => item.value.appliedValue !== null)) {
+      const current = migrated.currentItems.find(item => JSON.stringify(item.value.key) === JSON.stringify(original.value.key));
+      expect(current?.value.appliedValue).toEqual(original.value.appliedValue);
+      expect(current?.actualSource).toEqual(original.actualSource);
+    }
+    await second.manager.receive(receiveWorkerDesired(source.authority.desiredJson), "0");
+    await second.manager.settle();
+    expect(second.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "2" });
+    await second.manager.stop();
+    const offline = await fixture({ file: first.file });
+    expect(offline.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "2" });
+    await offline.manager.receive(receiveWorkerDesired(source.authority.desiredJson.replace('"revision":"2"', '"revision":"3"').replace('"enableSudoCleanup":true', '"enableSudoCleanup":false')), "0");
+    await offline.manager.settle();
+    expect(offline.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, revision: "3" });
+  });
+
+  it("does not publish or overwrite schema 6 when migration persistence fails", async () => {
+    const first = await fixture(), initial = desired("1");
+    await first.manager.receive(initial, "0"); await first.manager.settle();
+    const old = await first.read(); await first.manager.stop();
+    const source = JSON.stringify({ ...old, schemaVersion: 6, authority: { ...old.authority, desiredJson: initial.json.replace('"value":{', '"value":{"enableSudoCleanup":true,') } });
+    await writeFile(first.file, source);
+    const failure = new Error("migration write failed");
+    await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {}, persist: async () => { throw failure; } })).rejects.toBe(failure);
+    expect(await readFile(first.file, "utf8")).toBe(source);
+  });
+
+  it("validates newly recognized remote observations before replacing schema 6", async () => {
+    const first = await fixture(), initial = desired("1");
+    await first.manager.receive(initial, "0"); await first.manager.settle();
+    const old = await first.read(); await first.manager.stop();
+    const observation = '{"baseRevision":"0","desiredRevision":"1","reportedAt":"2026-11-17T00:00:00Z","items":[{"key":{"kind":"enableSudoCleanup"},"targetRevision":"1","appliedValue":"invalid","state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}';
+    const source = JSON.stringify({ ...old, schemaVersion: 6, remoteObservation: { observationRevision: "1", json: observation } });
+    await writeFile(first.file, source);
+    await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} })).rejects.toThrow();
+    expect(await readFile(first.file, "utf8")).toBe(source);
+  });
+
+  it("rejects an invalid newly known sudo value and leaves a schema 6 file intact", async () => {
+    const first = await fixture(), initial = desired("1");
+    await first.manager.receive(initial, "0"); await first.manager.settle();
+    const old = await first.read(); await first.manager.stop();
+    const source = JSON.stringify({ ...old, schemaVersion: 6, authority: { ...old.authority, desiredJson: initial.json.replace('"value":{', '"value":{"enableSudoCleanup":null,') } });
+    await writeFile(first.file, source);
+    await expect(createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} })).rejects.toThrow();
+    expect(await readFile(first.file, "utf8")).toBe(source);
+  });
+
+  it("keeps the previous policy until the new scalar has been committed", async () => {
+    let blockScalar = false;
+    const entered = barrier(), release = barrier();
+    const first = await fixture({ persist: async (file, chunks) => {
+      const text = [...chunks()].join("");
+      const parsed = JSON.parse(text) as WorkerConfigurationCache;
+      if (blockScalar && parsed.currentItems.some(item => item.value.key.kind === "enableSudoCleanup" && item.value.appliedValue === false)) {
+        blockScalar = false; entered.resolve(); await release.promise;
+      }
+      await replaceFileAtomicallyFromChunks(file, [text], 0o600);
+    } });
+    const initial = receiveWorkerDesired(desired("1").json.replace('"value":{', '"value":{"enableSudoCleanup":true,'));
+    await first.manager.receive(initial, "0"); await first.manager.settle();
+    expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "1" });
+    blockScalar = true;
+    try {
+      await first.manager.receive(receiveWorkerDesired(initial.json.replace('"revision":"1"', '"revision":"2"').replace('"enableSudoCleanup":true', '"enableSudoCleanup":false')), "0");
+      await entered.promise;
+      expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "1" });
+    } finally { release.resolve(); }
+    await first.manager.settle();
+    expect(first.manager.readCleanupPolicy()).toEqual({ enableSudoCleanup: false, revision: "2" });
+  });
+
   it("retains a hidden negotiated projection across restart without executing it", async () => {
     const first = await fixture(), rich = receiveWorkerDesired(desired("1").json.replace('"value":{', '"value":{"agentControlMode":"web",'));
     const tools = desiredCapabilitySources(rich.json).get("toolPaths")!;

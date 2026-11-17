@@ -147,7 +147,7 @@ describe("Worker cloud configuration application", () => {
       JSON.parse = originalParse;
       JSON.stringify = originalStringify;
     }
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(6);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(7);
   });
 
   it("migrates a structurally valid historical native value larger than the current item limit", async () => {
@@ -165,7 +165,7 @@ describe("Worker cloud configuration application", () => {
     const actual = item(reopened.current(), "native")?.appliedValue as WorkerCloudNative;
     expect(actual.args).toHaveLength(2050);
     expect(actual.args[2049]).toBe("x".repeat(4096));
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(6);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(7);
   });
 
   it("migrates schema 3 without dropping native modes or unacknowledged failures", async () => {
@@ -177,7 +177,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
     const records = [...migrated.currentItems, ...migrated.retainedItems];
-    expect(migrated.schemaVersion).toBe(6);
+    expect(migrated.schemaVersion).toBe(7);
     for (const previous of saved.items) expect(records.find(entry => JSON.stringify(entry.value.key) === JSON.stringify(previous.value.key))).toMatchObject({ value: previous.value, backoffStep: previous.attempts, failureId: previous.failureId, started: previous.started,
       nativeMode: saved.nativeModes[`${previous.value.key.kind}:${"projectId" in previous.value.key ? previous.value.key.projectId : ""}`] ?? null });
     expect(reopened.current().desired).toEqual(rejected);
@@ -329,7 +329,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     expect(reopened.current().effective.native).toBeNull();
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated).toMatchObject({ schemaVersion: 6, authority: { desiredJson: JSON.stringify(original), applicationRevision: original.revision, observationRevision: cache.observationRevision } });
+    expect(migrated).toMatchObject({ schemaVersion: 7, authority: { desiredJson: JSON.stringify(original), applicationRevision: original.revision, observationRevision: cache.observationRevision } });
     expect(migrated.currentItems.every(entry => entry.nativeMode === null)).toBe(true);
     await reopened.receive(receivedDesired(original)); await reopened.settle();
     expect(checked).toEqual(["web"]);
@@ -610,7 +610,7 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated.schemaVersion).toBe(6);
+    expect(migrated.schemaVersion).toBe(7);
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
     expect(migrated.nextFailureId).toBe(saved.nextFailureId);
     expect(migrated.authority.observationRevision).toBe(saved.observationRevision);

@@ -2443,7 +2443,7 @@ cycles add no configuration GET; startup, unknown results, 400/protocol failures
 and capability discovery read first. Reporting keeps its 30-second single-flight
 scheduler, merged triggers and finite prompt batches.
 
-The Worker stores configuration facts in one schema 6
+The Worker stores configuration facts in one schema 7
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
 observation revision and local generation. The executable known view derives from
@@ -2460,7 +2460,17 @@ When existing mode or tool negotiation hides a previously received field at the
 same revision, `hiddenCapabilitySources` retains its raw source as a historical
 fact. It is not executed or reported as the current target; the Worker compares
 it if that field becomes visible again at the same revision. Older schema 6
-checkpoints without this optional field remain readable.
+checkpoints without this optional field remain readable and are upgraded.
+
+When the service provides `enableSudoCleanup`, the Worker validates and applies
+the boolean without adding it to an old service bootstrap. Automatic cleanup
+snapshots the committed applied value and its source revision at the start of
+each attempt. On Linux and macOS, an owned worktree blocked by filesystem
+permissions can then be removed with non-interactive sudo, or directly as root;
+ordinary removal is tried first. Windows and manual cleanup never invoke this
+path. The original Git registration is removed by ordinary Git and both resources
+are observed absent before settlement. Sudo failure retains the original error
+and cleanup responsibility; the Worker does not ask for a password.
 
 Current records describe the known target's application and verification;
 retained records preserve original work, stops, unknown outcomes, unacknowledged
@@ -2472,7 +2482,7 @@ Versions 1–4 retain their original conversion to validated schema 5; schema 5 
 upgrades to schema 6 with its complete ledger, identities, provenance, references,
 mode and retry facts preserved. Its old target becomes `desiredJson`, its revision
 becomes `applicationRevision`, and `remoteObservation` starts null. Version 1
-retains its platform-preference migration. Migration publishes only after atomic
+retains its platform-preference migration. Schema 6 is validated under its original known-field contract before the Worker recognizes `enableSudoCleanup` from the retained source. A present field creates a new pending item, never a historical application; absent fields create no item. Unchanged actual values retain their provenance. Migration publishes only after atomic
 save; failed saves retain the original file and error. Missing required fields,
 invalid scope and corrupt data remain failures. Genuine file I/O failures
 recover in the original storage scope. Reads and atomic writes process the outer
