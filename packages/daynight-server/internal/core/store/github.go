@@ -10,9 +10,23 @@ import (
 // GitHubReadDAO reads resource facts in the caller's snapshot.
 type GitHubReadDAO interface {
 	Connection(context.Context, string) (githubpr.Connection, error)
+	Authors(context.Context, GitHubAuthorQuery) (GitHubAuthorPage, error)
 	PullRequest(context.Context, string, int64) (githubpr.PullRequest, error)
 	PullRequests(context.Context, GitHubPRQuery) (GitHubPRPage, error)
 	PullRequestCounts(context.Context, string) (GitHubPRCounts, error)
+}
+
+// GitHubAuthorQuery selects a bounded page of canonical saved authors.
+type GitHubAuthorQuery struct {
+	ProjectID, Query string
+	Limit            int
+	AnchorNameKey    *string
+	AnchorAuthorID   *int64
+}
+
+type GitHubAuthorPage struct {
+	Items   []githubpr.Author
+	HasMore bool
 }
 
 type GitHubPRQuery struct {

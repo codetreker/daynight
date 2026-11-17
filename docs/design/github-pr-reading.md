@@ -1,10 +1,12 @@
 # 项目 GitHub PR 读取
 
-Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配置及持久化同步事实，通过 `GET /api/v1/projects/{projectId}/pull-requests` 读取摘要页，通过 `GET /api/v1/projects/{projectId}/pull-requests/{number}` 读取完整详情。读取不访问 GitHub；服务未配置、同步关闭或连接断开时仍可读取保留的数据。没有连接行时返回虚拟未连接状态，不创建存储行。部署配置决定 `serviceAvailable`，与连接和观测版本无关；必填 boolean `syncEnabled` 表示 Project 保存的同步意愿，不随服务禁用或访问撤权自动改写。
+Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配置及持久化同步事实，通过 `GET /api/v1/projects/{projectId}/pull-requests` 读取摘要页，通过 `GET /api/v1/projects/{projectId}/pull-requests/{number}` 读取完整详情，并通过 `GET /api/v1/projects/{projectId}/pull-request-authors` 读取作者目录。读取不访问 GitHub；服务未配置、同步关闭或连接断开时仍可读取保留的数据。没有连接行时返回虚拟未连接状态，不创建存储行。部署配置决定 `serviceAvailable`，与连接和观测版本无关；必填 boolean `syncEnabled` 表示 Project 保存的同步意愿，不随服务禁用或访问撤权自动改写。
 
 项目读取权限、连接、计数和页面或详情在同一只读快照内验证与读取。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要不包含 description，详情保留原始 Markdown，空字符串和 null 不合并。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
 
 列表按 number 降序读取，支持 `state=active|closed|merged|all`（默认 active）、字面大小写不敏感的标题或编号子串 `q`（最多 1024 UTF-8 bytes）、`limit`（默认 20，范围 1–100）和可选 cursor。counts 独立于 q 和状态筛选，total 对应当前筛选。游标绑定 Project、条件、页大小、首次读取上界、锚点和方向，条件不匹配或格式错误予以拒绝。后续新编号不会插入已有页；已有记录变化仍可改变页面和计数，空锚定页保留返回路径。
+
+作者目录覆盖项目全部已保存 PR 中的作者，按稳定 GitHub ID 去重；同一 ID 取 `observed_at`、`revision`、`number` 依次降序的最新保存登录名。完整规范集合先标记不区分大小写的同名，再应用字面子串 `q`（默认空、最多 1024 UTF-8 bytes）、`limit`（默认 50、范围 1–100）和可选 cursor。响应包含十进制字符串 `revision` 和作者 `id`、`login`、`loginAmbiguous` 及可空 `nextCursor`，没有总数。SQL 按 C 排序键和 ID 进行 keyset 分页，只返回有界目录页；生成目录仍需检查项目范围的保存记录，响应有界不代表查询成本固定。游标绑定 Project、查询、页大小、revision 和最后的排序键；格式或请求不匹配返回 `invalid_input`，同一读取快照中的 revision 变化返回 `resource_conflict`，调用方须从头读取。目录不读取正文或访问 GitHub，权限与保存事实使用同一快照；错误日志不记录查询、游标或作者内容。
 
 连接状态、初始化、渠道运行标记和错误来自已保存事实；完整成功属于特定 generation，旧 generation 的成功不能证明新代次完成。同步关闭时 `initializing`、poll 和 webhook 的 `running` 为 false，`poll.nextAttemptAt` 为 null；历史时间和错误仍保留。读取不启动连接或后台同步。存储字段与快照约束见 [GitHub PR 存储](github-pr-storage.md)。
 
