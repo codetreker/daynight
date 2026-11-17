@@ -155,10 +155,12 @@ failures, malformed lengths and pointers, deadline checks and original-error
 preservation. The Windows-only
 [native identity regression](../../../../packages/daynight/test/commands/controller/process-proof-native-windows.test.ts)
 starts one controlled child and requires its self-proof, the parent's proof and
-later inspection to agree. One isolated CIM query compares birth and the full
+later inspection to agree. One isolated WMI query compares birth and the full
 command hash using explicit UTF-8 JSON transported inside an ASCII Base64
 envelope. Canonical Base64 and strict UTF-8 decoding prevent console code-page
-loss from weakening the comparison. That oracle has its own sixty-second query
+loss from weakening the comparison. The [oracle query decision](2026-11-17-windows-process-proof-wmi-oracle.md)
+replaces the CIM cmdlet with direct `System.Management` while retaining the
+provider comparison. That oracle has its own sixty-second query
 allowance inside a ninety-second test; it qualifies the provider's format
 without becoming a production acquisition fallback. Mismatch diagnostics record
 hashes, lengths and qualification flags, never the raw command text. The child
