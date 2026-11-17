@@ -62,6 +62,76 @@ const install = async (page: Page): Promise<State> => {
   return state;
 };
 
+for (const locale of ['en', 'zh-CN'] as const) {
+  for (const width of [320, 600, 601, 1280]) {
+    test(`list heading hierarchy at ${width}px in ${locale}`, async ({ page }) => {
+      const state = await install(page);
+      const longName = '跨团队自动化管理'.repeat(8) + 'VeryLongApplicationNameWithoutSpaces'.repeat(3);
+      const longSlug = 'long-slug-without-spaces-'.repeat(8);
+      await page.route(/\/api\/v1\/github\/apps(?:\?.*)?$/, route => route.fulfill({ status: 200, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId }, body: stringifyWireJson({ items: [metadata(), { ...metadata('00000000-0000-4000-8000-000000000022'), name: longName, githubSlug: longSlug }], nextCursor: null }) }));
+      await page.setViewportSize({ width, height: 900 }); await page.goto('/github-apps');
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      const panel = page.locator('.github-app-list-panel');
+      const heading = panel.getByRole('heading', { level: 2 });
+      const names = panel.getByRole('heading', { level: 3 });
+      await expect(names).toHaveCount(2);
+      const headingStyle = await heading.evaluate(element => { const s = getComputedStyle(element); return { size: parseFloat(s.fontSize), weight: Number(s.fontWeight), family: s.fontFamily, lineHeight: s.lineHeight }; });
+      expect(headingStyle.size).toBeCloseTo(16.38, 2); expect(headingStyle.weight).toBe(700);
+      for (const name of await names.all()) {
+        const style = await name.evaluate(element => { const s = getComputedStyle(element); return { size: parseFloat(s.fontSize), weight: Number(s.fontWeight), family: s.fontFamily, lineHeight: s.lineHeight }; });
+        expect(style.size).toBe(width <= 600 ? 14 : 15); expect(style.weight).toBe(650);
+        expect(style.family).toBe(headingStyle.family); expect(headingStyle.size).toBeGreaterThan(style.size); expect(headingStyle.weight).toBeGreaterThan(style.weight);
+      }
+      await expect(names.nth(1)).toHaveText(longName); await expect(panel).toContainText(longSlug);
+      await expect(panel).toContainText('9007199254740993');
+      await expect(panel).toContainText(locale === 'en' ? '2 administrators' : '2 名管理员');
+      await expect(panel).toContainText(locale === 'en' ? '1 authorized Teams' : '1 个获授权 Team');
+      expect(await names.nth(1).evaluate(element => {
+        const row = element.closest('li')!, text = element.parentElement!, button = row.querySelector('button')!;
+        const a = text.getBoundingClientRect(), b = button.getBoundingClientRect();
+        return element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight && (a.right <= b.left || a.bottom <= b.top);
+      })).toBe(true);
+      expect(await panel.locator('li').nth(1).locator('p').evaluate(element => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true);
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Manage' : '管理' })).toHaveCount(2);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(state.writes).toHaveLength(0);
+    });
+  }
+}
+
+for (const input of ['pointer', 'keyboard'] as const) test(`list loading, retry, pagination and management retain their behavior with ${input}`, async ({ page }) => {
+  const state = await install(page); const gate = Promise.withResolvers<void>();
+  let first = true; let pageGate: Promise<void> | null = null;
+  await page.route('**/api/v1/github/apps*', async route => {
+    const url = new URL(route.request().url());
+    if (first) { first = false; await gate.promise; return route.fulfill({ status: 500, body: JSON.stringify({ error: { code: 'failed', message: 'failed', requestId: 'test' } }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } }); }
+    if (url.searchParams.has('cursor')) { if (pageGate) await pageGate; return route.fulfill({ status: 200, body: stringifyWireJson({ items: [{ ...metadata('00000000-0000-4000-8000-000000000022'), name: 'Second App' }], nextCursor: null }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } }); }
+    return route.fulfill({ status: 200, body: stringifyWireJson({ items: [metadata()], nextCursor: 'next' }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  try {
+    await page.goto('/github-apps'); const panel = page.locator('.github-app-list-panel');
+    await expect(panel.getByRole('heading', { level: 2 })).toBeVisible(); await expect(panel.getByRole('status')).toBeVisible();
+    gate.resolve(); await expect(page.getByRole('alert')).toContainText('Unable to read');
+    await page.getByRole('button', { name: 'Retry' }).click(); await expect(panel.getByRole('heading', { level: 3 })).toHaveCount(1);
+    const next = Promise.withResolvers<void>(); pageGate = next.promise;
+    const more = panel.getByRole('button', { name: 'Load more' });
+    if (input === 'keyboard') { await more.focus(); await page.keyboard.press('Enter'); } else await more.click();
+    await expect(more).toHaveAttribute('aria-disabled', 'true'); next.resolve();
+    await expect(panel.getByRole('heading', { level: 3 })).toHaveCount(2);
+    const manage = panel.getByRole('button', { name: 'Manage' }).first();
+    if (input === 'keyboard') { await manage.focus(); await page.keyboard.press('Enter'); } else await manage.click();
+    await expect(page).toHaveURL(new RegExp(`/github-apps/${appId}$`));
+    await expect(page.getByRole('heading', { name: 'App configuration' })).toHaveCSS('font-size', '15px');
+    expect(state.writes).toHaveLength(0);
+  } finally { gate.resolve(); }
+});
+
+test('empty list retains its section heading', async ({ page }) => {
+  const state = await install(page); state.removed = true; await page.goto('/github-apps');
+  const panel = page.locator('.github-app-list-panel'); await expect(panel.getByRole('heading', { level: 2 })).toHaveCSS('font-weight', '700');
+  await expect(panel).toContainText('No GitHub Apps to administer'); expect(state.writes).toHaveLength(0);
+});
+
 for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
   test(`registration is usable at ${width}px in ${locale}`, async ({ page }) => {
     const state = await install(page); await page.setViewportSize({ width, height: 900 }); await page.goto('/github-apps');
