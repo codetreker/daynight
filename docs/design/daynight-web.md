@@ -929,7 +929,9 @@ Web 质量 job 使用 `scripts/ci.mts quality` 串行运行完整 Web 类型检�
 实际 localhost Dockerfile 的 `web` 阶段构建、Vitest/V8 覆盖率采集及独立的源码清单与
 严格语句覆盖率检查。各阶段期限分别为 1、3、5、15、1 分钟，采集使用四个 worker；
 质量 job 总期限为 30 分钟，浏览器 job 为 20 分钟。Docker 阶段验证过滤后的 context、
-容器锁文件安装、生产编译与资源发布，不启动服务、数据库或运行 Go 单元验证。
+容器锁文件安装、生产编译与资源发布；通过 Buildx 的 `--output=type=cacheonly` 执行完整
+`web` target 并保留构建缓存，省去后续步骤没有消费者的镜像导出与加载。该阶段不启动
+服务、数据库或运行 Go 单元验证。
 测试失败、取消或进程清理失败均须传播。已选中的 Web 质量 job 必须成功才能通过
 最终 `checks`。实际选择规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
 
