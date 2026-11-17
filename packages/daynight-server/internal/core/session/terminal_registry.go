@@ -13,11 +13,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-type terminalRecording struct {
-	Responsibility  *v2.RecordingResponsibility
-	Evidence        *v2.RecordingEvidence
-	ObservedContent bool
-}
 type terminalRecord struct {
 	AutomationRecoveries map[string]*terminalAutomationRecovery
 	Envelope             v2.Envelope

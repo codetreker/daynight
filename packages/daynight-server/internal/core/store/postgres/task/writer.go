@@ -136,7 +136,7 @@ func (tx *Writer) CreateTask(ctx context.Context, id string, values TaskWrite) (
 }
 
 func (tx *Writer) UpdateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties)
+	properties, err := taskproperties.NormalizeStored(values.Properties)
 	if err != nil {
 		return model.Task{}, pg.QueryError("validate task properties", err)
 	}

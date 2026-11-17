@@ -1,5 +1,5 @@
 import { Fragment } from 'react';
-import type { TerminalFrame } from '../../../../daynight/src/session/v2/types';
+import type { TerminalFrame } from '../../../../daynight/src/session/v2/recording-types';
 import { useTerminalMessages } from './terminal-messages';
 import './terminal-session.css';
 

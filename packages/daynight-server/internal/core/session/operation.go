@@ -48,22 +48,25 @@ type BotRunner func(context.Context, model.Principal, string, string, func(model
 // Neither the transaction scope nor a single Operation is retained here.
 type Execution struct {
 	*Engine
-	browserRun              BrowserRunner
-	taskContentReadRun      BrowserRunner
-	taskReadRun             TaskRunner
-	taskArchiveReadRun      ArchiveRunner
-	controllerRun           ControllerRunner
-	archiveRun              ArchiveRunner
-	archivePreflightRun     ArchivePreflightRunner
-	terminalRun             TerminalRunner
-	taskRegistrationRun     TaskRegistrationRunner
-	testRegistrationRun     TestRegistrationRunner
-	grantRun                GrantRunner
-	taskRun                 TaskRunner
-	credentialRun           CredentialRunner
-	terminalRegistrationRun TerminalRegistrationRunner
-	authorizationRun        AuthorizationRunner
-	botRun                  BotRunner
+	browserRun               BrowserRunner
+	taskContentReadRun       BrowserRunner
+	taskReadRun              TaskRunner
+	taskArchiveReadRun       ArchiveRunner
+	controllerRun            ControllerRunner
+	archiveRun               ArchiveRunner
+	archivePreflightRun      ArchivePreflightRunner
+	terminalRun              TerminalRunner
+	terminalHistoryRun       TerminalHistoryRunner
+	terminalDirectoryRun     TerminalDirectoryRunner
+	taskTerminalDirectoryRun TerminalDirectoryRunner
+	taskRegistrationRun      TaskRegistrationRunner
+	testRegistrationRun      TestRegistrationRunner
+	grantRun                 GrantRunner
+	taskRun                  TaskRunner
+	credentialRun            CredentialRunner
+	terminalRegistrationRun  TerminalRegistrationRunner
+	authorizationRun         AuthorizationRunner
+	botRun                   BotRunner
 }
 
 func NewExecution(engine *Engine, browser BrowserRunner, controller ControllerRunner, archive ArchiveRunner, terminal TerminalRunner, taskRegistration TaskRegistrationRunner, testRegistration TestRegistrationRunner, grant GrantRunner, task TaskRunner, credential CredentialRunner, bot BotRunner, terminalRegistration TerminalRegistrationRunner, authorization AuthorizationRunner) *Execution {

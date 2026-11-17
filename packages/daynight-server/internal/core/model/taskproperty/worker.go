@@ -54,6 +54,16 @@ func encodeWorker(worker *model.WorkerClaim) *workerDocument {
 }
 
 func decodeWorker(data []byte) (*model.WorkerClaim, error) {
+	return decodeWorkerDocument(data, false)
+}
+
+// decodeStoredWorker recognizes historical execution modes independently of
+// admission policy, so changing new-claim support cannot make old tasks unreadable.
+func decodeStoredWorker(data []byte) (*model.WorkerClaim, error) {
+	return decodeWorkerDocument(data, true)
+}
+
+func decodeWorkerDocument(data []byte, stored bool) (*model.WorkerClaim, error) {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil, fmt.Errorf("properties.worker must be an object")
 	}
@@ -99,16 +109,18 @@ func decodeWorker(data []byte) (*model.WorkerClaim, error) {
 		return nil, err
 	}
 	worker.AgentControlMode = model.WorkerAgentControlMode(mode)
-	if !worker.AgentControlMode.Supports(worker.Agent) {
+	if stored && worker.AgentControlMode != model.AgentControlModeHerdr && worker.AgentControlMode != model.AgentControlModeWeb ||
+		!stored && !worker.AgentControlMode.Supports(worker.Agent) {
 		return nil, fmt.Errorf("properties.worker has an unsupported agent control mode and agent combination")
 	}
 	if !worker.State.Valid() || !worker.Platform.Valid() || !worker.Agent.Valid() || !worker.Phase.Valid() {
 		return nil, fmt.Errorf("properties.worker has invalid state, platform, agent or phase")
 	}
-	if _, exists := fields["herdr"]; !exists {
+	herdrRaw, exists := fields["herdr"]
+	if !exists && (!stored || worker.AgentControlMode != model.AgentControlModeWeb) {
 		return nil, fmt.Errorf("properties.worker.herdr is required")
 	}
-	if !bytes.Equal(bytes.TrimSpace(fields["herdr"]), []byte("null")) {
+	if exists && !bytes.Equal(bytes.TrimSpace(herdrRaw), []byte("null")) {
 		herdr, err := jsonobject.Decode(fields["herdr"], "properties.worker.herdr", "session", "workspaceId", "paneId")
 		if err != nil {
 			return nil, err

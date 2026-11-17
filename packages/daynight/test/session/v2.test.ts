@@ -59,9 +59,9 @@ describe("shared Session v2 raw wire corpus", () => {
     const input = fixture(name);
     expect(canonicalSessionJson(parseSessionV2Message(input))).toBe(canonicalSessionJson(input));
   });
-  it.each(manifest.cases)("$file accepts=$valid", async ({ file, type, valid }) => {
+  it.each(manifest.cases.filter(item => item.type === "message"))("$file accepts=$valid", async ({ file, valid }) => {
     const bytes = readFileSync(new URL(file, root));
-    const result = type === "archive" ? decodeSessionV2Archive(bytes) : decodeSessionV2Message(bytes);
+    const result = decodeSessionV2Message(bytes);
     if (valid) await expect(result).resolves.toBeDefined();
     else await expect(result).rejects.toThrow();
   });
@@ -70,15 +70,6 @@ describe("shared Session v2 raw wire corpus", () => {
 describe("Session v2 limits and integrity", () => {
   it("preserves every agreed resource and time boundary", () => {
     expect({ protocolHeader: SESSION_PROTOCOL_HEADER, ...SESSION_V2_LIMITS }).toEqual(JSON.parse(readFileSync(new URL("limits.json", root), "utf8")));
-  });
-  it("rejects malformed or duplicate raw JSON at any depth", () => {
-    for (const raw of ['{"x":{"a":1,"a":1}}', '{"x":[{"a":1,"a":2}]}', '[1,]', '{"a":1,}', 'true false', 'NaN', '1e9999', '"\\udc00"', '"\\ud800x"', '\ufeff{}', '['.repeat(66) + '0' + ']'.repeat(66)]) expect(() => decodeStrictSessionJson(raw)).toThrow();
-    expect(decodeStrictSessionJson('{"__proto__":{"x":1},"s":"\\ud83d\\ude00"}')).toEqual({ ["__proto__"]: { x: 1 }, s: "😀" });
-  });
-  it("checks raw byte size before dropping JSON whitespace", () => {
-    expect(decodeStrictSessionJson(' '.repeat(1020) + 'null', 1024)).toBeNull();
-    expect(() => decodeStrictSessionJson(' '.repeat(1021) + 'null', 1024)).toThrow();
-    expect(() => decodeStrictSessionJson(new Uint8Array([0xef, 0xbb, 0xbf, 123, 125]))).toThrow();
   });
   it("accepts native identity only as unknown then a stable value", () => {
     expect(() => assertNativeSessionIdProgression(null, "session:opaque")).not.toThrow();

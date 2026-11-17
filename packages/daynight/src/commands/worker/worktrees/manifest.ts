@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readFi
 import path from "node:path";
 import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
-import { decodeStrictSessionJson } from "../../../session/v2/values.js";
+import { decodeStrictJson } from "../../../strict-json.js";
 import type { ClaimIdentity, ResourceOwner } from "../types.js";
 import { canonicalWorktreeId, manifestPath } from "./paths.js";
 
@@ -45,7 +45,7 @@ export const createWorktreeManifestStore = (commonDirectory: string): WorktreeMa
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino) throw new Error(`Worktree manifest changed during read: ${file}`);
-      const result = parse(decodeStrictSessionJson(readFileSync(fd), 16384));
+      const result = parse(decodeStrictJson(readFileSync(fd), 16384));
       if (durable) fsyncSync(fd);
       return result;
     } finally { closeSync(fd); }
