@@ -57,6 +57,8 @@ The [Web specification](../../../../docs/spec/daynight-web.md#云端运行配置
 the interaction requirements; the [Web design](../../../../docs/design/daynight-web.md#worker-云端配置编辑)
 owns data flow and preservation behavior.
 
+The [configuration source decision](../architecture/2026-11-17-web-worker-configuration-source.md) preserves unknown target data through this lifecycle.
+
 ## Alternatives
 
 **Scroll from the shortcut click handler.** On the first visit the configuration

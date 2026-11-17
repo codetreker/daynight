@@ -18,6 +18,11 @@ const response = (revision = '1', toolPaths: WorkerCloudToolPaths | undefined = 
   return result;
 };
 const legacyResponse = (revision: string, maxConcurrent = 7) => configurationResponse(configurationResource(revision, { ...configurationValue(), maxConcurrent }));
+const futureResponse = (revision: string, maxConcurrent: number, paths: WorkerCloudToolPaths = original, future = '900719925474099312345', recoveryLimit = 3, mode?: 'web' | 'herdr') => {
+  const toolPaths = { ...paths, codex: paths.codex === null ? null : { ...paths.codex, extra: { large: 'FUTURE_NUMBER' } }, nextTool: { kind: 'new', limit: 'FUTURE_NUMBER' } };
+  const text = JSON.stringify(configurationResource(revision, { ...configurationValue(), maxConcurrent, recoveryLimit, toolPaths, ...(mode === undefined ? {} : { agentControlMode: mode }) })).replaceAll('"FUTURE_NUMBER"', future);
+  return new Response(text, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '1', ...(mode === undefined ? {} : { 'Daynight-Worker-Control-Mode': '1' }) } });
+};
 const scopes: TaskCacheScope[] = [];
 const scope = () => {
   const owner = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() });
@@ -37,6 +42,77 @@ beforeEach(() => vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }))
 afterEach(() => { for (const owner of scopes.splice(0)) owner.dispose(); invalidateAuthRequests(); vi.useRealTimers(); });
 
 describe('Worker legacy tool-path save reconciliation', () => {
+  it.each([false, true])('initializes newly discovered same-revision tools while settling an omitted receipt (publication deferred: %s)', async deferredPublication => {
+    const put = deferred<Response>(), entering = deferred<void>(), release = deferred<void>(), owner = scope();
+    const fetch = vi.fn().mockResolvedValueOnce(legacyResponse('1', 2)).mockImplementationOnce(() => put.promise)
+      .mockResolvedValueOnce(futureResponse('2', 7, remote, '900719925474099312345', 3, 'web')).mockResolvedValueOnce(futureResponse('3', 7, { ...remote, codex: local.codex }, '900719925474099312345', 4, 'web'));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = hook(owner); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, recoveryLimit: '4' })));
+    if (deferredPublication) {
+      const ready = owner.ready.bind(owner);
+      vi.spyOn(owner, 'ready').mockImplementationOnce(async () => { entering.resolve(); await release.promise; }).mockImplementation(ready);
+      put.resolve(legacyResponse('2')); await act(async () => entering.promise); await act(async () => saving);
+      await refresh(result); release.resolve(); await flush();
+    } else {
+      await refresh(result); put.resolve(legacyResponse('2')); await act(async () => saving); await flush();
+    }
+    expect(result.current.draft?.recoveryLimit).toBe('4');
+    expect(result.current.draft?.toolPaths).toEqual(remote);
+    expect(result.current.draft?.agentControlMode).toBe('web'); expect(result.current.resource?.controlModeSupported).toBe(true);
+    expect(result.current.resource?.desired?.value.toolPaths).toEqual(remote);
+    expect(result.current.baselineRevision).toBe('2');
+    act(() => result.current.setDraft(draft => ({ ...draft, toolPaths: { ...draft.toolPaths!, codex: local.codex } })));
+    await act(async () => result.current.save());
+    const body = fetch.mock.calls[3]![1].body as string, submitted = JSON.parse(body).value;
+    expect(submitted.toolPaths).toMatchObject({ codex: local.codex, copilot: remote.copilot, herdr: remote.herdr });
+    expect(submitted.agentControlMode).toBe('web');
+    expect(body).toContain('900719925474099312345'); expect(result.current.notice).toBe('saved');
+    expect(result.current.dirty).toBe(false);
+  });
+
+  it('uses the same-revision full source when capability appears during an edit', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(legacyResponse('1', 2)).mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(futureResponse('2', 7));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = hook(); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7' })));
+    await refresh(result); await act(async () => result.current.save());
+    const body = fetch.mock.calls[2]![1].body as string;
+    expect(body).toContain('900719925474099312345');
+    expect(JSON.parse(body).value.toolPaths).toHaveProperty('nextTool.kind', 'new');
+    expect(JSON.parse(body).value.toolPaths.codex).toHaveProperty('extra');
+    expect(result.current.notice).toBe('saved');
+  });
+
+  it('enriches an omitted receipt only from the same revision, never a delayed older read', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(legacyResponse('2'))
+      .mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(futureResponse('2', 7)).mockResolvedValueOnce(futureResponse('3', 7, local));
+    vi.stubGlobal('fetch', fetch);
+    const { result, rerender } = hook(); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7', toolPaths: local }))); rerender({ editable: false });
+    await act(async () => result.current.save()); rerender({ editable: true }); await refresh(result);
+    expect(result.current.baselineRevision).toBe('2'); expect(result.current.saveableDirty).toBe(false);
+    await act(async () => result.current.save()); expect(puts(fetch)).toHaveLength(1);
+    await refresh(result); expect(result.current.saveableDirty).toBe(true);
+    await act(async () => result.current.save());
+    const body = fetch.mock.calls[4]![1].body as string;
+    expect(body).toContain('900719925474099312345'); expect(JSON.parse(body).value.toolPaths).toHaveProperty('nextTool.kind', 'new');
+    expect(result.current.notice).toBe('saved');
+  });
+
+  it('retains the draft and blocks saves when the same revision changes unknown source', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(futureResponse('1', 2)).mockResolvedValueOnce(futureResponse('1', 2, original, '900719925474099312346'));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = hook(); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '7' })));
+    await refresh(result);
+    expect(result.current.error).toMatchObject({ kind: 'protocol' });
+    expect(result.current.draft?.maxConcurrent).toBe('7'); expect(result.current.saveableDirty).toBe(false);
+    await act(async () => result.current.save()); expect(puts(fetch)).toHaveLength(0);
+  });
+
   it('adopts untouched omitted paths before using a newer read revision for a full save', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(response()).mockRejectedValueOnce(new TypeError('connection lost'))
       .mockResolvedValueOnce(response('3', remote, 7)).mockResolvedValueOnce(response('4', remote, 8));

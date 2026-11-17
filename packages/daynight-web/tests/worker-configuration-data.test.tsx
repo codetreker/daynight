@@ -24,6 +24,79 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); invalidateAuthRequests(); vi.useRealTimers(); });
 
 describe('Worker configuration editing lifetime', () => {
+  it('does not reconcile an unknown save when only the known values match', async () => {
+    const raw = (revision: string, value: number, future: string) => new Response(JSON.stringify(configurationResource(revision, { ...configurationValue(), maxConcurrent: value })).replace('"maxConcurrent":', `"future":${future},"maxConcurrent":`), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1' } });
+    const fetch = vi.fn().mockResolvedValueOnce(raw('1', 2, '900719925474099312345')).mockRejectedValueOnce(new TypeError('connection lost'))
+      .mockResolvedValueOnce(raw('2', 3, '900719925474099312346'));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    await act(async () => result.current.save()); await flush();
+    expect(result.current.notice).toBe('conflict'); expect(result.current.baselineRevision).toBe('1');
+    expect(result.current.draft?.maxConcurrent).toBe('3'); expect(result.current.dirty).toBe(true);
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+  it.each([true, false])('only confirms an abandoned unknown save when the full source matches: %s', async matches => {
+    const raw = (revision: string, value: number, future: string) => new Response(JSON.stringify(configurationResource(revision, { ...configurationValue(), maxConcurrent: value })).replace('"maxConcurrent":', `"future":${future},"maxConcurrent":`), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1' } });
+    const put = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(raw('1', 2, '900719925474099312345')).mockImplementationOnce(() => put.promise)
+      .mockResolvedValueOnce(raw('2', 3, matches ? '900719925474099312345' : '900719925474099312346'));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    act(() => result.current.abandon()); put.reject(new TypeError('connection lost'));
+    await act(async () => saving); await flush();
+    expect(result.current.notice).toBe(matches ? 'reconciled' : 'notSaved'); expect(result.current.uncertain).toBe(false);
+    expect(result.current.draft?.maxConcurrent).toBe('3'); expect(result.current.baselineRevision).toBe('2');
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
+  it('does not silently rebase a matching edit over changed unknown values', async () => {
+    const raw = (revision: string, value: number, future: number) => { const next = { ...configurationValue(), maxConcurrent: value, future }; return configurationResponse(configurationResource(revision, next)); };
+    const fetch = vi.fn().mockResolvedValueOnce(raw('1', 2, 1)).mockResolvedValueOnce(raw('2', 3, 2));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.conflict).toBe(true); expect(result.current.baselineRevision).toBe('1'); expect(result.current.dirty).toBe(true);
+  });
+  it('rejects inconsistent rereads of the newer displayed revision while retaining the original draft', async () => {
+    const raw = (revision: string, value: number, future: number) => { const next = { ...configurationValue(), maxConcurrent: value, future }; return configurationResponse(configurationResource(revision, next)); };
+    const fetch = vi.fn().mockResolvedValueOnce(raw('1', 2, 1)).mockResolvedValueOnce(raw('2', 4, 2))
+      .mockResolvedValueOnce(raw('2', 4, 3)).mockResolvedValueOnce(raw('1', 2, 1)).mockResolvedValueOnce(raw('2', 4, 2));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    act(() => result.current.refresh()); await flush();
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.error).toMatchObject({ kind: 'protocol' }); expect(result.current.draft?.maxConcurrent).toBe('3');
+    act(() => result.current.loadLatest()); expect(result.current.baselineRevision).toBe('1');
+    act(() => result.current.refresh()); await flush(); expect(result.current.saveableDirty).toBe(false);
+    act(() => result.current.refresh()); await flush(); expect(result.current.error).toBeNull();
+    act(() => result.current.loadLatest()); expect(result.current.baselineRevision).toBe('2');
+  });
+  it.each([false, true])('blocks an abandoned draft when a same-revision read contradicts its receipt (publication deferred: %s)', async deferredPublication => {
+    const raw = (revision: string, value: number, future: number) => { const next = { ...configurationValue(), maxConcurrent: value, future }; return configurationResponse(configurationResource(revision, next)); };
+    const put = deferred<Response>(), entering = deferred<void>(), release = deferred<void>(), owner = makeScope();
+    const fetch = vi.fn().mockResolvedValueOnce(raw('1', 2, 1)).mockImplementationOnce(() => put.promise).mockResolvedValueOnce(raw('2', 3, 2));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(owner) }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    act(() => result.current.abandon());
+    if (deferredPublication) {
+      const ready = owner.ready.bind(owner);
+      vi.spyOn(owner, 'ready').mockImplementationOnce(async () => { entering.resolve(); await release.promise; }).mockImplementation(ready);
+      put.resolve(raw('2', 3, 1)); await act(async () => entering.promise); await act(async () => saving);
+      act(() => result.current.refresh()); await flush(); release.resolve(); await flush();
+    } else {
+      act(() => result.current.refresh()); await flush();
+      put.resolve(raw('2', 3, 1)); await act(async () => saving); await flush();
+    }
+    expect(result.current.error).toMatchObject({ kind: 'protocol' });
+    expect(result.current.saveableDirty).toBe(false); act(() => result.current.loadLatest());
+    await act(async () => result.current.save()); expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
   it('keeps invalid raw edits while polling independently of task snapshots', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource()))
       .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...configurationValue(), maxConcurrent: 8 })));
@@ -496,7 +569,7 @@ describe('Worker configuration editing lifetime', () => {
       const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) });
       await flush(); act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3' })));
       await act(async () => result.current.save()); await flush();
-      expect(confirmed).toHaveBeenCalledExactlyOnceWith(saved);
+      expect(confirmed).toHaveBeenCalledOnce(); expect(confirmed.mock.calls[0]![0].document.known).toEqual(saved);
       expect((fetch.mock.calls[1]![1].signal as AbortSignal).aborted).toBe(true);
       expect(result.current.pending).toBe(false); expect(result.current.uncertain).toBe(false);
       expect(result.current.notice).toBe('saved'); expect(result.current.baselineRevision).toBe('2');
