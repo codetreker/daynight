@@ -10,6 +10,7 @@ import (
 )
 
 func TestTaskSearchProjectAccessUsesSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := searchTestStore(t)
 	ctx := context.Background()
 	project, owner, team, stranger := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()

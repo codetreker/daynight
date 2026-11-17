@@ -113,6 +113,7 @@ func threadWitnessAppend(ctx context.Context, database *Store, principal model.P
 }
 
 func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
 		t.Run(string(kind), func(t *testing.T) {
 			database, principal, _, project := membershipFixture(t)
@@ -253,6 +254,7 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 }
 
 func TestThreadCancellationBeforeCommitRollsBackEveryWriteStage(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, principal, _, project := membershipFixture(t)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	first, _, err := threadWitnessAppend(t.Context(), database, principal, project.ID, task.ID, "first", nil)
@@ -296,6 +298,7 @@ func TestThreadCancellationBeforeCommitRollsBackEveryWriteStage(t *testing.T) {
 }
 
 func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, agent := range []bool{false, true} {
 		t.Run(fmt.Sprintf("agent=%t", agent), func(t *testing.T) {
 			database, principal, _, project := membershipFixture(t)
@@ -409,6 +412,7 @@ func threadWitnessRead(ctx context.Context, database *Store, principal model.Pri
 }
 
 func TestThreadReadCancellationAndParentDeadlineAreBounded(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, principal, _, project := membershipFixture(t)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	first := appendStoredThread(t, database, task.ID, principal.UserID, "first")
@@ -458,6 +462,7 @@ func TestThreadReadCancellationAndParentDeadlineAreBounded(t *testing.T) {
 }
 
 func TestThreadReadDatabaseFailuresRemainVisible(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, principal, _, project := membershipFixture(t)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	database.Close()
@@ -476,6 +481,7 @@ func TestThreadReadDatabaseFailuresRemainVisible(t *testing.T) {
 }
 
 func TestThreadPreCommitSQLFailureRollsBackCandidate(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database, principal, _, project := membershipFixture(t)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	before := threadWitnessState(t, database, task.ID)

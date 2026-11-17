@@ -34,6 +34,7 @@ func TestAssistantTaskMigrationOwnsTablesAndIndexes(t *testing.T) {
 }
 
 func TestAssistantTaskWireCommitLossRecoversOriginalReceiptReadOnly(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -102,6 +103,7 @@ func TestAssistantTaskWireCommitLossRecoversOriginalReceiptReadOnly(t *testing.T
 }
 
 func TestAssistantTaskScopeReportsBeginFailureWithoutCallingOperation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	database.Pool.Close()
 	called := false

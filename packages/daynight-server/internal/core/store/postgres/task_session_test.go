@@ -35,6 +35,7 @@ func taskSessionTransitionFacts(t *testing.T, database *Store) map[string]string
 }
 
 func TestTaskDeletionSessionFreezeAndCacheEpochAreAtomic(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	project := queryProject(t, database, 1)
@@ -116,6 +117,7 @@ func TestTaskDeletionSessionFreezeAndCacheEpochAreAtomic(t *testing.T) {
 }
 
 func TestTaskSessionFreezeAndReceiptFailureRollBackTaskTransitions(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, status := range []model.TaskStatus{model.TaskDone, model.TaskCancelled} {
 		t.Run(string(status), func(t *testing.T) {
 			ctx := context.Background()

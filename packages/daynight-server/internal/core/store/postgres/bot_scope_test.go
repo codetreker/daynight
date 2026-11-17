@@ -17,6 +17,7 @@ import (
 )
 
 func TestBotDefinitionsHaveNoProjectDependency(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	var exists bool
 	if err := database.Pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='bots')`).Scan(&exists); err != nil {
@@ -35,6 +36,7 @@ func TestBotDefinitionsHaveNoProjectDependency(t *testing.T) {
 }
 
 func TestBotTransactionRollbackAndCompositeWorkerForeignKey(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	candidate, principal := storedBotCandidate(t, database)
 	ctx := context.Background()
@@ -90,6 +92,7 @@ func TestBotTransactionRollbackAndCompositeWorkerForeignKey(t *testing.T) {
 }
 
 func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	bot := runtimeStoredBot(t, database)
 	ctx := context.Background()
@@ -161,6 +164,7 @@ func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 }
 
 func TestBotReadyAndSuccessfulPreferencesShareOneTransaction(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	bot := runtimeStoredBot(t, database)
 	ctx := context.Background()
@@ -219,6 +223,7 @@ func TestBotReadyAndSuccessfulPreferencesShareOneTransaction(t *testing.T) {
 }
 
 func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	candidate, _ := storedBotCandidate(t, database)
 	bot := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/choice"), Provider: botPreferenceText("claude")})
@@ -259,6 +264,7 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 }
 
 func TestBotClosedPoolDoesNotInvokeScope(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := closedStore(t)
 	if err := writeBotTest(database, context.Background(), func(BotWriteDAO) error { t.Fatal("closed pool invoked callback"); return nil }); err == nil {
 		t.Fatal("closed pool appeared writable")
@@ -266,6 +272,7 @@ func TestBotClosedPoolDoesNotInvokeScope(t *testing.T) {
 }
 
 func TestBotCleanupReceiptPersistsAcrossCommitAndRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	candidate, principal := storedBotCandidate(t, database)

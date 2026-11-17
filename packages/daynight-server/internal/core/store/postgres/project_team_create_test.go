@@ -15,6 +15,7 @@ import (
 )
 
 func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, rollback := range []bool{false, true} {
 		t.Run(map[bool]string{false: "commit", true: "rollback"}[rollback], func(t *testing.T) {
 			s, actor, team := storeTeamFixture(t)
@@ -60,6 +61,7 @@ func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
 }
 
 func TestTeamDeletionWaitsForActualProjectCreation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, rollback := range []bool{false, true} {
 		t.Run(map[bool]string{false: "commit", true: "rollback"}[rollback], func(t *testing.T) {
 			s, actor, team := storeTeamFixture(t)
@@ -116,6 +118,7 @@ func TestTeamDeletionWaitsForActualProjectCreation(t *testing.T) {
 }
 
 func TestProjectCreationCommitResponseLoss(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
 	tx, err := s.Pool.Begin(ctx)

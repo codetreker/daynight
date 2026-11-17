@@ -27,6 +27,7 @@ func databaseURL(t *testing.T) string {
 }
 
 func TestOpenAndReuse(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	url := scopedDatabaseURL(t)
@@ -44,6 +45,7 @@ func TestOpenAndReuse(t *testing.T) {
 }
 
 func TestOpenFailuresPreserveCauseAndRedact(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, url := range []string{"postgres://user:top-secret@bad%host/db", "postgres://user:top-secret@127.0.0.1:1/db?connect_timeout=1"} {
 		_, err := Open(context.Background(), url)
 		var failure *Error
@@ -63,6 +65,7 @@ func TestOpenFailuresPreserveCauseAndRedact(t *testing.T) {
 }
 
 func TestQueryCancellationReleasesConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -188,6 +191,7 @@ func TestOpenMigrationFailurePreservesCauseAndRedacts(t *testing.T) {
 }
 
 func TestReadinessReportsClosedPersistence(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	if err := database.Ready(context.Background()); err != nil {
 		t.Fatalf("open persistence is not ready: %v", err)

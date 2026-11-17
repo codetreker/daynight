@@ -20,6 +20,7 @@ import (
 )
 
 func TestEnsureUserCompleteAccountRacesNativeLogin(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -64,6 +65,7 @@ func TestEnsureUserCompleteAccountRacesNativeLogin(t *testing.T) {
 }
 
 func TestEnsureUserInitializationFailureRollsBackAccount(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, table := range []string{"teams", "team_members"} {
 		t.Run(table, func(t *testing.T) {
 			database := isolatedStore(t)
@@ -85,6 +87,7 @@ func TestEnsureUserInitializationFailureRollsBackAccount(t *testing.T) {
 }
 
 func TestProfilePatchCompleteValidationRollsBackSparseWrite(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, failure := range []string{"personal-team", "profile-capacity", "stored-field-capacity"} {
 		t.Run(failure, func(t *testing.T) {
 			database := isolatedStore(t)
@@ -112,6 +115,7 @@ func TestProfilePatchCompleteValidationRollsBackSparseWrite(t *testing.T) {
 }
 
 func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.OAuthCredential} {
 		t.Run(string(kind), func(t *testing.T) {
 			database := isolatedStore(t)
@@ -180,6 +184,7 @@ func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
 }
 
 func TestEnsureUserLostCommitAcknowledgementReturnsUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	var armed, lost atomic.Bool

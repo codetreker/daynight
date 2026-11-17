@@ -12,6 +12,7 @@ import (
 )
 
 func TestThreadClockExhaustionDoesNotPublishInsertedCandidate(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := context.Background()
 	var candidate model.ThreadMessage

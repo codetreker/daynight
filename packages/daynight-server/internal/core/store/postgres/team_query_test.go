@@ -138,6 +138,7 @@ func TestTeamRenameAndDeleteSQLFailuresRollbackCompleteLifecycle(t *testing.T) {
 }
 
 func TestTeamMemberQueryCancellationPreservesFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx := t.Context()
 	_, actor, _ := testAuthRecords(t, s)

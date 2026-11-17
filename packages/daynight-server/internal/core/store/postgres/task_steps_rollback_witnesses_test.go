@@ -339,6 +339,7 @@ func competeStepWitnessTransactions(t *testing.T, database *Store, projectID, ta
 }
 
 func TestTaskStepsCompetingWritesUseFreshSharedParentRevision(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	for index, test := range []struct {

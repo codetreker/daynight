@@ -16,6 +16,7 @@ import (
 )
 
 func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, transferFirst := range []bool{false, true} {
 		for _, firstCommits := range []bool{false, true} {
 			t.Run(fmt.Sprintf("transferFirst=%t/commit=%t", transferFirst, firstCommits), func(t *testing.T) {

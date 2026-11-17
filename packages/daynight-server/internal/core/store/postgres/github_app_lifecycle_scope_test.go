@@ -61,6 +61,7 @@ func (f appLifecycleFixture) assertStopped(t *testing.T, impact int64) {
 }
 
 func TestAppProjectTransferStopsEvenWithSameAppDestination(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
 	target := f.target(t)
 	mustQueryExec(t, f.db, `INSERT INTO github_app_team_grants(id,app_resource_id,team_id) VALUES($1,$2,$3)`, uuid.NewString(), f.app, target.ID)
@@ -82,6 +83,7 @@ func TestAppProjectTransferStopsEvenWithSameAppDestination(t *testing.T) {
 }
 
 func TestAppProjectSameTeamPreservesConnectionAndIntent(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
 	var target model.Team
 	err := f.db.ReadSnapshot(t.Context(), func(s store.SnapshotScope) error {
@@ -103,6 +105,7 @@ func TestAppProjectSameTeamPreservesConnectionAndIntent(t *testing.T) {
 }
 
 func TestAppProjectDeletionStopsAndRetainsHistoricalData(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
 	task, sessionID := uuid.NewString(), uuid.NewString()
 	mustQueryExec(t, f.db, `INSERT INTO tasks(id,project_id,title,status,deleted_at) VALUES($1,$2,'Historical task','done',now())`, task, f.project.ID)
@@ -124,6 +127,7 @@ func TestAppProjectDeletionStopsAndRetainsHistoricalData(t *testing.T) {
 }
 
 func TestAppProjectDeletionStorageFailureRollsBackRetirement(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
 	mustQueryExec(t, f.db, `CREATE FUNCTION reject_app_project_deletion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected Project deletion failure'; END $$; CREATE TRIGGER reject_app_project_deletion BEFORE UPDATE ON projects FOR EACH ROW EXECUTE FUNCTION reject_app_project_deletion()`)
 	_, err := projectservice.NewAppProjects(f.db).Delete(t.Context(), f.actor, f.project.ID)
@@ -138,6 +142,7 @@ func TestAppProjectDeletionStorageFailureRollsBackRetirement(t *testing.T) {
 }
 
 func TestAppProjectDeletionRejectsMissingOwnershipRoots(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, missing := range []string{"ownership", "Team"} {
 		t.Run(missing, func(t *testing.T) {
 			f := lifecycleFixture(t)
@@ -156,6 +161,7 @@ func TestAppProjectDeletionRejectsMissingOwnershipRoots(t *testing.T) {
 }
 
 func TestAppProjectRetirementRollbackAndUnboundIntent(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
 	sentinel := errors.New("rollback retirement")
 	c, err := f.db.WriteGitHubProjectTransfer(t.Context(), f.project.ID, func(s store.GitHubProjectTransferScope) error {
@@ -186,6 +192,7 @@ func TestAppProjectRetirementRollbackAndUnboundIntent(t *testing.T) {
 }
 
 func TestAppLifecycleWaitsForAppDeletionAndReadsCleanup(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, operation := range []string{"transfer", "project-delete", "team-delete"} {
 		t.Run(operation, func(t *testing.T) {
 			f := lifecycleFixture(t)
@@ -242,6 +249,7 @@ func TestAppLifecycleWaitsForAppDeletionAndReadsCleanup(t *testing.T) {
 }
 
 func TestAppTeamDeletionRetiresOnlyItsGrants(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
 	target := f.target(t)
 	grant := uuid.NewString()
@@ -258,6 +266,7 @@ func TestAppTeamDeletionRetiresOnlyItsGrants(t *testing.T) {
 }
 
 func TestAppLifecycleScopeMissingRootsAndClosedPool(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
 	for _, closed := range []bool{false, true} {
 		if closed {

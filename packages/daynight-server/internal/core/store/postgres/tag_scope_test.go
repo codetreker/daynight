@@ -11,6 +11,7 @@ import (
 )
 
 func TestTagScopesShareSnapshotAndProjectTransaction(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -121,6 +122,7 @@ func TestTagScopesShareSnapshotAndProjectTransaction(t *testing.T) {
 }
 
 func TestTagSnapshotQueryCancellation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	ctx, finish := context.WithTimeout(context.Background(), 10*time.Second)
@@ -153,6 +155,7 @@ func TestTagSnapshotQueryCancellation(t *testing.T) {
 }
 
 func TestTagDeleteAndAttachSerialize(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	task := queryTask(t, s, project.ID, 11, model.TaskTodo)

@@ -14,6 +14,7 @@ import (
 )
 
 func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -157,6 +158,7 @@ func TestGoalDeletionWaitsForResourceWrites(t *testing.T) {
 }
 
 func TestProjectDeletionWaitsForGoalChildAttachment(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

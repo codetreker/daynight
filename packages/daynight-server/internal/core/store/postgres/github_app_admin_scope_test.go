@@ -102,6 +102,7 @@ func serializedAppAdminOperations(t *testing.T, db *Store, appID string, first, 
 }
 
 func TestAppAdminScopeSerializesAcceptAndRevoke(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, acceptFirst := range []bool{false, true} {
 		t.Run(map[bool]string{false: "revoke first", true: "accept first"}[acceptFirst], func(t *testing.T) {
 			db, appID, issuer, joiner, _ := appAdminScopeFixture(t)
@@ -149,6 +150,7 @@ func TestAppAdminScopeSerializesAcceptAndRevoke(t *testing.T) {
 }
 
 func TestAppAdminScopeSerializesIssuerRemovalAndAccept(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, acceptFirst := range []bool{false, true} {
 		t.Run(map[bool]string{false: "remove issuer first", true: "accept first"}[acceptFirst], func(t *testing.T) {
 			db, appID, issuer, remaining, joiner := appAdminScopeFixture(t)
@@ -193,6 +195,7 @@ func TestAppAdminScopeSerializesIssuerRemovalAndAccept(t *testing.T) {
 }
 
 func TestAppAdminScopeLastAdminAndRejoinCannotRestoreOldInvite(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, appID, first, second, joiner := appAdminScopeFixture(t)
 	ctx := t.Context()
 	c, err := db.WriteGitHubAppAdmins(ctx, appID, func(w store.GitHubAppAdminWriter) error { _, err := w.AddAdmin(ctx, appID, second.UserID); return err })
@@ -248,6 +251,7 @@ func TestAppAdminScopeLastAdminAndRejoinCannotRestoreOldInvite(t *testing.T) {
 }
 
 func TestAppAdminScopeRollbackCancellationAndMissingApp(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, appID, issuer, joiner, _ := appAdminScopeFixture(t)
 	ctx := t.Context()
 	refused := errors.New("abort after mutation")
@@ -315,6 +319,7 @@ func TestAppAdminScopeRollbackCancellationAndMissingApp(t *testing.T) {
 }
 
 func TestAppAdminLostCommitResponsePreservesUnknownAndDurableState(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, appID, _, joiner, _ := appAdminScopeFixture(t)
 	ctx := t.Context()
 	tx, err := db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})

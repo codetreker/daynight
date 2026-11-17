@@ -21,6 +21,7 @@ var updateSchemaSnapshot = flag.Bool("update-schema-snapshot", false, "Regenerat
 var schemaSnapshotPGDump = flag.String("schema-snapshot-pg-dump", "pg_dump", "PostgreSQL 18 pg_dump executable used to regenerate the schema snapshot.")
 
 func TestSchemaSnapshotVersion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	assertSchemaSnapshotVersion(t, currentSchemaSnapshot)
 }
 
@@ -111,6 +112,7 @@ func TestSchemaSnapshotMatchesMigrations(t *testing.T) {
 }
 
 func TestSchemaSnapshotSQLNormalizationPreservesLiteralData(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	input := `-- pg_dump annotation
 \restrict generated-token
 SET statement_timeout = 0;

@@ -22,6 +22,7 @@ func searchMutationFence(t *testing.T, database *Store, projectID string) store.
 	return fence
 }
 func TestTaskSearchRollbackRetainsFenceAndPersistentTask(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	target := queryTask(t, database, project.ID, 11, model.TaskTodo)

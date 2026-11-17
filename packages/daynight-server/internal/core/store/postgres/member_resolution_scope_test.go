@@ -14,6 +14,7 @@ import (
 
 // Resolution uses the actual credential and Team transaction and persists no business changes.
 func TestMemberResolutionScopeAuthorizationAndReadOnly(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, actor, team := storeTeamFixture(t)
 	ctx := t.Context()
 	admin, _, _ := testAuthRecords(t, db)
@@ -108,6 +109,7 @@ func TestMemberResolutionScopeAuthorizationAndReadOnly(t *testing.T) {
 }
 
 func TestMemberResolutionScopeObservesChangesDuringTeamLockWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, change := range []string{"admin", "credential", "membership"} {
 		t.Run(change, func(t *testing.T) {
 			db, actor, team := storeTeamFixture(t)

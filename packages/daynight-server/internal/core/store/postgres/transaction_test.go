@@ -17,6 +17,7 @@ import (
 )
 
 func TestReadSnapshotCommitCancellationRetainsUnknownOutcome(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	for _, missing := range []bool{false, true} {
@@ -109,6 +110,7 @@ func cancellationObserver(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 }
 
 func TestTransactRollbackSurvivesCancellation(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	if _, err := pool.Exec(context.Background(), "CREATE TABLE rollback_marker (id int)"); err != nil {
 		t.Fatal(err)
@@ -136,6 +138,7 @@ func TestTransactRollbackSurvivesCancellation(t *testing.T) {
 }
 
 func TestReadOnlySnapshotWaitsForCanceledConnectionCleanup(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
@@ -155,6 +158,7 @@ func TestReadOnlySnapshotWaitsForCanceledConnectionCleanup(t *testing.T) {
 }
 
 func TestReadOnlySnapshotPreservesAdditionalCleanupFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
@@ -179,6 +183,7 @@ func TestReadOnlySnapshotPreservesAdditionalCleanupFailure(t *testing.T) {
 }
 
 func TestReadOnlySnapshotRetainsDatabaseFailureAfterCanceledConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
@@ -199,6 +204,7 @@ func TestReadOnlySnapshotRetainsDatabaseFailureAfterCanceledConnection(t *testin
 }
 
 func TestTransactPreservesOperationAndCleanupFailures(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	tx, err := pool.Begin(context.Background())
 	if err != nil {
@@ -217,6 +223,7 @@ func TestTransactPreservesOperationAndCleanupFailures(t *testing.T) {
 }
 
 func TestTransactRollbackOnPanic(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	tx, err := pool.Begin(context.Background())
 	if err != nil {
@@ -234,6 +241,7 @@ func TestTransactRollbackOnPanic(t *testing.T) {
 }
 
 func TestTransactDoesNotSuppressJoinedClosedRollbackFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	tx, err := pool.Begin(context.Background())
 	if err != nil {
@@ -260,6 +268,7 @@ func (tx *rollbackFailureTx) Rollback(ctx context.Context) error {
 }
 
 func TestTransactCommitKnownnessUsesActualDatabaseCompletion(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	if _, err := pool.Exec(context.Background(), "CREATE TABLE commit_marker (id int)"); err != nil {
 		t.Fatal(err)
@@ -305,6 +314,7 @@ func TestTransactCommitKnownnessUsesActualDatabaseCompletion(t *testing.T) {
 }
 
 func TestTransactCancellationBeforeCommitIsConfirmedRollback(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	tx, err := pool.Begin(context.Background())
 	if err != nil {
@@ -327,6 +337,7 @@ func (tx classificationTx) Commit(context.Context) error   { return tx.commit }
 func (tx classificationTx) Rollback(context.Context) error { return tx.rollback }
 
 func TestTransactionFailureClassification(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	fault := &model.Fault{Code: "not_found", Message: "not found"}
 	driver := &pgconn.PgError{Code: "23505", Message: "private"}
 	cleanup := errors.New("cleanup")
@@ -359,6 +370,7 @@ func TestTransactionFailureClassification(t *testing.T) {
 }
 
 func TestThreadCompletionFailuresPreserveFaultAndCause(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	fault := &model.Fault{Code: "invalid_input", Message: "invalid"}
 	cleanup := errors.New("cleanup")
 	completion, err := writeThread(context.Background(), classificationTx{rollback: cleanup}, func(ThreadScope) error { return fault })
@@ -375,6 +387,7 @@ func TestThreadCompletionFailuresPreserveFaultAndCause(t *testing.T) {
 	}
 }
 func TestReadOnlySnapshotCleansConnectionAfterQueryDeadline(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	pool := emptyPool(t)
 	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
@@ -410,6 +423,7 @@ func (tx *deadlineRollbackTx) Rollback(ctx context.Context) error {
 }
 
 func TestGitHubSignalCleanupHonorsRequestDeadline(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	deadline, _ := ctx.Deadline()

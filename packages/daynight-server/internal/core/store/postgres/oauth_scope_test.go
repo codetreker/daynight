@@ -21,6 +21,7 @@ func authorizationFailureRecord(now time.Time) store.OAuthAuthorization {
 }
 
 func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	t.Run("constraint failure rolls back insertion", func(t *testing.T) {
@@ -183,6 +184,7 @@ func familyCredentialAfterTargetLock(t *testing.T, db *Store, issue store.OAuthF
 }
 
 func TestOAuthFamilyTransactionRollbackAndCredentialLocks(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	db := isolatedStore(t)
@@ -263,6 +265,7 @@ func lifecycleIssue(t *testing.T, db *Store, user string, now time.Time) (store.
 func addLifecycleUser(t *testing.T, db *Store) string { return testutil.AddOAuthUser(t, db.Pool) }
 
 func TestGrantLifecycleAdmissionDoesNotExhaustPool(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

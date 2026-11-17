@@ -146,6 +146,7 @@ func assertHintCheckpoint(t *testing.T, logs, delivery string) {
 }
 
 func TestGitHubWebhookUnknownCommitIsNotAcknowledged(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
 	b2Configure(t, db, project.ID, 10, 20, 30)
@@ -178,6 +179,7 @@ func TestGitHubWebhookUnknownCommitIsNotAcknowledged(t *testing.T) {
 }
 
 func TestGitHubSignalDeadlineReleasesBlockedConnection(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
 	b2Configure(t, db, project.ID, 10, 20, 30)

@@ -58,6 +58,7 @@ func directMemberPrincipal(t *testing.T, db *Store, actor model.Principal, kind 
 }
 
 func TestDirectMemberScopeConcurrentEnsuresConvergeWithoutAdvancingMembership(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, role := range []model.ProjectRole{model.ProjectAdmin, model.ProjectMemberRole} {
 		t.Run(string(role), func(t *testing.T) {
 			db, actor, team := storeTeamFixture(t)
@@ -120,6 +121,7 @@ func TestDirectMemberScopeConcurrentEnsuresConvergeWithoutAdvancingMembership(t 
 }
 
 func TestDirectMemberScopeRechecksRevocationAfterCompleteTarget(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, cause := range []string{"admin", "session", "pat", "oauth"} {
 		t.Run(cause, func(t *testing.T) {
 			db, actor, team := storeTeamFixture(t)
@@ -206,6 +208,7 @@ func TestDirectMemberScopeRechecksRevocationAfterCompleteTarget(t *testing.T) {
 }
 
 func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential, model.OAuthCredential} {
 		t.Run(string(kind), func(t *testing.T) {
 			db, actor, team := storeTeamFixture(t)
@@ -282,6 +285,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 }
 
 func TestDirectMemberScopeEligibilityFailureRollsBackMembershipButRetainsAccount(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, actor, team := storeTeamFixture(t)
 	ctx := t.Context()
 	target, _, _ := testAuthRecords(t, db)
@@ -304,6 +308,7 @@ func TestDirectMemberScopeEligibilityFailureRollsBackMembershipButRetainsAccount
 }
 
 func TestDirectMemberScopeLostFinalCommitAcknowledgementReturnsUnknown(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, actor, team := storeTeamFixture(t)
 	ctx := t.Context()
 	var armed, lost atomic.Bool
@@ -345,6 +350,7 @@ func TestDirectMemberScopeLostFinalCommitAcknowledgementReturnsUnknown(t *testin
 }
 
 func TestDirectMemberScopeExpiryDuringEligibilityWaitRollsBackNewMembership(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()

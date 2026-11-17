@@ -10,6 +10,7 @@ import (
 )
 
 func TestAppConfigScopeMissingRootAndClosedPool(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, app, _, _, _ := appAdminScopeFixture(t)
 	ctx := t.Context()
 	called := false

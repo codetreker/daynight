@@ -65,6 +65,7 @@ func (c *lostGrantCommitConn) Read(out []byte) (int, error) {
 }
 
 func TestGrantWireCommitLossPreservesUnknownAndDurableWrite(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, _, target, project := membershipFixture(t)
 	ctx := t.Context()
 	mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, project.Ownership.TeamID, target.UserID)

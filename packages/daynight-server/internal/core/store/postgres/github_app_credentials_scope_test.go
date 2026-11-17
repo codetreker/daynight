@@ -5,6 +5,7 @@ import (
 )
 
 func TestStoreCredentialsReadsOnlyLiveApp(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	db, _, _, _, app, _ := projectAppScopeFixture(t)
 	got, err := db.Credentials(t.Context(), app)
 	if err != nil || got.AppResourceID != app || got.GitHubAppID != 9 || got.CredentialVersion != 1 || string(got.PrivateKeyPEM) != "k" {

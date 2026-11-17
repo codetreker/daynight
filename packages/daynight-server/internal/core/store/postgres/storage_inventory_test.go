@@ -48,6 +48,7 @@ func TestBackupReaderRequiresCurrentMigrationChainAndRemainsReadOnly(t *testing.
 }
 
 func TestBackupInventoryRejectsOrphansAndRetainsCallbackFailure(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	ctx := t.Context()
 	owner, id, execution := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -77,6 +78,7 @@ func TestBackupInventoryRejectsOrphansAndRetainsCallbackFailure(t *testing.T) {
 }
 
 func TestBackupReaderFailuresRedactConnectionDetails(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, url := range []string{"postgres://secret-user:secret-password@bad%host/db", "postgres://secret-user:secret-password@127.0.0.1:1/db?connect_timeout=1"} {
 		_, err := OpenReadOnly(context.Background(), url)
 		if err == nil || strings.Contains(err.Error(), "secret-") {
@@ -126,6 +128,7 @@ func TestBackupInventoryRetainsMigrationAndSkipsReleasedStagingTombstones(t *tes
 }
 
 func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, tc := range []struct {
 		name     string
 		offset   int64

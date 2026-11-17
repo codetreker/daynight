@@ -36,6 +36,7 @@ func appWorkClaim(ctx context.Context, w store.GitHubAppWorkDAO, token string) (
 }
 
 func TestAppWorkScopeRollbackAndOriginalIdentity(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, project, identity := appWorkScopeFixture(t)
 	ctx := t.Context()
 	token := uuid.NewString()
@@ -210,6 +211,7 @@ func TestAppWorkWaitsForInvalidationBeforeClaim(t *testing.T) {
 }
 
 func TestAppWorkScopeLostCommitReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, project, identity := appWorkScopeFixture(t)
 	ctx := t.Context()
 	var armed, lost atomic.Bool
@@ -250,6 +252,7 @@ func TestAppWorkScopeLostCommitReceipt(t *testing.T) {
 }
 
 func TestAppWorkOriginalClaimRejectsOwnershipABA(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, project, identity := appWorkScopeFixture(t)
 	ctx := t.Context()
 	token := uuid.NewString()

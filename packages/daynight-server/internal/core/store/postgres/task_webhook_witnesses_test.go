@@ -24,6 +24,7 @@ import (
 )
 
 func TestWebhookFrozenThreadAudienceSurvivesDestinationChange(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	var expected [5]string
 	for _, binding := range f.bindings {
@@ -184,6 +185,7 @@ func TestWebhookFrozenThreadAudienceSurvivesDestinationChange(t *testing.T) {
 }
 
 func TestWebhookStatusAndPauseShareFreeze(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	expected := make(map[[2]string][][5]string)
 	for _, binding := range f.bindings {
@@ -321,6 +323,7 @@ func TestWebhookStatusAndPauseShareFreeze(t *testing.T) {
 }
 
 func TestWebhookCommittedFactsSurviveLostSourceReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -367,6 +370,7 @@ func TestWebhookCommittedFactsSurviveLostSourceReceipt(t *testing.T) {
 }
 
 func TestWebhookDeferredStepFailureRollsBackSourceAndCapture(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	ctx := t.Context()
 	for i, id := range []string{"00000001", "00000002"} {
@@ -449,6 +453,7 @@ func TestWebhookDeferredStepFailureRollsBackSourceAndCapture(t *testing.T) {
 }
 
 func TestWebhookThreadCaptureDoesNotReverseProjectLock(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -607,6 +612,7 @@ func TestWebhookCaptureSurvivesProcessExit(t *testing.T) {
 }
 
 func TestWebhookThreadSameTimestampOrderedIDAndReply(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	ctx := t.Context()
 	var first, second model.ThreadMessage
@@ -649,6 +655,7 @@ func TestWebhookThreadSameTimestampOrderedIDAndReply(t *testing.T) {
 }
 
 func TestWebhookDeletionBeforeThreadRejectsWithoutCapture(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	ctx := t.Context()
 	completion, err := f.db.WriteProject(ctx, f.project, func(sc store.ProjectWriteScope) error {
@@ -697,6 +704,7 @@ func TestWebhookDeletionBeforeThreadRejectsWithoutCapture(t *testing.T) {
 }
 
 func TestWebhookConfigGCRespectsReceiptAndReclaimsTombstone(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	f := taskWebhookStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

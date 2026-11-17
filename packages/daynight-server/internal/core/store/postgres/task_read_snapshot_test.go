@@ -44,6 +44,7 @@ func readTaskSnapshotAssignees(t *testing.T, database *Store, projectID string, 
 }
 
 func TestTaskObservationKeepsEpochAndTaskInOneSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	target := queryTask(t, database, project.ID, 11, model.TaskTodo)
@@ -102,6 +103,7 @@ func TestTaskObservationKeepsEpochAndTaskInOneSnapshot(t *testing.T) {
 }
 
 func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, resolve := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resolve=%t", resolve), func(t *testing.T) {
 			database := isolatedStore(t)
@@ -156,6 +158,7 @@ func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 }
 
 func TestTaskAssigneesReadOneAssignmentSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, resolve := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resolve=%t", resolve), func(t *testing.T) {
 			database := isolatedStore(t)
@@ -206,6 +209,7 @@ func TestTaskAssigneesReadOneAssignmentSnapshot(t *testing.T) {
 }
 
 func TestTaskSyncAssigneeFactsUseTheTaskSnapshot(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	member := storeAssigneeUser(t, database, project.ID, 101, true)

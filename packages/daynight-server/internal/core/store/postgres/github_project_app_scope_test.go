@@ -30,6 +30,7 @@ func projectAppScopeFixture(t *testing.T) (*Store, string, string, string, strin
 }
 
 func TestProjectAppScopeLostCommitReceipt(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, actor, project, _, app, grant := projectAppScopeFixture(t)
 	ctx := t.Context()
 	var armed, lost atomic.Bool
@@ -67,6 +68,7 @@ func TestProjectAppScopeLostCommitReceipt(t *testing.T) {
 }
 
 func TestProjectAppScopeMissingAndFailedRoots(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	for _, tc := range []struct {
 		name, breakSQL string
 		args           func(string, string, string) []any

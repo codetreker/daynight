@@ -16,6 +16,7 @@ import (
 )
 
 func TestCreateTagsPersistAndRejectAtomically(t *testing.T) {
+	parallelRootDatabaseTest(t)
 	s, principal, _, project := membershipFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
