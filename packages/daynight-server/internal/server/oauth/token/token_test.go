@@ -210,6 +210,32 @@ func TestPublicMethodsAndMalformedRequests(t *testing.T) {
 	}
 }
 
+func TestUnsupportedGrantsDoNotIssueTokens(t *testing.T) {
+	for _, grant := range []string{"urn:ietf:params:oauth:grant-type:device_code", "unknown"} {
+		for _, mode := range []string{"valid", "missing client", "wrong resource"} {
+			t.Run(grant+"/"+mode, func(t *testing.T) {
+				d := &tokenRate{counts: map[string]int{}}
+				s := &tokenStub{}
+				h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+				form := url.Values{"grant_type": {grant}, "client_id": {"client"}, "resource": {"https://server.test/mcp"}}
+				want := "unsupported_grant_type"
+				if mode == "missing client" {
+					form.Del("client_id")
+					want = "invalid_request"
+				}
+				if mode == "wrong resource" {
+					form.Set("resource", "https://other.test/mcp")
+					want = "invalid_grant"
+				}
+				w := tokenRequest(h.Token, form.Encode())
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"`+want+`"`) || s.calls != 0 {
+					t.Fatalf("unsupported dispatch: status=%d body=%s calls=%d", w.Code, w.Body.String(), s.calls)
+				}
+			})
+		}
+	}
+}
+
 func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
 	valid := "grant_type=refresh_token&client_id=client&resource=https%3A%2F%2Fserver.test%2Fmcp&refresh_token=refresh"
 	for _, tc := range []struct {

@@ -33,7 +33,7 @@ type Clients struct {
 // NewClients rejects malformed preregistration configuration at startup. The
 // map contains full metadata documents with a client_id matching each key.
 func NewClients(writer store.OAuthClientWriter, admission core.PublicAdmission, registered map[string][]byte) (*Clients, error) {
-	return newClients(writer, registered, clientOperations{take: admission.Take, parseMetadata: core.ParseClientMetadata, parseStoredMetadata: core.ParseStoredClientMetadata, freezeClient: core.FreezeClient})
+	return newClients(writer, registered, clientOperations{take: admission.Take, parseMetadata: core.ParseClientMetadata, parseCIMDMetadata: core.ParseCIMDClientMetadata, parseStoredMetadata: core.ParseStoredClientMetadata, freezeClient: core.FreezeClient})
 }
 
 func newClients(writer store.OAuthClientWriter, registered map[string][]byte, operations clientOperations) (*Clients, error) {
@@ -132,7 +132,7 @@ func (c *Clients) Resolve(ctx context.Context, id, redirect string) (core.Valida
 		return core.ValidatedClient{}, err
 	}
 	var m core.ClientMetadata
-	_, deadline, err := c.fetch.Fetch(ctx, id, func(data []byte) error { var e error; m, e = c.operations.parseMetadata(data, id); return e })
+	_, deadline, err := c.fetch.Fetch(ctx, id, func(data []byte) error { var e error; m, e = c.operations.parseCIMDMetadata(data, id); return e })
 	if err != nil {
 		if ctx.Err() != nil {
 			return core.ValidatedClient{}, ctx.Err()
