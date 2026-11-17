@@ -69,6 +69,12 @@ run can verify that the recorded browser group stopped without relying on
 visible instead of turning process absence into a guessed successful cleanup.
 The product E2E guide owns the recovery procedure.
 
+A failed build may release its lock only after its commands have all joined and
+the runner has persisted that stop boundary. Cancellation and unknown command
+outcomes retain the lock and evidence; a normal build error still fails the run.
+Recovery serializes removal of that lock with other recovery for the same run
+and refuses a lock owned by a different run.
+
 Worker completion is versioned. An explicit conflict rejects the attempted
 write, so the fixture can read the Task again, verify the original active
 assignment and authorization, and make a bounded new decision. An unknown

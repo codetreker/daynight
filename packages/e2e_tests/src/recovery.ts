@@ -45,6 +45,12 @@ const markStageComplete = async (runDirectory: string, stage: 'build' | 'environ
 };
 export const markBuildComplete = (runDirectory: string): Promise<void> => markStageComplete(runDirectory, 'build');
 export const markEnvironmentComplete = (runDirectory: string): Promise<void> => markStageComplete(runDirectory, 'environment');
+export const completeFailedBuild = async (runDirectory: string, cancelled: boolean): Promise<boolean> => {
+  if (cancelled) return false;
+  try { assertCommandQuiescence(); } catch { return false; }
+  await markBuildComplete(runDirectory);
+  return true;
+};
 export const completeFailedEnvironmentSetup = async (runDirectory: string, browserStopped: boolean, cancelled: boolean): Promise<boolean> => {
   if (!browserStopped || cancelled) return false;
   try { assertCommandQuiescence(); } catch { return false; }
@@ -265,7 +271,7 @@ const validateRunDirectory = async (repository: string, runDirectory: string): P
   return { directoryId, ownerUid: owner.uid, ownerGid: owner.gid };
 };
 
-export const recoverEnvironment = async (options: { repository: string; runDirectory: string; phase?: 'build' | 'environment'; execute?: DockerCommand }): Promise<void> => {
+export const recoverEnvironment = async (options: { repository: string; runDirectory: string; phase?: 'build' | 'environment'; execute?: DockerCommand; afterRecovery?: () => Promise<void> }): Promise<void> => {
   const directory = await validateRunDirectory(options.repository, options.runDirectory);
   const filename = path.join(options.runDirectory, 'results', 'environment-cleanup.json');
   await requireStageComplete(options.runDirectory, directory.directoryId, 'build');
@@ -313,6 +319,7 @@ export const recoverEnvironment = async (options: { repository: string; runDirec
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, 'Independent E2E recovery failed.', { cause: failures[0] });
+    await options.afterRecovery?.();
     lock.exec('COMMIT');
   } finally { lock.close(); }
 };

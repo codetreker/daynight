@@ -208,7 +208,11 @@ missing or conflicting proof cannot establish browser shutdown. An interrupted
 Worker or Test Session may leave detached helpers. If their original stop cannot
 be proved, or build or environment setup has not reached a confirmed boundary,
 recovery fails and retains the original state for inspection instead of reporting
-cleanup success. Docker cleanup mutations record an intent
+cleanup success. A failed build that has joined all of its commands records the
+build stop boundary and releases its own build lock while preserving the build
+failure. Cancellation or an unconfirmed command keeps the lock and evidence.
+Independent recovery serializes lock removal with recovery for the same run and
+never removes another run's lock. Docker cleanup mutations record an intent
 before dispatch. An unknown result keeps that intent and prevents automatic
 replay or treating a temporarily absent resource as final absence.
 

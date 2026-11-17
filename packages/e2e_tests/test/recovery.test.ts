@@ -348,6 +348,25 @@ test('independent Docker recovery is serialized before any second recovery comma
   } finally { release(); await first?.catch(() => {}); await rm(runDirectory, { recursive: true }); }
 });
 
+test('build lock release remains inside the per-run recovery lock', async () => {
+  const runDirectory = await directory();
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let first: Promise<void> | undefined;
+  try {
+    stoppedOwner(runDirectory);
+    await markBuildComplete(runDirectory);
+    first = recoverEnvironment({ repository, runDirectory, phase: 'build', afterRecovery: async () => { entered(); await barrier; } });
+    await started;
+    let secondEntered = false;
+    await assert.rejects(recoverEnvironment({ repository, runDirectory, phase: 'build', afterRecovery: async () => { secondEntered = true; } }), /locked/);
+    assert.equal(secondEntered, false);
+    release(); await first;
+  } finally { release(); await first?.catch(() => {}); await rm(runDirectory, { recursive: true }); }
+});
+
 test('ordinary failed setup can complete its boundary only after all commands join', async () => {
   const runDirectory = await directory();
   const command = new URL('../src/command.ts', import.meta.url).href;

@@ -15,15 +15,17 @@ if (record.schemaVersion !== 1 || typeof record.runDirectory !== "string" || !["
   path.dirname(record.runDirectory) !== path.join(repository, ".tmp", "product-e2e") || !uuid.test(path.basename(record.runDirectory))) {
   throw new Error("The E2E run pointer does not identify a run in this checkout.");
 }
-await recoverEnvironment({ repository, runDirectory: record.runDirectory, phase: record.phase });
 const lockFile = path.join(repository, ".tmp", "product-e2e-build-lock");
-let owner: { schemaVersion: number; runDirectory: string } | undefined;
-try { owner = JSON.parse(await readFile(lockFile, "utf8")) as typeof owner; }
-catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
-if (owner !== undefined) {
-  if (owner.schemaVersion !== 1 || owner.runDirectory !== record.runDirectory) throw new Error("Build lock belongs to another E2E run; recovery will not remove it.");
-  await rm(lockFile);
-}
-if (await readFile(filename, "utf8") !== pointerText) throw new Error("The E2E run pointer changed during recovery; it is retained.");
-await rm(filename);
+await recoverEnvironment({ repository, runDirectory: record.runDirectory, phase: record.phase, afterRecovery: async () => {
+  if (await readFile(filename, "utf8") !== pointerText) throw new Error("The E2E run pointer changed during recovery; it is retained.");
+  let owner: { schemaVersion: number; runDirectory: string } | undefined;
+  try { owner = JSON.parse(await readFile(lockFile, "utf8")) as typeof owner; }
+  catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+  if (owner !== undefined) {
+    if (owner.schemaVersion !== 1 || owner.runDirectory !== record.runDirectory) throw new Error("Build lock belongs to another E2E run; recovery will not remove it.");
+    await rm(lockFile);
+  }
+  if (await readFile(filename, "utf8") !== pointerText) throw new Error("The E2E run pointer changed during recovery; it is retained.");
+  await rm(filename);
+} });
 console.log(`E2E recovery verified resources and private data for ${path.basename(record.runDirectory)}.`);

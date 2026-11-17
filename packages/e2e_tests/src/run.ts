@@ -7,7 +7,7 @@ import { buildArtifacts } from "./build.ts";
 import { assertCommandQuiescence, CommandFailure, runCommand } from "./command.ts";
 import { startEnvironment, type CleanupReceipt, type Environment } from "./environment.ts";
 import { initializeRunOwnership, recoverRunOwnership, startOwnedPlaywright } from "./fixture-owner.ts";
-import { completeFailedEnvironmentSetup, markBuildComplete, markEnvironmentComplete } from "./recovery.ts";
+import { completeFailedBuild, completeFailedEnvironmentSetup, markBuildComplete, markEnvironmentComplete } from "./recovery.ts";
 
 const repository = path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const args = process.argv.slice(2);
@@ -134,6 +134,10 @@ try {
 } catch (error) {
   failures.push(error);
   manifest.status = "failed";
+  if (ownsLock && !buildComplete) {
+    try { buildComplete = await completeFailedBuild(runDirectory, cancellation.signal.aborted); }
+    catch { /* Preserve original resources when the build boundary cannot be recorded. */ }
+  }
   if (preparingEnvironment && !environmentComplete) {
     try { environmentComplete = await completeFailedEnvironmentSetup(runDirectory, authQuiescent, cancellation.signal.aborted); }
     catch { /* Preserve original resources when setup quiescence is unconfirmed. */ }
