@@ -2295,7 +2295,7 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 	report["startup"] = map[string]any{"state": "failed", "reasonCode": "native_rejected"}
 	body := jsonBody(t, map[string]any{
 		"version": f.task.Version, "claimId": f.snapshot.ClaimID, "phase": "waiting",
-		"nativeSessionId": nil, "herdr": nil, "startupReport": report,
+		"nativeSessionId": nil, "startupReport": report,
 	})
 	currentTask := startupTaskModel(f.task)
 	value := startupReportValue(t, report)
@@ -2303,7 +2303,6 @@ func TestFailedStartupReportHTTPReadback(t *testing.T) {
 	expectedTask = startupReplaceWorker(t, expectedTask, func(worker *api.WorkerClaim) {
 		worker.Phase = "waiting"
 		worker.NativeSessionID = nil
-		worker.Herdr = nil
 	})
 	startupExpectWrite(t, f, currentTask, &value, true, &expectedTask, nil, f.handler.principal, nil)
 	updated := decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusOK)
@@ -2512,7 +2511,11 @@ func startupReportValue(t *testing.T, body map[string]any) sp.StartupReport {
 func startupReportedTask(t *testing.T, current model.Task, report sp.StartupReport) model.Task {
 	t.Helper()
 	result := current
-	result.Properties = taskproperty.Clone(current.Properties)
+	var err error
+	result.Properties, err = taskproperty.NormalizeStored(current.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result.Properties["sessionStartup"] = rawProperty(t, report)
 	result.Version, result.UpdatedAt = current.Version+1, current.UpdatedAt.Add(time.Second)
 	return result
@@ -2525,6 +2528,11 @@ func startupReplaceWorker(t *testing.T, current model.Task, change func(*api.Wor
 	worker := apiWorker(t, result.Properties)
 	change(worker)
 	result.Properties["worker"] = rawProperty(t, worker)
+	var err error
+	result.Properties, err = taskproperty.NormalizeStored(result.Properties)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return result
 }
 
