@@ -6,7 +6,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -130,6 +129,13 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 		h.Failure(w, r, terminalFault("unsupported_protocol", "Terminal Sessions require a task."))
 		return
 	}
+	switch r.Pattern {
+	case "POST " + sessionBase + "/{sessionId}/commands",
+		"GET " + sessionBase + "/{sessionId}/operations/{operationId}",
+		"GET " + sessionBase + "/{sessionId}/channel":
+		h.Failure(w, r, terminalFault("unsupported_content_kind", "This endpoint does not serve terminal content."))
+		return
+	}
 	project, task, id := r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId")
 	path := r.URL.Path
 	var result any
@@ -137,9 +143,6 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 	switch {
 	case strings.HasSuffix(path, "/worker-channel"):
 		h.terminalWorkerChannel(w, r, p)
-		return
-	case strings.HasSuffix(path, "/channel"):
-		h.terminalBrowserChannel(w, r, p)
 		return
 	case r.Method == http.MethodGet:
 		switch {
@@ -161,10 +164,6 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 		case strings.HasSuffix(path, "/current"):
 			if _, err = httpx.QueryValues(r); err == nil {
 				result, err = h.service.CurrentTerminal(r.Context(), p, project, task)
-			}
-		case r.PathValue("operationId") != "":
-			if _, err = httpx.QueryValues(r); err == nil {
-				result, err = h.service.TerminalOperation(r.Context(), p, project, task, id, r.PathValue("operationId"))
 			}
 		case r.PathValue("recoveryId") != "":
 			if _, err = httpx.QueryValues(r); err == nil {
@@ -252,16 +251,6 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 		switch {
 		case strings.HasSuffix(path, "/sessions"):
 			result, err = h.service.RegisterTerminal(r.Context(), p, project, task, m)
-		case strings.HasSuffix(path, "/commands"):
-			browserID := r.Header.Get("Daynight-Browser-Client")
-			if len(r.Header.Values("Daynight-Browser-Client")) != 1 {
-				err = httpx.InvalidInput("A browser client identity is required.")
-				break
-			}
-			if _, err = model.CanonicalID(browserID); err != nil {
-				break
-			}
-			result, err = h.service.SubmitTerminal(r.Context(), p, project, task, id, browserID, m)
 		case strings.HasSuffix(path, "/archive"):
 			result, err = h.service.UpdateTerminalArchive(r.Context(), p, project, task, id, m)
 		case strings.HasSuffix(path, "/worker-messages"):
@@ -276,11 +265,7 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 	default:
 		err = terminalFault("unsupported_content_kind", "Unsupported terminal endpoint.")
 	}
-	status := http.StatusOK
-	if r.Method == http.MethodPost && strings.HasSuffix(path, "/commands") {
-		status = http.StatusAccepted
-	}
-	h.Result(w, r, status, result, err)
+	h.Result(w, r, http.StatusOK, result, err)
 }
 func (h *Routes) terminalWorkerMessage(ctx context.Context, p model.Principal, project, task, id, epoch string, m v2.Message) (v2.Message, error) {
 	switch m.Type {
@@ -413,91 +398,6 @@ func (h *Routes) terminalWorkerChannel(w http.ResponseWriter, r *http.Request, p
 				if e = relayWrite(ctx, conn, offer); e != nil {
 					return
 				}
-			}
-		}
-	}
-}
-func (h *Routes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	if _, err := httpx.QueryValues(r, "browserClientId"); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	if err := terminalChannelProtocol(r); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	if err := h.userChannelOrigin(r, p); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	browserID := r.URL.Query().Get("browserClientId")
-	if _, err := model.CanonicalID(browserID); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	project, task, id := r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId")
-	state, err := h.service.TerminalState(r.Context(), p, project, task, id)
-	if err != nil {
-		h.channelAdmissionFailure(w, r, err)
-		return
-	}
-	claimID := state["claimId"].(string)
-	connectionEpoch := state["connectionEpoch"].(string)
-	conn, ctx, cleanup, err := h.accept(w, r)
-	if err != nil {
-		return
-	}
-	defer cleanup()
-	key := id + ":" + p.UserID + ":" + browserID
-	h.mutex.Lock()
-	if h.terminalViewers == nil {
-		h.terminalViewers = make(map[string]*websocket.Conn)
-	}
-	if h.terminalViewers[key] != nil {
-		h.mutex.Unlock()
-		return
-	}
-	h.terminalViewers[key] = conn
-	h.mutex.Unlock()
-	// Keep the identity reserved until release commits. A replacement socket may
-	// connect after cleanup, but cannot have its lease revoked by this callback.
-	defer func() {
-		release, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
-		defer cancel()
-		h.recordDrainError(h.service.DisconnectTerminalViewer(release, p, project, task, id, browserID, claimID, connectionEpoch))
-		h.mutex.Lock()
-		if h.terminalViewers[key] == conn {
-			delete(h.terminalViewers, key)
-		}
-		h.mutex.Unlock()
-	}()
-
-	closed := conn.CloseRead(ctx)
-	defer func() { h.closeUserChannel(ctx, conn, err) }()
-	if err = relayWrite(ctx, conn, state); err != nil {
-		return
-	}
-	tick := time.NewTicker(sessioncore.PollInterval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-closed.Done():
-			return
-		case <-tick.C:
-			next, e := h.service.TerminalState(ctx, p, project, task, id)
-			if e != nil {
-				err = e
-				return
-			}
-			if next["claimId"] != claimID || next["connectionEpoch"] != connectionEpoch {
-				return
-			}
-			if !reflect.DeepEqual(next, state) {
-				if e = relayWrite(ctx, conn, next); e != nil {
-					err = e
-					return
-				}
-				state = next
 			}
 		}
 	}

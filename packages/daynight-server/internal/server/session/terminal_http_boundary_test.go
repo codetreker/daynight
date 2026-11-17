@@ -91,8 +91,26 @@ func TestTerminalHTTPRefusesMalformedAndCrossRouteMessages(t *testing.T) {
 	}
 }
 
+func TestTerminalBrowserControlEndpointsAreUnavailable(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	path := f.base + "/" + f.message.SessionID
+	for _, tc := range []struct{ method, suffix, body string }{
+		{http.MethodPost, "/commands?extra=1", "not JSON"},
+		{http.MethodGet, "/operations/" + uuid.NewString() + "?extra=1", ""},
+		{http.MethodGet, "/channel?browserClientId=" + uuid.NewString(), ""},
+	} {
+		t.Run(tc.suffix, func(t *testing.T) {
+			w := terminalBoundaryRequest(t, f, tc.method, path+tc.suffix, tc.body, v2.Protocol, nil)
+			terminalBoundaryFault(t, w, http.StatusBadRequest, "unsupported_content_kind")
+		})
+	}
+	if got := f.calls.TotalCalls(); got != 0 {
+		t.Fatalf("retired browser endpoints invoked %d business operations", got)
+	}
+}
+
 func TestTerminalHTTPBoundaryAndReadbackErrors(t *testing.T) {
-	evidenceID, recoveryID, operationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	evidenceID, recoveryID := uuid.NewString(), uuid.NewString()
 	for _, tc := range []struct {
 		name, method, suffix, body, protocol string
 		status                               int
@@ -122,12 +140,9 @@ func TestTerminalHTTPBoundaryAndReadbackErrors(t *testing.T) {
 		{"recovery extra query", "GET", "/automation-recovery/" + recoveryID + "?extra=1", "", v2.Protocol, 400, "", ""},
 		{"recovery v1", "GET", "/automation-recovery/" + recoveryID, "", sp.Protocol, 400, "", ""},
 		{"state extra query", "GET", "/state?extra=1", "", v2.Protocol, 400, "", ""},
-		{"missing operation", "GET", "/operations/" + operationID, "", v2.Protocol, 404, "TerminalOperation", "not_found"},
-		{"command missing browser", "POST", "/commands", "registration", v2.Protocol, 400, "", ""},
 		{"worker messages extra query", "POST", "/worker-messages?extra=1", "registration", v2.Protocol, 400, "", ""},
 		{"worker channel extra query", "GET", "/worker-channel?extra=1", "", v2.Protocol, 400, "", ""},
 		{"worker channel missing subprotocol", "GET", "/worker-channel", "", v2.Protocol, 400, "", ""},
-		{"browser channel extra query", "GET", "/channel?extra=1", "", v2.Protocol, 400, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := terminalHTTPSetup(t)
@@ -179,16 +194,6 @@ func TestTerminalHTTPBoundaryAndReadbackErrors(t *testing.T) {
 						scope(ctx, p, project, task, id)
 						if recovery != recoveryID {
 							t.Fatal("recovery route changed its identity", recovery)
-						}
-						return v2.Message{}, fault
-					}
-				})
-			case "TerminalOperation":
-				f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
-					calls.TerminalOperation = func(ctx context.Context, p model.Principal, project, task, id, operation string) (v2.Message, error) {
-						scope(ctx, p, project, task, id)
-						if operation != operationID {
-							t.Fatal("operation route changed its identity", operation)
 						}
 						return v2.Message{}, fault
 					}
