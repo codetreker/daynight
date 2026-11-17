@@ -27,5 +27,6 @@ Old Herdr resources are neither observed nor managed by this runtime. They are n
 The uncalled Herdr local recording sampler, store, archive writer and resource
 orchestration are also removed. Uploaded historical recordings retain their
 independent read-only format and integrity checks; existing local resources
-remain the user's responsibility. Input and lifecycle leaves remain until their
-own consumers are removed.
+remain the user's responsibility. The uncalled input arbitration, bridge, store and terminal transport are removed
+as well. The input blocker and lifecycle leaves remain while other legacy leaves
+still consume them.

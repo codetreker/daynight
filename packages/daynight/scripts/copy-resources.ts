@@ -13,7 +13,6 @@ const resources = [
   { source: "commands/worker/sqlite", destination: "commands/worker/sqlite", sqlOnly: true },
   { source: "commands/worker/backends/sqlite", destination: "commands/worker/backends/sqlite", sqlOnly: true },
   { source: "commands/worker/herdr/sqlite", destination: "commands/worker/herdr/sqlite", sqlOnly: true },
-  { source: "commands/worker/herdr/input-sqlite", destination: "commands/worker/herdr/input-sqlite", sqlOnly: true },
   { source: "commands/controller/sqlite/journal", destination: "commands/controller/sqlite/journal", sqlOnly: true },
   { source: "commands/controller/sqlite/resume-lease", destination: "commands/controller/sqlite/resume-lease", sqlOnly: true },
 ];
