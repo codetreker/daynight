@@ -2631,7 +2631,13 @@ Team membership refresh or owner selection before releasing the old response.
 Rotation confirmation waits for dialog removal and an enabled Check operation
 action. Rendered errors, secrets, dialogs and focus use DOM readiness predicates;
 cached owner-role labels, fresh detail controls and list error removal remain
-separate observations. The [Webhook observation decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-observation-boundaries.md)
+separate observations. Named control queries resolve the current Owner group,
+endpoint detail or native editor before matching controls by role and accessible
+name. Each lookup reacquires its owner; global privacy, absence, dialog identity
+and endpoint-count assertions retain document-wide scope. The
+[Webhook query decision](../../.agents/notes/implemented/testing/2026-11-17-webhook-query-owners.md)
+records that query boundary. The
+[Webhook observation decision](../../.agents/notes/implemented/testing/2026-11-08-webhook-observation-boundaries.md)
 records the retained fixtures and the limits of these frontend checks.
 
 Step panel DOM tests retain the full pagination fixtures and resolve visible
