@@ -55,7 +55,7 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 		VALUES
 		($1,9007199254740993,9007199254740995,'https://github.com/owner/repository/pull/9007199254740993','First PR',9007199254740997,'author','open',true,'main',9007199254740999,'fork/repository','feature','abcdef','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',$2,'2026-01-03T00:00:00Z',7),
 		($1,2,102,'https://github.com/owner/repository/pull/2','Second PR',NULL,NULL,'open',false,'main',NULL,NULL,NULL,'123456','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
-		($1,1,101,'https://github.com/owner/repository/pull/1','Closed PR',NULL,NULL,'closed',false,'main',NULL,NULL,NULL,'789abc','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7)`, project.ID, "正文\n**original**\n")
+		($1,1,101,'https://github.com/owner/repository/pull/1','Closed PR',9007199254740998,'zeta','closed',false,'main',NULL,NULL,NULL,'789abc','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7)`, project.ID, "正文\n**original**\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +67,30 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	repository, ok := state["repository"].(map[string]any)
 	if !ok || repository["id"] != "9007199254740993" || repository["fullName"] != "owner/repository" || repository["private"] != true {
 		t.Fatalf("retained repository differs: %+v", state["repository"])
+	}
+
+	authorsPath := base + "/pull-request-authors?q=a&limit=1"
+	authors := read(authorsPath)
+	authorItems, ok := authors["items"].([]any)
+	if authors["projectId"] != project.ID || authors["revision"] != "7" || !ok || len(authorItems) != 1 {
+		t.Fatalf("first author page differs: %+v", authors)
+	}
+	firstAuthor, ok := authorItems[0].(map[string]any)
+	if !ok || firstAuthor["id"] != "9007199254740997" || firstAuthor["login"] != "author" || firstAuthor["loginAmbiguous"] != false {
+		t.Fatalf("first author differs: %+v", authorItems[0])
+	}
+	authorCursor, ok := authors["nextCursor"].(string)
+	if !ok || authorCursor == "" {
+		t.Fatalf("first author page lacks a next cursor: %+v", authors)
+	}
+	moreAuthors := read(authorsPath + "&cursor=" + url.QueryEscape(authorCursor))
+	authorItems, ok = moreAuthors["items"].([]any)
+	if moreAuthors["projectId"] != project.ID || moreAuthors["revision"] != "7" || !ok || len(authorItems) != 1 || moreAuthors["nextCursor"] != nil {
+		t.Fatalf("second author page differs: %+v", moreAuthors)
+	}
+	secondAuthor, ok := authorItems[0].(map[string]any)
+	if !ok || secondAuthor["id"] != "9007199254740998" || secondAuthor["login"] != "zeta" || secondAuthor["loginAmbiguous"] != false {
+		t.Fatalf("second author differs: %+v", authorItems[0])
 	}
 
 	first := read(base + "/pull-requests?limit=1")

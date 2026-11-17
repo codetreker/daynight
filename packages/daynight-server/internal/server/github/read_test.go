@@ -33,15 +33,24 @@ func (authStub) Require(f httpx.AuthenticatedHandler) http.HandlerFunc {
 }
 
 type readerStub struct {
-	calls  int
-	input  coregithub.ListRequest
-	number int64
-	id     string
-	ctx    context.Context
-	status coregithub.Status
-	page   coregithub.Page
-	detail coregithub.Detail
-	err    error
+	calls        int
+	input        coregithub.ListRequest
+	number       int64
+	id           string
+	ctx          context.Context
+	status       coregithub.Status
+	page         coregithub.Page
+	detail       coregithub.Detail
+	authorsInput coregithub.AuthorsRequest
+	authorsPage  coregithub.AuthorsPage
+	principal    model.Principal
+	err          error
+}
+
+func (s *readerStub) Authors(ctx context.Context, p model.Principal, id string, in coregithub.AuthorsRequest) (coregithub.AuthorsPage, error) {
+	s.calls++
+	s.id, s.ctx, s.principal, s.authorsInput = id, ctx, p, in
+	return s.authorsPage, s.err
 }
 
 func (s *readerStub) Get(ctx context.Context, p model.Principal, id string) (coregithub.Status, error) {
