@@ -126,6 +126,10 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		return WorkerReportResult{}, workercore.InputLimit(err)
 	}
 	if input.Configuration != nil {
+		var archiveSessions *bool
+		if input.Configuration.Bootstrap != nil {
+			archiveSessions = input.Configuration.Bootstrap.ArchiveSessions
+		}
 		raw, marshalErr := json.Marshal(input.Configuration)
 		if marshalErr != nil {
 			return WorkerReportResult{}, &model.Fault{Code: "invalid_input", Message: "Worker configuration exchange is invalid."}
@@ -133,6 +137,11 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 		input.Configuration, err = s.report.parseConfiguration(raw)
 		if err != nil {
 			return WorkerReportResult{}, err
+		}
+		// The archive target is stored outside the base JSON and therefore is
+		// omitted from its normalization round trip.
+		if input.Configuration.Bootstrap != nil {
+			input.Configuration.Bootstrap.ArchiveSessions = archiveSessions
 		}
 	}
 	var result WorkerReportResult
