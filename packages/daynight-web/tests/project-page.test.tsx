@@ -140,6 +140,105 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it.each([["overview", "概览"], ["tasks", "任务列表"], ["prs", "PR 列表"], ["tags", "标签"]] as const)(
+    "opens %s directly despite a conflicting preference and does not save it", async (tab, label) => {
+      history.replaceState(null, "", `/projects/${projectId}?tab=${tab}`);
+      localStorage.setItem(`daynight:project-section:${projectId}`, JSON.stringify(tab === "tags" ? "overview" : "tags"));
+      graphRequest.mockResolvedValue(graph());
+      render(<ProjectPage projectId={projectId} />);
+      expect(sectionTabs().getByRole("tab", { name: label })).toHaveAttribute("aria-selected", "true");
+      expect(sectionTabs().getByRole("tab", { name: label })).toHaveAttribute("href", `/projects/${projectId}?tab=${tab}`);
+      expect(localStorage.getItem(`daynight:project-section:${projectId}`)).toBe(JSON.stringify(tab === "tags" ? "overview" : "tags"));
+      expect(location.search).toBe(`?tab=${tab}`);
+      await waitForGraph();
+    },
+  );
+
+  it("normalizes a bare entry from preference without adding an entry or replacing the project panels", async () => {
+    localStorage.setItem(`daynight:project-section:${projectId}`, JSON.stringify("tasks"));
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(sectionTabs().getByRole("tab", { name: "任务列表" })).toHaveAttribute("aria-selected", "true");
+    expect(location.search).toBe("?tab=tasks"); expect(history.length).toBe(length);
+    await findListButton("已完成根");
+    const panel = document.getElementById("project-section-panel-tasks");
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
+    expect(location.search).toBe("?tab=overview");
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "任务列表" }));
+    expect(location.search).toBe("?tab=tasks");
+    expect(document.getElementById("project-section-panel-tasks")).toBe(panel);
+  });
+
+  it("consumes a pending multi-member chain fragment by replacing the URL and selecting tasks", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?other=retained&tab=prs#chain=${A}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
+    expect(location.search).toBe("?other=retained&tab=tasks");
+    expect(location.hash).toBe(""); expect(history.length).toBe(length);
+    expect(sectionTabs().getByRole("tab", { name: "任务列表" })).toHaveAttribute("aria-selected", "true");
+    expect(localStorage.getItem(`daynight:project-section:${projectId}`)).toBeNull();
+  });
+
+  it("consumes an invalid fragment without changing the selected section", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs#task=${X}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByText("对应的任务分组已不可见，请从任务列表选择任务。")).toBeVisible();
+    expect(location.search).toBe("?tab=prs"); expect(location.hash).toBe(""); expect(history.length).toBe(length);
+    expect(sectionTabs().getByRole("tab", { name: "PR 列表" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("discards a pending fragment when the user changes section before the index is ready", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs#chain=${A}`);
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "标签" }));
+    expect(location.search).toBe("?tab=tags"); expect(location.hash).toBe("");
+    await act(async () => { pending.resolve(graph()); });
+    await waitFor(() => expect(sectionTabs().getByRole("tab", { name: "标签" })).toHaveAttribute("aria-selected", "true"));
+    expect(location.search).toBe("?tab=tags"); expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it("does not repeat a cancelled fragment decision on the same location after rerender", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs`);
+    graphRequest.mockResolvedValue(graph());
+    const view = render(<ProjectPage projectId={projectId} />);
+    await waitForGraph();
+    const navigation = browserNavigation(), discard = vi.fn();
+    const release = navigation.register({ scope: { identity: {}, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+    act(() => { history.pushState({ foreign: true }, '', `/projects/${projectId}?tab=prs#chain=${A}`); dispatchEvent(new PopStateEvent('popstate')); });
+    await waitFor(() => expect(navigation.decision()).not.toBeNull());
+    act(() => navigation.cancel());
+    view.rerender(<ProjectPage projectId={projectId} />);
+    expect(navigation.decision()).toBeNull();
+    expect(location.search).toBe('?tab=prs'); expect(location.hash).toBe(`#chain=${A}`);
+    expect(discard).not.toHaveBeenCalled();
+    release();
+  });
+
+  it("waits for another pending navigation decision before consuming the fragment", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=prs#chain=${A}`);
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    const navigation = browserNavigation(), discard = vi.fn(), unrelated = vi.fn();
+    const release = navigation.register({ scope: { identity: {}, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+    act(() => navigation.requestAction(unrelated));
+    const decision = navigation.decision();
+    await act(async () => { pending.resolve(graph()); });
+    expect(navigation.decision()).toBe(decision); expect(location.hash).toBe(`#chain=${A}`);
+    act(() => navigation.cancel());
+    await waitFor(() => expect(navigation.decision()).not.toBeNull());
+    expect(navigation.decision()).not.toBe(decision);
+    expect(unrelated).not.toHaveBeenCalled(); expect(discard).not.toHaveBeenCalled();
+    act(() => navigation.cancel()); release();
+  });
+
   it("keeps the current page when a background snapshot changes the page count", async () => {
     const makeSeeds = (count: number): Seed[] => Array.from({ length: count }, (_, i) => ({ id: `30000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`, title: `Task ${i + 1}`, status: "todo", dependsOn: [] }));
     graphRequest.mockResolvedValueOnce(graph(makeSeeds(21))).mockResolvedValue(graph(makeSeeds(41)));

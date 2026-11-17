@@ -118,6 +118,7 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
   const generation = useSyncExternalStore(subscribe, () => fence.generation);
   const key = `${userId}/${projectId}`;
   const empty = (): ProjectReading => ({ ...defaults, projectGraphWitness: null, detail: null });
+  const nativeViews = useRef(new WeakMap<object, { key: string; fence: ResourceFence; generation: number }>());
   const retained = useRef<{ key: string; fence: ResourceFence; accessRetirements: number; generation: number; selection: ProjectReading; entryId: string | null; onPage: boolean }>({ key, fence, accessRetirements: fence.accessRetirements, generation, selection: empty(), entryId: null, onPage: false });
   if (retained.current.key !== key || retained.current.fence !== fence) retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection: empty(), entryId: null, onPage: false };
   const route = parseRoute(location.pathname, location.search);
@@ -141,24 +142,39 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
     previous.selection.section === 'tasks' && previous.selection.view === 'goals' && witness !== null &&
     selected?.section === 'tasks' && selected.view === 'goals' && selected.projectGraphWitness === witness && isDisplayedGoal(witness);
   if (retired) selected = null;
-  const selection = carry ? { section: 'tasks', view: 'goals', projectGraphWitness: witness, detail: null } as const
-    : !onPage || location.entryId === null ? (previous.generation === generation ? previous.selection : empty()) : selected ?? empty();
+  const nativeBinding = typeof location.view === 'object' && location.view !== null ? nativeViews.current.get(location.view) : undefined;
+  const nativeSelected = nativeBinding?.key === key && nativeBinding.fence === fence && nativeBinding.generation === generation ? selected : null;
+  const admitted = carry ? { section: 'tasks', view: 'goals', projectGraphWitness: witness, detail: null } as const
+    : !onPage || location.entryId === null ? (previous.generation === generation ? nativeSelected ?? previous.selection : empty()) : selected ?? empty();
+  const urlSection = onPage && route.kind === 'project' ? route.tab : null;
+  const mismatch = urlSection !== null && admitted.section !== urlSection;
+  const selection: ProjectReading = mismatch ? { ...empty(), section: urlSection } : admitted;
   useLayoutEffect(() => {
     if (!onPage || error) return;
     retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection, entryId: location.entryId, onPage };
     if (retired && location.entryId !== null && readSelection?.projectGraphWitness === null && readSelection.detail === null) fence.entries.set(location.entryId, generation);
     // setView intentionally does nothing for equal values, so bind that entry here.
     if (carry && location.entryId !== null && readSelection?.detail === null) fence.entries.set(location.entryId, generation);
-    if (location.entryId !== null && selected === null) navigation.setView(projectHistory(userId, projectId, selection), { replace: true, onCommit: () => {
-      const entryId = navigation.snapshot().entryId;
-      if (entryId !== null) fence.entries.set(entryId, generation);
-    } });
-  }, [onPage, error, selection, selected, location.entryId, navigation, userId, projectId, key, fence, generation, retired, readSelection, carry]);
-  const select = (next: ProjectReading, replace = false, onCommit?: () => void) => {
+    if (location.entryId !== null && (selected === null || mismatch || urlSection === null)) {
+      const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
+      url.searchParams.set('tab', selection.section);
+      navigation.setView(projectHistory(userId, projectId, selection), { to: url.pathname + url.search + url.hash, replace: true, onCommit: () => {
+        const entryId = navigation.snapshot().entryId;
+        if (entryId !== null) fence.entries.set(entryId, generation);
+      } });
+    }
+  }, [onPage, error, selection, selected, location, navigation, userId, projectId, key, fence, generation, retired, readSelection, carry, mismatch, urlSection]);
+  const select = (next: ProjectReading, replace = false, onCommit?: () => void, consumeFragment = false) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (entryId !== null) fence.entries.set(entryId, generation); };
-    if (location.entryId !== null && selected === null) navigation.setView(projectHistory(userId, projectId, selection), { replace: true, onCommit: record });
-    navigation.setView(projectHistory(userId, projectId, next), { replace, onCommit: () => { record(); onCommit?.(); } });
+    const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
+    if (next.section !== selection.section || consumeFragment) {
+      url.searchParams.set('tab', next.section);
+      url.hash = '';
+    }
+    const view = projectHistory(userId, projectId, next);
+    if (location.entryId === null && consumeFragment) nativeViews.current.set(view, { key, fence, generation });
+    navigation.setView(view, { to: url.pathname + url.search + url.hash, replace: replace || consumeFragment, preserveNative: consumeFragment, onCommit: () => { record(); onCommit?.(); } });
   };
   return { selection, select, error };
 }

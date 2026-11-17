@@ -6,6 +6,7 @@ import { accountSelection, type AccountSelection } from './account-route';
 
 export type TaskDetailTab = "description" | "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
+export type ProjectSection = "overview" | "tasks" | "prs" | "tags";
 
 export type WebhookRoute = {
   readonly kind: "webhooks";
@@ -50,7 +51,7 @@ export const webhookUrl = (selection: Pick<WebhookRoute, "owner" | "teamId" | "e
 
 export type Route =
   | { readonly kind: "projects" }
-  | { readonly kind: "project"; readonly projectId: string }
+  | { readonly kind: "project"; readonly projectId: string; readonly tab: ProjectSection | null }
   | ({ readonly kind: "task"; readonly projectId: string; readonly taskId: string } & TaskDetailNavigation)
   | ({ readonly kind: "attachment"; readonly projectId: string; readonly taskId: string; readonly path: string } & TaskDetailNavigation)
   | { readonly kind: "notFound" };
@@ -109,7 +110,16 @@ export const parseRoute = (pathname: string, search = ""): Route => {
     return { kind: "notFound" };
   }
   const projectId = canonicalId(decoded);
-  return projectId === null ? { kind: "notFound" } : { kind: "project", projectId };
+  const tabs = new URLSearchParams(search).getAll("tab");
+  if (projectId === null || tabs.length > 1) return { kind: "notFound" };
+  const tab = tabs[0];
+  if (tab !== undefined && tab !== "overview" && tab !== "tasks" && tab !== "prs" && tab !== "tags") return { kind: "notFound" };
+  return { kind: "project", projectId, tab: tab ?? null };
+};
+
+export const projectSectionUrl = (projectId: string, section: ProjectSection): string => {
+  if (canonicalId(projectId) === null || !["overview", "tasks", "prs", "tags"].includes(section)) throw new ApiError("protocol");
+  return `/projects/${encodeURIComponent(projectId)}?${new URLSearchParams({ tab: section })}`;
 };
 
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {

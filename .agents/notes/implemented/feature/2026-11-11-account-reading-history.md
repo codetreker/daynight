@@ -22,9 +22,10 @@ mounted after opening and cancellation restores the appropriate dirty tab only
 after the original history position is admitted. The
 [peer-tab decision](../architecture/2026-11-12-worker-detail-prompt-tab.md)
 extends that selection to the Worker prompt. Invalid recognized state is exposed
-rather than interpreted as another target. Project
-uses the same entry model for section, view, graph and nested resource selections;
-its existing preference writes occur only after user-initiated changes are admitted.
+rather than interpreted as another target. Project originally used the same entry
+model for section, view, graph and nested resource selections. The later [project tab URL decision](2026-11-17-project-tab-urls.md)
+places the outer section in the URL while retaining the admitted nested reading
+model; preference writes occur only after user-initiated changes are admitted.
 
 The [Web design](../../../../docs/design/daynight-web.md) owns the current
 consumer and the [navigation design](../../../../docs/design/daynight-task-steps.md#web-呈现导航与大集合)
