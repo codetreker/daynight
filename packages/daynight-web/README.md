@@ -283,10 +283,12 @@ It composes the project list, graph, shared task-detail surfaces and My Workers
 list/detail with private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` groups navigation by the current Team or Personal space, My,
-and Tools in one scrollable region. The current scope contains the Team selector,
-Projects tree and Team settings; My contains Shared with me, My Workers and
-Assistants; Tools contains Webhooks and Test sessions. Webhooks starts at
+`WorkspaceSidebar` places the account-scoped In-progress tasks link between the
+Team selector and the Projects tree, followed by applicable Team entries, My,
+and Tools in one scrollable region. `/my-tasks` remains available during Team
+restoration or failure and is independent of the selected Team. My contains My
+GitHub Apps, Shared with me, My Workers and Assistants; Tools contains Webhooks
+and Test sessions. Webhooks starts at
 `/webhooks?owner=personal` and retains its independent owner selection and catalog
 gate. The selector shows the known Team or Personal space type above its name; an
 unknown type leaves that line empty. Project list headings and document titles use

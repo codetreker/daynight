@@ -46,6 +46,7 @@ for (const width of [320, 390, 768, 1360]) {
       const sidebar = page.locator('.sidebar');
       if (width <= 740) {
         expect((await sidebar.boundingBox())!.width).toBe(60);
+        await expect(sidebar.getByRole('link', { name: chinese ? '进行中的任务' : 'In-progress tasks', exact: true })).toBeVisible();
         await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(220);
       } else expect((await sidebar.boundingBox())!.width).toBe(190);
@@ -62,6 +63,24 @@ for (const width of [320, 390, 768, 1360]) {
       expect(geometry.arrowRight).toBeLessThanOrEqual(geometry.parentRight);
       const groups = sidebar.locator('.sidebar-group');
       await expect(groups).toHaveCount(3);
+      const tasks = sidebar.getByRole('link', { name: chinese ? '进行中的任务' : 'In-progress tasks', exact: true });
+      await expect(tasks).toHaveCount(1);
+      await expect(tasks).toHaveAttribute('href', '/my-tasks');
+      await expect(tasks).toHaveAttribute('title', chinese ? '进行中的任务' : 'In-progress tasks');
+      await expect(tasks).not.toHaveAttribute('aria-current');
+      await expect(groups.nth(1).locator('a[href="/my-tasks"]')).toHaveCount(0);
+      expect(await groups.nth(0).evaluate(group => {
+        const selector = group.querySelector('.team-selector')!;
+        const tasks = group.querySelector('a[href="/my-tasks"]')!;
+        const projects = group.querySelector('.sidebar-projects')!.previousElementSibling!;
+        return Boolean(selector.compareDocumentPosition(tasks) & Node.DOCUMENT_POSITION_FOLLOWING)
+          && tasks.nextElementSibling === projects;
+      })).toBe(true);
+      await selector.focus();
+      await page.keyboard.press('Tab');
+      await expect(tasks).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(groups.nth(0).getByRole('link', { name: chinese ? '项目' : 'Projects', exact: true })).toBeFocused();
       await expect(groups.nth(0).getByRole('link', { name: chinese ? '项目' : 'Projects', exact: true })).toHaveAttribute('aria-current', 'page');
       await expect(groups.nth(1).locator('.nav-label')).toHaveText(chinese ? '我的' : 'My');
       await expect(groups.nth(2).locator('.nav-label')).toHaveText(chinese ? '工具' : 'Tools');
@@ -87,8 +106,14 @@ for (const width of [320, 390, 768, 1360]) {
         await page.getByRole('button', { name: chinese ? '折叠侧栏' : 'Collapse sidebar' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(68);
         await expect(sidebar.locator('.sidebar-projects')).toBeHidden();
+        await expect(tasks).toBeVisible();
       }
       expect(reads()).toBe(before);
+      if (width <= 740) await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
+      await tasks.click();
+      await expect(page).toHaveURL(/\/my-tasks$/);
+      await expect(tasks).toHaveAttribute('aria-current', 'page');
+      if (width <= 740) await expect(sidebar).not.toHaveAttribute('role', 'dialog');
     });
   }
 }
