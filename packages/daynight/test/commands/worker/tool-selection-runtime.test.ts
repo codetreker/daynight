@@ -20,8 +20,8 @@ test("runtime freezes inspected facts and host snapshots do no process work", as
     expect(runtime.configurationOptions.readToolSelectionKeys({ agent: "codex", model: null, args: [] })).toEqual({ codex: expect.any(String) });
     expect(prepare.mock.calls.map(([tool, context]) => [tool, context])).toEqual([["codex", "web"]]);
     expect(runtime.manager.snapshot().entries.find(entry => entry.tool === "herdr")).toBeUndefined();
-    const configuration = await runtime.freezeConfiguration({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, operation.signal);
-    expect(configuration.toolObservation).toMatchObject({ version: "1.0.0" }); expect(configuration.toolLaunch?.entryPath).toBe(entry);
+    const configuration = await runtime.freezeConfiguration({ agent: "codex", model: null, args: [], recoveryLimit: 3 }, operation.signal);
+    expect(configuration.toolObservation).toMatchObject({ version: "1.0.0" }); expect(configuration.toolLaunch?.entryPath).toBe(entry); expect(configuration.toolLaunch?.context).toBe("web");
     const before = await readFile(receipt, "utf8");
     expect(await runtime.hostInspector.check(configuration.toolLaunch!, operation)).toEqual(configuration.toolObservation);
     runtime.manager.snapshot(); expect(await readFile(receipt, "utf8")).toBe(before);
@@ -102,23 +102,4 @@ test("demand changes during a refresh take effect after the current preparation 
     expect(await runtime.prepareWebCandidates(operation.signal, true)).toBe(true);
     expect(prepare.mock.calls.map(([tool]) => tool)).toEqual(["codex", "codex", "copilot"]);
   } finally { release(); prepare.mockRestore(); try { await runtime.close(); } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); } }
-});
-
-test("Herdr configuration freezes both inspected native and handshake recipes", async () => {
-  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(path.join(scratch, "herdr-")), native = path.join(root, "codex.cjs"), daemon = path.join(root, "herdr.cjs");
-  await writeFile(native, "console.log('codex-cli 1.0.0');\n"); await writeFile(daemon, "console.log('herdr 0.9.9');\n");
-  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: process.env, readActiveSelections: () => [],
-    localToolPaths: { codex: { kind: "path", path: native }, copilot: { kind: "auto" }, herdr: { kind: "path", path: daemon } },
-    admitHerdr: async () => ({ state: "applied", version: "0.9.5", checkedAt: new Date().toISOString() }),
-  });
-  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: native }, copilot: { kind: "auto" }, herdr: { kind: "path", path: daemon } } });
-  try {
-    const frozen = await runtime.freezeConfiguration({ agent: "codex", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }, new AbortController().signal);
-    expect(frozen.toolLaunch).toMatchObject({ context: "herdr", entryPath: native });
-    expect(frozen.herdrLaunch).toMatchObject({ tool: "herdr", context: "herdr", entryPath: daemon });
-    expect(frozen.herdrObservation?.version).toBe("0.9.5");
-    await rm(native); await rm(daemon);
-    expect(await runtime.freezeConfiguration(frozen, new AbortController().signal)).toBe(frozen);
-  } finally { try { await runtime.close(); } finally { await rm(root, { recursive: true, force: true }); } }
 });

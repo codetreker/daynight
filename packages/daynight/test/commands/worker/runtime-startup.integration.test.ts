@@ -29,7 +29,7 @@ import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const reportSample = { ...workerTelemetry, taskInventory: null };
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null }));
 vi.mock("node:crypto", async original => {
   const actual = await original<typeof import("node:crypto")>();
   return { ...actual, randomUUID: (options?: Parameters<typeof actual.randomUUID>[0]) => mocks.nextUUID === null ? actual.randomUUID(options) : mocks.nextUUID() };
@@ -42,8 +42,6 @@ vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAs
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
-vi.mock("../../../src/commands/worker/herdr/shared.js", () => ({ createSharedWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", async original => ({ ...await original<object>(), createWorkerRemote: mocks.remote }));
@@ -142,7 +140,6 @@ beforeEach(() => {
     reportConfiguration: vi.fn(), report: vi.fn(),
   });
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
-  mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
   mocks.probe.mockResolvedValue("0.164.0");
   mocks.coordinator.mockReturnValue(coordinator(async () => {}));
@@ -179,17 +176,20 @@ describe("worker cloud-first startup", () => {
             expect(reporterOptions).toBeDefined();
             expect(stopProject).toHaveBeenCalledTimes(2);
             const saved = observed.current();
-            expect(saved.schemaVersion).toBe(9);
+            expect(saved.schemaVersion).toBe(10);
             expect(JSON.parse(saved.authority.desiredJson!)).toEqual(target);
-            if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
+            if (pass === 0) expect(saved.currentItems).toHaveLength(1027);
             for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
-            expect(reporterOptions!.configuration!.capture(reportSample).observation!.items.length).toBeLessThanOrEqual(1025);
+            const items = reporterOptions!.configuration!.capture(reportSample).observation!.items;
+            expect(items.length).toBeLessThanOrEqual(1026);
+            expect(items.filter(item => item.key.kind !== "agentControlMode").length).toBeLessThanOrEqual(1025);
           }, { timeout: 10_000, interval: 50 });
           const acknowledged = new Set<string>();
           let remaining = 0;
           for (let batch = 0; batch < 3; batch++) {
             const sent = reporterOptions!.configuration!.capture(reportSample);
-            expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
+            expect(sent.observation!.items.length).toBeLessThanOrEqual(1026);
+            expect(sent.observation!.items.filter(item => item.key.kind !== "agentControlMode").length).toBeLessThanOrEqual(1025);
             for (const item of sent.observation!.items) if (item.key.kind === "projectRemoval" && item.state === "applied") acknowledged.add(item.key.projectId);
             const operation = createOperation();
             try { await reporterOptions!.configuration!.accept(sent, receivedReceipt({ desired: target, observationRevision: String(++revision), observationAccepted: true }), operation); }
@@ -227,7 +227,7 @@ describe("worker cloud-first startup", () => {
       queueMicrotask(() => { void (async () => {
         try {
           const installed = observed.current();
-          expect(installed.schemaVersion).toBe(9);
+          expect(installed.schemaVersion).toBe(10);
           expect(JSON.parse(installed.authority.desiredJson!)).toEqual(next);
           expect(installed.currentItems.length).toBeGreaterThan(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,
@@ -244,7 +244,8 @@ describe("worker cloud-first startup", () => {
           let removed = false;
           for (let batch = 0; batch < 3; batch++) {
             const sent = options.configuration!.capture(reportSample);
-            expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
+            expect(sent.observation!.items.length).toBeLessThanOrEqual(1026);
+            expect(sent.observation!.items.filter(item => item.key.kind !== "agentControlMode").length).toBeLessThanOrEqual(1025);
             expect(sent.observation?.desiredRevision).toBe("2");
             expect(sent.observation!.items.every(item => BigInt(item.targetRevision) <= 2n)).toBe(true);
             const operation = createOperation();
@@ -528,7 +529,7 @@ describe("worker cloud-first startup", () => {
     const cancellation = new AbortController(); cancellation.abort(new Error("Startup cancelled."));
     await runWorker({ ...f, signal: cancellation.signal });
     expect((await readdir(f.homeDirectory, { recursive: true })).sort()).toEqual(before);
-    for (const factory of [mocks.coordinator, mocks.herdr, mocks.git, mocks.remote, mocks.reporter]) expect(factory).not.toHaveBeenCalled();
+    for (const factory of [mocks.coordinator, mocks.git, mocks.remote, mocks.reporter]) expect(factory).not.toHaveBeenCalled();
   });
 
   it("starts its configuration channel for an empty cloud selection without invoking a picker", async () => {
@@ -560,7 +561,7 @@ describe("worker cloud-first startup", () => {
       expect(JSON.parse(cache.authority.desiredJson)).toEqual(target);
       expect(channel!.capture(reportSample).observation).toBeNull();
       expect(mocks.coordinator).not.toHaveBeenCalled();
-      expect(mocks.herdr).not.toHaveBeenCalled();
+
       expect(mocks.probe).not.toHaveBeenCalled();
       expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("unsupported Herdr control mode") }));
     } finally { cancellation.abort(); await running; }
@@ -612,7 +613,7 @@ describe("worker cloud-first startup", () => {
     const failure = new Error("Configuration service unavailable.");
     mocks.remote().configuration.mockRejectedValue(failure); mocks.remote.mockClear();
     await expect(runWorker(f)).rejects.toBe(failure);
-    expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled();
+    expect(mocks.coordinator).not.toHaveBeenCalled();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
@@ -626,7 +627,7 @@ describe("worker cloud-first startup", () => {
     const { cancellation, running } = start(f);
     try {
       await vi.waitFor(() => expect(channel).toBeDefined());
-      expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled();
+      expect(mocks.coordinator).not.toHaveBeenCalled();
       const competing = await tryAcquireWorkerInstanceLock(f.paths);
       try { expect(competing).toBeNull(); } finally { await competing?.release(); }
       await expect(prepareConfiguration(channel!)).rejects.toBe(failure);
@@ -1027,6 +1028,45 @@ it("rebuilds unknown zero-version Web state before starting its coordinator", as
   expect(web.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(webExecutionStoreFormat));
   expect(web.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all()).toEqual([{ name: "executions" }, { name: "orchestration_blockers" }]);
   expect(web.prepare("SELECT * FROM executions").all()).toEqual([]); web.close();
+});
+
+it("blocks Bot and Task admission while Web adoption is pending despite ready native settings", async () => {
+  const f = await fixture(false, false);
+  mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+  let botOptions: { canAdmitNewExecution(): boolean } | undefined;
+  mocks.bots.mockImplementation(options => {
+    botOptions = options;
+    return { run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) };
+  });
+  let manager: cloudConfiguration.WorkerConfigurationManager | undefined;
+  const create = cloudConfiguration.createWorkerConfigurationManager;
+  const created = vi.spyOn(cloudConfiguration, "createWorkerConfigurationManager").mockImplementation(async options => {
+    manager = await create(options); return manager;
+  });
+  const { cancellation, running } = start(f);
+  let current: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    await vi.waitFor(() => {
+      expect(botOptions?.canAdmitNewExecution()).toBe(true);
+      expect(mocks.coordinator).toHaveBeenCalledOnce();
+      expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).configurationComplete!()).toBe(true);
+    }, { timeout: 5000, interval: 10 });
+    const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+    const ready = manager!.current();
+    expect(ready.effective.native).not.toBeNull();
+    expect(ready.effective.recoveryLimit).not.toBeNull();
+    expect(ready.selectedProjects).toEqual([]);
+    // The manager owns mode adoption and can retain ready native values during a new checkpoint.
+    current = vi.spyOn(manager!, "current").mockReturnValue({ ...ready,
+      items: ready.items.map(item => item.key.kind === "agentControlMode" ? { ...item, state: "pending", appliedValue: null } : item),
+      effective: { ...ready.effective, agentControlMode: null },
+    });
+    expect(manager!.isReady()).toBe(true);
+    expect([botOptions!.canAdmitNewExecution(), options.configurationComplete!()]).toEqual([false, false]);
+    current.mockRestore(); current = undefined;
+    expect(botOptions!.canAdmitNewExecution()).toBe(true);
+    expect(options.configurationComplete!()).toBe(true);
+  } finally { current?.mockRestore(); cancellation.abort(); await running; created.mockRestore(); }
 });
 
 it("starts Bot management with no projects and preserves the Worker lock through Bot shutdown", async () => {

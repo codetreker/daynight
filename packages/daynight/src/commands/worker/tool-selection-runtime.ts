@@ -4,15 +4,13 @@ import type { WorkerCloudNative } from "../../api/worker-configuration.js";
 import { ToolSelectionError, verifyToolLaunch, type ResolvedToolLaunch, type ToolPaths } from "../../platform/tool-executables.js";
 import { createCopilotToolMaterializer } from "./copilot-tool-materializer.js";
 import { createWorkerToolInspector } from "./native-selection.js";
-import { ToolSelectionManager, type ActiveToolSelection, type ToolSelectionTargets, type HerdrToolAdmission } from "./tool-selection.js";
+import { ToolSelectionManager, type ActiveToolSelection, type ToolSelectionTargets } from "./tool-selection.js";
 import type { ExecutionConfiguration } from "./types.js";
 
 /** One Worker lifetime owns all candidate recipes, probe cleanup and published runtime dependencies. */
 export const createWorkerToolSelectionRuntime = (options: {
   workerDirectory: string; cwd: string; environment: NodeJS.ProcessEnv; localToolPaths: ToolPaths;
   readActiveSelections: () => readonly ActiveToolSelection[];
-  admitHerdr?: HerdrToolAdmission;
-  closeHerdr?: (operation: Operation) => Promise<void>;
 }) => {
   const toolRuntimeRoot = path.join(options.workerDirectory, "tool-runtimes");
   const materializer = createCopilotToolMaterializer({ workerDirectory: options.workerDirectory, environment: options.environment });
@@ -74,25 +72,10 @@ export const createWorkerToolSelectionRuntime = (options: {
       prepareToolSelection: async (native: WorkerCloudNative, targets: ToolSelectionTargets, signal: AbortSignal): Promise<void> => { setTargets(targets); await prepareNative(native, signal); },
     },
     freezeConfiguration: async (configuration: ExecutionConfiguration, signal: AbortSignal): Promise<ExecutionConfiguration> => {
-      if (configuration.toolLaunch !== undefined || configuration.herdrLaunch !== undefined) return configuration;
-      const mode = configuration.agentControlMode ?? "herdr";
-      if (mode === "herdr") {
-        if (options.admitHerdr === undefined) {
-          await withOperation(signal, async operation => {
-            if (configuration.agent === "codex" || configuration.agent === "copilot") await manager.prepare(configuration.agent, "herdr", operation);
-            await manager.prepare("herdr", "herdr", operation);
-          });
-          return configuration;
-        }
-        return withOperation(signal, async operation => {
-          for (;;) {
-            const herdrLaunch = await manager.selectForNewExecution("herdr", "herdr", operation);
-            const toolLaunch = configuration.agent === "claude" ? undefined : await manager.selectForNewExecution(configuration.agent, "herdr", operation);
-            const herdrObservation = manager.observationFor(herdrLaunch), toolObservation = toolLaunch === undefined ? undefined : manager.observationFor(toolLaunch);
-            if (!herdrObservation || toolLaunch !== undefined && !toolObservation) { operation.check(); continue; }
-            return { ...configuration, herdrLaunch, herdrObservation, ...(toolLaunch === undefined ? {} : { toolLaunch, toolObservation: toolObservation! }) };
-          }
-        });
+      if (configuration.agentControlMode === "herdr" || configuration.herdrLaunch !== undefined) throw new Error("Herdr execution is no longer supported.");
+      if (configuration.toolLaunch !== undefined) {
+        if (configuration.toolLaunch.context !== "web") throw new Error("The frozen tool does not identify a Web execution.");
+        return configuration;
       }
       if (configuration.agent !== "codex" && configuration.agent !== "copilot") return configuration;
       const toolLaunch = await selectToolLaunch(configuration.agent, signal), toolObservation = manager.observationFor(toolLaunch);
@@ -102,7 +85,7 @@ export const createWorkerToolSelectionRuntime = (options: {
     close: async (): Promise<void> => {
       const operation = createOperation({ limits: { totalMs: 30_000 } });
       try {
-        const results = await Promise.allSettled([manager.close(operation), materializer.close(operation), ...(options.closeHerdr ? [options.closeHerdr(operation)] : [])]);
+        const results = await Promise.allSettled([manager.close(operation), materializer.close(operation)]);
         const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
         if (failures.length) throw new AggregateError(failures, "Worker tool selection cleanup remains unconfirmed.");
       } finally { operation.dispose(); }

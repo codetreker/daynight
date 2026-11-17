@@ -16,8 +16,11 @@ The configuration manager accepts only an adopted Web target for new
 configuration work. An explicit Herdr target remains unchanged in raw authority
 and is reported as unsupported. A null or unadopted mode has no execution
 qualification. The existing public capability and three-tool wire remain, with a
-real `controlModeBootstrap:web`; no mode application item is synthesized. The
-service may accept a partial observation and omitted mode evidence remains unknown.
+real `controlModeBootstrap:web`. The original schema 9 decision omitted mode
+application items to avoid inventing success merely from the desired value.
+The [mode adoption decision](2026-11-18-worker-web-mode-adoption.md) replaces
+that omission with a persisted, independently applied Web confirmation. The
+service still accepts partial observations; omitted mode evidence remains unknown.
 An omitted local mode produces a Web bootstrap candidate; an explicit local
 Herdr candidate is rejected with a correction, without rewriting the file.
 
@@ -26,14 +29,14 @@ field type or value this Worker cannot decode. The complete source and validated
 revision remain authoritative, while the known view is unavailable; this state
 is not null authority and does not trigger a new bootstrap. JSON, envelope,
 timestamp, revision, negotiated capability and observation relation failures
-remain protocol errors. Schema 9 persists `pendingApplication` to distinguish
+remain protocol errors. The schema 9 format introduced `pendingApplication` to distinguish
 unreconciled raw authority, including null or unsupported targets, from a Web
 target whose ledger has been reconciled. The flag does not claim that individual
 side effects succeeded. After restart or recovery from an unsupported target, a
 valid Web target is reconciled even when its values match an earlier target.
 
-Schema 9 distinguishes the Web ledger from deployed schemas 1–8. The frozen
-storage decoder validates the original format before conversion. Migration drops
+Schema 9 distinguished the Web ledger from deployed schemas 1–8. The frozen
+storage decoder validates the original format before conversion. Its migration dropped
 mode items and `nativeMode`; only native actual values proven to have used Web
 retain their values and sources, and the new process still revalidates them.
 Other native values, sources and corresponding failures become pending. Raw
@@ -76,7 +79,8 @@ partial observations without that fiction.
 
 The current Worker can synchronize and preserve an unsupported target while
 closing admission, and its Web qualification does not depend on Herdr tool
-availability. Older binaries cannot consume schema 9; the atomic migration and
+availability. The schema 10 successor retains that boundary and restores mode feedback from
+actual adoption. Older binaries cannot consume the new checkpoint; atomic migration and
 strict historical reader preserve facts without granting rollback compatibility.
 The public mode and tool fields remain until their actual consumers and protocol
 are retired. The [Worker design](../../../../docs/design/daynight-worker.md#云端接收与本机提交)

@@ -7,13 +7,14 @@ import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js
 import { ToolSelectionError, verifyToolLaunch, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import { captureProcessProof, inspectProcessProof } from "../../controller/process-proof.js";
 import { createWorkerHerdr, type HerdrExecutionContext, type WorkerHerdrAdapter } from "../herdr.js";
-import type { ActiveToolSelection, HerdrToolAdmission } from "../tool-selection.js";
+import type { ActiveToolSelection } from "../tool-selection.js";
 import { parseFrozenToolObservation } from "../tool-observation.js";
 import type { HerdrInstanceReady, HerdrInstanceStopped } from "./instance.js";
 import { herdrIpcAddress } from "./rpc.js";
 import { readHerdrSharedInstance, writeHerdrSharedInstance, type HerdrSharedInstanceRecord } from "./shared-instance-store.js";
 import { confirmToolLaunchMappingsStopped, readToolLaunchMappingInventory } from "./tool-launch-inventory.js";
 
+type HerdrToolAdmission = (launch: ResolvedToolLaunch, operation: Operation) => Promise<{ state: "applied"; version: string; checkedAt: string } | { state: "pending"; reason: "active_instance" | "cleanup_unconfirmed" }>;
 type EndpointState = { api: boolean; client: boolean };
 type Options = Parameters<typeof createWorkerHerdr>[0] & {
   hasResponsibilities(): boolean;

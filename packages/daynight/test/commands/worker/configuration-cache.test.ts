@@ -65,10 +65,64 @@ afterEach(async () => { for (const folder of directories.splice(0)) await rm(fol
 describe("Worker configuration cache", () => {
   it("creates an immutable uninitialized cache with a fresh local generation", () => {
     const first = createConfigurationCache(identity), second = createConfigurationCache(identity);
-    expect(first).toMatchObject({ schemaVersion: 9, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
+    expect(first).toMatchObject({ schemaVersion: 10, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
     expect(first.authority.generation).not.toBe(second.authority.generation);
     expect(Object.isFrozen(first.authority)).toBe(true);
     expect(parseConfigurationCache(first, identity)).toEqual({ cache: first, migrated: false });
+  });
+
+  it("migrates schema 9 Web authority with a pending adoption while preserving other facts", () => {
+    const original = cache(), failed = original.currentItems[0]!;
+    const currentItems = withoutModeItems(original.currentItems.map(item => item === failed ? {
+      ...item, value: { ...item.value, state: "error" as const, error: failure, lastFailure: failure, nextAttemptAt: "2026-11-04T02:00:00Z" }, backoffStep: 3, failureId: 4,
+    } : item));
+    const stop = { ...withoutMode(tracked(70, { kind: "projectRemoval", projectId: previousProjectId })), started: true,
+      value: { ...tracked(70, { kind: "projectRemoval", projectId: previousProjectId }).value, state: "pending" as const, appliedValue: null }, actualSource: null };
+    const remoteObservation = { observationRevision: "7", json: '{"baseRevision":"6","desiredRevision":"10","reportedAt":"2026-11-04T02:00:00Z","items":[]}' };
+    const desiredJson = original.authority.desiredJson!.replace('"value":{', '"value":{"future":[-1e100000,900719925474099312345],');
+    const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson, pendingApplication: false }, currentItems, retainedItems: [stop], remoteObservation };
+    const result = parseConfigurationCache(source, identity);
+    expect(result.migrated).toBe(true);
+    expect(result.cache.schemaVersion).toBe(10);
+    expect(result.cache.authority).toMatchObject({ desiredJson, applicationRevision: "10", observationRevision: "9" });
+    expect(result.cache.remoteObservation).toEqual(remoteObservation);
+    expect(result.cache.currentItems.filter(item => item.value.key.kind !== "agentControlMode")).toEqual(currentItems);
+    expect(result.cache.retainedItems).toEqual([stop]);
+    const mode = result.cache.currentItems.find(item => item.value.key.kind === "agentControlMode");
+    expect(mode).toMatchObject({ origin: { generation: result.cache.authority.generation, targetRevision: "10", source: "application" },
+      value: { appliedValue: null, state: "pending", targetRevision: "10" }, actualSource: null, started: false });
+    expect(mode!.recordId).not.toBe(original.currentItems.find(item => item.value.key.kind === "agentControlMode")!.recordId);
+    expect(parseConfigurationCache(result.cache, identity)).toEqual({ cache: result.cache, migrated: false });
+  });
+
+  it.each(["herdr", null, "absent", "future"] as const)("does not adopt schema 9 %s authority or lose its prior native proof", mode => {
+    const original = cache(), currentItems = withoutModeItems(original.currentItems);
+    const { agentControlMode: _mode, ...withoutControlMode } = desired.value;
+    const desiredJson = JSON.stringify({ ...desired, revision: "11", value: mode === "absent" ? withoutControlMode : { ...desired.value, agentControlMode: mode } });
+    const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson, pendingApplication: true }, currentItems };
+    const result = parseConfigurationCache(source, identity).cache;
+    expect(result.authority).toMatchObject({ desiredJson, pendingApplication: true, applicationRevision: "10" });
+    expect(result.currentItems).toEqual(currentItems);
+    expect(result.currentItems.some(item => item.value.key.kind === "agentControlMode")).toBe(false);
+    expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
+  });
+
+  it("keeps the application revision when schema 9 received an equal newer target", () => {
+    const original = cache();
+    const source = { ...original, schemaVersion: 9, authority: { ...original.authority, desiredJson: JSON.stringify({ ...desired, revision: "12" }), pendingApplication: false }, currentItems: withoutModeItems(original.currentItems) };
+    const result = parseConfigurationCache(source, identity).cache;
+    expect(result.authority.applicationRevision).toBe("10");
+    expect(result.currentItems.find(item => item.value.key.kind === "agentControlMode")).toMatchObject({
+      origin: { targetRevision: "10" }, value: { targetRevision: "10", appliedValue: null, state: "pending" }, actualSource: null,
+    });
+    expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
+  });
+
+  it("reopens schema 10 adoption proof without losing its provenance", () => {
+    const original = cache();
+    const source = { ...original, schemaVersion: 10, authority: { ...original.authority, pendingApplication: false }, currentItems: original.currentItems.map(withoutMode) };
+    expect(parseConfigurationCache(source, identity)).toEqual({ cache: source, migrated: false });
+    expect(() => parseConfigurationCache({ ...source, currentItems: withoutModeItems(original.currentItems) }, identity)).toThrow(/missing target/);
   });
 
   it("upgrades schema 6 without inventing an applied archive value", () => {
@@ -84,7 +138,7 @@ describe("Worker configuration cache", () => {
     const source = { ...cache(), schemaVersion: 6 };
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache).toEqual({ ...source, schemaVersion: 9, authority: { ...source.authority, generation: expect.any(String), pendingApplication: false }, projectionCursor: null, currentItems: withoutModeItems(source.currentItems) });
+    expect(result.cache).toEqual({ ...source, schemaVersion: 10, authority: { ...source.authority, generation: expect.any(String), pendingApplication: false }, projectionCursor: null, currentItems: [...withoutModeItems(source.currentItems), expect.objectContaining({ value: expect.objectContaining({ key: { kind: "agentControlMode" }, state: "pending", appliedValue: null }), actualSource: null })] });
     expect(result.cache.currentItems.some(item => item.value.key.kind === "enableSudoCleanup")).toBe(false);
   });
 
@@ -142,6 +196,21 @@ describe("Worker configuration cache", () => {
     const unknown = parseConfigurationCache({ ...source, retainedItems: [] }, identity).cache;
     expect(snapshot(unknown).retainedArchiveSessions).toBeNull();
     expect(parseConfigurationCache(upgraded, identity)).toEqual({ cache: upgraded, migrated: false });
+  });
+
+  it.each([5, 6, 7, 8])("requires fresh mode adoption after schema %i Web success", version => {
+    const original = cache();
+    const { remoteObservation: _remote, authority: _authority, ...ledger } = original;
+    const source = version === 5
+      ? { ...ledger, schemaVersion: 5, authority: { generation, desired, observationRevision: "9" } }
+      : { ...original, schemaVersion: version };
+    const result = parseConfigurationCache(source, identity).cache;
+    expect(result.currentItems.filter(item => item.value.key.kind !== "agentControlMode")).toEqual(withoutModeItems(original.currentItems));
+    expect(result.currentItems.find(item => item.value.key.kind === "agentControlMode")).toMatchObject({
+      origin: { generation: result.authority.generation, targetRevision: "10", source: "application" },
+      value: { state: "pending", appliedValue: null }, actualSource: null,
+    });
+    expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
   });
 
   it.each([5, 6, 7, 8])("reads historical mode and all three tool choices from schema %i", version => {
@@ -243,7 +312,8 @@ describe("Worker configuration cache", () => {
   });
 
   it("strictly rejects legacy mode fields and mode items in schema 9", () => {
-    const current = parseConfigurationCache(cache(), identity).cache;
+    const parsed = parseConfigurationCache(cache(), identity).cache;
+    const current = { ...parsed, schemaVersion: 9, currentItems: parsed.currentItems.filter(item => item.value.key.kind !== "agentControlMode") };
     expect(() => parseConfigurationCache({ ...current, currentItems: [{ ...current.currentItems[0], nativeMode: null }, ...current.currentItems.slice(1)] }, identity)).toThrow();
     expect(() => parseConfigurationCache({ ...current, retainedItems: [withoutMode(tracked(90, { kind: "agentControlMode" }))] }, identity)).toThrow();
   });
@@ -321,8 +391,8 @@ describe("Worker configuration cache", () => {
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
     expect(result.cache).toEqual({
-      ...original, schemaVersion: 9, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String), pendingApplication: false },
-      currentItems: withoutModeItems(currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item)), retainedItems: [withoutMode(stop)],
+      ...original, schemaVersion: 10, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String), pendingApplication: false },
+      currentItems: [...withoutModeItems(currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item)), expect.objectContaining({ value: expect.objectContaining({ key: { kind: "agentControlMode" }, state: "pending", appliedValue: null }), actualSource: null })], retainedItems: [withoutMode(stop)],
     });
     expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(desired);
     expect(source.currentItems[4]!.value.state).toBe("applying");
@@ -339,7 +409,7 @@ describe("Worker configuration cache", () => {
     await replaceFileAtomicallyFromChunks(file, configurationCacheChunks(expected), 0o600);
     const reopened = await readConfigurationCache(file, identity, new AbortController().signal);
     expect(reopened).toEqual({ cache: expected, migrated: false });
-    expect(reopened.cache.currentItems).toEqual(withoutModeItems(source.currentItems));
+    expect(reopened.cache.currentItems.filter(item => item.value.key.kind !== "agentControlMode")).toEqual(withoutModeItems(source.currentItems));
     expect(reopened.cache.retainedItems).toEqual([]);
   });
 
@@ -369,7 +439,7 @@ describe("Worker configuration cache", () => {
   it.each([1, 2, 3, 4] as const)("explicitly upgrades schema %i without inventing a prior success revision", version => {
     const source = legacy(version), result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache.schemaVersion).toBe(9);
+    expect(result.cache.schemaVersion).toBe(10);
     expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual({ ...source.desired, value: { ...source.desired.value, preferPlatformSpecificTasks: version === 1 ? false : desired.value.preferPlatformSpecificTasks } });
     expect(result.cache.authority).toMatchObject({ applicationRevision: "10", observationRevision: "9" });
     expect(result.cache.remoteObservation).toBeNull();
@@ -383,6 +453,19 @@ describe("Worker configuration cache", () => {
     if (version === 1) expect(JSON.parse(result.cache.authority.desiredJson!).value.preferPlatformSpecificTasks).toBe(false);
     expect(result.cache.currentItems.find(item => item.value.key.kind === "native")?.value.appliedValue).toEqual(version >= 3 ? native : null);
     expect(parseConfigurationCache(result.cache, identity)).toEqual({ cache: result.cache, migrated: false });
+  });
+
+  it.each([2, 3, 4] as const)("replaces schema %i historical Web confirmation with an unadopted mode", version => {
+    const previous = legacy(version);
+    const old = tracked(90, { kind: "agentControlMode" });
+    const source = { ...previous, desired: { ...previous.desired, value: { ...previous.desired.value, agentControlMode: "web" } },
+      items: [...previous.items, { value: old.value, attempts: 0, failureId: null, started: false }] };
+    const result = parseConfigurationCache(source, identity).cache;
+    expect(result.currentItems.find(item => item.value.key.kind === "agentControlMode")).toMatchObject({
+      origin: { generation: result.authority.generation, targetRevision: "10", source: "application" },
+      value: { state: "pending", appliedValue: null }, actualSource: null,
+    });
+    expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
   });
 
   it("moves unselected project history into retained while preserving original stop ownership and failures", () => {
@@ -421,7 +504,7 @@ describe("Worker configuration cache", () => {
   });
 
   const invalid: readonly [string, (input: WorkerConfigurationCache) => unknown][] = [
-    ["unknown schema", input => ({ ...input, schemaVersion: 10 })],
+    ["unknown schema", input => ({ ...input, schemaVersion: 11 })],
     ["unknown fields", input => ({ ...input, extra: true })],
     ["missing application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: null } })],
     ["future application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: "11" } })],

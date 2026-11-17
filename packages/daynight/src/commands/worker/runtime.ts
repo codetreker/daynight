@@ -45,8 +45,6 @@ import { createWorkerConfigurationDiagnostics } from "./configuration-diagnostic
 import { ConfigurationFileOperationError } from "./configuration-failure.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
-import type { ExecutionConfiguration } from "./types.js";
-import { createSharedWorkerHerdr } from "./herdr/shared.js";
 import { hasUnconfirmedOwnedCommandCleanup } from "./owned-command.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
@@ -193,7 +191,6 @@ const nativeConfigurationApplication = (options: {
   };
   return {
     current: () => environment,
-    prepareEnvironment: getEnvironment,
     apply: async (native: WorkerCloudNative, signal: AbortSignal): Promise<void> => {
       normalizeWorkerNative(native, "web", options.overrides);
       const nativeEnvironment = await getEnvironment();
@@ -258,17 +255,6 @@ const webToolSelections = (homeDirectory: string, web: Awaited<ReturnType<typeof
   return [{ tool, context: "web", launch: task.configuration!.toolLaunch ?? null, version: task.configuration!.toolObservation?.version ?? null, checkedAt: task.configuration!.toolObservation?.checkedAt ?? null, executionCount: unknown ? null : 1, instanceCount: 0, unconfirmedCount: unknown ? 1 : 0 }];
 }) ?? [];
 
-const retainedHerdrToolSelections = (store: ReturnType<typeof openWorkerStore> | undefined): ActiveToolSelection[] => store?.listUnfinishedTasks().flatMap(task => {
-  if ((task.agentControlMode ?? "herdr") !== "herdr" || task.sessionId === null) return [];
-  const frozen = store.getNativeConfiguration(task);
-  const tools = task.agent === "codex" || task.agent === "copilot" ? [task.agent, "herdr"] as const : ["herdr"] as const;
-  return tools.map(tool => {
-    const launch = tool === "herdr" ? frozen?.herdrLaunch : frozen?.toolLaunch;
-    const observation = tool === "herdr" ? frozen?.herdrObservation : frozen?.toolObservation;
-    return { tool, context: "herdr", launch: launch ?? null, version: observation?.version ?? null, checkedAt: observation?.checkedAt ?? null, executionCount: null, instanceCount: null, unconfirmedCount: 1 };
-  });
-}) ?? [];
-
 export const runWorker = async (options: {
   homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
@@ -283,7 +269,6 @@ export const runWorker = async (options: {
   let tools: ReturnType<typeof createWorkerToolSelectionRuntime> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
-  let selectionHerdr: ReturnType<typeof createSharedWorkerHerdr> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
   let configuration: WorkerConfigurationManager | undefined;
@@ -449,18 +434,8 @@ export const runWorker = async (options: {
     };
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, overrides: local, signal, emit });
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
-    const readExecutionConfiguration = (context: import("./herdr.js").HerdrExecutionOwner): ExecutionConfiguration | null => {
-      const frozen = getStore().getNativeConfiguration(context);
-      return frozen === null ? null : { ...frozen, agentControlMode: "herdr", recoveryLimit: configuration?.current().effective.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit };
-    };
-    const sharedHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>>) => selectionHerdr ??= createSharedWorkerHerdr({ paths: platform === "macos" ? { ...paths, herdrDirectory: path.join(paths.herdrDirectory, "p"), logsDirectory: path.join(paths.herdrDirectory, "p", "logs") } : paths,
-      homeDirectory: options.homeDirectory, ...environment, selectionVerifier, readExecutionConfiguration,
-      hasResponsibilities: () => platform !== "macos" && (getStore().listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr") || getStore().listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr")),
-    });
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
-      admitHerdr: async (launch, operation) => sharedHerdr(await nativeApplication.prepareEnvironment()).prepareSelection(launch, operation),
-      closeHerdr: async operation => { if (selectionHerdr !== undefined && (platform === "macos" || !getStore().listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr") && !getStore().listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr"))) await selectionHerdr.stopInstance(operation); },
-      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? [], ...bots?.activeToolSelections() ?? []] });
+      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...bots?.activeToolSelections() ?? []] });
     const toolRuntime = tools;
     let retainedView: WorkerCoordinatorConfiguration | undefined;
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
@@ -737,7 +712,7 @@ export const runWorker = async (options: {
       return effective.native?.agent === "copilot" || effective.projects.some(project => project.native?.agent === "copilot") || (bots?.requiresCopilot() ?? false);
     };
     bots = createWorkerBotHost({ ...options, selectToolLaunch: toolRuntime.selectToolLaunch, toolObservationFor: toolRuntime.toolObservationFor, toolRuntimeRoot: toolRuntime.toolRuntimeRoot, toolInspector: toolRuntime.hostInspector, toolLaunchForHost: agent => toolRuntime.manager.currentSelection(agent, "web"), copilotRequired, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
-      canAdmitNewExecution: () => { const current = manager.current(); return manager.isReady() && current.selectedProjects !== null && current.effective.native !== null && current.effective.recoveryLimit !== null; },
+      canAdmitNewExecution: () => { const current = manager.current(); return manager.isReady() && current.effective.agentControlMode === "web" && current.selectedProjects !== null && current.effective.native !== null && current.effective.recoveryLimit !== null; },
       configuration: () => {
         const effective = manager.current().effective;
         // Assistant capability collection owns per-Provider Web argument failures.
@@ -798,7 +773,8 @@ export const runWorker = async (options: {
             reporter!.publishInventory(complete ? inventory : null);
           },
           configurationComplete: () => {
-            return manager.isReady() && manager.current().selectedProjects !== null && unobservedLocalMappings.size === 0;
+            const current = manager.current();
+            return manager.isReady() && current.effective.agentControlMode === "web" && current.selectedProjects !== null && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
           requestReconcile: reconcileWake.request,
@@ -967,14 +943,12 @@ export const runWorkerControl = async (options: {
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
   const configurationExchanges: ReturnType<typeof createWorkerConfigurationExchange>[] = [];
-  let selectionHerdr: ReturnType<typeof createSharedWorkerHerdr> | undefined;
   let configurationManager: WorkerConfigurationManager | undefined;
   let configurationInitialization: Promise<WorkerConfigurationManager> | undefined;
   let controlPromptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
   let controlBootstrap: ReturnType<typeof createWorkerConfigurationBootstrap> | undefined;
   let controlResource: ReceivedWorkerConfigurationResource | undefined;
   const failures: unknown[] = [];
-  const selectionVerifier = createNativeSelectionVerifier();
   try {
     signal.throwIfAborted();
     lock = await tryAcquireWorkerInstanceLock(paths);
@@ -994,18 +968,8 @@ export const runWorkerControl = async (options: {
     });
     const nativeApplication = nativeConfigurationApplication({ tools: () => tools, paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, overrides: local, signal, emit: diagnostics.emit });
     const toolEnvironment = { agentEnvironment: { DN_CONFIG_DIR: paths.stateDirectory } };
-    const readExecutionConfiguration = (context: import("./herdr.js").HerdrExecutionOwner): ExecutionConfiguration | null => {
-      const frozen = store!.getNativeConfiguration(context);
-      return frozen === null ? null : { ...frozen, agentControlMode: "herdr", recoveryLimit: configurationManager?.current().effective.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit };
-    };
-    const sharedHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>> | {}) => selectionHerdr ??= createSharedWorkerHerdr({ paths: platform === "macos" ? { ...paths, herdrDirectory: path.join(paths.herdrDirectory, "p"), logsDirectory: path.join(paths.herdrDirectory, "p", "logs") } : paths,
-      homeDirectory: options.homeDirectory, ...environment, selectionVerifier, readExecutionConfiguration,
-      hasResponsibilities: () => platform !== "macos" && (store!.listUnfinishedTasks().some(task => (task.agentControlMode ?? "herdr") === "herdr") || store!.listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr")),
-    });
     tools = createWorkerToolSelectionRuntime({ workerDirectory: paths.workerDirectory, cwd: options.homeDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, localToolPaths: local.toolPaths,
-      admitHerdr: async (launch, operation) => sharedHerdr(await nativeApplication.prepareEnvironment()).prepareSelection(launch, operation),
-      closeHerdr: async operation => { if (selectionHerdr !== undefined && platform === "macos") await selectionHerdr.stopInstance(operation); },
-      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? []] });
+      readActiveSelections: () => [...webToolSelections(options.homeDirectory, web)] });
     const toolRuntime = tools;
     const initializeConfiguration = (): Promise<WorkerConfigurationManager> => configurationInitialization ??= createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localToolPaths: local.toolPaths,
@@ -1018,7 +982,7 @@ export const runWorkerControl = async (options: {
     if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
     if (sources.length === 0 || sources[0]!.status === "done") throw new Error("Management requires the original unfinished local execution.");
     const targetProjectId = sources[0]!.projectId;
-    const frozenRetry = options.request.kind === "retry" && sources.length === 1 && (sources[0]!.agentControlMode === "web" || store.getNativeConfiguration(sources[0]!) !== null);
+    const frozenRetry = options.request.kind === "retry";
     if (options.request.kind !== "release" && !frozenRetry) {
       let resource: ReceivedWorkerConfigurationResource;
       const syncId = randomUUID();
@@ -1168,7 +1132,6 @@ export const runWorkerControl = async (options: {
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
-    try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
