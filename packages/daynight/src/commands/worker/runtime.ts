@@ -7,6 +7,9 @@ import { loadServerConfiguration } from "../../config/server.js";
 import path from "node:path";
 import { maintainWorkerControllerGrants } from "./backends/grant-renewal.js";
 import { openWebExecutionStore } from "./backends/web-store.js";
+import { recoverPendingWebClosure } from "./backends/web-termination-recovery.js";
+import { recoverHerdrTerminationPending } from "./herdr/termination-recovery.js";
+import { readTerminationPending } from "../session-termination/domain.js";
 import { createWebExecutionBackend } from "./backends/web.js";
 import { createWebControllerLauncher } from "./backends/web-process.js";
 import { createControllerJobLeases } from "./backends/controller-job-leases.js";
@@ -221,8 +224,9 @@ const nativeConfigurationApplication = (options: {
   };
 };
 
-const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>) => {
-  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, workerId: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void, signal: AbortSignal, promptSource?: ReturnType<typeof createWorkerPromptSource>, preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>, monitoring?: ReturnType<typeof createMonitoringObserver>, tools?: ReturnType<typeof createWorkerToolSelectionRuntime>) => {
+  const pending = readTerminationPending(path.join(paths.workerDirectory, "termination-domain"));
+  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { ...(pending?.key.startsWith("web/") ? { existingOnly: true } : {}), onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
     const api = createWorkerSessionApi(serverUrl, serverToken);
     const jobLeases = createControllerJobLeases();
@@ -244,8 +248,8 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive probe does not identify the original execution.");
       return probeStoppedControllerArchive({ journalPath, ticket, signal });
     };
-    const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, signal, store, webStore, archive, probeArchive, emit, ...(monitoring === undefined ? {} : { monitoring }) });
-    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, jobLeases, platform, now: Date.now, archive, probeArchive, onArchiveFailure: archiveMaintenance.recordFailure, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
+    const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, workerId, signal, store, webStore, archive, probeArchive, emit, reconcileTermination: (task, operationSignal) => webBackend.reconcileTermination(task, operationSignal), recoverPendingTermination: operationSignal => recoverPendingWebClosure(options.homeDirectory, webStore, { serverOrigin: serverUrl, workerId }, operationSignal), ...(monitoring === undefined ? {} : { monitoring }) });
+    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, workerId, serverOrigin: serverUrl, store: webStore, git, launcher, jobLeases, platform, now: Date.now, archive, probeArchive, onArchiveFailure: archiveMaintenance.recordFailure, ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
         return buildWorkerPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
@@ -341,6 +345,22 @@ export const runWorker = async (options: {
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken], onSinkState: observeDiagnosticSink });
     const emit = diagnostics.emit;
+    try {
+      const pending = readTerminationPending(path.join(paths.workerDirectory, "termination-domain"));
+      if (pending?.key.startsWith("web/")) {
+        const file = path.join(paths.workerDirectory, "web-executions.sqlite");
+        const metadata = await lstat(file);
+        if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("Original Web termination inventory is not a regular file.");
+        const retained = openWebExecutionStore(file, { existingOnly: true });
+        try { await recoverPendingWebClosure(options.homeDirectory, retained, { serverOrigin: serverUrl, workerId }, signal); }
+        finally { retained.close(); }
+      } else if (pending?.key.startsWith("herdr/")) {
+        await recoverHerdrTerminationPending({ workerDirectory: paths.workerDirectory, serverOrigin: serverUrl, workerId, signal });
+      }
+    } catch (error) {
+      if (signal.aborted) throw error;
+      emit({ kind: "session-termination-retry", message: "Original Session closure recovery remains pending.", error });
+    }
     configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit });
     const remote = createWorkerRemote({ serverUrl, serverToken });
     const invalidateUnavailable = (projectId?: string): void => {
@@ -791,7 +811,7 @@ export const runWorker = async (options: {
       if (coordinatorJob !== undefined) return coordinatorJob;
       const job = (async () => {
         const currentStore = getStore();
-        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit, signal, currentPromptSource, undefined, observer, toolRuntime);
+        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, workerId, platform, emit, signal, currentPromptSource, undefined, observer, toolRuntime);
         if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
           onError: message => emit({ kind: "credential-renewal-error", message }),
         }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
@@ -919,7 +939,7 @@ export const runWorker = async (options: {
             if (coordinator !== undefined) {
               const latest = view(manager.current());
               if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
-              if (!archiveShouldYield()) web!.archiveMaintenance.request(archiveShouldYield);
+              web!.archiveMaintenance.request(archiveShouldYield);
             }
           }
         } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });
@@ -1151,7 +1171,7 @@ export const runWorkerControl = async (options: {
         diagnostics!.emit({ kind: "warning", message: "Worker prompt synchronization failed; new input remains waiting." });
       } finally { operation.dispose(); }
     };
-    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource, undefined, toolRuntime);
+    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, workerId, platform, diagnostics.emit, signal, retryPromptSource, preparePromptSource, undefined, toolRuntime);
     if (frozenRetry) {
       const original = sources[0]!, saved = store.getNativeConfiguration(original);
       const frozen = web.webStore.getTask(original)?.configuration ?? (saved === null ? null : { ...saved, agentControlMode: original.agentControlMode ?? "herdr", recoveryLimit: workerConfigurationDefaults.recoveryLimit });

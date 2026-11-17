@@ -32,6 +32,7 @@ import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket }
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
 import type { ControllerJobLease } from "./windows-job.js";
+import { withTerminationPhysicalStop } from "../session-termination/domain.js";
 export type ControllerSnapshot = SessionBinding & {
   executionId: string; sessionId: string; executionGeneration: string; controllerInstanceId: string;
   lifecycle: "starting" | "ready" | "working" | "stopping" | "stopped" | "paused" | "failed";
@@ -578,7 +579,7 @@ export const readProvenWindowsStoppedControllerGeneration = (file: string, ticke
 };
 
 /** Only an independent worker may commit complete process-tree stop after the writer exits. */
-export type ControllerStopOptions = { permit?: ControllerStoragePermit; signal?: AbortSignal; deadline?: number; jobLease?: ControllerJobLease };
+export type ControllerStopOptions = { permit?: ControllerStoragePermit; signal?: AbortSignal; deadline?: number; jobLease?: ControllerJobLease; terminationDomain?: { directory: string; domainId: string } };
 const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTicket, options: ControllerStopOptions, permit: ControllerStoragePermit): Promise<ControllerSnapshot> => {
   assertControllerStoragePermit(permit, file);
   const { deadline, jobLease: lease } = options;
@@ -619,12 +620,11 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
   }
   if (process.platform === "win32" && lease === undefined) throw new Error("Windows Job stop proof and original Job lease are unavailable; complete process-tree stop is unconfirmed.");
   if (!await (lease === undefined ? confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline) : confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline, lease))) throw new Error("The original controller or its descendants are still running.");
-  let db: Database.Database;
-  try { db = new Database(file, { fileMustExist: true, ...(deadline === undefined ? {} : { timeout: remaining() }) }); }
-  catch (error) { return failedAtDeadline(error, "not-started", true); }
   let stopped: ControllerSnapshot | undefined;
   try {
-    closeJournal(db, file, () => {
+    const commit = (): void => {
+      const db = new Database(file, { fileMustExist: true, ...(deadline === undefined ? {} : { timeout: remaining() }) });
+      closeJournal(db, file, () => {
       remaining();
       if (deadline !== undefined) db.pragma(`busy_timeout = ${remaining()}`);
       remaining();
@@ -643,7 +643,16 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
         remaining();
         return value;
       });
-    });
+      });
+    };
+    const binding = ticket.terminationDomain ?? options.terminationDomain;
+    if (ticket.terminationDomain !== undefined && options.terminationDomain !== undefined && (ticket.terminationDomain.directory !== options.terminationDomain.directory || ticket.terminationDomain.domainId !== options.terminationDomain.domainId)) throw new Error("Controller stop conflicts with its original termination domain.");
+    if (binding === undefined) commit();
+    else {
+      const deadlineSignal = deadline === undefined ? undefined : AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+      const signals = [options.signal, deadlineSignal].filter((signal): signal is AbortSignal => signal !== undefined);
+      await withTerminationPhysicalStop(binding.directory, async () => { remaining(); commit(); }, { expectedDomainId: binding.domainId, ...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }) });
+    }
   } catch (error) { failedAtDeadline(error, error instanceof SqliteAccessError ? error.outcome : sqliteTransactionOutcome(error), error instanceof SqliteAccessError ? error.connectionClosed : true); }
   if (deadline !== undefined && Date.now() >= deadline) throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "stop-deadline" }, { outcome: "committed", connectionClosed: true, cause: new Error("Controller stop recording exceeded its deadline after commit.") });
   return stopped!;

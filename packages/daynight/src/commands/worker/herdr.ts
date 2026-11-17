@@ -117,6 +117,14 @@ export type WorkerHerdrLifecycle = {
     retire(owner: HerdrExecutionOwner, operation: Operation, verifyWorktreeAbsent: (cwd: string) => Promise<void>): Promise<void>;
   };
   archive?: import("./herdr/resource-types.js").HerdrArchiveResources;
+  termination?: {
+    inventory(): import("./herdr/lifecycle-types.js").HerdrTerminationInventory[];
+    diagnostics(): { identity: string; error: unknown }[];
+    candidates(): HerdrExecutionOwner[];
+    recoverPending?(operation: Operation): Promise<void>;
+    read(owner: HerdrExecutionOwner): import("./herdr/termination-closure.js").HerdrTerminationClosure | null;
+    close(owner: HerdrExecutionOwner, operation: Operation): Promise<import("./herdr/termination-closure.js").HerdrTerminationClosure | null>;
+  };
   registerClaim(context: HerdrExecutionContext, ownerUserId: string): void;
   assertCanAdvance(context: HerdrExecutionContext): void;
   /** Missing or uncertain original evidence cannot authorize checkout recreation. */

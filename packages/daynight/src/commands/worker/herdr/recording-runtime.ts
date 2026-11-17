@@ -34,7 +34,7 @@ export const createHerdrRecordingRuntime = (options: {
   };
   return {
     directory, source,
-    quiescent: (record: HerdrLifecycleRecord): boolean => !samplers.has(record.sessionId),
+    quiescent: (record: Pick<HerdrLifecycleRecord, "sessionId">): boolean => !samplers.has(record.sessionId),
     canAllocate,
     canPrepareRun: (record: HerdrLifecycleRecord): boolean => record.runs.length < SESSION_V2_LIMITS.maxRuns && (record.runs.length === 0 || canAllocate(record)) && herdrRecordingMetadataBudget(record, record.runs.length === 0 ? [] : source(record).metadata().gaps, "run") <= SESSION_V2_LIMITS.metadataMaxBytes,
     prepare(record: HerdrLifecycleRecord): void {

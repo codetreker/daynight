@@ -68,3 +68,11 @@ export type HerdrLifecycleRecord = {
   segments: HerdrLocalSegment[];
   version: number;
 };
+
+/** Local termination inventory excludes assignment and input content. */
+export type HerdrTerminationMetadata = Pick<HerdrLifecycleRecord, "owner" | "claimId" | "sessionId" | "registrationId" | "cwd" | "preparation" | "runs" | "segments" | "version"> & { neverStarted: boolean };
+export type HerdrTerminationInventory = HerdrTerminationMetadata & {
+  domainId: string | null;
+  closure: import("./termination-closure.js").HerdrTerminationClosure | null;
+  retired: boolean;
+};

@@ -597,7 +597,7 @@ it.each([false,true])("only an orderly shutdown can resume at an exhausted recov
  task=f.store.bindNativeSession(task,{source:"controller",sessionId:nativeId},6);
  f.store.beginRecovery(task,7);task=f.store.beginRecovery(task,8);
  if(orderly){f.store.beginCleanup(task,{kind:"shutdown",deadline:100},9);task=f.store.clearShutdown(task,13);}
- const e=task.webExecution!;const stopped:ControllerSnapshot={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"stopped",nativeSessionId:nativeId,initialInputState:"confirmed",activity:"stopped",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:e.controllerProcess,nativeProcesses:[],nativeStopped:true,stoppedAt:new Date(0).toISOString(),error:null};
+ const e=task.webExecution!;const stopped:ControllerSnapshot={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"stopped",nativeSessionId:nativeId,initialInputState:"confirmed",activity:"stopped",currentTurnId:null,capabilities:{send:false,steer:false,cancel:false,respond:false},controllerProcess:e.controllerProcess,nativeProcesses:[],nativeStopped:true,stoppedAt:new Date(0).toISOString(),error:null};
  vi.spyOn(lifecycle,"readControllerSnapshot").mockReturnValue(stopped);vi.spyOn(lifecycle,"recordStoppedControllerGeneration").mockResolvedValue(stopped);vi.spyOn(processProof,"confirmControllerProcessesStopped").mockResolvedValue(true);
  vi.spyOn(launchObservation,"reconcileSubmittedControllerLaunch").mockImplementation(async input=>({kind:"controller-exited",process:input.spawnProof,snapshot:stopped}));
  const launcher={prepare:vi.fn(async(task:LocalTask):Promise<ControllerLaunchTicket>=>{const e=task.webExecution!;return {schemaVersion:1,launchId:e.launchId,executionId:e.executionId,controllerId:e.controllerId,controllerInstanceId:e.controllerInstanceId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,serverOrigin:task.serverOrigin,projectId:task.projectId,taskId:task.taskId,claimId:task.claimId,workerId:task.workerId,worktreeId:task.worktreeId,userId:task.userId!,provider:"codex",cwd:task.resources.worktree!.worktreePath,nativeHome:path.join(f.home,".codex"),configuration:task.configuration!,initialOperationId:e.initialOperationId,initialPrompt:"managed",resumeNativeSessionId:nativeId,credentialFile:path.join(f.home,"grant.json"),ipcEndpoint:path.join(f.home,"c.sock"),ipcSecret:"a".repeat(64),createdAt:new Date(0).toISOString()};}),launch:vi.fn(async()=>{}),refreshGrant:vi.fn(async()=>{})};
@@ -1047,6 +1047,7 @@ it("does not turn a pending retry into another orderly restart during shutdown",
   const current = { ...f.snapshot, executionGeneration: starting.webExecution!.executionGeneration, controllerInstanceId: starting.webExecution!.controllerInstanceId, lifecycle: "starting" as const, nativeStopped: false, stoppedAt: null, error: null };
   f.saved.mockReturnValue(current);
   vi.mocked(launchTickets.readLaunchTicket).mockResolvedValue(await f.launcher.prepare(starting));
+  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockResolvedValue({ ...current, lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: new Date(30).toISOString() });
   const shutdown = await f.backend.cleanup(starting, { kind: "shutdown", deadline: 30, immediateStop: true });
   expect(shutdown.task.recovery).toEqual({ count: 3, pauseReason: "The explicit recovery attempt stopped before a successful observation.", retryAuthorized: false });
   const restored = f.store.clearShutdown(shutdown.task, 31);
@@ -1410,7 +1411,7 @@ it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-st
   let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
   source.saved.mockImplementation(() => snapshot);
   source.stopped.mockImplementation(async () => recovering && conflict !== "unproven-stop");
-  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => ({ ...snapshot,
+  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => ({ ...snapshot, activity: "stopped", capabilities: { send: false, steer: false, cancel: false, respond: false },
     ...(conflict === "changed-stop-native" ? { nativeSessionId: randomUUID() } : {}),
     ...(conflict === "changed-stop-session" ? { sessionId: randomUUID() } : {}),
     ...(conflict === "changed-stop-process" ? { nativeProcesses: [{ ...native, pid: 989 }] } : {}),
@@ -1427,7 +1428,7 @@ it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-st
     return { requestId: randomUUID(), ok: true, snapshot };
   });
   const launcher = {
-    prepare: vi.fn(async (record: LocalTask): Promise<ControllerLaunchTicket> => ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId, resumeNativeSessionId: record.resources.nativeSession?.sessionId ?? null })),
+    prepare: vi.fn(async (record: LocalTask): Promise<ControllerLaunchTicket> => record.webExecution!.executionGeneration === source.ticket.executionGeneration ? source.ticket : ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId, resumeNativeSessionId: record.resources.nativeSession?.sessionId ?? null })),
     launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}),
   };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
@@ -1464,7 +1465,7 @@ it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-st
   } else expect(result.recovery).toEqual({ count: 1, pauseReason: null, retryAuthorized: false });
   expect(f.store.getOrchestrationBlocker(task)).toBeNull();
   const launches = await Promise.all(launcher.prepare.mock.results.map(result => result.value));
-  expect(launches.every(ticket => ticket.resumeNativeSessionId === nativeSessionId)).toBe(true);
+  expect(launches.every(ticket => ticket.executionGeneration === "1" ? ticket.resumeNativeSessionId === source.ticket.resumeNativeSessionId : ticket.resumeNativeSessionId === nativeSessionId)).toBe(true);
   expect(source.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
 });
 
@@ -1739,7 +1740,7 @@ it("Task holds one Job lease through IPC stop, complete confirmation and journal
   const deadline = tree.mock.calls[0]![2];
   expect(tree).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
   expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
-  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, { deadline, jobLease: lease });
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, expect.objectContaining({ deadline, jobLease: lease }));
   expect(leases.release).toHaveBeenCalledOnce();
 });
 

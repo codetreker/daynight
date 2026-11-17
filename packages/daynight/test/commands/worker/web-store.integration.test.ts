@@ -1,14 +1,126 @@
 import Database from "better-sqlite3";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { createWebStoreFixtures } from "./web-store.fixtures.js";
+import { readTerminationPending, withTerminationDomain } from "../../../src/commands/session-termination/domain.js";
+import { recoverPendingWebClosure } from "../../../src/commands/worker/backends/web-termination-recovery.js";
+import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 
 const { id, stores, open, close, connect, externalContentFixture, fixture, blockedInitialFixture } = createWebStoreFixtures("file");
+
+it("keeps missing, empty, corrupt and unversioned inventories intact during existing-only recovery", () => {
+  const { root, store } = fixture(); close(store);
+  const missing = path.join(root, "missing.sqlite");
+  expect(() => openWebExecutionStore(missing, { existingOnly: true })).toThrow();
+  expect(existsSync(missing)).toBe(false);
+  for (const [name, contents] of [["empty.sqlite", Buffer.alloc(0)], ["corrupt.sqlite", Buffer.from("not a database")]] as const) {
+    const file = path.join(root, name); writeFileSync(file, contents);
+    expect(() => openWebExecutionStore(file, { existingOnly: true })).toThrow();
+    expect(readFileSync(file)).toEqual(contents);
+  }
+  const file = path.join(root, "unversioned.sqlite"), db = new Database(file);
+  db.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original')"); db.close();
+  const before = readFileSync(file);
+  expect(() => openWebExecutionStore(file, { existingOnly: true })).toThrow(/current format/);
+  expect(readFileSync(file)).toEqual(before);
+});
+
+it("keeps an unversioned original inventory intact on normal open while a Web closure is pending", async () => {
+  const { root, store } = fixture(); close(store);
+  const worker = path.join(root, "worker"); mkdirSync(worker);
+  const file = path.join(worker, "web-executions.sqlite"), db = new Database(file);
+  db.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original')"); db.close();
+  const before = readFileSync(file), directory = path.join(worker, "termination-domain"), closureKey = `web/${id(1)}/${id(2)}/${id(3)}/${id(7)}`;
+  await withTerminationDomain(directory, async domain => { domain.beginClosure(closureKey); }, { pendingKey: closureKey });
+  expect(() => openWebExecutionStore(file)).toThrow(/current format/);
+  expect(readFileSync(file)).toEqual(before);
+  expect(readTerminationPending(directory)?.key).toBe(closureKey);
+});
+
+it("retains pending closure and quarantines uncommitted reads when commit and rollback both fail", async () => {
+  const { root, file, store, project, claim } = fixture();
+  let task = store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  task = store.initializeWebExecution(task, 2);
+  task = store.updateWebExecution(task, { sessionId: id(7) }, 3);
+  task = store.beginCleanup(task, { kind: "terminal", deadline: 100 }, 4);
+  const directory = path.join(resolveWorkerPaths(root).workerDirectory, "termination-domain");
+  const closureKey = `web/${task.projectId}/${task.taskId}/${task.claimId}/${id(7)}`;
+  const db = connect(file), prototype = Object.getPrototypeOf(db.prepare("SELECT 1")) as { run: (...args: unknown[]) => unknown };
+  const run = prototype.run;
+  await expect(withTerminationDomain(directory, async domain => {
+    store.bindTerminationDomain(task, domain.domainId);
+    const sequence = domain.beginClosure(closureKey);
+    vi.spyOn(prototype, "run").mockImplementation(function (this: { source: string; database: Database.Database }, ...args: unknown[]) {
+      if (this.database.name === file && (this.source === "COMMIT" || this.source === "ROLLBACK")) throw new Error(`injected ${this.source} failure`);
+      return run.apply(this, args);
+    });
+    store.freezeTerminationClosure(task, domain.domainId, sequence);
+  }, { pendingKey: closureKey })).rejects.toThrow(/ROLLBACK/);
+  expect(() => store.readTerminationClosure(task)).toThrow(/unresolved transaction/);
+  expect(readTerminationPending(directory)?.key).toBe(closureKey);
+  vi.restoreAllMocks(); close(store);
+  const reopened = open(file);
+  expect(reopened.readTerminationClosure(task)).toBeNull();
+  expect(await recoverPendingWebClosure(root, reopened, { serverOrigin: task.serverOrigin, workerId: task.workerId }, new AbortController().signal)).toBe(true);
+  expect(reopened.readTerminationClosure(task)?.sessionId).toBe(id(7));
+  expect(readTerminationPending(directory)).toBeNull();
+});
+
+it("reports a missing owner projection without hiding another original execution", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const second = { ...claim, taskId: id(8), claimId: id(9), worktreeId: id(10) };
+  store.register({ ...second, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const db = connect(file);
+  db.prepare("DELETE FROM termination_owners WHERE claim_id=?").run(claim.claimId);
+  const inventory = store.listTerminationInventory();
+  expect(inventory.find(item => item.claimId === claim.claimId)?.error).toBeInstanceOf(Error);
+  expect(inventory.find(item => item.claimId === second.claimId)).toMatchObject({ error: null, workerId: second.workerId });
+});
+
+it.each(["1", "2"])("backfills the retained generation of a legacy Web inventory without inventing prior generations (%s)", generation => {
+  const { file, store, project, claim } = fixture();
+  let task = store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2, toolLaunch: frozenToolLaunch() }, userId: id(6) }, 1);
+  task = store.initializeWebExecution(task, 2);
+  task = store.updateWebExecution(task, { sessionId: id(7) }, 3);
+  if (generation === "2") {
+    task = store.bindNativeSession(task, { source: "controller", sessionId: id(8) }, 4);
+    task = store.beginWebGeneration(task, { executionGeneration: "1", controllerInstanceId: task.webExecution!.controllerInstanceId, nativeSessionId: id(8), nativeStopped: true }, 5);
+  }
+  task = store.beginCleanup(task, { kind: "terminal", deadline: 100 }, 6);
+  close(store);
+  const db = connect(file);
+  db.exec("DROP TABLE termination_owners; DROP TABLE termination_domains; DROP TABLE termination_closures; DROP TABLE termination_launches"); db.pragma("user_version=4");
+  const reopened = open(file);
+  expect(reopened.listTerminationInventory().find(item => item.claimId === claim.claimId)).toMatchObject({ launches: [{ generation }] });
+  reopened.bindTerminationDomain(claim, id(11));
+  if (generation === "1") expect(reopened.freezeTerminationClosure(claim, id(11), "1").highestExecutionGeneration).toBe("1");
+  else expect(() => reopened.freezeTerminationClosure(claim, id(11), "1")).toThrow(/inventory is incomplete/);
+});
+
+it.each(["damaged-prompt", "duplicate-owner"] as const)("backfills only unambiguous legacy metadata without reading the prompt (%s)", kind => {
+  const { file, store, project, claim } = fixture();
+  let task = store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  task = store.initializeWebExecution(task, 2);
+  task = store.updateWebExecution(task, { sessionId: id(7), initialPrompt: "original" }, 3);
+  close(store);
+  const db = connect(file), raw = (db.prepare("SELECT data FROM executions").get() as { data: string }).data;
+  const altered = kind === "damaged-prompt" ? raw.replace('"initialPrompt":"original"', '"initialPrompt":"\\ud800"') : raw.replace('"workerId":', '"\\u0077orkerId":"' + claim.workerId + '","workerId":');
+  expect(altered).not.toBe(raw);
+  db.prepare("UPDATE executions SET data=?").run(altered);
+  db.exec("DROP TABLE termination_owners; DROP TABLE termination_domains; DROP TABLE termination_closures; DROP TABLE termination_launches"); db.pragma("user_version=4");
+  const reopened = open(file), item = reopened.listTerminationInventory().find(entry => entry.claimId === claim.claimId)!;
+  if (kind === "damaged-prompt") expect(item).toMatchObject({ error: null, sessionId: id(7), launches: [{ generation: "1" }] });
+  else expect(item.error).toBeInstanceOf(Error);
+  expect((db.prepare("SELECT data FROM executions").get() as { data: string }).data).toBe(altered);
+});
 
 it("persists a distinct web execution without inventing Herdr resources or workspace closure", () => {
   const { file, store, project, claim } = fixture();
@@ -21,14 +133,14 @@ it("persists a distinct web execution without inventing Herdr resources or works
   const cleaning = reopened.beginCleanup(claim, { kind: "shutdown", deadline: 100 }, 5);
   expect(cleaning.cleanup).toEqual({ kind: "shutdown", startedAt: 5, deadline: 100 });
   expect(reopened.getTask(claim)?.cleanup).toEqual(cleaning.cleanup);
-  expect(connect(file).pragma("user_version", { simple: true })).toBe(4);
+  expect(connect(file).pragma("user_version", { simple: true })).toBe(5);
 });
 
 it("migrates version-two records intact, persists independent blockers, and fences old readers", () => {
   const { file, store, project, claim } = fixture();
   const original = store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, userId: id(6) }, 1);
   close(store);
-  const db = connect(file); db.exec("DROP TABLE orchestration_blockers"); db.pragma("user_version=2");
+  const db = connect(file); db.exec("DROP TABLE termination_owners; DROP TABLE termination_domains; DROP TABLE termination_closures; DROP TABLE termination_launches; DROP TABLE orchestration_blockers"); db.pragma("user_version=2");
   const upgraded = open(file);
   expect(upgraded.getTask(claim)).toEqual(original);
   const blocker = upgraded.blockOrchestration(claim, { source: "worktree", code: "branch_mismatch", message: "Original branch differs." }, 2);
@@ -119,14 +231,14 @@ it.each([false, true])("migrates version-one cleanup receipts to resource intent
   const db = connect(file);
   const legacy = { ...original, cleanup: { ...original.cleanup, mode: "web", input: "submitted", baseline: { stateChangeSeq: 5, completionSeq: 3 }, result: "completed", error: null, agentStopped: observed, workspaceClosed: null, backendResourcesClosed: observed, worktreeDeleted: observed } };
   db.prepare("UPDATE executions SET data=?").run(JSON.stringify(legacy));
-  db.exec("DROP TABLE orchestration_blockers"); db.pragma("user_version=1");
+  db.exec("DROP TABLE termination_owners; DROP TABLE termination_domains; DROP TABLE termination_closures; DROP TABLE termination_launches; DROP TABLE orchestration_blockers"); db.pragma("user_version=1");
   const events: unknown[] = [];
   const upgraded = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(upgraded);
   expect(upgraded.getTask(claim)).toEqual(original);
   expect(upgraded.getTask(claim)?.cleanup).toEqual({ kind: "terminal", startedAt: 4, deadline: 100 });
   expect(upgraded.getTask(claim)?.webExecution?.cleanupOperationId).toBe(id(7));
-  expect(db.pragma("user_version", { simple: true })).toBe(4);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 4 }, { kind: "completed", fromVersion: 1, toVersion: 4 }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 1, toVersion: 5 }, { kind: "completed", fromVersion: 1, toVersion: 5 }]);
   close(upgraded);
   expect(open(file).getTask(claim)).toEqual(original);
 });
@@ -139,10 +251,10 @@ it("rebuilds the current unversioned schema and discards its execution records",
   const db = connect(file); db.pragma("user_version = 0");
   const events: unknown[] = [];
   const rebuilt = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(4);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
   expect(rebuilt.getTask(claim)).toBeNull();
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 4 }, { kind: "completed", fromVersion: 0, toVersion: 4 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 5 }, { kind: "completed", fromVersion: 0, toVersion: 5 }]);
   close(rebuilt); events.length = 0;
   const reopened = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
   expect(events).toEqual([]);
@@ -179,13 +291,13 @@ it("rejects newer and unknown nonzero table formats without deleting state", () 
   store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
   close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM executions").all();
-  db.pragma("user_version=5");
+  db.pragma("user_version=6");
   expect(() => open(file)).toThrow("unsupported-version");
-  expect(db.pragma("user_version", { simple: true })).toBe(5);
+  expect(db.pragma("user_version", { simple: true })).toBe(6);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
-  db.pragma("user_version=4"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
+  db.pragma("user_version=5"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
   expect(() => open(file)).toThrow("invalid-format");
-  expect(db.pragma("user_version", { simple: true })).toBe(4);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
   expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
   expect(db.prepare("SELECT value FROM unexpected").get()).toEqual({ value: "retained" });
 });

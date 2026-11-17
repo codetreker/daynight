@@ -29,7 +29,7 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 进程身份包含 boot identity、PID、微秒出生标识、audit token、父进程、进程组与 session。PID 或命令行相同不能代替出生身份；同一出生进程的 exec 也可能改变 audit identity。原始证明不可被后来观察的 foreground 进程覆盖，只能按已验证的连续父子关系追加证据。
 
-lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际观察，旧缺失字段保持缺失，禁止从当前目标补造历史身份。该格式延续格式 3 为每代保留的 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；普通 patch、取消或准入等待不能将 requested、observed 或 unknown 回退为 not_submitted。唯一的明确拒绝转换来自实际 `agent.start` 返回被识别的 `agent_pane_busy`：发送者先同步调用 `onRejected`，由 `confirmNativeLaunchRejected` 核对同一代、同一 binding、最新版本/CAS，以及该代没有 agent、采集段、输入/admission 或停止事实，才把原未启动运行恢复为 prepared/not_submitted；此前代的首次 assignment 与输入历史保持不变。此确认先于下一次准入等待，存储恢复后仍使用原 run；observed、unknown 或证据不足不能使用该转换。
+lifecycle SQLite 格式 5 保留原身份的终态元数据、顺序领域绑定和完整关闭事实；格式 4 的 preparation/run 冻结双 launch 与实际观察仍保持，旧缺失字段不能从当前目标补造。每代 `nativeLaunch` 为 `not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；普通 patch、取消或准入等待不能将 requested、observed 或 unknown 回退为 not_submitted。唯一的明确拒绝转换来自实际 `agent.start` 返回被识别的 `agent_pane_busy`：发送者先同步调用 `onRejected`，由 `confirmNativeLaunchRejected` 核对同一代、同一 binding、最新版本/CAS，以及该代没有 agent、采集段、输入/admission 或停止事实，才把原未启动运行恢复为 prepared/not_submitted；此前代的首次 assignment 与输入历史保持不变。此确认先于下一次准入等待，存储恢复后仍使用原 run；observed、unknown 或证据不足不能使用该转换。
 
 格式 3 的转换在 `executions` 和 `never_started_retirements` 中独立映射 `runs[].nativeLaunch`，不调用 lifecycle 或 Session 业务 parser，也不核对 SQL identity/version 与 JSON、retirement 与主记录的关系。映射只读取必要容器及 `processes[].role`、`phase`、`daemon`、`stopOperationId`、`admission`、`run.segmentIds`：含 agent 时为 observed；否则 launch_requested 为 requested；否则 prepared、daemon 非 null、唯一 process 为 shell、stopOperationId/admission 均为 null 且 segmentIds 为空时为 not_submitted；其余可操作 run 为 unknown。其他字段直接携带，不修改停止证明、待确认 ledger、版本或哈希。
 
@@ -77,6 +77,8 @@ lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际�
 重开遇到 `close_requested` 时保留已提交的停止 operation ID 和原因；正常恢复仍提高控制 fence，但停止重试不再次递增 controlEpoch、不回退到 `stop_intent`，也不把该阶段视为停止证明；继续对原 daemon、shell 和已登记 agent 执行完整身份验证与独占停止，再提交原代次证明。实际停止已完成但证明尚未落盘的运行由同一路径收敛；原身份变化或不可读仍保持 `stop_unknown`。
 
 journal 无法落盘时只依据已有证明尝试受控停止，并报告结果未确认；不能写成功状态。没有持久停止意图而原 daemon 在同一 boot 已消失时，重启不能补写意图来追认完整停止。pane 消失、内存 Map 为空或进程命令行变化也不是停止证明。已持久确认停止但封段或同步中断时，重试只补收尾，不重新停止或启动 agent。
+
+原 Session 的关闭事实由完整 lifecycle 清单产生，包含所有原运行及其停止证明，覆盖已启动但尚未同步服务端 ledger 的恢复代。生成前撤销新输入并等待原 native operation 和采样器退出，在原 Session 串行区内复核 preparation、launch 状态和全部 stop proof；仍可恢复的原 claim 不关闭。关闭记录冻结原身份、最高代次、领域顺序和 digest，后续启动及代次追加拒绝。关闭元数据独立于录制正文、远端 ledger、归档和工作树删除；缺失或未知证据保留原责任。
 
 准备停止确认后仍封闭实际录制责任并同步原 ledger。纯准备且零帧的终态执行使用实际零计数和无 captureError 的 unavailable/ended_before_first_sample，不生成 ready 空归档；前代有录制时保留其原帧和该代 unavailableRuns。服务端在 ledger 与 recording evidence/snapshot 的两个到达顺序上均拒绝准备证明关联非零 selected/registered 或已观察内容。新 proof 变体要求支持它的 server/Web reader；旧 reader 拒绝时，未确认的同步与归档责任继续保留；原停止及 Git 清理条件满足后独立结算 worktree。
 

@@ -141,7 +141,7 @@ it("deduplicates equivalent operation JSON regardless of object key insertion or
 
 it("test tickets and journals omit task identity and preserve no-input initialization", async () => {
   const { home, ticket: task, database } = await fixture();
-  const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
+  const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, terminationDomain: _______, ...common } = task;
   const ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "" };
   await writeLaunchTicket(home, ticket);
   expect(await readLaunchTicket(home, ticket.launchId)).toEqual(ticket);

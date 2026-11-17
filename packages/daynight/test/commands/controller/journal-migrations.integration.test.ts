@@ -12,6 +12,7 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
+import { withTerminationDomain, withTerminationDomainCut } from "../../../src/commands/session-termination/domain.js";
 
 const journalVersion = currentSqliteVersion(controllerJournalFormat);
 const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
@@ -40,6 +41,40 @@ const currentStopFixture = async () => {
   journal.close();
   return f;
 };
+
+test("bounds a Controller stop waiting for the original termination domain", async () => {
+  const f = await fixture(), directory = path.join(f.home, "termination-domain");
+  const domainId = await withTerminationDomain(directory, async domain => domain.domainId);
+  const ticket: ControllerLaunchTicket = { ...f.ticket, terminationDomain: { directory, domainId } };
+  const journal = openControllerLifecycleStore(f.file, ticket, { onMigration: () => {} });
+  journal.patchSnapshot({ controllerProcess: { pid: 123, parentPid: 12, processGroupId: process.platform === "win32" ? null : 123, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) } });
+  journal.close();
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const holder = withTerminationDomain(directory, async () => { entered(); await held; });
+  await ready;
+  try {
+    await expect(recordFixtureStop(f.file, ticket, Date.now() + 200)).rejects.toThrow(/deadline|aborted|timed out/i);
+    expect(readControllerSnapshot(f.file)).toMatchObject({ nativeStopped: false, stoppedAt: null });
+    const permit = acquireControllerStoragePermit(f.file); permit.release();
+  } finally { release(); await holder; }
+});
+
+test("records verified physical stop while a policy activation remains prepared", async () => {
+  const f = await fixture(), directory = path.join(f.home, "termination-domain"), activationId = randomUUID();
+  const domainId = await withTerminationDomain(directory, async domain => domain.domainId);
+  const ticket: ControllerLaunchTicket = { ...f.ticket, terminationDomain: { directory, domainId } };
+  const journal = openControllerLifecycleStore(f.file, ticket, { onMigration: () => {} });
+  journal.patchSnapshot({ controllerProcess: { pid: 123, parentPid: 12, processGroupId: process.platform === "win32" ? null : 123, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) } });
+  journal.close();
+  await withTerminationDomainCut(directory, async domain => { domain.prepare(activationId); }, { expectedDomainId: domainId });
+  expect(await recordFixtureStop(f.file, ticket, Date.now() + 5000)).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
+  await withTerminationDomainCut(directory, async domain => {
+    expect(domain.prepared?.activationId).toBe(activationId);
+    domain.settle(activationId);
+  }, { expectedDomainId: domainId });
+});
 
 test.each(fixturePlatforms)("does not write stopped if complete proof consumes the stop deadline (%s)", async mode => {
   selectFixturePlatform(mode);

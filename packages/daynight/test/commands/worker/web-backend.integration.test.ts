@@ -15,8 +15,113 @@ import type { ControllerLaunchTicket } from "../../../src/commands/controller/la
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
+import { readTerminationPending, withTerminationDomain, withTerminationDomainCut } from "../../../src/commands/session-termination/domain.js";
+import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
+import { recoverPendingWebClosure } from "../../../src/commands/worker/backends/web-termination-recovery.js";
 
 const { children, stores, fixture, cleanupSource, recoveryFixture } = createWebBackendFixtures("file");
+
+it.each([false, true])("reconciles an original pending Web closure after restart (closure committed=%s)", async committed => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task);
+  source.saved.mockRestore(); vi.mocked(lifecycle.recordStoppedControllerGeneration).mockRestore();
+  const journalFile = path.join(controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
+  const journal = lifecycle.openControllerLifecycleStore(journalFile, source.ticket, { onMigration: () => {} });
+  journal.patchSnapshot({ controllerProcess: source.snapshot.controllerProcess, nativeSessionId: randomUUID() });
+  journal.close();
+  const stopped = await lifecycle.recordStoppedControllerGeneration(journalFile, source.ticket, {});
+  task = f.store.beginCleanup(source.task, { kind: "terminal", deadline: 100 }, 8);
+  const directory = path.join(resolveWorkerPaths(f.home).workerDirectory, "termination-domain");
+  const closureKey = `web/${task.projectId}/${task.taskId}/${task.claimId}/${source.ticket.sessionId}`;
+  let originalSequence = "";
+  await withTerminationDomain(directory, async domain => {
+    f.store.bindTerminationDomain(task, domain.domainId);
+    f.store.recordTerminationStop(source.ticket, stopped);
+    originalSequence = domain.beginClosure(closureKey);
+    if (committed) f.store.freezeTerminationClosure(task, domain.domainId, originalSequence);
+  }, { pendingKey: closureKey });
+  expect(readTerminationPending(directory)).toEqual({ key: closureKey, sequence: originalSequence });
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  await expect(recoverPendingWebClosure(f.home, reopened, { serverOrigin: task.serverOrigin, workerId: randomUUID() }, new AbortController().signal)).rejects.toThrow(/conflicts/);
+  expect(readTerminationPending(directory)).toEqual({ key: closureKey, sequence: originalSequence });
+  expect(await recoverPendingWebClosure(f.home, reopened, { serverOrigin: task.serverOrigin, workerId: task.workerId }, new AbortController().signal)).toBe(true);
+  const closure = reopened.readTerminationClosure(task)!;
+  expect(closure).toMatchObject({ sequence: originalSequence, highestExecutionGeneration: "1", launchesSettled: true, runs: [{ launchId: source.ticket.launchId, snapshot: { nativeStopped: true } }] });
+  expect(readTerminationPending(directory)).toBeNull();
+  expect(reopened.listTerminationInventory().find(item => item.claimId === task.claimId)).toMatchObject({ closure, launches: [{ launchId: source.ticket.launchId, stopProof: { stoppedSnapshotHash: expect.any(String) } }] });
+  expect(() => reopened.initializeWebExecution(task, 9)).toThrow(/closed/);
+});
+
+it("joins two original Web generations after restart and orders closure after a prepared cut", async () => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const nativeId = randomUUID(), sessionId = randomUUID();
+  task = f.store.bindNativeSession(task, { source: "controller", sessionId: nativeId }, 3);
+  task = f.store.initializeWebExecution(task, 4);
+  task = f.store.updateWebExecution(task, { sessionId, initialPrompt: "original", launchSubmission: "unknown" }, 5);
+  const directory = path.join(resolveWorkerPaths(f.home).workerDirectory, "termination-domain");
+  const domainId = await withTerminationDomain(directory, async domain => { f.store.bindTerminationDomain(task, domain.domainId); return domain.domainId; });
+  const ticketFor = (record: LocalTask): ControllerLaunchTicket => {
+    const execution = record.webExecution!;
+    return { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId, executionGeneration: execution.executionGeneration, serverOrigin: record.serverOrigin, projectId: record.projectId, taskId: record.taskId, claimId: record.claimId, workerId: record.workerId, worktreeId: record.worktreeId, userId: record.userId!, terminationDomain: { directory, domainId }, provider: "codex", cwd: f.home, nativeHome: path.join(f.home, ".native"), configuration: record.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "original", resumeNativeSessionId: nativeId, credentialFile: path.join(f.home, "grant.json"), ipcEndpoint: path.join(f.home, "controller.sock"), ipcSecret: "a".repeat(64), createdAt: new Date(0).toISOString() };
+  };
+  const first = ticketFor(task), file = path.join(controllerExecutionDirectory(f.home, first.executionId), "journal.sqlite");
+  await mkdir(path.dirname(file), { recursive: true });
+  await launchTickets.writeLaunchTicket(f.home, first);
+  const process = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  let journal = lifecycle.openControllerLifecycleStore(file, first, { onMigration: () => {} });
+  journal.patchSnapshot({ controllerProcess: process, nativeSessionId: nativeId }); journal.close();
+  const firstStopped = await lifecycle.recordStoppedControllerGeneration(file, first, {});
+  f.store.recordTerminationStop(first, firstStopped);
+  task = await withTerminationDomain(directory, async () => f.store.beginWebGeneration(task, firstStopped, 6), { expectedDomainId: domainId });
+  const second = ticketFor(task);
+  await launchTickets.writeLaunchTicket(f.home, second);
+  task = f.store.updateWebExecution(task, { launchSubmission: "unknown", controllerProcess: process }, 7);
+  journal = lifecycle.openControllerLifecycleStore(file, second, { onMigration: () => {} });
+  expect(journal.getSnapshot().controlsRevisionFloor).toBe("0");
+  journal.patchSnapshot({ controllerProcess: process, nativeSessionId: nativeId }); journal.close();
+  task = f.store.beginCleanup(task, { kind: "terminal", deadline: 100 }, 8);
+  const earlyLauncher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), joinExecution: vi.fn(async () => {}) };
+  const earlyBackend = createWebExecutionBackend({ homeDirectory: f.home, workerId: task.workerId, serverOrigin: task.serverOrigin, store: f.store, git: f.git, launcher: earlyLauncher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50 });
+  await earlyBackend.reconcileTermination(task, new AbortController().signal);
+  expect(f.store.readTerminationClosure(task)).toBeNull();
+  const activationId = randomUUID();
+  await withTerminationDomainCut(directory, async domain => { domain.prepare(activationId); }, { expectedDomainId: domainId });
+  await lifecycle.recordStoppedControllerGeneration(file, second, {});
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), joinExecution: vi.fn(async () => {}) };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, workerId: task.workerId, serverOrigin: task.serverOrigin, store: reopened, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50 });
+  const wrongWorker = createWebExecutionBackend({ homeDirectory: f.home, workerId: randomUUID(), serverOrigin: task.serverOrigin, store: reopened, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50 });
+  await expect(wrongWorker.reconcileTermination(task, new AbortController().signal)).rejects.toThrow(/conflicts/);
+  expect(launcher.joinExecution).not.toHaveBeenCalled();
+  await expect(backend.reconcileTermination(task, new AbortController().signal)).rejects.toThrow(/prepared policy activation/);
+  expect(reopened.readTerminationClosure(task)).toBeNull();
+  await withTerminationDomainCut(directory, async domain => { domain.settle(activationId); }, { expectedDomainId: domainId });
+  await rm(launchTickets.controllerTicketPath(f.home, second.launchId));
+  const db = new Database(path.join(f.home, "worker.sqlite"));
+  db.prepare("UPDATE executions SET data=json_set(data,'$.webExecution.initialPrompt',42)").run(); db.close();
+  await backend.reconcileTermination(task, new AbortController().signal);
+  const closure = reopened.readTerminationClosure(task)!;
+  expect(closure).toMatchObject({ highestExecutionGeneration: "2", sequence: "2", runs: [{ launchId: first.launchId }, { launchId: second.launchId, snapshot: { controlsRevisionFloor: "0" } }] });
+  expect(closure.launches).toHaveLength(2);
+  const rawDb = new Database(path.join(f.home, "worker.sqlite"));
+  const original = (rawDb.prepare("SELECT value FROM termination_closures").get() as { value: string }).value;
+  for (const corrupt of [original.replace('"domainId":', '"\\u0064omainId":"' + closure.domainId + '","domainId":'), original.replace('{', '{"extra":"\\ud800",')]) {
+    rawDb.prepare("UPDATE termination_closures SET value=?").run(corrupt);
+    expect(() => reopened.readTerminationClosure(task)).toThrow();
+  }
+  rawDb.prepare("UPDATE termination_closures SET value=?").run(original);
+  const row = rawDb.prepare("SELECT generation,stop_proof FROM termination_launches WHERE generation='1'").get() as { generation: string; stop_proof: string };
+  const duplicate = row.stop_proof.replace('"ticketHash":', '"\\u0074icketHash":"' + closure.runs[0]!.ticketHash + '","ticketHash":');
+  rawDb.prepare("UPDATE termination_launches SET stop_proof=? WHERE generation=?").run(duplicate, row.generation);
+  expect(() => reopened.readTerminationClosure(task)).toThrow();
+  expect(reopened.listTerminationInventory().find(item => item.claimId === task.claimId)?.error).toBeInstanceOf(Error);
+  rawDb.close();
+});
 
 it.each(["valid", "missing", "generation", "process"] as const)("Web orderly recovery after Worker restart requires committed Windows Job proof (%s)", async kind => {
   const f = await fixture("codex", 0);
@@ -230,7 +335,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   let phase: "active" | "cleanup" | "resuming" = "active";
   source.saved.mockImplementation(() => snapshot);
   source.stopped.mockImplementation(async () => snapshot.nativeStopped);
-  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => snapshot);
+  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => ({ ...snapshot, activity: "stopped", capabilities: { send: false, steer: false, cancel: false, respond: false } }));
   vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue(undefined);
   source.request.mockImplementation(async (ticket, action) => {
     if (phase === "resuming") {
@@ -251,7 +356,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
     return { requestId: randomUUID(), ok: true, snapshot: observed };
   });
   const launcher = {
-    prepare: vi.fn(async (record: LocalTask): Promise<ControllerLaunchTicket> => ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId, resumeNativeSessionId: record.resources.nativeSession?.sessionId ?? null })),
+    prepare: vi.fn(async (record: LocalTask): Promise<ControllerLaunchTicket> => record.webExecution!.executionGeneration === source.ticket.executionGeneration ? source.ticket : ({ ...source.ticket, launchId: record.webExecution!.launchId, executionGeneration: record.webExecution!.executionGeneration, controllerInstanceId: record.webExecution!.controllerInstanceId, resumeNativeSessionId: record.resources.nativeSession?.sessionId ?? null })),
     launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}),
   };
   const options = { homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos" as const, buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request };
@@ -287,9 +392,16 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   expect(source.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
 });
 
-it.skipIf(process.platform === "win32")("uses the actual OS process group and controller journal to stop a live original writer", async () => {
-  const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!);
+it.skipIf(process.platform === "win32").each(["cut-first", "stop-first", "inventory-failure"] as const)("orders a real Controller process stop with a policy cut (%s)", async order => {
+  const f = await fixture();
+  const bound = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, bound);
   vi.restoreAllMocks();
+  const directory = path.join(resolveWorkerPaths(f.home).workerDirectory, "termination-domain");
+  const domainId = await withTerminationDomain(directory, async domain => { f.store.bindTerminationDomain(source.task, domain.domainId); return domain.domainId; });
+  const ticket: ControllerLaunchTicket = { ...source.ticket, terminationDomain: { directory, domainId } };
+  await rm(launchTickets.controllerTicketPath(f.home, ticket.launchId));
+  await launchTickets.writeLaunchTicket(f.home, ticket);
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
   children.push(child);
   await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
@@ -297,18 +409,62 @@ it.skipIf(process.platform === "win32")("uses the actual OS process group and co
   const task = f.store.updateWebExecution(source.task, { controllerProcess: proof }, 6);
   const journalPath = path.join(launchTickets.controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
   await mkdir(path.dirname(journalPath), { recursive: true });
-  const journal = lifecycle.openControllerLifecycleStore(journalPath, source.ticket);
+  const journal = lifecycle.openControllerLifecycleStore(journalPath, ticket);
   journal.patchSnapshot({ controllerProcess: proof, lifecycle: "working", activity: "working", nativeStopped: false, stoppedAt: null });
   journal.close();
   expect(await processProof.confirmControllerProcessesStopped(proof, [])).toBe(false);
   const request = vi.fn<typeof requestController>().mockRejectedValue(new ControllerIpcOutcomeUnknownError("Original IPC endpoint is unavailable."));
-  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 20, request });
-  const outcome = await backend.cleanup(task, { kind: "shutdown", deadline: 20, immediateStop: true });
+  const emit = vi.fn();
+  if (order === "inventory-failure") vi.spyOn(f.store, "recordTerminationStop").mockImplementationOnce(() => { throw new Error("controlled inventory failure"); });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, workerId: task.workerId, serverOrigin: task.serverOrigin, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), joinExecution: vi.fn(async () => {}) }, platform: "linux", buildPrompt: () => "managed", emit, now: () => 20, request });
+  let releaseGit!: () => void, enteredGit!: () => void;
+  const gitHeld = new Promise<void>(resolve => { releaseGit = resolve; });
+  const gitEntered = new Promise<void>(resolve => { enteredGit = resolve; });
+  vi.mocked(f.git.removeWorktree).mockImplementation(async () => { enteredGit(); await gitHeld; return { kind: "absent", effectErrors: [] }; });
+  const activationId = randomUUID();
+  let releaseCut!: () => void, enteredCut!: () => void;
+  const held = new Promise<void>(resolve => { releaseCut = resolve; });
+  const entered = new Promise<void>(resolve => { enteredCut = resolve; });
+  let cut: Promise<void> | undefined;
+  if (order === "cut-first") {
+    cut = withTerminationDomainCut(directory, async domain => { domain.prepare(activationId); enteredCut(); await held; domain.settle(activationId); }, { expectedDomainId: domainId });
+    await entered;
+  } else {
+    const execute = Database.prototype.exec;
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+      if (sql === "BEGIN IMMEDIATE" && this.name === journalPath && cut === undefined) {
+        cut = withTerminationDomainCut(directory, async domain => {
+          expect(lifecycle.readControllerSnapshot(journalPath)).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
+          domain.prepare(activationId); domain.settle(activationId);
+        }, { expectedDomainId: domainId });
+      }
+      return execute.call(this, sql);
+    });
+  }
+  const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+  const cleanup = backend.cleanup(task, { kind: "terminal", deadline: 20, immediateStop: true, scope: { attempt: { owner: task, attemptId: randomUUID() }, onExecutionStopped: () => {} } });
+  const cleanupFailure = cleanup.then(() => { throw new Error("Cleanup ended before the worktree barrier."); }, error => { throw error; });
+  void cleanupFailure.catch(() => {});
+  if (order === "cut-first") {
+    await Promise.race([exited, cleanupFailure]);
+    expect(lifecycle.readControllerSnapshot(journalPath)).toMatchObject({ nativeStopped: false });
+    releaseCut();
+  }
+  await Promise.race([gitEntered, cleanupFailure]);
+  if (order === "inventory-failure") expect(emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-termination-retry", error: expect.objectContaining({ message: "controlled inventory failure" }) }));
+  await backend.reconcileTermination(task, new AbortController().signal);
+  const closure = f.store.readTerminationClosure(task);
+  expect(closure).toMatchObject({ launchesSettled: true, runs: [{ launchId: ticket.launchId, snapshot: { nativeStopped: true, controllerProcess: proof } }] });
+  releaseGit();
+  const outcome = await cleanup;
+  expect(cut).toBeDefined(); await cut;
   expect(outcome.complete).toBe(true);
   expect(await processProof.confirmControllerProcessesStopped(proof, [])).toBe(true);
   expect(lifecycle.readControllerSnapshot(journalPath)).toMatchObject({ lifecycle: "stopped", nativeStopped: true, controllerProcess: proof });
-  expect(f.git.removeWorktree).not.toHaveBeenCalled();
-});
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  expect(reopened.readTerminationClosure(task)).toEqual(closure);
+}, 15_000);
 
 it.skipIf(process.platform === "win32")("stops the original bootstrap when its IPC accepts connections without replying", async () => {
   const f = await fixture(), source = await cleanupSource(f, f.store.getTask(f.identity)!, "unknown");

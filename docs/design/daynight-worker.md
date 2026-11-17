@@ -333,11 +333,17 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 
 运行资源使用当前四项身份格式。仓库准备期间显式转换旧 Git marker 与已知 sidecar，普通运行仅读取当前清单；Herdr label 的既有发现规则不变。转换与回退边界见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
 
+## 原 Session 的终态元数据
+
+Worker 的原身份清单保留 Web 与受管 Herdr 的启动、恢复、各代停止证明和未结算状态；完整读取不以当前已登记运行的停止状态代替全集。原 claim 不再可恢复后，独立维护等待启动和本机操作结算，生成包含原身份、完整运行、最高 generation、稳定 closureId 和 digest 的本机关闭事实。正文不可读、归档失败或工作树清理结果不改变此事实的准入；身份或停止证明缺失时保留未知状态。已关闭 Session 不再准入新运行。关闭事实供后续服务端终态协议消费，本机记录本身不分配服务端终态序号。
+
+Worker 与独立 Controller 通过同一终态元数据领域串行化代次分配、物理停止证明和最终关闭。领域采用平台实例锁及原子持久状态，不在 SQLite 写事务内等待网络；运行中 Controller 的 storage permit 不被清单扫描占用。关闭意图先绑定原身份与领域序号，SQLite 提交后结算该意图；中断后按原意图核对已提交结果，未知结果不得当作回滚。策略 cut 可持久准备并在原 activationId 下结算，待确认时保留物理停止证明，但关闭和新代次等待结果。当前能力不对外启用归档策略开关。
+
 ## Web backend 与执行证据
 
 云端 `agentControlMode` 经过 mode/native 成组应用后成为新 claim 的模式来源；本地 `worker.agentControlMode` 省略为 herdr，仅用于初始化和旧服务兼容。coordinator 的 configurationFor 优先读取原 claim 已冻结 mode/native，再考虑当前默认资格；没有冻结值时不能以新模式重解释旧参数。canAdvanceProject 的项目移除和权限门禁仍先行。动态 needsHerdr/ensureHerdr 保留旧模式资源并按需初始化新 backend，不重启健康 Session。同 claim 始终沿用服务端模式；普通 summary 与 properties 更新不可改写。Web 运行 Codex stdio app-server、Claude Agent SDK 或 Copilot SDK 私有 runtime；其初始输入、原生控制、停止和恢复契约由 [Task Session 设计](task-session-protocol.md)拥有。
 
-主协调器仍从完整自有 claim 清单和实际资源对账，为两种模式合并计算容量与同 task 启动屏障。Herdr 保持进程内业务 jobs，macOS 另有持久 lifecycle，Linux/Windows 保持最小索引路径；两种模式共享独立持久清理调度；Web 在独立版本 3 的 `worker/web-executions.sqlite` 保存自己的冻结配置、执行身份、恢复预算、编排阻塞和清理意图，在 `controller/` 保存 ticket 与版本 6 的原生 journal。Web 版本 0 重置原 schema 和数据，因此其旧 completed 行不进入补归档库存；此重置不删除独立 execution 目录中的 ticket、journal 或待归档文件。版本 1→2 在迁移中删除 cleanup 的 input、baseline、result、error、agentStopped、workspaceClosed、mode、backendResourcesClosed、worktreeDeleted 字段；当前 parser 只接受 kind、startedAt、deadline。Controller 拥有的原生操作回执保持在 journal，本机库不复制清理进度。Worker 持原实例锁分别打开所需状态库，全部成功后才创建 coordinator；一库失败不回滚已提交的另一库，下次按各自版本恢复。原始 Web 执行状态缺失时保留责任并报错，不能使用 legacy Herdr 的 NULL ID 新建语义代替连续性。
+主协调器仍从完整自有 claim 清单和实际资源对账，为两种模式合并计算容量与同 task 启动屏障。Herdr 保持进程内业务 jobs，macOS 另有持久 lifecycle，Linux/Windows 保持最小索引路径；两种模式共享独立持久清理调度；Web 在独立版本 5 的 `worker/web-executions.sqlite` 保存自己的冻结配置、执行身份、恢复预算、编排阻塞、清理意图及原启动与停止清单，在 `controller/` 保存 ticket 与版本 12 的原生 journal。普通 Web 库准入对版本 0 重置原 schema 和数据，因此其旧 completed 行不进入补归档库存；恢复已持久关闭意图时只打开原有当前格式，禁止创建、重置或迁移。此重置不删除独立 execution 目录中的 ticket、journal 或待归档文件。版本 1→2 在迁移中删除 cleanup 的 input、baseline、result、error、agentStopped、workspaceClosed、mode、backendResourcesClosed、worktreeDeleted 字段；当前 parser 只接受 kind、startedAt、deadline。Controller 拥有的原生操作回执保持在 journal，本机库不复制清理进度。Worker 持原实例锁分别打开所需状态库，全部成功后才创建 coordinator；一库失败不回滚已提交的另一库，下次按各自版本恢复。原始 Web 执行状态缺失时保留责任并报错，不能使用 legacy Herdr 的 NULL ID 新建语义代替连续性。
 
 Web 原生恢复复用持久 `recovery.count`、`pauseReason` 和 `retryAuthorized`。只有实际原生恢复及显式 retry 消耗该预算；普通编排、Git 和报告失败不计入原生恢复次数，也不能以进程内失败累计锁存 recovery_limit。真实原生恢复受阻时按原 claim 保存诊断原因，保留次数和执行身份。暂停写入必须独立提交，不能在同一 SQLite 事务内随后抛错而回滚暂停事实。Herdr 的进程内失败计数保持独立。
 

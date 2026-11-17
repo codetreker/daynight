@@ -18,7 +18,7 @@ import type { WorkerHerdrAdapter } from "../herdr.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrExecutionOwner, HerdrPromptReceipt, HerdrTaskBinding } from "./agents.js";
 import { openHerdrLifecycleStore, herdrLedgerHash, isHerdrNeverStarted, parseHerdrExecutionTools } from "./lifecycle-store.js";
 import { connectHerdrSession, publishHerdrLedger } from "./session-connection.js";
-import type { HerdrExecutionTools, HerdrLifecycleRecord, HerdrLocalRun, HerdrRunPhase } from "./lifecycle-types.js";
+import type { HerdrExecutionTools, HerdrLifecycleRecord, HerdrLocalRun, HerdrRunPhase, HerdrTerminationMetadata } from "./lifecycle-types.js";
 import { ToolSelectionError, verifyToolLaunch } from "../../../platform/tool-executables.js";
 import type { ExecutionConfiguration } from "../types.js";
 import type { ActiveToolSelection } from "../tool-selection.js";
@@ -41,10 +41,12 @@ import { createHerdrArchiveApi, ensureHerdrRecordingResponsibility, type HerdrAr
 import { createHerdrRecordingArchive } from "./recording-archive.js";
 import { createHerdrRecordingResources } from "./recording-resources.js";
 import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../native-selection.js";
+import { readTerminationPending, withTerminationDomain, withTerminationPhysicalStop, type TerminationDomain } from "../../session-termination/domain.js";
+import { sqliteTransactionOutcome } from "../../../platform/sqlite-access.js";
 
 type BaseOptions = Parameters<typeof createWorkerHerdr>[0];
 type Identity = HerdrExecutionOwner;
-const identity = (record: HerdrLifecycleRecord): Identity => ({ ...record.owner, claimId: record.claimId });
+const identity = (record: Pick<HerdrLifecycleRecord, "owner" | "claimId">): Identity => ({ ...record.owner, claimId: record.claimId });
 const current = (record: HerdrLifecycleRecord): HerdrLocalRun => {
   const run = record.runs.at(-1);
   if (!run) throw new Error("The original Herdr runtime has no durable identity.");
@@ -103,14 +105,29 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   };
   mkdirSync(options.paths.workerDirectory, { recursive: true, mode: 0o700 });
   const store = openHerdrLifecycleStore(path.join(options.paths.workerDirectory, "herdr-executions.sqlite"));
-  const inheritedSessions = new Set(store.list().map(record => record.sessionId));
+  const inheritedSessions = new Set(store.terminationInventory().map(record => record.sessionId));
   const inputStore = openHerdrInputStore(path.join(options.paths.workerDirectory, "herdr-inputs.sqlite"));
   const arbiters = new Map<string, HerdrInputArbiter>();
   const nativeBatches = new Map<string, { written: boolean; width: number; height: number }>();
   const nativeOperations = new Map<string, number>();
+  const nativeWaiters = new Map<string, Set<() => void>>();
+  const closingNativeOperations = new Set<string>();
   const beginNativeOperation = (sessionId: string): (() => void) => {
+    if (closingNativeOperations.has(sessionId)) throw new Error("The original Herdr Session is closing; native operations are not admitted.");
     nativeOperations.set(sessionId, (nativeOperations.get(sessionId) ?? 0) + 1);
-    return () => { const count = nativeOperations.get(sessionId)!; if (count === 1) nativeOperations.delete(sessionId); else nativeOperations.set(sessionId, count - 1); };
+    return () => { const count = nativeOperations.get(sessionId)!; if (count === 1) { nativeOperations.delete(sessionId); for (const resolve of nativeWaiters.get(sessionId) ?? []) resolve(); nativeWaiters.delete(sessionId); } else nativeOperations.set(sessionId, count - 1); };
+  };
+  const joinNativeOperations = async (sessionId: string, operation: Operation): Promise<void> => {
+    operation.check();
+    if (!nativeOperations.has(sessionId)) return;
+    await new Promise<void>((resolve, reject) => {
+      const waiters = nativeWaiters.get(sessionId) ?? new Set<() => void>(); nativeWaiters.set(sessionId, waiters);
+      const done = () => { operation.signal.removeEventListener("abort", abort); resolve(); };
+      const abort = () => { waiters.delete(done); if (waiters.size === 0) nativeWaiters.delete(sessionId); reject(operation.signal.reason); };
+      waiters.add(done);
+      if (operation.signal.aborted) abort(); else operation.signal.addEventListener("abort", abort, { once: true });
+    });
+    operation.check();
   };
   const inputFailures = new Map<string, Error>();
   const promptGuards = new Map<string, (operation: Operation) => Promise<boolean>>();
@@ -139,9 +156,26 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     if (store.retired(owner)) throw new Error("The original never-started claim is retired; execution cannot resume.");
     const record = store.get(owner);
     if (!record || record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) throw new Error("The original Herdr execution evidence is missing or belongs to another owner; resources are retained.");
+    const metadata = store.terminationRecord(owner);
+    if (!metadata || metadata.sessionId !== record.sessionId || canonicalSessionJson(metadata.owner) !== canonicalSessionJson(record.owner)) throw new Error("The original Herdr termination inventory cannot authorize execution.");
+    return record;
+  };
+  const needTermination = (owner: Identity): HerdrTerminationMetadata => {
+    const record = store.terminationRecord(owner);
+    if (!record || record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) throw new Error("The original Herdr termination inventory is missing or belongs to another owner.");
     return record;
   };
   const update = (owner: Identity, change: (record: HerdrLifecycleRecord) => void): HerdrLifecycleRecord => store.update(need(owner), change);
+  const terminationDirectory = path.join(options.paths.workerDirectory, "termination-domain");
+  const terminationKey = (record: HerdrTerminationMetadata): string => `herdr/${record.owner.projectId}/${record.owner.taskId}/${record.claimId}/${record.sessionId}`;
+  const terminationMetadata = async <T>(owner: Identity, operation: Operation, action: (domain: TerminationDomain) => T, pendingKey?: string): Promise<T> => {
+    needTermination(owner);
+    const binding = store.terminationBinding(owner);
+    return withTerminationDomain(terminationDirectory, async domain => {
+      needTermination(owner); store.bindTermination(owner, domain.domainId);
+      return action(domain);
+    }, { signal: operation.signal, ...(binding === null ? {} : { expectedDomainId: binding }), ...(pendingKey === undefined ? {} : { pendingKey }) });
+  };
   const serialize = async <T>(owner: Identity, action: () => Promise<T>): Promise<T> => {
     const name = key(owner), previous = locks.get(name) ?? Promise.resolve();
     let release!: () => void;
@@ -298,8 +332,8 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     arbiter = createHerdrInputArbiter({ store: inputStore, sessionId: record.sessionId, propagateAutomaticFailures: true,
       verify: async (expected, purpose, signal) => {
         const sessionId = need(owner).sessionId;
-        const operation = createOperation({ ...(signal ? { signal } : {}), limits: { totalMs: 10_000 } });
         const endNativeOperation = beginNativeOperation(sessionId);
+        const operation = createOperation({ ...(signal ? { signal } : {}), limits: { totalMs: 10_000 } });
         try {
           const fresh = need(owner);
           if (inputFailures.has(fresh.sessionId)) throw new SessionV2Error("source_corrupt");
@@ -348,8 +382,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         } finally { endNativeOperation(); operation.dispose(); }
       },
       execute: async (batch, write) => {
-        const fresh = need(owner), operation = createOperation({ signal: write.signal, limits: { totalMs: 10_000 } });
+        const fresh = need(owner);
         const endNativeOperation = beginNativeOperation(fresh.sessionId);
+        const operation = createOperation({ signal: write.signal, limits: { totalMs: 10_000 } });
         let progress: { written: boolean; width: number; height: number } | undefined;
         try {
           const readiness = await inspect(fresh, batch.source === "web" ? "manual" : batch.source === "cleanup" ? "cleanup" : "automatic", operation);
@@ -439,8 +474,92 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const record = need(owner);
     if (!recording.quiescent(record) || nativeOperations.has(record.sessionId)) throw new Error("An original local operation has not exited.");
   };
-  const nativeRunStopped = (record: HerdrLifecycleRecord): boolean => recording.quiescent(record) && !nativeOperations.has(record.sessionId) && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null));
+  const nativeRunStopped = (record: HerdrTerminationMetadata | HerdrLifecycleRecord): boolean => recording.quiescent(record) && !nativeOperations.has(record.sessionId) && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null));
   const nativeStopped = (record: HerdrLifecycleRecord): boolean => selectionEpoch === settledSelectionEpoch && nativeRunStopped(record);
+  const reconcileTermination = async (owner: Identity, operation: Operation, key: string) => {
+    const observed = store.terminationCommitted(owner);
+    if (readTerminationPending(terminationDirectory)?.key !== key) return observed;
+    return terminationMetadata(owner, operation, domain => {
+      const current = store.terminationCommitted(owner), pending = readTerminationPending(terminationDirectory);
+      if (pending?.key === key) {
+        if (current !== null && (current.domainId !== domain.domainId || current.sequence !== pending.sequence)) throw new Error("The original Herdr termination intent differs from its stored closure.");
+        // A committed read under the original domain proves absence as well as presence.
+        domain.finishClosure(key);
+      }
+      return current;
+    }, key);
+  };
+  const recoverTerminationPending = async (operation: Operation): Promise<void> => {
+    const pending = readTerminationPending(terminationDirectory);
+    if (pending === null || !pending.key.startsWith("herdr/")) return;
+    const [, projectId, taskId, claimId, sessionId] = pending.key.split("/");
+    const record = store.terminationRecord({ projectId: projectId!, taskId: taskId!, claimId: claimId! });
+    if (record === null || record.sessionId !== sessionId || terminationKey(record) !== pending.key) throw new Error("The original Herdr termination intent has no matching lifecycle identity.");
+    if (record.owner.serverOrigin !== options.serverOrigin || record.owner.workerId !== options.workerId) return;
+    const owner = identity(record);
+    if (store.terminationRetired(owner) || store.terminationBinding(owner) === null) throw new Error("The original Herdr termination intent has no valid domain binding.");
+    await reconcileTermination(owner, operation, pending.key);
+  };
+  const closeTermination = async (owner: Identity, operation: Operation) => {
+    if (store.terminationRetired(owner)) return null;
+    const original = needTermination(owner);
+    if (original.neverStarted) return null;
+    const key = terminationKey(original);
+    const existing = await reconcileTermination(owner, operation, key);
+    if (existing !== null) return existing;
+    if (!options.currentUserId || await options.currentUserId(operation.signal) !== original.owner.ownerUserId) throw new Error("Herdr termination requires the original authenticated owner.");
+    try {
+      const task = await options.readTask(owner.projectId, owner.taskId, operation.signal), claim = readWorkerClaim(task.properties);
+      if (task.projectId !== owner.projectId || task.id !== owner.taskId) throw new Error("The original task observation cannot prove claim termination.");
+      if (claim?.claimId === original.claimId && (claim.state === "active" || claim.workerId !== original.owner.workerId || claim.worktreeId !== original.owner.worktreeId
+        || claim.userId !== original.owner.ownerUserId || claim.agent !== original.owner.provider || claim.agentControlMode !== "herdr")) throw new Error("The original Herdr claim remains recoverable or its identity differs.");
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.phase !== "response" || error.status !== 410 || error.code !== "task_deleted"
+        || error.projectId !== owner.projectId || error.taskId !== owner.taskId || error.outcomeUnconfirmed) throw error;
+    }
+    return serialize(owner, () => serializeRecording(owner, operation, async () => {
+      const record = needTermination(owner);
+      if (record.sessionId !== original.sessionId || canonicalSessionJson(record.owner) !== canonicalSessionJson(original.owner)) throw new Error("The original Herdr Session identity changed before termination.");
+      const closed = await reconcileTermination(owner, operation, key);
+      if (closed !== null) return closed;
+      if (closingNativeOperations.has(record.sessionId)) throw new Error("The original Herdr Session is already closing.");
+      closingNativeOperations.add(record.sessionId);
+      try {
+        arbiters.get(record.sessionId)?.beginClosing();
+        inputSession.close(record.sessionId);
+        await joinNativeOperations(record.sessionId, operation);
+        if (!recording.quiescent(needTermination(owner))) throw new Error("The original Herdr sampler has not joined.");
+        return await terminationMetadata(owner, operation, domain => {
+          const current = needTermination(owner);
+          if (!nativeRunStopped(current)) throw new Error("The original Herdr launch, native operation or stop proof remains unsettled.");
+          const sequence = domain.beginClosure(key);
+          let closure;
+          try { closure = store.closeTermination(current, domain.domainId, sequence); }
+          catch (error) {
+            if (["not-started", "rolled-back"].includes(sqliteTransactionOutcome(error))) {
+              try { domain.finishClosure(key); }
+              catch (cleanup) { throw new AggregateError([error, cleanup], "Herdr termination failed and its original intent remains unsettled.", { cause: error }); }
+            }
+            throw error;
+          }
+          if (closure.domainId !== domain.domainId || closure.sequence !== sequence) throw new Error("The original Herdr termination closure differs from its persisted intent.");
+          domain.finishClosure(key);
+          return closure;
+        }, key);
+      } finally { closingNativeOperations.delete(record.sessionId); }
+    }));
+  };
+  const terminationViews = () => {
+    const records: import("./lifecycle-types.js").HerdrTerminationInventory[] = [];
+    const errors = store.terminationDiagnostics();
+    for (const record of store.terminationInventory()) {
+      if (record.owner.serverOrigin !== options.serverOrigin || record.owner.workerId !== options.workerId) continue;
+      try {
+        records.push({ ...record, domainId: store.terminationBinding(identity(record)), closure: store.termination(identity(record)), retired: store.terminationRetired(identity(record)) });
+      } catch (error) { errors.push({ identity: key(identity(record)), error }); }
+    }
+    return { records, errors };
+  };
   const assertNativeRunStopped = (owner: Identity): void => {
     assertRecordingQuiescent(owner);
     if (!nativeRunStopped(need(owner))) throw new Error("The original native execution stop is not confirmed.");
@@ -736,12 +855,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         throw new Error(`Herdr stop_unknown: ${outcome.reason ?? "original resource proof is incomplete"}`);
       }
       const stoppedAt = new Date().toISOString();
-      record = update(owner, draft => { const r = current(draft); r.phase = "stopped_confirmed"; r.error = null; r.run.stoppedAt = stoppedAt;
+      const domainBinding = store.terminationBinding(owner);
+      record = await withTerminationPhysicalStop(terminationDirectory, async domain => {
+        store.bindTermination(owner, domain.domainId);
+        return update(owner, draft => { const r = current(draft); r.phase = "stopped_confirmed"; r.error = null; r.run.stoppedAt = stoppedAt;
         const proof: SessionV2NativeStopProof = { recordId: r.stopOperationId!, executionGeneration: r.run.executionGeneration, binding: { ...r.run.binding }, bootId: r.daemon!.bootId, stoppedAt,
           method: outcome.method ?? "instances_exited", terminalStopped: true, processes: r.processes.map(p => ({ role: p.role === "shell" ? "shell" : "agent", pid: p.pid, birthToken: p.birthToken, bootId: p.bootId })) };
         const shell = r.processes[0]!, daemon = r.daemon!;
         r.run.stopProof = preparedStop ? { ...proof, nativeLaunch: "not_submitted", daemon: { pid: daemon.pid, birthToken: daemon.birthToken, bootId: daemon.bootId }, processes: [{ role: "shell", pid: shell.pid, birthToken: shell.birthToken, bootId: shell.bootId }] } : proof;
-      });
+        });
+      }, { signal: operation.signal, ...(domainBinding === null ? {} : { expectedDomainId: domainBinding }) });
     }
     if (reason === "terminal" && scope !== undefined) {
       const observation = await observeExecutionStop(owner, operation);
@@ -785,7 +908,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     pendingAttachmentPublications.add(runKey);
     await publish(owner, operation);
   };
-  for (const record of store.list()) { if (store.retired(identity(record))) continue; store.recover(record); if (inputStore.get(record.sessionId)) inputStore.recover(record.sessionId); }
+  for (const metadata of store.terminationInventory()) {
+    let record: HerdrLifecycleRecord | null;
+    try { record = store.get(identity(metadata)); }
+    catch (error) {
+      if (metadata.runs.length > 0 && metadata.preparation === null && metadata.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) continue;
+      throw error;
+    }
+    if (record === null || store.retired(identity(record))) continue;
+    store.recover(record); if (inputStore.get(record.sessionId)) inputStore.recover(record.sessionId);
+  }
   const tasks: ReturnType<typeof createWorkerHerdr>["tasks"] = {
     ...legacy.tasks,
     pendingStops: () => {
@@ -805,6 +937,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       return result;
     },
     prepareWorkspace: (context, title, operation, input) => serialize(context, () => serializeRecording(context, operation, async () => {
+      if (store.termination(context) !== null) throw new Error("The original Herdr Session is closed; recovery is prohibited.");
       await verifyClaim(context, operation);
       let record = need(context);
       if (record.runs.length === 0) {
@@ -831,7 +964,10 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const instanceId = randomUUID(), instanceDirectory = herdrRunDirectory(options.paths.herdrDirectory, instanceId);
       // Validate the native socket budget before persisting a preparation that could launch.
       resolveHerdrInstancePaths({ herdrDirectory: instanceDirectory, logsDirectory: path.join(instanceDirectory, "logs") });
-      record = update(context, draft => { draft.preparation = { instanceId, instanceDirectory, phase: "prepared", daemon: null, launches }; });
+      record = await terminationMetadata(context, operation, () => {
+        if (store.termination(context) !== null) throw new Error("The original Herdr Session is closed; recovery is prohibited.");
+        return update(context, draft => { draft.preparation = { instanceId, instanceDirectory, phase: "prepared", daemon: null, launches }; });
+      });
       record = update(context, draft => { draft.preparation!.phase = "launch_requested"; });
       const local = adapter(record, instanceDirectory);
       const ready = await local.ensureInstance(operation);
@@ -845,13 +981,14 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const shell = await native.capture(processInfo.shellPid, "shell", startup === undefined ? undefined : { executable: startup.executable, operation, ready: () => startup.isReady(processInfo.shellPid) });
       const generation = String(record.runs.length + 1), startedAt = new Date().toISOString();
       const terminal: TerminalBinding = { instanceId, sessionId: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId, terminalId: binding.terminalId, nativeSessionId: record.runs.at(-1)?.run.binding.nativeSessionId ?? null };
-      record = update(context, draft => { draft.runs.push({ run: { executionGeneration: generation, owner: draft.owner, binding: terminal, startedAt, stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory, launches: draft.preparation!.launches!, instanceObservation: draft.preparation!.instanceObservation!, daemon: draft.preparation!.daemon, processes: [shell], stopOperationId: null, stopReason: null, error: null, admission: null }); draft.preparation = null; });
+      record = await terminationMetadata(context, operation, () => update(context, draft => { draft.runs.push({ run: { executionGeneration: generation, owner: draft.owner, binding: terminal, startedAt, stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory, launches: draft.preparation!.launches!, instanceObservation: draft.preparation!.instanceObservation!, daemon: draft.preparation!.daemon, processes: [shell], stopOperationId: null, stopReason: null, error: null, admission: null }); draft.preparation = null; }));
       recording.prepare(need(context));
       await publish(context, operation, input?.canAdmitNewExecution);
       await prepareRecording(context, operation);
       return binding;
     })),
     start: (context, binding, input, operation) => serialize(context, async () => {
+      if (store.termination(context) !== null) throw new Error("The original Herdr Session is closed; native launch is prohibited.");
       let record = need(context), run = current(record);
       if (run.phase !== "prepared" || run.nativeLaunch !== "not_submitted" || JSON.stringify(bindingFor(run)) !== JSON.stringify(binding)) throw new Error("Native launch requires the original prepared Herdr run.");
       const originallySubmitted = record.runs.some(value => value.nativeLaunch !== "not_submitted");
@@ -965,6 +1102,15 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       suspend: owner => { getInput(owner).suspend(); },
     },
     lifecycle: {
+      termination: {
+        inventory: () => terminationViews().records,
+        diagnostics: () => terminationViews().errors,
+        recoverPending: recoverTerminationPending,
+        candidates: () => { const pending = readTerminationPending(terminationDirectory); return terminationViews().records.filter(record => !record.retired && record.runs.length > 0 && record.preparation === null
+          && record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)
+          && (record.closure === null || pending?.key === terminationKey(record))).map(identity); },
+        read: owner => { needTermination(owner); return store.termination(owner); }, close: closeTermination,
+      },
       migration: {
         listLifecycles: () => store.list(),
         getLifecycle: owner => store.get(owner),
@@ -1041,7 +1187,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         if (record === null || record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) return true;
         return record.runs.some(run => run.nativeLaunch !== "not_submitted");
       },
-      assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.run.stopProof !== null && isPreparedSessionV2StopProof(run.run.stopProof)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation."); if (run.phase === "active" || run.phase === "prepared" && run.nativeLaunch === "not_submitted") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
+      assertCanAdvance: context => { const record = need(context); if (store.termination(context) !== null) throw new Error("The original Herdr Session is closed; recovery is prohibited."); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.run.stopProof !== null && isPreparedSessionV2StopProof(run.run.stopProof)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation."); if (run.phase === "active" || run.phase === "prepared" && run.nativeLaunch === "not_submitted") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       archive: resources,
       activeToolSelections: (): ActiveToolSelection[] => store.list().flatMap(record => {
         if (record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || store.retired(identity(record))) return [];

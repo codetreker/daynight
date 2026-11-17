@@ -296,8 +296,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (operationId !== undefined) { observe(m => m.recover(operationId)); schedulerFailures.delete(phase); }
   };
   let archiveJob: Promise<void> | null = null;
+  let terminationJob: Promise<void> | null = null;
   let archiveCursor = "";
   const archiveObservationRetries = new Map<string, number>();
+  let terminationCursor = "";
+  const terminationRetries = new Map<string, number>();
+  let terminationRecoveryRetryAt = 0;
+  const terminationDiagnosticSignatures = new Map<string, string>();
   const confirmedClaims = new Set<string>();
   const unattributedWebIdentities = new Map<string, { identity: ClaimIdentity; operationKey: string }>();
   const pendingWebFailures = new Map<string, { identity: ClaimIdentity; phase: Extract<WorkerObservedPhase, { kind: "execution" }>; error: unknown; operationKey: string; observedFailure: { firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; running?: boolean } }>();
@@ -1383,8 +1388,26 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
   };
   const advanceArchive = (inventory: ReadonlyMap<string, Task>, coveredProjects: ReadonlySet<string>): void => {
+    if (shuttingDown) return;
+    const termination = lifecycle()?.termination;
+    const pendingClosures = (terminationJob === null ? termination?.candidates() ?? [] : []).filter(owner => coveredProjects.has(owner.projectId)
+      && !inventory.has(key(owner)) && now() >= (terminationRetries.get(key(owner)) ?? 0))
+      .sort((left, right) => key(left).localeCompare(key(right)));
+    const candidate = pendingClosures.find(owner => key(owner) > terminationCursor) ?? pendingClosures[0];
+    if (candidate !== undefined && termination !== undefined) {
+      terminationCursor = key(candidate);
+      const job = cleanupOperation(operation => termination.close(candidate, operation), normalSignal).then(() => {
+        terminationRetries.delete(key(candidate));
+      }).catch(error => {
+        if (!isWorkerCancellation(error, normalSignal)) {
+          terminationRetries.set(key(candidate), now() + ARCHIVE_REPAIR_PROBE_INTERVAL_MS);
+          options.emit({ kind: "cleanup-error", message: `Herdr termination closure for ${key(candidate)} remains incomplete; original metadata is retained for retry.`, error });
+        }
+      }).finally(() => { if (terminationJob === job) terminationJob = null; });
+      terminationJob = job;
+    }
     const archive = lifecycle()?.archive;
-    if (!archive || archiveJob !== null || shuttingDown) return;
+    if (!archive || archiveJob !== null) return;
     const retained = archive.resources();
     for (const resource of retained) {
       if (!resource.stopped || resource.disposition !== null || resource.state === "ready" || resource.state === "unavailable" || !coveredProjects.has(resource.owner.projectId) || inventory.has(key(resource.owner))) continue;
@@ -1645,6 +1668,27 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const reconcile = async (): Promise<void> => {
     reconciliationPhase = "reconciliation";
     observe(m => m.setPhase("reconciliation"));
+    const terminationDiagnostics = lifecycle()?.termination?.diagnostics?.() ?? [];
+    const diagnosticIds = new Set(terminationDiagnostics.map(item => item.identity));
+    for (const identity of terminationDiagnosticSignatures.keys()) if (!diagnosticIds.has(identity)) terminationDiagnosticSignatures.delete(identity);
+    for (const item of terminationDiagnostics) {
+      const signature = String(item.error);
+      if (terminationDiagnosticSignatures.get(item.identity) === signature) continue;
+      terminationDiagnosticSignatures.set(item.identity, signature);
+      options.emit({ kind: "cleanup-error", message: `Herdr termination metadata for ${item.identity} is unreadable; its original responsibility remains unknown.`, error: item.error });
+    }
+    const recoverPending = lifecycle()?.termination?.recoverPending;
+    if (recoverPending !== undefined && terminationJob === null && now() >= terminationRecoveryRetryAt) {
+      const job = cleanupOperation(operation => recoverPending(operation), normalSignal).then(() => {
+        terminationRecoveryRetryAt = 0;
+      }).catch(error => {
+        if (!isWorkerCancellation(error, normalSignal)) {
+          terminationRecoveryRetryAt = now() + ARCHIVE_REPAIR_PROBE_INTERVAL_MS;
+          options.emit({ kind: "cleanup-error", message: "Herdr termination intent recovery remains incomplete; the original metadata is retained.", error });
+        }
+      }).finally(() => { if (terminationJob === job) terminationJob = null; });
+      terminationJob = job;
+    }
     reconcileNeverStarted();
     reconcileDeletedArchives();
     launchCleanups();
@@ -2201,6 +2245,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await Promise.allSettled(preparationJobs.values());
       await Promise.allSettled(projectStops.values());
       await archiveJob;
+      await terminationJob;
       let complete = true;
       for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && options.webStore?.getTask(task) == null) {
         if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered) {

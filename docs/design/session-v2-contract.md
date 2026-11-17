@@ -92,6 +92,8 @@ Time 或 `null` 的 `stoppedAt`、StopProof 或 `null` 的 `stopProof`、UUID �
 或 ObservedContent 共存。前代内容不影响本代判断；captureError 不得清空来制造
 合法 unavailable。准备证明不能消费 generation grant 或自动恢复授权。
 
+Worker 的本机 `SessionTerminationClosure` 冻结完整原运行集合及这些停止证明，包含原 claim、Session、最高 generation、领域顺序和 digest。它可包含服务端 ledger 尚未登记的合法恢复代，不含帧摘要或数量；尚未结算的启动或未知停止不能封闭。该本机事实不是 v2 ledger 的新消息，也不单独证明服务端终态；生产和恢复由 [Worker 设计](daynight-worker.md#原-session-的终态元数据)拥有。
+
 零帧准备运行按实际无错误证据取得 `unavailable/ended_before_first_sample` 回执。
 若前代已有帧，固定归档保留原帧与段，准备代进入 `unavailableRuns`，代次边界仍有
 显式 restart gap。不得制造空 ready 归档或将丢失的源改称合法零帧。

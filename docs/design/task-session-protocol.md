@@ -88,6 +88,8 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、当前 timeline、投影状态及有界 outbox，资源 descriptor/blob/pin 继续由相邻文件拥有者保存。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
+新的 Task ticket 同时绑定原 Worker 的终态元数据领域及稳定身份；Test Session 不取得该绑定。独立 Controller 以该领域串行提交原物理停止证明，Worker 将每代 ticket hash、停止 snapshot hash 与 Windows Job 证明关联保存，直到完整原启动集合结算后才冻结关闭事实。旧 ticket 或历史代缺少可核验身份时保留未知，不能从当前快照补造。领域与跨崩溃提交顺序由 [Worker 设计](daynight-worker.md#原-session-的终态元数据)拥有；Controller 存储 permit 保持原生命周期，扫描不为读取正在运行的 Controller 而取得该 permit。
+
 Task、Bot 和独立 Test launcher 持久保留提交状态与原 spawn process proof。只有原 ticket 鉴权的 IPC 响应确认启动；观察窗口届满或原进程仍运行但 IPC 未就绪时继续观察同一实例，不创建新 generation 或重放输入。原进程确认退出后，共享观察取得原 execution 的存储 permit，再读取当前 journal 的单次只读快照，核对完整执行身份、generation 和 ticket 绑定；观察不迁移旧格式。当前 generation 交由完整 Controller/native 停止证明处理；缺失执行行或符合交接规则的精确前驱表示 writer 尚未提交，保留原启动意图和资源责任，不能记为 stopped。冲突与无法确定的进程事实保留错误，不以本地 journal 代替 IPC 鉴权。
 
 同一 PID 的创建时间改变证明原实例已退出，只允许读取原 journal 和继续核验原进程树；不能向新实例发信号。同一创建时间的命令或组身份冲突仍为未知。若主动停止前发生 PID 复用，停止操作拒绝新实例，调用者重新分类原启动；后续核验失败保留替换和实际失败的错误链。

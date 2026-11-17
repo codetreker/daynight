@@ -25,10 +25,10 @@ it("maps only native launch fields across independent executions and retirements
     untouched.forEach((data, index) => insert.run(`b-untouched-${index}`, 7, data));
     insert.run("c-after", 42, JSON.stringify(table === "executions" ? legacy : retirement));
   }
-  db.pragma("user_version = 2"); db.close();
+  db.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); db.pragma("user_version = 2"); db.close();
   const upgraded = open(f.file); close(upgraded);
   const inspect = new Database(f.file);
-  expect(inspect.pragma("user_version", { simple: true })).toBe(4);
+  expect(inspect.pragma("user_version", { simple: true })).toBe(5);
   const expected = { ...legacy, runs: [{ ...observed, nativeLaunch: "observed" }, ...inaccessible, { ...requested, nativeLaunch: "requested" }, { ...prepared, nativeLaunch: "not_submitted" }, { ...unknown, nativeLaunch: "unknown" }] };
   for (const table of ["executions", "never_started_retirements"]) {
     const rows = inspect.prepare(`SELECT identity, version, data FROM ${table} ORDER BY identity`).all() as { identity: string; version: number; data: string }[];
@@ -51,7 +51,7 @@ it("preserves source tokens in inaccessible runs and unrelated fields while mapp
   const db = new Database(f.file);
   db.prepare("UPDATE executions SET data = ?").run(data);
   db.exec("INSERT INTO never_started_retirements SELECT * FROM executions");
-  db.pragma("user_version = 2"); db.close();
+  db.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); db.pragma("user_version = 2"); db.close();
   const upgraded = open(f.file); close(upgraded);
   const inspect = new Database(f.file);
   for (const table of ["executions", "never_started_retirements"]) expect(inspect.prepare(`SELECT data FROM ${table}`).get()).toEqual({ data: expected });
@@ -71,11 +71,11 @@ it.each(["duplicate initialAssignment", "nonfinite admission", "duplicate native
   const db = new Database(f.file);
   db.prepare("UPDATE executions SET data = ?").run(data);
   db.exec("INSERT INTO never_started_retirements SELECT * FROM executions");
-  db.pragma("user_version = 2"); db.close();
+  db.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); db.pragma("user_version = 2"); db.close();
   const upgraded = open(f.file);
   expect(() => upgraded.get(identity)).toThrow(); close(upgraded);
   const inspect = new Database(f.file);
-  expect(inspect.pragma("user_version", { simple: true })).toBe(4);
+  expect(inspect.pragma("user_version", { simple: true })).toBe(5);
   for (const table of ["executions", "never_started_retirements"]) expect(inspect.prepare(`SELECT data FROM ${table}`).get()).toEqual({ data: expected });
   inspect.close();
   expect(() => readHerdrLifecycleRecords(f.file)).toThrow();
@@ -88,7 +88,7 @@ it("locates escaped keys and only replaces the effective nativeLaunch value with
   const data = String.raw` {"runs":[${ignored}],"r\u0075ns" : [${run}],"tail":"unmodified"} `;
   const expected = data.replace(String.raw`"native\u004caunch" : {"ignored":"} ] \\\""}`, String.raw`"native\u004caunch" : "observed"`);
   const db = new Database(f.file);
-  db.prepare("UPDATE executions SET data = ?").run(data); db.pragma("user_version = 2"); db.close();
+  db.prepare("UPDATE executions SET data = ?").run(data); db.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); db.pragma("user_version = 2"); db.close();
   const upgraded = open(f.file); close(upgraded);
   const inspect = new Database(f.file);
   expect(inspect.prepare("SELECT data FROM executions").get()).toEqual({ data: expected }); inspect.close();
@@ -103,11 +103,11 @@ it.each([
 ])("leaves unchanged source without issuing an UPDATE: %s", data => {
   const f = fixture(); close(f.store);
   const db = new Database(f.file);
-  db.prepare("UPDATE executions SET data = ?").run(data); db.pragma("user_version = 2");
+  db.prepare("UPDATE executions SET data = ?").run(data); db.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); db.pragma("user_version = 2");
   db.exec("CREATE TEMP TRIGGER reject_update BEFORE UPDATE ON executions BEGIN SELECT RAISE(ABORT, 'unexpected rewrite'); END");
   const upgraded = openHerdrLifecycleStore(db, { onMigration: () => {} });
   expect(db.prepare("SELECT data FROM executions").get()).toEqual({ data });
-  expect(db.pragma("user_version", { simple: true })).toBe(4);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
   upgraded.close();
 });
 
@@ -127,14 +127,14 @@ it.each([limit - 8, limit + 8])("converts and reopens a valid %i-byte legacy row
   legacy.initialPrompt += "x".repeat(desired - Buffer.byteLength(JSON.stringify(legacy)));
   const data = JSON.stringify(legacy); expect(Buffer.byteLength(data)).toBe(desired);
   const old = new Database(f.file);
-  old.prepare("UPDATE executions SET data = ?").run(data); old.pragma("user_version = 2"); old.close();
+  old.prepare("UPDATE executions SET data = ?").run(data); old.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); old.pragma("user_version = 2"); old.close();
   const expected = { ...legacy, runs: legacy.runs.map((run: object) => ({ ...run, nativeLaunch: "observed" })) };
   const upgraded = open(f.file);
   expect(upgraded.get(identity)).toEqual(expected);
   expect(() => upgraded.update(expected, draft => { draft.controlEpoch = "1"; })).toThrow("Herdr lifecycle metadata exceeds its size limit.");
   close(upgraded);
   const inspect = new Database(f.file);
-  expect(inspect.pragma("user_version", { simple: true })).toBe(4);
+  expect(inspect.pragma("user_version", { simple: true })).toBe(5);
   const row = inspect.prepare("SELECT data, version FROM executions").get() as { data: string; version: number };
   expect(Buffer.byteLength(row.data)).toBeGreaterThan(limit);
   expect(JSON.parse(row.data)).toEqual(expected); expect(row.version).toBe(original.version);
@@ -150,7 +150,7 @@ it("propagates actual SQLite write errors and rolls back earlier row mappings an
   const db = new Database(f.file);
   db.prepare("UPDATE executions SET data = ?").run(data);
   db.prepare("INSERT INTO executions(identity, version, data) VALUES (?, ?, ?)").run("later", 1, data);
-  db.pragma("user_version = 2");
+  db.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); db.pragma("user_version = 2");
   db.exec("CREATE TEMP TRIGGER reject_later_update BEFORE UPDATE ON executions WHEN OLD.identity = 'later' BEGIN SELECT RAISE(ABORT, 'native launch write failed'); END");
   let failure: unknown;
   try { openHerdrLifecycleStore(db, { onMigration: () => {} }); } catch (error) { failure = error; }

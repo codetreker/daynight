@@ -21,6 +21,7 @@ import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import { readTerminationPending, withTerminationDomain } from "../../../src/commands/session-termination/domain.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerConfigurationCache } from "../../../src/commands/worker/configuration-model.js";
@@ -1057,6 +1058,40 @@ it("retains committed Worker state while a Web state failure leaves the configur
   const unchangedWorker = new Database(f.paths.databaseFile);
   expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
   unchangedWorker.close();
+});
+
+it.each(["unversioned", "corrupt"] as const)("preserves a %s Web inventory after pending recovery and later Worker initialization fail", async kind => {
+  const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
+  await mkdir(f.paths.workerDirectory, { recursive: true });
+  const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
+  if (kind === "unversioned") {
+    const original = new Database(webFile);
+    original.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original')"); original.close();
+  } else await writeFile(webFile, Buffer.from("original corrupt Web inventory"));
+  const before = await readFile(webFile);
+  const directory = path.join(f.paths.workerDirectory, "termination-domain");
+  const key = `web/${uuid(1)}/${uuid(2)}/${uuid(3)}/${uuid(7)}`;
+  await withTerminationDomain(directory, async domain => { domain.beginClosure(key); }, { pendingKey: key });
+  const pending = readTerminationPending(directory);
+  const events: { kind: string; error?: unknown }[] = [];
+  mocks.emit.mockImplementation((event: { kind: string; error?: unknown }) => {
+    events.push(event);
+    if (event.kind === "reconciliation-error" && event.error !== undefined) cancellation.abort();
+  });
+  const running = runWorker({ ...f, signal: cancellation.signal });
+  try {
+    await vi.waitFor(() => expect(events.some(event => event.kind === "reconciliation-error" && event.error !== undefined)).toBe(true), { timeout: 6500, interval: 20 });
+  } finally { cancellation.abort(); await running; }
+  expect(events.some(event => event.kind === "session-termination-retry" && event.error !== undefined)).toBe(true);
+  expect(mocks.remote().currentUserId).toHaveBeenCalled();
+  expect(mocks.coordinator).not.toHaveBeenCalled();
+  expect(await readFile(webFile)).toEqual(before);
+  expect(readTerminationPending(directory)).toEqual(pending);
+  if (kind === "unversioned") {
+    const observed = new Database(webFile, { readonly: true, fileMustExist: true });
+    try { expect(observed.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" }); }
+    finally { observed.close(); }
+  }
 });
 
 it("rebuilds unknown zero-version Web state before starting its coordinator", async () => {

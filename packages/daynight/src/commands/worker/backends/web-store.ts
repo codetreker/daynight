@@ -1,22 +1,50 @@
 import { parseStartupObservation, type StartupObservation, type SessionStartupReport } from "../../../session/startup.js";
+import { normalizeServerUrl } from "../../../config/server.js";
+import { decodeStrictSessionJson } from "../../../session/v2/values.js";
 import { randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
+import path from "node:path";
+import Database from "better-sqlite3";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
-import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
+import { assertCurrentSqlite, inspectSqlite } from "../../../platform/sqlite-format.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration, WorkerProject, ResourceOwner } from "../types.js";
 import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import { controllerPayloadHash, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
+import { parseWebTerminationClosure, parseWebTerminationRun, type WebTerminationClosure, type WebTerminationLaunch, type WebTerminationRun } from "./web-termination.js";
+import { readTerminationPending } from "../../session-termination/domain.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
 import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesControllerProcessProof, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+export type { WebTerminationClosure, WebTerminationLaunch, WebTerminationRun } from "./web-termination.js";
+type LaunchRow = { generation: string; execution_id: string; launch_id: string; controller_id: string; controller_instance_id: string; session_id: string | null; submission: WebExecutionState["launchSubmission"]; stop_proof: string | null };
+type OwnerRow = { identity: string; server_origin: string; owner_user_id: string | null; worker_id: string; project_id: string; task_id: string; claim_id: string; worktree_id: string; provider: string | null; status: LocalTask["status"]; cleanup: "terminal" | "shutdown" | null; session_id: string | null; execution_id: string | null; controller_id: string | null; generation: string | null };
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
-export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: { onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file: filename, format: webExecutionStoreFormat, allowCreate: true,
+export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: { onMigration?: SqliteMigrationReporter; existingOnly?: boolean } = {}) => {
+  const openExisting = (): Database.Database => {
+    if (typeof filename !== "string") throw new Error("Existing-only Web recovery requires an original file.");
+    const stat = lstatSync(filename);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Original Web execution inventory is not a regular file.");
+    const probe = new Database(filename, { readonly: true, fileMustExist: true });
+    try { if (probe.transaction(() => inspectSqlite(probe, webExecutionStoreFormat)).deferred().kind !== "current") throw new Error("Original Web execution inventory is not at the current format; it was retained."); }
+    finally { probe.close(); }
+    const existing = new Database(filename, { fileMustExist: true });
+    try {
+      if (existing.transaction(() => inspectSqlite(existing, webExecutionStoreFormat)).deferred().kind !== "current") throw new Error("Original Web execution inventory changed before recovery.");
+      existing.pragma("busy_timeout = 5000"); existing.pragma("synchronous = FULL");
+      return existing;
+    } catch (error) { existing.close(); throw error; }
+  };
+  const pendingWebRecovery = typeof filename === "string" && path.basename(filename) === "web-executions.sqlite" && readTerminationPending(path.join(path.dirname(filename), "termination-domain"))?.key.startsWith("web/");
+  const db = options.existingOnly || pendingWebRecovery ? openExisting() : openSqliteDatabase({ file: filename, format: webExecutionStoreFormat, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
+  let quarantined = false;
   const atomic = <T>(operation: () => T): T => {
+    if (quarantined) throw new Error("Web execution storage has an unresolved transaction; reopen it before reading or writing.");
     let guardFailure: unknown;
     try {
       return db.transaction(() => {
@@ -25,11 +53,13 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
         return operation();
       }).immediate();
     } catch (error) {
+      if (db.open && db.inTransaction) quarantined = true;
       if (guardFailure !== undefined && error !== guardFailure) throw new AggregateError([guardFailure, error], "Web SQLite format assertion and rollback failed.");
       throw error;
     }
   };
   const read = <T>(operation: () => T): T => {
+    if (quarantined) throw new Error("Web execution storage has an unresolved transaction; reopen it before reading or writing.");
     if (db.inTransaction) { assertCurrentSqlite(db, webExecutionStoreFormat); return operation(); }
     return db.transaction(() => { assertCurrentSqlite(db, webExecutionStoreFormat); return operation(); }).deferred();
   };
@@ -37,7 +67,25 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
     const row = db.prepare("SELECT data FROM executions WHERE identity = ?").get(key(identity)) as { data: string } | undefined;
     return row === undefined ? null : validate(JSON.parse(row.data) as LocalTask);
   });
-  const write = (task: LocalTask): LocalTask => { validate(task); db.prepare("INSERT INTO executions(identity,data) VALUES (?,?) ON CONFLICT(identity) DO UPDATE SET data=excluded.data").run(key(task), JSON.stringify(task)); return getTask(task)!; };
+  const getTerminationOwner = (identity: ClaimIdentity): OwnerRow | null => {
+    const owner = db.prepare("SELECT * FROM termination_owners WHERE identity=?").get(key(identity)) as OwnerRow | undefined;
+    if (owner === undefined) return null;
+    if (owner.identity !== key(identity) || owner.project_id !== identity.projectId || owner.task_id !== identity.taskId || owner.claim_id !== identity.claimId || [owner.project_id, owner.task_id, owner.claim_id, owner.worker_id, owner.worktree_id, ...(owner.owner_user_id === null ? [] : [owner.owner_user_id]), ...(owner.session_id === null ? [] : [owner.session_id]), ...(owner.execution_id === null ? [] : [owner.execution_id]), ...(owner.controller_id === null ? [] : [owner.controller_id])].some(value => id(value, "Web termination owner") !== value) || normalizeServerUrl(owner.server_origin) !== owner.server_origin || !["pending", "active", "done"].includes(owner.status) || ![null, "terminal", "shutdown"].includes(owner.cleanup) || ![null, "codex", "claude", "copilot"].includes(owner.provider) || owner.generation !== null && (!/^[1-9][0-9]{0,18}$/.test(owner.generation) || BigInt(owner.generation) > 9_223_372_036_854_775_807n)) throw new Error("Web termination owner projection is invalid.");
+    return owner;
+  };
+  const write = (task: LocalTask): LocalTask => {
+    validate(task);
+    const execution = task.webExecution;
+    const previousOwner = getTerminationOwner(task);
+    if (previousOwner !== null && (previousOwner.server_origin !== task.serverOrigin || previousOwner.worker_id !== task.workerId || previousOwner.worktree_id !== task.worktreeId || previousOwner.owner_user_id !== null && previousOwner.owner_user_id !== task.userId || previousOwner.provider !== null && previousOwner.provider !== (task.configuration?.agent ?? null) || previousOwner.session_id !== null && previousOwner.session_id !== execution?.sessionId || previousOwner.execution_id !== null && previousOwner.execution_id !== execution?.executionId || previousOwner.controller_id !== null && previousOwner.controller_id !== execution?.controllerId)) throw new Error("Web termination owner cannot be replaced.");
+    db.prepare("INSERT INTO termination_owners(identity,server_origin,owner_user_id,worker_id,project_id,task_id,claim_id,worktree_id,provider,status,cleanup,session_id,execution_id,controller_id,generation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET owner_user_id=excluded.owner_user_id,provider=excluded.provider,status=excluded.status,cleanup=excluded.cleanup,session_id=excluded.session_id,execution_id=excluded.execution_id,controller_id=excluded.controller_id,generation=excluded.generation").run(key(task), task.serverOrigin, task.userId, task.workerId, task.projectId, task.taskId, task.claimId, task.worktreeId, task.configuration?.agent ?? null, task.status, task.cleanup?.kind ?? null, execution?.sessionId ?? null, execution?.executionId ?? null, execution?.controllerId ?? null, execution?.executionGeneration ?? null);
+    if (execution !== null) {
+      const previous = db.prepare("SELECT * FROM termination_launches WHERE identity=? AND generation=?").get(key(task), execution.executionGeneration) as LaunchRow | undefined;
+      if (previous !== undefined && (previous.execution_id !== execution.executionId || previous.launch_id !== execution.launchId || previous.controller_id !== execution.controllerId || previous.controller_instance_id !== execution.controllerInstanceId || previous.session_id !== null && previous.session_id !== execution.sessionId || ["not-submitted", "unknown", "acknowledged"].indexOf(execution.launchSubmission) < ["not-submitted", "unknown", "acknowledged"].indexOf(previous.submission))) throw new Error("Web launch inventory conflicts with its original generation.");
+      db.prepare("INSERT INTO termination_launches(identity,generation,execution_id,launch_id,controller_id,controller_instance_id,session_id,submission) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(identity,generation) DO UPDATE SET session_id=excluded.session_id,submission=excluded.submission").run(key(task), execution.executionGeneration, execution.executionId, execution.launchId, execution.controllerId, execution.controllerInstanceId, execution.sessionId, execution.launchSubmission);
+    }
+    db.prepare("INSERT INTO executions(identity,data) VALUES (?,?) ON CONFLICT(identity) DO UPDATE SET data=excluded.data").run(key(task), JSON.stringify(task)); return getTask(task)!;
+  };
   const change = (identity: ClaimIdentity, now: number, operation: (task: LocalTask) => LocalTask): LocalTask => atomic(() => {
     const task = getTask(identity); if (task === null || task.status === "done") throw new Error("The original Web execution is missing or done.");
     return write({ ...operation(task), updatedAt: integer(now, "Execution time") });
@@ -56,6 +104,108 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
   });
   return {
     close: (): void => { closeSqliteDatabase(db, { file: db.name, format: webExecutionStoreFormat }); }, getTask, getOrchestrationBlocker,
+    readTerminationSource: (identity: ClaimIdentity) => read(() => {
+      const owner = getTerminationOwner(identity);
+      if (owner === null) return null;
+      const domain = db.prepare("SELECT domain_id FROM termination_domains WHERE identity=?").get(key(identity)) as { domain_id: string } | undefined;
+      return { serverOrigin: owner.server_origin, ownerUserId: owner.owner_user_id, workerId: owner.worker_id, projectId: owner.project_id, taskId: owner.task_id, claimId: owner.claim_id, worktreeId: owner.worktree_id, provider: owner.provider, status: owner.status, cleanup: owner.cleanup, sessionId: owner.session_id, executionId: owner.execution_id, generation: owner.generation, domainId: domain === undefined ? null : id(domain.domain_id, "Termination domain ID") };
+    }),
+    readTerminationDomain: (identity: ClaimIdentity): string | null => read(() => {
+      const row = db.prepare("SELECT domain_id FROM termination_domains WHERE identity=?").get(key(identity)) as { domain_id: string } | undefined;
+      return row === undefined ? null : id(row.domain_id, "Termination domain ID");
+    }),
+    bindTerminationDomain: (identity: ClaimIdentity, domainId: string): void => atomic(() => {
+      const checked = id(domainId, "Termination domain ID");
+      if (getTerminationOwner(identity) === null) throw new Error("The original Web execution is missing.");
+      const previous = db.prepare("SELECT domain_id FROM termination_domains WHERE identity=?").get(key(identity)) as { domain_id: string } | undefined;
+      if (previous !== undefined && previous.domain_id !== checked) throw new Error("The original Web termination domain cannot be replaced.");
+      if (previous === undefined) db.prepare("INSERT INTO termination_domains(identity,domain_id) VALUES(?,?)").run(key(identity), checked);
+    }),
+    listTerminationInventory: () => read(() => (db.prepare("SELECT identity FROM executions UNION SELECT identity FROM termination_owners UNION SELECT identity FROM termination_launches UNION SELECT identity FROM termination_domains UNION SELECT identity FROM termination_closures").all() as { identity: string }[]).map(row => {
+      const [projectId = "", taskId = "", claimId = ""] = row.identity.split("/");
+      const identity = { projectId, taskId, claimId };
+      try {
+      if (row.identity !== key(identity) || db.prepare("SELECT 1 FROM executions WHERE identity=?").get(row.identity) === undefined) throw new Error("Web termination identity has no original execution owner.");
+      const task = getTerminationOwner(identity);
+      if (task === null) throw new Error("Web termination owner projection is missing.");
+      const domain = db.prepare("SELECT domain_id FROM termination_domains WHERE identity=?").get(key(identity)) as { domain_id: string } | undefined;
+      if (domain !== undefined && id(domain.domain_id, "Termination domain ID") !== domain.domain_id) throw new Error("Web termination domain identity is not canonical.");
+      const rows = db.prepare("SELECT * FROM termination_launches WHERE identity=?").all(key(identity)) as LaunchRow[];
+      rows.sort((a, b) => BigInt(a.generation) < BigInt(b.generation) ? -1 : 1);
+      const launches = rows.map(row => {
+        if (!/^[1-9][0-9]{0,18}$/.test(row.generation) || BigInt(row.generation) > 9_223_372_036_854_775_807n || [row.execution_id, row.launch_id, row.controller_id, row.controller_instance_id].some(value => id(value, "Web launch identity") !== value) || row.session_id !== null && id(row.session_id, "Web Session ID") !== row.session_id || !["not-submitted", "unknown", "acknowledged"].includes(row.submission)) throw new Error("Web launch inventory is invalid.");
+        const launch: WebTerminationLaunch = { executionId: row.execution_id, launchId: row.launch_id, controllerId: row.controller_id, controllerInstanceId: row.controller_instance_id, generation: row.generation, submission: row.submission };
+        const stopProof = row.stop_proof === null ? null : row.session_id === null ? (() => { throw new Error("Web stop proof has no Session identity."); })() : parseWebTerminationRun(decodeStrictSessionJson(row.stop_proof, Number.POSITIVE_INFINITY), launch, task.claim_id, row.session_id);
+        return { ...launch, sessionId: row.session_id, stopProof };
+      });
+      const closed = db.prepare("SELECT value FROM termination_closures WHERE identity=?").get(key(identity)) as { value: string } | undefined;
+      const closure = closed === undefined ? null : parseWebTerminationClosure(decodeStrictSessionJson(closed.value, Number.POSITIVE_INFINITY));
+      if (closure !== null && (closure.claimId !== task.claim_id || closure.owner.projectId !== task.project_id || closure.owner.taskId !== task.task_id || closure.owner.workerId !== task.worker_id || closure.owner.worktreeId !== task.worktree_id || closure.owner.ownerUserId !== task.owner_user_id || closure.owner.provider !== task.provider || closure.owner.serverOrigin !== task.server_origin || closure.sessionId !== task.session_id || closure.highestExecutionGeneration !== task.generation || closure.domainId !== domain?.domain_id || closure.launches.length !== launches.length || launches.some(launch => {
+        const saved = closure.launches.find(item => item.generation === launch.generation), proof = closure.runs.find(item => item.generation === launch.generation);
+        return saved === undefined || ["executionId", "launchId", "controllerId", "controllerInstanceId", "submission"].some(field => saved[field as keyof WebTerminationLaunch] !== launch[field as keyof WebTerminationLaunch]) || launch.sessionId !== closure.sessionId || (launch.stopProof === null ? proof !== undefined : proof === undefined || controllerPayloadHash(launch.stopProof) !== controllerPayloadHash(proof));
+      }))) throw new Error("Web closure inventory conflicts with its original owner or launches.");
+      return { serverOrigin: task.server_origin, ownerUserId: task.owner_user_id, workerId: task.worker_id, projectId: task.project_id, taskId: task.task_id, claimId: task.claim_id, worktreeId: task.worktree_id, provider: task.provider, status: task.status, cleanup: task.cleanup, domainId: domain?.domain_id ?? null, sessionId: task.session_id, launches, closure, error: null };
+      } catch (error) {
+        return { ...identity, serverOrigin: null, ownerUserId: null, workerId: null, worktreeId: null, provider: null, status: null, cleanup: null, domainId: null, sessionId: null, launches: [], closure: null, error };
+      }
+    })),
+    readTerminationClosure: (identity: ClaimIdentity): WebTerminationClosure | null => read(() => {
+      const row = db.prepare("SELECT value FROM termination_closures WHERE identity=?").get(key(identity)) as { value: string } | undefined;
+      if (row === undefined) return null;
+      const value = parseWebTerminationClosure(decodeStrictSessionJson(row.value, Number.POSITIVE_INFINITY));
+      const task = getTerminationOwner(identity);
+      const domain = db.prepare("SELECT domain_id FROM termination_domains WHERE identity=?").get(key(identity)) as { domain_id: string } | undefined;
+      if (domain?.domain_id !== value.domainId) throw new Error("Web termination closure conflicts with its original domain.");
+      if (task === null || value.claimId !== identity.claimId || value.owner.projectId !== identity.projectId || value.owner.taskId !== identity.taskId || value.owner.workerId !== task.worker_id || value.owner.worktreeId !== task.worktree_id || value.owner.ownerUserId !== task.owner_user_id || value.owner.serverOrigin !== task.server_origin || value.owner.provider !== task.provider || value.sessionId !== task.session_id || value.highestExecutionGeneration !== task.generation) throw new Error("Web termination closure conflicts with its original owner.");
+      const rows = db.prepare("SELECT * FROM termination_launches WHERE identity=?").all(key(identity)) as LaunchRow[];
+      if (rows.length !== value.launches.length || rows.some(row => {
+        const launch = value.launches.find(item => item.generation === row.generation), proof = value.runs.find(item => item.generation === row.generation);
+        return launch === undefined || launch.executionId !== row.execution_id || launch.launchId !== row.launch_id || launch.controllerId !== row.controller_id || launch.controllerInstanceId !== row.controller_instance_id || launch.submission !== row.submission || row.session_id !== value.sessionId || (row.stop_proof === null ? proof !== undefined : proof === undefined || controllerPayloadHash(decodeStrictSessionJson(row.stop_proof, Number.POSITIVE_INFINITY)) !== controllerPayloadHash(proof));
+      })) throw new Error("Web termination closure conflicts with its retained launch inventory.");
+      return value;
+    }),
+    recordTerminationStop: (ticket: ControllerLaunchTicket, snapshot: ControllerSnapshot): void => atomic(() => {
+      if (ticket.claimId === undefined || ticket.projectId === undefined || ticket.taskId === undefined) throw new Error("A Web termination stop requires its original Task ticket.");
+      const identity = { projectId: ticket.projectId, taskId: ticket.taskId, claimId: ticket.claimId };
+      const task = getTerminationOwner(identity);
+      const binding = db.prepare("SELECT domain_id FROM termination_domains WHERE identity=?").get(key(identity)) as { domain_id: string } | undefined;
+      if (ticket.terminationDomain !== undefined && binding?.domain_id !== ticket.terminationDomain.domainId) throw new Error("The stopped Web ticket conflicts with its original termination domain.");
+      if (task === null || task.worker_id !== ticket.workerId || task.owner_user_id !== ticket.userId || task.worktree_id !== ticket.worktreeId || task.server_origin !== ticket.serverOrigin || task.session_id !== ticket.sessionId) throw new Error("The stopped Web ticket conflicts with its original owner.");
+      const row = db.prepare("SELECT * FROM termination_launches WHERE identity=? AND generation=?").get(key(identity), ticket.executionGeneration) as LaunchRow | undefined;
+      if (row === undefined || row.launch_id !== ticket.launchId || row.execution_id !== ticket.executionId || row.controller_id !== ticket.controllerId || row.controller_instance_id !== ticket.controllerInstanceId || row.session_id !== ticket.sessionId || row.submission === "not-submitted" || snapshot.executionId !== ticket.executionId || snapshot.claimId !== ticket.claimId || snapshot.sessionId !== ticket.sessionId || snapshot.executionGeneration !== ticket.executionGeneration || snapshot.controllerInstanceId !== ticket.controllerInstanceId || snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || snapshot.stoppedAt === null || snapshot.controllerProcess === null) throw new Error("The stopped Web generation lacks its original launch or trusted stop evidence.");
+      const proof: WebTerminationRun = { executionId: ticket.executionId, launchId: ticket.launchId, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, generation: ticket.executionGeneration, ticketHash: controllerPayloadHash(ticket), stoppedSnapshotHash: controllerPayloadHash(snapshot), snapshot };
+      const encoded = JSON.stringify(proof);
+      if (row.stop_proof !== null && controllerPayloadHash(decodeStrictSessionJson(row.stop_proof, Number.POSITIVE_INFINITY)) !== controllerPayloadHash(proof)) throw new Error("The original Web stop proof cannot be replaced.");
+      if (row.stop_proof === null) db.prepare("UPDATE termination_launches SET stop_proof=? WHERE identity=? AND generation=?").run(encoded, key(identity), ticket.executionGeneration);
+    }),
+    freezeTerminationClosure: (identity: ClaimIdentity, domainId: string, sequence: string, dryRun = false): WebTerminationClosure => atomic(() => {
+      const old = db.prepare("SELECT value FROM termination_closures WHERE identity=?").get(key(identity)) as { value: string } | undefined;
+      if (old !== undefined) {
+        const value = parseWebTerminationClosure(decodeStrictSessionJson(old.value, Number.POSITIVE_INFINITY));
+        if (value.domainId !== domainId || !dryRun && value.sequence !== sequence) throw new Error("The retained Web closure conflicts with the original domain or sequence.");
+        return value;
+      }
+      const task = getTerminationOwner(identity);
+      if (task === null || task.cleanup !== "terminal" || task.owner_user_id === null || task.provider === null || task.session_id === null || task.execution_id === null || task.controller_id === null || task.generation === null) throw new Error("Web closure requires the original terminal cleanup and Session identity.");
+      const rows = db.prepare("SELECT * FROM termination_launches WHERE identity=?").all(key(identity)) as LaunchRow[];
+      rows.sort((a, b) => BigInt(a.generation) < BigInt(b.generation) ? -1 : 1);
+      const launches: WebTerminationLaunch[] = [], runs: WebTerminationRun[] = [];
+      for (let index = 0; index < rows.length; index++) {
+        const row = rows[index]!;
+        if (row.generation !== String(index + 1) || row.session_id !== task.session_id || row.execution_id !== task.execution_id || row.controller_id !== task.controller_id) throw new Error("The original Web launch inventory is incomplete or conflicts with its Session.");
+        launches.push({ executionId: row.execution_id, launchId: row.launch_id, controllerId: row.controller_id, controllerInstanceId: row.controller_instance_id, generation: row.generation, submission: row.submission });
+        if (row.submission === "not-submitted") { if (row.stop_proof !== null) throw new Error("An unsubmitted Web launch has conflicting stop evidence."); continue; }
+        if (row.stop_proof === null) throw new Error(`Web generation ${row.generation} has no trusted stop proof.`);
+        const proof = decodeStrictSessionJson(row.stop_proof, Number.POSITIVE_INFINITY) as WebTerminationRun;
+        if (proof.executionId !== row.execution_id || proof.launchId !== row.launch_id || proof.controllerId !== row.controller_id || proof.controllerInstanceId !== row.controller_instance_id || proof.generation !== row.generation || proof.stoppedSnapshotHash !== controllerPayloadHash(proof.snapshot) || !/^[a-f0-9]{64}$/.test(proof.ticketHash) || proof.snapshot.lifecycle !== "stopped" || !proof.snapshot.nativeStopped) throw new Error("Retained Web stop proof is invalid.");
+        runs.push(proof);
+      }
+      if (rows.length === 0 || rows.at(-1)!.generation !== task.generation) throw new Error("The original Web launch inventory does not include its highest generation.");
+      const body = { schemaVersion: 1 as const, closureId: randomUUID(), backend: "web" as const, owner: { projectId: task.project_id, taskId: task.task_id, workerId: task.worker_id, worktreeId: task.worktree_id, ownerUserId: task.owner_user_id, serverOrigin: task.server_origin, provider: task.provider }, claimId: task.claim_id, sessionId: task.session_id, highestExecutionGeneration: task.generation, launchesSettled: true as const, launches, runs, domainId, sequence };
+      const value = parseWebTerminationClosure({ ...body, closureDigest: controllerPayloadHash(body) });
+      if (!dryRun) db.prepare("INSERT INTO termination_closures(identity,value) VALUES(?,?)").run(key(identity), JSON.stringify(value));
+      return value;
+    }),
     blockOrchestration: (identity: ClaimIdentity, failure: OrchestrationFailure, now: number): OrchestrationBlocker => atomic(() => {
       const task = getTask(identity);
       if (task === null || task.status !== "active" || task.cleanup !== null) throw new Error("Orchestration failure requires the original active execution.");
@@ -172,6 +322,7 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       return { ...task, status: "done" };
     }),
     initializeWebExecution: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
+      if (db.prepare("SELECT 1 FROM termination_closures WHERE identity=?").get(key(identity))) throw new Error("The original Web Session is closed; another launch is forbidden.");
       if (task.configuration?.agentControlMode !== "web" || task.status !== "active") throw new Error("Web execution requires its active frozen claim.");
       if (task.webExecution != null) return task;
       return { ...task, nativeExecution: null, webExecution: { executionId: randomUUID(), registrationId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), launchId: randomUUID(), sessionId: null, executionGeneration: "1", initialOperationId: randomUUID(), initialPrompt: null, launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, nativeHome: null, summary: null, initialInputState: "not_submitted", activity: "initializing" } };
@@ -194,6 +345,7 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       return write({ ...task, updatedAt: now, webExecution: { ...execution, startupReport: report } }).webExecution!.startupReport!;
     }),
     updateWebExecution: (identity: ClaimIdentity, patch: Partial<WebExecutionState>, now: number): LocalTask => change(identity, now, task => {
+      if (db.prepare("SELECT 1 FROM termination_closures WHERE identity=?").get(key(identity))) throw new Error("The original Web Session is closed; execution changes are forbidden.");
       if (task.configuration?.agentControlMode !== "web" || task.webExecution == null) throw new Error("The web execution identity is missing.");
       const previous = task.webExecution;
       const submissions = ["not-submitted", "unknown", "acknowledged"];
@@ -207,8 +359,16 @@ export const openWebExecutionStore = (filename: SqliteDatabaseSource, options: {
       return { ...task, webExecution: parseWebExecution({ ...previous, ...patch }) };
     }),
     beginWebGeneration: (identity: ClaimIdentity, previous: { executionGeneration: string; controllerInstanceId: string; nativeSessionId: string | null; nativeStopped: boolean }, now: number, toolLaunch?: ResolvedToolLaunch): LocalTask => change(identity, now, task => {
+      if (db.prepare("SELECT 1 FROM termination_closures WHERE identity=?").get(key(identity))) throw new Error("The original Web Session is closed; another generation is forbidden.");
       requireOrdinary(task); const execution = task.webExecution;
       if (execution == null || task.configuration?.agentControlMode !== "web" || previous.executionGeneration !== execution.executionGeneration || previous.controllerInstanceId !== execution.controllerInstanceId || !previous.nativeStopped || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId) throw new Error("Web recovery requires the exact stopped generation and native identity.");
+      if (db.prepare("SELECT 1 FROM termination_domains WHERE identity=?").get(key(identity)) !== undefined) {
+        const row = db.prepare("SELECT * FROM termination_launches WHERE identity=? AND generation=?").get(key(identity), execution.executionGeneration) as LaunchRow | undefined;
+        if (row === undefined || row.stop_proof === null || row.session_id === null || row.submission === "not-submitted") throw new Error("Web recovery requires retained proof for its original stopped generation.");
+        const launch: WebTerminationLaunch = { executionId: row.execution_id, launchId: row.launch_id, controllerId: row.controller_id, controllerInstanceId: row.controller_instance_id, generation: row.generation, submission: row.submission };
+        const proof = parseWebTerminationRun(decodeStrictSessionJson(row.stop_proof, Number.POSITIVE_INFINITY), launch, task.claimId, row.session_id);
+        if (proof.snapshot.nativeSessionId !== previous.nativeSessionId || proof.snapshot.controllerInstanceId !== previous.controllerInstanceId) throw new Error("Web recovery conflicts with its retained stopped generation.");
+      }
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) throw new Error("The paused execution requires an explicit recovery retry.");
       if (task.recovery.retryAuthorized && task.recovery.pauseReason === null) throw new Error("The authorized recovery generation is still awaiting a successful observation.");
       let configuration = task.configuration;

@@ -4,6 +4,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
+import { resolveWorkerPaths } from "../paths.js";
+import { withTerminationDomain } from "../../session-termination/domain.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, serializeLaunchTicket, LaunchTicketLimitError, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
@@ -38,6 +40,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       || ticket.workerId !== task.workerId || ticket.userId !== task.userId || ticket.serverOrigin !== task.serverOrigin
       || ticket.controllerId !== execution.controllerId || ticket.controllerInstanceId !== execution.controllerInstanceId
       || ticket.executionGeneration !== execution.executionGeneration || ticket.initialOperationId !== execution.initialOperationId
+      || ticket.terminationDomain !== undefined && ticket.terminationDomain.directory !== path.join(resolveWorkerPaths(options.homeDirectory).workerDirectory, "termination-domain")
       || ticket.sessionId !== execution.sessionId || ticket.initialPrompt !== execution.initialPrompt
       || task.resources.worktree !== null && ticket.cwd !== task.resources.worktree.worktreePath
       || !matchesLaunchConfiguration(ticket.configuration, task.configuration)) throw new Error("An existing launch ticket does not match the durable execution intent.");
@@ -121,7 +124,10 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         : process.env.COPILOT_HOME ?? path.join(options.homeDirectory, ".copilot"));
       if (execution.nativeHome === null) execution = options.store.updateWebExecution(task,{nativeHome},options.now()).webExecution!;
       const initialPrompt = execution.initialPrompt ?? (typeof prompt === "function" ? prompt() : prompt);
-      const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId, provider: task.configuration.agent, cwd: task.resources.worktree.worktreePath, nativeHome, configuration: task.configuration, initialOperationId: execution.initialOperationId, initialPrompt, resumeNativeSessionId: task.resources.nativeSession?.sessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(options.now()).toISOString() };
+      const directoryBinding = path.join(resolveWorkerPaths(options.homeDirectory).workerDirectory, "termination-domain");
+      const expectedDomainId = options.store.readTerminationDomain(task);
+      const domainId = await withTerminationDomain(directoryBinding, async domain => { options.store.bindTerminationDomain(task, domain.domainId); return domain.domainId; }, { signal, ...(expectedDomainId === null ? {} : { expectedDomainId }) });
+      const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: execution.sessionId!, executionGeneration: execution.executionGeneration, serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId, terminationDomain: { directory: directoryBinding, domainId }, provider: task.configuration.agent, cwd: task.resources.worktree.worktreePath, nativeHome, configuration: task.configuration, initialOperationId: execution.initialOperationId, initialPrompt, resumeNativeSessionId: task.resources.nativeSession?.sessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(options.now()).toISOString() };
       try { serializeLaunchTicket(ticket); }
       catch (error) {
         if (error instanceof LaunchTicketLimitError) throw new PromptInputLimitError("web_ticket", error.actualBytes, error.maxBytes);
@@ -149,7 +155,19 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         await launchControllerProcess({
           homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, signal,
           env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory },
-          onSubmitting: () => { assertConfigurationAdmission(canAdmitNewExecution); submitting = true; task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now()); },
+          onSubmitting: async () => {
+            const submit = (): void => {
+              task = current(task);
+              checkTicket(task, ticket);
+              if (task.status !== "active" || task.cleanup !== null) throw new Error("Web launch admission was fenced by cleanup.");
+              assertConfigurationAdmission(canAdmitNewExecution);
+              submitting = true;
+              task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now());
+            };
+            const directory = ticket.terminationDomain?.directory ?? path.join(resolveWorkerPaths(options.homeDirectory).workerDirectory, "termination-domain");
+            const expectedDomainId = options.store.readTerminationDomain(task) ?? ticket.terminationDomain?.domainId;
+            await withTerminationDomain(directory, async domain => { options.store.bindTerminationDomain(task, domain.domainId); submit(); }, { ...(expectedDomainId === undefined ? {} : { expectedDomainId }), signal });
+          },
           onSpawned: proof => { task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now()); },
           onObserved: async snapshot => {
             if (process.platform === "win32") {
@@ -214,6 +232,8 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     reportTicketVerified: (task: LocalTask): void => { try { grantObserver?.ticketVerified(task); } catch { /* Optional monitoring cannot alter renewal. */ } },
     prepare: (...args: Parameters<typeof methods.prepare>) => serialize(args[0], () => methods.prepare(...args)),
     launch: (...args: Parameters<typeof methods.launch>) => serialize(args[0], () => methods.launch(...args)),
+    join: (task: LocalTask) => serialize(task, async () => {}),
+    joinExecution: (executionId: string) => serializeExecution(executionId, async () => {}),
     refreshGrant: (...args: Parameters<typeof methods.refreshGrant>) => serialize(args[0], () => methods.refreshGrant(...args)),
   };
 };

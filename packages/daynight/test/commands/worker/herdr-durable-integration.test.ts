@@ -27,6 +27,9 @@ import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
+import { recoverHerdrTerminationPending } from "../../../src/commands/worker/herdr/termination-recovery.js";
+import { readTerminationPending, withTerminationDomain, withTerminationDomainCut } from "../../../src/commands/session-termination/domain.js";
+import * as terminationDomain from "../../../src/commands/session-termination/domain.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError, HerdrInputWaitingError } from "../../../src/commands/worker/herdr/agents.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
@@ -266,6 +269,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
         });
         return { width: 1, height: 1, rows: [[]] };
       } } : {}), currentUserId: async () => ownerId,
+      ...(real ? { inspectInput: async (request: Parameters<typeof inspectHerdrInput>[0]) => { await beforeInspect?.(request.purpose); return inspectHerdrInput(request); } } : {}),
       archiveApi: { ...createHerdrArchiveApi(serverOrigin, "fixture-token"), state: async () => stateView(), recording: async (_expected, message) => {
         const m = message as SessionV2Message;
         if (m.type !== "recording_responsibility" || !remote) throw new Error("Unexpected recording fixture message");
@@ -314,7 +318,13 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   return { replaceToolTargets: () => { frozenTools = recordedHerdrTools(); }, context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, launchOutcomes, observed, nativeId, nativeReference, api, read, stateView, register, prepare, start, reopen, adapterSelectionVerifiers, readTask: async () => task,
     removeLegacyToolSnapshot: () => {
       const database = new Database(path.join(paths.workerDirectory, "herdr-executions.sqlite"));
-      try { database.prepare("UPDATE executions SET data = json_remove(data, '$.runs[0].launches', '$.runs[0].instanceObservation')").run(); }
+      try {
+        database.prepare("UPDATE executions SET data = json_remove(data, '$.runs[0].launches', '$.runs[0].instanceObservation')").run();
+        const row = database.prepare("SELECT identity, data FROM termination_inventory").get() as { identity: string; data: string };
+        const projection = JSON.parse(row.data); delete projection.runs[0].launches; delete projection.runs[0].instanceObservation;
+        const data = canonicalSessionJson(projection), digest = createHash("sha256").update(data).digest("hex");
+        database.prepare("UPDATE termination_inventory SET data=?, digest=? WHERE identity=?").run(data, digest, row.identity);
+      }
       finally { database.close(); }
     },
     beforeDefiniteRetry: (hook: () => void) => { beforeDefiniteRetry = hook; },
@@ -387,6 +397,27 @@ it.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_HERDR_NATIVE_CLE
     const pane = await f.facade.tasks.prepareWorkspace(f.context, "Native cleanup fixture", active);
     await f.facade.tasks.start(f.context, pane, { configuration: { agent: "codex", model: null, args: ["--no-alt-screen"] }, prompt: "Reply briefly for this isolated test." }, active);
     await vi.waitFor(() => expect(f!.facade.lifecycle!.archive!.resources()[0]?.sourceBytes).not.toBe("0"), { timeout: 15_000, interval: 100 });
+    let entered!: () => void, release!: () => void;
+    const enteredInput = new Promise<void>(resolve => { entered = resolve; });
+    const heldInput = new Promise<void>(resolve => { release = resolve; });
+    f.beforeInspect(async purpose => { if (purpose === "automatic") { entered(); await heldInput; } });
+    const cancellation = new AbortController();
+    const inputOperation = createOperation({ signal: cancellation.signal, limits: { totalMs: 30_000 } });
+    try {
+      const input = f.facade.tasks.submitPrompt(f.context, pane, "Unsent continuation", inputOperation);
+      await enteredInput; cancellation.abort(new Error("Join the original native operation"));
+      await expect(input).rejects.toThrow();
+      await f.facade.lifecycle!.stop(f.context, "shutdown", active);
+      expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+      expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+      release();
+      await vi.waitFor(() => expect(f!.facade.lifecycle!.isStopped(f!.context)).toBe(true));
+    } finally { release(); inputOperation.dispose(); f.beforeInspect(undefined); }
+    expect(f.read().runs[0]).toMatchObject({ phase: "stopped_confirmed", nativeLaunch: "observed" });
+    f.reopen();
+    const resumed = await f.facade.tasks.prepareWorkspace(f.context, "Native recovery fixture", active);
+    await expect(f.facade.tasks.start(f.context, resumed, { configuration: { agent: "codex", model: null, args: ["--no-alt-screen"] }, prompt: "Continue the isolated test." }, active)).rejects.toMatchObject({ code: "automation_suspended" });
+    expect(f.read().runs[1]).toMatchObject({ phase: "active", nativeLaunch: "observed", run: { executionGeneration: "2" } });
     f.settings.ledgerFailure = "before";
     const source = f.facade.lifecycle!.archive!.resources()[0]!;
     const driver = createCleanupDriver({ store: workerStore, git: manager, herdr: f.facade, platform: "macos", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "fixture", emit: () => {}, now: Date.now });
@@ -395,10 +426,21 @@ it.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_HERDR_NATIVE_CLE
     expect(await manager.isOriginalWorktreeAbsent(project, f.context, f.context.cwd, active)).toBe(true);
     expect(statSync(source.sourcePath).isDirectory()).toBe(true);
     expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ sessionId: source.sessionId, worktreeDeleted: false });
+    await expect(f.facade.lifecycle!.termination!.close(f.context, active)).rejects.toThrow(/recoverable/);
+    const originalWorker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...originalWorker, state: "completed" } } });
+    const termination = await f.facade.lifecycle!.termination!.close(f.context, active);
+    expect(termination).toMatchObject({ sessionId: source.sessionId, highestExecutionGeneration: "2", launchesSettled: true, runs: [
+      { nativeLaunch: "observed", run: { stopProof: expect.objectContaining({ terminalStopped: true }) } },
+      { nativeLaunch: "observed", run: { stopProof: expect.objectContaining({ terminalStopped: true }) } },
+    ] });
+    f.reopen();
+    expect(f.facade.lifecycle!.termination!.read(f.context)).toEqual(termination);
+    await expect(f.facade.tasks.prepareWorkspace(f.context, "Closed original", active)).rejects.toThrow(/closed/);
     f.settings.ledgerFailure = "none";
     const nextBinding = await manager.prepareWorktree(project, successor, active); successor.cwd = nextBinding.worktreePath;
     const previousWorker = (await f.readTask()).properties.worker as Record<string, unknown>;
-    f.changeTask({ properties: { worker: { ...previousWorker, claimId: successor.claimId, worktreeId: successor.worktreeId } } });
+    f.changeTask({ properties: { worker: { ...previousWorker, state: "active", claimId: successor.claimId, worktreeId: successor.worktreeId } } });
     f.facade.lifecycle!.registerClaim(successor, uuid(5));
     const nextPane = await f.facade.tasks.prepareWorkspace(successor, "Successor fixture", active);
     await f.facade.tasks.start(successor, nextPane, { configuration: { agent: "codex", model: null, args: ["--no-alt-screen"] }, prompt: "Reply briefly for this isolated successor test." }, active);
@@ -439,6 +481,163 @@ it.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_HERDR_NATIVE_CLE
 }, 180_000);
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("orders an actual generation allocation behind a concurrently held cut", async () => {
+    const f = fixture(); f.register();
+    const directory = path.join(f.paths.workerDirectory, "termination-domain");
+    let cutEntered!: () => void, releaseCut!: () => void, allocationEntered!: () => void;
+    const entered = new Promise<void>(resolve => { cutEntered = resolve; });
+    const release = new Promise<void>(resolve => { releaseCut = resolve; });
+    const allocating = new Promise<void>(resolve => { allocationEntered = resolve; });
+    const original = terminationDomain.withTerminationDomain;
+    vi.spyOn(terminationDomain, "withTerminationDomain").mockImplementation((path, action, options) => { allocationEntered(); return original(path, action, options); });
+    const cut = withTerminationDomainCut(directory, async permit => { cutEntered(); await release; return permit.prepare(uuid(53)); });
+    await entered;
+    const preparation = f.prepare();
+    const rejected = expect(preparation).rejects.toThrow(/prepared policy activation/);
+    try { await allocating; expect(f.read()).toMatchObject({ preparation: null, runs: [] }); }
+    finally { releaseCut(); }
+    await cut; await rejected;
+    expect(f.read()).toMatchObject({ preparation: null, runs: [] });
+    await withTerminationDomainCut(directory, async permit => permit.settle(uuid(53)));
+    await f.prepare();
+    expect(f.read().runs).toHaveLength(1);
+  });
+
+  it("closes stopped original metadata after the assignment body becomes unreadable", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    const before = f.read(), worker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...worker, state: "completed" } } });
+    const db = new Database(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"));
+    db.prepare("UPDATE executions SET data=json_set(data, '$.initialPrompt', 17) WHERE identity=?").run(`${f.context.projectId}/${f.context.taskId}/${f.context.claimId}`); db.close();
+    f.reopen();
+    expect(() => f.read()).toThrow();
+    const inventory = f.facade.lifecycle!.termination!.inventory();
+    expect(inventory).toMatchObject([{ sessionId: before.sessionId, runs: [{ run: { stopProof: expect.any(Object) } }] }]);
+    expect(inventory[0]).not.toHaveProperty("initialPrompt");
+    expect(await f.facade.lifecycle!.termination!.close(f.context, operation())).toMatchObject({ sessionId: before.sessionId, launchesSettled: true });
+  });
+
+  it("reports a corrupt inventory entry while other original identities remain usable", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    const other = { ...f.context, projectId: uuid(70), taskId: uuid(71), claimId: uuid(72), worktreeId: uuid(73) };
+    f.facade.lifecycle!.registerClaim(other, uuid(5));
+    const db = new Database(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"));
+    const badIdentity = `${other.projectId}/${other.taskId}/${other.claimId}`;
+    db.prepare("UPDATE termination_inventory SET digest=? WHERE identity=?").run("0".repeat(64), badIdentity); db.close();
+    f.reopen();
+    expect(f.facade.lifecycle!.termination!.diagnostics()).toEqual([expect.objectContaining({ identity: badIdentity, error: expect.any(Error) })]);
+    expect(f.facade.lifecycle!.termination!.inventory()).toMatchObject([{ claimId: f.context.claimId }]);
+    const worker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...worker, state: "completed" } } });
+    expect(await f.facade.lifecycle!.termination!.close(f.context, operation())).toMatchObject({ claimId: f.context.claimId });
+  });
+
+  it("refuses original input when a corrupt projection and missing input journal prevent recovery", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    const sessionId = f.read().sessionId;
+    const lifecycle = new Database(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"));
+    lifecycle.prepare("UPDATE termination_inventory SET digest=?").run("0".repeat(64)); lifecycle.close();
+    const input = new Database(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    input.prepare("DELETE FROM input_sessions WHERE session_id=?").run(sessionId); input.close();
+    f.reopen();
+    expect(() => f.facade.input!.state(f.context)).toThrow(/inventory/);
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Must not be delivered", operation())).rejects.toThrow(/inventory/);
+    const check = new Database(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+    expect(check.prepare("SELECT 1 FROM input_sessions WHERE session_id=?").get(sessionId)).toBeUndefined(); check.close();
+  });
+
+  it.each(["before", "after"] as const)("recovers a termination intent interrupted %s its SQLite commit", async boundary => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    const worker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...worker, state: "completed" } } });
+    const record = f.read(), domain = path.join(f.paths.workerDirectory, "termination-domain");
+    const key = `herdr/${record.owner.projectId}/${record.owner.taskId}/${record.claimId}/${record.sessionId}`;
+    const journal = openHerdrLifecycleStore(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"), { onMigration: () => {} });
+    let expected: ReturnType<typeof journal.closeTermination> | null = null;
+    const domainId = journal.terminationBinding(f.context)!;
+    const sequence = await withTerminationDomain(domain, async permit => {
+      const sequence = permit.beginClosure(key);
+      if (boundary === "after") expected = journal.closeTermination(journal.get(f.context)!, permit.domainId, sequence);
+      return sequence;
+    }, { expectedDomainId: domainId, pendingKey: key });
+    journal.close();
+    expect(readTerminationPending(domain)).toEqual({ key, sequence });
+    await expect(withTerminationDomainCut(domain, async permit => permit.prepare(uuid(52)))).rejects.toThrow(/must be reconciled/);
+    f.reopen();
+    expect(f.facade.lifecycle!.termination!.candidates()).toHaveLength(1);
+    f.failTaskRead(new Error("Original task is offline"));
+    await recoverHerdrTerminationPending({ workerDirectory: f.paths.workerDirectory, serverOrigin: "https://daynight.example", workerId: uuid(6) });
+    expect(f.facade.lifecycle!.termination!.read(f.context)).toEqual(expected);
+    expect(readTerminationPending(domain)).toBeNull();
+    const cut = await withTerminationDomainCut(domain, async permit => permit.prepare(uuid(52)));
+    expect(BigInt(cut)).toBeGreaterThan(BigInt(sequence));
+    await withTerminationDomainCut(domain, async permit => permit.settle(uuid(52)));
+    if (boundary === "before") {
+      f.failTaskRead(undefined);
+      const closed = await f.facade.lifecycle!.termination!.close(f.context, operation());
+      expect(closed).toMatchObject({ domainId, sessionId: record.sessionId });
+      expect(BigInt(closed!.sequence)).toBeGreaterThan(BigInt(cut));
+    }
+    expect(f.facade.lifecycle!.termination!.candidates()).toEqual([]);
+  });
+
+  it.each(["preparation", "launch"] as const)("keeps termination open when original %s is unconfirmed", async boundary => {
+    const f = fixture(); f.register();
+    if (boundary === "preparation") {
+      f.shellSettings.managed = true; f.shellSettings.captureFailure = true;
+      await expect(f.prepare()).rejects.toThrow("Unconfirmed final shell image");
+    } else {
+      const binding = await f.prepare(); f.launchOutcomes.unknown = true;
+      await expect(f.start(binding)).rejects.toMatchObject({ submission: "unknown" });
+    }
+    const worker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...worker, state: "completed" } } });
+    await expect(f.facade.lifecycle!.termination!.close(f.context, operation())).rejects.toThrow(/unsettled/);
+    expect(f.facade.lifecycle!.termination!.read(f.context)).toBeNull();
+    expect(f.facade.lifecycle!.termination!.candidates()).toEqual([]);
+    expect(f.facade.lifecycle!.termination!.inventory()).toMatchObject([{ sessionId: f.read().sessionId }]);
+  });
+
+  it("orders generation allocation and closure after an unresolved policy cut", async () => {
+    const f = fixture(); f.register();
+    const domain = path.join(f.paths.workerDirectory, "termination-domain"), activationId = uuid(50);
+    const cut = await withTerminationDomainCut(domain, async permit => permit.prepare(activationId));
+    await expect(f.prepare()).rejects.toThrow(/prepared policy activation/);
+    expect(f.read()).toMatchObject({ preparation: null, runs: [] });
+    await withTerminationDomainCut(domain, async permit => permit.settle(activationId));
+    const first = await f.prepare(); await f.start(first);
+    const cut2 = await withTerminationDomainCut(domain, async permit => permit.prepare(uuid(51)));
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.read().runs[0]).toMatchObject({ phase: "stopped_confirmed", run: { stopProof: expect.any(Object) } });
+    const worker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...worker, state: "completed" } } });
+    await expect(f.facade.lifecycle!.termination!.close(f.context, operation())).rejects.toThrow(/prepared policy activation/);
+    expect(f.facade.lifecycle!.termination!.read(f.context)).toBeNull();
+    await withTerminationDomainCut(domain, async permit => permit.settle(uuid(51)));
+    const closure = await f.facade.lifecycle!.termination!.close(f.context, operation());
+    expect(BigInt(closure!.sequence)).toBeGreaterThan(BigInt(cut2));
+    expect(BigInt(cut2)).toBeGreaterThan(BigInt(cut));
+  });
+
+  it("retains both original generations when recovery ledger publication fails", async () => {
+    const f = fixture(); f.register(); const first = await f.prepare(); await f.start(first);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    await expect(f.facade.lifecycle!.termination!.close(f.context, operation())).rejects.toThrow(/recoverable/);
+    f.reopen(); const second = await f.prepare(); await f.start(second);
+    f.settings.ledgerFailure = "before";
+    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow();
+    expect(f.read().runs).toHaveLength(2);
+    const worker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...worker, state: "completed" } } });
+    const result = await f.facade.lifecycle!.termination!.close(f.context, operation());
+    expect(result).toMatchObject({ highestExecutionGeneration: "2", runs: [{ run: { executionGeneration: "1", stopProof: expect.any(Object) } }, { run: { executionGeneration: "2", stopProof: expect.any(Object) } }] });
+    f.reopen(); expect(f.facade.lifecycle!.termination!.read(f.context)).toEqual(result);
+    await expect(f.prepare()).rejects.toThrow(/closed/);
+  });
+
   it("resumes the same unstarted run after a definite busy rejection and configuration outage", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(), original = f.read();
     let complete = true;
@@ -759,7 +958,13 @@ describe("durable Herdr facade with real SQLite", () => {
       expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
       expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
       expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+      const worker = (await f.readTask()).properties.worker as Record<string, unknown>;
+      f.changeTask({ properties: { worker: { ...worker, state: "completed" } } });
+      const closing = f.facade.lifecycle!.termination!.close(f.context, operation());
+      await vi.waitFor(() => expect(f.facade.lifecycle!.termination!.candidates()).toHaveLength(1));
+      expect(f.facade.lifecycle!.termination!.read(f.context)).toBeNull();
       release();
+      expect(await closing).toMatchObject({ launchesSettled: true });
       await vi.waitFor(() => expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true));
     } finally { release(); inputOperation.dispose(); }
   });

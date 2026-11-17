@@ -1,11 +1,92 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { expect, it } from "vitest";
-import { herdrLedgerHash, herdrLedgerPayloadHash, readHerdrLifecycleRecords } from "../../../src/commands/worker/herdr/lifecycle-store.js";
+import { herdrLedgerHash, herdrLedgerPayloadHash, openHerdrLifecycleStore, readHerdrLifecycleRecords } from "../../../src/commands/worker/herdr/lifecycle-store.js";
+import { readTerminationPending, withTerminationDomain } from "../../../src/commands/session-termination/domain.js";
+import { recoverHerdrTerminationPending } from "../../../src/commands/worker/herdr/termination-recovery.js";
 import { createHerdrLifecycleStoreFixtures } from "./herdr-lifecycle-store.fixtures.js";
 
 const { uuid, owner, identity, start, finish, open, close, fixture, processIdentity, prepared, active, stopped } = createHerdrLifecycleStoreFixtures("file");
+
+it("keeps a pending original intent from creating or upgrading its lifecycle database", async () => {
+  const f = fixture(), record = stopped(f, active(f)); close(f.store);
+  const file = path.join(f.directory, "herdr-executions.sqlite"); renameSync(f.file, file);
+  const old = new Database(file); old.exec("DROP TABLE termination_closures; DROP TABLE termination_bindings; DROP TABLE termination_inventory"); old.pragma("user_version = 4");
+  const original = old.prepare("SELECT data FROM executions").get(); old.close();
+  const domain = path.join(f.directory, "termination-domain"), key = `herdr/${owner.projectId}/${owner.taskId}/${identity.claimId}/${record.sessionId}`;
+  await withTerminationDomain(domain, async permit => permit.beginClosure(key), { pendingKey: key });
+  await expect(recoverHerdrTerminationPending({ workerDirectory: f.directory, serverOrigin: owner.serverOrigin, workerId: owner.workerId })).rejects.toThrow(/current format/);
+  expect(() => openHerdrLifecycleStore(file)).toThrow(/current format/);
+  const read = new Database(file, { readonly: true });
+  expect(read.pragma("user_version", { simple: true })).toBe(4);
+  expect(read.prepare("SELECT data FROM executions").get()).toEqual(original); read.close();
+  expect(readTerminationPending(domain)?.key).toBe(key);
+  const absentDir = path.join(f.directory, "absent"), absentDomain = path.join(absentDir, "termination-domain"), missing = path.join(absentDir, "herdr-executions.sqlite");
+  await withTerminationDomain(absentDomain, async permit => permit.beginClosure(key), { pendingKey: key });
+  expect(() => openHerdrLifecycleStore(missing)).toThrow();
+  expect(existsSync(missing)).toBe(false); expect(readTerminationPending(absentDomain)?.key).toBe(key);
+});
+
+it("migrates valid original stop metadata independently of an unreadable assignment body", () => {
+  const f = fixture(), original = stopped(f, active(f)); close(f.store);
+  const old = new Database(f.file); old.exec("DROP TABLE termination_closures; DROP TABLE termination_bindings; DROP TABLE termination_inventory"); old.pragma("user_version = 4");
+  old.prepare("UPDATE executions SET data=json_set(data, '$.initialPrompt', 17)").run();
+  const body = old.prepare("SELECT data FROM executions").get(); old.close();
+  const migrated = open(f.file);
+  expect(() => migrated.get(identity)).toThrow();
+  const metadata = migrated.terminationRecord(identity)!;
+  expect(metadata).toMatchObject({ sessionId: original.sessionId, neverStarted: false, runs: [{ run: { stopProof: original.runs[0]!.run.stopProof } }] });
+  migrated.bindTermination(identity, uuid(40));
+  expect(migrated.closeTermination(metadata, uuid(40), "1")).toMatchObject({ sessionId: original.sessionId, launchesSettled: true });
+  close(migrated);
+  const inspect = new Database(f.file, { readonly: true }); expect(inspect.prepare("SELECT data FROM executions").get()).toEqual(body); inspect.close();
+});
+
+it("does not invent termination metadata for a corrupt original owner during migration", () => {
+  const f = fixture(); stopped(f, active(f)); close(f.store);
+  const old = new Database(f.file); old.exec("DROP TABLE termination_closures; DROP TABLE termination_bindings; DROP TABLE termination_inventory"); old.pragma("user_version = 4");
+  old.prepare("UPDATE executions SET data=json_set(data, '$.owner.workerId', 'invalid')").run(); old.close();
+  const migrated = open(f.file);
+  expect(migrated.terminationInventory()).toEqual([]);
+  expect(migrated.terminationDiagnostics()).toEqual([expect.objectContaining({ identity: `${identity.projectId}/${identity.taskId}/${identity.claimId}`, error: expect.any(Error) })]);
+});
+
+it.each(["duplicate owner key", "invalid owner Unicode"] as const)("does not sanitize %s as assignment body during migration", corruption => {
+  const f = fixture(); const original = stopped(f, active(f)); close(f.store);
+  const old = new Database(f.file); old.exec("DROP TABLE termination_closures; DROP TABLE termination_bindings; DROP TABLE termination_inventory"); old.pragma("user_version = 4");
+  const source = JSON.stringify({ ...original, initialPrompt: 17 });
+  const field = `"workerId":"${owner.workerId}"`;
+  const replacement = corruption === "duplicate owner key" ? `${field},${field}` : String.raw`"workerId":"\ud800"`;
+  const damaged = source.replace(field, replacement);
+  expect(damaged).not.toBe(source);
+  old.prepare("UPDATE executions SET data=?").run(damaged); old.close();
+  const migrated = open(f.file);
+  expect(migrated.terminationInventory()).toEqual([]);
+  expect(migrated.terminationDiagnostics()).toEqual([expect.objectContaining({ identity: `${identity.projectId}/${identity.taskId}/${identity.claimId}`, error: expect.any(Error) })]);
+  close(migrated);
+  const inspect = new Database(f.file, { readonly: true }); expect(inspect.prepare("SELECT data FROM executions").get()).toEqual({ data: damaged }); inspect.close();
+});
+
+it("persists and freezes the full original stopped lineage under its original domain", () => {
+  const f = fixture(); let record = active(f);
+  f.store.bindTermination(identity, uuid(40));
+  expect(() => f.store.closeTermination(record, uuid(40), "1")).toThrow(/unconfirmed/);
+  expect(f.store.termination(identity)).toBeNull();
+  record = f.store.update(record, draft => { draft.runs[0]!.run.binding.nativeSessionId = uuid(41); });
+  record = stopped(f, record);
+  const closure = f.store.closeTermination(record, uuid(40), "2");
+  expect(closure).toMatchObject({ claimId: identity.claimId, sessionId: record.sessionId, highestExecutionGeneration: "1", domainId: uuid(40), sequence: "2", launchesSettled: true, runs: [{ run: record.runs[0]!.run, nativeLaunch: "observed" }] });
+  expect(f.store.closeTermination(record, uuid(40), "3")).toEqual(closure);
+  expect(() => f.store.closeTermination(record, uuid(42), "3")).toThrow(/domain/);
+  expect(() => f.store.update(record, draft => { draft.preparation = { instanceId: "replacement", instanceDirectory: f.directory, phase: "prepared", daemon: null }; })).toThrow(/closed/);
+  expect(() => f.store.bindTermination(identity, uuid(42))).toThrow(/cannot be replaced/);
+  close(f.store); const reopened = open(f.file);
+  expect(reopened.termination(identity)).toEqual(closure);
+  close(reopened);
+  const db = new Database(f.file); db.prepare("UPDATE termination_closures SET data = json_set(data, '$.sequence', '9')").run(); db.close();
+  expect(() => open(f.file).termination(identity)).toThrow(/digest/);
+});
 
 it("reads an existing journal without migration, recovery or epoch changes", () => {
     const f = fixture(); const record = active(f); close(f.store);
@@ -22,7 +103,7 @@ it("rejects an old or altered journal without upgrading or resetting evidence", 
     let db = new Database(f.file); db.pragma("user_version = 0"); db.close();
     const original = readFileSync(f.file);
     expect(() => readHerdrLifecycleRecords(f.file)).toThrow(); expect(readFileSync(f.file)).toEqual(original);
-    db = new Database(f.file); db.pragma("user_version = 1"); db.exec("CREATE TABLE unexpected(value TEXT)"); db.close();
+    db = new Database(f.file); db.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); db.pragma("user_version = 1"); db.exec("CREATE TABLE unexpected(value TEXT)"); db.close();
     expect(() => readHerdrLifecycleRecords(f.file)).toThrow();
     db = new Database(f.file); expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='unexpected'").get()).toBeDefined(); db.close();
   });
@@ -130,9 +211,9 @@ it("persists segment ownership and rejects ordinal reuse or post-stop additions"
 
 it("refuses corrupted persisted evidence and future schemas without resetting responsibility", () => {
     const f = fixture(); active(f); close(f.store);
-    const db = new Database(f.file); db.pragma("user_version = 5"); db.close();
+    const db = new Database(f.file); db.pragma("user_version = 6"); db.close();
     expect(() => open(f.file)).toThrow();
-    const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.pragma("user_version = 3"); inspect.prepare("UPDATE executions SET data = ?").run('{"broken":true}'); inspect.close();
+    const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); inspect.pragma("user_version = 3"); inspect.prepare("UPDATE executions SET data = ?").run('{"broken":true}'); inspect.close();
     expect(() => open(f.file).list()).toThrow();
   });
 
@@ -145,7 +226,7 @@ it("does not erase stop responsibility when the database version is missing", ()
 
 it("upgrades original lifecycle rows and freezes never-started retirements without inventing run evidence", () => {
   const f = fixture(), original = f.record; close(f.store);
-  const old = new Database(f.file); old.exec("DROP TABLE never_started_retirements"); old.pragma("user_version = 1"); old.close();
+  const old = new Database(f.file); old.exec("DROP TABLE never_started_retirements"); old.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); old.pragma("user_version = 1"); old.close();
   const upgraded = open(f.file);
   expect(upgraded.get(identity)).toEqual(original); expect(upgraded.listRetired()).toEqual([]);
   upgraded.retireNeverStarted(original); expect(upgraded.get(identity)).toEqual(original);
@@ -164,14 +245,14 @@ it("migrates an original prepared run but preserves closing launch uncertainty",
     close(f.store);
     const old = new Database(f.file);
     const legacy = JSON.parse(JSON.stringify(record)); delete legacy.runs[0].nativeLaunch;
-    old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.pragma("user_version = 2"); old.close();
+    old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); old.pragma("user_version = 2"); old.close();
     const upgraded = open(f.file); const original = upgraded.get(identity)!;
     expect(original.runs[0]).toMatchObject({ phase: "prepared", nativeLaunch: "not_submitted" });
     expect(original.runs[0]!.processes).toEqual(record.runs[0]!.processes);
     close(upgraded);
     const unknown = new Database(f.file);
     legacy.runs[0].phase = "stop_unknown";
-    unknown.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); unknown.pragma("user_version = 2"); unknown.close();
+    unknown.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); unknown.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); unknown.pragma("user_version = 2"); unknown.close();
     const reopened = open(f.file);
     expect(reopened.get(identity)!.runs[0]).toMatchObject({ phase: "stop_unknown", nativeLaunch: "unknown" });
     expect(() => reopened.update(reopened.get(identity)!, draft => { draft.runs[0]!.nativeLaunch = "not_submitted"; })).toThrow();
@@ -181,7 +262,7 @@ it("does not infer never-submitted launch from incomplete legacy prepared eviden
     const f = fixture();
     const record = f.store.update(f.record, draft => { draft.runs.push(prepared(f.directory)); }); close(f.store);
     const old = new Database(f.file), legacy = JSON.parse(JSON.stringify(record)); delete legacy.runs[0].nativeLaunch;
-    old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.pragma("user_version = 2"); old.close();
+    old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); old.pragma("user_version = 2"); old.close();
     const reopened = open(f.file);
     expect(reopened.get(identity)!.runs[0]!.nativeLaunch).toBe("unknown");
     const unknown = reopened.get(identity)!;
@@ -241,7 +322,7 @@ it("migrates legacy stopped and pending ledger identities without rewriting thei
   });
   record = stopped(f, record); close(f.store);
   const old = new Database(f.file), legacy = JSON.parse(JSON.stringify(record)); delete legacy.runs[0].nativeLaunch;
-  old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.pragma("user_version = 2"); old.close();
+  old.prepare("UPDATE executions SET data = ?").run(JSON.stringify(legacy)); old.exec("DROP TABLE IF EXISTS termination_closures; DROP TABLE IF EXISTS termination_bindings; DROP TABLE IF EXISTS termination_inventory"); old.pragma("user_version = 2"); old.close();
   const migrated = open(f.file).get(identity)!;
   expect(migrated.runs[0]!.nativeLaunch).toBe("observed");
   expect(migrated.runs[0]!.run).toEqual(record.runs[0]!.run);

@@ -12,11 +12,16 @@ import type { openWebExecutionStore } from "./backends/web-store.js";
 import type { WebBackendOptions } from "./backends/web.js";
 import type { LocalTask } from "./backends/web-types.js";
 import type { ArchiveBackfillIdentity, CleanupScheduleRecord } from "./types.js";
+import type { ClaimIdentity } from "./types.js";
+import { readTerminationPending } from "../session-termination/domain.js";
+import { resolveWorkerPaths } from "./paths.js";
 
 export const createWebArchiveMaintenance = (options: {
-  homeDirectory: string; serverUrl: string; signal: AbortSignal;
+  homeDirectory: string; serverUrl: string; workerId: string; signal: AbortSignal;
   store: ReturnType<typeof openWorkerStore>; webStore: ReturnType<typeof openWebExecutionStore>;
   archive: NonNullable<WebBackendOptions["archive"]>; probeArchive: NonNullable<WebBackendOptions["probeArchive"]>;
+  reconcileTermination?: (task: ClaimIdentity, signal: AbortSignal) => Promise<void>;
+  recoverPendingTermination?: (signal: AbortSignal) => Promise<unknown>;
   emit: (event: WorkerEvent) => void; monitoring?: ReturnType<typeof createMonitoringObserver>;
 }) => {
   const { store, webStore, serverUrl, archive, probeArchive, emit, monitoring } = options;
@@ -98,6 +103,34 @@ export const createWebArchiveMaintenance = (options: {
     emit({ kind: "session-archive-retry", message: repairCode === undefined ? `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` : `Completed session ${execution.sessionId} archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.`, error: reportedError });
   };
   let lastArchiveAttempt: string | null = null;
+  let lastTerminationAttempt: string | null = null;
+  const terminationRetryAt = new Map<string, number>();
+  const backfillTermination = async (signal: AbortSignal): Promise<void> => {
+    if (options.reconcileTermination === undefined) return;
+    const inventory = webStore.listTerminationInventory();
+    for (const task of inventory) if (task.error !== null && (terminationRetryAt.get(task.claimId) ?? 0) <= Date.now()) {
+      terminationRetryAt.set(task.claimId, Date.now() + 60_000);
+      emit({ kind: "session-termination-retry", message: `Original Session termination inventory is invalid for claim ${task.claimId}.`, error: task.error });
+    }
+    const tasks = inventory.filter(task => task.error === null && task.serverOrigin === serverUrl && task.workerId === options.workerId && task.cleanup === "terminal" && task.sessionId != null);
+    const pending = readTerminationPending(path.join(resolveWorkerPaths(options.homeDirectory).workerDirectory, "termination-domain"));
+    const previous = tasks.findIndex(task => task.claimId === lastTerminationAttempt);
+    for (let offset = 1; offset <= tasks.length; offset++) {
+      signal.throwIfAborted();
+      const task = tasks[(previous + offset) % tasks.length]!;
+      if ((terminationRetryAt.get(task.claimId) ?? 0) > Date.now()) continue;
+      const closureKey = `web/${task.projectId}/${task.taskId}/${task.claimId}/${task.sessionId}`;
+      if (task.closure !== null && pending?.key !== closureKey) continue;
+      lastTerminationAttempt = task.claimId;
+      try { await options.reconcileTermination(task, signal); }
+      catch (error) {
+        if (signal.aborted) throw error;
+        terminationRetryAt.set(task.claimId, Date.now() + 60_000);
+        emit({ kind: "session-termination-retry", message: `Web termination remains pending: project=${task.projectId} task=${task.taskId} claim=${task.claimId} session=${task.sessionId}.`, error });
+      }
+      break;
+    }
+  };
   const backfillArchives = async (signal: AbortSignal) => {
     const tasks = webStore.listCompletedTasks();
     const previous = tasks.findIndex(task => task.webExecution?.executionId === lastArchiveAttempt);
@@ -165,6 +198,12 @@ export const createWebArchiveMaintenance = (options: {
       // Reserve the slot before invoking any backfill code, including synchronous re-entry.
       const attempt = Promise.resolve().then(async () => {
         // Cleanup can become pending after the polling round requested maintenance.
+        if (signal.aborted) return;
+        try { await options.recoverPendingTermination?.(signal); await backfillTermination(signal); }
+        catch (error) {
+          if (signal.aborted) throw error;
+          emit({ kind: "session-termination-retry", message: "Original Session termination metadata remains unconfirmed and will be retried.", error });
+        }
         if (signal.aborted || shouldYield()) return;
         await backfillArchives(signal);
         if (failureId !== undefined) { try { monitoring?.recover(failureId); } catch { /* Monitoring cannot change archival. */ } failureId = undefined; }

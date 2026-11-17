@@ -1,5 +1,6 @@
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
 import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../../platform/sqlite-format.js";
@@ -9,14 +10,16 @@ import type { SessionV2Owner, SessionV2Payloads, SessionV2Run } from "../../../s
 import type { ClaimIdentity } from "../types.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { parseFrozenToolObservation } from "../tool-observation.js";
-import type { HerdrExecutionTools, HerdrInstanceObservation, HerdrLifecycleRecord, HerdrLocalRun, HerdrLocalSegment, HerdrNativeLaunchRejection, HerdrPreparation, HerdrRunPhase, MacProcessIdentity } from "./lifecycle-types.js";
+import type { HerdrExecutionTools, HerdrInstanceObservation, HerdrLifecycleRecord, HerdrLocalRun, HerdrLocalSegment, HerdrNativeLaunchRejection, HerdrPreparation, HerdrRunPhase, HerdrTerminationMetadata, MacProcessIdentity } from "./lifecycle-types.js";
 import { herdrLifecycleStoreFormat } from "./lifecycle-store-format.js";
+import { createHerdrTerminationClosure, parseHerdrTerminationClosure, type HerdrTerminationClosure } from "./termination-closure.js";
+import { readTerminationPending } from "../../session-termination/domain.js";
 
 const same = (left: unknown, right: unknown): boolean => canonicalSessionJson(left) === canonicalSessionJson(right);
 const reject = (message: string): never => { throw new Error(message); };
 const absolute = (value: unknown): string => { const result = text(value, 16_384); if (!path.isAbsolute(result) || result.includes("\0")) return reject("Herdr lifecycle paths must be absolute."); return result; };
 const identityKey = (identity: ClaimIdentity): string => [uuid(identity.projectId), uuid(identity.taskId), uuid(identity.claimId)].join("/");
-const key = (record: HerdrLifecycleRecord): string => identityKey({ ...record.owner, claimId: record.claimId });
+const key = (record: Pick<HerdrLifecycleRecord, "owner" | "claimId">): string => identityKey({ ...record.owner, claimId: record.claimId });
 export const herdrLedgerPayloadHash = (payload: SessionV2Payloads["generation_ledger"]): string => createHash("sha256").update(canonicalSessionJson(payload)).digest("hex");
 export const herdrLedgerHash = (record: Pick<HerdrLifecycleRecord, "runs">): string => herdrLedgerPayloadHash({ runs: record.runs.map(run => run.run), finalizationId: null });
 const phases: readonly HerdrRunPhase[] = ["prepared", "launch_requested", "active", "stop_intent", "close_requested", "stopped_confirmed", "stop_unknown"];
@@ -125,6 +128,20 @@ export const isHerdrNeverStarted = (record: HerdrLifecycleRecord): boolean =>
   && record.connectionEpoch === null && record.registrationRequest === null && record.ledgerRequest === null
   && record.publishedLedgerHash === null && record.initialAssignment === "pending" && record.initialPrompt === null && !record.automationBlocked;
 
+const terminationProjection = (record: HerdrLifecycleRecord): HerdrTerminationMetadata => ({
+  owner: record.owner, claimId: record.claimId, sessionId: record.sessionId, registrationId: record.registrationId, cwd: record.cwd,
+  preparation: record.preparation, runs: record.runs, segments: record.segments, version: record.version, neverStarted: isHerdrNeverStarted(record),
+});
+const parseTerminationProjection = (value: unknown): HerdrTerminationMetadata => {
+  const o = exact(value, ["owner", "claimId", "sessionId", "registrationId", "cwd", "preparation", "runs", "segments", "version", "neverStarted"]);
+  const { neverStarted: unused, ...evidence } = o;
+  const record = parseHerdrLifecycleRecord({ ...evidence, connectionEpoch: null, registrationRequest: null, ledgerRequest: null,
+    publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending", initialPrompt: null, automationBlocked: false });
+  const neverStarted = bool(unused);
+  if (neverStarted && !isHerdrNeverStarted(record)) return reject("Never-started termination inventory conflicts with its original run evidence.");
+  return { ...terminationProjection(record), neverStarted };
+};
+
 const transitions: Record<HerdrRunPhase, readonly HerdrRunPhase[]> = {
   prepared: ["prepared", "launch_requested", "stop_intent", "stop_unknown"],
   launch_requested: ["launch_requested", "active", "stop_intent", "stop_unknown"],
@@ -223,6 +240,33 @@ const parseRow = (row: LifecycleRow): HerdrLifecycleRecord => {
   if (key(record) !== row.identity || record.version !== row.version) return reject("Persisted Herdr lifecycle ownership or version is inconsistent.");
   return record;
 };
+const writeTerminationProjection = (db: Database.Database, record: HerdrLifecycleRecord, neverStarted = isHerdrNeverStarted(record)): void => {
+  const data = canonicalSessionJson({ ...terminationProjection(record), neverStarted }), digest = createHash("sha256").update(data).digest("hex");
+  db.prepare("INSERT INTO termination_inventory(identity, version, data, digest) VALUES (?, ?, ?, ?) ON CONFLICT(identity) DO UPDATE SET version=excluded.version, data=excluded.data, digest=excluded.digest").run(key(record), record.version, data, digest);
+};
+const terminationStoreFormat = {
+  ...herdrLifecycleStoreFormat,
+  migrations: herdrLifecycleStoreFormat.migrations.map(step => step.toVersion !== 5 ? step : {
+    ...step,
+    up: (db: Database.Database, source: Parameters<typeof step.up>[1]): undefined => {
+      step.up(db, source);
+      for (const row of db.prepare("SELECT identity, version, data FROM executions ORDER BY identity").all() as LifecycleRow[]) {
+        let original: HerdrLifecycleRecord;
+        let bodyUnreadable = false;
+        try { original = parseRow(row); }
+        catch {
+          // Validate the original metadata independently of an unreadable assignment body.
+          const sanitized = db.prepare("SELECT CASE WHEN json_valid(data) THEN json_set(data, '$.initialPrompt', null) END AS data FROM executions WHERE identity=?").get(row.identity) as { data: string | null };
+          if (sanitized.data === null) continue;
+          try { original = parseRow({ ...row, data: sanitized.data }); } catch { continue; }
+          bodyUnreadable = true;
+        }
+        writeTerminationProjection(db, original, bodyUnreadable ? false : isHerdrNeverStarted(original));
+      }
+      return undefined;
+    },
+  }),
+};
 
 /** Attach observes responsibility without acquiring recovery or migration ownership. */
 export const readHerdrLifecycleRecords = (filename: string): HerdrLifecycleRecord[] => {
@@ -235,17 +279,41 @@ export const readHerdrLifecycleRecords = (filename: string): HerdrLifecycleRecor
   } finally { db.close(); }
 };
 
-export const openHerdrLifecycleStore = (filename: SqliteDatabaseSource, options: { onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file: filename, format: herdrLifecycleStoreFormat, allowCreate: true,
+export const openHerdrLifecycleStore = (filename: SqliteDatabaseSource, options: { onMigration?: SqliteMigrationReporter; existingOnly?: boolean } = {}) => {
+  const openExisting = (): Database.Database => {
+    if (typeof filename !== "string") throw new Error("Existing-only Herdr recovery requires an original file.");
+    const stat = lstatSync(filename);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Original Herdr lifecycle inventory is not a regular file.");
+    const probe = new Database(filename, { readonly: true, fileMustExist: true });
+    try { if (probe.transaction(() => inspectSqlite(probe, herdrLifecycleStoreFormat)).deferred().kind !== "current") throw new Error("Original Herdr lifecycle inventory is not at the current format; it was retained."); }
+    finally { probe.close(); }
+    const existing = new Database(filename, { fileMustExist: true });
+    try {
+      if (existing.transaction(() => inspectSqlite(existing, herdrLifecycleStoreFormat)).deferred().kind !== "current") throw new Error("Original Herdr lifecycle inventory changed before recovery.");
+      existing.pragma("busy_timeout = 5000"); existing.pragma("synchronous = FULL");
+      return existing;
+    } catch (error) { existing.close(); throw error; }
+  };
+  const pendingHerdrRecovery = typeof filename === "string" && path.basename(filename) === "herdr-executions.sqlite" && readTerminationPending(path.join(path.dirname(filename), "termination-domain"))?.key.startsWith("herdr/");
+  const db = options.existingOnly || pendingHerdrRecovery ? openExisting() : openSqliteDatabase({ file: filename, format: terminationStoreFormat, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
     // An unversioned journal may be the only remaining proof of a native launch.
-    assertMigrationAllowed: (_db, source) => { if (source.kind === "unversioned") throw new Error("Unversioned Herdr lifecycle evidence must be retained for explicit recovery."); },
+    assertMigrationAllowed: (_db, source) => { if (source.kind === "unversioned") throw new Error("Original Herdr lifecycle evidence requires owner-managed recovery; it cannot be replaced or upgraded here."); },
   });
   const read = <T>(action: () => T): T => {
     if (db.inTransaction) { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); }
     return db.transaction(() => { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); }).deferred();
   };
   const get = (identity: ClaimIdentity): HerdrLifecycleRecord | null => read(() => { const row = db.prepare("SELECT identity, version, data FROM executions WHERE identity = ?").get(identityKey(identity)) as { identity: string; version: number; data: string } | undefined; return row === undefined ? null : parseRow(row); });
+  const writeProjection = (record: HerdrLifecycleRecord): void => writeTerminationProjection(db, record);
+  const terminationRecord = (identity: ClaimIdentity): HerdrTerminationMetadata | null => read(() => {
+    const row = db.prepare("SELECT e.version AS originalVersion, i.version, i.data, i.digest FROM executions e LEFT JOIN termination_inventory i ON i.identity=e.identity WHERE e.identity=?").get(identityKey(identity)) as { originalVersion: number; version: number | null; data: string | null; digest: string | null } | undefined;
+    if (!row) return null;
+    if (row.data === null || row.version !== row.originalVersion || row.digest !== createHash("sha256").update(row.data).digest("hex")) return reject("The original Herdr termination inventory is missing or corrupt.");
+    const result = parseTerminationProjection(decodeStrictSessionJson(row.data, Number.POSITIVE_INFINITY));
+    if (key(result) !== identityKey(identity) || result.version !== row.originalVersion) return reject("The original Herdr termination inventory identity differs.");
+    return result;
+  });
   const retired = (identity: ClaimIdentity): HerdrLifecycleRecord | null => read(() => {
     const row = db.prepare("SELECT identity, version, data FROM never_started_retirements WHERE identity = ?").get(identityKey(identity)) as LifecycleRow | undefined;
     if (!row) return null;
@@ -253,23 +321,83 @@ export const openHerdrLifecycleStore = (filename: SqliteDatabaseSource, options:
     if (!isHerdrNeverStarted(record) || !same(record, original)) return reject("The never-started retirement differs from its original lifecycle evidence.");
     return record;
   });
+  const terminationBinding = (identity: ClaimIdentity): string | null => read(() => {
+    const row = db.prepare("SELECT domain_id AS domainId FROM termination_bindings WHERE identity = ?").get(identityKey(identity)) as { domainId: string } | undefined;
+    return row === undefined ? null : uuid(row.domainId);
+  });
+  const termination = (identity: ClaimIdentity): HerdrTerminationClosure | null => read(() => {
+    const row = db.prepare("SELECT data FROM termination_closures WHERE identity = ?").get(identityKey(identity)) as { data: string } | undefined;
+    if (!row) return null;
+    const closure = parseHerdrTerminationClosure(decodeStrictSessionJson(row.data, Number.POSITIVE_INFINITY));
+    const original = terminationRecord(identity);
+    if (!original || key(original) !== identityKey(identity) || closure.claimId !== original.claimId || closure.sessionId !== original.sessionId
+      || !same(closure.owner, original.owner) || closure.domainId !== terminationBinding(identity) || original.preparation !== null
+      || !same(closure.runs, original.runs.map(({ run, nativeLaunch }) => ({ run, nativeLaunch })))) return reject("The Herdr termination closure differs from its original execution evidence.");
+    return closure;
+  });
   const atomic = <T>(action: () => T): T => runSqliteImmediate(db, () => { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); });
   const mutate = (expected: HerdrLifecycleRecord, change: (draft: HerdrLifecycleRecord) => void, validate: typeof validateChange): HerdrLifecycleRecord => atomic(() => {
     if (retired({ ...expected.owner, claimId: expected.claimId })) return reject("A retired never-started claim cannot acquire new execution evidence.");
     const original = get({ ...expected.owner, claimId: expected.claimId });
     if (original === null || original.version !== expected.version) return reject("The Herdr lifecycle version changed; reread the original execution before deciding.");
     if (!same(original, expected)) return reject("The expected lifecycle record differs from its stored version.");
+    if (!same(terminationRecord({ ...original.owner, claimId: original.claimId }), terminationProjection(original))) return reject("The original Herdr lifecycle and termination inventory differ.");
     const draft = structuredClone(original); change(draft); draft.version = original.version + 1;
     const next = parseHerdrLifecycleRecord(draft); validate(original, next);
+    if (termination({ ...original.owner, claimId: original.claimId }) !== null
+      && (!same(original.preparation, next.preparation) || !same(original.runs, next.runs))) return reject("A closed Herdr Session cannot start or alter an original run.");
     const data = canonicalSessionJson(next); if (Buffer.byteLength(data) > 8 * 1024 * 1024) return reject("Herdr lifecycle metadata exceeds its size limit.");
     const result = db.prepare("UPDATE executions SET version = ?, data = ? WHERE identity = ? AND version = ?").run(next.version, data, key(original), original.version);
     if (result.changes !== 1) return reject("The Herdr lifecycle compare-and-swap was not confirmed.");
+    writeProjection(next);
     return get({ ...next.owner, claimId: next.claimId })!;
   });
   const update = (expected: HerdrLifecycleRecord, change: (draft: HerdrLifecycleRecord) => void): HerdrLifecycleRecord => mutate(expected, change, validateChange);
+  const terminationEntries = (): { identity: string; record: HerdrTerminationMetadata | null; error: unknown | null }[] => read(() => (db.prepare("SELECT identity FROM executions ORDER BY identity").all() as { identity: string }[]).map(row => {
+    try {
+      const [projectId, taskId, claimId] = row.identity.split("/");
+      return { identity: row.identity, record: terminationRecord({ projectId: projectId!, taskId: taskId!, claimId: claimId! }), error: null };
+    } catch (error) { return { identity: row.identity, record: null, error }; }
+  }));
   return {
     close: (): void => { closeSqliteDatabase(db, { file: db.name, format: herdrLifecycleStoreFormat }); },
     get,
+    termination,
+    terminationRecord,
+    terminationInventory: (): HerdrTerminationMetadata[] => terminationEntries().flatMap(entry => entry.record === null ? [] : [entry.record]),
+    terminationDiagnostics: (): { identity: string; error: unknown }[] => terminationEntries().flatMap(entry => entry.error === null ? [] : [{ identity: entry.identity, error: entry.error }]),
+    terminationCommitted: (identity: ClaimIdentity): HerdrTerminationClosure | null => {
+      if (db.inTransaction) return reject("The original Herdr termination transaction remains unsettled.");
+      return termination(identity);
+    },
+    terminationBinding,
+    terminationRetired: (identity: ClaimIdentity): boolean => read(() => {
+      const exists = db.prepare("SELECT 1 FROM never_started_retirements WHERE identity = ?").get(identityKey(identity)) !== undefined;
+      if (exists && terminationRecord(identity)?.neverStarted !== true) return reject("The original retirement conflicts with termination inventory.");
+      return exists;
+    }),
+    bindTermination: (identity: ClaimIdentity, domainId: string): void => atomic(() => {
+      const domain = uuid(domainId), record = terminationRecord(identity);
+      if (record === null) return reject("The original Herdr lifecycle is missing.");
+      const previous = terminationBinding(identity);
+      if (previous !== null && previous !== domain) return reject("The original Herdr termination domain cannot be replaced.");
+      if (previous === null) db.prepare("INSERT INTO termination_bindings(identity, domain_id) VALUES (?, ?)").run(identityKey(identity), domain);
+    }),
+    closeTermination: (expected: HerdrTerminationMetadata | HerdrLifecycleRecord, domainId: string, sequence: string): HerdrTerminationClosure => atomic(() => {
+      const owner = { ...expected.owner, claimId: expected.claimId };
+      const existing = termination(owner);
+      if (existing !== null) {
+        if (existing.domainId !== domainId) return reject("The original Herdr termination domain cannot be replaced.");
+        return existing;
+      }
+      const original = terminationRecord(owner);
+      const expectedMetadata = "neverStarted" in expected ? expected : terminationProjection(expected);
+      if (original === null || !same(original, expectedMetadata)) return reject("The Herdr lifecycle changed before its termination closure.");
+      if (terminationBinding(owner) !== domainId) return reject("The original Herdr termination domain is not bound.");
+      const closure = createHerdrTerminationClosure(original, domainId, sequence);
+      db.prepare("INSERT INTO termination_closures(identity, data) VALUES (?, ?)").run(key(original), canonicalSessionJson(closure));
+      return termination(owner)!;
+    }),
     retired,
     listRetired: (): HerdrLifecycleRecord[] => read(() => (db.prepare("SELECT identity, version, data FROM never_started_retirements ORDER BY identity").all() as LifecycleRow[]).map(row => { const record = parseRow(row); return retired({ ...record.owner, claimId: record.claimId })!; })),
     retireNeverStarted: (expected: HerdrLifecycleRecord): void => atomic(() => {
@@ -286,6 +414,7 @@ export const openHerdrLifecycleStore = (filename: SqliteDatabaseSource, options:
       if (existing !== null) { if (!same(existing.owner, owner) || existing.cwd !== cwd) return reject("The original execution cannot be rebound to a different owner or worktree."); return existing; }
       const record = parseHerdrLifecycleRecord({ owner, claimId, cwd, sessionId: randomUUID(), registrationId: randomUUID(), connectionEpoch: null, registrationRequest: null, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending", initialPrompt: null, automationBlocked: false, preparation: null, runs: [], segments: [], version: 1 });
       db.prepare("INSERT INTO executions(identity, version, data) VALUES (?, ?, ?)").run(key(record), record.version, canonicalSessionJson(record));
+      writeProjection(record);
       return get({ ...owner, claimId })!;
     }),
     update,

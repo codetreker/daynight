@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
@@ -8,6 +8,10 @@ import { ConfigurationAdmissionWaiting } from "../../../src/commands/worker/conf
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
+import * as processLauncher from "../../../src/commands/worker/backends/controller-process.js";
+import { controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { withTerminationDomainCut } from "../../../src/commands/session-termination/domain.js";
+import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 const resources: { directory: string; store: ReturnType<typeof openWebExecutionStore> }[] = [];
 afterEach(async () => {
@@ -53,4 +57,32 @@ it("does not mark submission or spawn after readiness changes during launch gran
   await expect(launcher.launch(f.store.getTask(f.task)!, ticket, signal, () => complete)).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
   expect(f.store.getTask(f.task)!.webExecution).toMatchObject({ launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [] });
   expect(f.store.getTask(f.task)!.webExecution!.startupReport).toBeUndefined();
+});
+
+it("serializes an unsubmitted legacy ticket with a concurrent policy cut", async () => {
+  const f = await fixture(), launcher = createWebControllerLauncher({ homeDirectory: f.directory, packageDirectory: f.directory, store: f.store, sessionApi: f.sessionApi, now: Date.now });
+  const signal = new AbortController().signal, fresh = await launcher.prepare(f.task, "assignment", signal);
+  const { terminationDomain: binding, ...oldFields } = fresh;
+  const ticket = oldFields as ControllerLaunchTicket;
+  const ticketFile = controllerTicketPath(f.directory, ticket.launchId);
+  await rm(ticketFile); await writeLaunchTicket(f.directory, ticket);
+  const original = await readFile(ticketFile);
+  const directory = path.join(resolveWorkerPaths(f.directory).workerDirectory, "termination-domain"), activationId = randomUUID();
+  let release!: () => void, entered!: () => void, submissionReached!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+  const submission = new Promise<void>(resolve => { submissionReached = resolve; });
+  const cut = withTerminationDomainCut(directory, async domain => { domain.prepare(activationId); entered(); await held; domain.settle(activationId); }, { expectedDomainId: binding!.domainId });
+  await ready;
+  vi.spyOn(processLauncher, "launchControllerProcess").mockImplementation(async options => {
+    submissionReached(); await options.onSubmitting(); throw new Error("fixture prevents process spawn");
+  });
+  const launch = launcher.launch(f.store.getTask(f.task)!, ticket, signal);
+  void launch.catch(() => {});
+  try {
+    await submission;
+    expect(f.store.getTask(f.task)!.webExecution?.launchSubmission).toBe("not-submitted");
+  } finally { release(); await cut; }
+  await expect(launch).rejects.toThrow("fixture prevents process spawn");
+  expect(f.store.getTask(f.task)!.webExecution?.launchSubmission).toBe("unknown");
+  expect(await readFile(ticketFile)).toEqual(original);
 });

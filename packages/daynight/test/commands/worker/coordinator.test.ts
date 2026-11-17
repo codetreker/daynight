@@ -3824,6 +3824,36 @@ describe("worker monitoring of coordinator jobs", () => {
     } finally { await coordinator.shutdown(); }
   });
 
+  it("advances archive maintenance while an independent termination closure is waiting", async () => {
+    const f = await fixture(); f.options.repositories = [];
+    const owner = { projectId: f.project.projectId, taskId: uuid(975), claimId: uuid(985), worktreeId: uuid(995) };
+    f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    const retained = { owner, sessionId: uuid(1005), stopped: true, stoppedLedgerPending: false, stopEvidence: archiveFixture.runs.map(run => run.stopProof), terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, "source"), sourceBytes: "10", state: "pending", error: null, nextAttemptAt: null, worktreeDeleted: true, disposition: null };
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const termination = { candidates: () => [owner], close: vi.fn(async () => { await gate; return null; }) };
+    const archive = { resources: () => [retained], advance: vi.fn(async () => true), cleaned: vi.fn() };
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => true, termination, archive, stop: vi.fn() } });
+    const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true });
+    try {
+      await coordinator.tick();
+      await eventually(() => expect(termination.close).toHaveBeenCalledOnce());
+      await eventually(() => expect(archive.advance).toHaveBeenCalledOnce());
+    } finally { release(); await coordinator.shutdown(); }
+  });
+
+  it("reconciles a local termination intent even when the remote inventory is unavailable", async () => {
+    const f = await fixture();
+    const recoverPending = vi.fn(async () => {});
+    Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => true, termination: { recoverPending }, stop: vi.fn() } });
+    vi.mocked(f.remote.currentUserId).mockRejectedValueOnce(new Error("offline"));
+    const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true });
+    try {
+      await expect(coordinator.tick()).rejects.toThrow("offline");
+      await eventually(() => expect(recoverPending).toHaveBeenCalledOnce());
+    } finally { await coordinator.shutdown(); }
+  });
+
   it.each(["failed", "permission_denied"] as const)("retries only pending stopped ledger for a %s archive at low frequency", async state => {
     const f = await fixture(), monitor = createMonitoringObserver(); f.options.repositories = [];
     const owner = { projectId: f.project.projectId, taskId: uuid(975), claimId: uuid(985), worktreeId: uuid(995) };

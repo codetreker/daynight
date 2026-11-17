@@ -29,8 +29,8 @@ type LaunchCommon = {
   readonly createdAt: string;
 };
 export type ControllerLaunchTicket = LaunchCommon & SessionBinding & (
-  | { readonly claimId: string; readonly projectId: string; readonly taskId: string; readonly workerId: string; readonly worktreeId: string; readonly userId: string; readonly ownerUserId?: never; readonly initialInput?: never }
-  | { readonly testExecutionId: string; readonly ownerUserId: string; readonly initialInput: "none" | "prompt"; readonly projectId?: never; readonly taskId?: never; readonly workerId?: never; readonly worktreeId?: never; readonly userId?: never }
+  | { readonly claimId: string; readonly projectId: string; readonly taskId: string; readonly workerId: string; readonly worktreeId: string; readonly userId: string; readonly terminationDomain?: { readonly directory: string; readonly domainId: string }; readonly ownerUserId?: never; readonly initialInput?: never }
+  | { readonly testExecutionId: string; readonly ownerUserId: string; readonly initialInput: "none" | "prompt"; readonly projectId?: never; readonly taskId?: never; readonly workerId?: never; readonly worktreeId?: never; readonly userId?: never; readonly terminationDomain?: never }
 );
 const uuid = (value: unknown): string => { if (typeof value !== "string" || canonicalId(value) !== value) throw new Error("Controller identity must be a canonical UUID."); return value; };
 export const controllerExecutionDirectory = (home: string, executionId: string): string => path.join(resolveConfigurationPaths(home).stateDirectory, "controller", "executions", uuid(executionId));
@@ -47,13 +47,20 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
+  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(!test && Object.hasOwn(data, "terminationDomain") ? ["terminationDomain"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
   if (data.schemaVersion !== 1 || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
   if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller ticket server origin is invalid.");
   if (data.provider !== "codex" && data.provider !== "claude" && data.provider !== "copilot") throw new Error("Controller ticket provider is invalid.");
   for (const key of ["cwd", "nativeHome", "credentialFile"]) if (typeof data[key] !== "string" || !path.isAbsolute(data[key]) || /[\0\r\n]/.test(data[key])) throw new Error(`Controller ticket ${key} must be absolute.`);
+  if (data.terminationDomain !== undefined) {
+    const domain = data.terminationDomain;
+    if (typeof domain !== "object" || domain === null || Array.isArray(domain) || Object.keys(domain).sort().join() !== "directory,domainId" || typeof (domain as { directory?: unknown }).directory !== "string") throw new Error("Controller termination domain is invalid.");
+    const { directory, domainId } = domain as { directory: string; domainId: unknown };
+    if (!path.isAbsolute(directory) || path.normalize(directory) !== directory || /[\0\r\n]/.test(directory)) throw new Error("Controller termination domain must be an absolute normalized path.");
+    uuid(domainId);
+  }
   if (typeof data.ipcEndpoint !== "string" || /[\0\r\n]/.test(data.ipcEndpoint) || !(path.isAbsolute(data.ipcEndpoint) || data.ipcEndpoint.startsWith("\\\\.\\pipe\\"))) throw new Error("Controller IPC endpoint is invalid.");
   if (typeof data.ipcSecret !== "string" || !/^[a-f0-9]{64}$/.test(data.ipcSecret)) throw new Error("Controller IPC authentication is invalid.");
   if (typeof data.initialPrompt !== "string" || (!(test && data.initialInput === "none") && data.initialPrompt.trim() === "") || !data.initialPrompt.isWellFormed()) throw new Error("Controller initial prompt is invalid or too large.");

@@ -32,9 +32,12 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { prepareControllerLaunchStorage } from "./controller-process.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+import { resolveWorkerPaths } from "../paths.js";
+import { readTerminationPending, withTerminationDomain, withTerminationPhysicalStop } from "../../session-termination/domain.js";
 export type WebBackendOptions = {
   jobLeases?: ControllerJobLeases;
-  homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: Pick<ReturnType<typeof createWebControllerLauncher>, "prepare" | "launch" | "refreshGrant"> & Partial<Pick<ReturnType<typeof createWebControllerLauncher>, "setGrantObserver">>;
+  workerId?: string; serverOrigin?: string;
+  homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: Pick<ReturnType<typeof createWebControllerLauncher>, "prepare" | "launch" | "refreshGrant"> & Partial<Pick<ReturnType<typeof createWebControllerLauncher>, "setGrantObserver" | "join" | "joinExecution">>;
   platform: TaskPlatform; buildPrompt: (task: LocalTask, platform: TaskPlatform) => string; emit: (event: { kind: string; message: string; task?: LocalTask; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown }) => void; now: () => number;
   promptSource?: Pick<WorkerPromptSource, "current">;
   preparePromptSource?: (projectId: string, signal: AbortSignal) => Promise<void>;
@@ -52,6 +55,11 @@ export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large" | "sto
 export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
 class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
+  const terminationDirectory = path.join(resolveWorkerPaths(options.homeDirectory).workerDirectory, "termination-domain");
+  const inTerminationDomain = <T>(identity: ClaimIdentity, action: () => T): Promise<T> => {
+    const expectedDomainId = options.store.readTerminationDomain(identity);
+    return withTerminationDomain(terminationDirectory, async domain => { options.store.bindTerminationDomain(identity, domain.domainId); return action(); }, expectedDomainId === null ? {} : { expectedDomainId });
+  };
   const jobLeases = options.jobLeases ?? createControllerJobLeases();
   const previousLaunchId = (proof: ProcessProof, fallback: string): string => {
     if (!jobLeases.enabled) return fallback;
@@ -83,10 +91,26 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   const stopWithLease = async (launchId: string, controller: ProcessProof, native: readonly ProcessProof[], deadline: number) => jobLeases.enabled
     ? stopControllerProcesses(controller, native, deadline, await jobLeases.get(launchId)) : stopControllerProcesses(controller, native, deadline);
-  const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number, maintain = false): Promise<ControllerSnapshot> => {
+  const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number, maintain = false, isolateInventoryFailure = false): Promise<ControllerSnapshot> => {
     const jobLease = jobLeases.enabled ? await jobLeases.get(ticket.launchId) : undefined;
-    const stopOptions = { ...(deadline === undefined ? {} : { deadline }), ...(jobLease === undefined ? {} : { jobLease }) };
-    if (!maintain) return recordStoppedControllerGeneration(file, ticket, stopOptions);
+    if (ticket.projectId === undefined || ticket.taskId === undefined || ticket.claimId === undefined) throw new Error("Web stop requires its original Task ticket.");
+    if (ticket.terminationDomain !== undefined && ticket.terminationDomain.directory !== terminationDirectory) throw new Error("Web stop ticket conflicts with the original termination domain directory.");
+    const identity = { projectId: ticket.projectId, taskId: ticket.taskId, claimId: ticket.claimId };
+    const expectedDomainId = options.store.readTerminationDomain(identity) ?? ticket.terminationDomain?.domainId;
+    const domainId = await withTerminationPhysicalStop(terminationDirectory, async domain => { options.store.bindTerminationDomain(identity, domain.domainId); return domain.domainId; }, { ...(expectedDomainId === undefined ? {} : { expectedDomainId }), ...(deadline === undefined ? {} : { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) }) });
+    const stopOptions = { terminationDomain: { directory: terminationDirectory, domainId }, ...(deadline === undefined ? {} : { deadline }), ...(jobLease === undefined ? {} : { jobLease }) };
+    const record = async (snapshot: ControllerSnapshot): Promise<void> => {
+      try { await withTerminationPhysicalStop(terminationDirectory, async () => { options.store.recordTerminationStop(ticket, snapshot); }, { expectedDomainId: domainId, ...(deadline === undefined ? {} : { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) }) }); }
+      catch (error) {
+        if (!isolateInventoryFailure) throw error;
+        try { options.emit({ kind: "session-termination-retry", message: `Stopped Web generation remains pending: project=${ticket.projectId} task=${ticket.taskId} claim=${ticket.claimId} session=${ticket.sessionId} generation=${ticket.executionGeneration}.`, component: "cleanup", phase: "agent-stop", error }); } catch { /* Diagnostics do not prevent the original worktree cleanup. */ }
+      }
+    };
+    if (!maintain) {
+      const snapshot = await recordStoppedControllerGeneration(file, ticket, stopOptions);
+      await record(snapshot);
+      return snapshot;
+    }
     let permit: ReturnType<typeof acquireControllerStoragePermit>;
     try { permit = acquireControllerStoragePermit(file); }
     catch (cause) {
@@ -96,6 +120,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     let snapshot: ControllerSnapshot | undefined, failure: unknown, failed = false;
     try {
       snapshot = await recordStoppedControllerGeneration(file, ticket, { ...stopOptions, permit });
+      await record(snapshot);
       const prepared = prepareControllerStorage({ journalFile: file, mode: "stopped-maintenance", ticket }, permit);
       if (prepared.kind === "waiting") throw new ControllerStorageWaitingError(prepared.reason, prepared.cause);
     } catch (cause) { failed = true; failure = cause; }
@@ -445,7 +470,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             const toolLaunch = await recoverySelection(task, ticket);
             const stopped = await recordWithLease(journal(task), ticket, undefined, true);
             await jobLeases.release(ticket.launchId);
-            task = options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch);
+            task = await inTerminationDomain(task, () => options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch));
           }
           success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
         } else if (!retryAttempt && task.webExecution !== null && task.webExecution.launchSubmission !== "not-submitted" && task.recovery.count >= task.configuration!.recoveryLimit) {
@@ -470,7 +495,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
         task = await verifyWorktree(task, signal);
         assertConfigurationAdmission(canAdmitNewExecution);
-        task = options.store.initializeWebExecution(task, options.now());
+        task = await inTerminationDomain(task, () => options.store.initializeWebExecution(task, options.now()));
         if (task.webExecution!.initialPrompt === null && options.promptSource !== undefined) {
           if (options.preparePromptSource !== undefined) {
             phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-prompt-source");
@@ -532,7 +557,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           if (!task.webExecution!.restartAfterShutdown) task = options.store.beginRecovery(task, options.now());
           if (task.recovery.pauseReason !== null) return task;
           recovering = true;
-          task = options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch);
+          task = await inTerminationDomain(task, () => options.store.beginWebGeneration(task, stopped, options.now(), toolLaunch));
           success(task, { kind: "execution", phase: "preparing" }, "web-recovery-proof");
           ticket = await prepareTicket(task, task.webExecution!.initialPrompt!, signal);
           phase(task, { kind: "execution", phase: "agent-start" });
@@ -759,7 +784,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
                 throw error;
               }
               await notifyStopped();
-              if (saved !== null) await recordWithLease(journal(task), ticket, stopDeadline);
+              if (saved !== null) await recordWithLease(journal(task), ticket, stopDeadline, false, kind === "terminal");
               await jobLeases.release(ticket.launchId);
               success(task, { kind: "cleanup", phase: "agent-stop" });
               phase(task, { kind: "cleanup", phase: "agent-stop" }, true);
@@ -876,6 +901,51 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   return {
     ...backend,
     observeExecutionStop,
+    reconcileTermination: async (input: ClaimIdentity, signal: AbortSignal): Promise<void> => {
+      signal.throwIfAborted();
+      const task = options.store.readTerminationSource(input);
+      if (task === null || task.cleanup !== "terminal" || task.sessionId === null || task.executionId === null) return;
+      if (options.workerId === undefined || options.serverOrigin === undefined || task.workerId !== options.workerId || task.serverOrigin !== options.serverOrigin) throw new Error("Web termination owner conflicts with this Worker or service.");
+      const closureKey = `web/${task.projectId}/${task.taskId}/${task.claimId}/${task.sessionId}`;
+      const closed = options.store.readTerminationClosure(input);
+      if (closed !== null && readTerminationPending(terminationDirectory)?.key !== closureKey) return;
+      if (options.launcher.joinExecution === undefined) throw new Error("Web termination requires joining its original launch operations.");
+      if (closed === null) await options.launcher.joinExecution(task.executionId);
+      signal.throwIfAborted();
+      const inventory = options.store.listTerminationInventory().find(item => item.projectId === task.projectId && item.taskId === task.taskId && item.claimId === task.claimId);
+      const execution = inventory?.launches.at(-1);
+      if (execution === undefined) throw new Error("The original Web launch inventory is missing.");
+      if (closed === null && execution.submission !== "not-submitted" && execution.stopProof === null) {
+        const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
+        const file = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
+        const snapshot = readCurrentControllerSnapshot(file, ticket);
+        if (snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped || snapshot.stoppedAt === null) return;
+        if (process.platform === "win32") readProvenWindowsStoppedControllerGeneration(file, ticket);
+        if (ticket.terminationDomain !== undefined && ticket.terminationDomain.directory !== terminationDirectory) throw new Error("Web stop ticket conflicts with the original termination domain directory.");
+        const bound = options.store.readTerminationDomain(input) ?? ticket.terminationDomain?.domainId;
+        await withTerminationPhysicalStop(terminationDirectory, async domain => {
+          options.store.bindTerminationDomain(input, domain.domainId);
+          options.store.recordTerminationStop(ticket, snapshot);
+        }, { signal, ...(bound === undefined ? {} : { expectedDomainId: bound }) });
+      }
+      const expectedDomainId = options.store.readTerminationDomain(input);
+      await withTerminationDomain(terminationDirectory, async domain => {
+        options.store.bindTerminationDomain(input, domain.domainId);
+        const existing = options.store.readTerminationClosure(input);
+        const pending = readTerminationPending(terminationDirectory);
+        if (existing !== null) {
+          if (pending?.key === closureKey) {
+            if (existing.domainId !== domain.domainId || existing.sequence !== pending.sequence) throw new Error("Web closure conflicts with its original pending sequence.");
+            domain.finishClosure(closureKey);
+          }
+          return;
+        }
+        options.store.freezeTerminationClosure(input, domain.domainId, "1", true);
+        const sequence = domain.beginClosure(closureKey);
+        options.store.freezeTerminationClosure(input, domain.domainId, sequence);
+        domain.finishClosure(closureKey);
+      }, { signal, pendingKey: closureKey, ...(expectedDomainId === null ? {} : { expectedDomainId }) });
+    },
     probeArchive: async (input: LocalTask, signal: AbortSignal): Promise<ArchiveProbeResult> => {
       signal.throwIfAborted();
       const task = current(input);

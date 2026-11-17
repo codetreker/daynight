@@ -154,7 +154,7 @@ it("loads acknowledged timeline from local storage with stable paging after rest
 
 it.each(["task", "test"])("preserves the original %s ticket bytes and journal hash when instructions are absent", async scope => {
   const { home, ticket: task } = await fixture();
-  const { claimId, projectId, taskId, workerId, worktreeId, userId, ...common } = task;
+  const { claimId, projectId, taskId, workerId, worktreeId, userId, terminationDomain, ...common } = task;
   const ticket: ControllerLaunchTicket = scope === "task" ? task : { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "" };
   const original = JSON.stringify(ticket), hash = controllerPayloadHash(ticket);
   expect(parseLaunchTicket(ticket)).toBe(ticket);
@@ -173,7 +173,7 @@ it.each(["task", "test"])("preserves the original %s ticket bytes and journal ha
 it.each(fixturePlatforms)("carries persisted role instructions through stopped generations without replaying unknown user input (%s)", async mode => {
   selectFixturePlatform(mode);
   const { home, ticket: task } = await fixture();
-  const { claimId, projectId, taskId, workerId, worktreeId, userId, ...common } = task;
+  const { claimId, projectId, taskId, workerId, worktreeId, userId, terminationDomain, ...common } = task;
   let ticket: ControllerLaunchTicket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", instructions: "固定角色\nUse the CLI. 😀" };
   const nativeSessionId = randomUUID(), journal = path.join(home, "role.sqlite"), operationId = randomUUID();
   for (const generation of ["1", "2", "3"]) {
