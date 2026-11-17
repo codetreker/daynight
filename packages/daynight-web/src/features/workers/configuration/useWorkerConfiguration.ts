@@ -10,7 +10,7 @@ import { configurationDraftsEqual, draftFromValue, mergeConfigurationResources, 
 
 export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
 export type ConfigurationDraftUpdate = ConfigurationDraft | ((draft: ConfigurationDraft) => ConfigurationDraft);
-type Submission = { readonly value: WorkerConfigurationValue; readonly source: ConfigurationSubmission; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
+type Submission = { readonly value: WorkerConfigurationValue; readonly source: ConfigurationSubmission; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly archiveSessionsSupported: boolean; readonly archiveSessionsChanged: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
 type State = {
   readonly scope: TaskCacheScope; readonly workerId: string; readonly resource: WorkerConfigurationResource | null;
   readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null; readonly baseline: ConfigurationBaseline | null;
@@ -20,14 +20,15 @@ type State = {
 const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, baseline: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false, baselineInvalid: false, invalidRevision: null });
 const matchesComplete = (baseline: ConfigurationBaseline | null, draft: ConfigurationDraft, resource: WorkerConfigurationResource): boolean => {
   const latest = workerConfigurationBaseline(resource);
-  if (baseline === null || latest === null || (baseline.known.agentControlMode === undefined) !== (latest.known.agentControlMode === undefined) || (baseline.known.toolPaths === undefined) !== (latest.known.toolPaths === undefined)) return false;
-  const parsed = parseConfigurationDraft(draft, baseline.known.agentControlMode !== undefined, { toolPathsSupported: baseline.known.toolPaths !== undefined });
+  if (baseline === null || latest === null || (baseline.known.agentControlMode === undefined) !== (latest.known.agentControlMode === undefined) || (baseline.known.toolPaths === undefined) !== (latest.known.toolPaths === undefined) || (baseline.known.archiveSessions === undefined) !== (latest.known.archiveSessions === undefined)) return false;
+  const parsed = parseConfigurationDraft(draft, baseline.known.agentControlMode !== undefined, { toolPathsSupported: baseline.known.toolPaths !== undefined, archiveSessionsSupported: baseline.known.archiveSessions !== undefined });
   return parsed.value !== null && configurationValueSourcesEqual(mergeConfigurationDraft(baseline, parsed.value).valueSource, latest.valueSource);
 };
 const submittedBaseline = (state: State, submission: Submission): ConfigurationDraft => {
-  const { toolPaths: _tools, ...draft } = submission.draft;
+  const { toolPaths: _tools, archiveSessions: _archive, ...draft } = submission.draft;
   const toolPaths = submission.toolPathsSupported ? submission.draft.toolPaths : state.baselineDraft?.toolPaths;
-  return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }) };
+  const archive = submission.archiveSessionsSupported ? submission.value.archiveSessions : state.baselineDraft?.archiveSessions;
+  return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }), ...(archive === undefined ? {} : { archiveSessions: archive }) };
 };
 const confirmedDrafts = (state: State, submission: Submission, receipt: ConfigurationBaseline | null, observed: ConfigurationBaseline | null) => {
   const baseline = receipt === null ? null : enrichConfigurationBaseline(receipt, observed);
@@ -43,6 +44,11 @@ const confirmedDrafts = (state: State, submission: Submission, receipt: Configur
   if (baselineDraft.agentControlMode === undefined && mode !== undefined) {
     baselineDraft = { ...baselineDraft, agentControlMode: mode };
     if (draft !== null && draft.agentControlMode === undefined) draft = { ...draft, agentControlMode: mode };
+  }
+  const archive = baseline?.known.archiveSessions;
+  if (baselineDraft.archiveSessions === undefined && archive !== undefined) {
+    baselineDraft = { ...baselineDraft, archiveSessions: archive };
+    if (draft !== null && draft.archiveSessions === undefined) draft = { ...draft, archiveSessions: archive };
   }
   return { baseline, baselineDraft, draft };
 };
@@ -66,8 +72,8 @@ const mergeConfigurationReceipt = (current: WorkerConfigurationResource | null, 
   if (current === null) return merged;
   // Reads discover capabilities. A delayed or legacy PUT receipt cannot
   // replace a newer read's capability decision when its result is published.
-  const { toolPathsSupported: _tools, controlModeSupported: _mode, ...resource } = merged;
-  return { ...resource, ...(current.toolPathsSupported === true ? { toolPathsSupported: true } : {}), ...(current.controlModeSupported === true ? { controlModeSupported: true } : {}) };
+  const { toolPathsSupported: _tools, controlModeSupported: _mode, archiveSessionsSupported: _archive, ...resource } = merged;
+  return { ...resource, ...(current.toolPathsSupported === true ? { toolPathsSupported: true } : {}), ...(current.controlModeSupported === true ? { controlModeSupported: true } : {}), ...(current.archiveSessionsSupported === true ? { archiveSessionsSupported: true } : {}) };
 };
 type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly abandon: () => void; readonly save: () => Promise<void> };
 const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, abandon: () => {}, save: async () => {} };
@@ -132,6 +138,10 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       if (resource.toolPathsSupported === true && resource.desired?.revision === old.baselineRevision && tools !== undefined && old.draft !== null && old.draft.toolPaths === undefined) {
         old = { ...old, draft: { ...old.draft, toolPaths: structuredClone(tools) }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, toolPaths: structuredClone(tools) } };
       }
+      const archive = resource.desired?.value.archiveSessions;
+      if (resource.archiveSessionsSupported === true && resource.desired?.revision === old.baselineRevision && archive !== undefined && old.draft !== null && old.draft.archiveSessions === undefined) {
+        old = { ...old, draft: { ...old.draft, archiveSessions: archive }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, archiveSessions: archive } };
+      }
       if (!old.pending && old.submission?.receipt !== null && old.submission?.receipt !== undefined) {
         const submitted = old.submission;
         const merged = mergeConfigurationReceipt(resource, submitted.receipt!);
@@ -152,18 +162,25 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
         if ((submitted.toolPathsSupported || old.baselineDraft?.toolPaths !== undefined || old.draft?.toolPaths !== undefined) && observedTools === undefined) {
           return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
         }
+        const observedArchive = incoming.archiveSessionsSupported === true && incoming.desired?.revision === resource.desired?.revision ? incoming.desired?.value.archiveSessions : undefined;
+        if ((submitted.archiveSessionsSupported || old.baselineDraft?.archiveSessions !== undefined || old.draft?.archiveSessions !== undefined) && observedArchive === undefined) {
+          return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
+        }
         const observedBaseline = workerConfigurationBaseline(resource);
-        const matchesSubmitted = resource.desired !== null && observedBaseline !== null && configurationValueSourcesEqual(observedBaseline.valueSource, submitted.source.valueSource, { controlMode: submitted.controlModeSupported, toolPaths: submitted.toolPathsSupported });
+        const matchesSubmitted = resource.desired !== null && observedBaseline !== null && configurationValueSourcesEqual(observedBaseline.valueSource, submitted.source.valueSource, { controlMode: submitted.controlModeSupported, toolPaths: submitted.toolPathsSupported, archiveSessions: submitted.archiveSessionsSupported });
         if (old.abandoned && resource.desired !== null) {
           const draft = draftFromValue(resource.desired.value);
           return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: observedBaseline, refreshing: false, error: null, errorSource: null, notice: matchesSubmitted ? 'reconciled' : 'notSaved', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
         if (resource.desired !== null && matchesSubmitted) {
           const reconciled = reconcileOmittedToolPaths(old, submitted, observedTools);
-          if (reconciled.conflict) {
+          const archiveConflict = !submitted.archiveSessionsSupported && observedArchive !== undefined && old.draft?.archiveSessions !== old.baselineDraft?.archiveSessions && observedArchive !== old.baselineDraft?.archiveSessions && observedArchive !== old.draft?.archiveSessions;
+          if (reconciled.conflict || archiveConflict) {
             return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'conflict', uncertain: false, unavailable: false, submission: null, protectedDraft: true };
           }
-          return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: reconciled.baselineDraft, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), protectedDraft: false };
+          const archiveBaseline = !submitted.archiveSessionsSupported && observedArchive !== undefined ? { ...reconciled.baselineDraft, archiveSessions: observedArchive } : reconciled.baselineDraft;
+          const archiveDraft = !submitted.archiveSessionsSupported && observedArchive !== undefined && reconciled.draft !== null && old.draft?.archiveSessions === old.baselineDraft?.archiveSessions ? { ...reconciled.draft, archiveSessions: observedArchive } : reconciled.draft;
+          return { ...old, resource, draft: archiveDraft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: archiveBaseline, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), protectedDraft: false };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
         const protectedDraft = conflict && old.draft !== null && !configurationDraftsEqual(old.draft, submitted.draft) &&
@@ -255,10 +272,13 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       if (old.resource.desired.revision !== old.baselineRevision) { update(value => ({ ...value, notice: 'conflict' })); return; }
       const controlModeSupported = old.resource.controlModeSupported === true && old.baseline.known.agentControlMode !== undefined;
       const toolPathsSupported = old.resource.toolPathsSupported === true && old.baseline.known.toolPaths !== undefined && toolAccess.current.editable;
-      const parsed = parseConfigurationDraft(old.draft, controlModeSupported, { toolPathsSupported, ...(toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
-      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported, toolPathsSupported)) return;
-      const submitted: Submission = { value: parsed.value, source: mergeConfigurationDraft(old.baseline, parsed.value), revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, draftRevision, dispatched: false, receipt: null, rejection: null };
-      const toolsAdmitted = () => !submitted.toolPathsSupported || toolAccess.current.editable && currentState().resource?.toolPathsSupported === true;
+      const archiveSessionsSupported = old.resource.archiveSessionsSupported === true && old.baseline.known.archiveSessions !== undefined;
+      const archiveSessionsEditable = archiveSessionsSupported && old.resource.observation?.items.some(item => item.key.kind === 'archiveSessions') === true;
+      const archiveDraft = archiveSessionsEditable || old.baseline.known.archiveSessions === undefined ? old.draft : { ...old.draft, archiveSessions: old.baseline.known.archiveSessions };
+      const parsed = parseConfigurationDraft(archiveDraft, controlModeSupported, { toolPathsSupported, archiveSessionsSupported, ...(toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
+      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported, toolPathsSupported, archiveSessionsEditable)) return;
+      const submitted: Submission = { value: parsed.value, source: mergeConfigurationDraft(old.baseline, parsed.value), revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, archiveSessionsSupported, archiveSessionsChanged: archiveSessionsEditable && old.draft.archiveSessions !== old.baselineDraft?.archiveSessions, draftRevision, dispatched: false, receipt: null, rejection: null };
+      const toolsAdmitted = () => (!submitted.toolPathsSupported || toolAccess.current.editable && currentState().resource?.toolPathsSupported === true) && (!submitted.archiveSessionsSupported || currentState().resource?.archiveSessionsSupported === true) && (!submitted.archiveSessionsChanged || currentState().resource?.observation?.items.some(item => item.key.kind === 'archiveSessions') === true);
       publication?.abort(); publication = null;
       const controller = new AbortController(); write = controller;
       const signal = AbortSignal.any([controller.signal, scope.signal]);
@@ -290,9 +310,9 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
           update(value => ({ ...value, pending: false, submission: null }));
           return;
         }
-        const incoming = await abortable(saveWorkerConfiguration(workerId, submitted.revision, submitted.source, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, toolPathsSupported: submitted.toolPathsSupported, onDispatch: () => {
+        const incoming = await abortable(saveWorkerConfiguration(workerId, submitted.revision, submitted.source, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, toolPathsSupported: submitted.toolPathsSupported, archiveSessionsSupported: submitted.archiveSessionsSupported, onDispatch: () => {
           // The API can wait for identity again after the scope admission above.
-          if (!toolsAdmitted()) throw new Error('Worker tool path editing is unavailable.');
+          if (!toolsAdmitted()) throw new Error('Worker configuration editing is unavailable.');
           submitted.dispatched = true;
         }, onConfirmed: receipt => { submitted.receipt = receipt; }, onRejected: error => { submitted.rejection = error; } }), signal);
         settleConfirmed(incoming);
@@ -376,17 +396,19 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
     (!configurationDraftsEqual(current.draft, current.baselineDraft) || current.submission !== null && !configurationDraftsEqual(current.draft, current.submission.draft) || current.protectedDraft);
   const controlAdmitted = !current.baselineInvalid && current.resource?.controlModeSupported === true && current.baseline?.known.agentControlMode !== undefined;
   const toolsAdmitted = !current.baselineInvalid && current.resource?.toolPathsSupported === true && current.baseline?.known.toolPaths !== undefined;
-  const resource = current.resource === null ? null : { ...current.resource, controlModeSupported: controlAdmitted, toolPathsSupported: toolsAdmitted };
+  const archiveAdmitted = !current.baselineInvalid && current.resource?.archiveSessionsSupported === true && current.baseline?.known.archiveSessions !== undefined;
+  const archiveEditable = archiveAdmitted && current.resource?.observation?.items.some(item => item.key.kind === 'archiveSessions') === true;
+  const resource = current.resource === null ? null : { ...current.resource, controlModeSupported: controlAdmitted, toolPathsSupported: toolsAdmitted, archiveSessionsSupported: archiveAdmitted };
   const desiredValue = current.resource?.desired?.value;
   const comparisonValue = desiredValue === undefined ? null : current.baseline !== null && !current.baselineInvalid && current.baseline.revision === current.resource?.desired?.revision
-    ? { ...desiredValue, ...(desiredValue.agentControlMode === undefined && current.baseline.known.agentControlMode !== undefined ? { agentControlMode: current.baseline.known.agentControlMode } : {}), ...(desiredValue.toolPaths === undefined && current.baseline.known.toolPaths !== undefined ? { toolPaths: current.baseline.known.toolPaths } : {}) }
+    ? { ...desiredValue, ...(desiredValue.agentControlMode === undefined && current.baseline.known.agentControlMode !== undefined ? { agentControlMode: current.baseline.known.agentControlMode } : {}), ...(desiredValue.toolPaths === undefined && current.baseline.known.toolPaths !== undefined ? { toolPaths: current.baseline.known.toolPaths } : {}), ...(desiredValue.archiveSessions === undefined && current.baseline.known.archiveSessions !== undefined ? { archiveSessions: current.baseline.known.archiveSessions } : {}) }
     : desiredValue;
   return {
     resource, draft: current.draft, comparisonValue, baselineRevision: current.baselineRevision,
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
     dirty, publicationPending: !current.pending && !current.uncertain && current.submission !== null,
-    saveableDirty: !current.baselineInvalid && dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, controlAdmitted, toolsAdmitted && toolPathsEditable),
+    saveableDirty: !current.baselineInvalid && dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, controlAdmitted, toolsAdmitted && toolPathsEditable, archiveEditable),
     conflict,
     setDraft, refresh, loadLatest, save, discard: loadLatest, abandon,
   };

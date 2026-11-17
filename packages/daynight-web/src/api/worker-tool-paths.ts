@@ -6,7 +6,7 @@ export type ToolPathChoice = { readonly kind: "auto" } | { readonly kind: "path"
 export type ToolPaths = Readonly<Record<Tool, ToolPathChoice>>;
 
 export type WorkerCloudToolPaths = Readonly<Record<Tool, ToolPathChoice | null>>;
-export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean };
+export type WorkerConfigurationCapabilities = { readonly controlMode: boolean; readonly toolPaths: boolean; readonly archiveSessions?: boolean };
 export type WorkerConfigurationCapabilityInput = WorkerConfigurationCapabilities | boolean;
 export const workerConfigurationCapabilities = (value: WorkerConfigurationCapabilityInput = false): WorkerConfigurationCapabilities =>
   typeof value === "boolean" ? { controlMode: value, toolPaths: false } : value;
