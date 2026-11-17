@@ -33,6 +33,7 @@ export type WorkerConfigurationMessages = {
   readonly saveFailed: string;
   readonly networkError: string;
   readonly protocolError: string;
+  readonly unsupportedFields: string; readonly unsupportedFieldsDetail: string;
   readonly permissionError: string;
   readonly retainedDraft: string;
   readonly saved: string;

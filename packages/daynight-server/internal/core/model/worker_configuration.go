@@ -19,7 +19,7 @@ type WorkerProjectConfiguration struct {
 type WorkerConfiguration struct {
 	ArchiveSessions         *bool                   `json:"-"`
 	PreserveArchiveSessions bool                    `json:"-"`
-	AgentControlMode        *WorkerAgentControlMode `json:"agentControlMode"`
+	AgentControlMode        *WorkerAgentControlMode `json:"agentControlMode,omitempty"`
 	ToolPaths               WorkerToolPaths         `json:"toolPaths"`
 	PreserveToolPaths       bool                    `json:"-"`
 	// Legacy replacements retain the locked cloud mode without synthesizing a default.

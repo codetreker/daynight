@@ -25,16 +25,12 @@ export const toolPathSummaryStates = (resource: WorkerConfigurationResource, tel
   });
 };
 
-// The form still saves all three choices, so its overall success must account for
-// the existing wire's remaining observations even though they are not displayed.
 export const allToolPathsApplied = (resource: WorkerConfigurationResource, telemetry: ToolPathTelemetry | undefined, online: boolean | null): boolean => {
   if (resource.toolPathsSupported !== true) return true;
   if (telemetry === undefined || resource.desired === null) return false;
   const { desired } = resource;
-  const contexts = desired.value.agentControlMode === 'herdr' ? ['web', 'herdr'] as const : ['web'] as const;
-  return (['codex', 'copilot', 'herdr'] as const).every(tool =>
-    (tool === 'herdr' ? ['herdr'] as const : contexts).every(context =>
-      toolPathApplicationState(telemetry.entries.find(entry => entry.tool === tool && entry.context === context), desired, online) === 'applied'));
+  return (['codex', 'copilot'] as const).every(tool =>
+    toolPathApplicationState(telemetry.entries.find(entry => entry.tool === tool && entry.context === 'web'), desired, online) === 'applied');
 };
 
 export const toolSoftwareEntries = (telemetry: ToolPathTelemetry, tool: Tool): readonly ToolPathObservation[] => telemetry.entries.filter(entry => entry.tool === tool && entry.context === 'web' && !(

@@ -1,5 +1,4 @@
-import { parseWorkerCloudToolPaths, parseToolPathsBootstrap, workerConfigurationCapabilities, type WorkerCloudToolPaths, type WorkerConfigurationCapabilityInput } from "./worker-tool-paths.js";
-import type { ToolPaths } from "../platform/tool-path-choice.js";
+import { parseWorkerCloudToolPaths, parseToolPathsBootstrap, workerConfigurationCapabilities, type WorkerCloudToolPaths, type WorkerToolPathsBootstrap, type WorkerConfigurationCapabilityInput } from "./worker-tool-paths.js";
 import { decodeWorkerConfigurationSource } from "./worker-configuration-source.js";
 import { jsonObjectSources } from "./json-source.js";
 import { parseWorkerReportReceipt } from "./parse.js";
@@ -29,7 +28,7 @@ export type WorkerCloudItem = {
 };
 export type WorkerCloudObservation = { readonly baseRevision: string; readonly desiredRevision: string; readonly items: readonly WorkerCloudItem[] };
 export type WorkerCloudResource = { readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly observation: (WorkerCloudObservation & { readonly reportedAt: string }) | null };
-export type WorkerCloudReport = { readonly toolPathsBootstrap?: ToolPaths | null; readonly controlModeBootstrap?: AgentControlMode | null; readonly bootstrap: WorkerCloudValue | null; readonly observation: WorkerCloudObservation | null };
+export type WorkerCloudReport = { readonly toolPathsBootstrap?: WorkerToolPathsBootstrap | null; readonly controlModeBootstrap?: AgentControlMode | null; readonly bootstrap: WorkerCloudValue | null; readonly observation: WorkerCloudObservation | null };
 export type WorkerCloudReceipt = { readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly observationAccepted: boolean };
 export type WorkerCloudReportReceipt = WorkerReportReceipt & { readonly configuration: WorkerCloudReceipt };
 

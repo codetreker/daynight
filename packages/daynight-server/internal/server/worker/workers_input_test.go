@@ -33,7 +33,7 @@ func workerSnapshotReportBody() map[string]any {
 		"os":     probe(map[string]any{"type": "Linux", "release": "6.8", "version": "kernel", "arch": "x64"}),
 		"cpu":    probe(map[string]any{"model": "CPU", "logicalProcessors": 4, "usagePercent": 12.5}),
 		"memory": probe(map[string]any{"usedBytes": 4, "totalBytes": 8}), "disk": probe(map[string]any{"availableBytes": 8, "totalBytes": 16}),
-		"versions":      map[string]any{"daynight": "1.0.0", "herdr": probe("0.9.5"), "codex": map[string]any{"state": "not_installed", "checkedAt": now}, "copilot": map[string]any{"state": "error", "checkedAt": now, "code": "timeout"}},
+		"versions":      map[string]any{"daynight": "1.0.0", "codex": map[string]any{"state": "not_installed", "checkedAt": now}, "copilot": map[string]any{"state": "error", "checkedAt": now, "code": "timeout"}},
 		"taskInventory": map[string]any{"observedAt": now, "claims": []any{}}}
 }
 
@@ -341,8 +341,6 @@ func (f *capacityReportOperationFixture) dispatchRaw(method, path, body, protoco
 func (f *capacityReportOperationFixture) putRequest(body map[string]any, calls int, result model.WorkerConfigurationResource) *httptest.ResponseRecorder {
 	f.t.Helper()
 	want := capacityDecode[model.WorkerConfiguration](f.t, body["value"])
-	want.PreserveAgentControlMode = true
-	want.PreserveToolPaths = true
 	want.PreserveArchiveSessions = true
 	_, present := body["value"].(map[string]any)["enableSudoCleanup"]
 	want.PreserveSudoCleanup = !present
@@ -452,9 +450,6 @@ func TestWorkerReportCapacityHTTPRejectsBeforeWrite(t *testing.T) {
 		{"machine", 256, func(b map[string]any, s string) { b["machine"].(map[string]any)["name"] = s }},
 		{"cwd", 4096, func(b map[string]any, s string) { b["workingDirectory"] = s }},
 		{"daynight", 256, func(b map[string]any, s string) { b["versions"].(map[string]any)["daynight"] = s }},
-		{"herdr", 256, func(b map[string]any, s string) {
-			b["versions"].(map[string]any)["herdr"].(map[string]any)["value"] = s
-		}},
 		{"codex", 256, func(b map[string]any, s string) {
 			b["versions"].(map[string]any)["codex"] = map[string]any{"state": "ok", "checkedAt": "2026-10-29T00:00:00Z", "value": s}
 		}},

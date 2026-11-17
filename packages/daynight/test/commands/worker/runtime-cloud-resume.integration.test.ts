@@ -50,7 +50,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { agentControlMode: "web", maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {

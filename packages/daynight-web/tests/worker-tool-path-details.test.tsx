@@ -55,8 +55,7 @@ describe('Worker tool path details', () => {
 
   it('shows only native Web observations across language changes', () => {
     const web = toolPathObservation('copilot', 'web', { actual: toolPathActual('copilot', { source: 'bundled', version: 'bundled-version' }) });
-    const legacy = toolPathObservation('copilot', 'herdr', { actual: toolPathActual('copilot', { version: 'legacy-version' }) });
-    const { container, setLocale } = renderWithLocale(<WorkerToolPathDetails tool="copilot" telemetry={toolPathTelemetry([web, legacy])} desired={toolPathConfiguration().desired} online />, { locale: 'en' });
+    const { container, setLocale } = renderWithLocale(<WorkerToolPathDetails tool="copilot" telemetry={toolPathTelemetry([web])} desired={toolPathConfiguration().desired} online />, { locale: 'en' });
     expect(screen.getByText('Bundled runtime')).toBeInTheDocument();
     expect(screen.queryByText('legacy-version')).toBeNull();
     expect(container.querySelector('[data-context="herdr"]')).toBeNull();

@@ -1038,7 +1038,35 @@ func TestRawBootstrapAdoptsMissingToolPaths(t *testing.T) {
 	if err := json.Unmarshal(fields["toolPaths"], &paths); err != nil {
 		t.Fatal(err)
 	}
-	if string(paths["codex"]) != `{"kind":"auto"}` || string(paths["copilot"]) != `null` || string(paths["herdr"]) != `null` || string(fields["future"]) != `{"unchanged":1}` {
+	if string(paths["codex"]) != `{"kind":"auto"}` || string(paths["copilot"]) != `null` || paths["herdr"] != nil || string(fields["future"]) != `{"unchanged":1}` {
 		t.Fatalf("unexpected result %s", d.rawWritten)
+	}
+}
+
+func TestTwoToolReplacementCorrectsLegacyRawWithoutChangingArchiveOrSudo(t *testing.T) {
+	d := checkedConfigurationScope(t, configuredDAO("7"))
+	archive := false
+	d.current.Desired.ArchiveSessions = &archive
+	d.current.Desired.Raw = json.RawMessage(`{"agentControlMode":"herdr","toolPaths":{"codex":{"kind":"auto"},"copilot":{"kind":"auto"},"herdr":{"kind":"auto"}},"enableSudoCleanup":true,"maxConcurrent":1,"pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[]},"projects":[]}`)
+	choice := &model.ToolPathChoice{Kind: "auto"}
+	input := model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice, Copilot: choice}}
+	receipt, err := ExchangeConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", input)
+	if err != nil || d.desiredWrites != 0 || receipt.Desired.Revision != "7" {
+		t.Fatalf("report converted the raw target: %+v writes=%d error=%v", receipt, d.desiredWrites, err)
+	}
+	value := configurationFixture()
+	value.ToolPaths = model.WorkerToolPaths{Codex: choice, Copilot: choice}
+	value.PreserveSudoCleanup = true
+	value.PreserveArchiveSessions = true
+	got, err := PutConfiguration(t.Context(), d, model.Principal{UserID: "user"}, "worker", 7, value)
+	if err != nil || got.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
+		t.Fatalf("replacement failed: %+v writes=%d archive=%v error=%v", got, d.desiredWrites, d.rawArchive, err)
+	}
+	var saved map[string]json.RawMessage
+	if err := json.Unmarshal(d.rawWritten, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := saved["agentControlMode"]; present || string(saved["enableSudoCleanup"]) != "true" || string(saved["toolPaths"]) != `{"codex":{"kind":"auto"},"copilot":{"kind":"auto"}}` {
+		t.Fatalf("replacement retained old fields or lost sudo: %s", d.rawWritten)
 	}
 }

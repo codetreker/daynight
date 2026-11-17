@@ -12,6 +12,8 @@ an explicit reset and an unfinished edit.
 
 ## Decision
 
+The [two-tool protocol decision](../architecture/2026-11-17-worker-two-tool-protocol.md) supersedes the three-tool and mode portions of this decision. The original trade-offs below describe the earlier contract.
+
 The existing Worker configuration form preserves nullable choices and raw path
 drafts. Each tool has one input and an explicit automatic reset in a collapsed
 section. The form negotiates tool support independently and requires a supporting

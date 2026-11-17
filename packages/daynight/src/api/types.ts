@@ -236,7 +236,6 @@ export type WorkerMemory = { readonly usedBytes: number; readonly totalBytes: nu
 export type WorkerDisk = { readonly availableBytes: number; readonly totalBytes: number };
 export type WorkerVersions = {
   readonly daynight: string;
-  readonly herdr: WorkerHerdrProbe;
   readonly codex: WorkerExecutableProbe;
   readonly copilot: WorkerExecutableProbe;
 };

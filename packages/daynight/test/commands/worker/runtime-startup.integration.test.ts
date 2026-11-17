@@ -64,7 +64,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { agentControlMode: "web", maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {
@@ -153,13 +153,13 @@ afterEach(async () => {
 
 describe("worker cloud-first startup", () => {
   it("continues retained-project reconciliation with bounded observations and after restart", async () => {
-    const f = await fixture(true, false), target = desired([]), ids = [uuid(10_000), uuid(10_001)];
+    const f = await fixture(true, false), target = { ...desired([]), revision: "2" }, ids = [uuid(10_000), uuid(10_001)];
     for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
     const stored = (key: Record<string, string>, appliedValue: unknown) => ({ value: { key, targetRevision: "1", appliedValue, state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
     const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "preferPlatformSpecificTasks" }, false), stored({ kind: "native" }, target.value.native)];
     for (let n = 0; n < 1019; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(20_000 + n) }, true));
-    const { agentControlMode: _mode, ...historicalValue } = target.value;
-    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: { ...target, value: historicalValue }, observationRevision: "0", nextFailureId: 1, items }));
+    const { agentControlMode: _mode, toolPaths: _tools, ...historicalValue } = target.value;
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: { ...target, revision: "1", value: historicalValue }, observationRevision: "0", nextFailureId: 1, items }));
     let revision = 0n, reporterOptions: ReporterOptions | undefined;
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: String(revision), observation: null })));
@@ -178,7 +178,7 @@ describe("worker cloud-first startup", () => {
             const saved = observed.current();
             expect(saved.schemaVersion).toBe(10);
             expect(JSON.parse(saved.authority.desiredJson!)).toEqual(target);
-            if (pass === 0) expect(saved.currentItems).toHaveLength(1027);
+            if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
             for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
             const items = reporterOptions!.configuration!.capture(reportSample).observation!.items;
             expect(items.length).toBeLessThanOrEqual(1026);
@@ -217,7 +217,7 @@ describe("worker cloud-first startup", () => {
     const stored = (key: Record<string, string>, appliedValue: unknown, state = "applied", started = false) => ({ value: { key, targetRevision: "1", appliedValue, state, error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started });
     const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "preferPlatformSpecificTasks" }, false), stored({ kind: "native" }, old.value.native)];
     for (let n = 0; n < 1020; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(10 + n) }, n < 2 ? true : null, n < 2 ? "applied" : "pending", n === 0));
-    const { agentControlMode: _mode, ...historicalValue } = old.value;
+    const { agentControlMode: _mode, toolPaths: _tools, ...historicalValue } = old.value;
     await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: { ...old, value: historicalValue }, observationRevision: "0", nextFailureId: 1, items }));
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(next));
@@ -229,7 +229,7 @@ describe("worker cloud-first startup", () => {
           const installed = observed.current();
           expect(installed.schemaVersion).toBe(10);
           expect(JSON.parse(installed.authority.desiredJson!)).toEqual(next);
-          expect(installed.currentItems.length).toBeGreaterThan(1025);
+          expect(installed.currentItems.length).toBeGreaterThanOrEqual(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,
             value: { key: { kind: "projectRemoval", projectId: uuid(10) }, targetRevision: "1" } });
           await vi.waitFor(() => {
@@ -313,7 +313,7 @@ describe("worker cloud-first startup", () => {
       expect(sent.bootstrap).toMatchObject({ maxConcurrent: 2, native: { model: "local-model", args: ["-c", 'model_reasoning_effort="low"'] }, projects: [{ projectId: uuid(1) }, { projectId: uuid(2) }] });
       expect(sent.observation).toBeNull();
       const operation = createOperation();
-      try { await reporterOptions!.configuration!.accept(sent, receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)], 2), value: { ...sent.bootstrap!, agentControlMode: "web" } }, observationRevision: "0", observationAccepted: false }), operation); }
+      try { await reporterOptions!.configuration!.accept(sent, receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)], 2), value: { ...sent.bootstrap! } }, observationRevision: "0", observationAccepted: false }), operation); }
       finally { operation.dispose(); }
       await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
       await vi.waitFor(() => {
@@ -563,37 +563,8 @@ describe("worker cloud-first startup", () => {
       expect(mocks.coordinator).not.toHaveBeenCalled();
 
       expect(mocks.probe).not.toHaveBeenCalled();
-      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("unsupported Herdr control mode") }));
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("unsupported agentControlMode") }));
     } finally { cancellation.abort(); await running; }
-  });
-
-  it("rediscovers tool support after a mode-capable server upgrades without restarting the Worker", async () => {
-    const f = await fixture(false, false), base = desired([]);
-    const initial: WorkerCloudDesired = { ...base, value: { ...base.value, agentControlMode: "web" } };
-    const upgraded: WorkerCloudDesired = { ...initial, value: { ...initial.value, toolPaths: { codex: null, copilot: null, herdr: null } } };
-    const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockResolvedValueOnce(resource(initial)).mockResolvedValue(resource(upgraded));
-    let channel: ReporterOptions["configuration"];
-    mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration; return reporter(); });
-    const { cancellation, running } = start(f);
-    const operation = createOperation();
-    try {
-      await vi.waitFor(() => expect(channel).toBeDefined());
-      await channel!.prepare!(operation);
-      expect(remote.configuration).toHaveBeenCalledOnce();
-      await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: initial, observationRevision: "0", observationAccepted: false }), operation);
-
-      await channel!.prepare!(operation);
-      expect(remote.configuration).toHaveBeenCalledTimes(2);
-      expect(remote.configuration).toHaveBeenLastCalledWith(workerId, operation.signal, operation);
-      expect(JSON.parse(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).authority.desiredJson)).toEqual(upgraded);
-      expect(channel!.capture(reportSample)).toMatchObject({ controlModeBootstrap: "web", toolPathsBootstrap: null });
-
-      await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: upgraded, observationRevision: "0", observationAccepted: false }), operation);
-      await channel!.prepare!(operation);
-      expect(remote.configuration).toHaveBeenCalledTimes(2);
-      expect(remote.reportConfiguration).not.toHaveBeenCalled();
-    } finally { operation.dispose(); cancellation.abort(); await running; }
   });
 
   it("ignores stale managed YAML when the cloud target already exists", async () => {

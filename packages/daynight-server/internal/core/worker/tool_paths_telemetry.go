@@ -61,13 +61,13 @@ func ValidateToolPaths(value *model.ToolPathTelemetry, platform model.TaskPlatfo
 	if value == nil {
 		return nil
 	}
-	if value.SchemaVersion != 1 || !validToolTime(value.ObservedAt) || value.Entries == nil || len(value.Entries) > 5 {
+	if value.SchemaVersion != 1 || !validToolTime(value.ObservedAt) || value.Entries == nil || len(value.Entries) > 2 {
 		return invalidInput("Tool path telemetry schema, time or entries are invalid.")
 	}
 	seen := map[[2]string]bool{}
 	for _, entry := range value.Entries {
 		key := [2]string{entry.Tool, entry.Context}
-		if !slices.Contains([]string{"codex", "copilot", "herdr"}, entry.Tool) || !slices.Contains([]string{"web", "herdr"}, entry.Context) || entry.Tool == "herdr" && entry.Context != "herdr" || seen[key] {
+		if !slices.Contains([]string{"codex", "copilot"}, entry.Tool) || entry.Context != "web" || seen[key] {
 			return invalidInput("Tool path contexts must be unique supported tool/context pairs.")
 		}
 		seen[key] = true

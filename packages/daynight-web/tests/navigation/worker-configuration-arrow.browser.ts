@@ -15,7 +15,7 @@ const install = async (page: Page) => {
   const writes: unknown[] = [];
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    const send = (json: unknown) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Control-Mode': '1' } });
+    const send = (json: unknown) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2', 'Daynight-Worker-Control-Mode': '1' } });
     if (path === '/api/v1/me') return send(profile);
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team);

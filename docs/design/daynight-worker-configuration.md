@@ -17,19 +17,19 @@ flowchart LR
   W --> R[当前目标与实际结果]
 ~~~
 
-目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；托管模式、工具路径和 Session 归档分别通过独立能力头选择闭合字段。enableSudoCleanup 直接包含在目标中，不增加字段专用的能力协商。
+目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；工具路径使用必需的版本 2 合同，Session 归档通过独立能力头选择闭合字段。enableSudoCleanup 直接包含在目标中，不增加字段专用的能力协商。
 
 ## 持久化与表示
 
 workers 保存 configuration_revision、configuration_updated_at、desired_configuration、configuration_observation_revision、configuration_observation 和 archive_sessions。目标三列同时为空或存在；应用观测独立为空，观测版本初始为 0。迁移不从任务或旧机器报告推测配置。
 
-目标 JSONB 作为独立原始事实与 revision、修改时间一起读取；读取不以当前候选 schema 的解析结果替代原值。完整 PUT 的候选仍严格验证，未知或不兼容的已存字段可被合法替换。观测按其存储协议解码；公开 revision 为十进制字符串，避免客户端 JSON 数值解析差异。配置标量、原生字段和项目数量受[配置协议](../spec/daynight-worker-configuration.md#目标配置)规定的业务容量约束。preferPlatformSpecificTasks 是独立布尔标量，不进入原生配置元组；应用观测的同名 key 接受 true、false 或 null。agentControlMode 作为同一目标 JSONB 中的 nullable 字段存储，只有旧目标未采纳时为 null。专用存储升级解码识别旧行缺字段，不改变新写入严格结构。项目覆盖以 key 存在性保留继承语义，不把省略改为显式默认值；mode 不属于项目覆盖。
+目标 JSONB 作为独立原始事实与 revision、修改时间一起读取；读取不以当前候选 schema 的解析结果替代原值。完整 PUT 的候选严格验证，未知或不兼容的已存字段可被合法替换。旧 mode 只保留在原始目标中，完整新候选不会将其恢复。观测按其存储协议解码；公开 revision 为十进制字符串。项目覆盖以 key 存在性保留继承语义。
 
 configuration_observation 的 items 保存除 mode 和 archiveSessions 外的应用项，包括 enableSudoCleanup；mode 与 archiveSessions 观测保存在同一 JSONB 的私有扩展槽，各自保留可恢复顺序的序号。internal/protocol/worker 的存储 codec 拥有该表示，DAO 写入与实际存储字节预算使用同一编码，读取时按序号恢复公开 items。仍在运行的旧服务忽略未知扩展槽，不会回显这些槽中的 key；直接字段的兼容基线按需求规定。旧报告完整替换观测时会移除扩展，此后必须等待 Worker 重新报告，不能复活旧 applied 值。数据库迁移后，旧二进制重启会因迁移版本超出其已知范围而拒绝启动。
 
 archive_sessions 是 `boolean NOT NULL DEFAULT true` 独立列，迁移为已有 Worker 设为 true，新 Worker 也从 true 开始。它不存入基础 desired JSONB，避免旧服务完整重写该 JSON 时擦除已保存的归档目标。读取时将列与目标组合；目标 revision、修改时间和列值在同一 Worker 行事务中维护。
 
-toolPaths 保存于同一 desired JSONB，固定三项 choice/null。旧 JSONB 缺少外层字段时，协商后的响应投影三个 null，不改保存的目标、revision 或时间，也不把未采纳状态当作 auto。工具实际观察独立保存于现有 telemetry JSONB，由完整报告替换；后续报告省略扩展会清除原字段，避免旧 Worker 沿用此前成功。此扩展不新增表、列或配置 CRUD。
+toolPaths 保存于同一 desired JSONB，新候选固定 Codex/Copilot 两项 choice/null。旧原始目标缺字段或含第三工具时不自动补全或转换。工具实际观察独立保存于现有 telemetry JSONB，由完整报告替换；后续报告省略扩展会清除原字段。
 
 数据库迁移为已初始化且缺少 preferPlatformSpecificTasks 的目标 JSON 补入 false，保留目标版本、修改时间、观测版本与原应用结果。缺少同名应用观测仍表示等待 Worker 确认，不从迁移后的目标推导已应用。当前完整目标解析始终要求该布尔字段。
 
@@ -39,9 +39,9 @@ toolPaths 保存于同一 desired JSONB，固定三项 choice/null。旧 JSONB �
 
 ## Worker 行事务
 
-报告复用 Store.WriteWorker。服务层重新解析基础配置 JSON 时单独保留归档候选，避免独立列字段在序列化中丢失。机器观测 upsert 建立或更新记录后，配置分支锁定同一 Worker 行：缺失目标且有合法候选时建立初值；已有目标不被完整候选改写。controlModeBootstrap 仅填尚未采纳的模式，toolPathsBootstrap 分别填尚为 null 的工具。首次候选先完成规范化、编码及预算。已有目标的显式引导只更新未采纳字段，保留其他原始字段；多个工具和模式同时采纳也只升一次目标版本。无变化不写，编码失败回滚整个报告。观测比较自身 baseRevision 后保存。回执来自该事务内最终目标与观测版本。
+报告复用 Store.WriteWorker。服务层重新解析基础配置 JSON 时单独保留归档候选，避免独立列字段丢失。配置分支锁定 Worker 行：缺失目标且有合法候选时建立初值；已有目标不被完整候选改写。toolPathsBootstrap 只填可应用目标中尚为 null 的两项工具；旧模式或第三工具需要显式纠正，报告不自动转换。观测比较自身 baseRevision 后保存，回执来自事务内最终目标与观测版本。
 
-PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标志，不接受这些标志为业务 JSON。core 在锁内 CAS 后将旧客户端省略的模式、工具、sudo 和归档值合并入候选，再完整规范化、校验新增/修改项目准入、编码预算与完整目标比较；未知字段使完整替换产生新版本。无法确认相同的项目条目时重新校验项目访问；不能从旧 GET 或解析器默认值决定保留内容。显式 enableSudoCleanup:false 是普通更新，null 或非布尔类型拒绝。已采纳的模式或工具 choice 不能清回 null，工具 auto 为正常显式更新。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
+PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标志，不接受这些标志为业务 JSON。core 在锁内 CAS 后将省略的 sudo 和未协商的归档值合并入候选，再完整规范化、校验新增/修改项目准入、编码预算与完整目标比较；未知字段使完整替换产生新版本。无法确认相同的项目条目时重新校验项目访问；不能从旧 GET 或解析器默认值决定保留内容。显式 enableSudoCleanup:false 是普通更新，null 或非布尔类型拒绝。已采纳的工具 choice 不能清回 null，工具 auto 为正常显式更新。保留相同项目条目或删除失权条目不要求重新取得项目权限。配置事务不进入 Project 写事务，不创建任务锁序或跨任务注册门禁。
 
 并发导入只建立一次初值。观测 CAS 失败不覆盖结果，也不使合法 telemetry 失败；目标 CAS 失败不改变目标。数据库操作、提交与回滚错误保留原链。
 
@@ -55,9 +55,9 @@ PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标�
 
 enableSudoCleanup 观察项沿用原 state、targetRevision 与 boolean/null appliedValue；没有该项表示本批未观察，而不是实际关闭。服务端不会替未认识此字段的 Worker 生成应用项。服务端仍整体替换本次 observation，不聚合此前各批 items，也不引入 completeness 字段。应用观测保留本批服务器接纳时间；机器报告可以更新，而应用结果仍是此前已接纳的整批状态。消费者将当前目标与所报每项目标版本比较，保持旧实际值和明确等待/失败含义；缺少当前目标项表示本批未观察，不能复用另一批结果宣称成功。
 
-独立 Daynight-Worker-Control-Mode: 1 请求与回显控制 mode 字段及观测项的严格解析和投影，不依赖配置协议 1/2。未协商时去除 mode 及同名观测；新客户端只有确认回显才发送 controlModeBootstrap。字段直接扩展的上线基线仍须满足[兼容要求](../spec/daynight-worker-configuration.md#兼容基线与上线)。模式能力不改变账号、Origin、principal、配置 CAS 和报告身份校验。
+配置与报告不再接收模式候选或模式观察；旧原始目标中的模式保持可见且不受支持，完整 PUT 可明确移除它。
 
-Daynight-Worker-Tool-Paths: 1 同样独立协商。HTTP 在业务调用前拒绝重复值和非 1；显式能力选项分别控制 mode 与 tools 的服务端严格输入解析。Worker 的成功响应通过配置专用源文本保留未知字段；这不放宽服务端写入准入或新增能力协商，具体机制由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。protocol DTO 在编码前选择投影，旧配置省略 toolPaths、旧详情省略 telemetry.toolPaths；列表只验证并回显能力，维持摘要。客户端工具能力绑定认证 origin/principal，由配置 GET 或已认证 404 确认，不能由报告响应或包版本推断可发送扩展。合法报告回执缺少 mode 或 toolPaths 任一投影时，运行时在下一次报告准备阶段重新读取配置；mode 已存在不停止工具能力发现。字段缺失只安排认证读取，不授予能力；下一次报告按读取结果重新构造，不重放结果未知的写入。
+Daynight-Worker-Tool-Paths: 2 对报告、配置与详情必需，缺失或不匹配在业务调用前拒绝并提示升级；列表摘要不设门槛。成功响应回显版本。配置成功响应保留原始目标与未知字段并组合独立归档列，严格写入只接受两工具；配置协议 1/2 和 prompt 继续独立处理。
 
 Daynight-Worker-Archive-Sessions: 1 独立协商布尔目标与同名观测项。协议 codec 对未协商请求保留原闭合投影，确认后严格解析布尔值；服务回显能力，重复或无效头在业务调用前拒绝。旧 PUT 的值来自锁内实际列而非旧 GET。归档观测的私有槽与 mode 槽都按保存的序号还原，替换报告不保留未提供的旧证据。
 
@@ -67,11 +67,11 @@ Daynight-Worker-Archive-Sessions: 1 独立协商布尔目标与同名观测项�
 
 ## Web 字段与保存
 
-`ConfigurationControlModeField` 与 `ConfigurationNativeFields` 的全局 Agent、项目 Agent、Model 模式和 Args 模式共用 [NativeSelect](native-select.md) 的 `form`/`fill` 变体，表单高度为 38px。公共组件拥有箭头、文字留白、焦点和禁用外观，配置样式仅安排表单网格与外部布局。选项、继承与自定义联动、重置、反馈和异步保存由配置编辑器拥有。
+`ConfigurationNativeFields` 的全局 Agent、项目 Agent、Model 模式和 Args 模式共用 [NativeSelect](native-select.md) 的 `form`/`fill` 变体，表单高度为 38px。公共组件拥有箭头、文字留白、焦点和禁用外观，配置样式仅安排表单网格与外部布局。选项、继承与自定义联动、重置、反馈和异步保存由配置编辑器拥有。
 
-托管模式仍只有 `herdr` 和 `web` 两个选项。`ConfigurationControlModeField` 的 ref 指向真实 `HTMLSelectElement`，自身 `useLayoutEffect` 在 nullable 草稿未采纳时设置 `selectedIndex=-1`；公共层不增加第三项或选择默认模式。能力不支持时继续禁用，label、可用性说明、反馈的 `aria-describedby` 和项目 Model/Args 的 `aria-controls` 继续关联真实字段。后台复核保留字段节点、焦点和草稿，不从观测值替换编辑输入。
+配置表单不编辑托管模式或第三工具。旧字段显示在原始目标中，用户明确保存完整候选时才替换；后台读取、编辑与重置不改写目标。
 
-配置端点使用专用源文本解码，验证 JSON 语法、重复解码键及深度，再从同一响应派生已知视图和完整目标基底。已知视图供表单校验，未知子树保留为已验证 JSON 片段；合并按已知叶子及 projectId 对齐实体，明确删除项目时删除其全部内容。提交冻结原 revision 与合并后的完整 value，回执及未知结果读取按完整语义比较，对象无序、数组有序、数字无损比较；已知项目按 ID 对齐。旧模式和工具能力投影仍控制可提交字段。后台读取不能替换已有草稿的源基底，确认回执才建立新的提交基底。
+配置端点使用专用源文本解码，验证 JSON 语法、重复解码键及深度，再从同一响应派生已知视图和完整目标基底。已知视图供表单校验，未知子树保留为已验证 JSON 片段；合并按已知叶子及 projectId 对齐实体，明确删除项目时删除其全部内容。提交冻结原 revision 与合并后的完整 value，回执及未知结果读取按完整语义比较，对象无序、数组有序、数字无损比较；已知项目按 ID 对齐。旧模式及第三工具只在明确保存新候选时移除。后台读取不能替换已有草稿的源基底，确认回执才建立新的提交基底。
 
 归档开关沿用运行设置的原生 checkbox、关联帮助和配置反馈。服务回显确认目标字段，最新观察项的存在独立确定 Worker 是否支持编辑；观察版本落后不撤销编辑资格。草稿和基线保留 false 与未提交修改，能力变化不伪造目标或实际值。保存其他字段时以基线保留不可编辑的归档目标，恢复支持后继续原草稿；未知结果必须核对同版本完整目标。
 
@@ -83,6 +83,6 @@ Web 配置编辑器持有提交的账号、Worker、操作、目标版本与草�
 
 真实 PostgreSQL 验证并发导入、独立 CAS、相同值、规范化比较、权限变化、事务失败与持久状态，包括 sudo 字段省略保留、显式关闭及版本冲突。HTTP 验证认证、Origin、查询/方法拒绝、精确字段、布尔 false、版本和原格式。迁移验证 preferPlatformSpecificTasks 补值保持版本与时间；enableSudoCleanup 补值推进版本与时间，已存在字段及未初始化目标不变，revision 耗尽时整体回滚。两者均不改变观测、Worker 遥测或任务数据，也不为未初始化 Worker 生成目标。归档列迁移及新建默认、并发旧写入、目标 CAS、回读、观察替换和未协商投影均使用其实际存储与协议边界验证。
 
-Web 模块测试验证两选项无选中、能力禁用、继承与自定义、保存/拒绝/未知结果及后台复核中的草稿连续性。`tests/navigation/worker-configuration-arrow.browser.ts` 在生产 App 的受控 API fixture 中检查公共箭头、表单几何、禁用和 forced-colors；`worker-control-mode.browser.ts` 检查真实模式字段和配置交互。箭头回归由 `team-playwright.config.ts` 的 `team-preference` 项目执行，模式回归由 `worker-configuration-navigation-playwright.config.ts` 执行；公共组件矩阵由[公共选择组件](native-select.md#验证责任)拥有。
+Web 模块测试验证继承与自定义、保存/拒绝/未知结果及后台复核中的草稿连续性。`tests/navigation/worker-configuration-arrow.browser.ts` 在生产 App 的受控 API fixture 中检查公共箭头、表单几何、禁用和 forced-colors。箭头回归由 `team-playwright.config.ts` 的 `team-preference` 项目执行；公共组件矩阵由[公共选择组件](native-select.md#验证责任)拥有。
 
 服务端验证输入和账号归属，不能证明客户端真正准备了仓库或停止了进程；这些结果由本机观察并上报。配置接入不依赖任务清单同步，不改变现有任务恢复行为。

@@ -516,7 +516,7 @@ const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, sig
 
 test("keeps A/B version, host, models and native Bot launches on their selected recipes across restart and removal", async () => {
   const f = await fixture({ managedTools: true }), signal = AbortSignal.timeout(150_000), runtime = f.tools!;
-  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.toolEntries.A }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") }, herdr: { kind: "auto" } } });
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.toolEntries.A }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") } } });
   const dist = path.resolve(import.meta.dirname, "../../../dist");
   const hostModule = await import(pathToFileURL(path.join(dist, "commands/worker/bots/host-capabilities.js")).href) as typeof import("../../../src/commands/worker/bots/host-capabilities.js");
   const modelModule = await import(pathToFileURL(path.join(dist, "commands/worker/read-only/models.js")).href) as typeof import("../../../src/commands/worker/read-only/models.js");
@@ -559,7 +559,7 @@ test("keeps A/B version, host, models and native Bot launches on their selected 
   await f.create().shutdown(f.current(), signal);
 
   vi.stubEnv("PATH", path.join(f.home, "path-B") + path.delimiter + (process.env.PATH ?? ""));
-  runtime.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") }, herdr: { kind: "auto" } } });
+  runtime.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") } } });
   const b = await inspect("B", "1.20.2");
   expect(b.selectionKey).not.toBe(a.selectionKey);
   const nextDefinition: BotDefinition = { ...originalDefinition, id: randomUUID(), version: "1", creationOrder: "2", sessionId: null, testExecutionId: null, roleConfiguration: null, startupResult: { state: "pending", code: null } };

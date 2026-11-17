@@ -107,7 +107,10 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 	}
 	configurationAware := protocol != ""
 	capabilities, err := workerCapabilities(request.Header)
-	if err == nil && (capabilities.ControlMode || capabilities.ToolPaths || capabilities.ArchiveSessions) && !configurationAware {
+	if err == nil {
+		err = requireToolPaths(capabilities)
+	}
+	if err == nil && (capabilities.ControlMode || capabilities.ArchiveSessions) && !configurationAware {
 		err = httpx.InvalidInput("Worker extensions require the configuration protocol.")
 	}
 	if err != nil {
@@ -179,12 +182,6 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 
 func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
-	capabilities, err := workerCapabilities(request.Header)
-	if err != nil {
-		httpx.WriteError(w, request, logger, "worker_report", "read", err)
-		return
-	}
-	writeWorkerCapabilities(w.Header(), capabilities)
 	page, err := httpx.PageRequest(request)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
@@ -209,6 +206,9 @@ func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	capabilities, err := workerCapabilities(request.Header)
+	if err == nil {
+		err = requireToolPaths(capabilities)
+	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
 		return

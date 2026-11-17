@@ -77,19 +77,19 @@ test('tool paths start collapsed and retain automatic choices until explicitly e
 });
 
 test('unadopted tools remain null and blank edits require explicit automatic reset', async ({ page }) => {
-  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { codex: null, copilot: null, herdr: null } }) });
+  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { codex: null, copilot: null } }) });
   await openToolConfiguration(page); await expandTools(page);
   await expect(field(page)).toHaveAttribute('placeholder', /等待.*导入/);
   await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
   await expect.poll(() => state.writes.length).toBe(1);
-  expect(state.writes[0]!.value.toolPaths).toEqual({ codex: null, copilot: null, herdr: null });
+  expect(state.writes[0]!.value.toolPaths).toEqual({ codex: null, copilot: null });
   await field(page).fill('/opt/custom/codex'); await field(page).fill('');
   await expect(save(page)).toBeDisabled();
   await expect(configuration(page).getByText('请输入此 Worker 平台的绝对文件路径，最多 4096 UTF-8 字节，且不含控制字符。', { exact: true })).toBeVisible();
   const resets = configuration(page).getByRole('button', { name: '恢复自动', exact: true });
   await resets.first().click(); await save(page).click();
   await expect.poll(() => state.writes.length).toBe(2);
-  expect(state.writes[1]!.value.toolPaths).toEqual({ codex: { kind: 'auto' }, copilot: null, herdr: null });
+  expect(state.writes[1]!.value.toolPaths).toEqual({ codex: { kind: 'auto' }, copilot: null });
 });
 
 test('initial configuration loading does not invent an applied tool result', async ({ page }) => {
@@ -104,17 +104,19 @@ test('initial configuration loading does not invent an applied tool result', asy
   await expect(field(page)).toBeEnabled();
 });
 
-for (const missing of ['service', 'worker'] as const) {
-  test(`missing ${missing} capability disables only tool path editing`, async ({ page }) => {
-    const state = await installTools(page, { [missing]: false }); await openToolConfiguration(page); await expandTools(page);
-    for (const tool of ['codex', 'copilot', 'herdr']) await expect(field(page, tool)).toBeDisabled();
-    await expect(configuration(page).getByRole('button', { name: '恢复自动', exact: true }).first()).toBeDisabled();
-    await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
-    await expect.poll(() => state.writes.length).toBe(1); expect(state.writes[0]!.value.recoveryLimit).toBe(7);
-    expect(state.writes[0]!.value).not.toHaveProperty('toolPaths');
-    await expect(page.locator('.config-save-bar').getByRole('status')).toHaveText('没有修改');
-  });
-}
+test('a Worker without tool telemetry disables path editing while preserving saved paths', async ({ page }) => {
+  const state = await installTools(page, { worker: false }); await openToolConfiguration(page); await expandTools(page);
+  for (const tool of ['codex', 'copilot']) await expect(field(page, tool)).toBeDisabled();
+  await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
+  await expect.poll(() => state.writes.length).toBe(1);
+  expect(state.writes[0]!.value.toolPaths).toEqual(toolPaths);
+});
+
+test('an older service requires an upgrade', async ({ page }) => {
+  await installTools(page, { service: false });
+  await page.goto(`/workers/${targetWorker}`);
+  await expect(page.getByText('升级服务后可查看 Worker 详情。')).toBeVisible();
+});
 
 test('offline supported Workers accept desired edits but label observed paths as historical', async ({ page }) => {
   const state = await installTools(page); state.detail = { ...reportedDetail(), observedAt: '2026-10-29T12:05:00Z' };
@@ -146,9 +148,7 @@ test('older report revisions and unchecked contexts cannot make all configuratio
 
 for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details share reported paths and show only native Copilot observations`, async ({ page }) => {
   const state = await installTools(page, { locale });
-  state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web'), toolObservation('copilot', 'herdr', {
-    actual: toolActual('copilot', 'herdr', { version: '1.0.099' }),
-  }), toolObservation('herdr', 'herdr')]));
+  state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web')]));
   await page.goto(`/workers/${targetWorker}`);
   const software = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
   await software.locator('summary').filter({ hasText: locale === 'zh-CN' ? '查看实际路径' : 'View actual paths' }).click();
@@ -173,10 +173,9 @@ for (const width of [1440, 390, 320]) test(`software summary and full details su
   await page.setViewportSize({ width, height: 900 });
   const state = await installTools(page);
   const longPath = `/opt/${'long-directory/'.repeat(20)}codex`;
-  const empty = (tool: 'codex' | 'copilot' | 'herdr', context: 'web' | 'herdr') => toolObservation(tool, context, { state: 'not_checked', actual: null });
   state.detail = reportedDetail(toolReport([
-    toolObservation('codex', 'web', { actual: toolActual('codex', 'web', { entryPath: longPath, executablePath: longPath }) }), empty('codex', 'herdr'),
-    toolObservation('copilot', 'web'), empty('copilot', 'herdr'), empty('herdr', 'herdr'),
+    toolObservation('codex', 'web', { actual: toolActual('codex', 'web', { entryPath: longPath, executablePath: longPath }) }),
+    toolObservation('copilot', 'web'),
   ]));
   await page.goto(`/workers/${targetWorker}`);
   const codex = page.locator('.worker-software-tool-paths[data-tool="codex"]');
@@ -213,7 +212,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const long = `/Users/测试 用户/${'long-installation-directory/'.repeat(14)}bin/codex`;
     const actual = toolActual('codex', 'web', { entryPath: long, executablePath: long, interpreterPath: null });
     const state = await installTools(page, { locale });
-    state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { actual }), toolObservation('copilot', 'web'), toolObservation('herdr', 'herdr')]));
+    state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { actual }), toolObservation('copilot', 'web')]));
     await page.goto(`/workers/${targetWorker}`);
     for (const tool of ['codex', 'copilot']) {
       const row = page.locator(`.worker-software-tool-paths[data-tool="${tool}"]`);
@@ -364,7 +363,7 @@ test('lost save responses reconcile the submitted path by GET without a second P
   await expect(facts(page)).not.toContainText('已应用');
 });
 
-test('legacy unknown saves adopt untouched remote paths before tool support returns', async ({ page }) => {
+test('unknown saves preserve paths and retain the draft on a later remote change', async ({ page }) => {
   const original = pathChoice('/opt/original/codex'), remote = pathChoice('/opt/remote/codex');
   const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { ...toolPaths, codex: original } }) });
   await openToolConfiguration(page); await expandTools(page);
@@ -376,12 +375,14 @@ test('legacy unknown saves adopt untouched remote paths before tool support retu
   await revalidate(); await expect(field(page)).toBeDisabled();
   state.mode = 'unknown'; await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
   await expect(page.getByText('保存结果尚未确认，当前草稿已保留。')).toBeVisible();
-  expect(state.writes).toHaveLength(1); expect(state.writes[0]!.value).not.toHaveProperty('toolPaths');
+  expect(state.writes).toHaveLength(1); expect(state.writes[0]!.value.toolPaths?.codex).toEqual(original);
   state.resource = observedConfiguration('3', { ...state.resource.desired!.value, toolPaths: { ...toolPaths, codex: remote } });
   state.unknownReads = false;
   await page.getByRole('button', { name: '核对保存结果' }).click();
+  await expect(page.getByText('云端配置已被其他页面修改。')).toBeVisible();
+  await expect(field(page)).toHaveValue(original.path);
+  await page.getByRole('button', { name: '载入最新配置' }).click();
   await expect(field(page)).toHaveValue(remote.path);
-  await expect(page.locator('.config-save-bar').getByRole('status')).toHaveText('没有修改');
   state.detail = reportedDetail(); state.mode = 'success';
   await revalidate(); await expect(field(page)).toBeEnabled();
   await page.locator('#config-recoveryLimit').fill('8'); await save(page).click();

@@ -81,8 +81,8 @@ it.each([
   const firstPath = path.join(directory, "private-old-tool"), nextPath = path.join(directory, "private-new-tool"), privateArgument = "private-native-argument";
   const desired = (changed: boolean): WorkerCloudDesired => ({ revision: changed ? "6" : "5", updatedAt: "2026-11-13T04:00:00Z", value: {
     maxConcurrent: 2, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false,
-    agentControlMode: "web", native: { agent: "codex", model: null, args: [privateArgument] }, projects: [],
-    toolPaths: { codex: { kind: "path", path: change === "tool path" && changed ? nextPath : firstPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } },
+    native: { agent: "codex", model: null, args: [privateArgument] }, projects: [],
+    toolPaths: { codex: { kind: "path", path: change === "tool path" && changed ? nextPath : firstPath }, copilot: { kind: "auto" } },
   } });
   const manager = await createWorkerConfigurationManager({ file, identity: { serverOrigin: "https://daynight.example", userId: "22222222-2222-4222-8222-222222222222", workerId: "33333333-3333-4333-8333-333333333333" },
     signal: new AbortController().signal, now: () => 1_000, applyNative: async () => {},

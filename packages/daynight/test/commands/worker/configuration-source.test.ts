@@ -40,7 +40,7 @@ const fixture = async (data: Record<string, unknown> = {}) => {
   return { directory, paths, source };
 };
 const response = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), {
-  status, headers: { "Content-Type": "application/json", "Daynight-User-ID": user.id, "Daynight-Worker-Configuration": "1" },
+  status, headers: { "Content-Type": "application/json", "Daynight-User-ID": user.id, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2" },
 });
 const cloudFetch = (desired: unknown) => vi.fn<typeof globalThis.fetch>()
   .mockResolvedValueOnce(response(user))
@@ -113,15 +113,15 @@ describe("Worker cloud configuration sources", () => {
     const f = await fixture({ worker: { toolPaths: { codex: path.join(path.parse(process.cwd()).root, "tools with spaces", "codex"), copilot: null } } });
     const local = parseWorkerLocalConfiguration(f.source, f.paths);
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
-    expect(seed.toolPaths).toEqual(local.toolPaths);
-    expect(seed.toolPaths).toMatchObject({ codex: { kind: "path" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+    expect(seed.toolPaths).toEqual({ codex: local.toolPaths.codex, copilot: local.toolPaths.copilot });
+    expect(seed.toolPaths).toMatchObject({ codex: { kind: "path" }, copilot: { kind: "auto" } });
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
   it.each([undefined, "web"])("imports Web without rewriting YAML: %s", async agentControlMode => {
     const f = await fixture({ worker: agentControlMode === undefined ? {} : { agentControlMode } });
     const seed = await parseWorkerCloudBootstrap(f.source, f.paths, async () => ({ id: project.id }), new AbortController().signal);
-    expect(seed.agentControlMode).toBe("web");
+    expect(seed).not.toHaveProperty("agentControlMode");
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 

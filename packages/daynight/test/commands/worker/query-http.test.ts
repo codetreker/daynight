@@ -18,7 +18,7 @@ const page = { observedAt, items: [summary], nextCursor: null };
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 const respond = (response: ServerResponse, value: unknown, status = 200) => {
-  response.writeHead(status, { "Content-Type": "application/json", "Daynight-User-ID": userId });
+  response.writeHead(status, { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Tool-Paths": "2" });
   response.end(JSON.stringify(value));
 };
 const fixture = async (handler: (request: IncomingMessage, response: ServerResponse) => void) => {
@@ -125,7 +125,7 @@ describe("remote worker commands over HTTP", () => {
   });
   it("prints the complete observed detail through the public show command", async () => {
     const probe = { state: "error", checkedAt: observedAt, code: "unavailable" };
-    const telemetry = { machine: summary.machine, platform: "macos", workingDirectory: "/ordinary", sampledAt: observedAt, os: probe, cpu: probe, memory: probe, disk: probe, versions: { daynight: "0.41.0", herdr: { state: "not_running", checkedAt: observedAt }, codex: { state: "not_installed", checkedAt: observedAt }, copilot: probe } };
+    const telemetry = { machine: summary.machine, platform: "macos", workingDirectory: "/ordinary", sampledAt: observedAt, os: probe, cpu: probe, memory: probe, disk: probe, versions: { daynight: "0.41.0", codex: { state: "not_installed", checkedAt: observedAt }, copilot: probe } };
     const detail = { observedAt, worker: { ...summary, telemetry, inventoryObservedAt: null, tasks: [] } };
     const requests: string[] = [];
     const current = await fixture((request, response) => { requests.push(request.url!); respond(response, detail); });
@@ -143,7 +143,7 @@ describe("remote worker commands over HTTP", () => {
     ] };
     const supported = { ...summary, taskObservationState: "observed", taskObservedAt: observedAt, activeTaskCount: 0 };
     const legacy = { ...supported, workerId: secondId };
-    const telemetry = { machine: summary.machine, platform: "macos", workingDirectory: "/ordinary", sampledAt: observedAt, os: probe, cpu: probe, memory: probe, disk: probe, versions: { daynight: "0.41.0", herdr: { state: "not_running", checkedAt: observedAt }, codex: { state: "not_installed", checkedAt: observedAt }, copilot: probe }, assistantHost };
+    const telemetry = { machine: summary.machine, platform: "macos", workingDirectory: "/ordinary", sampledAt: observedAt, os: probe, cpu: probe, memory: probe, disk: probe, versions: { daynight: "0.41.0", codex: { state: "not_installed", checkedAt: observedAt }, copilot: probe }, assistantHost };
     const detail = { observedAt, worker: { ...supported, telemetry, inventoryObservedAt: observedAt, tasks: [] } };
     const requests: string[] = [];
     const authorizations: (string | undefined)[] = [];

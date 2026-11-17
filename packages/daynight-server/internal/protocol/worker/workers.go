@@ -36,7 +36,6 @@ type WorkerDisk struct {
 
 type WorkerVersions struct {
 	Daynight string              `json:"daynight"`
-	Herdr    WorkerProbe[string] `json:"herdr"`
 	Codex    WorkerProbe[string] `json:"codex"`
 	Copilot  WorkerProbe[string] `json:"copilot"`
 }

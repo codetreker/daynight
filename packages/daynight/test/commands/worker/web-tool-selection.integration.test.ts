@@ -96,7 +96,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   const compiled = await import(pathToFileURL(path.join(dist, "commands/worker/tool-selection-runtime.js")).href) as typeof import("../../../src/commands/worker/tool-selection-runtime.js");
   const tools = compiled.createWorkerToolSelectionRuntime({ workerDirectory: path.join(state, "worker"), cwd: repository, environment: { ...process.env },
     localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } }, readActiveSelections: () => [] });
-  tools.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } } });
+  tools.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") } } });
   const selectToolLaunch = vi.fn(tools.selectToolLaunch);
   const service = createServer();
   const relay = new WebSocketServer({ server: service });
@@ -348,7 +348,7 @@ test("restores the original Web claim with A after target B and refuses missing 
   await f.shutdown(identityA);
 
   vi.stubEnv("PATH", path.join(f.home, "path-B") + path.delimiter + (process.env.PATH ?? ""));
-  f.tools.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") }, herdr: { kind: "auto" } } });
+  f.tools.setTargets({ source: "cloud", revision: "2", choices: { codex: { kind: "path", path: f.toolEntries.B }, copilot: { kind: "path", path: path.join(f.home, "missing-copilot") } } });
   const identityB = await f.addTask("B"), next = await f.ready(identityB, signal), b = next.configuration!.toolLaunch!;
   expect(b.entryPath).toBe(f.toolEntries.B); expect(b.selectionKey).not.toBe(a.selectionKey);
   expect(next.configuration!.toolObservation).toMatchObject({ version: "1.20.2" });

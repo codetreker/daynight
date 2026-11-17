@@ -20,7 +20,7 @@ export type WorkersMessages = {
   readonly readError: string;
   readonly cacheStorageError: string;
   readonly networkError: string;
-  readonly protocolError: string;
+  readonly protocolError: string; readonly upgradeService: string;
   readonly refreshFailed: string;
   readonly retainedState: string;
   readonly lastSynchronized: string;

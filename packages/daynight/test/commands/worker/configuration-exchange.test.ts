@@ -11,7 +11,7 @@ import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-so
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 const target = (revision = "1"): WorkerCloudDesired => ({ revision, updatedAt: workerTelemetryTime, value: {
-  agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } },
+  toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } },
   maxConcurrent: 1, pollIntervalMs: 30_000, recoveryLimit: 2, preferPlatformSpecificTasks: false,
   native: { agent: "codex", model: null, args: [] }, projects: [],
 } });
@@ -89,7 +89,7 @@ const fixture = () => {
     receive: vi.fn(async (received: ReceivedWorkerDesired | null, revision = "0") => { const desired = received?.known ?? null; authorityRead = true; state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
     report: vi.fn((bootstrap: WorkerCloudReport["bootstrap"] = null): WorkerCloudReport => {
       order.push("capture");
-      const report: WorkerCloudReport = { controlModeBootstrap: "web", toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, ...(state.desired === null ? { bootstrap, observation: null } : { bootstrap: null, observation: { baseRevision: state.observationRevision, desiredRevision: state.desired.revision, items: [] } }) };
+      const report: WorkerCloudReport = { toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, ...(state.desired === null ? { bootstrap, observation: null } : { bootstrap: null, observation: { baseRevision: state.observationRevision, desiredRevision: state.desired.revision, items: [] } }) };
       captures.set(report, state.generation);
       contexts.set(report, { reportId: `report-${++nextReportId}`, generation: state.generation, baseRevision: state.observationRevision, recordIds: [], failures: [], items: [] });
       return report;

@@ -30,7 +30,7 @@ const install = async (page: Page) => {
     if (path === `/api/v1/me/workers/${target}/configuration`) {
       if (state.unavailable) return missing();
       if (request.method() === 'PUT') state.resource = configurationResource(String(BigInt(state.resource.desired!.revision) + 1n), request.postDataJSON().value as WorkerConfigurationValue);
-      return send(state.resource, 200, { 'Daynight-Worker-Configuration': '1' });
+      return send(state.resource, 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     }
     return missing();
   });
@@ -236,7 +236,7 @@ test('320px keyboard save preserves unknown configuration and isolates the next 
       const revision = revisions.get(current)!;
       const currentValue = current === WORKER_USER ? value : bobValue;
       const body = `{"desired":{"revision":"${revision}","updatedAt":"${WORKER_TIME}","value":${currentValue}},"observationRevision":"1","observation":{"baseRevision":"0","desiredRevision":"${revision}","reportedAt":"${WORKER_TIME}","items":[{"key":{"kind":"futureSetting"},"targetRevision":"${revision}","appliedValue":true,"state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}}`;
-      return route.fulfill({ body, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': current, 'Daynight-Worker-Configuration': '1' } });
+      return route.fulfill({ body, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': current, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' } });
     }
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });

@@ -126,8 +126,6 @@ func storedModeAndPaths(fields map[string]json.RawMessage, value *model.WorkerCo
 			value.AgentControlMode = nil
 		}
 		value.PreserveAgentControlMode = false
-	} else if value.AgentControlMode == nil && len(mode) != 0 && !configurationNull(mode) {
-		return invalidInput("An adopted agent control mode cannot be cleared.")
 	}
 	paths := fields["toolPaths"]
 	if value.PreserveToolPaths {
@@ -144,12 +142,12 @@ func storedModeAndPaths(fields map[string]json.RawMessage, value *model.WorkerCo
 	} else if len(paths) != 0 && !configurationNull(paths) {
 		var slots map[string]json.RawMessage
 		if json.Unmarshal(paths, &slots) != nil || slots == nil {
-			if value.ToolPaths.Codex == nil || value.ToolPaths.Copilot == nil || value.ToolPaths.Herdr == nil {
+			if value.ToolPaths.Codex == nil || value.ToolPaths.Copilot == nil {
 				return invalidInput("Stored tool paths are invalid.")
 			}
 			return nil
 		}
-		for tool, choice := range map[string]*model.ToolPathChoice{"codex": value.ToolPaths.Codex, "copilot": value.ToolPaths.Copilot, "herdr": value.ToolPaths.Herdr} {
+		for tool, choice := range map[string]*model.ToolPathChoice{"codex": value.ToolPaths.Codex, "copilot": value.ToolPaths.Copilot} {
 			if raw := slots[tool]; choice == nil && len(raw) != 0 && !configurationNull(raw) {
 				return invalidInput("Adopted tool paths cannot be cleared.")
 			}
@@ -182,6 +180,19 @@ func adoptRawConfiguration(desired *model.WorkerDesiredConfiguration, input mode
 	if err != nil {
 		return nil, false, err
 	}
+	// Unsupported stored targets require explicit correction, never bootstrap conversion.
+	if _, exists := fields["agentControlMode"]; exists {
+		return nil, false, nil
+	}
+	var existingPaths map[string]json.RawMessage
+	if raw := fields["toolPaths"]; input.ToolPathsBootstrap != nil && len(raw) != 0 && !configurationNull(raw) {
+		if json.Unmarshal(raw, &existingPaths) != nil || existingPaths == nil {
+			return nil, false, invalidInput("Stored tool paths are invalid.")
+		}
+		if _, exists := existingPaths["herdr"]; exists {
+			return nil, false, nil
+		}
+	}
 	changed := false
 	if input.ControlModeBootstrap != nil && (len(fields["agentControlMode"]) == 0 || configurationNull(fields["agentControlMode"])) {
 		fields["agentControlMode"], err = json.Marshal(input.ControlModeBootstrap)
@@ -193,12 +204,12 @@ func adoptRawConfiguration(desired *model.WorkerDesiredConfiguration, input mode
 	if input.ToolPathsBootstrap != nil {
 		var slots map[string]json.RawMessage
 		if len(fields["toolPaths"]) == 0 || configurationNull(fields["toolPaths"]) {
-			slots = map[string]json.RawMessage{"codex": json.RawMessage("null"), "copilot": json.RawMessage("null"), "herdr": json.RawMessage("null")}
+			slots = map[string]json.RawMessage{"codex": json.RawMessage("null"), "copilot": json.RawMessage("null")}
 		} else if err := json.Unmarshal(fields["toolPaths"], &slots); err != nil || slots == nil {
 			return nil, false, invalidInput("Stored tool paths are invalid.")
 		}
 		pathsChanged := false
-		for tool, choice := range map[string]*model.ToolPathChoice{"codex": input.ToolPathsBootstrap.Codex, "copilot": input.ToolPathsBootstrap.Copilot, "herdr": input.ToolPathsBootstrap.Herdr} {
+		for tool, choice := range map[string]*model.ToolPathChoice{"codex": input.ToolPathsBootstrap.Codex, "copilot": input.ToolPathsBootstrap.Copilot} {
 			if choice != nil && (len(slots[tool]) == 0 || configurationNull(slots[tool])) {
 				slots[tool], err = json.Marshal(choice)
 				if err != nil {

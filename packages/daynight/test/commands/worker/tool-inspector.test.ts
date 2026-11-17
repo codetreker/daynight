@@ -74,7 +74,7 @@ test("manager recovers the original Copilot probe owner before admitting a fresh
     .mockResolvedValue({ run: async () => ({ stdout: '{"ok":true,"version":"1.0.106"}' }), close: async () => {} });
   const inspector = createWorkerToolInspector({ cwd: f.root, environment: process.env });
   const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: { ...inspector, cacheToken: inspector.revision } });
-  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "path", path: f.launch.entryPath }, herdr: { kind: "auto" } } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "path", path: f.launch.entryPath } } });
   let release: (() => void) | undefined, short: ReturnType<typeof operation> | undefined;
   try {
     await expect(manager.prepare("copilot", "web", op)).rejects.toMatchObject({ code: "cleanup_unknown" });
@@ -111,7 +111,7 @@ test("manager bounds reconciliation queued behind an original live probe without
   const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: {
     ...inspector, cacheToken: inspector.revision, reconcile: (launch, parent) => { queued(); return inspector.reconcile(launch, parent); },
   } });
-  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "path", path: f.launch.entryPath }, herdr: { kind: "auto" } } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "path", path: f.launch.entryPath } } });
   const original = inspector.check(f.launch, op); let short: ReturnType<typeof operation> | undefined;
   try {
     await started; vi.useFakeTimers(); short = createOperation({ limits: { totalMs: 100 } });
@@ -149,7 +149,7 @@ test("an upgraded candidate waits for failed discovery cleanup from another scop
   controlled.create.mockResolvedValue({ run: async () => ({ stdout: '{"ok":true,"observation":{"model":null,"models":[{"id":"model","efforts":null}]}}' }), close: async () => { throw cleanup; } });
   const inspector = createWorkerToolInspector({ cwd: f.root, environment: process.env });
   const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: { ...inspector, cacheToken: inspector.revision } });
-  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.launch.entryPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.launch.entryPath }, copilot: { kind: "auto" } } });
   try {
     const old = await manager.selectForNewExecution("codex", "web", op);
     await expect(inspector.discover({ native: { agent: "codex", model: null, args: [] }, cwd: other.root, environment: { ...process.env, CODEX_HOME: other.root }, mode: "web", toolLaunch: old }, op)).rejects.toMatchObject({ code: "cleanup_unknown" });
@@ -174,7 +174,7 @@ test("an upgraded candidate joins an in-flight discovery in another scope", asyn
   const inspector = createWorkerToolInspector({ cwd: f.root, environment: process.env });
   const manager = new ToolSelectionManager({ cwd: f.root, environment: process.env, readActiveSelections: () => [], probe: { ...inspector, cacheToken: inspector.revision,
     reconcile: (launch, operation) => { const result = inspector.reconcile(launch, operation); if (armed && launch.selectionKey === f.launch.selectionKey) signalled(); return result; } } });
-  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.launch.entryPath }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+  manager.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: f.launch.entryPath }, copilot: { kind: "auto" } } });
   let discovery: Promise<unknown> | undefined, queuedDiscovery: Promise<unknown> | undefined;
   try {
     const old = await manager.selectForNewExecution("codex", "web", op);

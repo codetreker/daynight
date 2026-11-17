@@ -28,14 +28,16 @@ const summary = (workerId = firstWorker, name = 'Alice worker') => ({ workerId, 
 const list = (name = 'Alice worker', viewer = principal) => json({ observedAt, items: [summary(firstWorker, name)], nextCursor: null }, 200, viewer);
 const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principal, observation = { observedAt, reportedAt, cpu: 34 }) => {
   const worker = summary(workerId, name);
-  return json({ observedAt: observation.observedAt, worker: { ...worker, lastReportedAt: observation.reportedAt, inventoryObservedAt: null, tasks: [], telemetry: {
+  const response = json({ observedAt: observation.observedAt, worker: { ...worker, lastReportedAt: observation.reportedAt, inventoryObservedAt: null, tasks: [], telemetry: {
     machine: worker.machine, platform: worker.platform, workingDirectory: '/srv/workers', sampledAt: observedAt,
     os: { state: 'ok', checkedAt: observedAt, value: { type: 'Linux', release: '6.8.0', version: '#1', arch: 'x64' } },
     cpu: { state: 'ok', checkedAt: observation.observedAt, value: { model: 'Example CPU', logicalProcessors: 8, usagePercent: observation.cpu } },
     memory: { state: 'ok', checkedAt: observedAt, value: { usedBytes: 4 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 } },
     disk: { state: 'ok', checkedAt: observedAt, value: { availableBytes: 32 * 1024 ** 3, totalBytes: 64 * 1024 ** 3 } },
-    versions: { daynight: '0.27.1', herdr: { state: 'not_running', checkedAt: observedAt }, codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
+    versions: { daynight: '0.27.1', codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
   } } }, 200, viewer);
+  response.headers.set('Daynight-Worker-Tool-Paths', '2');
+  return response;
 };
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
 const monitoringDetail = (viewer = principal) => json({ observedAt, state: 'available', revision: firstWorker, runId: secondWorker, sequence: '1', receivedAt: observedAt, expiresAt: '2026-10-29T12:00:00Z', detailCoverage: 'complete', permissionProjection: 'current', data: {

@@ -43,12 +43,17 @@ func parseToolPathChoice(raw json.RawMessage) (*model.ToolPathChoice, error) {
 
 func parseToolPaths(raw json.RawMessage, allowNull bool) (model.WorkerToolPaths, error) {
 	var value model.WorkerToolPaths
-	fields, err := configurationObject(raw, "toolPaths", false, "codex", "copilot", "herdr")
+	fields, err := configurationObject(raw, "toolPaths", true, "codex", "copilot", "herdr")
 	if err != nil {
 		return value, err
 	}
+	for _, tool := range []string{"codex", "copilot"} {
+		if _, exists := fields[tool]; !exists {
+			return value, invalidInput("toolPaths." + tool + " is required.")
+		}
+	}
 	for tool, target := range map[string]**model.ToolPathChoice{"codex": &value.Codex, "copilot": &value.Copilot, "herdr": &value.Herdr} {
-		if allowNull && configurationNull(fields[tool]) {
+		if tool == "herdr" && len(fields[tool]) == 0 || allowNull && configurationNull(fields[tool]) {
 			continue
 		}
 		*target, err = parseToolPathChoice(fields[tool])

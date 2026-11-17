@@ -21,7 +21,7 @@ const telemetry: WorkerTelemetry = {
   cpu: { state: "ok", checkedAt: timestamp, value: { model: "CPU", logicalProcessors: 4, usagePercent: 12 } },
   memory: { state: "ok", checkedAt: timestamp, value: { usedBytes: 100, totalBytes: 200 } },
   disk: { state: "ok", checkedAt: timestamp, value: { availableBytes: 300, totalBytes: 400 } },
-  versions: { daynight: "0.26.1", herdr: { state: "not_running", checkedAt: timestamp }, codex: { state: "not_installed", checkedAt: timestamp }, copilot: { state: "not_installed", checkedAt: timestamp } },
+  versions: { daynight: "0.26.1", codex: { state: "not_installed", checkedAt: timestamp }, copilot: { state: "not_installed", checkedAt: timestamp } },
 };
 const deferred = <T>() => {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;

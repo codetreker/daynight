@@ -30,7 +30,7 @@ export const configurationHasUnfinishedRemoval = (cache: WorkerConfigurationCach
 export const configurationToolTargets = (cache: WorkerConfigurationCache, local: ToolPaths): WorkerConfigurationToolTargets | null => {
   const desired = configurationDesired(cache), choices = desired?.value.toolPaths;
   if (choices === undefined) return { source: "local", revision: null, choices: local };
-  return { source: "cloud", revision: cache.authority.applicationRevision, choices: { codex: choices.codex, copilot: choices.copilot, herdr: choices.herdr } };
+  return { source: "cloud", revision: cache.authority.applicationRevision, choices: { codex: choices.codex, copilot: choices.copilot } };
 };
 export const configurationProjects = (cache: WorkerConfigurationCache): readonly WorkerCloudProject[] | null =>
   cache.authority.pendingApplication ? null : applicableConfigurationDesired(configurationDesired(cache))?.value.projects ?? null;
@@ -153,7 +153,6 @@ export const transitionConfigurationDesired = (
       backoffStep: 0, failureId: null, started: false,
       actualSource: reset ? null : previous?.actualSource ?? null, blockedByRemovalId: blocker?.recordId ?? null });
   };
-  add({ kind: "agentControlMode" }, true);
   for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"] as const) add({ kind });
   if (desired.value.archiveSessions !== undefined) add({ kind: "archiveSessions" });
   if (desired.value.enableSudoCleanup !== undefined) add({ kind: "enableSudoCleanup" });
@@ -205,10 +204,9 @@ export const configurationSnapshot = (
   const projects = selectedProjects !== null ? selectedProjects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
     ready: current.get(configurationKey({ kind: "projectPreparation", projectId: project.projectId }))?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !unfinishedRemovals.has(project.projectId) })) : [];
   const globalNative = native({ kind: "native" });
-  const mode = current.get(configurationKey({ kind: "agentControlMode" }));
   return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, desiredRevision: configurationDesiredRevision(cache), selectedProjects, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null, retainedArchiveSessions,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: synchronized ? configurationToolTargets(cache, localTools) : null, effective: {
-      agentControlMode: synchronized && mode?.value.state === "applied" && mode.value.appliedValue === "web" && mode.actualSource?.kind === "observed" ? "web" : null,
+      agentControlMode: synchronized && desired !== null ? "web" : null,
       maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,
       archiveSessions: synchronized && desired !== null ? retainedArchiveSessions : null,
       native: globalNative, projects,
@@ -231,14 +229,11 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
   const bootstrapSource = options.bootstrap === null ? null : (({ enableSudoCleanup: _sudo, ...rest }) => rest)(options.bootstrap);
   const bootstrap = cache.authority.desiredJson === null && bootstrapSource !== null ? parseWorkerCloudValue(bootstrapSource, true, configurationCapabilities(bootstrapSource)) : null;
   const cloudTools = options.synchronized && !cache.authority.pendingApplication && applicableConfigurationDesired(desired) !== null ? desired?.value.toolPaths : undefined;
-  // The current wire requires all three choices, while the server adopts each null
-  // slot independently. Only send a cloud candidate if its Herdr choice is real.
   const toolPathsBootstrap = bootstrap?.toolPaths !== undefined ? parseToolPathsBootstrap(bootstrap.toolPaths)
-    : cloudTools?.herdr != null && (cloudTools.codex === null || cloudTools.copilot === null)
-      ? { codex: cloudTools.codex ?? options.localTools.codex, copilot: cloudTools.copilot ?? options.localTools.copilot, herdr: cloudTools.herdr }
+    : cloudTools !== undefined && (cloudTools.codex === null || cloudTools.copilot === null)
+      ? { codex: cloudTools.codex ?? options.localTools.codex, copilot: cloudTools.copilot ?? options.localTools.copilot }
       : null;
   const base: WorkerCloudReport = {
-    controlModeBootstrap: cache.authority.desiredJson !== null && desired === null ? null : "web",
     toolPathsBootstrap,
     bootstrap,
     observation: options.synchronized && !cache.authority.pendingApplication && applicableConfigurationDesired(desired) !== null ? { baseRevision: cache.authority.observationRevision, desiredRevision: desired!.revision, items: [] } : null,
@@ -249,6 +244,7 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
   if (base.observation === null) return freezeConfiguration({ reportId: randomUUID(), report: base, generation: cache.authority.generation, baseRevision: cache.authority.observationRevision, recordIds: [], failures: [], nextCursor: cache.projectionCursor });
   const pendingFailures = latestFailures(cache);
   const candidates = cache.currentItems.flatMap(item => {
+    if (item.value.key.kind === "agentControlMode") return [];
     const value = publicItem(item, pendingFailures);
     parseWorkerCloudItem(value, false, configurationCapabilities(desired!.value));
     try { parseWorkerCloudItem(value, true, configurationCapabilities(desired!.value)); }

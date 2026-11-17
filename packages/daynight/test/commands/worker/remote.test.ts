@@ -35,6 +35,7 @@ const listen = async (handler: (request: IncomingMessage, response: ServerRespon
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     response.setHeader("Daynight-User-ID", userId);
+    if (request.headers["daynight-worker-tool-paths"] === "2") response.setHeader("Daynight-Worker-Tool-Paths", "2");
     if (request.url === "/api/v1/me" && options.identity !== false) {
       respond(response, { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
       return;
@@ -93,9 +94,9 @@ describe("worker remote API", () => {
 
   it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
     const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
-    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const value = { toolPaths: { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } }, maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
     const desired = { revision: "1", updatedAt: time, value };
-    const configuration = { bootstrap: value, observation: null };
+    const configuration = { bootstrap: value, observation: null, toolPathsBootstrap: null };
     const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
     const serverUrl = await listen((request, response, body) => {
       const capability = request.headers["daynight-worker-configuration"] as string | undefined;
@@ -117,40 +118,22 @@ describe("worker remote API", () => {
     } finally { operation.dispose(); }
   });
 
-  it("enables tool bootstrap only after authenticated configuration rediscovery on a mode-capable server", async () => {
-    const requests: { method: string | undefined; url: string | undefined; authorization: string | undefined; mode: string | string[] | undefined; tools: string | string[] | undefined; body: unknown }[] = [];
-    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, agentControlMode: "web" as const, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
-    const tools = { codex: { kind: "path" as const, path: "/opt/codex" }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
-    const configuration = { bootstrap: null, observation: null, controlModeBootstrap: "web" as const, toolPathsBootstrap: tools };
-    let upgraded = false;
+  it("uses v2 without a mode header for configuration and reports", async () => {
+    const requests: { mode: string | string[] | undefined; tools: string | string[] | undefined; body: unknown }[] = [];
+    const tools = { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } };
+    const value = { toolPaths: tools, maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const desired = { revision: "1", updatedAt: time, value };
     const serverUrl = await listen((request, response, body) => {
-      requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization, mode: request.headers["daynight-worker-control-mode"], tools: request.headers["daynight-worker-tool-paths"], body });
-      const selected = upgraded && request.headers["daynight-worker-tool-paths"] === "1";
+      requests.push({ mode: request.headers["daynight-worker-control-mode"], tools: request.headers["daynight-worker-tool-paths"], body });
       response.setHeader("Daynight-Worker-Configuration", "1");
-      response.setHeader("Daynight-Worker-Control-Mode", "1");
-      if (selected) response.setHeader("Daynight-Worker-Tool-Paths", "1");
-      const desired = { revision: "1", updatedAt: time, value: { ...value, ...(selected ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
-      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null }
-        : { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false } });
+      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null } : { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired, observationRevision: "0", observationAccepted: false } });
     });
-    const token = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", remote = createWorkerRemote({ serverUrl, serverToken: token });
-    await remote.currentUserId(signal());
-    const operation = operations.createOperation();
+    const remote = await verifiedRemote(serverUrl), operation = operations.createOperation();
     try {
       await remote.configuration(workerId, signal());
-      upgraded = true;
-      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
-      await remote.configuration(workerId, operation.signal, operation);
-      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation);
-      expect(requests.map(({ method, mode, tools }) => ({ method, mode, tools }))).toEqual([
-        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: undefined },
-        { method: "GET", mode: "1", tools: "1" }, { method: "POST", mode: "1", tools: "1" },
-      ]);
-      expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
-      expect(requests.map(({ url }) => url)).toEqual(["configuration", "report", "configuration", "report"].map(suffix => `/api/v1/me/workers/${workerId}/${suffix}`));
-      expect(requests[1]!.body).toMatchObject({ configuration: { bootstrap: null, observation: null, controlModeBootstrap: "web" } });
-      expect(requests[1]!.body).not.toHaveProperty("configuration.toolPathsBootstrap");
-      expect(requests[3]!.body).toMatchObject({ configuration });
+      await remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, { bootstrap: null, observation: null, toolPathsBootstrap: tools }, operation);
+      expect(requests.map(({ mode, tools }) => ({ mode, tools }))).toEqual([{ mode: undefined, tools: "2" }, { mode: undefined, tools: "2" }]);
+      expect(requests[1]!.body).toMatchObject({ configuration: { bootstrap: null, observation: null, toolPathsBootstrap: tools } });
     } finally { operation.dispose(); }
   });
 

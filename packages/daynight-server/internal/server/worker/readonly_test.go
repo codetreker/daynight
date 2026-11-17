@@ -84,6 +84,7 @@ func (f *readOnlyFixture) report(t *testing.T, worker, token string) {
 	raw, _ := json.Marshal(workerSnapshotReportBody())
 	r, _ := http.NewRequest("POST", f.server.URL+"/api/v1/me/workers/"+worker+"/report", strings.NewReader(string(raw)))
 	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set(workerToolPathsHeader, "2")
 	r.Header.Set("Authorization", "Bearer "+token)
 	response, err := http.DefaultClient.Do(r)
 	if err != nil {
@@ -144,6 +145,7 @@ func (f *readOnlyFixture) request(ctx context.Context, worker, token string, inp
 	raw, _ := json.Marshal(input)
 	r, _ := http.NewRequestWithContext(ctx, "POST", f.server.URL+"/api/v1/me/workers/"+worker+"/readonly/requests", strings.NewReader(string(raw)))
 	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set(workerToolPathsHeader, "2")
 	r.Header.Set("Authorization", "Bearer "+token)
 	return http.DefaultClient.Do(r)
 }

@@ -13,7 +13,7 @@ const valueSource = `{
     {"projectId":"${b}","nativeOverrides":{},"removedFuture":42}],
   "toolPaths":{"codex":{"kind":"path","path":"/old","futureChoice":7},"copilot":null,"herdr":{"kind":"auto"},"futureTool":{"kind":"later","n":9007199254740993}}
 }`;
-const known = { ...configurationValue(), agentControlMode: null, projects: [{ projectId: a, nativeOverrides: { agent: 'claude' as const } }, { projectId: b, nativeOverrides: {} }], toolPaths: { codex: { kind: 'path' as const, path: '/old' }, copilot: null, herdr: { kind: 'auto' as const } } };
+const known = { ...configurationValue(), projects: [{ projectId: a, nativeOverrides: { agent: 'claude' as const } }, { projectId: b, nativeOverrides: {} }], toolPaths: { codex: { kind: 'path' as const, path: '/old' }, copilot: null } };
 const document = () => decodeConfigurationDocument(`{"desired":{"revision":"9","value":${valueSource}}}`, () => configurationResource('9', known));
 
 describe('configuration source', () => {
@@ -44,16 +44,19 @@ describe('configuration source', () => {
     expect(body).not.toContain('"removedFuture"');
     expect(body).toContain('"futureTool":{"kind":"later","n":9007199254740993}');
     expect(body).toContain('"codex":{"kind":"auto","futureChoice":7}');
+    expect(body).not.toContain('"herdr"');
+    expect(body).not.toContain('"agentControlMode"');
     expect(body).not.toContain('"path":"/old"');
     expect(body).not.toContain('"agent":"claude"');
   });
 
-  it('omits unsupported extensions and constructs new entities without unknowns', () => {
+  it('removes unsupported legacy fields and constructs new entities without unknowns', () => {
     const baseline = configurationBaseline(document())!;
     const edited = { ...configurationValue(), projects: [{ projectId: b, nativeOverrides: {} }, { projectId: 'cccccccc-cccc-cccc-cccc-cccccccccccc', nativeOverrides: {} }] };
     const result = mergeConfigurationDraft(baseline, edited).valueSource;
     expect(result).not.toContain('"agentControlMode"');
-    expect(result).not.toContain('"toolPaths"');
+    expect(result).toContain('"toolPaths":{"codex":null,"copilot":null');
+    expect(result).not.toContain('"herdr"');
     expect(result).not.toContain('"futureProject"');
     expect(result).toContain('"removedFuture":42');
     expect(result).toContain('"projectId":"cccccccc-cccc-cccc-cccc-cccccccccccc","nativeOverrides":{}');

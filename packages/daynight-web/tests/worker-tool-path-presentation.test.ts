@@ -15,15 +15,10 @@ describe('tool path application evidence', () => {
     expect(toolPathApplicationState({ ...entry, actual: null }, desired, true)).toBe('pending');
   });
 
-  it('does not confirm the whole editable configuration while a hidden tool target is unresolved', () => {
-    const resource = toolPathConfiguration('1', { ...automaticToolPaths(), herdr: { kind: 'path', path: '/new/herdr' } });
-    const old = toolPathTelemetry();
-    expect(toolPathSummaryStates(resource, old, true)).toEqual(['applied', 'applied']);
-    expect(allToolPathsApplied(resource, old, true)).toBe(false);
-    const choice = resource.desired!.value.toolPaths!.herdr!;
-    const applied = toolPathObservation('herdr', 'herdr', { target: choice, actual: toolPathActual('herdr', { selection: choice }) });
-    expect(allToolPathsApplied(resource, toolPathTelemetry([toolPathObservation(), toolPathObservation('copilot'), applied]), true)).toBe(true);
-    expect(allToolPathsApplied(resource, toolPathTelemetry([toolPathObservation(), toolPathObservation('copilot'), { ...applied, state: 'error' }]), true)).toBe(false);
+  it('requires both editable tool observations before confirming application', () => {
+    const resource = toolPathConfiguration();
+    expect(allToolPathsApplied(resource, toolPathTelemetry(), true)).toBe(true);
+    expect(allToolPathsApplied(resource, toolPathTelemetry([toolPathObservation()]), true)).toBe(false);
   });
 
   it('does not present offline, stale, unavailable or unchecked observations as current application', () => {
@@ -40,10 +35,9 @@ describe('tool path application evidence', () => {
     const failing = toolPathObservation('copilot', 'web', { state: 'error', error: { code: 'not_found', occurredAt: '2026-10-25T10:00:00Z' } });
     expect(toolPathSummaryStates(resource, toolPathTelemetry(), true)).toEqual(['applied', 'applied']);
     expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation()]), true)).toEqual(['applied', 'not_checked']);
-    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation(), failing, toolPathObservation('herdr')]), true)).not.toContain('error');
+    expect(toolPathSummaryStates(resource, toolPathTelemetry([toolPathObservation(), failing]), true)).not.toContain('error');
     expect(toolPathSummaryStates({ ...resource, desired: { ...resource.desired!, value: { ...resource.desired!.value, native: { agent: 'copilot', model: null, args: [] } } } }, toolPathTelemetry([failing]), true)).toContain('error');
     expect(toolPathSummaryStates(resource, undefined, true)).toEqual(['not_checked']);
-    expect(toolPathSummaryStates({ ...resource, desired: { ...resource.desired!, value: { ...resource.desired!.value, agentControlMode: 'herdr' } } }, toolPathTelemetry(), true)).toEqual(['applied', 'applied']);
   });
 });
 
@@ -62,6 +56,5 @@ describe('software summary entries', () => {
     expect(toolSoftwareEntries(toolPathTelemetry([empty, web, toolPathObservation('copilot')]), 'codex')).toEqual([web]);
     for (const entry of informative) expect(toolSoftwareEntries(toolPathTelemetry([entry]), 'codex')).toEqual([entry]);
     expect(toolSoftwareEntries(toolPathTelemetry([empty]), 'codex')).toEqual([]);
-    expect(toolSoftwareEntries(toolPathTelemetry([toolPathObservation('codex', 'herdr')]), 'codex')).toEqual([]);
   });
 });

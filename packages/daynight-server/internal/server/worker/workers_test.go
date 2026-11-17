@@ -104,6 +104,7 @@ func projectRequest(handler http.Handler, method, path, body string) *httptest.R
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	authorizeResourceRequest(handler, request)
 	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	request.Header.Set("Daynight-Worker-Tool-Paths", "2")
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -491,6 +492,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(workerToolPathsHeader, "2")
 		request.Header.Set("X-Request-ID", "project-test")
 		if actor != nil {
 			f.handler.authenticate = true
@@ -672,7 +674,6 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	}
 	second := "d4444444-4444-4444-8444-444444444444"
 	secondBody := workerSnapshotReportBody()
-	secondBody["versions"].(map[string]any)["herdr"] = map[string]any{"state": "not_running", "checkedAt": "2026-10-29T00:00:00Z"}
 	secondSnapshot := model.WorkerSnapshot{UserID: handler.principal.UserID, WorkerID: second, CreatedAt: f.now, LastReportedAt: f.now, Telemetry: workerHTTPTelemetry(t, secondBody), TaskSnapshot: model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &f.now, InventoryObservedAt: &inventoryAt, Items: []model.WorkerObservedTask{}}}
 	f.report(t, second, secondBody, nil, []model.WorkerObservedTask{}, secondSnapshot)
 	count := 1
