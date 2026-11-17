@@ -163,7 +163,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     expect((await lstat(binding.worktreePath)).isDirectory()).toBe(true);
     return binding;
   }), prepareRepository: unexpected, findWorktree: unexpected, removeWorktree: unexpected, dispose: unexpected } as unknown as WorkerGitManager;
-  const buildPrompt = vi.fn((task: LocalTask) => `original assignment ${tasks.get(task.claimId)!.tool}`);
+  const buildPrompt = vi.fn((task: LocalTask) => `${task.resources.nativeSession === null ? "original" : "resumed"} assignment ${tasks.get(task.claimId)!.tool}`);
   const leaseOwners: ReturnType<typeof createControllerJobLeases>[] = [];
   const observerJobs = new Map<string, ControllerJobLease>();
   const observerFor = (proof: ProcessProof) => proof.jobObjectName === undefined ? undefined : observerJobs.get(proof.jobObjectName);
@@ -283,12 +283,13 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     store.bindWorktree(identity, binding, Date.now());
     return identity;
   };
-  const ready = async (identity: ClaimIdentity, signal: AbortSignal) => {
+  const ready = async (identity: ClaimIdentity, signal: AbortSignal, requireResumeAssignment = false) => {
     const deadline = Date.now() + 30_000;
     for (;;) {
       await execution.backend.advance(current(identity), signal);
       const saved = journal(identity);
-      if (saved?.lifecycle === "ready" && saved.initialInputState === "confirmed") {
+      const resumeInput = requireResumeAssignment && (await requests()).some(request => request.method === "turn/start" && request.fixtureTool === tasks.get(identity.claimId)!.tool && (request.params?.input as { text?: string }[] | undefined)?.some(part => part.text === `resumed assignment ${tasks.get(identity.claimId)!.tool}`));
+      if (saved?.lifecycle === "ready" && saved.initialInputState === "confirmed" && (!requireResumeAssignment || resumeInput)) {
         expect(saved.nativeSessionId).toBe(nativeIds[tasks.get(identity.claimId)!.tool]); return current(identity);
       }
       if (Date.now() >= deadline) throw new Error("Original Web generation did not become ready with its confirmed initial input.");
@@ -335,7 +336,7 @@ test("correlates native invocations when a PID is reused", () => {
   expect(() => assertNativeInvocation(requestA, [...receipts, receiptA], expectedA)).toThrow();
 });
 
-test("restores the original Web claim with A after target B and refuses missing A without replacing its native Session or replaying its prompt", async () => {
+test("restores the original Web claim with A after target B and refuses missing A without replacing its native Session or replaying its initial input", async () => {
   const f = await fixture(), signal = AbortSignal.timeout(150_000);
   const identityA = await f.addTask("A"), original = await f.ready(identityA, signal), initial = original.webExecution!;
   const ticketA = await readLaunchTicket(f.home, initial.launchId), ticketBytes = await readFile(initial.ticketPath!, "utf8"), a = original.configuration!.toolLaunch!;
@@ -358,7 +359,7 @@ test("restores the original Web claim with A after target B and refuses missing 
   expect(f.current(identityA)).toMatchObject({ ...identityA, configuration: original.configuration, cleanup: { kind: "shutdown" }, resources: { nativeSession: { sessionId: f.nativeIds.A } } });
   expect(f.tools.manager.currentSelection("codex", "web")!.selectionKey).toBe(b.selectionKey);
   f.store.clearShutdown(identityA, Date.now());
-  const resumed = await f.ready(identityA, signal), resumedExecution = resumed.webExecution!;
+  const resumed = await f.ready(identityA, signal, true), resumedExecution = resumed.webExecution!;
   expect(resumed).toMatchObject({ ...identityA, configuration: original.configuration, resources: { nativeSession: original.resources.nativeSession }, recovery: { count: 0, pauseReason: null, retryAuthorized: false } });
   expect(resumedExecution).toMatchObject({ executionId: initial.executionId, sessionId: initial.sessionId, executionGeneration: "2", initialOperationId: initial.initialOperationId, initialPrompt: initial.initialPrompt, initialInputState: "confirmed" });
   const resumedTicket = await readLaunchTicket(f.home, resumedExecution.launchId);
@@ -368,7 +369,15 @@ test("restores the original Web claim with A after target B and refuses missing 
   expect((await f.requests()).filter(request => request.method === "thread/resume")).toMatchObject([{ fixtureTool: "A", params: { threadId: f.nativeIds.A } }]);
   const journalPath = path.join(controllerExecutionDirectory(f.home, initial.executionId), "journal.sqlite");
   expect(readControllerOperation(journalPath, initial.initialOperationId)).toMatchObject({ state: "confirmed", kind: "initial" });
-  expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(1);
+  const aInputs = (await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A");
+  expect(aInputs).toMatchObject([
+    { params: { clientUserMessageId: initial.initialOperationId, input: [{ type: "text", text: "original assignment A" }] } },
+    { params: { threadId: f.nativeIds.A, input: [{ type: "text", text: "resumed assignment A" }] } },
+  ]);
+  expect(aInputs).toHaveLength(2);
+  const resumeOperationId = aInputs[1]!.params!.clientUserMessageId as string;
+  expect(resumeOperationId).not.toBe(initial.initialOperationId);
+  expect(readControllerOperation(journalPath, resumeOperationId)).toMatchObject({ kind: "worker_input", executionGeneration: "2", state: "confirmed" });
   await f.shutdown(identityA);
 
   const beforeRemoval = await f.receipts();
@@ -379,8 +388,8 @@ test("restores the original Web claim with A after target B and refuses missing 
   const refused = f.journal(identityA)!; await stopped(refused.controllerProcess!, refused.nativeProcesses, f.observerFor(refused.controllerProcess!));
   expect(f.current(identityA)).toMatchObject({ ...identityA, configuration: original.configuration, resources: { nativeSession: { sessionId: f.nativeIds.A } }, webExecution: { executionId: initial.executionId, sessionId: initial.sessionId, executionGeneration: "3", initialOperationId: initial.initialOperationId, initialPrompt: initial.initialPrompt } });
   expect(await f.receipts()).toEqual(beforeRemoval);
-  expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(1);
-  expect(f.register).toHaveBeenCalledTimes(2); expect(f.selectToolLaunch).toHaveBeenCalledTimes(2); expect(f.buildPrompt).toHaveBeenCalledTimes(2);
+  expect((await f.requests()).filter(request => request.method === "turn/start" && request.fixtureTool === "A")).toHaveLength(2);
+  expect(f.register).toHaveBeenCalledTimes(2); expect(f.selectToolLaunch).toHaveBeenCalledTimes(2); expect(f.buildPrompt).toHaveBeenCalledTimes(3);
   const node = await realpath(process.execPath);
   for (const receipt of beforeRemoval) {
     expect(await realpath(receipt.execPath)).toBe(node);

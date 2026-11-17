@@ -2796,7 +2796,7 @@ completion and instructs the agent not to ask again about procedural authorizati
 such as whether merging the PR is authorized. Task scope, independent pauses or
 revocations, and CI, review and merge gates still apply.
 
-Startup, macOS recovery or continuation, and periodic ping prompts share an
+Startup, recovery or continuation, and periodic ping prompts share an
 autonomous execution policy. The agent checks the task, repository constraints
 and evidence, adjusts its approach, steps and task decisions, investigates failed
 approaches and chooses feasible alternatives, and records significant deviations
@@ -2835,7 +2835,7 @@ honoring independent user pauses, restrictions and revocations. Fixed native
 full access and folder trust apply to every fresh/resumed process; task delivery
 remains within its business authorization.
 
-For a still-owned active claim, each patrol observes the live agent. An
+For a still-owned active Herdr claim, each patrol observes the live agent. An
 interactive-ready agent that is not launching and has no first input pending
 receives a continuation ping when idle or done and its task is not paused.
 Working, blocked, unknown and not-ready agents remain under observation. The
@@ -2858,8 +2858,19 @@ submission are separate operations; pausing does not retract input already sent.
 The legacy path applies this property to periodic continuation. The macOS
 durable path also checks it before initial, deferred and resumed automatic
 input. Observation, original-run stopping and human attach remain available;
-pausing does not terminate a native process. Web execution currently sends no
-such periodic pings.
+pausing does not terminate a native process.
+
+Web execution sends the initial assignment before patrol. On Worker restart or
+Controller replacement it reconstructs the full assignment using the current
+task, frozen configuration, verified native Session and current appended prompts.
+It sends no ping in the assignment round; subsequent eligible ticks each send a
+new ping, including repeated identical idle observations. A relay reconnect does
+not reset this progress. Controller admission checks the current task and native
+readiness at dispatch. Unknown results are reconciled by their original operation
+identity; a terminal unknown ping does not permanently suppress later ticks.
+An older live Controller is replaced only after its original input and native
+identity are resolved and complete process stopping is proven; the original
+claim, Session and worktree remain bound.
 
 A non-NULL saved session ID remains the recovery identity. A different native
 ID reported during startup, live reconnection or before deferred input is an
@@ -3336,8 +3347,8 @@ capacity slot. The worker continues publishing `waiting` with `herdr:null` even
 when execution is blocked. A failed summary update is retried using a newly read
 task version without consuming native recovery budget; an unchanged confirmed
 summary is not written again. Ordinary restart and shutdown cannot clear this
-pause. It is separate from `task.properties.paused`, which controls Herdr
-continuation pings.
+pause. It is separate from `task.properties.paused`, which controls automatic
+input as described above.
 
 Normal Web terminal cleanup keeps its original cleanup operation identity and
 deadline. Every attempt reads its operation receipt from the original Controller

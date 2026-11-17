@@ -18,4 +18,4 @@ Worker initial and subsequent text inputs enter the Controller's existing native
 
 ## Consequences
 
-A fresh task read adds a service dependency to each Worker input and cannot make task authorization and native dispatch atomic. A failed read does not submit input. Existing journal operations retain their uncertainty and late acknowledgement semantics; no separate ping state or migration is introduced. Periodic Worker input and adoption of older running Controllers remain separate capabilities.
+A fresh task read adds a service dependency to each Worker input and cannot make task authorization and native dispatch atomic. A failed read does not submit input. Existing journal operations retain their uncertainty and late acknowledgement semantics; no separate ping state or migration is introduced. The [Worker patrol decision](2026-11-17-web-worker-patrol.md) builds periodic input and adoption of older running Controllers on this capability.

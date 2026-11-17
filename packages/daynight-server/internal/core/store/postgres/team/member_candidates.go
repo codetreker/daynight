@@ -35,3 +35,13 @@ func (s *reader) MemberCandidates(ctx context.Context, query store.TeamMemberCan
 	}
 	return result, nil
 }
+
+func (tx *writer) MemberCandidate(ctx context.Context, userID string) (model.TeamMemberCandidate, error) {
+	var item model.TeamMemberCandidate
+	err := tx.tx.QueryRow(ctx, `SELECT id::text,name,email,avatar_url FROM users WHERE id=$1`, userID).
+		Scan(&item.UserID, &item.Profile.Name, &item.Profile.Email, &item.Profile.AvatarURL)
+	if err != nil {
+		return model.TeamMemberCandidate{}, pg.QueryError("read Team member candidate", err)
+	}
+	return item, nil
+}

@@ -142,7 +142,7 @@ beforeEach(async () => {
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
-  mocks.webBackend.mockReturnValue({});
+  mocks.webBackend.mockReturnValue({ closeInput: vi.fn() });
   mocks.webOpen.mockImplementation(() => ({
     close: mocks.webClose,
     listCompletedTasks: () => mocks.completed().map((task: object) => ({ workerId: uuid(4), worktreeId: uuid(5), resources: { worktree: null }, ...task })),

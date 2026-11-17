@@ -56,7 +56,7 @@ const runningOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot
 };
 
 export const healthyOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean =>
-  runningOriginalGeneration(task, snapshot) && snapshot.initialInputState === "confirmed";
+  runningOriginalGeneration(task, snapshot) && ["provider_accepted", "confirmed"].includes(snapshot.initialInputState);
 
 /** An authenticated first-generation observation can establish its first native identity without creating another conversation. */
 export const continuingInitialGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {

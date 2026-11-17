@@ -236,6 +236,7 @@ Team API 使用 session/PAT 或固定 API OAuth、Cookie 写请求 Origin 校验
 | `GET /api/v1/teams/{teamId}/members` | 当前 Team 成员 | `200`，完整目录 `{items}` |
 | `POST /api/v1/teams/{teamId}/members` | 当前 admin；`expectedUserId,user,role` | `200`，`{membership,added,actorRole:"admin"}` |
 | `POST /api/v1/teams/{teamId}/member-candidates/search` | 普通 Team admin；`expectedUserId,query`，可选 `limit,cursor` | `200`，既有账号资料分页 `{items,nextCursor,actorRole}` |
+| `POST /api/v1/teams/{teamId}/members/{userId}` | 普通 Team admin；`expectedUserId` | `200`，真实成员与资料回执 `{membership,added,actorRole:"admin"}` |
 | `PATCH /api/v1/teams/{teamId}/members/{userId}` | 当前 admin；`version,role,expectedUserId` | `200`，`{membership,actorRole}` |
 | `DELETE /api/v1/teams/{teamId}/members/{userId}` | 当前 admin 或本人；`version,expectedUserId` | `200`，`{teamId,userId,removed:true,actorRole}` |
 
@@ -292,6 +293,8 @@ Team 状态和目标关系。成员与必要 webhook eligibility 原子提交，
 已有不同角色返回 `409 resource_conflict`，关系和时间均不变；调用者须读取当前成员版本后使用既有 PATCH
 修改角色。成功 membership 包含实际目标 UUID、Team UUID、角色、无损正 int64 版本和 UTC 时间。
 直接添加不推进 Team 元数据版本，不改变最后 admin 规则或独立 Project grant，不创建或消费邀请。
+
+普通 Team 的当前 admin 可按本地 UUID 直接添加既有账号：`POST /api/v1/teams/{teamId}/members/{userId}` 仅接受 `{expectedUserId}`，不接受 query、角色或资料。两个路径 ID 和主体必须为非零规范 UUID，主体必须匹配当前凭据；未知、重复、缺失、null、错误类型字段与非法 Unicode 明确拒绝。新关系固定为 member 并返回 added=true；已有 member 或 admin 返回 added=false 及原角色、版本和时间。回执的 membership 包含事务内保存的真实可空 profile，actorRole 为 admin。目标不存在返回 `404 user_not_found`，Team 缺失返回 `404 not_found`。该操作不初始化账号或 Personal Team、不创建或消费邀请、不推进 Team 元数据版本，也不改写 Project 独立授权。成员关系与 webhook eligibility 在同一事务提交，等待后重验当前凭据；仅确认提交后返回成功，未知结果不得自动重放。
 
 普通 Team 的当前 admin 可通过 `POST /api/v1/teams/{teamId}/members/resolve` 只读解析既有外部身份。
 请求仅接受 `{expectedUserId,user:{externalUserId}}`，拒绝 query、未知或重复字段以及 profile；

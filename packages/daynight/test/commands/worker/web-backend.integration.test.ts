@@ -226,9 +226,10 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   const source = await cleanupSource(f, task);
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native-original", commandHash: "b".repeat(64) };
   const nativeSessionId = randomUUID();
-  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
+  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", capabilities: { ...source.snapshot.capabilities, send: true }, nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
   let phase: "active" | "cleanup" | "resuming" = "active";
   source.saved.mockImplementation(() => snapshot);
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => snapshot);
   source.stopped.mockImplementation(async () => snapshot.nativeStopped);
   vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => snapshot);
   vi.spyOn(processProof, "stopControllerProcesses").mockResolvedValue(undefined);
@@ -256,7 +257,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
   };
   const options = { homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos" as const, buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request };
   const backend = createWebExecutionBackend(options);
-  await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Initial response was lost");
+  await expect(backend.advance(source.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow("Initial response was lost");
   expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
   vi.mocked(f.git.prepareWorktree).mockRejectedValueOnce(new Error("Temporary worktree deviation."));
   await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Temporary worktree");

@@ -47,13 +47,13 @@ import type { FailureWorktree } from "./monitoring/types.js";
 import type { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
-export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" };
+export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" | "task_paused" | "claim_invalid" | "native_input" };
 export type WorkerCoordinatorOptions = {
   freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
   reserveClaimTools?: (reservation: ClaimToolReservation, signal: AbortSignal) => Promise<void>;
   hasHerdrJournal?: boolean;
   availableDiskBytes?: () => bigint;
-  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
+  webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "confirmUpgrade" | "setMonitoringObserver" | "probeArchive">>;
   webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
   archiveMaintenance?: Pick<ReturnType<typeof createWebArchiveMaintenance>, "recordLegacyFailure"> & Partial<Pick<ReturnType<typeof createWebArchiveMaintenance>, "discardLocal" | "discardOne">>;
   archiveSessions?: () => boolean | null;
@@ -1054,7 +1054,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!stopped.complete) throw new Error("The original Web resources remain before restart.");
     return options.webStore.clearShutdown(stopped.task, now());
   };
-  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, execute = true, herdrRestored = false): Promise<WorkerInputWait | undefined> => {
+  // An adoption can replace at most one legacy generation during this Worker run.
+  const webUpgradeAttempts = new Set<string>();
+  const checkWebAuthority = async (original: NonNullable<ReturnType<WebExecutionStore["getTask"]>>, inputSignal: AbortSignal, explicitRetry: boolean, allowShutdown = false): Promise<"task_paused" | "claim_invalid" | null> => {
+    const fresh = await options.remote.readTask(original.projectId, original.taskId, inputSignal);
+    const claim = readWorkerClaim(fresh.properties);
+    const latest = options.webStore!.getTask(original);
+    if ((explicitRetry ? projectStops.has(original.projectId) : !canAdvanceProject(original.projectId)) || fresh.projectId !== original.projectId || fresh.id !== original.taskId
+      || fresh.status !== "in_progress" || !fresh.allowAgents || claim?.state !== "active"
+      || claim.claimId !== original.claimId || claim.workerId !== original.workerId || claim.worktreeId !== original.worktreeId
+      || claim.userId !== original.userId || claim.agent !== original.configuration?.agent || claim.agentControlMode !== "web"
+      || latest === null || latest.status !== "active" || (latest.cleanup !== null && !(allowShutdown && latest.cleanup.kind === "shutdown")) || latest.control !== null
+      || latest.workerId !== original.workerId || latest.worktreeId !== original.worktreeId
+      || (claim.nativeSessionId !== null && latest.resources.nativeSession !== null && claim.nativeSessionId !== latest.resources.nativeSession.sessionId)) return "claim_invalid";
+    return readTaskPaused(fresh.properties) ? "task_paused" : null;
+  };
+  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, execute = true, herdrRestored = false, explicitRetry = false): Promise<WorkerInputWait | undefined> => {
     if (ending.has(key(task))) return;
     const owner = remoteOwner(remoteTask);
     if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== (task.agentControlMode ?? "herdr")) throw new Error("The local execution does not match the observed original worker claim.");
@@ -1069,6 +1084,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let advancing = false;
       let waitingInput: WorkerInputWait | undefined;
       const canAdmitNewExecution = () => options.configurationComplete?.() ?? true;
+      const authority = (original: NonNullable<ReturnType<WebExecutionStore["getTask"]>>, _ticket: unknown, inputSignal: AbortSignal) => checkWebAuthority(original, inputSignal, explicitRetry);
       try {
         if (record === null || record.recovery.pauseReason === null || record.recovery.retryAuthorized || legacyBranchLatch(record)) {
           requireImplementedWorkerBackend(configuration);
@@ -1083,12 +1099,36 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             assertConfigurationAdmission(canAdmitNewExecution);
           }
           record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: worker.userId, configuration }, now());
-          if (record.cleanup !== null) record = await finishShutdown(record, signal);
+          // A persisted orderly stop already commits this run to its replacement generation.
+          if (record.cleanup?.kind === "shutdown" || record.webExecution?.restartAfterShutdown) webUpgradeAttempts.add(key(task));
+          if (record.cleanup !== null) {
+            if (await checkWebAuthority(record, signal, explicitRetry, true) === "claim_invalid") { waitingInput = { kind: "waiting_input", reason: "claim_invalid" }; return waitingInput; }
+            record = await finishShutdown(record, signal);
+          }
+          if (record.webExecution?.restartAfterShutdown) {
+            const reason = await authority(record, null, signal);
+            if (reason !== null) { waitingInput = { kind: "waiting_input", reason }; return waitingInput; }
+          }
           advancing = true;
           if (options.webBackend.advanceResult) {
-            const result = await options.webBackend.advanceResult(record, signal, canAdmitNewExecution);
+            const precedingGeneration = record.webExecution?.executionGeneration;
+            const result = await options.webBackend.advanceResult(record, signal, canAdmitNewExecution, authority);
             record = result.task;
+            if (precedingGeneration !== undefined && record.webExecution?.executionGeneration !== precedingGeneration) webUpgradeAttempts.add(key(task));
             if (result.kind === "waiting_input") waitingInput = { kind: "waiting_input", reason: result.reason };
+            if (result.kind === "upgrade") {
+              if (webUpgradeAttempts.has(key(task))) throw new Error("The replacement Controller does not support Worker input protocol 1.");
+              if (!options.webBackend.confirmUpgrade) throw new Error("Legacy Controller adoption cannot verify its original input state.");
+              const confirmation = await options.webBackend.confirmUpgrade(record, authority, signal);
+              record = confirmation.task;
+              if (confirmation.kind === "waiting_input") waitingInput = { kind: "waiting_input", reason: confirmation.reason };
+              else {
+                webUpgradeAttempts.add(key(task));
+                const stopped = await options.webBackend.cleanup(record, { kind: "shutdown", deadline: now(), immediateStop: true, signal });
+                if (!stopped.complete) throw new Error("The original Web resources remain before restart.");
+                record = options.webStore.clearShutdown(stopped.task, now());
+              }
+            }
           } else record = await options.webBackend.advance(record, signal, canAdmitNewExecution);
           observed = true;
         }
@@ -1778,6 +1818,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const recovery = webRecoveryFailures.get(identity);
       if (recovery !== undefined) { observe(m => m.discardFailure(recovery.id)); webRecoveryFailures.delete(identity); }
       webMonitoringState.delete(identity);
+      webUpgradeAttempts.delete(identity);
       execution.forget(local);
     }
     reconciliationPhase = "resource-observation";
@@ -2211,11 +2252,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (task.agentControlMode === "web" && options.webStore) {
           let record = options.webStore.getTask(task);
           if (record !== null) {
-            if (record.cleanup !== null) record = await finishShutdown(record, normalSignal);
+            if (record.cleanup !== null) {
+              if (await checkWebAuthority(record, normalSignal, true, true) === "claim_invalid") return { kind: "waiting_input", reason: "claim_invalid" };
+              webUpgradeAttempts.add(key(task));
+              record = await finishShutdown(record, normalSignal);
+            }
+            const reason = await checkWebAuthority(record, normalSignal, true);
+            if (reason !== null) return { kind: "waiting_input", reason };
             options.webStore.authorizeRecoveryRetry(record, now());
           }
         }
-        return ensure(task, remoteTask, normalSignal, true, herdrRestored);
+        return ensure(task, remoteTask, normalSignal, true, herdrRestored, true);
       });
     },
     cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<ResourceOwner> => {
