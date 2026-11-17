@@ -15,11 +15,10 @@ import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
-const mocks = vi.hoisted(() => ({ ordinary: vi.fn(), assistant: vi.fn(), cpus: vi.fn(), nativeEnvironment: vi.fn() }));
+const mocks = vi.hoisted(() => ({ ordinary: vi.fn(), assistant: vi.fn(), cpus: vi.fn() }));
 const environment = { PATH: "/fixture/bin" };
 vi.mock("node:os", () => ({ type: () => "Fixture", release: () => "1", version: () => "1", arch: () => "arm64", cpus: mocks.cpus, totalmem: () => 1024, freemem: () => 256 }));
 vi.mock("node:fs/promises", () => ({ realpath: async (value: string) => value, stat: async () => ({ isDirectory: () => true }), access: async () => {}, statfs: async () => ({ blocks: 100n, bavail: 25n, bsize: 4096n }) }));
-vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrNativeEnvironment: mocks.nativeEnvironment }));
 vi.mock("../../../src/commands/controller/providers/copilot-runtime.js", () => ({ copilotExecutable: () => "/fixture/bundled/copilot" }));
 vi.mock("../../../src/commands/worker/owned-command.js", async original => ({ ...await original<object>(), runOwnedCommand: (command: OwnedCommand, operation: Operation) => command.environment.DN_CONFIG_DIR === undefined ? mocks.ordinary(command, operation) : mocks.assistant(command, operation), spawnOwnedProcess: () => { throw new Error("Native spawning is forbidden in this fixture."); } }));
 
@@ -39,6 +38,7 @@ vi.mock("../../../src/commands/worker/codex-probe-owner.js", async original => {
   return { ...actual, captureCodexProbeEnvironment: (environment: NodeJS.ProcessEnv) => actual.captureCodexProbeEnvironment(environment, "win32") };
 });
 
+let originalEnvironment: NodeJS.ProcessEnv;
 const operations: Operation[] = [];
 const hosts: ReturnType<typeof createWorkerBotHost>[] = [];
 const operation = () => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
@@ -51,19 +51,20 @@ const output = async (command: OwnedCommand): Promise<OwnedCommandResult> => {
 };
 const collector = (overrides: Partial<Parameters<typeof createAssistantHostCollector>[0]> = {}) => createWorkerTelemetryCollector({
   paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: cwd, machine: { id: "fixture", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example",
-  assistantHost: createAssistantHostCollector({ workingDirectory: cwd, configuration: { agent: "copilot", model: null, args: [], agentControlMode: "herdr", recoveryLimit: 3 }, environment,
+  assistantHost: createAssistantHostCollector({ workingDirectory: cwd, configuration: { agent: "copilot", model: null, args: [], agentControlMode: "web", recoveryLimit: 3 }, environment,
     resolveExecutable: provider => provider === "codex" ? provider : `/fixture/bundled/${provider}`, runCommand: mocks.assistant, ...overrides }),
 });
 const finish = async <T>(pending: Promise<T>, ms = 210) => { await vi.advanceTimersByTimeAsync(ms); return pending; };
 const calls = (mock: typeof mocks.ordinary, file: string) => mock.mock.calls.filter(([command]) => (command as OwnedCommand).file === file).length;
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks();
+  originalEnvironment = process.env;
+  process.env = { ...environment };
   let tick = 0;
   mocks.cpus.mockImplementation(() => [{ model: "Fixture CPU", times: { idle: ++tick * 80, user: tick * 20 } }]);
   mocks.ordinary.mockImplementation(output); mocks.assistant.mockImplementation(output);
-  mocks.nativeEnvironment.mockReturnValue(environment);
 });
-afterEach(async () => { operations.splice(0).forEach(value => value.dispose()); await Promise.all(hosts.splice(0).map(host => host.close())); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(async () => { operations.splice(0).forEach(value => value.dispose()); await Promise.all(hosts.splice(0).map(host => host.close())); vi.unstubAllEnvs(); process.env = originalEnvironment; vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("composed Codex probe ownership", () => {
   it("blocks assistant version/help after ordinary cleanup uncertainty and preserves the original error", async () => {
@@ -119,16 +120,28 @@ describe("composed Codex probe ownership", () => {
     expect(send).toHaveBeenCalledOnce();
     await expect(reporter.stop()).rejects.toBe(failure);
   });
+  it("omits inherited agent session markers from native version probes", async () => {
+    const markers = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"];
+    for (const marker of markers) vi.stubEnv(marker, "session-marker");
+    await finish(collector().collect(operation()));
+    for (const [command] of mocks.ordinary.mock.calls) {
+      for (const marker of markers) expect(command.environment).not.toHaveProperty(marker);
+    }
+    for (const marker of markers) expect(process.env[marker]).toBe("session-marker");
+  });
   it("forwards the Node-selected captured search keys only to bare Codex launch commands", async () => {
     const ordinary = { Path: "C:\\ignored", PATH: "C:\\selected", Pathext: ".EXE;.JS", PATHEXT: ".EXE", FIXTURE: "ordinary" };
     const assistant = { PATH: "C:\\selected", Path: "C:\\other", PATHEXT: ".EXE", Pathext: ".JS", FIXTURE: "assistant" };
-    mocks.nativeEnvironment.mockReturnValue(ordinary);
+    for (const [key, value] of Object.entries(ordinary)) vi.stubEnv(key, value);
     await finish(collector({ environment: assistant }).collect(operation()));
     const expected = { PATH: "C:\\selected", PATHEXT: ".EXE" };
-    expect(mocks.ordinary.mock.calls.find(([command]) => command.file === "codex")![0].environment).toEqual({ ...expected, FIXTURE: "ordinary" });
+    const ordinaryCodex = mocks.ordinary.mock.calls.find(([command]) => command.file === "codex")![0].environment;
+    expect(ordinaryCodex).toMatchObject({ ...expected, FIXTURE: "ordinary" });
+    expect(ordinaryCodex).not.toHaveProperty("Path");
+    expect(ordinaryCodex).not.toHaveProperty("Pathext");
     expect(calls(mocks.assistant, "codex")).toBe(2);
     for (const [command] of mocks.assistant.mock.calls.filter(([command]) => command.file === "codex")) expect(command.environment).toEqual({ ...expected, FIXTURE: "assistant" });
-    expect(mocks.ordinary.mock.calls.find(([command]) => command.file === "copilot")![0].environment).toEqual(ordinary);
+    expect(mocks.ordinary.mock.calls.find(([command]) => command.file === "copilot")![0].environment).toMatchObject(ordinary);
     for (const [command] of mocks.assistant.mock.calls.filter(([command]) => command.file !== "codex")) expect(command.environment).toEqual(assistant);
     expect(ordinary.Path).toBe("C:\\ignored"); expect(assistant.Path).toBe("C:\\other");
     mocks.assistant.mockClear();
@@ -138,7 +151,7 @@ describe("composed Codex probe ownership", () => {
   it.each(["ordinary", "assistant"])("shares mixed-case Windows search inputs after %s cleanup failure", async origin => {
     let monotonic = 0; vi.spyOn(performance, "now").mockImplementation(() => monotonic);
     const failure = new OwnedCommandCleanupError([new Error("owned fixture cleanup")], undefined);
-    mocks.nativeEnvironment.mockReturnValue({ Path: "C:\\ignored", PATH: "C:\\selected", Pathext: ".JS", PATHEXT: ".EXE" });
+    for (const [key, value] of Object.entries({ Path: "C:\\ignored", PATH: "C:\\selected", Pathext: ".JS", PATHEXT: ".EXE" })) vi.stubEnv(key, value);
     const runner = origin === "ordinary" ? mocks.ordinary : mocks.assistant;
     runner.mockImplementation(async command => { if (command.file === "codex") throw failure; return output(command); });
     const instance = collector({ environment: { PATH: "C:\\selected", Path: "C:\\other", PATHEXT: ".EXE", Pathext: ".JS" } });
@@ -168,7 +181,6 @@ describe("production Bot host Codex ownership", () => {
     const searchEnvironment = { ...environment, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
     vi.stubEnv("PATH", searchEnvironment.PATH);
     vi.stubEnv("PATHEXT", searchEnvironment.PATHEXT);
-    mocks.nativeEnvironment.mockReturnValue(searchEnvironment);
     const paths = resolveWorkerPaths(path.resolve("fixture-home"));
     const host = createWorkerBotHost({ homeDirectory: path.resolve("fixture-home"), packageDirectory: path.resolve("fixture-package"), workingDirectory: cwd, paths,
       owner: { serverOrigin: "https://daynight.example", ownerUserId: "fixture-owner", workerId: "fixture-worker" }, serverToken: "fixture-placeholder", emit: () => {},

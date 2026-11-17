@@ -57,7 +57,7 @@ Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。�
 
 已知非零迁移按各步骤的必要映射保留可表示的业务记录。Worker 9→10 在 SQL 中从可访问的 registration 映射 intent 控制器身份，并设置原有 execution recovery 字段；每行直接更新，不跨复合主键查找其他 owner。Web 版本 1→2 在 SQL 中只移除原定的 cleanup 操作回执和资源完成字段，当前 parser 读取迁移后的清理意图，不在运行时代码兼容旧字段。这两步使用嵌套 CASE 先排除含实际 NUL 字符的文本并保护 JSON 语法和所需局部容器，再执行 JSON 操作；无效或不适用的值以及没有实际变化的行不执行 UPDATE，保留原字符串并继续其他行。它们不校验完整业务记录或修复关联，真实 SQL 失败仍回滚迁移事务。Web 2→3 只新增 orchestration_blockers 表，不改写原执行 JSON；旧版本受版本守卫保护而拒绝新库。其他 Web 字段保留原有解析语义；未来收紧字段仍需新增版本转换。Journal 的非零升级保留不涉及映射的值、序列、ACK、原生身份和 BLOB，不把原类型断言当成已经增加全面运行时校验。
 
-Herdr lifecycle 的格式 3 转换由 `herdr/lifecycle-store-format.ts` 直接拥有，两张表各自执行局部 `nativeLaunch` 映射。迁移不依赖业务 store 的完整 parser 或关系检查；不可操作值保留原值，仅编辑目标字段的源文本，其他 token 和重复键不重新编码，未变化的 JSON 不写入。输入/输出不执行普通容量政策。存量行经现有严格 JSON decoder 和 lifecycle parser 读取时不设总字节门槛，新增写入仍在业务 store 执行原 8 MiB 检查。字段、列表和状态关系的运行期校验保持；映射优先级及坏值粒度由 [Herdr 生命周期设计](herdr-worker-lifecycle.md#身份与存储)拥有。
+旧 Herdr lifecycle 数据由用户处理；Worker 不打开、迁移或重置该数据库。
 
 ## 连接来源与所有权
 

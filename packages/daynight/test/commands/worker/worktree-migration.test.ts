@@ -11,7 +11,6 @@ import { createWorktreeManifestStore } from "../../../src/commands/worker/worktr
 import { migrateLegacyWorktrees, type MigrationSources } from "../../../src/commands/worker/worktrees/migration.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
-import { openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import Database from "better-sqlite3";
@@ -99,10 +98,9 @@ const snapshotRows = (file: string, table: string): unknown[] => {
 };
 const historicalFixture = () => {
   const f = fixture(), old = owner(), next = { ...old, claimId: randomUUID(), worktreeId: randomUUID() }, original = f.add(old);
-  const workerFile = path.join(f.root, "worker.sqlite"), webFile = path.join(f.root, "web.sqlite"), herdrFile = path.join(f.root, "herdr.sqlite");
+  const workerFile = path.join(f.root, "worker.sqlite"), webFile = path.join(f.root, "web.sqlite");
   const worker = openWorkerStore(workerFile, { onMigration: () => {} });
   const web = openWebExecutionStore(webFile, { onMigration: () => {} });
-  const herdr = openHerdrLifecycleStore(herdrFile, { onMigration: () => {} });
   worker.registerProject({ projectId: old.projectId, repoUrl: "https://example.test/repo.git", localPath: f.repositoryPath });
   const registerWeb = (value: ResourceOwner, bind = true) => {
     const project = { projectId: value.projectId, repoUrl: "https://example.test/repo.git", localPath: f.repositoryPath };
@@ -110,11 +108,6 @@ const historicalFixture = () => {
       configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
     return bind ? web.bindWorktree(task, f.binding(value), 2) : task;
   };
-  const registerHerdr = (value: ResourceOwner) => herdr.create({
-    owner: { projectId: value.projectId, taskId: value.taskId, worktreeId: value.worktreeId, workerId: randomUUID(),
-      ownerUserId: randomUUID(), serverOrigin: "https://daynight.example", provider: "codex" },
-    claimId: value.claimId, cwd: f.binding(value).worktreePath,
-  });
   const webTasks = () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()];
   const sources: MigrationSources = { listSchedules: () => webTasks().flatMap(task => {
     const schedule = worker.getCleanupSchedule(task, task);
@@ -131,8 +124,8 @@ const historicalFixture = () => {
     try { return await migrateLegacyWorktrees({ repositoryPath: f.repositoryPath, commonDirectory: f.commonDirectory, operation, sources: input }); }
     finally { operation.dispose(); }
   };
-  return { ...f, old, next, original, workerFile, webFile, herdrFile, worker, web, herdr, sources, registerWeb, registerHerdr, release, reuse, run,
-    close: () => { herdr.close(); web.close(); worker.close(); } };
+  return { ...f, old, next, original, workerFile, webFile, worker, web, sources, registerWeb, release, reuse, run,
+    close: () => { web.close(); worker.close(); } };
 };
 
 describe("legacy worktree migration", { timeout: 30_000 }, () => {
@@ -285,11 +278,15 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
   });
 
   it("reads actual persisted schedule and Web sources without changing records or ticket", async () => {
-    const f = fixture(), scheduled = owner(), completed = owner(), active = owner(), herdrOwner = owner();
+    const f = fixture(), scheduled = owner(), completed = owner(), active = owner();
     f.add(scheduled);
     const worker = openWorkerStore(path.join(f.root, "worker.sqlite"), { onMigration: () => {} });
     const web = openWebExecutionStore(path.join(f.root, "web.sqlite"), { onMigration: () => {} });
-    const herdr = openHerdrLifecycleStore(path.join(f.root, "herdr.sqlite"), { onMigration: () => {} });
+    const legacyFile = path.join(f.root, "herdr.sqlite");
+    const legacy = new Database(legacyFile);
+    legacy.exec("CREATE TABLE retained (value TEXT NOT NULL); INSERT INTO retained VALUES ('untouched')");
+    legacy.close();
+    const legacyBytes = readFileSync(legacyFile);
     try {
       worker.registerProject({ projectId: scheduled.projectId, repoUrl: "https://example.test/repo.git", localPath: f.repositoryPath });
       const config = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
@@ -313,14 +310,11 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
       };
       const ticketPath = await writeLaunchTicket(f.root, ticket), ticketBytes = readFileSync(ticketPath);
       web.beginCleanup(done, { kind: "terminal", deadline: 100 }, 4); web.completeTask(done, 5);
-      herdr.create({ owner: { projectId: herdrOwner.projectId, taskId: herdrOwner.taskId, worktreeId: herdrOwner.worktreeId,
-        workerId: randomUUID(), ownerUserId: randomUUID(), serverOrigin: "https://daynight.example", provider: "codex" },
-      claimId: herdrOwner.claimId, cwd: f.binding(herdrOwner).worktreePath });
       const rawRows = (file: string, table: string) => {
         const db = new Database(file, { readonly: true });
         try { return db.prepare(`SELECT * FROM ${table}`).all(); } finally { db.close(); }
       };
-      const webRows = rawRows(path.join(f.root, "web.sqlite"), "executions"), herdrRows = rawRows(path.join(f.root, "herdr.sqlite"), "executions");
+      const webRows = rawRows(path.join(f.root, "web.sqlite"), "executions");
       const operation = createOperation();
       try {
         await migrateLegacyWorktrees({ repositoryPath: f.repositoryPath, commonDirectory: f.commonDirectory, operation, sources: {
@@ -335,9 +329,9 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
       expect(f.store.read(completed.worktreeId)).toBeNull();
       expect(web.listCompletedTasks()).toHaveLength(1);
       expect(rawRows(path.join(f.root, "web.sqlite"), "executions")).toEqual(webRows);
-      expect(rawRows(path.join(f.root, "herdr.sqlite"), "executions")).toEqual(herdrRows);
+      expect(readFileSync(legacyFile)).toEqual(legacyBytes);
       expect(readFileSync(ticketPath)).toEqual(ticketBytes);
-    } finally { herdr.close(); web.close(); worker.close(); }
+    } finally { web.close(); worker.close(); }
   });
 
   it("recovers a Web worktree created before its journal binding was saved", async () => {

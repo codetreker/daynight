@@ -10,11 +10,10 @@ import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import path from "node:path";
 
-const mocks = vi.hoisted(() => ({ cpus: vi.fn(), totalmem: vi.fn(), freemem: vi.fn(), statfs: vi.fn(), stat: vi.fn(), access: vi.fn(), version: vi.fn(), herdr: vi.fn() }));
+const mocks = vi.hoisted(() => ({ cpus: vi.fn(), totalmem: vi.fn(), freemem: vi.fn(), statfs: vi.fn(), stat: vi.fn(), access: vi.fn(), version: vi.fn() }));
 vi.mock("node:os", async (original) => ({ ...await original<object>(), cpus: mocks.cpus, totalmem: mocks.totalmem, freemem: mocks.freemem }));
 vi.mock("node:fs/promises", async (original) => ({ ...await original<object>(), statfs: mocks.statfs, stat: mocks.stat, access: mocks.access }));
 vi.mock("../../../src/commands/worker/native-version.js", async (original) => ({ ...await original<object>(), probeNativeAgentVersion: mocks.version }));
-vi.mock("../../../src/commands/worker/herdr/instance.js", async (original) => ({ ...await original<object>(), createHerdrVersionObserver: () => ({ observe: mocks.herdr }) }));
 
 const operations: Operation[] = [];
 const operation = (): Operation => { const result = createOperation({ limits: { totalMs: 15_000 } }); operations.push(result); return result; };
@@ -31,7 +30,6 @@ beforeEach(() => {
   mocks.stat.mockResolvedValue({ isDirectory: () => true });
   mocks.access.mockRejectedValue(Object.assign(new Error("absent"), { code: "ENOENT" }));
   mocks.version.mockImplementation(async ({ agent }: { agent: string }) => agent === "codex" ? "0.1.0" : "1.0.0");
-  mocks.herdr.mockResolvedValue("0.9.5");
 });
 afterEach(() => { operations.splice(0).forEach((value) => value.dispose()); vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -100,11 +98,10 @@ describe("Worker telemetry", () => {
     const snapshot = vi.fn(() => facts);
     expect((await finish(collector({ context: "web", snapshot }).collect(operation()))).telemetry.toolPaths).toEqual(facts);
     expect(snapshot).toHaveBeenCalledOnce();
-    mocks.version.mockClear(); mocks.herdr.mockClear();
+    mocks.version.mockClear();
     const sample = await finish(collector({ context: "web", snapshot }).collect(operation()));
     expect(sample.telemetry.versions.codex).toMatchObject({ state: "error", code: "unavailable" });
     expect(mocks.version).not.toHaveBeenCalled();
-    expect(mocks.herdr).not.toHaveBeenCalled();
   });
   it("reports the Web tool selection's actual version", async () => {
     const time = "2026-11-04T00:00:00Z";
@@ -204,7 +201,6 @@ describe("Worker telemetry", () => {
     expect(updated.telemetry.versions.codex).toMatchObject({ state: "error" });
     expect(updated.telemetry.versions.codex.checkedAt).not.toBe(first.telemetry.versions.codex.checkedAt);
     expect(JSON.stringify(updated.telemetry)).not.toContain("native config");
-    expect(mocks.herdr).not.toHaveBeenCalled();
   });
 
   it("distinguishes confirmed executable absence from an invalid native working directory", async () => {
@@ -230,9 +226,7 @@ describe("Worker telemetry", () => {
     expect(second.issues.find(({ component }) => component === "codex")?.error).toBe(failure);
   });
 
-  it("propagates runtime cancellation and keeps an absent private daemon separate from errors", async () => {
-    mocks.herdr.mockResolvedValue(null);
-    const sample = await finish(collector().collect(operation()));
+  it("propagates runtime cancellation", async () => {
     const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
     const pending = collector().collect(op);
     controller.abort();
