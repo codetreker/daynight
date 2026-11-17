@@ -183,44 +183,54 @@ export const createWebArchiveMaintenance = (options: {
     }
   };
 
-  const controller = new AbortController();
-  const signal = AbortSignal.any([options.signal, controller.signal]);
-  let pending: Promise<void> | undefined;
+  const terminationController = new AbortController();
+  const archiveController = new AbortController();
+  const terminationSignal = AbortSignal.any([options.signal, terminationController.signal]);
+  const archiveSignal = AbortSignal.any([options.signal, archiveController.signal]);
+  let terminationPending: Promise<void> | undefined;
+  let archivePending: Promise<void> | undefined;
   let closed = false;
-  let shutdownFailure: unknown;
-  let shutdownFailed = false;
+  const shutdownFailures: unknown[] = [];
   let failureId: string | undefined;
   return {
     recordFailure,
     recordLegacyFailure,
     request(shouldYield: () => boolean): void {
-      if (closed || signal.aborted || pending !== undefined) return;
-      // Reserve the slot before invoking any backfill code, including synchronous re-entry.
+      if (closed || options.signal.aborted) return;
+      if (terminationPending === undefined) {
+        const attempt = Promise.resolve().then(async () => {
+          if (terminationSignal.aborted) return;
+          await options.recoverPendingTermination?.(terminationSignal);
+          await backfillTermination(terminationSignal);
+        }).catch(error => {
+          if (isWorkerCancellation(error, terminationSignal)) return;
+          if (terminationSignal.aborted) shutdownFailures.push(error);
+          try { emit({ kind: "session-termination-retry", message: "Original Session termination metadata remains unconfirmed and will be retried.", error }); } catch { /* Reporting cannot detach the maintenance task. */ }
+        }).finally(() => { if (terminationPending === attempt) terminationPending = undefined; });
+        terminationPending = attempt;
+      }
+      if (archivePending !== undefined) return;
+      // Reserve each slot before invoking backfill, including synchronous re-entry.
       const attempt = Promise.resolve().then(async () => {
-        // Cleanup can become pending after the polling round requested maintenance.
-        if (signal.aborted) return;
-        try { await options.recoverPendingTermination?.(signal); await backfillTermination(signal); }
-        catch (error) {
-          if (signal.aborted) throw error;
-          emit({ kind: "session-termination-retry", message: "Original Session termination metadata remains unconfirmed and will be retried.", error });
-        }
-        if (signal.aborted || shouldYield()) return;
-        await backfillArchives(signal);
+        if (archiveSignal.aborted || shouldYield()) return;
+        await backfillArchives(archiveSignal);
         if (failureId !== undefined) { try { monitoring?.recover(failureId); } catch { /* Monitoring cannot change archival. */ } failureId = undefined; }
       }).catch(error => {
-        if (isWorkerCancellation(error, signal)) return;
-        if (signal.aborted) { shutdownFailed = true; shutdownFailure = error; }
+        if (isWorkerCancellation(error, archiveSignal)) return;
+        if (archiveSignal.aborted) shutdownFailures.push(error);
         failureId ??= randomUUID();
         try { monitoring?.fail({ operationId: failureId, component: "archive", phase: "archive-backfill", scope: { kind: "worker" }, error }); } catch { /* Monitoring cannot change archival. */ }
         try { emit({ kind: "session-archive-retry", message: "Historical session archive maintenance failed; sources remain for retry.", error }); } catch { /* Reporting cannot detach the maintenance task. */ }
-      }).finally(() => { if (pending === attempt) pending = undefined; });
-      pending = attempt;
+      }).finally(() => { if (archivePending === attempt) archivePending = undefined; });
+      archivePending = attempt;
     },
     async close(): Promise<void> {
       closed = true;
-      controller.abort(new Error("Archive maintenance is closing."));
-      await pending;
-      if (shutdownFailed) throw shutdownFailure;
+      terminationController.abort(new Error("Termination maintenance is closing."));
+      archiveController.abort(new Error("Archive maintenance is closing."));
+      await Promise.all([terminationPending, archivePending]);
+      if (shutdownFailures.length === 1) throw shutdownFailures[0];
+      if (shutdownFailures.length > 1) throw new AggregateError(shutdownFailures, "Web maintenance shutdown failed.");
     },
   };
 };

@@ -910,7 +910,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       const closed = options.store.readTerminationClosure(input);
       if (closed !== null && readTerminationPending(terminationDirectory)?.key !== closureKey) return;
       if (options.launcher.joinExecution === undefined) throw new Error("Web termination requires joining its original launch operations.");
-      if (closed === null) await options.launcher.joinExecution(task.executionId);
+      if (closed === null) await options.launcher.joinExecution(task.executionId, signal);
       signal.throwIfAborted();
       const inventory = options.store.listTerminationInventory().find(item => item.projectId === task.projectId && item.taskId === task.taskId && item.claimId === task.claimId);
       const execution = inventory?.launches.at(-1);

@@ -233,7 +233,7 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     prepare: (...args: Parameters<typeof methods.prepare>) => serialize(args[0], () => methods.prepare(...args)),
     launch: (...args: Parameters<typeof methods.launch>) => serialize(args[0], () => methods.launch(...args)),
     join: (task: LocalTask) => serialize(task, async () => {}),
-    joinExecution: (executionId: string) => serializeExecution(executionId, async () => {}),
+    joinExecution: (executionId: string, signal: AbortSignal) => serializeExecution.join(executionId, signal),
     refreshGrant: (...args: Parameters<typeof methods.refreshGrant>) => serialize(args[0], () => methods.refreshGrant(...args)),
   };
 };

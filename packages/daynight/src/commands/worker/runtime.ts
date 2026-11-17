@@ -939,6 +939,7 @@ export const runWorker = async (options: {
             if (coordinator !== undefined) {
               const latest = view(manager.current());
               if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
+              archiveShouldYield();
               web!.archiveMaintenance.request(archiveShouldYield);
             }
           }

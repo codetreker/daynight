@@ -22,6 +22,7 @@ import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
+import { createControllerExecutionSerializer } from "../../../src/commands/worker/backends/controller-process.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
@@ -141,7 +142,7 @@ beforeEach(async () => {
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
   mocks.webBackend.mockReturnValue({});
-  mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }));
+  mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed, listTerminationInventory: () => [] }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   target = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
   observationRevision = 0n;
@@ -1244,6 +1245,7 @@ it("defers archive backfill after each coordinator tick and resumes without repe
   const f = await fixture();
   let round = 0;
   const reads: number[] = [], archived: number[] = [], deferredRounds: number[] = [];
+  const secondArchive = deferred<void>();
   const yielding = [true, true, false, true, true, false];
   const completed = [11, 12].map(id => ({
     projectId: uuid(1), taskId: uuid(id + 10), claimId: uuid(id + 20), serverOrigin: "https://daynight.example",
@@ -1254,14 +1256,14 @@ it("defers archive backfill after each coordinator tick and resumes without repe
     const task = completed.find(task => task.webExecution.launchId === launchId)!;
     return { serverOrigin: task.serverOrigin, claimId: task.claimId, ...task.webExecution };
   });
-  mocks.archive.mockImplementation(async () => { archived.push(round); return { state: "ready" }; });
+  mocks.archive.mockImplementation(async () => { archived.push(round); if (archived.length === 2) secondArchive.resolve(); return { state: "ready" }; });
   mocks.emit.mockImplementation(event => { if (event.kind === "session-archive-deferred") deferredRounds.push(round); });
   mocks.coordinator.mockImplementation(() => ({
     tick: async () => { round++; }, archiveYield: () => yielding[round - 1], updateConfiguration: update, shutdown,
   }));
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
   mocks.delay.mockImplementation(async (_milliseconds, _value, options) => {
-    if (round >= yielding.length) f.signal.abort();
+    if (round >= yielding.length) { await Promise.race([secondArchive.promise, timers.setTimeout(1500)]); f.signal.abort(); }
     await timers.setTimeout(0, undefined, options);
   });
   await start(f);
@@ -1297,9 +1299,9 @@ it("rechecks archive deferral before starting a scheduled maintenance round", as
   const running = start(f);
   await decisionChanged.promise;
   await eventually(() => expect(polls.some(poll => !poll.signal.aborted)).toBe(true));
+  await eventually(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1));
   expect(mocks.completed).not.toHaveBeenCalled();
   expect(mocks.archive).not.toHaveBeenCalled();
-  expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-deferred")).toHaveLength(1);
   yielding = false;
   polls.findLast(poll => !poll.signal.aborted)!.gate.resolve();
   await eventually(() => expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(1));
@@ -1366,6 +1368,43 @@ it("continues polling during one historical upload and joins its finalizer befor
   expect(storeClose).toHaveBeenCalledOnce();
   expect(options.monitoring!.capture("1").lifecycle).toBe("stopped");
   expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-retry")).toBe(false);
+});
+
+it("archives independently of a blocked termination join and joins its cancellation before closing stores", async () => {
+  const f = await fixture();
+  const serialize = createControllerExecutionSerializer();
+  const operationEntered = deferred<void>(), releaseOperation = deferred<void>(), joinEntered = deferred<void>();
+  const joinCancelled = deferred<void>(), releaseFinalizer = deferred<void>();
+  const executionId = uuid(11), order: string[] = [];
+  const operation = serialize(executionId, async () => { operationEntered.resolve(); await releaseOperation.promise; order.push("original-finished"); });
+  await operationEntered.promise;
+  const task = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), sessionId: uuid(12), serverOrigin: "https://daynight.example", cleanup: "terminal", closure: null, error: null };
+  mocks.webOpen.mockReturnValue({ close: () => { order.push("store-closed"); }, listCompletedTasks: mocks.completed, listTerminationInventory: () => [task] });
+  mocks.webBackend.mockReturnValue({ reconcileTermination: async (_task: unknown, signal: AbortSignal) => {
+    joinEntered.resolve();
+    try { await serialize.join(executionId, signal); }
+    finally { joinCancelled.resolve(); await releaseFinalizer.promise; order.push("join-finalized"); }
+  } });
+  mocks.completed.mockReturnValue([{ ...task, webExecution: { executionId, launchId: uuid(13), sessionId: task.sessionId, executionGeneration: "1", launchSubmission: "submitted" } }]);
+  mocks.ticket.mockResolvedValue({ serverOrigin: task.serverOrigin, executionId, claimId: task.claimId, sessionId: task.sessionId, executionGeneration: "1" });
+  mocks.archive.mockResolvedValue({ state: "ready" });
+  mocks.coordinator.mockImplementation(() => ({ tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown }));
+  const running = start(f);
+  try {
+    await eventually(() => expect(mocks.webBackend).toHaveBeenCalled());
+    await joinEntered.promise;
+    await eventually(() => expect(mocks.archive).toHaveBeenCalledOnce());
+    expect(order).toEqual([]);
+    f.signal.abort();
+    await joinCancelled.promise;
+    expect(order).not.toContain("store-closed");
+    expect(order).not.toContain("original-finished");
+    releaseFinalizer.resolve();
+    await running;
+    expect(order).toEqual(["join-finalized", "store-closed"]);
+    releaseOperation.resolve(); await operation;
+    expect(order).toEqual(["join-finalized", "store-closed", "original-finished"]);
+  } finally { f.signal.abort(); releaseFinalizer.resolve(); releaseOperation.resolve(); await operation; await running; }
 });
 
 it("reports an inventory failure against worker archive maintenance and recovers on a later poll", async () => {
@@ -1682,7 +1721,7 @@ it("admits another task through the real coordinator after a stop wake with both
     prepareWorktree: async (_project: any, target: any) => { trace.push("worktree"); const next = { ...binding, worktreePath: path.join(repo, ".worktrees", "daynight", target.worktreeId), branch: `daynight/${target.taskId}` }; await mkdir(next.worktreePath, { recursive: true }); worktrees.set(target.claimId, { owner: target, binding: next }); return next; },
     removeWorktree: async (_project: any, target: any) => { if (target.claimId === owner.claimId) { removeEntered.resolve(); await removeRelease.promise; } worktrees.delete(target.claimId); return { kind: "absent" as const, effectErrors: [] }; },
   });
-  mocks.webOpen.mockReturnValue({ close: mocks.webClose, listUnfinishedTasks: () => [], getTask: () => null, listCompletedTasks: mocks.completed });
+  mocks.webOpen.mockReturnValue({ close: mocks.webClose, listUnfinishedTasks: () => [], getTask: () => null, listCompletedTasks: mocks.completed, listTerminationInventory: () => [] });
   mocks.completed.mockReturnValue([{ projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } }]);
   mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
   mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => { archiveEntered.resolve(); await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); signal.throwIfAborted(); });

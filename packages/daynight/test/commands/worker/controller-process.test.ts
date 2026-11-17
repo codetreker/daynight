@@ -163,3 +163,19 @@ test("serializes the same execution, releases failures, and permits unrelated ex
   release(); await rejected; await second;
   expect(order).toEqual(["first", "independent", "second"]);
 });
+
+test("cancels a join without disturbing the original operation or its queued successor", async () => {
+  const serialize = createControllerExecutionSerializer(), order: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const first = serialize("one", async () => { order.push("first"); await gate; order.push("finished"); });
+  const second = serialize("one", async () => { order.push("second"); });
+  const controller = new AbortController(), reason = new Error("cancel join");
+  const joined = serialize.join("one", controller.signal);
+  controller.abort(reason);
+  await expect(joined).rejects.toBe(reason);
+  expect(order).toEqual(["first"]);
+  release(); await Promise.all([first, second]);
+  expect(order).toEqual(["first", "finished", "second"]);
+  await serialize.join("one", new AbortController().signal);
+});

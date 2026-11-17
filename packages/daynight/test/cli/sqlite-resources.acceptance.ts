@@ -11,7 +11,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const packageDirectory = path.join(workspace, "packages/daynight");
 const sqlDirectories = [
-  "commands/review/sqlite", "commands/worker/sqlite", "commands/worker/backends/sqlite",
+  "commands/review/sqlite", "commands/worker/sqlite", "commands/worker/backends/sqlite", "commands/worker/herdr/sqlite",
   "commands/controller/sqlite/journal", "commands/controller/sqlite/resume-lease",
 ];
 let fixture: Awaited<ReturnType<typeof createAcceptanceCli>>;
@@ -46,6 +46,8 @@ it("ships exact SQL resources and executes installed stores and canonical timeli
   expect(count).toBe(expectedCount);
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("011-outbox-accounting.sql");
   expect(expectedResources.find(({ directory }) => directory === "commands/controller/sqlite/journal")!.source).toHaveProperty("013-native-index-lease.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/worker/backends/sqlite")!.source).toHaveProperty("005-termination-inventory.sql");
+  expect(expectedResources.find(({ directory }) => directory === "commands/worker/herdr/sqlite")!.source).toHaveProperty("005-termination-closures.sql");
   expect(existsSync(path.join(installed, "dist/commands/controller/content/timeline-schema.sql"))).toBe(false);
   const workerVersion = currentSqliteVersion(workerStoreFormat);
   const workerTables = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../src/commands/worker/sqlite/", import.meta.url)))
@@ -67,7 +69,8 @@ const { controllerJournalWriteOptions } = await load("commands/controller/storag
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", worker.version, worker.tables],
-  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 4, ["executions", "orchestration_blockers"]],
+  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 5, ["executions", "orchestration_blockers", "termination_closures", "termination_domains", "termination_launches", "termination_owners"]],
+  ["commands/worker/herdr/lifecycle-store-format.js", "herdrLifecycleStoreFormat", 5, ["executions", "never_started_retirements", "termination_bindings", "termination_closures", "termination_inventory"]],
   ["commands/controller/journal-format.js", "controllerJournalFormat", 13, ["execution", "image_captures", "image_chunks", "image_occurrences", "image_pins", "image_preparations", "image_runtime_state", "input_intents", "input_message_origins", "input_observations", "native_input_publication_images", "native_input_publications", "operations", "outbox", "outbox_totals", "timeline_entries", "timeline_totals"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
@@ -116,5 +119,5 @@ try {
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 13, 1, 13]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 5, 5, 13, 1, 13]);
 });

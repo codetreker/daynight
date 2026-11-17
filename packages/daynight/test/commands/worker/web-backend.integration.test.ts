@@ -12,6 +12,7 @@ import * as launchTickets from "../../../src/commands/controller/launch-ticket.j
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
@@ -21,16 +22,24 @@ import { recoverPendingWebClosure } from "../../../src/commands/worker/backends/
 
 const { children, stores, fixture, cleanupSource, recoveryFixture } = createWebBackendFixtures("file");
 
-it.each([false, true])("reconciles an original pending Web closure after restart (closure committed=%s)", async committed => {
+const proofPlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
+it.each(proofPlatforms.flatMap(platform => [false, true].map(committed => ({ platform, committed }))))("reconciles an original pending Web closure after restart ($platform, closure committed=$committed)", async ({ platform, committed }) => {
   const f = await fixture();
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  if (platform === "win32") Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+  try {
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   const source = await cleanupSource(f, task);
   source.saved.mockRestore(); vi.mocked(lifecycle.recordStoppedControllerGeneration).mockRestore();
   const journalFile = path.join(controllerExecutionDirectory(f.home, source.ticket.executionId), "journal.sqlite");
   const journal = lifecycle.openControllerLifecycleStore(journalFile, source.ticket, { onMigration: () => {} });
-  journal.patchSnapshot({ controllerProcess: source.snapshot.controllerProcess, nativeSessionId: randomUUID() });
+  const controller = process.platform === "win32" ? { ...source.snapshot.controllerProcess!, processGroupId: null, jobObjectName: `Local\\Daynight-${source.ticket.launchId}` } : source.snapshot.controllerProcess!;
+  const lease = {} as ControllerJobLease;
+  journal.patchSnapshot({ controllerProcess: controller, nativeSessionId: randomUUID() });
   journal.close();
-  const stopped = await lifecycle.recordStoppedControllerGeneration(journalFile, source.ticket, {});
+  const stopped = await lifecycle.recordStoppedControllerGeneration(journalFile, source.ticket, { jobLease: lease });
+  expect(source.stopped).toHaveBeenCalledWith(controller, [], undefined, lease);
+  if (process.platform === "win32") lifecycle.validateWindowsControllerStopProof(stopped, source.ticket, launchTickets.controllerPayloadHash(source.ticket));
   task = f.store.beginCleanup(source.task, { kind: "terminal", deadline: 100 }, 8);
   const directory = path.join(resolveWorkerPaths(f.home).workerDirectory, "termination-domain");
   const closureKey = `web/${task.projectId}/${task.taskId}/${task.claimId}/${source.ticket.sessionId}`;
@@ -52,10 +61,14 @@ it.each([false, true])("reconciles an original pending Web closure after restart
   expect(readTerminationPending(directory)).toBeNull();
   expect(reopened.listTerminationInventory().find(item => item.claimId === task.claimId)).toMatchObject({ closure, launches: [{ launchId: source.ticket.launchId, stopProof: { stoppedSnapshotHash: expect.any(String) } }] });
   expect(() => reopened.initializeWebExecution(task, 9)).toThrow(/closed/);
+  } finally { Object.defineProperty(process, "platform", originalPlatform); }
 });
 
-it("joins two original Web generations after restart and orders closure after a prepared cut", async () => {
+it.each(proofPlatforms)("joins two original Web generations after restart and orders closure after a prepared cut (%s)", async platform => {
   const f = await fixture();
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  if (platform === "win32") Object.defineProperty(process, "platform", { ...originalPlatform, value: "win32" });
+  try {
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   const nativeId = randomUUID(), sessionId = randomUUID();
   task = f.store.bindNativeSession(task, { source: "controller", sessionId: nativeId }, 3);
@@ -70,19 +83,23 @@ it("joins two original Web generations after restart and orders closure after a 
   const first = ticketFor(task), file = path.join(controllerExecutionDirectory(f.home, first.executionId), "journal.sqlite");
   await mkdir(path.dirname(file), { recursive: true });
   await launchTickets.writeLaunchTicket(f.home, first);
-  const process = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
-  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  const processFor = (ticket: ControllerLaunchTicket) => ({ pid: 987, parentPid: 1, processGroupId: process.platform === "win32" ? null : 987, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${ticket.launchId}` } : {}) });
+  const firstProcess = processFor(first), lease = {} as ControllerJobLease;
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   let journal = lifecycle.openControllerLifecycleStore(file, first, { onMigration: () => {} });
-  journal.patchSnapshot({ controllerProcess: process, nativeSessionId: nativeId }); journal.close();
-  const firstStopped = await lifecycle.recordStoppedControllerGeneration(file, first, {});
+  journal.patchSnapshot({ controllerProcess: firstProcess, nativeSessionId: nativeId }); journal.close();
+  const firstStopped = await lifecycle.recordStoppedControllerGeneration(file, first, { jobLease: lease });
+  expect(confirm).toHaveBeenCalledWith(firstProcess, [], undefined, lease);
+  if (process.platform === "win32") lifecycle.validateWindowsControllerStopProof(firstStopped, first, launchTickets.controllerPayloadHash(first));
   f.store.recordTerminationStop(first, firstStopped);
   task = await withTerminationDomain(directory, async () => f.store.beginWebGeneration(task, firstStopped, 6), { expectedDomainId: domainId });
   const second = ticketFor(task);
   await launchTickets.writeLaunchTicket(f.home, second);
-  task = f.store.updateWebExecution(task, { launchSubmission: "unknown", controllerProcess: process }, 7);
+  const secondProcess = processFor(second);
+  task = f.store.updateWebExecution(task, { launchSubmission: "unknown", controllerProcess: secondProcess }, 7);
   journal = lifecycle.openControllerLifecycleStore(file, second, { onMigration: () => {} });
   expect(journal.getSnapshot().controlsRevisionFloor).toBe("0");
-  journal.patchSnapshot({ controllerProcess: process, nativeSessionId: nativeId }); journal.close();
+  journal.patchSnapshot({ controllerProcess: secondProcess, nativeSessionId: nativeId }); journal.close();
   task = f.store.beginCleanup(task, { kind: "terminal", deadline: 100 }, 8);
   const earlyLauncher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), joinExecution: vi.fn(async () => {}) };
   const earlyBackend = createWebExecutionBackend({ homeDirectory: f.home, workerId: task.workerId, serverOrigin: task.serverOrigin, store: f.store, git: f.git, launcher: earlyLauncher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50 });
@@ -90,7 +107,9 @@ it("joins two original Web generations after restart and orders closure after a 
   expect(f.store.readTerminationClosure(task)).toBeNull();
   const activationId = randomUUID();
   await withTerminationDomainCut(directory, async domain => { domain.prepare(activationId); }, { expectedDomainId: domainId });
-  await lifecycle.recordStoppedControllerGeneration(file, second, {});
+  const secondStopped = await lifecycle.recordStoppedControllerGeneration(file, second, { jobLease: lease });
+  expect(confirm).toHaveBeenCalledWith(secondProcess, [], undefined, lease);
+  if (process.platform === "win32") lifecycle.validateWindowsControllerStopProof(secondStopped, second, launchTickets.controllerPayloadHash(second));
   f.store.close(); stores.splice(stores.indexOf(f.store), 1);
   const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), joinExecution: vi.fn(async () => {}) };
@@ -121,6 +140,7 @@ it("joins two original Web generations after restart and orders closure after a 
   expect(() => reopened.readTerminationClosure(task)).toThrow();
   expect(reopened.listTerminationInventory().find(item => item.claimId === task.claimId)?.error).toBeInstanceOf(Error);
   rawDb.close();
+  } finally { Object.defineProperty(process, "platform", originalPlatform); }
 });
 
 it.each(["valid", "missing", "generation", "process"] as const)("Web orderly recovery after Worker restart requires committed Windows Job proof (%s)", async kind => {

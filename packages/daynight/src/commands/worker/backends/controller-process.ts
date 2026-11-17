@@ -37,7 +37,7 @@ export const prepareControllerLaunchStorage = (homeDirectory: string, ticket: Co
 /** Serialize mutations of one execution without blocking unrelated executions. */
 export const createControllerExecutionSerializer = () => {
   const tails = new Map<string, Promise<void>>();
-  return async <T>(executionId: string, action: () => Promise<T>): Promise<T> => {
+  const serialize = async <T>(executionId: string, action: () => Promise<T>): Promise<T> => {
     const previous = tails.get(executionId) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -47,6 +47,18 @@ export const createControllerExecutionSerializer = () => {
     try { return await action(); }
     finally { release(); if (tails.get(executionId) === tail) tails.delete(executionId); }
   };
+  const join = async (executionId: string, signal: AbortSignal): Promise<void> => {
+    signal.throwIfAborted();
+    const tail = tails.get(executionId);
+    if (tail === undefined) return;
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      tail.then(() => { signal.removeEventListener("abort", abort); resolve(); });
+      if (signal.aborted) abort();
+    });
+  };
+  return Object.assign(serialize, { join });
 };
 
 /** IPC authenticates the original execution fence; observing never submits input. */

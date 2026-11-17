@@ -1103,7 +1103,7 @@ it("rebuilds unknown zero-version Web state before starting its coordinator", as
   await runWorker({ ...f, signal: cancellation.signal });
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(webExecutionStoreFormat));
-  expect(web.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all()).toEqual([{ name: "executions" }, { name: "orchestration_blockers" }]);
+  expect(web.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()).toEqual([{ name: "executions" }, { name: "orchestration_blockers" }, { name: "termination_closures" }, { name: "termination_domains" }, { name: "termination_launches" }, { name: "termination_owners" }]);
   expect(web.prepare("SELECT * FROM executions").all()).toEqual([]); web.close();
 });
 
