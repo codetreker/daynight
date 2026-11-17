@@ -105,7 +105,7 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
         </div>
         <div className="task-row-meta">
           <time dateTime={model.createdAt}>{standalone.createdOn({ date: format.date(model.createdAt) })}</time>
-          {assignee}<TaskAgentPermissionBadge allowAgents={model.allowAgents} /><TaskPlatformBadge requiredPlatform={model.requiredPlatform} />
+          {assignee}<TaskPlatformBadge requiredPlatform={model.requiredPlatform} /><TaskAgentPermissionBadge allowAgents={model.allowAgents} />
           <span className="task-row-machine">{worker}</span>
           {execution !== null ? <span className="task-row-execution"><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</span>
             : model.status === 'in_progress' && <span>{locale === 'zh-CN' ? '耗时未知' : 'Duration unknown'}</span>}
