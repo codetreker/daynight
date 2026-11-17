@@ -4,7 +4,7 @@ import { array, id, malformed, nonemptyString, record, string, timestamp } from 
 import type { TeamRef } from "./auth-types";
 import type { GitHubImpactProjectPage } from "./github-app-management";
 
-export type GitHubGrantTeam = TeamRef & { readonly version: string };
+export type GitHubGrantTeam = TeamRef & { readonly version: string; readonly personalOwner: { readonly userId: string; readonly name: string | null } | null };
 export type GitHubTeamGrant = { readonly id: string; readonly appId: string; readonly team: GitHubGrantTeam; readonly createdAt: string };
 export type GitHubTeamGrantPage = { readonly items: readonly GitHubTeamGrant[]; readonly nextCursor: string | null };
 export type GitHubGrantPreview = { readonly appId: string; readonly version: string; readonly targetTeam: GitHubGrantTeam; readonly grant: GitHubTeamGrant | null };
@@ -28,8 +28,14 @@ const query = (value: string | null): string => {
 };
 const unique = (values: readonly string[]) => { if (new Set(values).size !== values.length) return malformed(); };
 const team = (value: unknown): GitHubGrantTeam => {
-  const data = record(value); exact(data, ["id", "kind", "name", "version"]);
-  return { ...parseTeamRef({ id: data.id, kind: data.kind, name: data.name }), version: decimal(data.version) };
+  const data = record(value); exact(data, ["id", "kind", "name", "version", "personalOwner"]);
+  const ref = parseTeamRef({ id: data.id, kind: data.kind, name: data.name });
+  if (ref.kind === "ordinary") {
+    if (data.personalOwner !== null) return malformed();
+    return { ...ref, version: decimal(data.version), personalOwner: null };
+  }
+  const owner = record(data.personalOwner); exact(owner, ["userId", "name"]);
+  return { ...ref, version: decimal(data.version), personalOwner: { userId: id(owner.userId), name: owner.name === null ? null : string(owner.name) } };
 };
 const grant = (value: unknown, appId: string): GitHubTeamGrant => {
   const data = record(value); exact(data, ["id", "appId", "team", "createdAt"]);
@@ -37,7 +43,7 @@ const grant = (value: unknown, appId: string): GitHubTeamGrant => {
   if (result.appId !== appId) return malformed();
   return result;
 };
-const sameTeam = (a: GitHubGrantTeam, b: GitHubGrantTeam) => a.id === b.id && a.kind === b.kind && a.name === b.name && a.version === b.version;
+const sameTeam = (a: GitHubGrantTeam, b: GitHubGrantTeam) => a.id === b.id && a.kind === b.kind && a.name === b.name && a.version === b.version && a.personalOwner?.userId === b.personalOwner?.userId && a.personalOwner?.name === b.personalOwner?.name;
 const call = async <T>(url: string, signal: AbortSignal, admission: Admission, parse: (value: unknown) => T, method: "GET" | "POST" = "GET", body?: object, status = 200, write = false): Promise<T> => {
   const timeout = new AbortController(), lifetime = method === "POST" ? AbortSignal.any([signal, timeout.signal]) : signal;
   let timer: ReturnType<typeof setTimeout> | undefined;

@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -68,7 +69,7 @@ func TestGrantAdapterRealStore(t *testing.T) {
 		status             int
 		code               string
 	}{
-		{"POST", base + "/team-grant-preview", `{"teamId":"` + testTeamID + `"}`, 200, `"targetTeam"`},
+		{"POST", base + "/team-grant-preview", `{"teamId":"` + testTeamID + `"}`, 200, `"personalOwner":null`},
 		{"POST", base + "/team-grant-preview", `{"teamId":"66666666-6666-4666-8666-666666666666"}`, 404, `"not_found"`},
 		{"GET", base + "/team-grants/" + testGrantID, "", 404, `"not_found"`},
 		{"GET", base + "/team-grants/" + testGrantID + "/revocation-preview", "", 404, `"not_found"`},
@@ -292,5 +293,77 @@ func TestGrantOperationOutcomeAndCancellation(t *testing.T) {
 				t.Fatalf("%d %s", w.Code, w.Body)
 			}
 		})
+	}
+}
+
+func TestGrantAdapterPersonalOwnerJSON(t *testing.T) {
+	ctx := t.Context()
+	db, err := postgres.Open(ctx, testutil.ScopedDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	owner := "88888888-8888-4888-8888-888888888888"
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO users(id,uniauth_id,name,email,avatar_url,created_at,updated_at) VALUES($1,'owner','Alice','secret@example.test','private',now(),now())`, []any{owner}},
+		{`INSERT INTO teams(id,personal_user_id) VALUES($1,$2)`, []any{testTeamID, owner}},
+		{`INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,42,'App','App','app','key','secret')`, []any{appID}},
+		{`INSERT INTO github_app_admins(app_resource_id,user_id) VALUES($1,$2)`, []any{appID, userID}},
+	} {
+		if _, err := db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := grantMux(t, service.NewGrantManager(db, db))
+	base := appPath + "/" + appID
+	check := func(team any) {
+		t.Helper()
+		m, ok := team.(map[string]any)
+		if !ok || len(m) != 5 || m["id"] != testTeamID || m["kind"] != "personal" || m["name"] != nil || m["version"] != "1" {
+			t.Fatalf("team: %#v", team)
+		}
+		o, ok := m["personalOwner"].(map[string]any)
+		if !ok || len(o) != 2 || o["userId"] != owner || o["name"] != "Alice" {
+			t.Fatalf("owner: %#v", m["personalOwner"])
+		}
+	}
+	request := func(method, path, body string, status int) map[string]any {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest(method, path, body))
+		if w.Code != status {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+		var value map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	preview := request("POST", base+"/team-grant-preview", `{"teamId":"`+testTeamID+`"}`, 200)
+	check(preview["targetTeam"])
+	if preview["grant"] != nil {
+		t.Fatal(preview)
+	}
+	created := request("POST", base+"/team-grants", `{"id":"`+testGrantID+`","version":"1","teamId":"`+testTeamID+`","teamVersion":"1","expectedUserId":"`+userID+`"}`, 201)
+	check(created["team"])
+	preview = request("POST", base+"/team-grant-preview", `{"teamId":"`+testTeamID+`"}`, 200)
+	check(preview["targetTeam"])
+	check(preview["grant"].(map[string]any)["team"])
+	check(request("GET", base+"/team-grants/"+testGrantID, "", 200)["team"])
+	page := request("GET", base+"/team-grants", "", 200)
+	items := page["items"].([]any)
+	if len(items) != 1 {
+		t.Fatal(page)
+	}
+	check(items[0].(map[string]any)["team"])
+	if _, err := db.Pool.Exec(ctx, `DELETE FROM github_app_admins WHERE app_resource_id=$1`, appID); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{base + "/team-grants", base + "/team-grants/" + testGrantID} {
+		request("GET", path, "", 404)
 	}
 }
