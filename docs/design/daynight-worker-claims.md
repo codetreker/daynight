@@ -20,13 +20,12 @@
   "agentControlMode": "web",
   "worktreeId": "45dd8ec8-a8ea-4ac9-a72d-c2ed98fc66f5",
   "phase": "preparing",
-  "herdr": null,
   "nativeSessionId": null,
   "claimedAt": "2026-10-24T12:00:00Z"
 }
 ```
 
-`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 是 claim 创建时冻结的执行模式；新 claim 必须显式为 web，Codex、Claude、Copilot 均可使用。历史记录保留 herdr 模式和原关联，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
+`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 是 claim 创建时冻结的执行模式；新 claim 必须显式为 web，Codex、Claude、Copilot 均可使用。历史记录保留 herdr 模式和原关联；新 web 记录省略 `herdr`，读取也接受旧 web 记录的 `herdr:null`。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
 
 认领的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。completed 保留最后身份、工作区及会话信息，不自动过期；release 的历史由原 Session 和 archive 保存；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
@@ -34,11 +33,11 @@
 
 ## 执行模式兼容
 
-新认领必须显式提供 `agentControlMode: "web"`；省略、null、herdr、空串或未知枚举均拒绝，不转换为 Web。执行摘要更新只接受当前 Web claim，非空 Herdr 资源被拒绝，现有 Web 请求的 `herdr:null` 仍可接受。已存的 Herdr claim 继续按原义解码和编码，人工 release/withdraw 保持可用。存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
+新认领必须显式提供 `agentControlMode: "web"`；省略、null、herdr、空串或未知枚举均拒绝，不转换为 Web。执行摘要更新只接受当前 Web claim；POST 和 PATCH 请求均严格拒绝 `herdr` 成员，包括 null。已存的 Herdr claim 继续按原义解码和编码，人工 release/withdraw 保持可用。存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
 
 属性行迁移为旧非 null worker 文档补充规范模式，把旧 null worker 转为缺失，保留任务版本、时间及 PR 已解码字符串内容。服务端独立校验新写准入，不收窄历史解码。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
 
-Web 认领前通过认证 session-capabilities 请求核验协议、schema/projection 版本和 provider。Claim 的 herdr 始终为 null，phase/nativeSessionId 是执行摘要，不能证明在线或允许换 writer。Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，完整契约见[Task Session](task-session-protocol.md)。丢失 Web 执行证据的 claim 不因 preparing 或 nativeSessionId=null 变成首次启动；保留原模式并暂停，等待原执行来源证明。
+Web 认领前通过认证 session-capabilities 请求核验协议、schema/projection 版本和 provider。Web claim 不包含 herdr，phase/nativeSessionId 是执行摘要，不能证明在线或允许换 writer。Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，完整契约见[Task Session](task-session-protocol.md)。丢失 Web 执行证据的 claim 不因 preparing 或 nativeSessionId=null 变成首次启动；保留原模式并暂停，等待原执行来源证明。
 
 ## HTTP 操作
 
@@ -47,7 +46,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 | 方法和后缀 | 输入与结果 |
 |---|---|
 | POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、agentControlMode、worktreeId；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
-| PATCH `/worker-claim` | version、claimId，及 phase/herdr/nativeSessionId 中至少一个字段；只更新当前执行摘要。 |
+| PATCH `/worker-claim` | version、claimId，及 phase/nativeSessionId/startupReport 中至少一个字段；只更新当前执行摘要。 |
 | PUT `/status` | version、status；只有 done 目标可附带 claimId，以完成当前 active 归属。 |
 | POST `/worker-claim/release` | version、claimId、stoppedConfirmed:true；释放已停止的执行，返回 todo。 |
 | POST `/worker-claim/withdraw` | version、claimId；原 owner/admin 强制撤回 active 归属，原子清除 worker、返回 todo、清空起止时间并设置 allowAgents=false。 |

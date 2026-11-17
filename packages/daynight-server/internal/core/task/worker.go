@@ -31,7 +31,6 @@ type UpdateWorker struct {
 	Version         int64
 	ClaimID         string
 	Phase           *model.WorkerPhase
-	Herdr           **model.WorkerHerdr
 	NativeSessionID **string
 	StartupReport   *sp.StartupReport
 }
@@ -126,14 +125,11 @@ func ValidateWorkerUpdate(input UpdateWorker) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if input.Phase == nil && input.Herdr == nil && input.NativeSessionID == nil && input.StartupReport == nil {
+	if input.Phase == nil && input.NativeSessionID == nil && input.StartupReport == nil {
 		return "", invalidInput("At least one worker execution field must be provided.")
 	}
 	if input.Phase != nil && !input.Phase.Valid() {
 		return "", invalidInput("Worker phase is invalid.")
-	}
-	if input.Herdr != nil && *input.Herdr != nil {
-		return "", invalidInput("Worker execution cannot bind Herdr resources.")
 	}
 	if input.NativeSessionID != nil && *input.NativeSessionID != nil && !model.ValidWorkerText(**input.NativeSessionID) {
 		return "", invalidInput("Native session ID must be null or nonempty UTF-8 text without NUL.")
@@ -156,9 +152,6 @@ func WorkerUpdateAdmission(worker *model.WorkerClaim, userID, claimID string, in
 	}
 	if worker.AgentControlMode != model.AgentControlModeWeb {
 		return invalidInput("Only Web execution can be updated.")
-	}
-	if input.Herdr != nil && *input.Herdr != nil {
-		return invalidInput("Worker execution cannot bind Herdr resources.")
 	}
 	if input.StartupReport != nil && (worker.AgentControlMode != model.AgentControlModeWeb || input.StartupReport.ClaimID != claimID) {
 		return ClaimConflict()
@@ -186,13 +179,10 @@ func WorkerUpdateCandidate(current model.Task, worker *model.WorkerClaim, claimI
 	if input.Phase != nil {
 		next.Phase = *input.Phase
 	}
-	if input.Herdr != nil {
-		next.Herdr = *input.Herdr
-	}
 	if input.NativeSessionID != nil {
 		next.NativeSessionID = *input.NativeSessionID
 	}
-	if !reportChanged && next.Phase == worker.Phase && model.EqualOptional(next.Herdr, worker.Herdr) && model.EqualOptional(next.NativeSessionID, worker.NativeSessionID) {
+	if !reportChanged && next.Phase == worker.Phase && model.EqualOptional(next.NativeSessionID, worker.NativeSessionID) {
 		return store.TaskWrite{}, false, nil
 	}
 	values := CurrentWrite(current)

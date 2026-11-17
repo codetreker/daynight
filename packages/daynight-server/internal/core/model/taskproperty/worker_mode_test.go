@@ -71,7 +71,7 @@ func TestWorkerModeCodecRejectsInvalidModesAndWebHerdrBindings(t *testing.T) {
 	}
 }
 
-func TestStoredWorkerAcceptsWebWithoutHerdrWithoutChangingAdmission(t *testing.T) {
+func TestStoredWorkerAcceptsWebWithoutHerdr(t *testing.T) {
 	worker := workerJSON(t)
 	worker["agentControlMode"] = json.RawMessage(`"web"`)
 	delete(worker, "herdr")
@@ -96,8 +96,13 @@ func TestStoredWorkerAcceptsWebWithoutHerdrWithoutChangingAdmission(t *testing.T
 		t.Fatalf("worker changed on round trip: %#v, %v", claim, err)
 	}
 	raw, _ := json.Marshal(worker)
+	if _, err := taskproperty.NormalizeValue("worker", raw); err != nil {
+		t.Fatalf("new worker admission rejected omitted herdr: %v", err)
+	}
+	worker["herdr"] = json.RawMessage(`null`)
+	raw, _ = json.Marshal(worker)
 	if _, err := taskproperty.NormalizeValue("worker", raw); err == nil {
-		t.Fatal("new worker admission accepted omitted herdr")
+		t.Fatal("new worker admission accepted herdr null")
 	}
 	worker["herdr"] = json.RawMessage(`{"session":"s","workspaceId":"w","paneId":"p"}`)
 	if _, err := taskproperty.Decode(workerPropertiesJSON(t, worker)); err == nil {
@@ -133,7 +138,7 @@ func TestNewWorkerAdmissionOnlyAllowsWeb(t *testing.T) {
 				worker := workerJSON(t)
 				worker["agentControlMode"] = json.RawMessage(`"` + mode + `"`)
 				worker["agent"] = json.RawMessage(`"` + agent + `"`)
-				worker["herdr"] = json.RawMessage(`null`)
+				delete(worker, "herdr")
 				raw, err := json.Marshal(worker)
 				if err != nil {
 					t.Fatal(err)

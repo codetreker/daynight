@@ -233,7 +233,7 @@ func workerSchema() json.RawMessage {
 		"nativeSessionId": nullableSchema(workerTextSchema()),
 		"claimedAt":       map[string]any{"type": "string", "format": "date-time", "description": "Nonzero RFC3339 timestamp."},
 	}
-	schema := objectSchema(properties, "claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt")
-	schema["allOf"] = []any{map[string]any{"if": map[string]any{"properties": map[string]any{"agentControlMode": map[string]any{"const": "web"}}}, "then": map[string]any{"properties": map[string]any{"herdr": map[string]any{"type": "null"}}}}}
+	schema := objectSchema(properties, "claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "nativeSessionId", "claimedAt")
+	schema["allOf"] = []any{map[string]any{"if": map[string]any{"properties": map[string]any{"agentControlMode": map[string]any{"const": "web"}}}, "then": map[string]any{"properties": map[string]any{"herdr": map[string]any{"type": "null"}}}, "else": map[string]any{"required": []string{"herdr"}}}}
 	return schemaJSON(schema)
 }

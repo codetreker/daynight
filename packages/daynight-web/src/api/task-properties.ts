@@ -33,9 +33,9 @@ const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || va
 const workerClaim = (value: unknown): WorkerClaim => {
   const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
   const machine = fields(data.machine, ["id", "name"]);
-  const herdr = data.herdr === null ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
   const agentControlMode = data.agentControlMode;
   if (agentControlMode !== "herdr" && agentControlMode !== "web") return malformed();
+  const herdr = data.herdr === null || agentControlMode === "web" && data.herdr === undefined ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
   if (agentControlMode === "web" && herdr !== null) return malformed();
   return {
     claimId: id(data.claimId), state: data.state === "active" || data.state === "completed" ? data.state : malformed(),

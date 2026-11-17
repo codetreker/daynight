@@ -35,7 +35,7 @@ type workerDocument struct {
 	AgentControlMode model.WorkerAgentControlMode `json:"agentControlMode"`
 	WorktreeID       string                       `json:"worktreeId"`
 	Phase            model.WorkerPhase            `json:"phase"`
-	Herdr            *herdrDocument               `json:"herdr"`
+	Herdr            json.RawMessage              `json:"herdr,omitempty"`
 	NativeSessionID  *string                      `json:"nativeSessionId"`
 	ClaimedAt        string                       `json:"claimedAt"`
 }
@@ -48,7 +48,9 @@ func encodeWorker(worker *model.WorkerClaim) *workerDocument {
 		Machine: machineDocument{ID: worker.Machine.ID, Name: worker.Machine.Name}, Platform: worker.Platform, Agent: worker.Agent, AgentControlMode: worker.AgentControlMode,
 		WorktreeID: worker.WorktreeID, Phase: worker.Phase, NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC().Format(time.RFC3339Nano)}
 	if worker.Herdr != nil {
-		value.Herdr = &herdrDocument{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
+		value.Herdr, _ = json.Marshal(herdrDocument{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID})
+	} else if worker.AgentControlMode == model.AgentControlModeHerdr {
+		value.Herdr = json.RawMessage(`null`)
 	}
 	return value
 }
@@ -117,7 +119,10 @@ func decodeWorkerDocument(data []byte, stored bool) (*model.WorkerClaim, error) 
 		return nil, fmt.Errorf("properties.worker has invalid state, platform, agent or phase")
 	}
 	herdrRaw, exists := fields["herdr"]
-	if !exists && (!stored || worker.AgentControlMode != model.AgentControlModeWeb) {
+	if !stored && exists {
+		return nil, fmt.Errorf("properties.worker.herdr is not accepted for new execution")
+	}
+	if stored && !exists && worker.AgentControlMode != model.AgentControlModeWeb {
 		return nil, fmt.Errorf("properties.worker.herdr is required")
 	}
 	if exists && !bytes.Equal(bytes.TrimSpace(herdrRaw), []byte("null")) {

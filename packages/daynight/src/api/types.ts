@@ -414,7 +414,6 @@ export type UpdateWorkerClaimInput = {
   readonly version: bigint;
   readonly claimId: string;
   readonly phase?: WorkerPhase;
-  readonly herdr?: WorkerHerdr | null;
   readonly nativeSessionId?: string | null;
   readonly startupReport?: import("../session/startup.js").SessionStartupReport;
 };

@@ -80,6 +80,11 @@ describe("worker execution mode read contract", () => {
   });
   it.each(["codex", "claude", "copilot"])("reads %s web claims with no Herdr binding", (agent) => {
     expect(read({ ...worker, agentControlMode: "web", agent, herdr: null })).toMatchObject({ agentControlMode: "web", agent, herdr: null });
+    const { herdr: _herdr, ...withoutHerdr } = worker;
+    const value = { ...task, properties: { ...task.properties, worker: { ...withoutHerdr, agentControlMode: "web", agent } } };
+    const parsed = parseTask(value, projectId, taskId);
+    expect(parsed).toEqual(value);
+    expect(readWorkerClaim(parsed.properties)).toMatchObject({ agentControlMode: "web", agent, herdr: null });
   });
   it.each([null, "", "other", undefined])("rejects explicit invalid mode %j", (agentControlMode) => {
     expect(() => read({ ...worker, agentControlMode })).toThrow("invalid response");

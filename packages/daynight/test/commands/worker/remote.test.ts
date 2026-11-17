@@ -82,13 +82,13 @@ describe("worker remote API", () => {
     const remote = createWorkerRemote({ serverUrl, serverToken: token });
     expect(await remote.currentUserId(signal())).toBe(worker.userId);
     const observed = await remote.readTask(projectId, taskId, signal());
-    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report }, signal())).resolves.toEqual(updated);
+    await expect(remote.update(observed, { phase: "waiting", nativeSessionId: null, startupReport: report }, signal())).resolves.toEqual(updated);
     await expect(remote.readTask(projectId, taskId, signal())).resolves.toEqual(updated);
     const taskPath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
     expect(requests.map(({ method, url }) => [method, url])).toEqual([["GET", "/api/v1/me"], ["GET", taskPath], ["PATCH", `${taskPath}/worker-claim`], ["GET", taskPath]]);
     expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
     expect(requests.slice(1).map(({ protocol }) => protocol)).toEqual(["2", "2", "2"]);
-    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, herdr: null, startupReport: report });
+    expect(requests[2]!.body).toEqual({ version: 1n, claimId: descriptor.claimId, phase: "waiting", nativeSessionId: null, startupReport: report });
     expect(JSON.stringify(report)).not.toContain(token);
   });
 

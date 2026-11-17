@@ -85,7 +85,11 @@ describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
-    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
+    const webClaim = { ...claim(), agentControlMode: "web" as const };
+    const { herdr: _herdr, ...newWebClaim } = webClaim;
+    const claimed = task(webClaim, max);
+    const updated = task({ ...webClaim, phase: "executing", nativeSessionId: "native" });
+    const responses = [{ ...claimed, properties: { ...claimed.properties, worker: newWebClaim } }, { ...updated, properties: { ...updated.properties, worker: { ...newWebClaim, phase: "executing", nativeSessionId: "native" } } }, task(claim("completed")), task(undefined), { ...task(undefined), allowAgents: false }];
     const origin = await listen((request, response, body) => {
       requests.push({ method: request.method!, path: request.url!, body });
       const result = responses.shift();
@@ -93,9 +97,9 @@ describe("in-process worker task API", () => {
       respond(response, result);
     });
     const client = api(origin);
-    const initial: ClaimWorkerTaskInput = { ...descriptor, version: max - 1n };
-    await expect(client.claimWorkerTask(projectId, taskId, initial)).resolves.toMatchObject({ version: max, properties: { worker: claim() } });
-    const update = { version: 1n, claimId, phase: "executing", herdr: { paneId: "p", session: "w", workspaceId: "ws" }, nativeSessionId: "native" } as const;
+    const initial: ClaimWorkerTaskInput = { ...descriptor, agentControlMode: "web", version: max - 1n };
+    await expect(client.claimWorkerTask(projectId, taskId, initial)).resolves.toMatchObject({ version: max, properties: { worker: newWebClaim } });
+    const update = { version: 1n, claimId, phase: "executing", nativeSessionId: "native" } as const;
     await client.updateWorkerClaim(projectId, taskId, update);
     await client.completeWorkerTask(projectId, taskId, { version: 1n, claimId });
     await client.releaseWorkerClaim(projectId, taskId, { version: 1n, claimId, stoppedConfirmed: true });
@@ -110,6 +114,16 @@ describe("in-process worker task API", () => {
     expect(requests[2]!.body).toEqual({ version: 1n, claimId, status: "done" });
     expect(requests[3]!.body).toEqual({ version: 1n, claimId, stoppedConfirmed: true });
     expect(requests[4]!.body).toEqual({ version: 1n, claimId });
+  });
+
+  it.each([null, undefined, { session: "w", workspaceId: "ws", paneId: "p" }])("rejects herdr=%j in new claim and update inputs before dispatch", (herdr) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, herdr } as never)).toThrow("herdr is no longer accepted");
+    expect(() => client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId, herdr } as never)).toThrow("herdr is no longer accepted");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([true, false, undefined, null])("rejects deprecated continuityConfirmed=%s before any worker write", (continuityConfirmed) => {

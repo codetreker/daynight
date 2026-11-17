@@ -135,15 +135,14 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 			requireFault(t, err, entry.code)
 		})
 	}
-	t.Run("clear execution resources", func(t *testing.T) {
+	t.Run("clear native session", func(t *testing.T) {
 		cleared := workerTestResult(updated)
-		next.Herdr, next.NativeSessionID = nil, nil
+		next.NativeSessionID = nil
 		cleared.Properties = testWithWorker(t, updated.Properties, &next)
 		f := workerMockWrite(t, updated, owner)
 		workerExpectUpdate(t, f, workerTestValues(cleared), cleared)
-		var noHerdr *model.WorkerHerdr
 		var noNative *string
-		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, Herdr: &noHerdr, NativeSessionID: &noNative})
+		got, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: updated.Version, ClaimID: descriptor.ClaimID, NativeSessionID: &noNative})
 		if err != nil || !reflect.DeepEqual(got, cleared) {
 			t.Fatalf("resource clear: %#v %v", got, err)
 		}
@@ -335,10 +334,6 @@ func TestWorkerOperationsRejectInvalidInputsAndMissingResources(t *testing.T) {
 		},
 		"phase": func(s *taskservice.Tasks) error {
 			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, Phase: pointer(model.WorkerPhase("invalid"))})
-			return err
-		},
-		"Herdr": func(s *taskservice.Tasks) error {
-			_, err := s.UpdateWorker(t.Context(), owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: base.ClaimID, Herdr: pointer(&model.WorkerHerdr{})})
 			return err
 		},
 		"native": func(s *taskservice.Tasks) error {

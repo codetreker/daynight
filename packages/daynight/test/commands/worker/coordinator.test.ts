@@ -367,7 +367,7 @@ it("routes Web claims, freezes launch settings, and keeps interaction state out 
     await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
     const row = f.store.listTasks()[0]!;
     expect(row).toMatchObject({ agentControlMode: "web", sessionId: uuid(880) });
-    expect(vi.mocked(f.remote.update).mock.calls[0]![1]).toEqual({ phase: "executing", nativeSessionId: uuid(880), herdr: null });
+    expect(vi.mocked(f.remote.update).mock.calls[0]![1]).toEqual({ phase: "executing", nativeSessionId: uuid(880) });
     expect(monitor.capture().activities).toEqual([expect.objectContaining({ kind: "execution", phase: "waiting", status: "waiting", waitReason: "native-input" })]);
     controllerActivity = "working";
     webConfiguration.model = "changed-model";
