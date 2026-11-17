@@ -1554,9 +1554,19 @@ it("retains backfill blocker and probe deadline across runtime restart without c
   mocks.archiveProbe.mockResolvedValue({ kind: "blocked", code: "archive_incomplete" });
   const timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
   mocks.delay.mockImplementation(async (_ms, _value, options) => { await timers.setTimeout(1, undefined, options); });
-  let stop = f.signal, rounds = 0;
-  mocks.coordinator.mockImplementation(() => ({ tick: async () => { if (++rounds === 3) stop.abort(); }, archiveYield: () => false, updateConfiguration: update, shutdown }));
-  await start(f);
+  let retainedReads = 0;
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    const read = options.store.getArchiveBackfillSchedule.bind(options.store);
+    vi.spyOn(options.store, "getArchiveBackfillSchedule").mockImplementation(identity => { const result = read(identity); retainedReads++; return result; });
+    return { tick: async () => {}, archiveYield: () => false, updateConfiguration: update, shutdown };
+  });
+  const retries = () => mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry" && event.message.startsWith(`Completed session ${uuid(11)}`)).length;
+  const runUntil = async (signal: AbortController, check: () => void) => {
+    const running = start({ ...f, signal });
+    try { await eventuallyWithoutAdvancingTime(check); }
+    finally { signal.abort(); await running; }
+  };
+  await runUntil(f.signal, () => expect(retries()).toBe(1));
   expect(mocks.archiveProbe).toHaveBeenCalledOnce();
   const readState = () => {
     const db = openWorkerStore(f.paths.databaseFile);
@@ -1564,26 +1574,27 @@ it("retains backfill blocker and probe deadline across runtime restart without c
     finally { db.close(); }
   };
   expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
-  const restart = async () => { rounds = 0; stop = new AbortController(); await start({ ...f, signal: stop }); };
+  const restart = async (check: () => void) => runUntil(new AbortController(), check);
   now += 60_000;
-  await restart();
+  const previousReads = retainedReads;
+  await restart(() => expect(retainedReads).toBeGreaterThan(previousReads));
   expect(mocks.archiveProbe).toHaveBeenCalledOnce();
   expect(mocks.archive).not.toHaveBeenCalled();
   now += 840_000;
   mocks.archiveProbe.mockRejectedValue(new Error("metadata unavailable"));
-  await restart();
+  await restart(() => expect(retries()).toBe(2));
   expect(mocks.archiveProbe).toHaveBeenCalledTimes(2);
   expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
   expect(mocks.archive).not.toHaveBeenCalled();
   now += 900_000;
   mocks.archiveProbe.mockResolvedValue({ kind: "attempt" });
   mocks.archive.mockRejectedValue(new Error("receipt mismatch"));
-  await restart();
+  await restart(() => expect(retries()).toBe(3));
   expect(readState()).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: now + 900_000 });
   expect(mocks.emit.mock.calls.some(([event]) => event.kind === "session-archive-ready")).toBe(false);
   now += 900_000;
   mocks.archive.mockResolvedValue({ state: "ready" });
-  await restart();
+  await restart(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-ready" })));
   expect(readState()).toBeNull();
   expect(mocks.archive).toHaveBeenCalledTimes(2);
 });

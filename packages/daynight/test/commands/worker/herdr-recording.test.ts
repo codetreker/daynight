@@ -3,11 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeHerdrAnsi } from "../../../src/commands/worker/herdr/recording-ansi.js";
-import { openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
+import { HerdrPersistedCaptureFailure, openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
 import { SESSION_V2_LIMITS, canonicalSessionJson } from "../../../src/session/v2/values.js";
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, fsyncSync: vi.fn(actual.fsyncSync) };
+  return { ...actual, fsyncSync: vi.fn(actual.fsyncSync), lstatSync: vi.fn(actual.lstatSync), fstatSync: vi.fn(actual.fstatSync) };
 });
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -49,6 +49,24 @@ describe("bounded terminal styled text", () => {
 });
 
 describe("durable Herdr recording", () => {
+  it("preserves large journal identities when appending and confirming a durable capture failure", async () => {
+    const f = fixture(), journal = path.join(f.directory, "journal.jsonl"), actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const realIdentity = actual.lstatSync(journal, { bigint: true }), inode = 9007199254740993n;
+    const withInode = <T extends object>(stat: T, bigint: boolean): T => Object.create(stat, { ino: { value: bigint ? inode : Number(inode) } }) as T;
+    vi.mocked(lstatSync).mockImplementation(((file: Parameters<typeof lstatSync>[0], options?: { bigint?: boolean }) => {
+      const stat = actual.lstatSync(file, options as { bigint: true });
+      return file === journal ? withInode(stat, options?.bigint === true) : stat;
+    }) as typeof lstatSync);
+    vi.mocked(fstatSync).mockImplementation(((fd: number, options?: { bigint?: boolean }) => {
+      const stat = actual.fstatSync(fd, options as { bigint: true }), identity = actual.fstatSync(fd, { bigint: true });
+      return identity.dev === realIdentity.dev && identity.ino === realIdentity.ino ? withInode(stat, options?.bigint === true) : stat;
+    }) as typeof fstatSync);
+    try {
+      const reopened = openHerdrRecordingStore(f.options);
+      reopened.fail("1");
+      expect(() => openHerdrRecordingStore(f.options)).toThrow(HerdrPersistedCaptureFailure);
+    } finally { vi.mocked(lstatSync).mockRestore(); vi.mocked(fstatSync).mockRestore(); }
+  });
   it("accounts for empty-generation boundaries before admitting another run or segment", () => {
     const f = fixture(), maximum = SESSION_V2_LIMITS.maxGaps;
     f.store.sample(segment.segmentId, screen("first"), at(0));
