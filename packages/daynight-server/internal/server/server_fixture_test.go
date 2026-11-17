@@ -2177,49 +2177,9 @@ func (d sessionHTTPRejectedDAO) LockTerminal(a0 context.Context, a1 string) ([]b
 	panic("unconfigured SessionDAO.LockTerminal")
 }
 
-func (d sessionHTTPRejectedDAO) SaveTerminal(a0 context.Context, a1 string, a2 []byte, a3 *time.Time, a4 string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SaveTerminal")
-	panic("unconfigured SessionDAO.SaveTerminal")
-}
-
-func (d sessionHTTPRejectedDAO) FindTerminalRegistration(a0 context.Context, a1 string, a2 string, a3 string, a4 string, a5 string) (string, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.FindTerminalRegistration")
-	panic("unconfigured SessionDAO.FindTerminalRegistration")
-}
-
-func (d sessionHTTPRejectedDAO) InsertTerminal(a0 context.Context, a1 store.TerminalRegistration) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InsertTerminal")
-	panic("unconfigured SessionDAO.InsertTerminal")
-}
-
-func (d sessionHTTPRejectedDAO) InsertRecordingEvidence(a0 context.Context, a1 string, a2 int64, a3 string, a4 int64, a5 string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InsertRecordingEvidence")
-	panic("unconfigured SessionDAO.InsertRecordingEvidence")
-}
-
-func (d sessionHTTPRejectedDAO) InvalidateTerminalOperations(a0 context.Context, a1 string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.InvalidateTerminalOperations")
-	panic("unconfigured SessionDAO.InvalidateTerminalOperations")
-}
-
-func (d sessionHTTPRejectedDAO) ExpireTerminalOperations(a0 context.Context, a1 string, a2 time.Time) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.ExpireTerminalOperations")
-	panic("unconfigured SessionDAO.ExpireTerminalOperations")
-}
-
 func (d sessionHTTPRejectedDAO) TerminalArchive(a0 context.Context, a1 string) (v2.ArchiveStatus, *v2.Receipt, string, error) {
 	unexpectedHTTPCall(d.t, "SessionDAO.TerminalArchive")
 	panic("unconfigured SessionDAO.TerminalArchive")
-}
-
-func (d sessionHTTPRejectedDAO) SaveTerminalReceipt(a0 context.Context, a1 string, a2 v2.Receipt, a3 *string) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SaveTerminalReceipt")
-	panic("unconfigured SessionDAO.SaveTerminalReceipt")
-}
-
-func (d sessionHTTPRejectedDAO) SaveTerminalArchiveStatus(a0 context.Context, a1 string, a2 v2.ArchiveStatus) error {
-	unexpectedHTTPCall(d.t, "SessionDAO.SaveTerminalArchiveStatus")
-	panic("unconfigured SessionDAO.SaveTerminalArchiveStatus")
 }
 
 func (d sessionHTTPRejectedDAO) CurrentTerminalSession(a0 context.Context, a1 string, a2 string, a3 string) (string, error) {
@@ -2230,21 +2190,6 @@ func (d sessionHTTPRejectedDAO) CurrentTerminalSession(a0 context.Context, a1 st
 func (d sessionHTTPRejectedDAO) TerminalHistory(a0 context.Context, a1 string, a2 string, a3 *time.Time, a4 *string, a5 int) ([]store.TerminalHistoryRow, error) {
 	unexpectedHTTPCall(d.t, "SessionDAO.TerminalHistory")
 	panic("unconfigured SessionDAO.TerminalHistory")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalRecordingEvidence(a0 context.Context, a1 string, a2 int64, a3 string) (string, string, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalRecordingEvidence")
-	panic("unconfigured SessionDAO.TerminalRecordingEvidence")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalAutomationAllowed(a0 context.Context, a1 string) (bool, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalAutomationAllowed")
-	panic("unconfigured SessionDAO.TerminalAutomationAllowed")
-}
-
-func (d sessionHTTPRejectedDAO) TerminalInputPending(a0 context.Context, a1 string) (bool, error) {
-	unexpectedHTTPCall(d.t, "SessionDAO.TerminalInputPending")
-	panic("unconfigured SessionDAO.TerminalInputPending")
 }
 
 var _ store.SessionDAO = sessionHTTPRejectedDAO{}

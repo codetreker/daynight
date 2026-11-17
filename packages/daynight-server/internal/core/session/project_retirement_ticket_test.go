@@ -19,8 +19,6 @@ func TestProjectRetirementTicketPreservesReplacementsAndBoundsCleanup(t *testing
 	pending.reply <- contentReply{}
 	stale := &pendingContent{projectID: project, reply: make(chan contentReply, 1)}
 	s.content.pending = map[string]*pendingContent{"pending": pending, "stale": stale}
-	frame := &terminalFrameWrite{projectID: project}
-	s.terminalFrameWrites = map[string]*terminalFrameWrite{"frame": frame}
 	ticket := s.CaptureProjectRetirement(project)
 	changed.value = newLive(sp.Snapshot{Identity: sp.Identity{ProjectID: project}})
 	replacement := &liveCell{value: newLive(sp.Snapshot{Identity: sp.Identity{ProjectID: project}})}
@@ -36,8 +34,5 @@ func TestProjectRetirementTicketPreservesReplacementsAndBoundsCleanup(t *testing
 	}
 	if s.content.pending["stale"] != newPending {
 		t.Fatal("retired a newer content request")
-	}
-	if s.terminalFrameWrites["frame"] != nil {
-		t.Fatal("in-flight frame was not fenced")
 	}
 }

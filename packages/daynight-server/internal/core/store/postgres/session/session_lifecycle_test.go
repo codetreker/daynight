@@ -495,11 +495,9 @@ func testBotSessionCleanupIsTransactional(t *testing.T, db *postgres.Store) {
 		if err := dao.InsertSessionOperation(ctx, store.SessionOperation{SessionID: id, OperationID: op, Seq: 1, Hash: []byte("operation"), Actor: actor, Command: sp.Command{Kind: "send_message", Payload: json.RawMessage(`{}`)}, Receipt: sp.Operation{State: "accepted"}}); err != nil {
 			return err
 		}
-		if err := dao.InsertRecordingEvidence(ctx, id, 1, uuid.NewString(), 1, strings.Repeat("c", 64)); err != nil {
-			return err
-		}
 		return dao.SetSessionArchiveReady(ctx, id, strings.Repeat("b", 64), 10, "archive.json")
 	})
+	mustQueryExec(t, db, `INSERT INTO session_recording_evidence(session_id,execution_generation,evidence_id,revision,body_hash) VALUES($1,1,$2,1,$3)`, id, uuid.NewString(), strings.Repeat("c", 64))
 	mustQueryExec(t, db, `INSERT INTO session_events(session_id,event_seq,event) VALUES($1,1,'{}')`, id)
 	mustQueryExec(t, db, `INSERT INTO session_timeline(session_id,entry_id,entry_seq,revision,entry) VALUES($1,$2,1,1,'{}')`, id, uuid.NewString())
 	resource := uuid.NewString()

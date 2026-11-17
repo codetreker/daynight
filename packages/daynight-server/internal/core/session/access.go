@@ -21,13 +21,6 @@ type Access struct {
 
 type TaskAccess struct{ task task }
 
-type TerminalAccess struct {
-	tx     *operationTx
-	record *terminalRecord
-	task   task
-	write  bool
-}
-
 type Authority struct {
 	Purpose                                                        BrowserPurpose
 	Test                                                           bool
@@ -189,29 +182,6 @@ func (op *Operation) BindArchive(a *Access, t *TaskAccess, p model.Principal, pr
 		return denied()
 	}
 	a.task = t.task
-	return nil
-}
-
-func (op *Operation) LoadTerminal(ctx context.Context, scope store.SessionScope, id string) (*TerminalAccess, error) {
-	_, tx := op.scoped(scope)
-	r, err := loadTerminal(ctx, tx, id)
-	if err != nil {
-		return nil, err
-	}
-	return &TerminalAccess{tx: tx, record: r}, nil
-}
-
-func (op *Operation) BindTerminal(a *TerminalAccess, t *TaskAccess, p model.Principal, project, taskID string, deleted bool) error {
-	r := a.record
-	if r.Owner.ProjectID != project || r.Owner.TaskID != taskID {
-		return conflict()
-	}
-	if deleted {
-		if err := terminalOwner(p, r); err != nil {
-			return err
-		}
-	}
-	a.task, a.write = t.task, p.UserID == r.Owner.OwnerUserID
 	return nil
 }
 

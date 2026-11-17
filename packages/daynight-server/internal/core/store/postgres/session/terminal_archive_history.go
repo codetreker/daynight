@@ -30,24 +30,6 @@ func (tx *DAO) TerminalArchive(ctx context.Context, id string) (v2.ArchiveStatus
 	}
 	return status, receipt, "", nil
 }
-func (tx *DAO) SaveTerminalReceipt(ctx context.Context, id string, receipt v2.Receipt, path *string) error {
-	raw, err := json.Marshal(receipt)
-	if err != nil {
-		return err
-	}
-	_, err = tx.tx.Exec(ctx, `INSERT INTO session_archives(session_id,state,sha256,byte_length,object_path,error_code,schema_version,completeness,finalization_id,receipt) VALUES($1,$2,$3,$4,$5,$6,2,$7,$8,$9) ON CONFLICT(session_id) DO UPDATE SET state=excluded.state,sha256=excluded.sha256,byte_length=excluded.byte_length,object_path=excluded.object_path,error_code=excluded.error_code,schema_version=2,completeness=excluded.completeness,finalization_id=excluded.finalization_id,receipt=excluded.receipt,updated_at=now()`, id, receipt.Disposition, receipt.SHA256, receipt.ByteLength, path, receipt.Reason, receipt.Completeness, receipt.FinalizationID, raw)
-	if err != nil {
-		return pginternal.QueryError("save terminal receipt", err)
-	}
-	return nil
-}
-func (tx *DAO) SaveTerminalArchiveStatus(ctx context.Context, id string, status v2.ArchiveStatus) error {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO session_archives(session_id,state,error_code,schema_version,finalization_id) VALUES($1,$2,$3,2,$4) ON CONFLICT(session_id) DO UPDATE SET state=excluded.state,error_code=excluded.error_code,finalization_id=excluded.finalization_id,updated_at=now()`, id, status.State, status.ErrorCode, status.FinalizationID)
-	if err != nil {
-		return pginternal.QueryError("save terminal archive status", err)
-	}
-	return nil
-}
 func (tx *DAO) CurrentTerminalSession(ctx context.Context, project, task, claim string) (string, error) {
 	var id string
 	err := tx.tx.QueryRow(ctx, `SELECT id::text FROM task_sessions WHERE project_id=$1 AND task_id=$2 AND claim_id=$3 AND backend='herdr'`, project, task, claim).Scan(&id)
@@ -74,28 +56,4 @@ func (tx *DAO) TerminalHistory(ctx context.Context, project, task string, before
 		return nil, pginternal.QueryError("read terminal history", err)
 	}
 	return result, nil
-}
-func (tx *DAO) TerminalRecordingEvidence(ctx context.Context, id string, generation int64, evidenceID string) (string, string, error) {
-	var hash, revision string
-	err := tx.tx.QueryRow(ctx, `SELECT body_hash,revision::text FROM session_recording_evidence WHERE session_id=$1 AND execution_generation=$2 AND evidence_id=$3`, id, generation, evidenceID).Scan(&hash, &revision)
-	if err != nil {
-		return "", "", pginternal.QueryError("read terminal recording evidence", err)
-	}
-	return hash, revision, nil
-}
-func (tx *DAO) TerminalAutomationAllowed(ctx context.Context, taskID string) (bool, error) {
-	var allowed bool
-	err := tx.tx.QueryRow(ctx, `SELECT allow_agents AND NOT EXISTS(SELECT 1 FROM task_properties WHERE task_id=tasks.id AND name='paused' AND value::jsonb='true'::jsonb) FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&allowed)
-	if err != nil {
-		return false, pginternal.QueryError("read terminal automation permission", err)
-	}
-	return allowed, nil
-}
-func (tx *DAO) TerminalInputPending(ctx context.Context, id string) (bool, error) {
-	var pending bool
-	err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND receipt->>'state' IN ('queued','dispatching'))`, id).Scan(&pending)
-	if err != nil {
-		return false, pginternal.QueryError("read pending terminal input", err)
-	}
-	return pending, nil
 }

@@ -39,7 +39,7 @@ func New(writer store.SessionWriter, files ...filestorage.Storage) *Execution {
 		}
 		return nil
 	}
-	execution := NewExecution(engine, c.browserFor, c.controller, c.archive, c.terminal, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.registerTerminal, c.authorize)
+	execution := NewExecution(engine, c.browserFor, c.controller, c.archive, c.registerTask, c.registerTest, c.controllerGrant, c.taskQuery, c.credential, c.botRun, c.authorize)
 	execution.SetArchivePreflight(c.archivePreflight)
 	execution.SetTerminalHistoryRunner(c.terminalHistory)
 	execution.SetTerminalDirectoryRunners(c.terminalDirectory, c.terminalDirectory)
@@ -225,34 +225,6 @@ func (s *fixtureCoordinator) archive(ctx context.Context, principal model.Princi
 			if err = authorizeTest(ctx, op, scope, principal, access); err != nil {
 				return err
 			}
-		}
-		return work(access)
-	})
-}
-
-func (s *fixtureCoordinator) terminal(ctx context.Context, principal model.Principal, project, taskID, id string, finalize bool, work func(*TerminalAccess) error) error {
-	op, err := s.engine.BeginOperation()
-	if err != nil {
-		return err
-	}
-	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
-		task, deleted, err := op.LockArchiveTask(ctx, scope, project, taskID, finalize)
-		if err != nil {
-			return err
-		}
-		if err = op.LockCredential(ctx, scope, principal); err != nil {
-			return err
-		}
-		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
-			return err
-		}
-		access, err := op.LoadTerminal(ctx, scope, id)
-		if err != nil {
-			return err
-		}
-		if err = op.BindTerminal(access, task, principal, project, taskID, deleted); err != nil {
-			return err
 		}
 		return work(access)
 	})
@@ -518,27 +490,6 @@ func (s *fixtureCoordinator) botRun(ctx context.Context, p model.Principal, work
 			}
 		}
 		return work(op, scope, bot, access, func(principal model.Principal) error { return op.LockCredential(ctx, scope, principal) })
-	})
-}
-
-func (s *fixtureCoordinator) registerTerminal(ctx context.Context, p model.Principal, project, taskID string, work func(*Operation, store.SessionScope, *TaskAccess) error) error {
-	op, err := s.engine.BeginOperation()
-	if err != nil {
-		return err
-	}
-	defer op.Close()
-	return s.write(ctx, op, func(scope store.SessionScope) error {
-		task, err := op.LockRegistrationTask(ctx, scope, project, taskID)
-		if err != nil {
-			return err
-		}
-		if err = op.LockCredential(ctx, scope, p); err != nil {
-			return err
-		}
-		if err = op.CheckProjectAccess(ctx, scope, p, project); err != nil {
-			return err
-		}
-		return work(op, scope, task)
 	})
 }
 

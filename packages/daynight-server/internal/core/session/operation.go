@@ -34,13 +34,11 @@ type BrowserRunner func(context.Context, model.Principal, string, string, string
 type ControllerRunner func(context.Context, sp.ControllerFence, func(*Access) error) error
 type ArchivePreflightRunner func(context.Context, model.Principal, string, string, string, ArchiveMode) (string, error)
 type ArchiveRunner func(context.Context, model.Principal, string, string, string, bool, func(*Access) error) error
-type TerminalRunner func(context.Context, model.Principal, string, string, string, bool, func(*TerminalAccess) error) error
 type TaskRegistrationRunner func(context.Context, model.Principal, string, string, sp.Registration, func(*Operation, store.SessionScope, *Access) error) error
 type TestRegistrationRunner func(context.Context, model.Principal, sp.TestRegistration, func(*Operation, store.SessionScope, *Access) error) error
 type GrantRunner func(context.Context, []byte, func(*Access) error) error
 type TaskRunner func(context.Context, model.Principal, string, string, func(*Operation, store.SessionScope, *TaskAccess, func(string) (*Access, error)) error) error
 type CredentialRunner func(context.Context, model.Principal, func(*Operation, store.SessionScope) error) error
-type TerminalRegistrationRunner func(context.Context, model.Principal, string, string, func(*Operation, store.SessionScope, *TaskAccess) error) error
 type AuthorizationRunner func(context.Context, *Operation, store.SessionScope, model.Principal, Authority) error
 type BotRunner func(context.Context, model.Principal, string, string, func(model.Bot) error, func(model.Bot, *Access) error, func(*Operation, store.SessionScope, model.Bot, *Access, func(model.Principal) error) error) error
 
@@ -55,7 +53,6 @@ type Execution struct {
 	controllerRun            ControllerRunner
 	archiveRun               ArchiveRunner
 	archivePreflightRun      ArchivePreflightRunner
-	terminalRun              TerminalRunner
 	terminalHistoryRun       TerminalHistoryRunner
 	terminalDirectoryRun     TerminalDirectoryRunner
 	taskTerminalDirectoryRun TerminalDirectoryRunner
@@ -64,13 +61,12 @@ type Execution struct {
 	grantRun                 GrantRunner
 	taskRun                  TaskRunner
 	credentialRun            CredentialRunner
-	terminalRegistrationRun  TerminalRegistrationRunner
 	authorizationRun         AuthorizationRunner
 	botRun                   BotRunner
 }
 
-func NewExecution(engine *Engine, browser BrowserRunner, controller ControllerRunner, archive ArchiveRunner, terminal TerminalRunner, taskRegistration TaskRegistrationRunner, testRegistration TestRegistrationRunner, grant GrantRunner, task TaskRunner, credential CredentialRunner, bot BotRunner, terminalRegistration TerminalRegistrationRunner, authorization AuthorizationRunner) *Execution {
-	return &Execution{Engine: engine, browserRun: browser, controllerRun: controller, archiveRun: archive, terminalRun: terminal, taskRegistrationRun: taskRegistration, testRegistrationRun: testRegistration, grantRun: grant, taskRun: task, credentialRun: credential, botRun: bot, terminalRegistrationRun: terminalRegistration, authorizationRun: authorization}
+func NewExecution(engine *Engine, browser BrowserRunner, controller ControllerRunner, archive ArchiveRunner, taskRegistration TaskRegistrationRunner, testRegistration TestRegistrationRunner, grant GrantRunner, task TaskRunner, credential CredentialRunner, bot BotRunner, authorization AuthorizationRunner) *Execution {
+	return &Execution{Engine: engine, browserRun: browser, controllerRun: controller, archiveRun: archive, taskRegistrationRun: taskRegistration, testRegistrationRun: testRegistration, grantRun: grant, taskRun: task, credentialRun: credential, botRun: bot, authorizationRun: authorization}
 }
 
 // BeginOperation admits work without taking a live-cell lock. Database locks

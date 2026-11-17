@@ -1,7 +1,6 @@
 package session_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	pgsession "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/google/uuid"
 )
 
@@ -27,29 +25,41 @@ func testSessionTerminalHistoryRetainsMixedBackendsAndOriginalArchive(t *testing
 	older := now.Add(-time.Hour)
 	oldID, webID, currentID, otherID, newID := queryID(501), queryID(502), queryID(503), queryID(504), queryID(505)
 	oldClaim, webClaim, currentClaim, newClaim := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	terminal := func(dao store.SessionDAO, id, taskID, claim string) error {
-		return dao.InsertTerminal(t.Context(), store.TerminalRegistration{SessionID: id, ProjectID: project.ID, TaskID: taskID, ClaimID: claim, OwnerID: owner.UserID, RegistrationID: uuid.NewString(), Registration: []byte(`{}`), State: []byte(`{"generation":"1"}`), LastSeen: now, ServerInstance: uuid.NewString()})
+	terminal := func(id, taskID, claim string) {
+		mustQueryExec(t, database, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,backend,terminal_state) VALUES($1,$2,$3,$4,$5,$6,'{}',NULL,'herdr','{"generation":"1"}')`, id, project.ID, taskID, claim, owner.UserID, uuid.NewString())
 	}
 	finalization, digest, size, completeness, path := uuid.NewString(), strings.Repeat("c", 64), "7", "complete", "archive/original"
 	receipt := v2.Receipt{FinalizationID: finalization, Disposition: "ready", SHA256: &digest, ByteLength: &size, Completeness: &completeness}
+	rawReceipt, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal(oldID, task.ID, oldClaim)
+	terminal(currentID, task.ID, currentClaim)
+	terminal(otherID, other.ID, uuid.NewString())
+	mustQueryExec(t, database, `INSERT INTO session_archives(session_id,state,sha256,byte_length,object_path,schema_version,completeness,finalization_id,receipt) VALUES($1,'ready',$2,$3,$4,2,$5,$6,$7)`, currentID, digest, size, path, completeness, finalization, rawReceipt)
+	pendingID, unavailableID := uuid.NewString(), uuid.NewString()
+	unavailableReceipt, err := json.Marshal(v2.Receipt{FinalizationID: unavailableID, Disposition: "unavailable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustQueryExec(t, database, `INSERT INTO session_archives(session_id,state,schema_version,finalization_id) VALUES($1,'pending',2,$2)`, oldID, pendingID)
+	mustQueryExec(t, database, `INSERT INTO session_archives(session_id,state,schema_version,finalization_id,receipt) VALUES($1,'unavailable',2,$2,$3)`, otherID, unavailableID, unavailableReceipt)
 	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
-		if err := terminal(dao, oldID, task.ID, oldClaim); err != nil {
-			return err
-		}
-		if err := terminal(dao, currentID, task.ID, currentClaim); err != nil {
-			return err
-		}
-		if err := terminal(dao, otherID, other.ID, uuid.NewString()); err != nil {
-			return err
-		}
-		if err := dao.InsertTaskSession(t.Context(), store.SessionRegistration{Location: store.SessionLocation{SessionID: webID, ProjectID: project.ID, TaskID: task.ID}, ClaimID: webClaim, OwnerID: owner.UserID, RegistrationID: uuid.NewString(), Registration: []byte(`{}`), Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: webID, ClaimID: webClaim, ExecutionGeneration: "1"}}, Lifecycle: "archived"}}); err != nil {
-			return err
-		}
-		return dao.SaveTerminalReceipt(t.Context(), currentID, receipt, &path)
+		return dao.InsertTaskSession(t.Context(), store.SessionRegistration{Location: store.SessionLocation{SessionID: webID, ProjectID: project.ID, TaskID: task.ID}, ClaimID: webClaim, OwnerID: owner.UserID, RegistrationID: uuid.NewString(), Registration: []byte(`{}`), Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: webID, ClaimID: webClaim, ExecutionGeneration: "1"}}, Lifecycle: "archived"}})
 	})
 	mustQueryExec(t, database, `UPDATE task_sessions SET created_at=$1 WHERE id IN ($2,$3)`, older, oldID, webID)
 	mustQueryExec(t, database, `UPDATE task_sessions SET created_at=$1 WHERE id=$2`, now, currentID)
 	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
+
+		pending, pendingReceipt, pendingPath, err := dao.TerminalArchive(t.Context(), oldID)
+		if err != nil || pending.State != "pending" || pending.FinalizationID == nil || *pending.FinalizationID != pendingID || pendingReceipt != nil || pendingPath != "" {
+			t.Fatalf("pending archive: %+v %+v %q %v", pending, pendingReceipt, pendingPath, err)
+		}
+		unavailable, savedUnavailable, unavailablePath, err := dao.TerminalArchive(t.Context(), otherID)
+		if err != nil || unavailable.State != "unavailable" || savedUnavailable == nil || savedUnavailable.Disposition != "unavailable" || savedUnavailable.FinalizationID != unavailableID || unavailablePath != "" {
+			t.Fatalf("unavailable archive: %+v %+v %q %v", unavailable, savedUnavailable, unavailablePath, err)
+		}
 		rows, err := dao.TerminalHistory(t.Context(), project.ID, task.ID, nil, nil, 2)
 		if err != nil || len(rows) != 2 || rows[0].ID != currentID || rows[0].Claim != currentClaim || rows[0].Backend != "herdr" || len(rows[0].Snapshot) != 0 || len(rows[0].Terminal) == 0 || rows[1].ID != webID || rows[1].Claim != webClaim || rows[1].Backend != "web" || len(rows[1].Terminal) != 0 {
 			t.Fatalf("mixed backend history and nullable content: %+v %v", rows, err)
@@ -73,9 +83,7 @@ func testSessionTerminalHistoryRetainsMixedBackendsAndOriginalArchive(t *testing
 		}
 		return nil
 	})
-	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
-		return terminal(dao, newID, task.ID, newClaim)
-	})
+	terminal(newID, task.ID, newClaim)
 	mustQueryExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE id=$1`, task.ID)
 	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
 		actual, err := dao.CurrentTerminalSession(t.Context(), project.ID, task.ID, newClaim)
@@ -88,159 +96,4 @@ func testSessionTerminalHistoryRetainsMixedBackendsAndOriginalArchive(t *testing
 		}
 		return nil
 	})
-}
-
-func TestSessionTerminalWritersReadCommittedPredecessor(t *testing.T) {
-	database := isolatedStore(t)
-	_, owner, _ := testAuthRecords(t, database)
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 2, model.TaskInProgress)
-	id, instance := uuid.NewString(), uuid.NewString()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
-		return dao.InsertTerminal(t.Context(), store.TerminalRegistration{SessionID: id, ProjectID: project.ID, TaskID: task.ID, ClaimID: uuid.NewString(), OwnerID: owner.UserID, RegistrationID: uuid.NewString(), Registration: []byte(`{}`), State: []byte(`{"revision":1}`), LastSeen: now, ServerInstance: instance})
-	})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	first, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer first.Rollback(context.Background())
-	dao := pgsession.New(first)
-	if _, err := dao.LockTerminal(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := dao.SaveTerminal(ctx, id, []byte(`{"revision":2}`), &now, instance); err != nil {
-		t.Fatal(err)
-	}
-	second, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Rollback(context.Background())
-	blocker, reader := first.Conn().PgConn().PID(), second.Conn().PgConn().PID()
-	done := make(chan struct{})
-	var raw []byte
-	var readErr error
-	go func() {
-		defer close(done)
-		raw, readErr = pgsession.New(second).LockTerminal(ctx, id)
-	}()
-	waitErr := awaitSessionStoreBlock(ctx, database, blocker, reader, done)
-	commitErr := first.Commit(ctx)
-	<-done
-	if waitErr != nil || commitErr != nil || readErr != nil {
-		t.Fatalf("terminal write serialization: wait=%v commit=%v read=%v", waitErr, commitErr, readErr)
-	}
-	var state struct {
-		Revision int `json:"revision"`
-	}
-	if err := json.Unmarshal(raw, &state); err != nil || state.Revision != 2 {
-		t.Fatalf("second writer loaded obsolete terminal state: %s %v", raw, err)
-	}
-	if err := second.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func testSessionDAOTerminalLedgerEvidenceAndHistory(t *testing.T, db *postgres.Store) {
-	ctx := context.Background()
-	_, principal, _ := testAuthRecords(t, db)
-	project := queryProject(t, db, 1)
-	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
-	mustQueryExec(t, db, `UPDATE tasks SET allow_agents=true WHERE id=$1`, task.ID)
-	id, claim, registration, instance := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	operationID, expiredID, evidenceID, finalID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-		if _, err := dao.LockTaskRegistration(ctx, project.ID, task.ID); err != nil {
-			return err
-		}
-		if err := dao.InsertTerminal(ctx, store.TerminalRegistration{SessionID: id, ProjectID: project.ID, TaskID: task.ID, ClaimID: claim, OwnerID: principal.UserID, RegistrationID: registration, Registration: []byte(`{}`), State: []byte(`{"revision":1}`), LastSeen: now, ServerInstance: instance}); err != nil {
-			return err
-		}
-		found, err := dao.FindTerminalRegistration(ctx, id, project.ID, registration, task.ID, claim)
-		if err != nil || found != id {
-			t.Fatalf("terminal registration: %q %v", found, err)
-		}
-		found, err = dao.CurrentTerminalSession(ctx, project.ID, task.ID, claim)
-		if err != nil || found != id {
-			t.Fatalf("current terminal: %q %v", found, err)
-		}
-		state, err := dao.LockTerminal(ctx, id)
-		if err != nil || !strings.Contains(string(state), `"revision": 1`) {
-			t.Fatalf("terminal state: %s %v", state, err)
-		}
-		if err := dao.SaveTerminal(ctx, id, []byte(`{"revision":2}`), &now, instance); err != nil {
-			return err
-		}
-		allowed, err := dao.TerminalAutomationAllowed(ctx, task.ID)
-		if err != nil || !allowed {
-			t.Fatalf("automation permission: %v %v", allowed, err)
-		}
-		return nil
-	})
-	// Historical operations are inserted directly: active terminal input no longer
-	// has a producer, while refresh and retirement still settle retained rows.
-	for _, row := range []struct {
-		id, state string
-		seq       int
-		deadline  time.Time
-	}{
-		{operationID, "dispatching", 1, now.Add(time.Minute)},
-		{expiredID, "queued", 2, now.Add(-time.Second)},
-	} {
-		mustQueryExec(t, db, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt,deadline) VALUES($1,$2,$3,$4,'{}',$5,$6,$7,jsonb_build_object('operationId',$2::uuid::text,'state',$8::text),$9)`, id, row.id, row.seq, []byte("terminal"), principal.UserID, principal.CredentialID, string(principal.Kind), row.state, row.deadline)
-	}
-	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
-		pending, err := dao.TerminalInputPending(ctx, id)
-		if err != nil || !pending {
-			t.Fatalf("pending input: %v %v", pending, err)
-		}
-		if err := dao.ExpireTerminalOperations(ctx, id, now); err != nil {
-			return err
-		}
-		if err := dao.InvalidateTerminalOperations(ctx, id); err != nil {
-			return err
-		}
-		hash := strings.Repeat("b", 64)
-		if err := dao.InsertRecordingEvidence(ctx, id, 1, evidenceID, 7, hash); err != nil {
-			return err
-		}
-		gotHash, revision, err := dao.TerminalRecordingEvidence(ctx, id, 1, evidenceID)
-		if err != nil || gotHash != hash || revision != "7" {
-			t.Fatalf("evidence: %s %s %v", gotHash, revision, err)
-		}
-		if err := dao.SaveTerminalArchiveStatus(ctx, id, v2.ArchiveStatus{State: "pending", FinalizationID: &finalID}); err != nil {
-			return err
-		}
-		status, receipt, path, err := dao.TerminalArchive(ctx, id)
-		if err != nil || status.State != "pending" || receipt != nil || path != "" {
-			t.Fatalf("pending archive: %+v %+v %q %v", status, receipt, path, err)
-		}
-		saved := v2.Receipt{FinalizationID: finalID, Disposition: "unavailable"}
-		if err := dao.SaveTerminalReceipt(ctx, id, saved, nil); err != nil {
-			return err
-		}
-		status, receipt, _, err = dao.TerminalArchive(ctx, id)
-		if err != nil || status.State != "unavailable" || receipt == nil || receipt.FinalizationID != finalID {
-			t.Fatalf("archive receipt: %+v %+v %v", status, receipt, err)
-		}
-		history, err := dao.TerminalHistory(ctx, project.ID, task.ID, nil, nil, 10)
-		if err != nil || len(history) != 1 || history[0].ID != id || history[0].Backend != "herdr" {
-			t.Fatalf("history: %+v %v", history, err)
-		}
-		return nil
-	})
-	for _, want := range []struct{ id, state, code string }{
-		{operationID, "unknown", "input_unknown"},
-		{expiredID, "rejected", "input_busy"},
-	} {
-		var state, code string
-		err := db.Pool.QueryRow(ctx, `SELECT receipt->>'state',receipt->>'errorCode' FROM session_operations WHERE session_id=$1 AND operation_id=$2`, id, want.id).Scan(&state, &code)
-		if err != nil || state != want.state || code != want.code {
-			t.Fatalf("terminal operation %s: state=%s code=%s error=%v", want.id, state, code, err)
-		}
-	}
 }

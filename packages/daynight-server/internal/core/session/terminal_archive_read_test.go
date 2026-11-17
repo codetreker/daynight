@@ -97,7 +97,7 @@ func TestTerminalHistoryReadsPersistedArchiveIndependently(t *testing.T) {
 		state := "ready"
 		return []store.TerminalHistoryRow{{ID: id, Claim: claim, Backend: "herdr", Created: time.Now(), Terminal: recordBytes, State: &state}}, nil
 	}
-	f.s.terminalRun, f.s.taskRun = nil, nil
+	f.s.taskRun = nil
 	content := func(p model.Principal, project string, counts map[string]int) (*RetainedArchive, error) {
 		phase := f.dao.ContextPhase(t.Context(), counts)
 		defer f.dao.FinishContext(phase)
@@ -579,5 +579,52 @@ func TestTerminalHistoryMissingStatusAndStorageFailures(t *testing.T) {
 				t.Fatal("failed object read did not close the body")
 			}
 		})
+	}
+}
+
+func TestTerminalArchiveChecksEachRunsCaptureAndZeroContentProof(t *testing.T) {
+	raw, err := os.ReadFile("../../../../daynight/test/session/fixtures/v2/valid-partial-archive.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := v2.DecodeArchive(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := v2.SourceDigest(doc, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := "recording_limit"
+	r := &terminalArchiveRecord{Envelope: v2.Envelope{SessionID: doc.SessionID, ClaimID: doc.ClaimID, ExecutionGeneration: doc.ExecutionGeneration}, Owner: doc.Owner, Runs: doc.Runs, FinalizationID: &doc.FinalizationID, Recording: map[string]terminalRecording{
+		"1": {Responsibility: &v2.RecordingResponsibility{RecordingEnabled: true}, Evidence: &v2.RecordingEvidence{Closed: true, SelectedFrameCount: "1", RegisteredFrameCount: "1", SourceSHA256: digest, CaptureError: &code}},
+	}}
+	if err = verifyTerminalArchiveRecord(r, doc); err != nil {
+		t.Fatal("legitimate same-run recording limit", err)
+	}
+	original := doc.Gaps
+	doc.Gaps = []v2.Gap{{Boundary: &v2.BoundaryGap{}}, {Interval: &v2.IntervalGap{Reason: "checkpoint_lost"}}, {Interval: &v2.IntervalGap{Reason: "recording_limit", SegmentID: uuid.NewString()}}}
+	if err = verifyTerminalArchiveRecord(r, doc); err == nil {
+		t.Fatal("another run's gap concealed capture error")
+	}
+	doc.Gaps = original
+	// The archive parser owns wire validity; this boundary additionally checks
+	// the Worker's immutable recording responsibility for each run.
+	zero := doc.Runs[0]
+	zero.ExecutionGeneration = "2"
+	zero.SegmentIDs = []string{}
+	doc.Runs = append(doc.Runs, zero)
+	r.Runs = doc.Runs
+	r.Recording["2"] = terminalRecording{Responsibility: &v2.RecordingResponsibility{RecordingEnabled: false}, Evidence: &v2.RecordingEvidence{Closed: true, SelectedFrameCount: "0", RegisteredFrameCount: "0", SourceSHA256: v2.EmptySourceDigest()}}
+	if err = verifyTerminalArchiveRecord(r, doc); err == nil {
+		t.Fatal("missing zero-run proof accepted")
+	}
+	doc.UnavailableRuns = []v2.UnavailableRun{{ExecutionGeneration: "2", Evidence: v2.NoRecordingEvidence{RecordingEnabled: true}}}
+	if err = verifyTerminalArchiveRecord(r, doc); err == nil {
+		t.Fatal("zero-run recording policy changed")
+	}
+	doc.UnavailableRuns[0].Evidence.RecordingEnabled = false
+	if err = verifyTerminalArchiveRecord(r, doc); err != nil {
+		t.Fatal("matching zero-run proof", err)
 	}
 }

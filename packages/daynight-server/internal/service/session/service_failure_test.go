@@ -9,10 +9,10 @@ import (
 	"time"
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
@@ -225,28 +225,16 @@ func TestServiceDispatchAuthorizationUsesCurrentCredentials(t *testing.T) {
 func TestServiceTerminalStorageFailures(t *testing.T) {
 	f := newServiceFixture(t)
 	ctx := context.Background()
-	f.service.SetOrigin("https://daynight.example")
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{agentControlMode}','"herdr"')::text WHERE task_id=$1 AND name='worker'`, f.task); err != nil {
+	files, err := local.New(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	pane := "pane"
-	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: f.registration.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: f.project, TaskID: f.task, WorkerID: f.registration.WorkerID, WorktreeID: f.registration.WorktreeID, OwnerUserID: f.owner.UserID, ServerOrigin: "https://daynight.example", Provider: "codex"}, Binding: v2.Binding{InstanceID: "instance", SessionID: "herdr", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_one"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	if _, err := f.service.RegisterTerminal(ctx, f.owner, f.project, f.task, m); err != nil {
-		t.Fatal(err)
-	}
-	for _, point := range []string{"registration_lock", "task", "credential", "project"} {
-		t.Run("registration/"+point, func(t *testing.T) {
-			s := New(failureWriter{SessionWriter: f.db, point: point}, f.service.engine)
-			_, err := s.RegisterTerminal(ctx, f.owner, f.project, f.task, m)
-			if !errors.Is(err, errSessionDAO) {
-				t.Fatalf("failure not returned: %v", err)
-			}
-		})
-	}
+	t.Cleanup(func() { _ = files.Close() })
+	id, _, _ := seedTerminalHistory(t, f, files)
 	for _, point := range []string{"archive_task", "credential", "project", "terminal"} {
 		t.Run("archive/"+point, func(t *testing.T) {
 			s := New(failureWriter{SessionWriter: f.db, point: point}, f.service.engine)
-			_, err := s.TerminalArchiveStatus(ctx, f.owner, f.project, f.task, m.SessionID)
+			_, err := s.TerminalArchiveStatus(ctx, f.owner, f.project, f.task, id)
 			if !errors.Is(err, errSessionDAO) {
 				t.Fatalf("failure not returned: %v", err)
 			}

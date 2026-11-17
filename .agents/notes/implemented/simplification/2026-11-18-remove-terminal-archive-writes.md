@@ -14,8 +14,7 @@ readable and old executions are managed by their users.
 Remove terminal archive upload and finalization writes, recovery operations and
 live Worker state readback. The independent historical archive reader retains
 its persisted record, authorization, integrity checks and residency permits.
-The stored recovery state type remains in the terminal registry record until
-its remaining caller is removed.
+The stored historical reader decodes only the fields needed for uploaded recordings.
 
 This extends the [Worker terminal entry removal](2026-11-18-remove-worker-terminal-entries.md)
 and retains the [history read boundary](../architecture/2026-11-17-terminal-history-read-boundary.md).
@@ -32,5 +31,5 @@ access and integrity checks even though their original bytes remain stored.
 
 Existing uploaded recordings remain available under their original identities and
 permissions. Unuploaded recordings cannot be supplemented through this server.
-The remaining registry implementation is separate from the removed writer and
-recovery operations.
+The [registry removal](2026-11-18-remove-terminal-registry.md) removes the
+remaining live registration and state operations.
