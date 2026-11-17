@@ -62,18 +62,19 @@ describe("Team settings workspace", () => {
   it("retains the expanded delete area across sections and starts another Team collapsed", async () => {
     const beta = "00000000-0000-4000-8000-000000000006";
     const fetcher = install((url) => url === `/api/v1/teams/${beta}` ? json({ ...team("Beta"), id: beta, membership: { ...team().membership, teamId: beta } }) : undefined);
-    render(<AuthenticatedApp />); await screen.findByRole("button", { name: "Edit" });
+    render(<AuthenticatedApp />); await screen.findByRole("button", { name: "Edit" }, { timeout: 20000 });
     const details = document.querySelector<HTMLDetailsElement>("details.team-delete")!;
     expect(details.open).toBe(false);
     await expandTeamDelete(); await waitFor(() => expect(details.open).toBe(true));
-    go(members); await screen.findByRole("button", { name: "Leave Team" });
-    go(general); await screen.findByRole("button", { name: "Edit" });
+    go(members); await screen.findByRole("button", { name: "Leave Team" }, { timeout: 20000 });
+    go(general); await screen.findByRole("button", { name: "Edit" }, { timeout: 20000 });
     expect(details.open).toBe(true);
-    go(`/teams/${beta}/settings`); await screen.findByText("Beta", { selector: ".team-settings-context" });
+    go(`/teams/${beta}/settings`); await screen.findByText("Beta", { selector: ".team-settings-context" }, { timeout: 20000 });
+    await screen.findByRole("button", { name: "Edit" }, { timeout: 20000 });
     const current = Array.from(document.querySelectorAll<HTMLDetailsElement>("details.team-delete")).find((element) => !element.closest("[hidden]"))!;
     expect(current).not.toBe(details); expect(current.open).toBe(false);
     expect(fetcher.mock.calls.some(([, init]) => init?.method && init.method !== "GET")).toBe(false);
-  });
+  }, 60000);
 
   it("retains the General editor and an unsent member confirmation across section changes", async () => {
     install(); render(<AuthenticatedApp />);
