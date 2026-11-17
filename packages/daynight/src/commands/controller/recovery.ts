@@ -11,7 +11,7 @@ export const observeNativeInput = (journal: ControllerLifecycleStore, observatio
   // Reopening may replay the same durable receipt to rebuild native aliases.
   // Revalidate all image evidence without rewriting an accepted operation.
   if (operation?.kind === "send_message" && ["provider_accepted", "confirmed"].includes(operation.state)) return typeof observation !== "string" && journal.recordInputObservation(observation);
-  if (!operation || !["initial", "send_message", "execute_command"].includes(operation.kind) || !["dispatching", "unknown"].includes(operation.state)) return false;
+  if (!operation || !["initial", "send_message", "worker_input", "execute_command"].includes(operation.kind) || !["dispatching", "unknown"].includes(operation.state)) return false;
   // Legacy callbacks cannot settle an image intent by operation ID alone.
   const intent = journal.getInputIntent(operationId);
   if (intent !== null && (typeof observation === "string" || !journal.recordInputObservation(observation))) return false;

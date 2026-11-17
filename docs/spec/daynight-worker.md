@@ -123,6 +123,7 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 ### W-07：执行模式与 agent 执行
 
 - 模式在服务端 claim 和本机索引中冻结。默认 herdr 经 Herdr 运行原生终端；web 直接启动 Controller，通过 Daynight relay 提供 Task Session，其执行不得探测或依赖 Herdr。独立运行快照只读观察私有端点，不启动 daemon 或初始化 Herdr backend。同一 claim 不切换模式，不因连接错误降级。两模式支持 Codex、Claude、Copilot。
+- Web Controller 的 Worker 首次 assignment 和私有后续文本输入在原生派发前检查当前 Task、原 active claim、Worker、worktree、Agent 和 Web 模式；暂停、不可输入或期限到期时不递交。人工输入与自动输入共享普通原生队列，已递交操作的未知结果按原 ID 核对，不自动重放。此能力本身不启用 Web 定期 ping。
 - 混合模式中 Herdr 不可用时，已有且身份、许可及原执行证据仍有效的 active Web 必须能继续恢复；其显式 retry、清理和完成也不得依赖 Herdr。Herdr 观察失败仍保持容量未知，不能当作空资源或据此启动 pending、新领取任务。
 - Web 的初始输入、恢复、原生能力与清理遵守 [Task Session 需求](task-sessions.md)。缺失原生 ID、journal 或停止证明不能套用 legacy Herdr 的 NULL 新建分支；macOS Herdr 同样禁止这种替代。以下 Herdr 原生运行规则继续独立适用。
 

@@ -13,7 +13,7 @@ import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerLifecycleStore, ControllerOperation } from "./lifecycle-store.js";
 import { CONTENT_READ_VERSION_HEADER, SessionHistoryError } from "../../session/history.js";
 
-export const publicOperation = (ticket: ControllerLaunchTicket, operation: ControllerOperation): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...sessionFence(ticket), executionGeneration: operation.executionGeneration ?? ticket.executionGeneration, operationId: operation.operationId, kind: operation.kind === "initial" || operation.kind === "cleanup" ? "send_message" : operation.kind, state: operation.state, providerResult: (operation.result as { disposition?: "started" | "queued" | "handled" } | null)?.disposition ?? null, error: operation.error ? { code: "native_operation_error", message: operation.error } : null });
+export const publicOperation = (ticket: ControllerLaunchTicket, operation: ControllerOperation): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...sessionFence(ticket), executionGeneration: operation.executionGeneration ?? ticket.executionGeneration, operationId: operation.operationId, kind: operation.kind === "initial" || operation.kind === "cleanup" || operation.kind === "worker_input" ? "send_message" : operation.kind, state: operation.state, providerResult: (operation.result as { disposition?: "started" | "queued" | "handled" } | null)?.disposition ?? null, error: operation.error ? { code: "native_operation_error", message: operation.error } : null });
 export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promise<ControllerGrantResponse> => {
   const metadata = await lstat(ticket.credentialFile);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 16_384 || process.platform !== "win32" && (metadata.mode & 0o077) !== 0) throw new Error("Controller credential must be a private regular file.");
@@ -136,7 +136,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
             journal.acknowledgeEvents(message.lastAckedSourceSeq);
             const unacknowledged: ControllerOperation[] = [];
             let after: string | undefined;
-            for (;;) { const page = journal.listUnacknowledgedOperations(100, after); unacknowledged.push(...page.filter(o => o.kind !== "initial" && o.kind !== "cleanup")); if (page.length < 100) break; after = page.at(-1)!.operationId; }
+            for (;;) { const page = journal.listUnacknowledgedOperations(100, after); unacknowledged.push(...page.filter(o => o.kind !== "initial" && o.kind !== "cleanup" && o.kind !== "worker_input")); if (page.length < 100) break; after = page.at(-1)!.operationId; }
             reconciliation = [];
             for (let i = 0; i < unacknowledged.length; i += 100) reconciliation.push(unacknowledged.slice(i, i + 100));
             if (!reconciliation.length) reconciliation.push([]);
@@ -274,7 +274,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       authorization.set(operationId, { resolve, reject, timer: timeout });
       try { send({ ...prefix(), type: "operation_begin", operationId }); } catch (error) { clearTimeout(timeout); authorization.delete(operationId); reject(error); }
     }),
-    receipt: (operation: ControllerOperation) => { if (synchronized && (!operation.executionGeneration || operation.executionGeneration === ticket.executionGeneration)) send({ ...prefix(), type: "operation_receipt", operation: publicOperation(ticket, operation) }); },
+    receipt: (operation: ControllerOperation) => { if (operation.kind !== "worker_input" && synchronized && (!operation.executionGeneration || operation.executionGeneration === ticket.executionGeneration)) send({ ...prefix(), type: "operation_receipt", operation: publicOperation(ticket, operation) }); },
     async flush(timeoutMs = 5000): Promise<void> { const end = Date.now() + timeoutMs; while (journal.pendingEvents(1).length && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 50)); if (journal.pendingEvents(1).length) throw new Error("Session events remain in the durable outbox."); },
     close: async (): Promise<void> => { stop(); await journal.stopMedia?.(); await Promise.allSettled([...mediaWork]); },
   };
