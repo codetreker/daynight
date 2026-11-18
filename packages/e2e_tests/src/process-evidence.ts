@@ -3,14 +3,25 @@ import { readFile, readdir } from "node:fs/promises";
 
 export type ProcessEvidence = { pid: number; group: number; start: string; boot: string; commandHash: string };
 type Observation = { group: number; start: string; state: string };
-const observe = async (pid: number): Promise<Observation | null> => {
-  try {
-    const line = await readFile(`/proc/${pid}/stat`, "utf8"), end = line.lastIndexOf(") ");
-    const fields = line.slice(end + 2).trim().split(/\s+/);
-    if (end < 0 || fields.length < 20 || !/^\d+$/.test(fields[2]!) || !/^\d+$/.test(fields[19]!)) throw new Error("Process identity is malformed.");
-    return { state: fields[0]!, group: Number(fields[2]), start: fields[19]! };
-  } catch (error) { if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH")) return null; throw error; }
+const signedStatFields = new Set([1, 2, 3, 4, 5, 13, 14, 15, 16, 17, 35, 36, 41, 49]);
+export const observeProcessStat = async (readStat: () => Promise<string>): Promise<Observation | null> => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let line: string;
+    try { line = await readStat(); }
+    catch (error) { if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH")) return null; throw error; }
+    const end = line.lastIndexOf(") "), fields = line.slice(end + 2).trim().split(/\s+/);
+    if (end < 0 || fields.length < 20 || !/^(?:-1|\d+)$/.test(fields[2]!) || !/^\d+$/.test(fields[19]!)) throw new Error("Process identity is malformed.");
+    if (fields[2] !== "-1") return { state: fields[0]!, group: Number(fields[2]), start: fields[19]! };
+    if (!/^\d+ \(/.test(line) || fields.length < 50 || !/^[RSDZTtXxKWPI]$/.test(fields[0]!)
+      || !/^\d+$/.test(fields[1]!) || fields.slice(1).some((field, offset) =>
+        !(signedStatFields.has(offset + 1) || offset + 1 >= 50 ? /^-?\d+$/ : /^\d+$/).test(field))) throw new Error("Process identity is malformed.");
+    // Linux may report -1 while the exiting task's signal state is unavailable.
+    // It is not evidence that the process or its original group has stopped.
+    if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("Process group identity is unavailable.");
 };
+const observe = async (pid: number): Promise<Observation | null> => observeProcessStat(() => readFile(`/proc/${pid}/stat`, "utf8"));
 export const captureProcessEvidence = async (pid: number): Promise<ProcessEvidence> => {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Process identity is invalid.");
   const before = await observe(pid);
@@ -54,7 +65,8 @@ const groupMembers = async (group: number): Promise<number[]> => {
 };
 export const stopEvidenceGroup = async (leader: ProcessEvidence, children: readonly ProcessEvidence[], deadline: number): Promise<void> => {
   if (leader.pid !== leader.group || children.some(child => child.group !== leader.group)) throw new Error("Original process group proof is invalid.");
-  const members = async () => { if (Date.now() >= deadline) throw new Error("Original process group stop exceeded its deadline."); return groupMembers(leader.group); };
+  const checkDeadline = () => { if (Date.now() >= deadline) throw new Error("Original process group stop exceeded its deadline."); };
+  const members = async () => { checkDeadline(); const found = await groupMembers(leader.group); checkDeadline(); return found; };
   const signal = async (value: NodeJS.Signals): Promise<void> => {
     if ((await members()).length === 0) return;
     let attributable = false;
@@ -63,6 +75,7 @@ export const stopEvidenceGroup = async (leader: ProcessEvidence, children: reado
       if ((await members()).length === 0) return;
       throw new Error("Original process group has no live instance proof.");
     }
+    checkDeadline();
     try { process.kill(-leader.group, value); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
   };
   await signal("SIGTERM");
