@@ -85,7 +85,7 @@ func (s alteredRange) OpenTransferRange(ctx context.Context, n filestorage.Trans
 	return obj, nil
 }
 func TestReadRejectsInvalidInputs(t *testing.T) {
-	f := newFixture(t)
+	f := newAdmissionFixture(t)
 	base := f.input
 	cases := []struct {
 		name string
@@ -99,7 +99,7 @@ func TestReadRejectsInvalidInputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := base
 			tc.edit(&in)
-			if data, err := f.service.Read(t.Context(), f.actor, in); err == nil || data != nil {
+			if data, err := f.service.Read(f.ctx, f.actor, in); err == nil || data != nil {
 				t.Fatalf("invalid input: %#v %v", data, err)
 			}
 		})
