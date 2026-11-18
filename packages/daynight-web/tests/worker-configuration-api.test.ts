@@ -208,3 +208,16 @@ describe('principal-admitted configuration API', () => {
     await expect(listWorkerConfigurationProjects({}, signal, admission())).rejects.toMatchObject({ code: 'principal_mismatch' });
   });
 });
+
+describe('task tag filter wire format', () => {
+  it('parses direct target and digest observations while retaining old services', () => {
+    expect(parseWorkerConfiguration(configurationResource()).desired!.value.taskTagFilter).toBeUndefined();
+    const filter = { names: ['backend', 'urgent'], match: 'all' as const };
+    const resource = { ...observed([outcome({ kind: 'taskTagFilter' }, 'a'.repeat(64))]), desired: configurationResource('1', { ...configurationValue(), taskTagFilter: filter }).desired };
+    expect(parseWorkerConfiguration(resource).desired!.value.taskTagFilter).toEqual(filter);
+    expect(parseWorkerConfiguration(resource).observation!.items[0]!.appliedValue).toBe('a'.repeat(64));
+    for (const invalid of ['A'.repeat(64), 'a'.repeat(63), true]) {
+      expect(() => parseWorkerConfiguration({ ...resource, observation: { ...resource.observation!, items: [outcome({ kind: 'taskTagFilter' }, invalid)] } })).toThrow();
+    }
+  });
+});
