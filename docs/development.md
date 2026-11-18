@@ -523,7 +523,11 @@ suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
 subjects. Worker worktree cases copy private starting repositories from
-file-owned files and reftable seeds. Partial resource scans that need existing
+file-owned files and reftable seeds. Legacy Worktree migration uses its own
+seeds with no linked checkout or migration state. Each case still creates its
+native registrations, manifests and database evidence in the private copy.
+The [migration fixture decision](../.agents/notes/implemented/testing/2026-11-18-worktree-migration-seeds.md)
+owns this boundary. Partial resource scans that need existing
 registrations create them with native Git and publish their manifests in the
 private repository. They exercise real inventory, inspection, and cleanup
 without setting up a remote. The
