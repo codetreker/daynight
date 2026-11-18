@@ -40,6 +40,8 @@ Controller journal 的唯一编号序列为 `001`–`015`，当前格式为 v15�
 
 页面、资源描述、pending interactions 与 inspection coverage 在同一短同步读事务中取得。在线页面、条目块、重连快照和待审批读取使用合并的 `onlineTimeline`；两表按全局 entrySeq 排序，分页保持原 before/after/tail 语义。coverage 通过 `iterate(visitor)` 检查全部在线内容的既有截断、投影错误和资源缺口，不建立正文 Map。完整条目使用现有 `canonicalHistoryJSON`、SHA-256、UTF-8 边界和 32 KiB 分块；每次请求重读当前行，revision/hash/长度改变返回 `content_changed`，不使用 SQL substr 切公开字节。
 
+inspection 页面内联条目必须同时通过 `parseTimelineEntry` 的 wire 字段与列表限制，以及包含响应开销的整页字节预算。存量条目即使总字节较小，也可能因字段或列表超限无法内联；此时与超出页面预算的条目一样，使用 `body=null`、`truncated=true` 和 `contentRef`，通过既有 canonical 分块完整读取原条目，不裁剪存量内容。页面的引用标记不改变来源 coverage；若连条目引用也无法装入剩余预算，则保留分页边界，单个引用仍无法装入时明确返回 `payload_too_large`。
+
 资源仍由原文件拥有者管理。`openSessionContent` 的组合层在同一同步读快照中检查合并在线内容和 `native_input_publication_images`，并要求资源拥有者的 lease/pin 检查通过才允许释放。媒体导入后的清理也使用这一受保护的资源接口。`metadataBytes()` 查询两表合并的当前 SQL totals 并加 descriptor 字节，只表示逻辑元数据，不代替实际 DB/WAL/SHM 物理计量。
 
 资源删除的恢复备份由同一 `index.json` 的可选 `cleanup` 清单持久登记，路径仅允许资源 descriptor 或 blob 的具名 `.delete` 备份。资源拥有者将不再需要恢复的确切备份路径与当前资源清单一起发布；重开后按清单重试，不扫描目录猜测文件归属。`retryCleanup()` 核对写权限、目录与 Session 身份，只删除登记的普通文件，允许已删除项缺失，拒绝 symlink 或其他文件类型；资源和 blob 目录刷盘成功后才发布移除 `cleanup` 的索引。删除、刷盘或索引发布失败明确报错，重入按实际索引继续处理尚存登记，已删除项可幂等确认；最后索引发布若在 rename 后刷盘失败，不能断言清单仍在。若原资源恢复失败，仍用于恢复的备份与原错误链保留，不能当作普通待清理文件。普通 `releaseResource` 逻辑提交后尝试清理备份，清理失败发出警告，不把已提交的资源释放报告为回滚。

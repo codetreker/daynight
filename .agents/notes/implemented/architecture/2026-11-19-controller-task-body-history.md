@@ -27,6 +27,13 @@ online limit rejects publication rather than truncating output or evicting
 control state. Markdown source storage has its own 512 MiB allowance for body
 executions. These logical limits do not bound total database or media disk use.
 
+Inspection admits an inline body only when it satisfies both wire field/list
+limits and the complete response byte budget. Stored originals that fail either
+condition use the existing content reference and canonical chunk path without
+clipping the original content. This preserves readable live tool details even
+when many short parts fit the byte budget but exceed the wire list limit; page
+references do not relabel the source coverage as incomplete.
+
 Synchronization and freezing consume only the retained body table and its
 resource closure. Source acknowledgements continue to cover the full event
 stream. The producer uses the negotiated
