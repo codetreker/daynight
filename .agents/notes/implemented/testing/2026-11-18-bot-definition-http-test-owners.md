@@ -34,10 +34,13 @@ private Bot content.
 same owner across the global and Worker lists. The service test
 `TestBotListContinuesWithinItsScope` consumes cursors issued by the service,
 checks the exact continuation keyset sent to storage, and rejects a global
-cursor on the Worker list before opening a snapshot. Bot deletion Core and
-service tests own input validation, intent replay and conflicts. The PostgreSQL
-`TestBotStorageDeletionAndScopedPagination` and integrated Bot deletion tests
-retain persisted visibility, version and cleanup proofs.
+cursor on the Worker list before opening a snapshot.
+`TestListAuthorizationAndStorageFailures` checks that the actual Core list
+operation passes the complete page to the DAO for both scopes. The PostgreSQL
+`TestBotStorageDeletionAndScopedPagination` checks continuation in both lists
+and persisted cleanup visibility. Bot deletion Core and service tests cover
+input validation, intent replay and conflicts. Integrated Bot deletion tests
+retain persisted version and cleanup proofs.
 
 ## Alternatives
 

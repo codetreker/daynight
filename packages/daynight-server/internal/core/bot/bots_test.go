@@ -311,7 +311,9 @@ func TestListAuthorizationAndStorageFailures(t *testing.T) {
 	ctx := context.Background()
 	principal := model.Principal{UserID: "owner"}
 	target := workerID
-	request := store.Page{Limit: 2}
+	const afterID = "22222222-2222-4222-8222-222222222222"
+	afterTime := time.Date(2026, 11, 18, 12, 0, 0, 123456000, time.UTC)
+	request := store.Page{Limit: 2, After: &store.Position{ID: afterID, CreatedAt: afterTime}}
 	database := &reader{fail: map[string]error{}, records: store.BotPage{Items: []model.Bot{{ID: botID}}}}
 	_, err := List(ctx, snapshot{r: database, err: model.ErrNotFound}, principal, &target, request)
 	assertFault(t, err, "unauthenticated")
@@ -334,9 +336,31 @@ func TestListAuthorizationAndStorageFailures(t *testing.T) {
 	if _, err = List(ctx, snapshot{r: database}, principal, &target, request); !errors.Is(err, sentinel) {
 		t.Fatalf("list cause: %v", err)
 	}
-	delete(database.fail, "list")
-	result, err := List(ctx, snapshot{r: database}, principal, &target, request)
-	if err != nil || len(result.Items) != 1 || database.listOwner != principal.UserID || database.listWorker == nil || *database.listWorker != target || database.listPage.Limit != request.Limit {
-		t.Fatalf("scope: %+v %v", result, err)
+	if database.listCalls != 1 {
+		t.Fatalf("BotDAO.Bots calls before successful reads: %d, want 1", database.listCalls)
+	}
+	for _, tc := range []struct {
+		name   string
+		worker *string
+	}{
+		{name: "global"},
+		{name: "worker", worker: &target},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := &reader{records: store.BotPage{Items: []model.Bot{{ID: botID}}}}
+			result, err := List(ctx, snapshot{r: database}, principal, tc.worker, request)
+			if err != nil || len(result.Items) != 1 || result.Items[0].ID != botID {
+				t.Fatalf("Bot list result: %+v %v", result, err)
+			}
+			readWorker := database.listWorker
+			if database.listCalls != 1 || database.listOwner != principal.UserID ||
+				(tc.worker == nil) != (readWorker == nil) || readWorker != nil && *readWorker != workerID {
+				t.Fatalf("BotDAO.Bots scope: owner=%q worker=%v calls=%d", database.listOwner, readWorker, database.listCalls)
+			}
+			page := database.listPage
+			if page.Limit != 2 || page.After == nil || page.After.ID != afterID || !page.After.CreatedAt.Equal(afterTime) {
+				t.Fatalf("BotDAO.Bots lost the continuation keyset: limit=%d after=%+v, want limit=2 ID=%q CreatedAt=%v", page.Limit, page.After, afterID, afterTime)
+			}
+		})
 	}
 }

@@ -2413,9 +2413,10 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 ```
 
 Core verifies cursor admission across the global and Worker lists. The service
-tests issue real cursors, forward their keysets to storage and reject a global
-cursor on the Worker route before opening a snapshot. PostgreSQL and integrated
-Bot tests retain storage pagination, deletion intent and cleanup transitions.
+tests issue real cursors, forward their keysets to Core and reject a global
+cursor on the Worker list before opening a snapshot. Core passes the complete
+page to the DAO for both scopes. PostgreSQL tests verify continuation in both
+lists, along with deletion intent and cleanup visibility.
 [Bot definition HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-definition-http-test-owners.md)
 
 ### MCP protocol tests
