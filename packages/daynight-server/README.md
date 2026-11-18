@@ -1354,19 +1354,23 @@ records the three bindings and the retained lifetime proof.
 
 ### Webhook HTTP fixture groups
 
-The Webhook configuration lifecycle, committed response-loss, and post-commit
-authorization tests each own one isolated PostgreSQL schema, pool and base
-HTTP listener. Within each group, sequential cases have their own bounded
+The Webhook configuration lifecycle, committed response-loss, post-commit
+authorization and subscription tests each own an isolated PostgreSQL schema,
+pool and base HTTP listener. Sequential scenarios have their own bounded
 context and use fresh actors, resources and operation IDs. Response-loss
 writers and post-commit gates remain case-local. The gated client and listener
 finish before the next case.
+
+The subscription group runs invalid arrays first so it can observe all four
+configuration tables empty after rejected requests. The subsequent eligibility
+and 51-subscription scenarios read their own owners, endpoints and receipts.
 
 With `DAYNIGHT_TEST_DATABASE_URL` set to an isolated PostgreSQL database, run:
 
 ```bash
 source scripts/env.sh
 go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
-  -run '^TestHTTP(ConfigurationLifecycle|CommittedWriteResponseLoss|CommittedWriteWhenResponseAuthorizationChanges)$' \
+  -run '^TestHTTP(ConfigurationLifecycle|CommittedWriteResponseLoss|CommittedWriteWhenResponseAuthorizationChanges|Subscriptions)$' \
   ./internal/server/webhook
 ```
 
