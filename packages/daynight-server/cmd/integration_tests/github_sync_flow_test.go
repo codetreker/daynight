@@ -136,7 +136,7 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	config, change := githubIntegrationRemote(t)
 	f := newFixtureConfigured(t, false, config)
-	project := createProject(t, f, "GitHub sync")
+	project := createProjectAtRepository(t, f, "GitHub sync", "https://github.com/example/integration")
 	base := "/api/v1/projects/" + project.ID
 	key, err := os.ReadFile(config.privateKey)
 	if err != nil {
