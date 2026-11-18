@@ -17,7 +17,7 @@ flowchart LR
   W --> R[当前目标与实际结果]
 ~~~
 
-目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；工具路径使用必需的版本 2 合同，Session 归档通过独立能力头选择闭合字段。enableSudoCleanup 直接包含在目标中，不增加字段专用的能力协商。
+目标与观测分别拥有版本。目标保存不代表本机应用，观测写入不使编辑草稿失效。配置协议选择报告交换格式；工具路径使用必需的版本 2 合同，Session 归档通过独立能力头选择闭合字段。enableSudoCleanup 和 taskTagFilter 直接包含在目标中，不增加字段专用的能力协商。
 
 ## 持久化与表示
 
@@ -35,6 +35,8 @@ toolPaths 保存于同一 desired JSONB，新候选固定 Codex/Copilot 两项 c
 
 另一项迁移只为非 null 且缺少 enableSudoCleanup 的目标补入 false。该变化推进 configuration_revision 并更新 configuration_updated_at；已有该字段的目标和 null 目标保持不变，观测及其他数据不变。若需修改的目标 revision 已耗尽，整个迁移事务失败，不产生同版本不同内容，也不生成应用观察。存储读取兼容历史目标缺字段；首次旧 bootstrap 缺字段时由服务初始化为 false。
 
+任务标签筛选迁移仅对已初始化且缺该成员的 Raw JSONB 用 jsonb_set 补入规范空筛选，保留未知兄弟成员，并推进目标版本和修改时间。版本耗尽时整个迁移失败；已有成员及未初始化目标不变。首次 bootstrap 同样由服务端补空。旧 PUT 省略该成员时在行锁及版本核对内保留原始值，显式输入严格解析；语义等价保持已存显示形式。新增或改变非空筛选前核对最近一批 observation 是否含该 kind，清空及保留不依赖此观察。
+
 配置 GET 按认证 userId/workerId 读取，不施加近期窗口，不续活。快照列表与详情继续使用[快照设计](daynight-worker-snapshots.md)的时间及权限规则。 Bot 创建只读取所选 Worker 的原生配置和成功偏好，其选择规则与完整默认目录由[助手设计](assistant.md#默认解析与偏好事务)维护。
 
 ## Worker 行事务
@@ -47,7 +49,7 @@ PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标�
 
 ## 项目事务内的目标读取资源
 
-`ProjectWriteScope.WorkerClaimAdmissionDAO()` 提供与当前项目写事务绑定的窄资源。`ClaimWorkerConfiguration(ctx,userID,workerID)` 只读取目标的 Raw、revision 与修改时间，返回 `*model.WorkerDesiredConfiguration`；不解析完整 typed 配置或应用观测，也不投影独立归档列。返回 nil 表示 Worker 尚不存在或目标尚未初始化，查询、锁等待、取消及数据库失败均保留错误，不解释为空目标。该资源只提供存储能力，任务领取规则由 `core/task` 的实际调用者拥有。
+`ProjectWriteScope.WorkerClaimAdmissionDAO()` 提供与当前项目写事务绑定的窄资源。`ClaimWorkerConfiguration(ctx,userID,workerID)` 只读取目标的 Raw、revision 与修改时间，返回 `*model.WorkerDesiredConfiguration`；不解析完整 typed 配置或应用观测，也不投影独立归档列。返回 nil 表示 Worker 尚不存在或目标尚未初始化，查询、锁等待、取消及数据库失败均保留错误，不解释为空目标。任务领取独立解析 Raw 中的筛选，即使整个 typed 投影不可用也不能放宽限制；仅 nil 目标视为空，已初始化目标缺失或非法成员报错。
 
 已有 Worker 行通过 `SELECT ... FOR UPDATE` 锁定到项目事务提交或回滚，配置 PUT 和报告对该行的写入随之串行。缺行的首次查询没有取得行锁，因此先复用报告的 `worker-admission:<userID>` 账号事务锁，再以独立 READ COMMITTED 语句重读并锁定 Worker；仍缺行时保持账号锁到项目事务结束，阻止首次报告插入穿过读取边界。账号锁的 SQL 由同一 helper 提供，已有行路径不取得该锁，避免将正常跨项目读取串行到账号级。
 
@@ -59,7 +61,7 @@ PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标�
 
 目标、项目覆盖、观测 key 与应用值分别做闭合解析。native 原子组合保证 Agent/model/args 的表示有效，服务端不运行 native preflight。观测只接受闭合诊断字段，不把自由输出带入日志或 HTTP。
 
-对目标配置基础 JSON 和实际存储的、包含 reportedAt 的观测编码后计量，超限在事务提交前拒绝。客户端把本机完整事实与本批 wire 投影分开，以条数、Go JSON 存储编码和完整请求编码同时选择连续前缀。固定保留真实未完成或失败停止核验，其余按持久化 recordId 游标轮转；匹配接纳后才按源记录身份清理失败，且仅当前 generation 的捕获推进游标。未知结果、未发送失败和原停止归属继续留在本机检查点，目标接纳与责任登记不受单批名额阻挡。本机表示与应用机制由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。观测项总数最多 1028，除 mode、archiveSessions 和 enableSudoCleanup 外的项最多 1025；三种项各有一个独立名额，不挤占原项。未协商扩展项的响应省略对应项；规范化 JSON 的总字节预算仍独立适用。
+对目标配置基础 JSON 和实际存储的、包含 reportedAt 的观测编码后计量，超限在事务提交前拒绝。typed 与最终 Raw 预算只排除规范空筛选的固定成员开销；非空值完整计入 4 MiB。配置 PUT 专属正文预算在原 1 MiB 上增加规范空成员及逗号的精确编码长度，其他入口不变。客户端把本机完整事实与本批 wire 投影分开，以条数、Go JSON 存储编码和完整请求编码同时选择连续前缀。固定保留真实未完成或失败停止核验，其余按持久化 recordId 游标轮转；匹配接纳后才按源记录身份清理失败，且仅当前 generation 的捕获推进游标。未知结果、未发送失败和原停止归属继续留在本机检查点，目标接纳与责任登记不受单批名额阻挡。本机表示与应用机制由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。观测项总数最多 1029，除 mode、archiveSessions、enableSudoCleanup 和 taskTagFilter 外的项最多 1025；四种项各有一个独立名额，不挤占原项。未协商扩展项的响应省略对应项；规范化 JSON 的总字节预算仍独立适用。
 
 enableSudoCleanup 观察项沿用原 state、targetRevision 与 boolean/null appliedValue；没有该项表示本批未观察，而不是实际关闭。服务端不会替未认识此字段的 Worker 生成应用项。服务端仍整体替换本次 observation，不聚合此前各批 items，也不引入 completeness 字段。应用观测保留本批服务器接纳时间；机器报告可以更新，而应用结果仍是此前已接纳的整批状态。消费者将当前目标与所报每项目标版本比较，保持旧实际值和明确等待/失败含义；缺少当前目标项表示本批未观察，不能复用另一批结果宣称成功。
 
@@ -71,7 +73,7 @@ Daynight-Worker-Archive-Sessions: 1 独立协商布尔目标与同名观测项�
 
 路径验证只处理远端语法，不能查询服务端文件或使用服务本机 filepath 规则替代 Worker 平台。工具观察包含目标、新准入 actual、candidate 和有界 activeSelections；它不进入 native appliedValue，服务验证不会产生执行资格。完整字段及降级规则由[快照协议](../spec/daynight-worker-snapshots.md#工具路径观察)拥有。
 
-旧协议不接受新正文，旧回执不附加配置字段；配置协议 1 遵循完整扩展结构。协议 2 的有限个人 prompt 批次在原报告提交后独立读取，机制由[个人 prompt 设计](worker-prompts.md#配置报告)拥有。能力仅影响配置交换，不成为 Task/claim 或 inventory 的准入条件。
+旧协议不接受新正文，旧回执不附加配置字段；配置协议 1 遵循完整扩展结构。协议 2 的有限个人 prompt 批次在原报告提交后独立读取，机制由[个人 prompt 设计](worker-prompts.md#配置报告)拥有。工具与归档能力仅影响配置交换，不成为 Task/claim 或 inventory 的准入条件；标签筛选的观察和 claim 准入遵循上述独立规则。
 
 ## Web 字段与保存
 

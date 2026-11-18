@@ -92,6 +92,17 @@ func expectWorkerHTTPWrite(t *testing.T, database *httpTestStore, current model.
 			t.Fatal("Worker DAO escaped its request transaction")
 		}
 	}
+	if observedAt != nil {
+		scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
+			return taskHTTPClaimAdmission{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+				checkContext(ctx)
+				if user != actor.UserID || worker == "" {
+					t.Fatal("claim admission identity changed")
+				}
+				return nil, nil
+			}}
+		}
+	}
 	project.ProjectAccessFn = func(ctx context.Context, principal model.Principal) (model.ProjectAccess, error) {
 		checkContext(ctx)
 		plan.access++

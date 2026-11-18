@@ -252,7 +252,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 		return result
 	}
 	before := rows()
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, rows()) {
@@ -282,7 +282,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, rows()) {

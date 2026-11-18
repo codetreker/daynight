@@ -26,7 +26,7 @@ const (
 	MaxNativeArgBytes         = 4 << 10
 	MaxProjects               = 128
 	MaxInventoryClaims        = 256
-	MaxObservationItems       = 1028
+	MaxObservationItems       = 1029
 	MaxTelemetryJSONBytes     = 4 << 20
 	MaxConfigurationJSONBytes = 4 << 20
 	MaxWorkerJSONBytes        = 4 << 20
@@ -212,6 +212,11 @@ func AdmitObservation(value model.WorkerConfigurationObservation) error {
 			var enabled bool
 			if err := configurationDecode(item.AppliedValue, &enabled); err != nil {
 				return err
+			}
+		case "taskTagFilter":
+			var digest string
+			if err := configurationDecode(item.AppliedValue, &digest); err != nil || !validTaskTagFilterKey(digest) {
+				return invalidInput("Task tag filter applied value must be a lowercase SHA-256 digest.")
 			}
 		case "native", "projectNative":
 			var native model.WorkerNativeConfiguration

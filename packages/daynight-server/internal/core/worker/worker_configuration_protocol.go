@@ -16,7 +16,7 @@ func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerpr
 	if capabilities.ArchiveSessions {
 		keys = append(keys, "archiveSessions")
 	}
-	fields, err := configurationObject(raw, "configuration", true, append(keys, "enableSudoCleanup")...)
+	fields, err := configurationObject(raw, "configuration", true, append(keys, "enableSudoCleanup", "taskTagFilter")...)
 	if err != nil {
 		return model.WorkerConfiguration{}, err
 	}
@@ -35,6 +35,8 @@ func ParseWorkerConfigurationProtocol(raw json.RawMessage, capabilities workerpr
 	value.PreserveArchiveSessions = !capabilities.ArchiveSessions
 	_, present := fields["enableSudoCleanup"]
 	value.PreserveSudoCleanup = !present
+	_, present = fields["taskTagFilter"]
+	value.PreserveTaskTagFilter = !present
 	return value, err
 }
 
@@ -72,11 +74,11 @@ func ParseWorkerConfigurationExchangeProtocol(raw json.RawMessage, capabilities 
 				if !capabilities.ArchiveSessions {
 					return nil, invalidInput("Archive sessions observations require the archive sessions capability.")
 				}
-			} else if item.Key.Kind != "enableSudoCleanup" {
+			} else if item.Key.Kind != "enableSudoCleanup" && item.Key.Kind != "taskTagFilter" {
 				legacyItems++
 			}
 		}
-		if err := upper("observation.items", int64(legacyItems), MaxObservationItems-3, "items"); err != nil {
+		if err := upper("observation.items", int64(legacyItems), MaxObservationItems-4, "items"); err != nil {
 			return nil, InputLimit(err)
 		}
 	}

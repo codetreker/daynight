@@ -2,6 +2,7 @@ package worker
 
 import (
 	"io"
+	"math"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -85,6 +86,9 @@ func runtimeNativeResponse(native *model.WorkerRuntimeNative) *WorkerRuntimeNati
 	return &WorkerRuntimeNative{Agent: string(native.Agent), Model: WorkerConfigurationValue(native.Model), ReasoningEffort: WorkerConfigurationValue(native.ReasoningEffort)}
 }
 
+// EmptyTaskTagFilterMemberBytes is the encoded fixed member plus its comma.
+const EmptyTaskTagFilterMemberBytes = int64(len(`,"taskTagFilter":{"names":[],"match":"any"}`))
+
 // EncodeItem measures the Worker item without the outer response envelope.
 func EncodeItem(w io.Writer, snapshot model.WorkerSnapshot, max int64) (int64, error) {
 	if err := preflightCollections(snapshot, max); err != nil {
@@ -99,6 +103,9 @@ func EncodeTelemetry(w io.Writer, value model.WorkerTelemetry, max int64) (int64
 }
 func EncodeConfiguration(w io.Writer, value model.WorkerConfiguration, max int64) (int64, error) {
 	// The fixed-size archive column is separate from the historical JSON budget.
+	if value.TaskTagFilter != nil && value.TaskTagFilter.Match == "any" && value.TaskTagFilter.Names != nil && len(value.TaskTagFilter.Names) == 0 && max <= math.MaxInt64-EmptyTaskTagFilterMemberBytes {
+		max += EmptyTaskTagFilterMemberBytes
+	}
 	return measure.JSON(w, "worker.configuration", max, model.WorkerConfigurationWire(value), false)
 }
 

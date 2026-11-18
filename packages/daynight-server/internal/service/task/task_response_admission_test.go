@@ -147,6 +147,7 @@ func TestWorkerLimitsRejectClaimAndStartupBeforeWrites(t *testing.T) {
 	descriptor.Machine.Name = strings.Repeat("m", taskproperties.MaxWorkerMachineNameBytes+1)
 	t.Run("oversized claim", func(t *testing.T) {
 		f := newPropertyWriteFixture(t, target, propertyCommit(t))
+		f.expectClaimAdmission(descriptor.WorkerID)
 		f.dao.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
 			if ctx != f.ctx {
 				t.Fatal("claim clock context changed")
@@ -166,6 +167,7 @@ func TestWorkerLimitsRejectClaimAndStartupBeforeWrites(t *testing.T) {
 	claimed.Ready = false
 	t.Run("legal claim", func(t *testing.T) {
 		f := newPropertyWriteFixture(t, target, propertyCommit(t))
+		f.expectClaimAdmission(descriptor.WorkerID)
 		f.dao.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
 			if ctx != f.ctx {
 				t.Fatal("claim clock context changed")

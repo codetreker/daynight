@@ -45,7 +45,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
-| POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、agentControlMode、worktreeId；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
+| POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、agentControlMode、worktreeId，以及可选 taskTagFilterKey；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
 | PATCH `/worker-claim` | version、claimId，及 phase/nativeSessionId/startupReport 中至少一个字段；只更新当前执行摘要。 |
 | PUT `/status` | version、status；只有 done 目标可附带 claimId，以完成当前 active 归属。 |
 | POST `/worker-claim/release` | version、claimId、stoppedConfirmed:true；释放已停止的执行，返回 todo。 |
@@ -56,6 +56,8 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 ### 自动认领和终止后新执行
 
 项目写事务取得锁后重新核验当前成员、精确版本、todo、全部前置为done或cancelled、assignedTo 非空且等于 principal.UserID、allowAgents=true、平台兼容和无 active 归属。负责人不匹配返回 409 invalid_transition，字段、版本和时间保持。成功同时进入 in_progress 并安装 active 记录，只增加一次任务版本。候选快照不替代事务校验。
+
+同一事务通过 [Worker 目标读取资源](daynight-worker-configuration.md#项目事务内的目标读取资源)锁定权威目标并独立解析 taskTagFilter。缺行或未初始化视为空；已初始化 Raw 缺失或非法成员是错误，不因其他字段不可解析而放宽。请求可选 taskTagFilterKey 必须为小写 64 位十六进制 SHA-256；摘要为紧凑 UTF-8 JSON `[match,sortedKeys]` 的哈希。非空目标缺摘要返回 409 `worker_task_tag_filter_unsupported`；提供的摘要与目标不符或当前任务自身标签不匹配返回 409 `claim_conflict`。空目标允许旧 Worker 省略摘要，提供时仍须匹配。Worker 行锁持续到事务结束，任务标签变化与配置写入均不能穿过最终准入；已有 claim 的更新、释放和恢复不受此筛选影响。
 
 没有记录时创建初始归属。存在 completed 历史时，新的 claimId 与 worktreeId 均须区别于最后执行；completed task 仍须先合法重开。Agent 可明确选择为 codex/copilot/claude，与 source 类型独立。接口严格拒绝已废弃的 continuityConfirmed，不兼容忽略。服务端校验当前可见的身份及资格；仍有效同一 claim 的原 worktree/native history 恢复由运行时核对，终止后新执行不依赖这些源资料。
 

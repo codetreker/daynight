@@ -11,6 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 )
 
@@ -27,6 +28,7 @@ func NormalizeConfiguration(value model.WorkerConfiguration) (model.WorkerConfig
 	normalized.ArchiveSessions = value.ArchiveSessions
 	normalized.PreserveArchiveSessions = value.PreserveArchiveSessions
 	normalized.PreserveSudoCleanup = value.PreserveSudoCleanup
+	normalized.PreserveTaskTagFilter = value.PreserveTaskTagFilter
 	return normalized, err
 }
 
@@ -236,7 +238,7 @@ func adoptRawConfiguration(desired *model.WorkerDesiredConfiguration, input mode
 	if err != nil {
 		return nil, false, err
 	}
-	if int64(len(raw)) > MaxConfigurationJSONBytes {
+	if configurationRawSize(fields, raw) > MaxConfigurationJSONBytes {
 		return nil, false, invalidInput("Worker configuration exceeds its size limit.")
 	}
 	return raw, true, nil
@@ -279,7 +281,10 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	if current.Desired.Raw != nil && (value.PreserveToolPaths || value.PreserveSudoCleanup) {
+	if err := prepareTaskTagFilter(current, fields, &value); err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	if current.Desired.Raw != nil && (value.PreserveToolPaths || value.PreserveSudoCleanup || value.PreserveTaskTagFilter) {
 		return putWithPreservedRaw(ctx, dao, principal, workerID, current, fields, actual, value)
 	}
 	if err := storedPaths(fields, &value); err != nil {
@@ -326,6 +331,9 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 // ExchangeConfiguration bootstraps desired state once and compares observation
 // revisions independently from desired writes.
 func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, input model.WorkerConfigurationExchange) (*model.WorkerConfigurationReceipt, error) {
+	if input.Bootstrap != nil && input.Bootstrap.TaskTagFilter != nil {
+		return nil, invalidInput("Bootstrap cannot set a task tag filter.")
+	}
 	current, err := dao.WorkerConfiguration(ctx, principal.UserID, workerID)
 	if err != nil {
 		return nil, err
@@ -361,6 +369,9 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 			revision, _ = strconv.ParseInt(current.Desired.Revision, 10, 64)
 		} else {
 			value = *input.Bootstrap
+			empty := model.TagNameFilter{Names: []string{}, Match: "any"}
+			value.TaskTagFilter = &empty
+			value.PreserveTaskTagFilter = false
 			if value.ArchiveSessions == nil {
 				archive := true
 				value.ArchiveSessions = &archive
@@ -413,7 +424,11 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 }
 
 func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, current model.WorkerConfigurationResource, fields map[string]json.RawMessage, actual int64, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
-	preservePaths, preserveSudo := value.PreserveToolPaths, value.PreserveSudoCleanup
+	preservePaths, preserveSudo, preserveFilter := value.PreserveToolPaths, value.PreserveSudoCleanup, value.PreserveTaskTagFilter
+	if preserveFilter {
+		value.TaskTagFilter = nil
+		value.PreserveTaskTagFilter = false
+	}
 	if preservePaths {
 		value.ToolPaths = model.WorkerToolPaths{}
 		value.PreserveToolPaths = false
@@ -455,7 +470,7 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	for key, raw := range fields {
 		comparison[key] = raw
 	}
-	for key, preserve := range map[string]bool{"toolPaths": preservePaths, "enableSudoCleanup": preserveSudo} {
+	for key, preserve := range map[string]bool{"toolPaths": preservePaths, "enableSudoCleanup": preserveSudo, "taskTagFilter": preserveFilter} {
 		if !preserve {
 			continue
 		}
@@ -480,7 +495,7 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	if int64(len(raw)) > MaxConfigurationJSONBytes {
+	if configurationRawSize(candidate, raw) > MaxConfigurationJSONBytes {
 		return model.WorkerConfigurationResource{}, invalidInput("Worker configuration exceeds its size limit.")
 	}
 	archive := true
@@ -493,4 +508,62 @@ func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principa
 	}
 	current.Desired = &desired
 	return current, nil
+}
+
+// configurationRawSize excludes only the canonical empty member from the historical budget.
+func configurationRawSize(fields map[string]json.RawMessage, raw []byte) int64 {
+	size := int64(len(raw))
+	var value struct {
+		Names []string `json:"names"`
+		Match string   `json:"match"`
+	}
+	filter, err := ParseTaskTagFilter(fields["taskTagFilter"])
+	if err == nil && json.Unmarshal(fields["taskTagFilter"], &value) == nil && value.Names != nil && len(value.Names) == 0 && value.Match == "any" && len(filter.Names) == 0 {
+		size -= workerprotocol.EmptyTaskTagFilterMemberBytes
+	}
+	return size
+}
+
+// prepareTaskTagFilter checks enablement using the latest observation while retaining
+// display spelling when the semantic filter has not changed.
+func prepareTaskTagFilter(current model.WorkerConfigurationResource, fields map[string]json.RawMessage, value *model.WorkerConfiguration) error {
+	if value.PreserveTaskTagFilter {
+		if current.Desired.Raw == nil {
+			value.TaskTagFilter = current.Desired.Value.TaskTagFilter
+			value.PreserveTaskTagFilter = false
+		}
+		return nil
+	}
+	if value.TaskTagFilter == nil {
+		return nil
+	}
+	normalized, err := tag.NormalizeNameFilter(*value.TaskTagFilter)
+	if err != nil {
+		return invalidInput("Task tag filter is invalid.")
+	}
+	old, oldErr := ParseTaskTagFilter(fields["taskTagFilter"])
+	if oldErr == nil {
+		oldDigest, _ := tag.NameFilterDigest(old)
+		newDigest, _ := tag.NameFilterDigest(normalized)
+		if oldDigest == newDigest {
+			value.TaskTagFilter = &old
+			return nil
+		}
+	}
+	if len(normalized.Names) > 0 {
+		supported := false
+		if current.Observation != nil {
+			for _, item := range current.Observation.Items {
+				if item.Key.Kind == "taskTagFilter" {
+					supported = true
+					break
+				}
+			}
+		}
+		if !supported {
+			return &model.Fault{Code: "worker_task_tag_filter_unsupported", Message: "Worker has not reported support for task tag filtering."}
+		}
+	}
+	value.TaskTagFilter = &normalized
+	return nil
 }

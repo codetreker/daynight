@@ -263,6 +263,18 @@ func (s sourceWriteScope) TaskDAO() store.TaskWriteDAO         { return s.tasks 
 func (s sourceWriteScope) ProjectDAO() store.ProjectWriteDAO   { return s.projects }
 func (s sourceWriteScope) SessionDAO() store.ProjectSessionDAO { return s.sessions }
 func (s sourceWriteScope) CaptureDAO() store.WebhookCaptureDAO { return s.capture }
+func (s sourceWriteScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	if !s.tasks.allowClock {
+		s.tasks.t.Fatal("unexpected claim admission")
+	}
+	return sourceClaimAdmission{}
+}
+
+type sourceClaimAdmission struct{}
+
+func (sourceClaimAdmission) ClaimWorkerConfiguration(context.Context, string, string) (*model.WorkerDesiredConfiguration, error) {
+	return nil, nil
+}
 
 type sourceWriteStore struct {
 	t     *testing.T
