@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 import { captureProcessProof, inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { powershellOracleScript, runOracleCommand } from "../../helpers/windows-oracle.js";
 
 type CimProcess = { ProcessId: number; ParentProcessId: number; Birth: string; CommandLine: string };
 const decodeCimOracle = (stdout: string): CimProcess => {
@@ -19,21 +20,29 @@ const decodeCimOracle = (stdout: string): CimProcess => {
 // Windows PowerShell's console code page can replace surrogate pairs with '?'.
 // Transport explicit UTF-8 JSON in an ASCII Base64 envelope so the oracle keeps
 // the complete command line independently of its console encoding.
-const cimOracle = (pid: number): Promise<CimProcess> => new Promise((resolve, reject) => {
-  const started = performance.now();
-  execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$value=Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ParentProcessId,@{Name='Birth';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},CommandLine; $json=ConvertTo-Json -InputObject $value -Compress; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))`], { encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-    if (error !== null) {
-      try {
-        console.error(JSON.stringify({ fixture: "windows-process-proof", stage: "cim-oracle-command", pid,
-          elapsedMs: Math.round(performance.now() - started), code: error.code ?? null, signal: error.signal ?? null, killed: error.killed ?? null,
-          stdout: stdout.slice(0, 2048), stdoutBytes: Buffer.byteLength(stdout), stdoutTruncated: stdout.length > 2048,
-          stderr: stderr.slice(0, 2048), stderrBytes: Buffer.byteLength(stderr), stderrTruncated: stderr.length > 2048 }));
-      } catch { /* Reporting must not replace the oracle command failure. */ }
-      reject(error); return;
-    }
-    try { resolve(decodeCimOracle(stdout)); } catch (error) { reject(error); }
-  });
-});
+const cimOracle = async (pid: number): Promise<CimProcess> => {
+  const script = powershellOracleScript(`
+Write-OraclePhase 'cim-module-import-start'
+Import-Module CimCmdlets -ErrorAction Stop
+Write-OraclePhase 'cim-module-import-completed'
+Write-OraclePhase 'cim-query-start'
+$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'
+Write-OraclePhase 'cim-query-completed'
+if ($null -eq $process) { throw 'CIM oracle did not find the controlled process' }
+Write-OraclePhase 'cim-projection-start'
+$value = $process | Select-Object ProcessId,ParentProcessId,@{Name='Birth';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},CommandLine
+Write-OraclePhase 'cim-projection-completed'
+Write-OraclePhase 'json-serialization-start'
+$json = ConvertTo-Json -InputObject $value -Compress
+Write-OraclePhase 'json-serialization-completed'
+Write-OraclePhase 'base64-encoding-start'
+$encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+Write-OraclePhase 'base64-encoding-completed'
+[Console]::WriteLine($encoded)
+`);
+  const { stdout } = await runOracleCommand({ stage: "cim-oracle-command", executable: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", script], timeoutMs: 60_000, killSignal: "SIGTERM", targetPid: pid, redactStdout: true });
+  return decodeCimOracle(stdout);
+};
 
 test("keeps the oracle's complete Unicode command line through an ASCII console", () => {
   const command = 'node "quoted value" "two  spaces" 📖', json = JSON.stringify({ CommandLine: command });
