@@ -144,6 +144,7 @@ export type AuthMessages = {
     readonly repository: string;
     readonly repositoryHint: string;
     readonly error: string;
+    readonly repositoryConflict: string;
     readonly unknown: string;
     readonly checkProjects: string;
     readonly observedProjects: string;
