@@ -530,8 +530,13 @@ mixed old/new writing can violate the new occupancy rule.
 
 Migration 082 adds `projects.repository_identity text COLLATE "C"`, backfills in
 bounded batches using the frozen `repositoryidentity/v1` transform, and checks
-active occupancy within each Team before committing its ledger entry. The
-checksum includes the frozen identity source and `migration082` transform source.
+active occupancy within each Team before committing its ledger entry. Its frozen
+Go source and SQL live under
+`internal/core/store/postgres/schema/migrations/082/`; the SQL retains its
+`migrations/082_project_repository_identity.sql` relative path within that leaf
+package. A separate `register.go` exposes SQL without changing the frozen source
+or SQL bytes. The checksum includes the frozen identity source and `migration082`
+transform source and remains unchanged by the directory move.
 Original addresses, business timestamps, versions, grants and history survive.
 Equivalent active identities or duplicate active unparseable raw addresses in
 one Team abort the migration with Team and Project IDs and roll back all changes
@@ -2440,8 +2445,11 @@ records the proof allocation and alternatives.
 
 `internal/core/store/postgres/schema/current.sql` records the final PostgreSQL
 format produced by the complete embedded migration history in
-`internal/core/store/postgres/schema/migrations/` and migration 026 in
-`internal/core/store/postgres/schema/migrations/026/`. The snapshot includes the
+`internal/core/store/postgres/schema/migrations/`. Migrations with frozen Go
+transforms retain their independent packages and internal layouts in the
+`026/` and `082/` version directories under that same history root. Their
+registration files expose the original SQL and transformation checksums without
+rewriting frozen content. The snapshot includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
 Runtime startup uses the snapshot for an empty target namespace and retains

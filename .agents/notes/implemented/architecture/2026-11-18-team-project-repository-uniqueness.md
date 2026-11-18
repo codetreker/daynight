@@ -22,8 +22,12 @@ Projects retain the original address and a nullable, byte-compared persistent
 identity. Transactional migration 082 freezes the existing RepositoryIdentity
 rules in `repositoryidentity/v1`, checksums that source and its `migration082`
 transform, backfills in batches and rejects same-Team active duplicates before
-commit. Unparseable historical addresses keep NULL identities and redacted
-diagnostics; duplicate active raw values within a Team also abort migration.
+commit. The transform and original SQL share the version directory
+`postgres/schema/migrations/082/`; a separate registration file exposes the SQL
+while preserving the frozen transformation and SQL bytes. The
+[PostgreSQL ownership decision](2026-11-05-server-postgres-ownership.md) owns the
+unified schema/history layout and checksum-preserving relocation. Unparseable
+historical addresses keep NULL identities and redacted diagnostics; duplicate active raw values within a Team also abort migration.
 Actual transfer of NULL identities is refused, while reads, deletion and
 same-Team no-ops remain available.
 

@@ -111,7 +111,8 @@ packages/daynight-server/
                 ├── internal/
                 └── schema/
                     └── migrations/
-                        └── 026/
+                        ├── 026/
+                        └── 082/
 ```
 
 `cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。HTTP、Session、Webhook 工作与依赖释放共用 `DAYNIGHT_SHUTDOWN_TIMEOUT`，上限十秒。超时后取消请求、通知 Operation 停止并强关 transport；已准入 transport 的断连收尾仍可启动所需事务。只有全部使用者退出后应用才关闭文件和数据库，未确认停止时保留资源供关闭重试并返回错误。Webhook 的监督和关闭顺序见[运行设计](webhook-runtime.md)。
@@ -596,6 +597,11 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 明确失败。成功与失败路径都先在锁所属连接上显式解锁，再将连接归还 pool；若无法
 确认解锁，则关闭该物理连接使 session 结束，不能把可能持锁的连接归还 pool。清理
 使用独立且有界的 context，避免已取消的启动 context 跳过解锁。
+
+当前 snapshot 与完整迁移历史统一位于 `postgres/schema`：普通 SQL 在 `schema/migrations`，
+包含冻结 Go transform 的迁移各自保留版本目录与内部布局。迁移 082 的源码在
+`schema/migrations/082/migrate.go`，SQL 在其 `migrations/082_project_repository_identity.sql`，
+独立 `register.go` 向根注册表暴露 SQL。冻结文件与 SQL 原文不随目录移动改写，保留原 checksum。
 
 迁移 082 在同一个事务中增加 nullable `repository_identity`、分批计算回填并检查存量重复。
 `migration082` 冻结 transform，运行时与迁移共用 `repositoryidentity/v1`，迁移 checksum

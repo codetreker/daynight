@@ -27,12 +27,14 @@ for the operation. Driver failures are mapped to neutral facts while preserving
 their original causes; cleanup failures and unknown completion remain distinct
 from business refusals.
 
-Historical SQL and checksum algorithms remain unchanged. Migration 026 embeds
-its complete original transformation source and SQL from a dedicated leaf
-package; a separate registration file exposes the transform without changing
-the embedded bytes. The current snapshot and migration history share the `postgres/schema` entry
-point. Ordinary SQL is in `schema/migrations`; migration 026 retains its
-independent package and internal layout in `schema/migrations/026`.
+Historical SQL and checksum algorithms remain unchanged. Migrations with frozen
+Go transforms retain dedicated leaf packages; separate registration files expose
+their SQL and transforms without changing embedded bytes. The current snapshot
+and migration history share the `postgres/schema` entry point. Ordinary SQL is
+in `schema/migrations`; migrations 026 and 082 retain their independent packages
+and internal layouts in `schema/migrations/026` and `schema/migrations/082`. The
+[Team repository uniqueness decision](2026-11-18-team-project-repository-uniqueness.md)
+owns migration 082's domain rules and frozen identity source.
 
 ## Alternatives
 
