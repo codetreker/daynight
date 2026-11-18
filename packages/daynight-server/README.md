@@ -1801,6 +1801,14 @@ storage. Real creation, readback, keyset paging and operational-error tests keep
 PostgreSQL. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
 records the input and error-chain guarantees.
 
+Project settings cancellation tests run the Service transaction callback and Core
+rules over controlled DAO results. Callback errors and transaction completion
+are supplied independently so a failed completion can suppress a result or
+take precedence over a captured refusal. Actual post-update rollback and
+readback, PostgreSQL errors, and lock-time authorization retain real database
+tests. The [Project settings completion decision](../../.agents/notes/implemented/testing/2026-11-18-project-settings-completion-tests.md)
+records the proof boundary.
+
 Task request tests separate service preflight from candidates that require a
 stored Task. Preflight rejects before storage; `PrepareUpdate` and `PrepareStatus`
 tests use `TaskWriteDAO` expectations for reads, version order, results and error
