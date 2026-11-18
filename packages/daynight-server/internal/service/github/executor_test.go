@@ -375,7 +375,7 @@ func TestExecutorNewHintSurvivesOlderConditionalAck(t *testing.T) {
 	if err := f.run(r); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.ackRequests) != 1 || f.ackRequests[0] != "old-request" || len(f.publications) != 1 {
+	if len(f.ackRequests) != 1 || f.ackRequests[0] != "old-request" || len(f.publications) != 1 || f.publications[0][0].SeenPollID != nil {
 		t.Fatalf("hint result: ack=%v publications=%v", f.ackRequests, f.publications)
 	}
 	var success *store.GitHubRuntimeWrite

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -24,6 +25,8 @@ type pollHintsHarness struct {
 	loseLease    bool
 	unknownAck   bool
 	acked        bool
+	rows         map[int64]githubpr.PullRequest
+	cursors      []int64
 }
 
 type pollHintsDAO struct {
@@ -69,9 +72,38 @@ func (d *pollHintsDAO) Publish(ctx context.Context, lease store.GitHubLease, ite
 	ok, err := d.GitHubWorkDAO.Publish(ctx, lease, items)
 	if ok && err == nil {
 		d.published = items[0].Number
+		for _, item := range items {
+			if d.h.rows != nil {
+				if previous, exists := d.h.rows[item.Number]; exists && item.SeenPollID == nil {
+					item.SeenPollID = previous.SeenPollID
+				}
+				d.h.rows[item.Number] = item
+			}
+		}
 		d.h.events = append(d.h.events, fmt.Sprintf("publish:%d", items[0].Number))
 	}
 	return ok, err
+}
+
+func (d *pollHintsDAO) UnseenActive(ctx context.Context, lease store.GitHubLease, pollID string, after int64, limit int) ([]int64, bool, error) {
+	if d.h.rows == nil {
+		return d.GitHubWorkDAO.UnseenActive(ctx, lease, pollID, after, limit)
+	}
+	if lease != d.h.f.lease || pollID != lease.Token || limit != 100 {
+		d.h.f.t.Fatalf("unseen lease=%+v poll=%q limit=%d", lease, pollID, limit)
+	}
+	d.h.cursors = append(d.h.cursors, after)
+	var numbers []int64
+	for n, row := range d.h.rows {
+		if n > after && row.State == "open" && (row.SeenPollID == nil || *row.SeenPollID != pollID) {
+			numbers = append(numbers, n)
+		}
+	}
+	sort.Slice(numbers, func(i, j int) bool { return numbers[i] < numbers[j] })
+	if len(numbers) > limit {
+		numbers = numbers[:limit]
+	}
+	return numbers, true, nil
 }
 
 func (d *pollHintsDAO) AckPending(_ context.Context, lease store.GitHubLease, number int64, request string) (bool, error) {
@@ -250,5 +282,42 @@ func TestPollHintFailuresStopBeforeNextDetail(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// An in-poll hint must not create another unseen active row in a later batch.
+func TestPollHintDoesNotExtendDynamicAbsenceTraversal(t *testing.T) {
+	f := newPollFixture(t)
+	h := &pollHintsHarness{f: f, rows: make(map[int64]githubpr.PullRequest)}
+	for n := int64(101); n <= 201; n++ {
+		h.rows[n] = githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: n, State: "open"}}
+	}
+	h.install()
+	r := h.remote()
+	pull := r.pull
+	r.pull = func(ctx context.Context, i int64, owner, name string, n int64) (githubpr.Observation, error) {
+		if n == 101 {
+			h.queue = append(h.queue, hintFor(1000, "new-open"))
+		}
+		return pull(ctx, i, owner, name, n)
+	}
+	if err := f.run(r); err != nil {
+		t.Fatal(err)
+	}
+	row := h.rows[1000]
+	if row.SeenPollID == nil || *row.SeenPollID != f.lease.Token {
+		t.Fatalf("hint publication missing poll token: %+v", row)
+	}
+	if !reflect.DeepEqual(h.cursors, []int64{0, 200, 201}) {
+		t.Fatalf("unexpected absence batches: %v", h.cursors)
+	}
+	var hintReads int
+	for _, event := range h.events {
+		if event == "fetch:1000" {
+			hintReads++
+		}
+	}
+	if hintReads != 1 || h.events[len(h.events)-1] != "full-success" || len(h.queue) != 0 {
+		t.Fatalf("hint reads=%d events=%v remaining=%v", hintReads, h.events, h.queue)
 	}
 }

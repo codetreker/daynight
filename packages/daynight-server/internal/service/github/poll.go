@@ -97,7 +97,7 @@ func (r *run) pollHint(ctx context.Context, owner, name string) error {
 		return err
 	}
 	if len(hints) > 0 {
-		if err = r.hint(ctx, hints[0], owner, name); err != nil && (fatal(err) || fail(err).Code == "github_rate_limited") {
+		if err = r.hint(ctx, hints[0], owner, name, &r.lease.Token); err != nil && (fatal(err) || fail(err).Code == "github_rate_limited") {
 			return err
 		}
 	}
