@@ -744,6 +744,14 @@ Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team
 grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/archived/architecture/2026-11-04-project-grant-management.md)
 拥有存在性条件、有限回执与外部加入范围的取舍。
 
+项目直接添加使用单独的 Read Committed 写作用域：先锁 Project，再共享锁当前 ownership 与
+owner Team，最后锁真实凭据；等待后以新语句重查有效 Project admin 和目标访问。目标账号使用
+`FOR KEY SHARE` 验证；已有访问不写入，否则创建固定 member grant 并在同一事务刷新该项目与用户的
+webhook eligibility。单项目、单用户查询复用名册投影，返回实际来源；提交前再次检查凭据有效期。
+Team 共享锁与成员写入的排他根协调，即使成员行尚不存在也能区分 Team 先加入与直加先完成。
+缺失活跃项目的 ownership 或 Team 是完整性错误；仅确认提交才发送回执。具体取舍见
+[项目直加决策](../../.agents/notes/implemented/feature/2026-11-18-existing-project-members.md)。
+
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
 接受按项目→邀请顺序加锁，验证状态后检查真实 direct grant。已有 grant 保持原角色且
 不消费；只有继承权限时插入 direct member 并消费。新 grant 与消费原子提交，两个

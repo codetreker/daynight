@@ -648,6 +648,9 @@ func (s unexpectedAppTransactions) WriteProject(context.Context, string, func(st
 	var value0 store.Completion
 	return value0, failure
 }
+func (s unexpectedAppTransactions) WriteProjectDirectMember(context.Context, string, func(store.ProjectDirectMemberScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteProjectDirectMember")
+}
 func (s unexpectedAppTransactions) WriteProjectCreation(context.Context, string, func(store.ProjectCreationDAO) error) (store.Completion, error) {
 	failure := s.backend.unexpected("WriteProjectCreation")
 	var value0 store.Completion

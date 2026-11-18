@@ -18,6 +18,25 @@ type ProjectWriter interface {
 	WriteProject(context.Context, string, func(ProjectWriteScope) error) (Completion, error)
 }
 
+// ProjectDirectMemberWriter holds the Project, current ownership and Team roots
+// until the callback has completed, including the case of absent membership.
+type ProjectDirectMemberWriter interface {
+	WriteProjectDirectMember(context.Context, string, func(ProjectDirectMemberScope) error) (Completion, error)
+}
+
+type ProjectDirectMemberScope interface {
+	ProjectDAO() ProjectWriteDAO
+	DirectMemberDAO() ProjectDirectMemberDAO
+	IdentityDAO() IdentityDAO
+	CredentialFamilyDAO() CredentialFamilyDAO
+	EligibilityDAO() WebhookEligibilityDAO
+}
+
+type ProjectDirectMemberDAO interface {
+	LockUser(context.Context, string) error
+	Participant(context.Context, string) (model.ProjectParticipant, error)
+}
+
 type ProjectCreationWriter interface {
 	WriteProjectCreation(context.Context, string, func(ProjectCreationDAO) error) (Completion, error)
 }
