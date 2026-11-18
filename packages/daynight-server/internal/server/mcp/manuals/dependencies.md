@@ -1,6 +1,6 @@
 # Dependencies and graph reads
 
-Read this topic to interpret a selected graph or create/replace prerequisites. Writes also require [Write safety](daynight://manuals/write-safety.md); [Tasks](daynight://manuals/tasks.md) owns creation/lifecycle/projections and [Materials](daynight://manuals/materials.md) owns shared input references. Examples are MCP `tools/call` parameters with fictional IDs/versions. Use actual observations and current `tools/list` schemas.
+Read this topic to interpret a selected graph or create/replace prerequisites. Writes also require [Write safety](daynight://manuals/write-safety.md). Creating a Task with dependencies or changing other Task fields alongside dependencies also requires [Task writes](daynight://manuals/task-writes.md). [Task reads](daynight://manuals/tasks.md) owns projections and [Materials](daynight://manuals/materials.md) owns shared input references. Examples are MCP `tools/call` parameters with fictional IDs/versions. Use actual observations and current `tools/list` schemas.
 
 ## Meaning and direction
 
@@ -62,7 +62,7 @@ Creation uses the same disjoint partition. This registers confirmed work explici
 {"name":"task_create","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","title":"Verify the assembled result","description":"Verify B's supplied result against X's required input.","status":"todo","dependsOn":["33333333-3333-4333-8333-333333333333"],"externalDependsOn":["55555555-5555-4555-8555-555555555555"],"returnView":"full"}}
 ```
 
-Automatic execution remains disabled; unfinished prerequisites block execution/completion rather than registration. [Tasks](daynight://manuals/tasks.md) owns creation defaults. Preserve the confirmed new ID and verify its graph. Unknown creation requires original-context reconciliation, not a duplicate based on title matching.
+Automatic execution remains disabled; unfinished prerequisites block execution/completion rather than registration. [Task writes](daynight://manuals/task-writes.md) owns creation defaults. Preserve the confirmed new ID and verify its graph. Unknown creation requires original-context reconciliation, not a duplicate based on title matching.
 
 ## Reduce only valid shortcuts
 
@@ -110,4 +110,4 @@ One graph is read within one observation. UTC observedAt is not a hash, Task ver
 | Permission/visibility failure | Preserve actual access failure rather than infer absence. |
 | Unknown write/transport outcome | Retain original scope, decision version and proposed sets; inspect current facts without automatic replay or historical attribution from matching arrays. |
 
-Cancellation preserves readable relationships and satisfies scheduling. Deletion is distinct; removing incoming references is an additional consequential change, affecting versions/readiness, that needs its own covered scope. [Tasks](daynight://manuals/tasks.md) owns cancellation/deletion boundaries and [Write safety](daynight://manuals/write-safety.md) owns completion attribution.
+Cancellation preserves readable relationships and satisfies scheduling. Deletion is distinct; removing incoming references is an additional consequential change, affecting versions/readiness, that needs its own covered scope. [Task writes](daynight://manuals/task-writes.md) owns cancellation/deletion boundaries and [Write safety](daynight://manuals/write-safety.md) owns completion attribution.

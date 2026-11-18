@@ -7,8 +7,8 @@ Read this overview before using Daynight tools. Use `tools/list` for current inp
 | Operation | Required topic; conditional additions |
 | --- | --- |
 | Establish Account, Team or Project context; resolve a repository | [Concepts](daynight://manuals/concepts.md) |
-| Inspect Tasks/Goals, list ready work or read properties | [Tasks](daynight://manuals/tasks.md) |
-| Create Tasks/Goals or change fields, status or properties | [Tasks](daynight://manuals/tasks.md); [Materials](daynight://manuals/materials.md) when defining or replacing formal material; [Dependencies](daynight://manuals/dependencies.md) when setting relationships |
+| Inspect Tasks/Goals, list ready work or read properties | [Task reads](daynight://manuals/tasks.md) |
+| Create or delete Tasks/Goals, or change metadata, status or properties | [Task writes](daynight://manuals/task-writes.md); [Materials](daynight://manuals/materials.md) when defining or replacing formal material; [Dependencies](daynight://manuals/dependencies.md) when setting relationships |
 | Read a dependency graph | [Dependencies](daynight://manuals/dependencies.md) |
 | Replace or reduce dependency relationships | [Dependencies](daynight://manuals/dependencies.md) |
 | Organize requirements, designs, shared sources or results | [Materials](daynight://manuals/materials.md) |
