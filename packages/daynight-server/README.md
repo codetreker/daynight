@@ -2394,7 +2394,7 @@ records the proof allocation and alternatives.
 `internal/core/store/postgres/schema/current.sql` records the final PostgreSQL
 format produced by the complete embedded migration history in
 `internal/core/store/postgres/schema/migrations/` and migration 026 in
-`internal/core/store/postgres/internal/migration026/`. The snapshot includes the
+`internal/core/store/postgres/schema/migration026/`. The snapshot includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
 Runtime startup uses the snapshot for an empty target namespace and retains

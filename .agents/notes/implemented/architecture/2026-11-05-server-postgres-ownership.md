@@ -30,9 +30,9 @@ from business refusals.
 Historical SQL and checksum algorithms remain unchanged. Migration 026 embeds
 its complete original transformation source and SQL from a dedicated leaf
 package; a separate registration file exposes the transform without changing
-the embedded bytes. The current snapshot and ordinary SQL history share the
-`postgres/schema` entry point.
-Migration 026 remains in its independent package under `postgres/internal`.
+the embedded bytes. The current snapshot and migration history share the `postgres/schema` entry
+point. Ordinary SQL is in `schema/migrations`; migration 026 retains its
+independent package and internal layout in `schema/migration026`.
 
 ## Alternatives
 
@@ -55,5 +55,5 @@ scans, connection management and migration registration. Splitting DAOs requires
 explicit composition of their shared transaction and preserves existing lock
 ordering. The frozen migration source carries its original package declaration
 because its exact bytes participate in the installed checksum. Moving the
-ordinary SQL without rewriting it preserves ledger checksums and upgrade
-behavior while bringing the format artifacts together.
+ordinary SQL and frozen package without rewriting them preserves ledger
+checksums and upgrade behavior while bringing the format artifacts together.

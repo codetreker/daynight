@@ -11,7 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
+	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migration026"
 	teamstore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
