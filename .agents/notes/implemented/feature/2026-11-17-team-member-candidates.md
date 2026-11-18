@@ -39,3 +39,5 @@ profiles can make a page large; item limits do not bound scan or response bytes.
 Changes between pages may shift matches before the current position. Search
 input, cursor and profiles must stay out of diagnostic logs. Index selection
 requires evidence from actual workload and plans.
+The [Project search decision](2026-11-18-project-member-candidates.md) shares
+the neutral account query while retaining separate authority and cursor formats.

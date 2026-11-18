@@ -352,6 +352,7 @@ grant、邀请、Task 或 GitHub App 集成，也不泄露目标冲突项目的�
 | 项目、任务、图、属性和成员名单读取 | 允许 | 允许 |
 | 任务元数据、依赖、属性、set-status 和附件管理 | 允许 | 允许 |
 | 邀请、移除成员、调整角色和撤销邀请 | 拒绝 | 允许 |
+| 按姓名或邮箱搜索既有账号候选 | 拒绝 | 允许 |
 | 项目提醒阈值修改 | 拒绝 | 允许 |
 
 新任务默认 proposed，创建可显式选择 proposed/todo；元数据 PATCH 不接受 status；set-status 使用
@@ -369,6 +370,31 @@ grant、邀请、Task 或 GitHub App 集成，也不泄露目标冲突项目的�
 独立授权的新增、修改和移除由有效 Project admin 执行，可针对本人或其他 admin；不改变 Team 角色，
 也不要求保留 direct admin。新增目标必须已经是有效 ProjectParticipant，外部用户仍须本人接受邀请，
 不能通过任意用户 ID 加入项目。Team admin 即使有 direct member grant，有效角色仍为 admin。
+
+### 项目管理员候选搜索
+
+`POST /api/v1/projects/{projectId}/member-candidates/search` 允许有效 Project admin
+搜索全服务既有账号，包括从普通 Team 继承、仅有 Project 独立授权及 Personal Team
+所属项目的 admin。普通成员返回 `403 forbidden`，无项目访问或项目不存在返回
+`404 not_found`，两者均不能读取账号目录。搜索不创建账号、成员、授权或邀请，也不授予后续写入权限。
+
+请求仅接受必需的 `{expectedUserId,query}` 和可选的 `limit,cursor`，拒绝 query string、
+未知、重复、缺失必需字段、null、错误类型及非法 Unicode。项目和主体 ID 必须为规范非零 UUID；
+主体与真实凭据不匹配在领域查询前返回 `409 identity_mismatch`。查询为无 NUL 的合法 UTF-8，
+裁切 Unicode 空白后最多 1024 bytes，按姓名或邮箱字面子串匹配，仅 ASCII 字母忽略大小写。
+limit 默认 20，范围 1–50；cursor 非空且最多 2048 bytes。空查询仍校验凭据和有效 admin，
+返回空数组及 null 游标，不能携带 cursor。无效输入或游标返回 `400 invalid_input`。
+
+成功 200 返回 `{items,nextCursor,actorRole:"admin"}`。每项仅含 `userId` 和必需的
+`profile:{name,email,avatarUrl}`，三个资料字段均必填且可为 null；`nextCursor` 为字符串或 null。
+按 UUID 升序分页，同名账号分别返回。项目专用游标绑定项目、真实用户、凭据类别和 ID、
+规范化查询及页大小，与 Team 搜索游标不互通；游标只表示位置。每页在同一只读快照内重验
+当前凭据和有效 admin 后读取目录，跨页变化不保证全局快照。凭据失效返回 401，读取或快照清理
+失败不得交付部分目录或成功响应，也不产生未知写入状态。响应设置 `Cache-Control: no-store`，
+只有已建立真实主体的响应设置 `Daynight-User-ID`。查询、游标、姓名、邮箱、头像和凭据秘密
+不得进入诊断日志。Cookie 来源、API OAuth scope 和其他认证拒绝沿现有规则。
+
+### 独立授权与邀请
 
 `PUT /api/v1/projects/{projectId}/grants/{userId}` 接受
 `{version:null|正 int64,role:"member"|"admin",expectedUserId}`：null 要求 grant 不存在，
@@ -706,7 +732,7 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| Team 管理、项目创建或转移、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| Team 管理、项目候选搜索、项目创建或转移、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 独立授权存在性或观察版本不符；ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 直接添加的目标已是不同角色的 Team 成员 | 409 resource_conflict，成员版本与时间不变 |
 | 新增独立授权的目标不是有效 participant | 404 not_found |

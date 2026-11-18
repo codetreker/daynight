@@ -241,17 +241,27 @@ func (m *projectMock) Delete(ctx context.Context, p model.Principal, id string) 
 }
 
 type membershipMock struct {
-	h                     *httpHarness
-	ListWithAccessFunc    func(ctx context.Context, p model.Principal, id string) (coreproject.ProjectParticipants, error)
-	SetRoleFunc           func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.SetProjectMemberRole) (model.ProjectGrant, error)
-	RemoveFunc            func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.RemoveProjectMember) error
-	SetGrantFunc          func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.SetProjectGrant) (coreproject.SetGrantResult, error)
-	RemoveGrantFunc       func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.RemoveProjectMember) (coreproject.RemoveGrantResult, error)
-	CreateInvitationFunc  func(ctx context.Context, p model.Principal, id, expected string) (coreproject.MintedInvitation, error)
-	ListInvitationsFunc   func(ctx context.Context, p model.Principal, id string) ([]model.ProjectInvitation, error)
-	RevokeInvitationFunc  func(ctx context.Context, p model.Principal, id, inviteID, expected string) error
-	InspectInvitationFunc func(ctx context.Context, p model.Principal, secret string) (coreproject.InvitationInspection, error)
-	AcceptInvitationFunc  func(ctx context.Context, p model.Principal, secret, expected string) (coreproject.InvitationAcceptance, error)
+	h                          *httpHarness
+	SearchMemberCandidatesFunc func(context.Context, model.Principal, string, coreproject.CandidateSearchInput) (coreproject.CandidatePage, error)
+	ListWithAccessFunc         func(ctx context.Context, p model.Principal, id string) (coreproject.ProjectParticipants, error)
+	SetRoleFunc                func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.SetProjectMemberRole) (model.ProjectGrant, error)
+	RemoveFunc                 func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.RemoveProjectMember) error
+	SetGrantFunc               func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.SetProjectGrant) (coreproject.SetGrantResult, error)
+	RemoveGrantFunc            func(ctx context.Context, p model.Principal, projectID, userID string, input coreproject.RemoveProjectMember) (coreproject.RemoveGrantResult, error)
+	CreateInvitationFunc       func(ctx context.Context, p model.Principal, id, expected string) (coreproject.MintedInvitation, error)
+	ListInvitationsFunc        func(ctx context.Context, p model.Principal, id string) ([]model.ProjectInvitation, error)
+	RevokeInvitationFunc       func(ctx context.Context, p model.Principal, id, inviteID, expected string) error
+	InspectInvitationFunc      func(ctx context.Context, p model.Principal, secret string) (coreproject.InvitationInspection, error)
+	AcceptInvitationFunc       func(ctx context.Context, p model.Principal, secret, expected string) (coreproject.InvitationAcceptance, error)
+}
+
+func (m *membershipMock) SearchMemberCandidates(ctx context.Context, p model.Principal, id string, input coreproject.CandidateSearchInput) (coreproject.CandidatePage, error) {
+	m.h.invoked("SearchMemberCandidates", ctx, p)
+	if m.SearchMemberCandidatesFunc == nil {
+		m.h.t.Errorf("unexpected SearchMemberCandidates call")
+		panic("unexpected SearchMemberCandidates call")
+	}
+	return m.SearchMemberCandidatesFunc(ctx, p, id, input)
 }
 
 func (m *membershipMock) ListWithAccess(ctx context.Context, p model.Principal, id string) (coreproject.ProjectParticipants, error) {

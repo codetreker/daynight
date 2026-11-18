@@ -64,7 +64,7 @@ func TestCandidateSearchProtocolAndCapacity(t *testing.T) {
 		if p.UserID != directActor || p.CredentialID != directTarget || p.Kind != model.PATCredential || id != directTeam || input.ExpectedUserID != directActor || input.Query != "private-search" || input.Limit == nil || *input.Limit != 7 || input.Cursor == nil || *input.Cursor != "private-cursor" {
 			t.Fatalf("principal=%+v id=%q input=%+v", p, id, input)
 		}
-		return core.CandidatePage{Items: []model.TeamMemberCandidate{{UserID: directTarget, Profile: model.ProjectParticipantProfile{Name: &name, AvatarURL: &avatar}}}, NextCursor: &cursor}, nil
+		return core.CandidatePage{Items: []model.UserCandidate{{UserID: directTarget, Profile: model.ProjectParticipantProfile{Name: &name, AvatarURL: &avatar}}}, NextCursor: &cursor}, nil
 	}}
 	h := candidateHTTP(t, op, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	w := httptest.NewRecorder()

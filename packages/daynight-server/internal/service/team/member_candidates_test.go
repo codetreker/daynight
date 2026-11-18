@@ -33,6 +33,10 @@ func (s *candidateScope) TeamDAO() store.TeamReader {
 	s.calls = append(s.calls, "teamDAO")
 	return candidateTeamReader{scope: s}
 }
+func (s *candidateScope) UserCandidateDAO() store.UserCandidateReader {
+	s.calls = append(s.calls, "candidateDAO")
+	return candidateTeamReader{scope: s}
+}
 func (s *candidateScope) Credential(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
 	s.calls = append(s.calls, "credential")
 	if ctx != s.ctx || p != s.p {
@@ -54,7 +58,7 @@ func (r candidateTeamReader) Team(ctx context.Context, userID, teamID string) (m
 	}
 	return s.team, s.teamErr
 }
-func (r candidateTeamReader) MemberCandidates(ctx context.Context, query store.TeamMemberCandidateQuery) (store.TeamMemberCandidatePage, error) {
+func (r candidateTeamReader) MemberCandidates(ctx context.Context, query store.UserCandidateQuery) (store.UserCandidatePage, error) {
 	s := r.scope
 	s.calls = append(s.calls, "search")
 	if ctx != s.ctx || query.Query != "alice" || query.Limit != 20 || query.AfterID != nil {
@@ -62,9 +66,9 @@ func (r candidateTeamReader) MemberCandidates(ctx context.Context, query store.T
 	}
 	if s.onSearch != nil {
 		s.onSearch(ctx)
-		return store.TeamMemberCandidatePage{}, ctx.Err()
+		return store.UserCandidatePage{}, ctx.Err()
 	}
-	return store.TeamMemberCandidatePage{Items: []model.TeamMemberCandidate{{UserID: teamFixtureTarget}}}, s.searchErr
+	return store.UserCandidatePage{Items: []model.UserCandidate{{UserID: teamFixtureTarget}}}, s.searchErr
 }
 
 type candidateSnapshot struct {
@@ -94,7 +98,7 @@ func TestCandidateSearchSnapshotAdmissionAndCompletion(t *testing.T) {
 			snapshot := &candidateSnapshot{scope: scope}
 			svc := &Teams{reader: snapshot}
 			page, err := svc.SearchMemberCandidates(ctx, p, teamFixtureID, core.CandidateSearchInput{ExpectedUserID: p.UserID, Query: " ALICE "})
-			if err != nil || len(page.Items) != 1 || page.Items[0].UserID != teamFixtureTarget || snapshot.calls != 1 || !reflect.DeepEqual(scope.calls, []string{"credentialDAO", "credential", "teamDAO", "team", "search"}) {
+			if err != nil || len(page.Items) != 1 || page.Items[0].UserID != teamFixtureTarget || snapshot.calls != 1 || !reflect.DeepEqual(scope.calls, []string{"credentialDAO", "credential", "teamDAO", "candidateDAO", "team", "search"}) {
 				t.Fatalf("page=%+v err=%v calls=%v", page, err, scope.calls)
 			}
 		})
@@ -107,11 +111,11 @@ func TestCandidateSearchSnapshotAdmissionAndCompletion(t *testing.T) {
 		wantCode                                      string
 		wantCalls                                     []string
 	}{
-		{"empty", "  ", nil, nil, nil, nil, model.ProjectAdmin, "", []string{"credentialDAO", "credential", "teamDAO", "team"}},
+		{"empty", "  ", nil, nil, nil, nil, model.ProjectAdmin, "", []string{"credentialDAO", "credential", "teamDAO", "candidateDAO", "team"}},
 		{"revoked", "alice", model.ErrNotFound, nil, nil, nil, model.ProjectAdmin, "unauthenticated", []string{"credentialDAO", "credential"}},
-		{"missing", "alice", nil, model.ErrNotFound, nil, nil, model.ProjectAdmin, "not_found", []string{"credentialDAO", "credential", "teamDAO", "team"}},
-		{"demoted", "alice", nil, nil, nil, nil, model.ProjectMemberRole, "forbidden", []string{"credentialDAO", "credential", "teamDAO", "team"}},
-		{"search-failed", "alice", nil, nil, errors.New("search failure"), nil, model.ProjectAdmin, "internal", []string{"credentialDAO", "credential", "teamDAO", "team", "search"}},
+		{"missing", "alice", nil, model.ErrNotFound, nil, nil, model.ProjectAdmin, "not_found", []string{"credentialDAO", "credential", "teamDAO", "candidateDAO", "team"}},
+		{"demoted", "alice", nil, nil, nil, nil, model.ProjectMemberRole, "forbidden", []string{"credentialDAO", "credential", "teamDAO", "candidateDAO", "team"}},
+		{"search-failed", "alice", nil, nil, errors.New("search failure"), nil, model.ProjectAdmin, "internal", []string{"credentialDAO", "credential", "teamDAO", "candidateDAO", "team", "search"}},
 		{"cleanup-precedes-refusal", "alice", model.ErrNotFound, nil, nil, errors.New("cleanup failure"), model.ProjectAdmin, "completion", []string{"credentialDAO", "credential"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
