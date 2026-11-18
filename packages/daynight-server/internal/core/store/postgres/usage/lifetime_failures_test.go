@@ -32,7 +32,7 @@ func TestUsageRegistrationRejectsUnavailableOriginalExecution(t *testing.T) {
 			testutil.MustExec(t, f.db.Pool, `UPDATE personal_access_tokens SET created_at=clock_timestamp()-interval '1 day',expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, f.actor.CredentialID)
 		}, "permission_revoked"},
 		{"paused task", func(t *testing.T, f *workflowFixture) {
-			testutil.PutTaskProperty(t, f.db.Pool, f.task, "paused", []byte("true"))
+			testutil.PutTaskProperty(t, f.db.Pool, f.task, "blocked", []byte("true"))
 		}, "permission_revoked"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

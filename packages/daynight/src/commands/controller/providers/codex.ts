@@ -1,3 +1,4 @@
+import { codexUsageProviderVersion } from "./codex-usage.js";
 import { assertNativeImageAdmission } from "./image-admission.js";
 import { createOperation } from "../../../api/operation.js";
 import { isOutboxFailure } from "../outbox-diagnostic.js";
@@ -267,6 +268,12 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", startParams));
     const thread = record(response.thread); nativeId = string(thread.id);
     if (!nativeId || options.resumeNativeSessionId && nativeId !== options.resumeNativeSessionId || await realpath(string(thread.cwd)) !== await realpath(options.cwd)) throw new Error("Native Codex session identity or working directory mismatch.");
+    // Cumulative/context snapshots have no accountable source revision.
+    try {
+      const providerVersion = codexUsageProviderVersion(initialized);
+      if (providerVersion) options.usageRuntime?.ready?.({ nativeSessionId: nativeId, providerVersion });
+      else options.usageRuntime?.gap("profile_unverified");
+    } catch { options.onDiagnostic?.("Codex usage capability could not be persisted; the native task continues."); }
     authority?.install({ initialized, remoteControl, response, nativeSessionId: nativeId, nativeCwd: string(thread.cwd) });
     configObservation = await configObserver?.bind(nativeId, { ...response, cwd: string(thread.cwd) }) ?? null;
     imageProfile = configObservation ? codexImageProfile(initialized, response, process.platform, executableSha256, configObservation) : null;

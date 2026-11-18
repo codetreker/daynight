@@ -29,7 +29,7 @@ func TestProjectDeletionWorkerSnapshotAndCompletion(t *testing.T) {
 		mustQueryExec(t, s, `INSERT INTO tasks(id,project_id,title,status,deleted_at) VALUES($1,$2,$3,'todo',CASE WHEN $4 THEN now() END)`, id, project.ID, fmt.Sprintf("Task %d", i), i == 130)
 		mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw))
 	}
-	mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, queryID(130))
+	mustQueryExec(t, s, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, queryID(130))
 	mustQueryExec(t, s, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'x','text/plain',1),($1,$3,'x','text/plain',1)`, project.ID, queryID(1), queryID(130))
 	err = s.ReadProjectDeletion(ctx, project.ID, func(snapshot store.ProjectDeletionSnapshot) error {
 		access, err := snapshot.ProjectDAO().ProjectAccess(ctx, actor, project.ID)

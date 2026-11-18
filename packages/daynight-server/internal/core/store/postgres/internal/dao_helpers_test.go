@@ -56,7 +56,7 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 	ctx := t.Context()
 	project, task := helperTask(t, tx)
 	missing := uuid.NewString()
-	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque","title":"Change"}]`), "paused": json.RawMessage(`true`)}
+	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque","title":"Change"}]`), "blocked": json.RawMessage(`true`)}
 	if err := pg.WriteTaskProperties(ctx, tx, task, properties); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestTaskHelpersReadPropertiesStepsPresenceAndDeletion(t *testing.T) {
 	if err := pg.AttachTaskProperties(ctx, tx, tasks); err != nil || !reflect.DeepEqual(tasks[0].Properties, properties) || tasks[1].Properties == nil {
 		t.Fatalf("attached=%#v, err=%v", tasks, err)
 	}
-	properties = model.TaskProperties{"paused": json.RawMessage(`false`)}
+	properties = model.TaskProperties{"blocked": json.RawMessage(`false`)}
 	if err := pg.WriteTaskProperties(ctx, tx, task, properties); err != nil {
 		t.Fatal(err)
 	}

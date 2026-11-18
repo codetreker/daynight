@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { UsageAck, UsagePayload, UsageQueuedEvent, UsageState, UsageStore } from "./types.js";
 
+import { usageProfileId } from "./profiles.js";
+
 const PROTOCOL = "daynight.usage.v1";
-const PROFILE = "copilot-event-1.0.11-v1";
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const sequence = (value: unknown): value is string => typeof value === "string" && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n;
 const hash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -28,10 +29,10 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
   const blocked = new Set<string>();
   const diagnose = (message: string) => options.onDiagnostic?.(message);
   const capability = (state: UsageState): UsagePayload | null => {
-    const profile = profiles?.find(item => item.id === PROFILE && item.provider === state.provider);
+    const profile = profiles?.find(item => item.id === usageProfileId(state.provider) && item.provider === state.provider);
     const exact = (Array.isArray(profile?.qualifiedVersions) ? profile.qualifiedVersions : []).map(object).find(item => item.providerVersion === state.providerVersion);
     const value = object(exact?.capability ?? profile?.capability);
-    if (value.profileId !== PROFILE || !["verified", "unverified", "unsupported"].includes(String(value.qualification))) return null;
+    if (value.profileId !== usageProfileId(state.provider) || !["verified", "unverified", "unsupported"].includes(String(value.qualification))) return null;
     if (!exact && value.qualification === "verified") return { ...value, qualification: "unverified" };
     return value;
   };
@@ -66,7 +67,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     if (response.status === 429 || response.status >= 500) { delay(response.headers.get("retry-after")); return true; }
     return false;
   };
-  const validState = (state: UsageState, value: Record<string, unknown>): boolean => value.id === state.stateId && value.sessionId === options.identity.sessionId && value.executionGeneration === state.generation && value.nativeSessionId === state.nativeSessionId && value.registrationId === state.registrationId && value.providerVersion === state.providerVersion && value.profileId === PROFILE && value.provider === state.provider && sequence(value.rowVersion);
+  const validState = (state: UsageState, value: Record<string, unknown>): boolean => value.id === state.stateId && value.sessionId === options.identity.sessionId && value.executionGeneration === state.generation && value.nativeSessionId === state.nativeSessionId && value.registrationId === state.registrationId && value.providerVersion === state.providerVersion && value.profileId === usageProfileId(state.provider) && value.provider === state.provider && sequence(value.rowVersion);
   const saveReceipt = (state: UsageState, value: Record<string, unknown>): boolean => {
     const remote = object(value.state), grant = object(value.grant);
     if (!validState(state, remote) || typeof grant.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(grant.token) || typeof grant.expiresAt !== "string" || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= Date.now()) return false;
@@ -90,7 +91,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
       const result = await request("/api/usage/v1/registrations", token, {
         protocol: PROTOCOL, stateId: state.stateId, registrationId: state.registrationId,
         ...options.identity, connectionEpoch: connection.connectionEpoch, nativeSessionId: state.nativeSessionId,
-        profileId: PROFILE, providerVersion: state.providerVersion,
+        profileId: usageProfileId(state.provider), providerVersion: state.providerVersion,
       });
       if (result.response.status === 429) store.clearRegistrationAttempted(state.stateId);
       if (refusal(state, result.response)) return false;
@@ -163,7 +164,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     failures = 0; nextAttempt = 0;
   };
   const run = async () => {
-    if (closed || disabled || Date.now() < nextAttempt) return;
+    if (closed || disabled || Date.now() < nextAttempt || store.states().length === 0) return;
     try {
       if (!profiles) {
         const result = await request("/api/usage/v1/capabilities", await options.readParentToken());

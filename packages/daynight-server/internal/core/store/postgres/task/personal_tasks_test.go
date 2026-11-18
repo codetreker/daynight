@@ -46,7 +46,7 @@ func TestPersonalTaskInventory(t *testing.T) {
 	when := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	readerExec(t, db, `UPDATE tasks SET started_at=$1,version=9223372036854775807 WHERE id=ANY($2::uuid[])`, when, []string{first.ID, second.ID})
 	readerExec(t, db, `UPDATE tasks SET started_at=NULL WHERE id=ANY($1::uuid[])`, []string{nullTime.ID, child.ID})
-	readerPutProperty(t, db, first.ID, "paused", []byte(`true`))
+	readerPutProperty(t, db, first.ID, "blocked", []byte(`true`))
 	if err := db.ReadSnapshot(t.Context(), func(scope store.SnapshotScope) error {
 		dao := scope.TaskDAO().(store.PersonalTaskReader)
 		facts, err := dao.PersonalTaskFacts(t.Context(), actor)

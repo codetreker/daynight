@@ -101,7 +101,7 @@ func TestHistoricalWorkerCannotUpdateButCanBeManuallyReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 	current.Properties["worker"] = raw
-	current.Properties["paused"] = json.RawMessage(`true`)
+	current.Properties["blocked"] = json.RawMessage(`true`)
 	phase := model.WorkerExecuting
 	faultCode(t, WorkerUpdateAdmission(&historical, historical.UserID, historical.ClaimID, UpdateWorker{Phase: &phase}), "invalid_input")
 	faultCode(t, WorkerUpdateAdmission(&historical, "other", historical.ClaimID, UpdateWorker{Phase: &phase}), "forbidden")
@@ -144,7 +144,7 @@ func TestHistoricalWorkerCannotUpdateButCanBeManuallyReleased(t *testing.T) {
 	} {
 		t.Run(operation.name, func(t *testing.T) {
 			values, err := operation.run(current)
-			if err != nil || values.Status != model.TaskTodo || string(values.Properties["paused"]) != "true" {
+			if err != nil || values.Status != model.TaskTodo || string(values.Properties["blocked"]) != "true" {
 				t.Fatalf("%s: %#v %v", operation.name, values, err)
 			}
 			if _, present := values.Properties["worker"]; present {

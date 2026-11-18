@@ -282,7 +282,7 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 			State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
 		current.Properties = workerHTTPProperties(t, current.Properties, &worker)
 		if value != "" {
-			current.Properties["paused"] = json.RawMessage(value)
+			current.Properties["blocked"] = json.RawMessage(value)
 			paused[current.ID] = value
 		}
 		wanted = append(wanted, current)
@@ -309,8 +309,9 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		item := page.Items[0]
 		value, exists := item.Properties["paused"]
 		wantValue, wantExists := paused[item.ID]
-		if exists != wantExists || string(value) != wantValue {
-			t.Fatalf("inventory changed paused presence/value: %#v", item.Properties)
+		blocked, blockedExists := item.Properties["blocked"]
+		if exists != wantExists || blockedExists != wantExists || string(value) != wantValue || string(blocked) != wantValue {
+			t.Fatalf("inventory changed blocked aliases presence/value: %#v", item.Properties)
 		}
 		ids = append(ids, item.ID)
 		if index == len(wanted)-1 {

@@ -307,10 +307,13 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP TABLE usage_records`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `UPDATE task_properties SET name='paused' WHERE name='blocked'`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `DROP TABLE project_github_coverage`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87)`); err != nil || result.RowsAffected() != 9 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88)`); err != nil || result.RowsAffected() != 10 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

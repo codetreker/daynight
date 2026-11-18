@@ -8,7 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 )
 
 func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
@@ -40,7 +40,7 @@ func (h *taskHandler) propertySchema(w http.ResponseWriter, request *http.Reques
 		httpx.WriteError(w, request, logger, "task_property", "schema", err)
 		return
 	}
-	definitions := taskproperties.Definitions()
+	definitions := taskprotocol.PropertyDefinitions()
 	response := api.TaskPropertySchema{Properties: make(map[string]api.TaskPropertyDefinition, len(definitions))}
 	for name, definition := range definitions {
 		response.Properties[name] = api.TaskPropertyDefinition{Description: definition.Description, ReadOnly: definition.ReadOnly, Schema: definition.Schema}
@@ -89,7 +89,7 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	name := request.PathValue("name")
-	if _, exists := taskproperties.Definitions()[name]; exists {
+	if _, exists := taskprotocol.PropertyDefinitions()[name]; exists {
 		logger = logger.With("property_name", name)
 	}
 	if err := propertyQuery(request); err != nil {

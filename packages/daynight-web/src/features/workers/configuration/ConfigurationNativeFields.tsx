@@ -7,9 +7,9 @@ import type { DraftIssue, NativeDraft, ProjectNativeDraft } from './model';
 const agents = [{ value: 'codex', label: 'Codex' }, { value: 'copilot', label: 'Copilot' }, { value: 'claude', label: 'Claude Code' }] as const;
 const AgentOptions = () => <>{agents.map(agent => <option value={agent.value} key={agent.value}>{agent.label}</option>)}</>;
 
-export const ConfigurationFieldError = ({ issue, id, range }: { readonly issue: DraftIssue | undefined; readonly id: string; readonly range?: { readonly minimum: number; readonly maximum: number } }) => {
+export const ConfigurationFieldError = ({ issue, id, range }: { readonly issue: DraftIssue | undefined; readonly id: string; readonly range?: { readonly minimum: number; readonly maximum: number; readonly unit?: string } }) => {
   const { messages: { workers: { configuration: m } }, format } = useI18n();
-  return issue === undefined ? null : <p id={id} className="hint error">{issue === 'integer' ? m.invalidNumber : issue === 'args' ? m.invalidArgs : issue === 'model' ? m.invalidText : m.invalidField}{issue === 'integer' && range !== undefined && <> ({format.number(range.minimum)}–{format.number(range.maximum)})</>}</p>;
+  return issue === undefined ? null : <p id={id} className="hint error">{issue === 'integer' ? m.invalidNumber : issue === 'args' ? m.invalidArgs : issue === 'model' ? m.invalidText : m.invalidField}{issue === 'integer' && range !== undefined && <> ({format.number(range.minimum)}–{format.number(range.maximum)}{range.unit === undefined ? '' : ` ${range.unit}`})</>}</p>;
 };
 
 export const ConfigurationNativeFields = ({ value, onChange, disabled, errors }: {

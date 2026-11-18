@@ -183,6 +183,19 @@ Copilot ephemeral 通知在 SDK/helper 到 durable ingress 之前仍可能丢失
 不安全 JS number 记录 native_integer_unrepresentable。停止后的未 seal state
 按已确认停止证据补 missing_final，而不是推断 complete。
 
+## Codex Controller 能力上报
+
+Codex 与 Copilot 使用同一 journal、上传器和 stopped 补传机制。state 中的 provider
+在代次首次准入时固定，恢复不能改写 Provider 身份；旧 Copilot journal 无需迁移。
+上传器按 provider 选择固定 profile，并核对注册回执的 profile/provider。
+
+Codex 从实际 App Server initialize 回执的 `daynight/<version>` userAgent 读取版本，
+只准入已核实的 0.169.0/0.169.1；版本未核实不冒充原生 unsupported。
+原 thread 身份和 cwd 验证后登记 `codex-snapshot-unaccountable-v1`，仅上传
+unsupported/provider_unsupported 的 execution_state，不读取累计或 last 快照生成
+measurement。停止和恢复保留 unsupported，不把无计量误写成零或采集失败。
+原生快照缺少可比较权威修订且含上下文估计，因此 turn/completed 不构成用量最终回执。
+
 ## 兼容与回退
 
 写入开关默认关闭；只读能力与旧 Task/Session 协议独立。未知/未资格验证的

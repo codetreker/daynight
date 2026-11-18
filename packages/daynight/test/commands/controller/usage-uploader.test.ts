@@ -282,3 +282,15 @@ test.each([404, 501])("disables reporting against an old service returning %i", 
   await f.uploader.tick(); await f.uploader.tick();
   expect(f.calls).toHaveLength(1); expect(f.store.pending(f.state.stateId)).toHaveLength(1);
 });
+
+test("does not contact the service before native usage identity is admitted", async () => {
+  const db = new Database(":memory:"); cleanups.push(() => { db.close(); });
+  db.exec(readFileSync(new URL("../../../src/commands/controller/sqlite/journal/014-usage.sql", import.meta.url), "utf8"));
+  const store = openUsageStore(db, { read: action => action(), write: action => db.transaction(action).immediate() });
+  const request = vi.fn(async () => Response.json({}, { status: 404 })), token = vi.fn(async () => "parent-token");
+  const uploader = createUsageUploader({ store, serverOrigin: "https://daynight.example", identity: { sessionId: randomUUID(), executionGeneration: "1", controllerInstanceId: randomUUID() }, connection: () => null, readParentToken: token, fetch: request });
+  cleanups.push(() => uploader.close());
+  await uploader.tick(); expect(request).not.toHaveBeenCalled(); expect(token).not.toHaveBeenCalled();
+  store.ensureState("1", randomUUID(), "0.169.0", "codex");
+  await uploader.tick(); expect(request).toHaveBeenCalledOnce(); expect(token).toHaveBeenCalledOnce();
+});

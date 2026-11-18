@@ -50,7 +50,7 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 		}
 		exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, id, string(raw))
 	}
-	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, ids[0])
+	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, ids[0])
 	exec(`INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'x','text/plain',1),($1,$3,'x','text/plain',1)`, project.ID, ids[0], ids[3])
 	page := model.PageRequest{Limit: 1}
 	_, err := s.DeletionPreview(ctx, model.Principal{}, project.ID, page)

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
@@ -14,10 +15,10 @@ func testPropertyNames() []string { return slices.Sorted(maps.Keys(taskproperty.
 
 func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing.T) {
 	catalog := taskproperty.Definitions()
-	if len(catalog) != 4 || catalog["paused"].ReadOnly || catalog["pullRequests"].ReadOnly || !catalog["worker"].ReadOnly {
+	if len(catalog) != 4 || catalog["blocked"].ReadOnly || catalog["pullRequests"].ReadOnly || !catalog["worker"].ReadOnly {
 		t.Fatalf("unexpected definitions: %#v", catalog)
 	}
-	if got := testPropertyNames(); !slices.Equal(got, []string{"paused", "pullRequests", "sessionStartup", "worker"}) {
+	if got := testPropertyNames(); !slices.Equal(got, []string{"blocked", "pullRequests", "sessionStartup", "worker"}) {
 		t.Fatalf("property order: %v", got)
 	}
 	encoded, err := json.Marshal(catalog)
@@ -39,8 +40,8 @@ func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing
 
 func TestSchemaMatchesKnownValueStructures(t *testing.T) {
 	catalog := taskproperty.Definitions()
-	if string(catalog["paused"].Schema) != `{"type":"boolean"}` {
-		t.Fatalf("paused schema and input kind diverged: %#v", catalog["paused"])
+	if string(catalog["blocked"].Schema) != `{"type":"boolean"}` {
+		t.Fatalf("paused schema and input kind diverged: %#v", catalog["blocked"])
 	}
 	var pr struct {
 		Type  string `json:"type"`
@@ -100,5 +101,21 @@ func TestSchemaMatchesKnownValueStructures(t *testing.T) {
 		if err := json.Unmarshal(worker.Properties[name], &value); err != nil || len(value.AnyOf) != 2 || string(value.AnyOf[1]) != `{"type":"null"}` {
 			t.Fatalf("worker.%s lost nullable inner value: %s (%v)", name, worker.Properties[name], err)
 		}
+	}
+}
+
+func TestEqualPreservesBooleanPresenceAndIgnoresStoredWhitespace(t *testing.T) {
+	for _, v := range []string{"true", "false"} {
+		a := model.TaskProperties{"blocked": json.RawMessage(" \n" + v + "\t")}
+		b := model.TaskProperties{"blocked": json.RawMessage(v)}
+		if !taskproperty.Equal(a, b) || !taskproperty.Equal(b, a) || taskproperty.Equal(a, model.TaskProperties{}) {
+			t.Fatalf("boolean equality %q", v)
+		}
+	}
+	if taskproperty.Equal(model.TaskProperties{"blocked": json.RawMessage("true")}, model.TaskProperties{"blocked": json.RawMessage("false")}) {
+		t.Fatal("different booleans equal")
+	}
+	if taskproperty.Equal(model.TaskProperties{"blocked": json.RawMessage(" null ")}, model.TaskProperties{"blocked": json.RawMessage("null")}) {
+		t.Fatal("invalid values equated")
 	}
 }

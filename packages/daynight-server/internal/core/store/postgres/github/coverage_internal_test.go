@@ -26,7 +26,7 @@ func TestCoverageSameSecondTransitions(t *testing.T) {
 	if _, err = tx.Exec(ctx, `CREATE TABLE project_github(project_id uuid, repository_id bigint, enabled boolean, sync_enabled boolean, revision bigint, last_full_generation bigint, access_state text, next_poll_at timestamptz, updated_at timestamptz)`); err != nil {
 		t.Fatal(err)
 	}
-	schema, err := os.ReadFile("../schema/migrations/087_github_coverage.sql")
+	schema, err := os.ReadFile("../schema/migrations/088_github_coverage.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestCoverageWriteFailuresRemainTransactional(t *testing.T) {
 	if _, err = conn.Exec(ctx, `CREATE TABLE project_github(project_id uuid, repository_id bigint, enabled boolean, sync_enabled boolean, revision bigint, last_full_generation bigint, access_state text, next_poll_at timestamptz, updated_at timestamptz)`); err != nil {
 		t.Fatal(err)
 	}
-	schema, err := os.ReadFile("../schema/migrations/087_github_coverage.sql")
+	schema, err := os.ReadFile("../schema/migrations/088_github_coverage.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

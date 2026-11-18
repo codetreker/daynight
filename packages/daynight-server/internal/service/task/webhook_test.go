@@ -18,7 +18,7 @@ func TestTaskFactsOnlyActualChanges(t *testing.T) {
 	current.Version = 2
 	current.UpdatedAt = now.Add(time.Second)
 	current.Status = model.TaskInProgress
-	current.Properties = model.TaskProperties{"paused": json.RawMessage(`true`)}
+	current.Properties = model.TaskProperties{"blocked": json.RawMessage(`true`)}
 	facts, err := taskFacts(false, old, current)
 	if err != nil || len(facts) != 2 || facts[0].Type != protocol.StatusChanged || facts[1].Type != protocol.Paused || facts[0].TaskVersion != 2 || !facts[0].OccurredAt.Equal(current.UpdatedAt) {
 		t.Fatalf("combined: %#v %v", facts, err)
@@ -37,14 +37,14 @@ func TestTaskFactsOnlyActualChanges(t *testing.T) {
 		t.Fatalf("unchanged: %#v %v", facts, err)
 	}
 	next := current
-	next.Properties = model.TaskProperties{"paused": json.RawMessage(`false`)}
+	next.Properties = model.TaskProperties{"blocked": json.RawMessage(`false`)}
 	facts, err = taskFacts(false, current, next)
 	if err != nil || len(facts) != 0 {
 		t.Fatalf("unpaused: %#v %v", facts, err)
 	}
-	next.Properties = model.TaskProperties{"paused": json.RawMessage(`"true"`)}
+	next.Properties = model.TaskProperties{"blocked": json.RawMessage(`"true"`)}
 	if _, err = taskFacts(false, current, next); err == nil {
-		t.Fatal("paused JSON type error was hidden")
+		t.Fatal("blocked JSON type error was hidden")
 	}
 }
 

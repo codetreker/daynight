@@ -9,6 +9,10 @@ const ENVELOPE_BYTES = Buffer.byteLength('{"entries":[]}');
 const columns = "id, CAST(entry_seq AS TEXT) AS entry_seq, CAST(revision AS TEXT) AS revision, kind, value, content_hash, byte_length";
 type TimelineRow = { id: string; entry_seq: string; revision: string; kind: string; value: string; content_hash: string; byte_length: number };
 export type TimelineTotals = { readonly entryCount: number; readonly byteLength: number; readonly timelineBytes: number };
+/** Legacy callers retain full history until their live projection is independent. */
+export type TimelineContentPolicy = "legacy" | "task_body" | "bot_detail";
+/** Results describe the current transaction; only its caller can confirm commit. */
+export type TimelineSaveResult = { readonly contentPolicy: TimelineContentPolicy; readonly status: "saved" | "unchanged" | "excluded" };
 export type TimelinePageQuery = { readonly direction: "tail" | "before" | "after"; readonly pivot: string | null; readonly limit: number };
 /** Verify the caller owns the original write boundary. */
 export type TimelineWriteContext = { readonly assertWrite: () => void };
@@ -43,7 +47,7 @@ const totals = (db: Database.Database): TimelineTotals => {
 };
 
 /** Publish one entry in the caller's transaction after its caller applies the appropriate admission. */
-const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unknown) => TimelineEntry, admit?: (updated: TimelineTotals) => void): void => {
+const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unknown) => TimelineEntry, admit?: (updated: TimelineTotals) => void): "saved" | "unchanged" => {
   if (!db.inTransaction) throw new Error("SQL timeline publication requires its original journal write transaction.");
   const entry = parse(JSON.parse(JSON.stringify(value))), entrySequence = sequence(entry.entrySeq), revision = sequence(entry.revision);
   const previous = getRow(db, entry.entryId), old = previous === undefined ? undefined : decode(previous);
@@ -51,7 +55,7 @@ const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unk
   const encoded = JSON.stringify(entry), contentHash = controllerPayloadHash(entry), byteLength = Buffer.byteLength(encoded);
   if (old !== undefined && old.revision === entry.revision) {
     if (previous!.value !== encoded || previous!.content_hash !== contentHash) throw new Error("SQL timeline revision cannot change its content.");
-    return;
+    return "unchanged";
   }
   const current = totals(db), updated = totalSize(current.entryCount + (old === undefined ? 1 : 0), current.byteLength - (previous?.byte_length ?? 0) + byteLength);
   admit?.(updated);
@@ -59,6 +63,7 @@ const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unk
     .run(entry.entryId, entrySequence, revision, entry.kind, encoded, contentHash, byteLength);
   const result = db.prepare("UPDATE timeline_totals SET entry_count=?,byte_length=? WHERE id=1").run(updated.entryCount, updated.byteLength);
   if (result.changes !== 1) throw new Error("SQL timeline totals were not updated.");
+  return "saved";
 };
 
 /** The caller owns transactions and proves that writes belong to its original write boundary. */
@@ -71,12 +76,22 @@ export const openTimelineStore = (db: Database.Database, context: TimelineWriteC
     for (const row of db.prepare(`SELECT ${columns} FROM timeline_entries ORDER BY timeline_entries.entry_seq`).iterate() as Iterable<TimelineRow>) decode(row);
   };
   if (db.inTransaction) validate(); else db.transaction(validate).deferred();
-  const save = (value: TimelineEntry): void => {
+  const save = (value: TimelineEntry, contentPolicy: TimelineContentPolicy = "legacy"): TimelineSaveResult => {
     if (!db.inTransaction) throw new Error("SQL timeline publication requires its original journal write transaction.");
     context.assertWrite();
-    publish(db, value, parseTimelineEntry, updated => {
+    if (!["legacy", "task_body", "bot_detail"].includes(contentPolicy)) throw new Error("Invalid SQL timeline content policy.");
+    if (contentPolicy === "task_body" && value.kind !== "user_message" && value.kind !== "assistant_message") {
+      // Excluded details still require valid structure, but never consume body
+      // admission or allocate a serialized copy of large tool output.
+      const excluded = parseStoredTimelineEntry(value);
+      sequence(excluded.entrySeq); sequence(excluded.revision);
+      if (getRow(db, excluded.entryId) !== undefined) throw new Error("Excluded timeline entry cannot replace retained history.");
+      return { contentPolicy, status: "excluded" };
+    }
+    const status = publish(db, value, parseTimelineEntry, updated => {
       if (updated.entryCount > MAX_ENTRIES || updated.timelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
     });
+    return { contentPolicy, status };
   };
   return {
     get,

@@ -476,6 +476,7 @@ test("a capture patches its own slot in the latest committed entry while an olde
     const part = { type: "image" as const, imageId: f.nativeImageId, resourceId: f.resourceId, label: "Native image" };
     f.journal.writeNativeImageState(f.key, { ...f.state, phase: "settled", part });
     expect(() => f.journal.projectTimeline({ ...before, content: [before.content[0]!, part] })).toThrow("Timeline update cannot move or replace a committed original image association");
+    expect(() => f.journal.saveTimelineHistory({ ...before, revision: "3", content: [before.content[0]!, part] }, "task_body")).toThrow("Timeline update cannot move or replace a committed original image association");
     expect(f.timeline()).toEqual(result.view.entry);
     const sequence = f.journal.getLastSourceSequence(), query = f.journal.queryNativeInputAssociation(f.request.identity);
     expect(query).toMatchObject({ state: "committed", receipt: result.receipt, view: { entry: result.view.entry } });

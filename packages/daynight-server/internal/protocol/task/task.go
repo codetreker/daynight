@@ -288,14 +288,49 @@ func EncodeMCPDataResponse(w io.Writer, data any, requestID, outcome string, rpc
 
 // Admission borrows immutable values. Public response projections retain
 // independent copies.
+// PropertyDefinitions exposes the legacy spelling without adding it to storage.
+func PropertyDefinitions() map[string]taskproperty.Definition {
+	defs := taskproperty.Definitions()
+	alias := defs["blocked"]
+	alias.Name = "paused"
+	defs["paused"] = alias
+	return defs
+}
+
+// Properties projects the canonical stored attribute to both public spellings.
+func Properties(value model.TaskProperties) map[string]json.RawMessage {
+	return properties(value, true)
+}
+
 func properties(value model.TaskProperties, copyValues bool) map[string]json.RawMessage {
+	var result map[string]json.RawMessage
 	if copyValues {
-		return taskproperty.Clone(value)
+		result = taskproperty.Clone(value)
+	} else {
+		result = maps.Clone(value)
 	}
-	if value == nil {
-		return map[string]json.RawMessage{}
+	if result == nil {
+		result = map[string]json.RawMessage{}
 	}
-	return maps.Clone(value)
+	if blocked, ok := result["blocked"]; ok {
+		if copyValues {
+			blocked = bytes.Clone(blocked)
+		}
+		result["paused"] = blocked
+	}
+	return result
+}
+
+// AliasBytes is the compact JSON increase over the legacy single-key object.
+func AliasBytes(value model.TaskProperties) int64 {
+	switch string(bytes.TrimSpace(value["blocked"])) {
+	case "true":
+		return 15
+	case "false":
+		return 16
+	default:
+		return 0
+	}
 }
 func array(value []string, copyValues bool) []string {
 	if value == nil {

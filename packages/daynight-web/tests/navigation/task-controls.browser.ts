@@ -59,7 +59,7 @@ async function install(page: Page, running = false, linked = false, large = fals
       return send({ projectId, total: 1, items: [{ id: task.id, type: task.type, parentId: task.parentId, projectId, tags: task.tags, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}` && request.method() === 'PATCH' && options.dualPauseReceipt) {
-      expect(request.postDataJSON()).toEqual({ version: Number(task.version), properties: { paused: false } });
+      expect(request.postDataJSON()).toEqual({ version: Number(task.version), properties: { blocked: false } });
       task = { ...task, version: task.version + 1n, updatedAt: '2026-10-22T10:02:00Z', properties: { ...task.properties, paused: false, blocked: false } };
       return send(task);
     }
@@ -126,12 +126,12 @@ async function openDialog(page: Page) {
   return dialog;
 }
 
-test('confirms the existing unpause action with a dual-key service receipt', async ({ page }) => {
+test('confirms the unblock action with a dual-key service receipt', async ({ page }) => {
   const writes = await install(page, true, false, false, false, true, undefined, {}, { dualPauseReceipt: true });
   const dialog = await openDialog(page);
-  await expect(dialog.getByText('Paused', { exact: true })).toBeVisible();
-  await dialog.getByRole('button', { name: 'Unpause' }).click();
-  await expect(dialog.getByText('The task is unpaused.')).toBeVisible();
+  await expect(dialog.getByText('Blocked', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Unblock' }).click();
+  await expect(dialog.getByText('The task is unblocked.')).toBeVisible();
   expect(writes).toEqual([`PATCH /api/v1/projects/${projectId}/tasks/${taskId}`]);
 });
 

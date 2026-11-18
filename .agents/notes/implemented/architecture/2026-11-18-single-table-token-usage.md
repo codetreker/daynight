@@ -71,6 +71,12 @@ explicit and automatic recording discard. Local conflicts have no uploadable
 event; acknowledging the accepted measurement and partial state cannot resolve
 or delete that evidence even after the outbox becomes empty.
 
+Provider identity is fixed at journal state admission and checked across recovery.
+The uploader selects the fixed profile by that identity. Qualified connected
+Codex versions register unsupported coverage without emitting measurements;
+stopped replay preserves this result instead of treating absent tokens as failure.
+Unverified handshakes do not acquire a supported-version capability.
+
 ## Alternatives
 
 **Measurements without execution coverage.** This cannot distinguish a complete

@@ -988,7 +988,7 @@ intent to off, so those Projects must explicitly enable it after reconnecting.
 Remove the old `github` configuration section and `DAYNIGHT_GITHUB_*` variables
 and dispose of their deployment secrets; the server no longer reads them.
 
-Before migration 087, stop and drain old server replicas. The migration starts
+Before migration 088, stop and drain old server replicas. The migration starts
 coverage at one UTC second for retained repositories with synchronization intent,
 preserves existing PRs and hints, and schedules available connections for a new
 full poll. Start only the matching new service after migration; restoring the old
@@ -4310,6 +4310,21 @@ were removed. Their recorded results and the
 [historical acceptance decisions](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 remain bound to their original source; they are not current module checks. CLI
 native validation and independent Web browser fixtures retain their own scopes.
+
+### Task blocked property cutover
+
+Drain old servers and background writers before migrating the shared database.
+Start the new server with its bundled compatible Web only after migration succeeds,
+verify the public property reads and writes, then distribute newer CLI and Worker
+builds. Existing supported clients can continue to use `paused`; the server stores
+only `blocked` and projects both names with the same value. Refresh Web to load the
+new interface. A refresh reads current state and does not prove or replay an
+unconfirmed earlier write.
+
+A failed migration rolls back its data and ledger entry. After a successful
+migration, prefer a fix on the new version. To return to an old server, restore a
+database backup matching its migration ledger and handle writes made after that
+backup under the existing recovery procedure.
 
 ### Worker release protocol cutover
 

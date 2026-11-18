@@ -390,7 +390,7 @@ describe('Goal list', () => {
     expect([...first.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['child', 'standalone']);
     expect([...second.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['solo-other', 'root']);
     expect(first.querySelector('.root-toggle')).toBeNull();
-    expect(within(first).getByText('已暂停')).toBeVisible();
+    expect(within(first).getByText('受阻')).toBeVisible();
     expect(first.querySelector('.task-duration')).toHaveTextContent('10 分钟');
     const child = document.getElementById('chain-task-goal-goal-child')!;
     fireEvent.click(child);

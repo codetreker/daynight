@@ -93,7 +93,7 @@
 .configuration-project-loading { display: flex; justify-content: center; padding: 14px; }
 .empty-projects { padding: 30px 20px; color: #7d889b; text-align: center; font-size: 12px; }
 .empty-projects .button { margin-top: 14px; }
-.configuration-notice { margin-bottom: 19px; }
+.configuration-notice { margin-bottom: 19px; overflow-wrap: anywhere; }
 .configuration-notice .notice-heading { font-weight: 600; }
 .configuration-notice .notice-actions { margin-top: 10px; }
 .configuration-source { margin: 10px 0; font-size: 11px; }

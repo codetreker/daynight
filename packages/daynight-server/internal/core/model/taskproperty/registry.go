@@ -32,7 +32,7 @@ type Definition struct {
 
 var definitions = map[string]Definition{
 	"sessionStartup": {Name: "sessionStartup", Description: "Claim-bound startup and recovery observation maintained by the owning Worker.", ReadOnly: true, Schema: sessionStartupSchema(), Normalize: normalizeSessionStartup, kind: "object"},
-	"paused":         {Name: "paused", Description: "Suppresses periodic worker pings while true; absent or false leaves them enabled.", Schema: schemaJSON(map[string]any{"type": "boolean"}), Normalize: normalizePaused, kind: "boolean"},
+	"blocked":        {Name: "blocked", Description: "Suppresses periodic worker pings while true; absent or false leaves them enabled.", Schema: schemaJSON(map[string]any{"type": "boolean"}), Normalize: normalizeBlocked, kind: "boolean"},
 	"pullRequests":   {Name: "pullRequests", Description: "Pull requests associated with this task; ordered URL and title text without URL validation.", Schema: pullRequestsSchema(), Normalize: normalizePullRequests, kind: "array"},
 	"worker":         {Name: "worker", Description: "Execution ownership maintained by the service; absent when no claim is retained.", ReadOnly: true, Schema: workerSchema(), Normalize: normalizeWorker, kind: "object"},
 }
@@ -101,7 +101,27 @@ func Clone(properties model.TaskProperties) model.TaskProperties {
 }
 
 func Equal(left, right model.TaskProperties) bool {
-	return maps.EqualFunc(left, right, func(a, b json.RawMessage) bool { return bytes.Equal(a, b) })
+	if len(left) != len(right) {
+		return false
+	}
+	for name, a := range left {
+		b, ok := right[name]
+		if !ok {
+			return false
+		}
+		if name == "blocked" {
+			// Migration preserves the old bytes, including valid JSON whitespace.
+			// Compare valid booleans semantically while retaining presence.
+			trimmedA, trimmedB := bytes.TrimSpace(a), bytes.TrimSpace(b)
+			if (bytes.Equal(trimmedA, []byte("true")) || bytes.Equal(trimmedA, []byte("false"))) && bytes.Equal(trimmedA, trimmedB) {
+				continue
+			}
+		}
+		if !bytes.Equal(a, b) {
+			return false
+		}
+	}
+	return true
 }
 
 func ParseInput(name, input string) (json.RawMessage, error) {

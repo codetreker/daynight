@@ -9,7 +9,7 @@ func TestGitHubCoverageMigrationRetainsWorkAndInitializesIntent(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
 	index := len(schemaMigrations) - 1
-	if index < 1 || schemaMigrations[index].version != 87 {
+	if index < 1 || schemaMigrations[index].version != 88 {
 		t.Fatal("unexpected migration boundary")
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
