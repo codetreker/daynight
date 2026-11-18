@@ -3,6 +3,7 @@ import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { BootstrapObservation, finalizeBootstrapObservation, throwBootstrapFailures, writeBootstrapObservation } from "./auth-observation.ts";
 import { buildArtifacts } from "./build.ts";
 import { browserCommandOptions } from "./browser.ts";
 import { assertCommandQuiescence, CommandFailure, runCommand } from "./command.ts";
@@ -46,20 +47,34 @@ process.once("SIGTERM", terminate);
 let authQuiescent = true;
 const registerAuth = async (environment: Environment): Promise<{ appId: string; appSecret: string }> => {
   const { chromium, expect } = await import("@playwright/test");
+  const observation = new BootstrapObservation(environment.authURL);
+  const errors: unknown[] = [];
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  let credentials: { appId: string; appSecret: string } | undefined;
+  let phase: "launch" | "console" | "continue" | "authorize" | "console-return" | "session" | "app" | "complete" = "launch";
+  const start = (next: typeof phase): void => { phase = next; observation.phase(next); };
   authQuiescent = false;
-  const browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" } });
   try {
+    start("launch");
+    browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" } });
     const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: "en-US" });
     const page = await context.newPage();
+    observation.attach(page);
     page.setDefaultTimeout(30_000);
+    start("console");
     await page.goto(`${environment.authURL}/console/`);
+    start("continue");
     await page.getByRole("button", { name: "Continue with GitHub", exact: true }).click();
+    start("authorize");
     await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
+    start("console-return");
     await expect(page).toHaveURL(`${environment.authURL}/console/`);
+    start("session");
     const session = await context.request.get(`${environment.authURL}/console/api/session`);
     if (session.status() !== 200) throw new Error(`UniAuth Console session failed (${session.status()}).`);
     const user = await session.json() as { csrf_token: string };
     if (typeof user.csrf_token !== "string") throw new Error("UniAuth did not return a Console CSRF token.");
+    start("app");
     const response = await context.request.post(`${environment.authURL}/console/api/apps`, {
       headers: { Origin: environment.authURL, "X-CSRF-Token": user.csrf_token },
       data: {
@@ -73,9 +88,21 @@ const registerAuth = async (environment: Environment): Promise<{ appId: string; 
     if (response.status() !== 201) throw new Error(`UniAuth App registration failed (${response.status()}): ${await response.text()}`);
     const creation = await response.json() as { app: { id: string }; secret: string };
     if (typeof creation.app.id !== "string" || typeof creation.secret !== "string") throw new Error("UniAuth did not return the registered App credentials.");
+    credentials = { appId: creation.app.id, appSecret: creation.secret };
     await context.close();
-    return { appId: creation.app.id, appSecret: creation.secret };
-  } finally { await browser.close(); authQuiescent = true; }
+    start("complete");
+    observation.phase("complete", "success");
+  } catch (error) {
+    observation.phase(phase, "failure");
+    errors.push(error);
+  } finally {
+    await finalizeBootstrapObservation(observation, async () => {
+      if (browser !== undefined) { await browser.close(); authQuiescent = true; }
+    }, snapshot => writeBootstrapObservation(path.join(runDirectory, "results", "auth-bootstrap.json"), snapshot), errors);
+  }
+  throwBootstrapFailures(errors);
+  if (credentials === undefined) throw new Error("OAuth bootstrap did not return credentials.");
+  return credentials;
 };
 
 let environment: Environment | undefined;

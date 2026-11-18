@@ -181,11 +181,30 @@ Dependency caches can accelerate preparation, but every invocation still builds
 and runs the current checkout. The [test-writing rules](../../docs/writing_tests.md)
 define the distinction between module, API integration and product E2E tests.
 
+The separate provider navigation validation exercises controlled TLS and HTTP
+stalls, CONNECT head handling and connection reuse with the real local provider
+and Chromium. It is not part of the normal product journey or CI harness:
+
+```bash
+node --test packages/e2e_tests/validation/provider-navigation.test.mjs
+```
+
 ## Results and cleanup
 
 Each invocation prints a `.tmp/product-e2e/<run-id>` result directory. It retains
 the source revision and fingerprint, binary and Web asset hashes, container
 identities, Playwright result, failure screenshots/traces and runtime logs.
+`results/auth-bootstrap.json` records bounded main-frame Document and action
+stages for Console bootstrap. It freezes unresolved requests before browser
+shutdown, so shutdown aborts do not replace the original failure boundary.
+`logs/provider-diagnostics.json` records bounded CONNECT, TLS and provider HTTP
+stages; a live snapshot survives an unconfirmed runtime shutdown, while a
+completed snapshot marks a confirmed provider close. IDs are local to each
+stream and do not associate browser requests with provider connections. Both
+streams report truncation and retain only allowlisted origins and paths, methods,
+status and restricted error codes, without query strings or credentials.
+A diagnostic write failure fails the run and remains visible with any original
+failure and cleanup errors.
 
 Setup and execution have deadlines, readiness detects early service exit, and
 failures propagate to the command exit status. Cleanup runs after success,

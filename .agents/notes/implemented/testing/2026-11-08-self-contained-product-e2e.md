@@ -47,6 +47,13 @@ connected ingress and database routes remain available, while external runtime
 connections cannot be routed. App registration goes through
 the real Console after normal authentication, rather than writing auth data.
 
+Bootstrap navigation records bounded, sanitized main-frame and action events;
+the provider records CONNECT, TLS and HTTP stages with connection-local IDs.
+Live provider snapshots remain available when shutdown is unconfirmed, and the
+browser snapshot freezes before close can generate aborts. These streams do not
+claim cross-layer request identity. Separate controlled stalls verify the TLS
+and HTTP boundaries without inserting fault cases into the product journey.
+
 An independent Linux CI job selects the framework and actual production build
 inputs and runs the same explicit command. Selected E2E must succeed at the
 final gate. CI reserves a separate always-run recovery step: resource ownership
@@ -104,6 +111,11 @@ production resource assembly. It does not establish the cross-client journey.
 and weaken resource ownership; a simulated API would not establish that the real
 Server can read monitoring through its configured store.
 
+**Use a bootstrap trace or HAR for diagnosis.** These can retain URLs,
+headers, bodies or other credentials and still require a provider-side boundary
+to distinguish TLS from a stalled HTTP response. Bounded allowlisted events keep
+the required evidence without retaining those materials.
+
 **Infer browser shutdown from Playwright exit or close.** Chromium is detached,
 and a close result alone does not establish that its original process group has
 stopped. Recovery needs the persisted identity and a confirmed stop.
@@ -117,8 +129,9 @@ platform or fault matrices.
 
 Go, source and container caches make repeated preparation cheaper. Preparation
 still requires tools and potentially dependency access; runtime isolation does
-not claim an offline build. The upstream source pin and local provider must be
-reviewed when UniAuth's protocol changes.
+not claim an offline build. The upstream source pin, diagnostic endpoint allowlist and local provider must be
+reviewed when UniAuth's protocol changes. A truncated stream cannot establish
+that an unrecorded stage did not occur; provider and browser IDs are independent.
 
 Per-run cleanup remains part of success, and source/artifact identities bound
 the retained result. A failed process observation can retain private fixture
