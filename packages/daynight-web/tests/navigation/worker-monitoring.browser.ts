@@ -75,7 +75,7 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   expect(await monitoringTime.evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.worker-task-heading-label')!.closest('section')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
   const timeBox = await monitoringTime.boundingBox(), taskBox = await taskPanel.boundingBox();
   expect(timeBox!.y + timeBox!.height).toBeLessThanOrEqual(taskBox!.y);
-  if (width <= 390) expect(await monitoringTime.evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
+  if (width === 320) expect(await monitoringTime.evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('monitoring-time.png'), fullPage: true });
   const tabs = page.locator('[data-worker-tab="overview"]:visible'); await tabs.focus(); await page.keyboard.press('ArrowRight');
@@ -120,6 +120,7 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   await page.setViewportSize({ width, height: 900 });
   await install(page, true, locale); await page.goto(`/workers/${target}`);
   await expect(page.getByText('6 / 6')).toBeVisible();
+  if (locale === 'en' && width <= 390) expect(await page.locator('.monitoring-time').evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
   const taskPanel = page.locator('.worker-task-heading-label').locator('xpath=ancestor::section[1]');
   const taskLink = taskPanel.getByRole('link', { name: longTitle });
   await expect(taskLink).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
