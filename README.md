@@ -285,6 +285,9 @@ covers eligibility, reviewer identity, retries, retained sessions and shutdown.
 
 ## Self-hosting
 
+The Web project workspace includes independent Task and pull request daily statistics,
+with per-person filtering and accessible chart readings.
+
 The Go service serves the Web app and API together, with PostgreSQL for project
 and task data and persistent file storage for attachments. The
 [local deployment guide](deployment/localhost/README.md) provides Docker Compose

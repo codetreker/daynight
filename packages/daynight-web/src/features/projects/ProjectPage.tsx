@@ -1,3 +1,4 @@
+import { ProjectStatistics } from "../project-statistics/ProjectStatistics";
 import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
@@ -101,6 +102,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
   const [tasksMounted, setTasksMounted] = useState(false);
   const [tagsMounted, setTagsMounted] = useState(false);
+  const [statisticsMounted, setStatisticsMounted] = useState(false);
+  const [statisticsRefresh, setStatisticsRefresh] = useState(0);
   const [creatingGoal, setCreatingGoal] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
@@ -178,7 +181,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (!snapshotReady) setTasksMounted(false);
     else if (section === "tasks") setTasksMounted(true);
   }, [snapshotReady, section]);
-  useLayoutEffect(() => { if (section === "tags") setTagsMounted(true); }, [section]);
+  useLayoutEffect(() => { if (section === "tags") setTagsMounted(true); if (section === "statistics") setStatisticsMounted(true); }, [section]);
   useLayoutEffect(() => {
     if (section !== "overview" || !snapshotReady) return;
     window.scrollTo({ top: overviewPosition.current, behavior: "instant" });
@@ -411,7 +414,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (next === section) return;
     history.select({ ...selection, section: next, projectGraphWitness: null }, false, () => {
       saveSectionPosition();
-      onSectionChange(next);
+      if (next !== "statistics") onSectionChange(next);
       onCommit?.();
     });
   }, [section, saveSectionPosition, onSectionChange, history.select, selection]);
@@ -697,7 +700,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {projectRead.project !== null && <p className="project-repository">{projectRead.project.repoUrl}</p>}
           </div>
         </div>
-        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
+        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
       </div>
       {creatingGoal && <GoalCreate projectId={projectId} onClose={() => setCreatingGoal(false)} onRefreshGraph={graph.refresh} />}
       {projectRead.error !== null && <section className="snapshot-error" role="alert">
@@ -723,6 +726,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
             {section === "overview" && graphState}
             {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} onOpenTask={onOpenTask} />}
+          </section>
+          <section className="project-section-panel" id="project-section-panel-statistics" role="tabpanel"
+            aria-labelledby="project-section-tab-statistics" hidden={section !== "statistics"} inert={section !== "statistics"} tabIndex={0}>
+            {(statisticsMounted || section === "statistics") && <ProjectStatistics userId={viewer.userId} projectId={projectId}
+              canRead={projectRead.project !== null && !viewer.isInvalidated} active={section === "statistics" && !history.error}
+              snapshot={currentSnapshot} taskError={graph.error} onTaskRetry={graph.refresh} refreshRevision={statisticsRefresh}
+              onPrincipalMismatch={viewer.principalMismatch} onAccessError={() => { void projectAccess.session.revalidate(); }} />}
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>

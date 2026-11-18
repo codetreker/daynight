@@ -26,7 +26,7 @@ const readPreference = <Value,>(key: string, decode: (value: unknown) => Value):
   }
 };
 
-export type ProjectSection = "overview" | "tasks" | "prs" | "tags";
+export type ProjectSection = "overview" | "statistics" | "tasks" | "prs" | "tags";
 export type TaskView = "standalone" | "chains" | "goals";
 export type GraphDirection = "horizontal" | "vertical";
 

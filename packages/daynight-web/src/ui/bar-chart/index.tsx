@@ -23,6 +23,9 @@ export function BarChart({ label, points, domainMax, formatValue }: BarChartProp
   }
   const id = useId();
   const plotRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const labelsRef = useRef<HTMLDivElement>(null);
+  const pointerFocus = useRef(false);
   const [selectedKey, setSelectedKey] = useState(points[0]!.key);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const foundIndex = points.findIndex(point => point.key === selectedKey);
@@ -41,6 +44,23 @@ export function BarChart({ label, points, domainMax, formatValue }: BarChartProp
     else if (target.right > bounds.right) scroller.scrollLeft += target.right - bounds.right;
   };
   useLayoutEffect(revealSelected, [selectedIndex, selected.key, points.length]);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current, labels = labelsRef.current;
+    if (!scroller || !labels) return;
+    const update = () => {
+      const bounds = scroller.getBoundingClientRect();
+      for (const element of Array.from(labels.children)) {
+        const label = element as HTMLElement, box = label.getBoundingClientRect();
+        label.style.visibility = box.left >= bounds.left - 1 && box.right <= bounds.right + 1 ? '' : 'hidden';
+      }
+    };
+    update();
+    scroller.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    observer?.observe(scroller);
+    return () => { scroller.removeEventListener('scroll', update); window.removeEventListener('resize', update); observer?.disconnect(); };
+  }, [points]);
   const shown = points.find(point => point.key === hoveredKey) ?? selected;
   const reading = (point: BarChartPoint) => `${point.label}: ${formatValue(point.value)}`;
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -65,8 +85,10 @@ export function BarChart({ label, points, domainMax, formatValue }: BarChartProp
     <output className="bar-chart__reading" aria-live="polite" aria-atomic="true">{reading(shown)}</output>
     <div className="bar-chart__grid">
       <div className="bar-chart__scale" aria-hidden="true"><span>{formatValue(domainMax)}</span><span>{formatValue(0n)}</span></div>
-      <div className="bar-chart__scroll" style={gridStyle}>
-      <div className="bar-chart__plot" ref={plotRef} role="listbox" aria-orientation="horizontal" tabIndex={0} aria-label={label} aria-activedescendant={`${id}-${selectedIndex}`} onFocus={revealSelected} onKeyDown={onKeyDown} onPointerLeave={() => setHoveredKey(null)}>
+      <div className="bar-chart__scroll" ref={scrollRef} style={gridStyle}>
+      <div className="bar-chart__plot" ref={plotRef} role="listbox" aria-orientation="horizontal" tabIndex={0} aria-label={label} aria-activedescendant={`${id}-${selectedIndex}`} onPointerDown={() => { pointerFocus.current = true; }}
+        onPointerCancel={() => { pointerFocus.current = false; }} onBlur={() => { pointerFocus.current = false; }}
+        onFocus={() => { if (!pointerFocus.current) revealSelected(); pointerFocus.current = false; }} onKeyDown={onKeyDown} onPointerLeave={() => setHoveredKey(null)}>
         {points.map((point, index) => {
           // Divide while still in bigint: converting either operand first can overflow.
           const height = domainMax === 0n ? 0 : Number(point.value * 10000n / domainMax) / 100;
@@ -77,7 +99,7 @@ export function BarChart({ label, points, domainMax, formatValue }: BarChartProp
             onClick={event => { setSelectedKey(point.key); setHoveredKey(null); event.currentTarget.parentElement?.focus(); }} />;
         })}
       </div>
-      <div className="bar-chart__labels" aria-hidden="true">{labelIndices.map((index, labelIndex) => <span key={points[index]!.key}
+      <div className="bar-chart__labels" ref={labelsRef} aria-hidden="true">{labelIndices.map((index, labelIndex) => <span key={points[index]!.key}
         style={{ left: `${positions[labelIndex]}%`,
           transform: labelIndex === 0 ? 'none' : labelIndex === labelIndices.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
         {points[index]!.axisLabel ?? points[index]!.label}</span>)}</div>

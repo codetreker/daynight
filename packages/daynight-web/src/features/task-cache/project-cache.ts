@@ -43,7 +43,7 @@ export type DetailStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE
 export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "sessionHistory", "readwrite">;
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
 type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true; readonly origin?: symbol };
-export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
+export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly peerHintWithdrawal?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
 type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true }; readonly unboundProjectDenial?: true; readonly authoritative?: true };
 export class TaskCacheLifecycleChanged extends DOMException {
   constructor(readonly retryable = true) { super("The task cache lifecycle changed.", "AbortError"); }
@@ -360,7 +360,7 @@ export class TaskCacheScope {
     // Exact generations can be withdrawn immediately. An unknown predecessor is
     // resolved against durable state before it can affect an incomparable history.
     const immediate = matchesCurrent
-      ? this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).then(() => {})
+      ? this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true }).then(() => {})
       : Promise.resolve();
     const action = immediate.then(async () => {
       if (!unknownAncestors && current !== undefined) return;
@@ -382,7 +382,7 @@ export class TaskCacheScope {
           stopPause();
           this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error });
           releaseProvisional();
-          if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).catch(() => {});
+          if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true }).catch(() => {});
           throw error;
         }
       }
@@ -393,7 +393,7 @@ export class TaskCacheScope {
         if (matches && unknownAncestors && !matchesCurrent && current !== undefined && latest?.userFence === current.userFence &&
           latest.cacheGeneration === current.cacheGeneration && ticket.admissionRevision === this.getAdmissionRevision(projectId) &&
           ticket.scopeRevision === this.getProjectRevision(projectId) && this.canRevokeProject(ticket)) {
-          const cleanup = this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false);
+          const cleanup = this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true });
           this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation,
             unknownAncestors: true, error: new ApiError("server", 404, "not_found") });
           await cleanup;
@@ -407,7 +407,7 @@ export class TaskCacheScope {
       }
       if (unknownAncestors && !unknownNotified) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error: new ApiError("server", 404, "not_found") });
       if (!matchesCurrent) {
-        const revoked = await this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false);
+        const revoked = await this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false, undefined, { peerHintWithdrawal: true });
         if (!revoked && released && provisional) this.emit({ projectId, accessRestored: true });
       }
     });
@@ -1051,7 +1051,7 @@ export class TaskCacheScope {
       (ticket.generationAncestors ?? []).includes(manifest.cacheGeneration) ||
       ticket.unknownAncestors === true && !(manifest.generationAncestors ?? []).includes(ticket.cacheGeneration));
   }
-  revokeProject(ticket: SyncTicket, signal: AbortSignal, broadcast = true, reason: ApiError = new ApiError("server", 404, "not_found"), notifyProjection = true, onWithdrawn?: () => void, options?: { readonly confirmedDeletion?: boolean }): Promise<boolean> {
+  revokeProject(ticket: SyncTicket, signal: AbortSignal, broadcast = true, reason: ApiError = new ApiError("server", 404, "not_found"), notifyProjection = true, onWithdrawn?: () => void, options?: { readonly confirmedDeletion?: boolean; readonly peerHintWithdrawal?: boolean }): Promise<boolean> {
     if (signal.aborted) return Promise.reject(signal.reason);
     if (this.isInvalidated) return Promise.reject(new TaskCacheLifecycleChanged());
     if (ticket.userId !== this.userId || ticket.userFence !== this.userFence) return Promise.reject(new ApiError("protocol"));
@@ -1071,7 +1071,8 @@ export class TaskCacheScope {
     this.projections.delete(ticket.projectId); this.authorizedProjects.delete(ticket.projectId); this.historyPreviews.delete(ticket.projectId); this.clearProjectHistoryUncertainty(ticket.projectId);
     if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence, revokedGeneration: ticket.cacheGeneration,
       generationAncestors: ticket.generationAncestors ?? [], unknownAncestors: ticket.unknownAncestors === true, ...(options?.confirmedDeletion ? { authoritative: true as const } : {}) } satisfies Hint);
-    this.emit({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, ...(ticket.unknownAncestors ? { unknownAncestors: true as const } : {}), error: reason }, notifyProjection);
+    // A peer hint withdraws a cache generation, not a confirmed current Project denial.
+    this.emit({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, ...(options?.peerHintWithdrawal ? { peerHintWithdrawal: true as const } : {}), ...(ticket.unknownAncestors ? { unknownAncestors: true as const } : {}), error: reason }, notifyProjection);
     if (notifyProjection) for (const ancestor of ticket.generationAncestors ?? []) {
       revoked.add(ancestor);
       this.emitProjection({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ancestor, error: reason });

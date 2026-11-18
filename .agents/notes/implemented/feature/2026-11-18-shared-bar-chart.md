@@ -13,7 +13,9 @@ when a filter changes.
 The shared BarChart accepts caller-owned labels, bigint values and an explicit
 axis maximum. Integer arithmetic computes bounded drawing proportions before
 conversion to CSS. One focus stop navigates the ordered points; stable keys retain
-the selected reading across data updates. Callers own data, units and filtering.
+the selected reading across data updates. Keyboard focus reveals the selected
+point, while pointer-initiated focus leaves the viewport in place until the new
+point is selected, preserving touch targets. Callers own data, units and filtering.
 
 ## Alternatives
 
@@ -24,4 +26,5 @@ touch and precision behavior and allow the two views to diverge.
 
 The component can be verified independently with synthetic series. Consumers must
 provide a nonempty series, unique keys and a maximum covering every value. Short
-axis labels may be truncated; complete readings remain available through the chart.
+axis labels may be truncated; partially clipped scroll-edge labels are hidden until
+they fit, while complete readings remain available through the chart.

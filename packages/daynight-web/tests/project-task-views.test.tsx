@@ -1096,6 +1096,22 @@ describe('project overview and task workspace', () => {
     expect(scroll).toBe(400);
   });
 
+  it('opens statistics through navigation and retains the old section preference', async () => {
+    window.localStorage.setItem(key('project-section'), '"tasks"');
+    mountOverview();
+    await screen.findByRole('heading', { name: project }); await waitForGraph();
+    fireEvent.click(screen.getByRole('tab', { name: '统计' }));
+    expect(window.location.search).toBe('?tab=statistics');
+    expect(window.localStorage.getItem(key('project-section'))).toBe('"tasks"');
+    expect(readProjectHistory(browserNavigation().snapshot().view, TEST_VIEWER_ID, project)?.section).toBe('statistics');
+    expect(screen.getByRole('heading', { name: '任务统计' })).toBeVisible();
+    expect(screen.getByRole('listbox', { name: '每日新建任务' })).toBeVisible();
+    act(() => window.history.back());
+    await waitFor(() => expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true'));
+    act(() => window.history.forward());
+    await waitFor(() => expect(screen.getByRole('tab', { name: '统计' })).toHaveAttribute('aria-selected', 'true'));
+  });
+
   it('navigates to Tags, retains the task view, and restores the section preference', async () => {
     mountOverview();
     await screen.findByRole('heading', { name: project }); await waitForGraph();
@@ -1196,7 +1212,7 @@ describe('project overview and task workspace', () => {
     graphRequest.mockImplementation(async (id) => snapshot([], id));
     const view = mountOverview();
     await screen.findByRole('heading', { name: project }); await waitForGraph();
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
     fireEvent.click(sectionTab('tasks'));
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     act(() => browserNavigation().navigate(`/projects/${otherProject}`));
