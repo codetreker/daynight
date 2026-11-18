@@ -15,6 +15,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/google/uuid"
 )
 
@@ -287,6 +289,7 @@ func (f *configurationHTTPFixture) report(t *testing.T, current model.WorkerConf
 				expectedValue.ArchiveSessions = &enabled
 			}
 			expectedValue.PreserveArchiveSessions = false
+			expectedValue.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
 			configurationHTTPCheck(t, value, expectedValue)
 			return configurationHTTPCopy(t, *saved), nil
 		}
@@ -720,5 +723,57 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	f.put(t, current, value, "3", nil, []string{projectID}, model.ErrNotFound, http.StatusNotFound, "not_found")
 	if strings.Contains(logs.String(), defaultHTTPToken()) || strings.Contains(logs.String(), httpTestToken(model.SessionCredential)) || strings.Contains(logs.String(), "private-configuration-repository") {
 		t.Fatal("configuration requests leaked credentials or private repository details to logs")
+	}
+}
+
+func TestConfigurationPUTPreservedEmptyFilterAtLegacyBodyLimit(t *testing.T) {
+	f := newConfigurationHTTPFixture(t, io.Discard)
+	value := configurationHTTPModel(t, configurationHTTPValue())
+	value.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := true
+	current := model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: f.now, Raw: raw, ArchiveSessions: &archive}, ObservationRevision: "0"}
+	f.tx.ReadSnapshotCall = func(ctx context.Context, op func(store.SnapshotScope) error) error {
+		return op(&workerHTTPReadScope{t: t, DAO: &workerHTTPReader{t: t, WorkerConfigurationCall: func(context.Context, string, string) (model.WorkerConfigurationResource, error) { return current, nil }}})
+	}
+	response := f.request(http.MethodGet, f.path(), "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET: %s", response.Body)
+	}
+	var got struct {
+		Desired struct {
+			Value map[string]json.RawMessage `json:"value"`
+		} `json:"desired"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Desired.Value["taskTagFilter"]) != `{"names":[],"match":"any"}` {
+		t.Fatalf("GET lost filter: %s", response.Body)
+	}
+	body, err := json.Marshal(map[string]any{"revision": "1", "value": got.Desired.Value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := httpx.MaxJSONBody + workerprotocol.EmptyTaskTagFilterMemberBytes
+	body = append(body, bytes.Repeat([]byte(" "), int(limit)-len(body))...)
+	f.tx.WriteWorkerCall = func(ctx context.Context, op func(store.WorkerScope) error) (store.Completion, error) {
+		dao := &workerHTTPWriteDAO{t: t, WorkerConfigurationCall: func(context.Context, string, string) (model.WorkerConfigurationResource, error) { return current, nil }}
+		err := op(&workerHTTPWriteScope{t: t, DAO: dao})
+		if err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}
+	response = f.request(http.MethodPut, f.path(), string(body))
+	if response.Code != http.StatusOK {
+		t.Fatalf("old client retained GET field at limit: %d %s", response.Code, response.Body)
+	}
+	response = f.request(http.MethodPut, f.path(), string(append(body, ' ')))
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("one byte over limit: %d %s", response.Code, response.Body)
 	}
 }

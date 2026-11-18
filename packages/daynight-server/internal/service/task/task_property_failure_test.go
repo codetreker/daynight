@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
@@ -22,6 +23,14 @@ func TestWorkerClaimClockFailurePreventsTaskWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	f.ctx = ctx
+	f.scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
+		return &workerClaimAdmissionMock{read: func(actual context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+			if actual != ctx || user != f.principal.UserID || worker == "" {
+				t.Fatal("claim admission identity changed")
+			}
+			return nil, nil
+		}}
+	}
 	calls := 0
 	f.dao.ObservedAtFn = func(actual context.Context) (time.Time, error) {
 		calls++

@@ -1,6 +1,6 @@
 # Worker 云端配置接口
 
-本文拥有账号级 Worker 目标配置与本机应用观测的服务端协议及消费者必须保持的数据含义。[设计](../design/daynight-worker-configuration.md)拥有表示与事务；[运行快照](daynight-worker-snapshots.md)继续拥有机器报告、在线与近期窗口。配置接入不依赖 active claim，不改变 Task/claim 的数据、接口、认领或恢复规则。
+本文拥有账号级 Worker 目标配置与本机应用观测的服务端协议及消费者必须保持的数据含义。[设计](../design/daynight-worker-configuration.md)拥有表示与事务；[运行快照](daynight-worker-snapshots.md)继续拥有机器报告、在线与近期窗口。配置接入不依赖 active claim；任务标签筛选约束后续新认领，不改变已有 claim 的执行或恢复。
 
 ## 资源与认证
 
@@ -24,6 +24,7 @@
 | recoveryLimit | 0..10 的整数 |
 | preferPlatformSpecificTasks | 布尔值；true 优先领取明确指定当前运行平台的任务，false 保留原候选顺序 |
 | enableSudoCleanup | 布尔值；默认 false，保存目标不代表 Worker 已应用或执行 sudo |
+| taskTagFilter | Worker 级标签名称筛选，`{names: string[], match: "any" | "all"}`；空集合规范为 `any`，不限制新认领 |
 | toolPaths | 工具能力协商后为固定两键 codex/copilot，各项为未采纳 null、显式自动或显式路径 |
 | archiveSessions | 归档能力协商后为布尔值，默认 true；false 表示关闭 Session 归档 |
 | native | 完整 {agent,model,args}，Agent 为 codex、copilot 或 claude |
@@ -40,6 +41,12 @@ model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 �
 toolPaths 的 codex 和 copilot 均必填。每项 null 表示尚未采纳；`{kind:"auto"}` 表示明确恢复自动；`{kind:"path",path:string}` 表示完整文件路径。旧目标缺字段或包含旧模式、第三工具时保留原始内容，不推断为 auto 或自动转换。已采纳 choice 不能清回 null。
 
 path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控制字符的绝对路径；保留原始空格、大小写和词法路径，不 trim、不展开环境变量或 `~`、不拆参数、不交给 shell。服务和浏览器只校验远端路径语法，不访问文件；真实存在性、入口种类、解释器与协议由 Worker 验证。不能用服务所在操作系统的路径规则拒绝另一平台的合法路径。
+
+### 任务标签筛选
+
+名称按项目标签规则去除 Unicode 首尾空白、校验长度与字符，并仅折叠 ASCII 大小写比较；等价名称去重并按 key 排序，保留首个有效显示拼写。非空筛选按任务自身标签名称执行 any 或 all，不继承 Goal 标签，不要求名称已存在。字段显式出现时 names 和 match 均必填，null、空白名称和非法输入均拒绝。语义等价的保存保持原有显示形式和版本。
+
+旧 PUT 省略该字段时在目标版本核对与 Worker 行锁内保留当前值；显式空集合清空。首次 bootstrap 不接受该字段，由服务补规范空值，不读取 YAML。新增或改变非空筛选需要最近一次接纳的完整 observation 包含 `taskTagFilter` 项；否则返回 409 `worker_task_tag_filter_unsupported`。清空、语义不变和省略不受此限制。保存目标不证明 Worker 已应用；降级后缺少该观察也不移除已保存目标。
 
 ## Worker 响应的未知内容保留
 
@@ -91,7 +98,7 @@ Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2�
 
 ## 应用观测
 
-每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。模式观察不再进入公开报告；除 archiveSessions 和 enableSudoCleanup 外最多 1025 项，两者各有独立名额，未协商归档时最多 1026 项。应用值遵循目标配置相同的字段与数值限制。
+每项含 key、targetRevision、appliedValue、state、error、lastFailure、nextAttemptAt；项目 key 另外包含 projectId。state 为 pending、applying、applied 或 error。模式观察不再进入公开报告；除 archiveSessions、enableSudoCleanup 和 taskTagFilter 外最多 1025 项，三者各有独立名额，未协商归档时最多 1027 项。应用值遵循目标配置相同的字段与数值限制。
 
 | kind | appliedValue |
 | --- | --- |
@@ -99,6 +106,7 @@ Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2�
 | preferPlatformSpecificTasks | true 或 false 表示已应用的优先策略；尚无确认值时为 null |
 | enableSudoCleanup | true 或 false 表示实际应用的清理设置；尚无确认值时为 null |
 | archiveSessions | true 或 false 表示已应用的归档设置；尚无确认值时为 null |
+| taskTagFilter | 已应用筛选语义的 64 位小写十六进制 SHA-256 摘要或 null |
 | native、projectNative | 完整 native 元组或 null |
 | projectPreparation | true 表示已准备；没有可确认结果时为 null |
 | projectRemoval | true 表示已移除/停止；没有可确认结果时为 null |
@@ -107,7 +115,7 @@ null 表示没有可确认的实际值，不是生效默认值；preferPlatformS
 
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 
-目标配置的基础 JSON 以及实际存储的应用观测（包含服务端生成的 reportedAt）分别受 4 MiB 规范化 JSON 编码预算约束。独立布尔列 `archiveSessions` 的固定大小投影不计入基础 JSON 预算，使此前合法的最大配置仍可由旧客户端写入。超限返回 400 invalid_input，整个事务回滚。客户端以 Go JSON 的 HTML、U+2028/U+2029 转义字节计量观测，并预留 512 字节覆盖 reportedAt 与私有观测存储槽；本批还须同时满足条数上限和完整配置报告的 9 MiB 请求预算。
+目标配置的基础 JSON 以及实际存储的应用观测（包含服务端生成的 reportedAt）分别受 4 MiB 规范化 JSON 编码预算约束。独立布尔列 `archiveSessions` 的固定大小投影和规范空 `taskTagFilter` 成员的固定编码开销不计入基础 JSON 预算，使此前合法的最大配置仍可由旧客户端写入；非空筛选全部计入预算。超限返回 400 invalid_input，整个事务回滚。客户端以 Go JSON 的 HTML、U+2028/U+2029 转义字节计量观测，并预留 512 字节覆盖 reportedAt 与私有观测存储槽；本批还须同时满足条数上限和完整配置报告的 9 MiB 请求预算。
 
 本机完整事实与网络报告分别管理。当前目标变更或本机项目移除责任登记不以一次报告的条数或字节名额为前置；已确认且不再需要的记录可以收敛，未完成停止、未知结果、仍有归属的工作和未确认失败继续保留。结构合法但当前网络表示无法容纳的历史值保留本机，不能截断实际值、改成 null 或伪报确认。
 

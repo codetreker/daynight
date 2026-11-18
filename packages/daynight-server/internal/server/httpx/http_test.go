@@ -175,7 +175,7 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 		{"github_repository_mismatch", 409},
 		{"archive_conflict", 409}, {"archive_incomplete", 409},
 		{"invalid_image", 400}, {"image_integrity", 400}, {"image_decode_failed", 400}, {"component_unsupported", 409}, {"quota_exceeded", 409}, {"resource_in_use", 409}, {"capability_changed", 409}, {"media_outcome_unknown", 503}, {"resource_busy", 429},
-		{"configuration_not_initialized", 409}, {"active_worker_limit_exceeded", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
+		{"configuration_not_initialized", 409}, {"worker_task_tag_filter_unsupported", 409}, {"active_worker_limit_exceeded", 409}, {"version_conflict", 409}, {"not_a_public_fault", 500},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			w := httptest.NewRecorder()

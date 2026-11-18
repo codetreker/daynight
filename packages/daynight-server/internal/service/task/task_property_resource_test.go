@@ -28,6 +28,7 @@ type propertyWriteFixture struct {
 	dao                                                         *taskWriterMock
 	sessions                                                    *projectSessionMock
 	store                                                       *taskStoreMock
+	scope                                                       *taskProjectScopeMock
 	capture                                                     *propertyCapturer
 	taskReads, writes, scopes, drains, receipts                 int
 	wantReads, wantWrites, wantScopes, wantDrains, wantReceipts int
@@ -38,6 +39,17 @@ type propertyCapturer struct {
 	expected bool
 	calls    int
 	check    func(context.Context, []protocol.Fact)
+}
+
+func (f *propertyWriteFixture) expectClaimAdmission(workerID string) {
+	f.scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
+		return &workerClaimAdmissionMock{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+			if ctx != f.ctx || user != f.principal.UserID || worker != workerID {
+				f.t.Fatal("claim admission identity changed")
+			}
+			return nil, nil
+		}}
+	}
 }
 
 func (capture *propertyCapturer) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, facts []protocol.Fact) error {
@@ -116,6 +128,7 @@ func newPropertyWriteFixture(t *testing.T, current model.Task, complete func(err
 	}
 	f.sessions = &projectSessionMock{taskMockBase: base.withLabel("sessions")}
 	scope := &taskProjectScopeMock{taskMockBase: base.withLabel("scope"), ProjectDAOFn: func() store.ProjectWriteDAO { return projects }, TaskDAOFn: func() store.TaskWriteDAO { return f.dao }, SessionDAOFn: func() store.ProjectSessionDAO { return f.sessions }}
+	f.scope = scope
 	captureDAO := &propertyCaptureDAO{t: t}
 	scope.CaptureDAOFn = func() store.WebhookCaptureDAO { return captureDAO }
 	f.store = &taskStoreMock{taskMockBase: base.withLabel("store")}
