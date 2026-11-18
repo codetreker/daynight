@@ -34,6 +34,49 @@ const response = (body: unknown, capability: string | null = "1", principal = us
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); vi.restoreAllMocks(); });
 
 describe("Worker cloud configuration protocol", () => {
+  it("receives the filter through GET and report receipts while reporting only its applied digest", async () => {
+    const taskTagFilter = { names: ["Backend", "urgent"], match: "all" as const };
+    const filteredDesired = { ...networkDesired, value: { ...networkValue, taskTagFilter } };
+    const digest = "b60f83f3c95a35685b5ceedbcd54b0aea405fef15c3f8bb11203002f0eca3ab6";
+    const applied: WorkerCloudItem = { ...item, key: { kind: "taskTagFilter" }, appliedValue: digest };
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response({ ...resource, desired: filteredDesired }))
+      .mockResolvedValueOnce(response({ ...receipt, configuration: { ...receipt.configuration, desired: filteredDesired } }));
+    const client = api(fetch);
+    expect((await client.getWorkerConfiguration(workerId)).desired?.known?.value.taskTagFilter).toEqual(taskTagFilter);
+    const received = await client.reportWorkerConfiguration(workerId, report, { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [applied] } });
+    expect(received.configuration.desired?.known?.value.taskTagFilter).toEqual(taskTagFilter);
+    const body = JSON.parse(String(fetch.mock.calls[1]![1]!.body));
+    expect(body.configuration.observation.items).toEqual([applied]);
+    expect(JSON.stringify(body)).not.toContain('"names"');
+  });
+
+  it("accepts optional tag filters and only digest application values", () => {
+    const filter = { names: [" urgent ", "Backend", "backend"], match: "all" };
+    expect(parseWorkerCloudValue({ ...value, taskTagFilter: filter }).taskTagFilter).toEqual({ names: ["Backend", "urgent"], match: "all" });
+    expect(parseWorkerCloudValue(value)).not.toHaveProperty("taskTagFilter");
+    for (const invalid of [null, {}, { names: [], match: "ALL" }]) expect(() => parseWorkerCloudValue({ ...value, taskTagFilter: invalid })).toThrow(ProtocolError);
+    const observation = (appliedValue: unknown, state = "applied") => ({ baseRevision: "0", desiredRevision: "1", items: [{ ...item, key: { kind: "taskTagFilter" }, appliedValue, state }] });
+    const digest = "d6b8862fae28deb5524520e92b0c2252f54a3d6607ea333c47c6ba91b99816f2";
+    expect(parseWorkerCloudObservation(observation(digest)).items[0]!.appliedValue).toBe(digest);
+    expect(parseWorkerCloudObservation(observation(null, "pending")).items[0]!.appliedValue).toBeNull();
+    for (const invalid of [filter, true, 2, digest.toUpperCase(), "a".repeat(63), "web", null]) expect(() => parseWorkerCloudObservation(observation(invalid))).toThrow(ProtocolError);
+    expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [{ ...item, appliedValue: digest }] })).toThrow(ProtocolError);
+  });
+
+  it("reserves one tag digest slot while retaining the historical ordinary item limit", () => {
+    const items = Array.from({ length: 1025 }, (_, n) => ({ ...item, key: { kind: "projectRemoval", projectId: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}` }, appliedValue: null, state: "pending" }));
+    const extensions = [
+      { ...item, key: { kind: "agentControlMode" }, appliedValue: "web" },
+      { ...item, key: { kind: "enableSudoCleanup" }, appliedValue: false },
+      { ...item, key: { kind: "archiveSessions" }, appliedValue: true },
+      { ...item, key: { kind: "taskTagFilter" }, appliedValue: "a".repeat(64) },
+    ];
+    const capabilities = { controlMode: true, toolPaths: false, archiveSessions: true };
+    expect(parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items, ...extensions] }, true, capabilities).items).toHaveLength(1029);
+    expect(() => parseWorkerCloudObservation({ baseRevision: "0", desiredRevision: "1", items: [...items, { ...items[0], key: { kind: "projectRemoval", projectId: workerId } }, ...extensions] }, true, capabilities)).toThrow(ProtocolError);
+  });
+
   it("retains incompatible stored targets across GET and report receipts", async () => {
     const raw = JSON.stringify(networkDesired).replace('"maxConcurrent":2', '"maxConcurrent":"future-value"').replace('"value":{', '"value":{"future":900719925474099312345,');
     const config = `{"desired":${raw},"observationRevision":"1","observationAccepted":true}`;

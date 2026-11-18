@@ -19,8 +19,9 @@ export type WorkerConfigurationMessages = {
     readonly activeError: Readonly<Record<'legacy_tool_identity_missing' | 'cleanup_unknown' | 'inventory_unavailable', string>>;
     readonly error: Readonly<Record<'not_found' | 'permission_denied' | 'not_executable' | 'invalid_path' | 'unsupported_launcher' | 'unrecognized_output' | 'incompatible_runtime' | 'probe_timeout' | 'cleanup_unknown' | 'tool_identity_changed' | 'legacy_tool_identity_missing' | 'io_error' | 'unavailable', string>>;
   };
-  readonly taskTags: Readonly<Record<'title' | 'detail' | 'empty' | 'any' | 'all' | 'unsupportedService' | 'unsupportedWorker' | 'unconfirmed' | 'checking' | 'checkFailed' | 'different', string>>;
+  readonly taskTags: Readonly<Record<'title' | 'detail' | 'empty' | 'any' | 'all' | 'unsupportedService' | 'unsupportedWorker' | 'unconfirmed' | 'checking' | 'checkFailed' | 'different' | 'target' | 'match' | 'matchAny' | 'matchAll' | 'placeholder' | 'add' | 'clear' | 'invalid', string>> & { readonly remove: (name: string) => string };
   readonly overview: string;
+  readonly system: string;
   readonly configuration: string;
   readonly prompt: string;
   readonly sections: string;

@@ -603,12 +603,14 @@ describe('Worker detail configuration integration', () => {
   it('keeps configuration available after telemetry404 and preserves its mounted draft across keyboard tabs', async () => {
     install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerError(404));
     renderWithLocale(<WorkerDetailPage userId={WORKER_USER} workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
-    expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    expect(within(screen.getByRole('tabpanel', { name: 'Runtime monitoring' })).getByText('Worker unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
     expect(screen.getByRole('checkbox', { name: 'Prefer platform-specific tasks' })).toBeInTheDocument();
     const args = input('Startup arguments'); change('Startup arguments', '[unfinished');
     const overview = screen.getByRole('tab', { name: 'Runtime monitoring' }); fireEvent.click(overview); expect(args).not.toBeVisible();
     fireEvent.keyDown(overview, { key: 'ArrowRight' }); await flush();
+    const system = screen.getByRole('tab', { name: 'System monitoring' }); expect(system).toHaveFocus(); expect(args).not.toBeVisible();
+    fireEvent.keyDown(system, { key: 'ArrowRight' }); await flush();
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveFocus(); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[unfinished'); expect(args).toBeVisible();
   });
   it('keeps an open selection and its focus across background reads, and closes it on a real tab change', async () => {
@@ -695,5 +697,80 @@ describe('task tag filter presentation', () => {
     expect(field).toHaveTextContent('Applied value differs from the current target');
     expect(field).not.toHaveTextContent(digest);
     expect(document.querySelector('.configuration-summary .status-chip')).not.toHaveTextContent('Applied');
+  });
+});
+
+describe('task tag filter editing', () => {
+  it('adds complete names, deduplicates, and includes the pending name on save', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: [], match: 'any' as const } };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'taskTagFilter' }, 'a'.repeat(64))]);
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        writes.push(body.value);
+        resource = observed('2', body.value, [...globals(body.value, '2'), item({ kind: 'taskTagFilter' }, 'a'.repeat(64), '2')], '2');
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    const editor = input('Task tag filter');
+    fireEvent.change(editor, { target: { value: ' Backend,urgent ' } }); fireEvent.keyDown(editor, { key: 'Enter' });
+    expect(document.querySelector('.task-tag-filter .application-feedback .status-chip')).toHaveTextContent('Unsaved');
+    expect(document.querySelector('.task-tag-target')).toHaveTextContent('Saved target: No tag restriction');
+    expect(screen.getByRole('button', { name: 'Remove tag Backend,urgent' })).toBeInTheDocument();
+    fireEvent.change(editor, { target: { value: 'backend,urgent' } }); fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(screen.getAllByRole('button', { name: 'Remove tag Backend,urgent' })).toHaveLength(1);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tag matching' }), { target: { value: 'all' } });
+    fireEvent.change(editor, { target: { value: 'review' } }); save(); await flush();
+    expect(writes[0]!.taskTagFilter).toEqual({ names: ['Backend,urgent', 'review'], match: 'all' });
+    expect(editor).toHaveValue('');
+  });
+  it('focuses and retains invalid input on save and rejects empty Add', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: [], match: 'any' as const } };
+    const fetch = install(() => configurationResponse(observed('1', value, [...globals(value), item({ kind: 'taskTagFilter' }, 'a'.repeat(64))])));
+    mount(); await flush();
+    const editor = input('Task tag filter');
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(editor).toHaveFocus(); expect(editor).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.change(editor, { target: { value: 'x'.repeat(65) } }); save();
+    expect(editor).toHaveFocus(); expect(editor).toHaveValue('x'.repeat(65)); expect(editor).toHaveAttribute('aria-invalid', 'true');
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+  });
+  it('retains an invalid tag draft after support disappears while saving another field', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: [], match: 'any' as const } };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'taskTagFilter' }, 'a'.repeat(64))]);
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }; writes.push(body.value);
+        resource = observed('2', body.value, globals(body.value, '2'), '2');
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    const editor = input('Task tag filter');
+    fireEvent.change(editor, { target: { value: 'x'.repeat(65) } });
+    resource = observed('1', value, globals(value), '2'); await advance(); await flush();
+    expect(editor).toBeDisabled(); expect(editor).toHaveValue('x'.repeat(65));
+    change('Concurrent task limit', '3'); save(); await flush();
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, taskTagFilter: { names: [], match: 'any' } });
+    expect(editor).toHaveValue('x'.repeat(65));
+  });
+  it('permits clearing an unconfirmed Worker filter and editing other settings', async () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: ['backend'], match: 'all' as const } };
+    let resource = observed('1', value, globals(value));
+    const writes: WorkerConfigurationValue[] = [];
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }; writes.push(body.value);
+        resource = observed('2', body.value, globals(body.value, '2'), '2');
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    expect(input('Task tag filter')).toBeDisabled(); expect(screen.getByRole('button', { name: 'Remove tag backend' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear restriction' })); change('Concurrent task limit', '3'); save(); await flush();
+    expect(writes[0]).toMatchObject({ maxConcurrent: 3, taskTagFilter: { names: [], match: 'any' } });
   });
 });

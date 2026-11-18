@@ -126,7 +126,7 @@ relabeling it as the current target would falsify its original source.
 ## Consequences
 
 Canonical recovery adds local token and candidate lifecycle state, while keeping
-the service DTO and transaction. The current schema 10 source representation is
+the service DTO and transaction. The current schema 11 source representation is
 owned by the unknown configuration, Web checkpoint and
 [mode adoption](2026-11-18-worker-web-mode-adoption.md) decisions. Schemas 1–9
 retain their historical interpretation. Historical origins remain immutable, and

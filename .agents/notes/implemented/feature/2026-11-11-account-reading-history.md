@@ -21,7 +21,9 @@ cold entry. Worker detail continues to use a Worker-bound history selection; its
 mounted after opening and cancellation restores the appropriate dirty tab only
 after the original history position is admitted. The
 [peer-tab decision](../architecture/2026-11-12-worker-detail-prompt-tab.md)
-extends that selection to the Worker prompt. Invalid recognized state is exposed
+extends that selection to the Worker prompt. The [system monitoring decision](../architecture/2026-11-18-worker-system-monitoring-tab.md)
+adds its own Worker-bound selection without changing the URL or history payload
+version. Invalid recognized state is exposed
 rather than interpreted as another target. Project originally used the same entry
 model for section, view, graph and nested resource selections. The later [project tab URL decision](2026-11-17-project-tab-urls.md)
 places the outer section in the URL while retaining the admitted nested reading

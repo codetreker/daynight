@@ -207,6 +207,43 @@ func TestDirectMemberScopeRechecksRevocationAfterCompleteTarget(t *testing.T) {
 	}
 }
 
+// Reserve the other actors' connections before the test-only expiry window begins.
+func armMemberCredentialExpiry(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, id string, connections int) time.Time {
+	t.Helper()
+	var conn *pgxpool.Conn
+	for range connections {
+		acquired, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer acquired.Release()
+		conn = acquired
+	}
+	var expires time.Time
+	if err := conn.QueryRow(ctx, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '750 milliseconds' WHERE id=$1 RETURNING expires_at`, id).Scan(&expires); err != nil {
+		t.Fatal(err)
+	}
+	return expires
+}
+
+func waitForMemberCredentialExpiry(t *testing.T, ctx context.Context, pool *pgxpool.Pool, expires time.Time) {
+	t.Helper()
+	var expired bool
+	const observedExpiry = `SELECT clock_timestamp()>=$1::timestamptz`
+	if err := pool.QueryRow(ctx, observedExpiry, expires).Scan(&expired); err != nil {
+		t.Fatal(err)
+	}
+	if expired {
+		t.Fatal("credential expired before the lock observations completed")
+	}
+	if _, err := pool.Exec(ctx, `SELECT pg_sleep_until($1::timestamptz)`, expires); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, observedExpiry, expires).Scan(&expired); err != nil || !expired {
+		t.Fatalf("credential still valid at the release barrier: expired=%t error=%v", expired, err)
+	}
+}
+
 func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential, model.OAuthCredential} {
@@ -219,9 +256,6 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			target, _, _ := testAuthRecords(t, db)
 			mustQueryExec(t, db, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, target.ID)
 			before := readStoreTeam(t, db, target.ID, team.ID).Membership
-			expires := time.Now().UTC().Add(2 * time.Second)
-			table := map[model.CredentialKind]string{model.SessionCredential: "sessions", model.PATCredential: "personal_access_tokens", model.OAuthCredential: "oauth_access_tokens"}[kind]
-			mustQueryExec(t, db, `UPDATE `+table+` SET expires_at=$2 WHERE id=$1`, actor.CredentialID, expires)
 			holder, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -230,6 +264,10 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			if _, err := holder.Exec(ctx, `SELECT user_id FROM team_members WHERE team_id=$1 AND user_id=$2 FOR UPDATE`, team.ID, target.ID); err != nil {
 				t.Fatal(err)
 			}
+			table := map[model.CredentialKind]string{model.SessionCredential: "sessions", model.PATCredential: "personal_access_tokens", model.OAuthCredential: "oauth_access_tokens"}[kind]
+			// The row holder already occupies one connection. Warm one each for
+			// the member operation, revocation, and compatible reader/observer.
+			expires := armMemberCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)
 			done := make(chan error, 1)
 			go func() {
 				_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
@@ -254,18 +292,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			if err != nil || c.Outcome != store.TransactionCommitted {
 				t.Fatalf("compatible Session credential reader blocked behind revocation: %#v %v", c, err)
 			}
-			for {
-				var expired bool
-				if err := db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired); err != nil {
-					t.Fatal(err)
-				}
-				if expired {
-					break
-				}
-				if err := testutil.WaitThreadClock(ctx); err != nil {
-					t.Fatal(err)
-				}
-			}
+			waitForMemberCredentialExpiry(t, ctx, db.Pool, expires)
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}

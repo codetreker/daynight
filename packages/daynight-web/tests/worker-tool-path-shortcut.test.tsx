@@ -39,6 +39,7 @@ const mount = async ({ delayed = false, supported = true, telemetry = true } = {
   const view = (id: string, active = true) => <StrictMode><TaskCacheProvider scope={scope}><WorkerDetailPage workerId={id} userId={WORKER_USER} readEnabled active={active} /></TaskCacheProvider></StrictMode>;
   browserNavigation().navigate(`/workers/${target}`);
   const rendered = renderWithLocale(view(target), { locale: 'en' }); await flush();
+  fireEvent.click(screen.getByRole('tab', { name: 'System monitoring' }));
   return { writes, setActive: async (active: boolean) => { rendered.rerender(view(target, active)); await flush(); }, requested: () => requested, resolve: async () => { gate.resolve(); await flush(); }, switchWorker: async (id: string, active = true) => {
     act(() => { browserNavigation().navigate(`/workers/${id}`); rendered.rerender(view(id, active)); }); await flush();
   } };
@@ -67,13 +68,14 @@ describe('Worker software tool path shortcut', () => {
     const input = screen.getByRole('textbox', { name: 'Concurrent task limit' });
     fireEvent.change(input, { target: { value: '-' } });
     fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'System monitoring' }));
     fireEvent.click(shortcut()); await flush();
     expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
     expect(input).toHaveValue('-'); expect(summary().closest('details')).toHaveAttribute('open');
     summary().closest('details')!.open = false;
     fireEvent.click(within(screen.getByRole('tabpanel', { name: 'Configuration' })).getByRole('button', { name: 'Refresh' })); await flush();
     expect(summary().closest('details')).not.toHaveAttribute('open'); expect(input).toHaveValue('-');
-    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' })); fireEvent.click(shortcut()); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' })); fireEvent.click(screen.getByRole('tab', { name: 'System monitoring' })); fireEvent.click(shortcut()); await flush();
     expect(summary().closest('details')).toHaveAttribute('open'); expect(state.writes).toEqual([]);
     fireEvent.click(screen.getByRole('tab', { name: 'Prompts' })); await flush();
     expect(screen.getByRole('textbox', { name: 'Prompt text' })).toBe(prompt); expect(prompt).toHaveValue('unsaved Worker instructions');

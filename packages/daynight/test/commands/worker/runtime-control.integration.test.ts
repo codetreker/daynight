@@ -257,6 +257,35 @@ describe("worker synchronous management runtime ownership", () => {
     expect(observed).toEqual(configuration); expect(f.store.getTask(f.task)).toEqual(f.task);
   });
 
+  it.each(["release", "retry"] as const)("keeps %s management available while the cached tag filter awaits authority synchronization", async kind => {
+    const f = await fixture();
+    const manager = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity: { serverOrigin: origin, userId: uuid(6), workerId: uuid(4) }, signal: new AbortController().signal, applyNative: async () => {} });
+    const target = cloudTarget(true);
+    await manager.receive(receiveWorkerDesired(JSON.stringify({ ...target, value: { ...target.value, taskTagFilter: { names: ["backend"], match: "all" } } })));
+    await manager.settle();
+    expect(manager.current().effective.taskTagFilterKey).toMatch(/^[a-f0-9]{64}$/);
+    await manager.stop();
+    const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: "frozen-model", args: [] as string[], recoveryLimit: 2 };
+    const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite"));
+    web.register({ ...f.task, worktreeId: uuid(9), project: f.project, serverOrigin: origin, workerId: uuid(4), userId: uuid(6), configuration }, Date.now());
+    web.close();
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.listCandidates = vi.fn(); remote.reportConfiguration = vi.fn();
+    mocks.submit.mockImplementationOnce(async () => {
+      const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      expect(options.taskTagFilterKey).toBeNull();
+      expect(options.webStore!.getTask(f.task)!.configuration).toEqual(configuration);
+      expect(options.store.getTask(f.task)).toEqual(f.task);
+      return { task: f.task, message: "management completed" };
+    });
+    await runWorkerControl({ ...f, request: kind === "release" ? f.request : { kind, taskId: f.task.taskId, claimId: f.task.claimId } });
+    expect(mocks.submit).toHaveBeenCalledOnce();
+    expect(remote.configuration).not.toHaveBeenCalled();
+    expect(remote.listCandidates).not.toHaveBeenCalled();
+    expect(remote.reportConfiguration).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
+  });
+
   it("synchronizes one batch only when retry prepares new input", async () => {
     const f = await fixture(); const webOptions = captureWebOptions();
     const collect = vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] }));
@@ -264,7 +293,7 @@ describe("worker synchronous management runtime ownership", () => {
     const remote = mocks.remote(); mocks.remote.mockClear();
     const reportConfiguration = vi.fn(async (_workerId: string, _report: unknown, _native: unknown, _operation: unknown, selectors: readonly WorkerPromptSelector[]) => ({
       observedAt: "2026-11-09T00:00:00Z", lastReportedAt: "2026-11-09T00:00:00Z",
-      configuration: receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }),
+      configuration: receivedReceipt({ desired: { ...cloudTarget(false), value: { ...cloudTarget(false).value, taskTagFilter: { names: ["urgent"], match: "any" } } }, observationRevision: "0", observationAccepted: false }),
       prompts: { ok: true as const, results: selectors.map(({ key }) => ({ key, status: "value" as const, value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? uuid(6) : uuid(4), revision: "0", text: "", updatedAt: null } })) },
     }));
     remote.reportConfiguration = reportConfiguration;

@@ -23,9 +23,9 @@ upgrade explicitly to validated schema 5 under the
 then to schema 6 under the [unknown configuration decision](2026-11-17-worker-unknown-configuration-preservation.md).
 The [Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md)
 introduced schema 9; the later [mode adoption decision](2026-11-18-worker-web-mode-adoption.md)
-establishes the current schema 10. Deployed schemas 1–9 retain their frozen
+establishes schema 10; the [tag proof decision](2026-11-18-worker-tag-filter-application.md) establishes schema 11. Deployed schemas 1–10 retain their frozen
 validation before conversion. Raw desired and remote observation documents are
-ordinary strings within schema 10; arbitrary unknown numbers and keys remain
+ordinary strings within schema 11; arbitrary unknown numbers and keys remain
 inside those strings without broadening the outer cache guard. The
 [storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
 owns the serialized readiness, retry and shutdown barrier using these same

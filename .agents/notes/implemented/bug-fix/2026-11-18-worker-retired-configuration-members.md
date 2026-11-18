@@ -13,7 +13,7 @@ source-preserving decoder accepting other unknown members.
 
 Cloud target reception treats `agentControlMode` and `toolPaths.herdr` as unknown
 JSON members. GET, report receipts, prompt-combined receipts, manager redecoding
-and current schema 10 target reads preserve their full source and exclude them
+and current schema 11 target reads preserve their full source and exclude them
 from the known projection. Current required fields, tool slots, values, envelopes,
 capability echoes and equal-revision source comparisons remain strict. Diagnostics
 identify invalid current configuration without blaming retained retired members.

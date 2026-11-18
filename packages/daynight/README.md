@@ -2378,7 +2378,7 @@ cycles add no configuration GET; startup, unknown results, 400/protocol failures
 and capability discovery read first. Reporting keeps its 30-second single-flight
 scheduler, merged triggers and finite prompt batches.
 
-The Worker stores configuration facts in one schema 10
+The Worker stores configuration facts in one schema 11
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
 observation revision and local generation. The required `pendingApplication` flag
@@ -2403,6 +2403,18 @@ fact. It is not executed or reported as the current target; the Worker compares
 it if that field becomes visible again at the same revision. Older schema 6
 checkpoints without this optional field remain readable and are upgraded.
 
+When the service provides `taskTagFilter`, the Worker validates the tag names and
+stores only the canonical SHA-256 application proof alongside its original raw
+target. It publishes the full effective filter and claim digest only after atomic
+persistence, synchronization and an exact target-digest match. Unavailable proof
+pauses new claims while retaining selected Projects and existing execution.
+Servers without the field keep the original admission behavior. Old checkpoints
+with an opaque filter gain a pending/null item, preserving their original pending
+application flag and application responsibilities. Reports always include the
+bounded filter item alongside removal priority, while other items, including
+global native configuration, continue rotating. No YAML field or bootstrap import
+is added. Deterministic stale hints request an authority reread through the normal
+configuration exchange; they do not prove the reason for a claim conflict.
 When the service provides `enableSudoCleanup`, the Worker validates and applies
 the boolean without adding it to an old service bootstrap. Automatic cleanup
 snapshots the committed applied value and its source revision at the start of
@@ -2419,12 +2431,12 @@ failures and necessary actual values. Each record has a stable `recordId` and
 immutable `origin`. Reused actual values keep their observed source; schema 4
 history with a lost successful revision remains explicitly unknown.
 
-Deployed schemas 1–9 are strictly decoded under their frozen historical
-structures and converted to schema 10. Old targets become `desiredJson` and their
+Deployed schemas 1–10 are strictly decoded under their frozen historical
+structures and converted to schema 11. Old targets become `desiredJson` and their
 revision becomes `applicationRevision`; older formats without a remote observation
 retain null. Schema 9 retains its original Web ledger without mode application
-items; current two-tool targets use schema 10 without redefining schema 9's
-interpretation. Schema 10 also reads its already persisted historical mode facts.
+items; current two-tool targets use schema 11 without redefining schema 9's
+interpretation. Schema 10 historical mode facts remain readable after conversion to schema 11.
 
 For schemas 1–8, conversion removes mode items and `nativeMode`. It retains a
 native value and its source only when the historical mode proves Web, and still

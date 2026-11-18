@@ -244,8 +244,15 @@ func TestReadOnlyHTTPRefusesUnsupportedAndUnauthorisedTargets(t *testing.T) {
 	}
 }
 
+func newReadOnlyTCPRefusalFixture(t *testing.T) *controlledReadOnlyTransport {
+	t.Helper()
+	return newReadOnlyTransportFixture(t, func(routes *ReadOnlyRoutes) {
+		routes.broker = &strictReadOnly{t: t, closeExpected: true}
+	})
+}
+
 func TestReadOnlyHTTPBodyReadHasDeadline(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTCPRefusalFixture(t)
 	f.routes.bodyTimeout = 50 * time.Millisecond
 	conn, err := net.Dial("tcp", strings.TrimPrefix(f.server.URL, "http://"))
 	if err != nil {
@@ -272,7 +279,7 @@ func TestReadOnlyHTTPBodyReadHasDeadline(t *testing.T) {
 func TestReadOnlyHTTPEarlyRefusalsBoundUnreadBodies(t *testing.T) {
 	for _, mode := range []string{"invalid_query", "capacity"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newReadOnlyFixture(t)
+			f := newReadOnlyTCPRefusalFixture(t)
 			f.routes.bodyTimeout = 50 * time.Millisecond
 			suffix := "?invalid=true"
 			want := 400
@@ -307,7 +314,7 @@ func TestReadOnlyHTTPEarlyRefusalsBoundUnreadBodies(t *testing.T) {
 }
 
 func TestReadOnlyChannelRefusalsBoundUnreadBodies(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTCPRefusalFixture(t)
 	for _, test := range []struct {
 		name, suffix   string
 		capacity, body bool

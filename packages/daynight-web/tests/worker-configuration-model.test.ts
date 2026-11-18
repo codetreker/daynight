@@ -4,6 +4,19 @@ import { configurationResource, configurationValue } from './helpers/worker-conf
 import { workerId } from './helpers/workers';
 
 describe('Worker configuration draft', () => {
+  it('includes valid pending tag input and compares normalized filter semantics', () => {
+    const value = { ...configurationValue(), taskTagFilter: { names: ['Backend', 'urgent'], match: 'all' as const } };
+    const base = draftFromValue(value);
+    const equivalent = { ...base, taskTagFilter: { names: ['URGENT', 'backend'], match: 'all' as const, input: ' BACKEND ' } };
+    expect(configurationDraftsEqual(base, equivalent)).toBe(true);
+    expect(configurationValuesEqual(value, { ...value, taskTagFilter: { names: ['urgent', 'backend'], match: 'all' } })).toBe(true);
+    const pending = { ...base, taskTagFilter: { ...base.taskTagFilter!, input: ' a,b ' } };
+    expect(parseConfigurationDraft(pending).value?.taskTagFilter).toEqual({ names: ['a,b', 'Backend', 'urgent'], match: 'all' });
+    expect(configurationFieldChanges(pending, value, {}).taskTagFilter).toBe(true);
+    expect(parseConfigurationDraft({ ...pending, taskTagFilter: { ...pending.taskTagFilter, input: '   ' } }).value?.taskTagFilter).toEqual(value.taskTagFilter);
+    expect(parseConfigurationDraft({ ...pending, taskTagFilter: { ...pending.taskTagFilter, input: 'a\nb' } }).errors.taskTagFilter).toBe('tagName');
+    expect(parseConfigurationDraft({ ...pending, taskTagFilter: { names: [], match: 'all', input: '' } }).value?.taskTagFilter).toEqual({ names: [], match: 'any' });
+  });
   it('round-trips explicit clears, inherited fields and arbitrary arguments', () => {
     const value = { ...configurationValue(), native: { agent: 'codex' as const, model: '模型', args: ['--model', 'quotes" \\ backslash', '日本語'] }, projects: [
       { projectId: workerId(3), nativeOverrides: {} },

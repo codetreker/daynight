@@ -49,7 +49,7 @@ can inspect old targets and explicitly save a corrected candidate. The existing
 archive and sudo facts remain independent of the protocol transition; saved
 choices still do not prove actual tool application.
 
-The schema 10 reader accepts the new raw target using the current protocol
+The current checkpoint reader accepts the new raw target using the current protocol
 parser while retaining historical decoders and the existing storage envelope.
 This direct reader is necessary for persisted current targets to survive a
 restart; it does not migrate stored targets or change checkpoint format. Old

@@ -362,9 +362,9 @@ credential and prompt owners retain drafts and operation results across tab
 navigation; neither secrets nor drafts enter the URL or history state. Leaving the
 account still protects unsaved prompt edits, and continuing editing restores the
 prompt URL and focus. See the [tab URL decision](../../.agents/notes/implemented/feature/2026-11-17-account-tab-urls.md).
-Worker monitoring, configuration and prompts tabs also participate in Back and
-Forward, scoped to the current user and Worker; both editing owners retain their
-drafts and operation state.
+Worker runtime monitoring, system monitoring, configuration and prompts tabs
+also participate in Back and Forward, scoped to the current user and Worker;
+both editing owners retain their drafts and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -454,8 +454,13 @@ Members & invitations links. Native links preserve direct access, reload and bro
 history; the navigation wraps on narrow screens. General displays the saved name
 with its rename action, the selectable Team ID with an adjacent copy button for every
 viewer, and a separate deletion panel at the bottom. Its native disclosure starts closed and retains its state within the same Team settings instance across section, locale and background updates; operation errors remain visible outside it. Members & invitations contains
-the roster and its existing role, removal and self-departure actions, followed by
-admin-only invitation management. The
+the roster and its role, removal and self-departure actions, followed by
+admin-only invitation management. An ordinary Team's sole administrator sees the
+last-admin reason on hover or focus of their unavailable Leave Team button. The
+focusable button exposes its reason to assistive technology and has no departure
+handler. The viewport-contained overlay preserves roster geometry, stays open
+while hovered or focused, and closes on Escape or when both end. Other disabled
+states retain native disabled controls. The
 [settings sections decision](../../.agents/notes/implemented/feature/2026-11-10-team-settings-sections.md)
 records the grouping and lifetime choices.
 
@@ -547,13 +552,13 @@ unavailable for editing.
 ## My Workers
 
 The account-owned `/workers` list shows Workers that have reported within the
-last 72 hours. `/workers/{workerId}` presents Runtime monitoring, Configuration
-and Prompts as peer tabs, defaulting to Runtime monitoring. Arrow keys wrap
-between tabs and Home and End select the first and last; tab and panel
-accessibility associations and hidden-panel isolation remain intact. Runtime
-observations retain that window, while cloud configuration and the Worker prompt
-are independent resources. Configuration includes tool paths; Prompts contains
-the Worker prompt editor. Both routes support direct access, reloads and
+last 72 hours. `/workers/{workerId}` presents Runtime monitoring, System
+monitoring, Configuration and Prompts as peer tabs, defaulting to Runtime
+monitoring. Arrow keys wrap between tabs and Home and End select the first and
+last; tab and panel accessibility associations and hidden-panel isolation remain
+intact. Both monitoring tabs share the Worker snapshot and its window, while
+cloud configuration and the Worker prompt are independent resources.
+Configuration includes tool paths; Prompts contains the Worker prompt editor. Both routes support direct access, reloads and
 login return destinations. They mount inside the existing authenticated
 workspace and share its navigation, styles and language. Sidebar project loading
 or failure does not admit or block Worker reads. Worker ID participates in the
@@ -572,8 +577,9 @@ change that relative order.
 The list also reads current monitoring summaries in batches of at most 100 loaded
 Worker IDs. Cards show the scheduling phase and capacity, including the capacity
 stale indicator, without admission reasons or monitoring timestamps and age.
-Detail shows scheduling and admission, actual capacity, parallel
-activities, current failures and the latest recovery before host resources. Task
+Runtime monitoring shows scheduling and admission, actual capacity, parallel
+activities, current failures and the latest recovery. System monitoring separately
+shows host resources, environment and software. Task
 associations open the existing task detail; fixed diagnostic categories and real
 retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
 
@@ -589,10 +595,20 @@ Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
-The detail overview places a single monitoring time line after Worker read and offline notices, before the current task panel or retained task snapshot. It preserves the received status, relative age and absolute capture time, using the same read state and expiry rule as the monitoring body. Loading, absent and expired observations hide the line; a failed refresh retains it while the retained observation remains displayable. The task panel remains the first business panel, followed by monitoring errors and retry, projection notices, runtime details and host telemetry. DOM order matches the visual and keyboard order, and the time line wraps naturally at narrow widths.
+Runtime monitoring places a single monitoring time line after Worker read and
+offline notices, before the current task panel or retained task snapshot. It
+preserves the received status, relative age and absolute capture time, using the
+same read state and expiry rule as the monitoring body. Loading, absent and
+expired observations hide the line; a failed refresh retains it while the
+retained observation remains displayable. The task panel remains the first
+business panel, followed by monitoring errors and retry, projection notices and
+runtime details. DOM order matches the visual and keyboard order, and the time
+line wraps naturally at narrow widths. System monitoring shares the same Worker
+snapshot and clock without another read on tab selection; its refresh reads only
+the snapshot and does not display runtime monitoring errors.
 
-Detail resource cards render actual OS type/release/version/architecture, CPU
-model/logical processor count/use, used/total memory and available/total capacity
+System monitoring resource cards render actual OS type/release/version/architecture,
+CPU model/logical processor count/use, used/total memory and available/total capacity
 of the startup working directory's filesystem. Capacity readings use localized
 IEC units while the API retains exact byte values. The directory is explicit; there
 is no inferred physical core count or fabricated device label. Zero capacity is
@@ -621,7 +637,7 @@ complete collection and exposes retry. Its last response supplies `observedAt`
 and the paired `performance.now()` receipt for a common server-time anchor.
 Online means less than 120 seconds since `lastReportedAt`; exactly 120 seconds
 is offline. Exactly 72 hours remains recent; later observations disappear, and
-an expired runtime overview becomes unavailable. This does not clear or block
+expired monitoring views become unavailable. This does not clear or block
 the Configuration tab. Browser wall-clock changes do not affect
 these rules.
 
@@ -1466,7 +1482,7 @@ internal state styles for both icon-only and text actions. Its CSS is imported
 by the component. Consumers provide localized labels, actions and external
 layout, while retaining clipboard writes, admission, pending and feedback
 lifecycles. `ValueCopyButton` serves Task and Goal rows and Task/Goal details; other
-features retain their own asynchronous flows. See the [UI principles](../../docs/ui-design.md#share-copy-button-presentation)
+features retain their own asynchronous flows. See the [Web design](../../docs/design/daynight-web.md#复制控件的职责)
 for geometry, focus and disabled presentation.
 
 ## Shared native selection
@@ -1479,7 +1495,7 @@ arrow and the stateless SelectTrigger for real button or summary hosts. Its CSS
 owns common tokens and custom trigger presentation. It
 supports native single-line, size-based list and multiple selection. The [component design](../../docs/design/native-select.md)
 owns its props, geometry, touch modes and popup-helper usage. The
-[UI principles](../../docs/ui-design.md#share-native-selection-presentation)
+[UI principles](../../docs/ui-design.md#shared-controls)
 own the reuse rules.
 
 Pages provide their options, value, labels, constraints, event handlers and real

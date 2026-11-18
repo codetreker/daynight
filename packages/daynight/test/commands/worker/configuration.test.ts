@@ -1,4 +1,5 @@
 import { receivedDesired, receivedReceipt } from "../../helpers/worker-received-configuration.js";
+import { taskTagFilterKey } from "../../../src/api/task-tag-filter.js";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -64,6 +65,56 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration application", () => {
+  it("retains pending filter proof and selected projects when the application commit fails", async () => {
+    const failure = new Error("filter proof persistence failed"), published: WorkerConfigurationSnapshot[] = [];
+    const { manager, file } = await fixture({ onChange: snapshot => { published.push(snapshot); }, persist: async (target, chunks) => {
+      const bytes = [...chunks()].join("");
+      const checkpoint = JSON.parse(bytes) as WorkerConfigurationCache;
+      if (checkpoint.currentItems.some(entry => entry.value.key.kind === "taskTagFilter" && entry.value.state === "applied")) throw failure;
+      await replaceFileAtomically(target, bytes, 0o600);
+    } });
+    fixtures.find(entry => entry.manager === manager)!.expectedStopError = failure;
+    const initial = desired();
+    await manager.receive(receivedDesired({ ...initial, value: { ...initial.value, taskTagFilter: { names: ["backend"], match: "any" } } }));
+    await expect(manager.settle()).rejects.toBe(failure);
+    expect(published.every(snapshot => snapshot.effective.taskTagFilterKey === null)).toBe(true);
+    expect(manager.current().selectedProjects?.map(project => project.projectId)).toEqual([projectId]);
+    expect(manager.current().effective.taskTagFilterKey).toBeNull();
+    expect((await readConfigurationCache(file, identity, new AbortController().signal)).cache.currentItems.find(entry => entry.value.key.kind === "taskTagFilter")?.value).toMatchObject({ state: "pending", appliedValue: null });
+  });
+
+  it("keeps a filter unavailable until its application proof is durably replaced and synchronized again after restart", async () => {
+    const writing = deferred(), release = deferred();
+    const filter = { names: ["backend"], match: "any" as const }, digest = taskTagFilterKey(filter);
+    let held = false;
+    const { manager, file } = await fixture({ persist: async (target, chunks) => {
+      const bytes = [...chunks()].join("");
+      const checkpoint = JSON.parse(bytes) as WorkerConfigurationCache;
+      if (!held && checkpoint.currentItems.some(entry => entry.value.key.kind === "taskTagFilter" && entry.value.state === "applied")) {
+        held = true; writing.resolve(); await release.promise;
+      }
+      await replaceFileAtomically(target, bytes, 0o600);
+    } });
+    const original = desired();
+    const target = { ...original, value: { ...original.value, taskTagFilter: filter } };
+    await manager.receive(receivedDesired(target));
+    await writing.promise;
+    expect(manager.current().effective.taskTagFilterKey).toBeNull();
+    expect(manager.current().selectedProjects?.map(project => project.projectId)).toEqual([projectId]);
+    const before = (await readConfigurationCache(file, identity, new AbortController().signal)).cache;
+    expect(before.currentItems.find(entry => entry.value.key.kind === "taskTagFilter")?.value).toMatchObject({ state: "pending", appliedValue: null });
+    release.resolve(); await manager.settle();
+    expect(manager.current().effective.taskTagFilterKey).toBe(digest);
+    expect(manager.current().effective.taskTagFilter).toEqual(filter);
+    expect(manager.report().observation?.items).toContainEqual(expect.objectContaining({ key: { kind: "taskTagFilter" }, appliedValue: digest, state: "applied" }));
+    await manager.stop();
+    const restarted = await createWorkerConfigurationManager({ file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: restarted, directory: path.dirname(file) });
+    expect(restarted.current().effective.taskTagFilterKey).toBeNull();
+    await restarted.receive(receivedDesired(target)); await restarted.settle();
+    expect(restarted.current().effective.taskTagFilterKey).toBe(digest);
+  });
+
   it("applies a synchronized target without reporting mode adoption", async () => {
     const { manager } = await fixture();
     await manager.receive(receivedDesired(desired("1", "original", false))); await manager.settle();
@@ -175,7 +226,7 @@ describe("Worker cloud configuration application", () => {
       JSON.parse = originalParse;
       JSON.stringify = originalStringify;
     }
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(10);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(11);
   });
 
   it("migrates a structurally valid historical native value larger than the current item limit", async () => {
@@ -193,7 +244,7 @@ describe("Worker cloud configuration application", () => {
     const actual = item(reopened.current(), "native")?.appliedValue as WorkerCloudNative;
     expect(actual.args).toHaveLength(2050);
     expect(actual.args[2049]).toBe("x".repeat(4096));
-    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(10);
+    expect(JSON.parse(await readFile(first.file, "utf8")).schemaVersion).toBe(11);
   });
 
   it("invalidates only native proofs that depend on a changed tool selection", async () => {
@@ -317,7 +368,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     expect(reopened.current().effective.native).toBeNull();
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated).toMatchObject({ schemaVersion: 10, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
+    expect(migrated).toMatchObject({ schemaVersion: 11, authority: { applicationRevision: original.revision, observationRevision: cache.observationRevision } });
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual(cache.desired);
     expect(migrated.currentItems.every(entry => !("nativeMode" in entry))).toBe(true);
     await reopened.receive(receivedDesired({ ...original, revision: "2" })); await reopened.settle();
@@ -393,7 +444,7 @@ describe("Worker cloud configuration application", () => {
       expect(invalid).not.toHaveBeenCalled();
       expect(reopened.report().observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
       const saved = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
-      expect(saved).toMatchObject({ schemaVersion: 10, authority: { desiredJson: raw, applicationRevision: "2", pendingApplication: false } });
+      expect(saved).toMatchObject({ schemaVersion: 11, authority: { desiredJson: raw, applicationRevision: "2", pendingApplication: false } });
       await reopened.stop();
       const againApply = vi.fn(async () => {});
       const again = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: againApply });
@@ -475,7 +526,7 @@ describe("Worker cloud configuration application", () => {
     const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
     fixtures.push({ manager: reopened, directory: first.directory });
     const migrated = (await readConfigurationCache(first.file, identity, new AbortController().signal)).cache;
-    expect(migrated.schemaVersion).toBe(10);
+    expect(migrated.schemaVersion).toBe(11);
     expect(JSON.parse(migrated.authority.desiredJson!)).toEqual({ ...saved.desired, value: { ...saved.desired.value, preferPlatformSpecificTasks: false } });
     expect(migrated.nextFailureId).toBe(saved.nextFailureId);
     expect(migrated.authority.observationRevision).toBe(saved.observationRevision);

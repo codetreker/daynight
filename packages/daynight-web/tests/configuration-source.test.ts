@@ -73,4 +73,22 @@ describe('configuration source', () => {
     expect(configurationValueSourcesEqual('{"toolPaths":{"future":1},"n":2}', '{"n":2}', { toolPaths: false })).toBe(true);
     expect(configurationValueSourcesEqual('{"toolPaths":{"future":1},"n":2}', '{"n":2}')).toBe(false);
   });
+
+  it('merges filter members without losing future source and compares filter semantics', () => {
+    const filter = { names: ['Backend', 'urgent'], match: 'all' as const };
+    const knownFilter = { ...known, taskTagFilter: filter };
+    const source = valueSource.replace('"future": {', '"taskTagFilter":{"names":["urgent","Backend"],"match":"all","future":9007199254740993},"future": {');
+    const baseline = configurationBaseline(decodeConfigurationDocument(`{"desired":{"revision":"9","value":${source}}}`, () => configurationResource('9', knownFilter)))!;
+    const unchanged = mergeConfigurationDraft(baseline, { ...knownFilter, taskTagFilter: { names: ['backend', 'URGENT'], match: 'all' } }).valueSource;
+    expect(unchanged).toContain('"taskTagFilter":{"names":["urgent","Backend"],"match":"all","future":9007199254740993}');
+    const edited = mergeConfigurationDraft(baseline, { ...knownFilter, taskTagFilter: { names: ['new'], match: 'any' } }).valueSource;
+    expect(edited).toContain('"taskTagFilter":{"names":["new"],"match":"any","future":9007199254740993}');
+    const left = '{"taskTagFilter":{"names":["Backend","urgent"],"match":"all","future":9007199254740993}}';
+    const right = '{"taskTagFilter":{"names":["URGENT","backend","backend"],"match":"all","future":9007199254740993}}';
+    expect(configurationValueSourcesEqual(left, right)).toBe(false);
+    expect(configurationValueSourcesEqual(left, right, { semanticTagFilter: true })).toBe(true);
+    expect(configurationValueSourcesEqual(left, right.replace('9007199254740993', '9007199254740992'), { semanticTagFilter: true })).toBe(false);
+    expect(configurationValueSourcesEqual(left, right.replace('"all"', '"any"'), { semanticTagFilter: true })).toBe(false);
+    expect(configurationValueSourcesEqual(left, '{}')).toBe(false);
+  });
 });
