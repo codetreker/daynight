@@ -99,13 +99,16 @@ After the required review result has been published or confirmed, finish stdout 
 PR ${review.number} Review Completed
 `;
 
-class LastLine extends Transform {
+export class LastLine extends Transform {
   readonly decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   readonly limit: number;
   line = "";
   overflow = false;
   lastNonempty: string | null = null;
   constructor(limit: number) { super(); this.limit = limit; }
+  matchesCompletion(reviewNumber: number): boolean {
+    return this.lastNonempty === `PR ${reviewNumber} Review Completed`;
+  }
   accept(text: string): void {
     for (const piece of text.split(/(?<=\n)/)) {
       const newline = piece.endsWith("\n");
@@ -342,7 +345,7 @@ export const createCopilotRunner = (options: CopilotRunnerOptions) => {
         if (await sessionExists(sessionDirectory)) store.markSessionEstablished(pr);
         else errors.push(new Error(`Copilot session ${pr.sessionId} did not retain its history at ${sessionDirectory}.`));
       } catch (error) { errors.push(asError(error)); }
-      outcome.completed = outcome.directProcessClosed && outcome.captureComplete && errors.length === 0 && outcome.interruption === null && outcome.exitCode === 0 && outcome.signal === null && outcome.lastNonemptyLine === `PR ${review.number} Review Completed`;
+      outcome.completed = outcome.directProcessClosed && outcome.captureComplete && errors.length === 0 && outcome.interruption === null && outcome.exitCode === 0 && outcome.signal === null && parser.matchesCompletion(review.number);
       return outcome;
     } finally { if (!mainStarted) await Promise.all([stdoutFile.close(), stderrFile.close()]); }
   };
