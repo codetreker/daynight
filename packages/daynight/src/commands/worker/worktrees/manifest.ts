@@ -10,7 +10,7 @@ export type WorktreeManifest = ResourceOwner & { schemaVersion: 1; directoryName
 export type WorktreeManifestStore = {
   read(worktreeId: string): WorktreeManifest | null;
   list(): WorktreeManifest[];
-  findClaim(identity: ClaimIdentity): WorktreeManifest | null;
+  lookupOwner(identity: ResourceOwner): { byWorktreeId: WorktreeManifest | null; byClaim: WorktreeManifest | null };
   publish(manifest: WorktreeManifest): WorktreeManifest;
   remove(expected: WorktreeManifest): void;
 };
@@ -71,7 +71,14 @@ export const createWorktreeManifestStore = (commonDirectory: string): WorktreeMa
   };
   return {
     read, list,
-    findClaim: identity => { const key = claimKey(identity); return list().find(value => claimKey(value) === key) ?? null; },
+    lookupOwner: identity => {
+      const worktreeId = canonicalWorktreeId(identity.worktreeId), key = claimKey(identity);
+      const manifests = list();
+      return {
+        byWorktreeId: manifests.find(value => value.worktreeId === worktreeId) ?? null,
+        byClaim: manifests.find(value => claimKey(value) === key) ?? null,
+      };
+    },
     publish: input => {
       const value = parse(input);
       ensureDurableDirectory(parent);

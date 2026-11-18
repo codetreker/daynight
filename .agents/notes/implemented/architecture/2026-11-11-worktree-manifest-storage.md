@@ -18,6 +18,10 @@ namespace directories and their parent links, flushes a temporary file, renames
 it and flushes the containing directory. An identical visible record is reusable
 only after its file and directory barriers succeed. Removal compares the full
 expected record and retires only metadata. Inventory reads do not flush files.
+An owner lookup resolves both the worktree ID and claim from one complete,
+validated enumeration. An unrelated malformed or conflicting record still
+fails this lookup. Separate observations across asynchronous work remain
+fresh; this synchronous read does not provide a cross-process snapshot.
 
 The shared durable JSON and directory primitives live in platform modules. The Worker uses the store for current resource ownership and location; the
 [adoption decision](2026-11-12-worktree-manifest-adoption.md) owns allocation,
