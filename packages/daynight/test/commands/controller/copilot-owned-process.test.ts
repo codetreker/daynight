@@ -1,13 +1,14 @@
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { afterEach, expect, test } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
 import { copilotDeadline, startCopilotProcess } from "../../../src/commands/controller/providers/copilot-owned-process.js";
+import { removeFixtureRoot } from "../../helpers/tool-fixture-cleanup.js";
 
 const roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { for (const root of roots.splice(0)) await removeFixtureRoot(root); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-owned-process");
   await mkdir(base, { recursive: true });
