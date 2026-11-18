@@ -89,20 +89,38 @@ describe("Git configuration and revision-transition regressions", () => {
     const caFile = path.join(f.directory, "private-ca.pem"); writeFileSync(caFile, "fixture CA");
     const caDirectory = path.join(f.directory, "trusted-certificates"); mkdirSync(caDirectory);
     const globalConfig = path.join(f.directory, "prepared.gitconfig"); writeFileSync(globalConfig, "[http]\n\tversion = HTTP/1.1\n");
-    vi.stubEnv("GIT_SSL_CAINFO", caFile); vi.stubEnv("GIT_SSL_CAPATH", caDirectory);
-    vi.stubEnv("GIT_CONFIG_GLOBAL", globalConfig); vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
-    const observed: string[][] = [];
+    const preparedEnvironment = { GIT_SSL_CAINFO: caFile, GIT_SSL_CAPATH: caDirectory, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: "1" };
+    const names = Object.keys(preparedEnvironment);
+    const expected = Object.values(preparedEnvironment);
+    for (const [name, value] of Object.entries(preparedEnvironment)) vi.stubEnv(name, value);
+    const observed: (string | undefined)[][] = [];
+    const nativeReadbacks = new Map<string, { authenticated: boolean; values: unknown }>();
     const execute: CommandExecutor = async (file, args, options) => {
-      const native = await executeCommand(process.execPath, ["-e", "process.stdout.write(JSON.stringify(['GIT_SSL_CAINFO','GIT_SSL_CAPATH','GIT_CONFIG_GLOBAL','GIT_CONFIG_NOSYSTEM'].map(name => process.env[name])))"], options);
-      if (native.error !== null) throw native.error;
-      observed.push(JSON.parse(native.stdout) as string[]);
+      const environment = { ...process.env, ...options.environment };
+      // Node passes the lexicographically first spelling of a Windows environment key.
+      const windowsKeys = process.platform === "win32" ? Object.keys(environment).sort() : null;
+      observed.push(names.map((name) => {
+        const key = windowsKeys === null ? name : windowsKeys.find((candidate) => candidate.toUpperCase() === name);
+        return key === undefined ? undefined : environment[key];
+      }));
+      const command = args.find((argument) => argument === "clone" || argument === "rev-parse");
+      if (file === "git" && command !== undefined && !nativeReadbacks.has(command)) {
+        const native = await executeCommand(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.argv.slice(1).map(name => process.env[name])))", ...names], options);
+        if (native.error !== null) throw native.error;
+        nativeReadbacks.set(command, {
+          authenticated: args.includes(`credential.https://${f.configuration.host}.helper=`),
+          values: JSON.parse(native.stdout),
+        });
+      }
       return f.execute(file, args, options);
     };
     const manager = createGitManager({ temporaryDirectory: path.join(f.directory, "tmp"), client: f.client, execute });
     const local = await manager.ensureRepository(f.configuration);
     expect(await manager.prepareWorktree(f.store, local, f.reserve().id, proof)).toMatchObject({ kind: "prepared" });
     expect(observed.length).toBeGreaterThan(0);
-    for (const variables of observed) expect(variables).toEqual([caFile, caDirectory, globalConfig, "1"]);
+    for (const variables of observed) expect(variables).toEqual(expected);
+    expect(nativeReadbacks.get("clone")).toEqual({ authenticated: true, values: expected });
+    expect(nativeReadbacks.get("rev-parse")).toEqual({ authenticated: false, values: expected });
   }, 60_000);
 
   it("honors committed fixture byte attributes while normal Git autocrlf conversion is enabled", async () => {
