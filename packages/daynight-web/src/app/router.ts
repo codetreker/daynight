@@ -129,10 +129,31 @@ export const buildTaskChainUrl = (projectId: string, taskId: string): string => 
   return new URL(`/projects/${project}?${new URLSearchParams({ tab: "tasks", chain: task })}`, window.location.origin).href;
 };
 
+/** A Goal graph link remains in the address while its graph is open. */
+export const buildGoalGraphUrl = (projectId: string, goalId: string): string => {
+  const project = canonicalId(projectId), goal = canonicalId(goalId);
+  if (project === null || goal === null) throw new ApiError("protocol");
+  return new URL(`/projects/${project}?${new URLSearchParams({ tab: "tasks", goalGraph: goal })}`, window.location.origin).href;
+};
+
+export const parseGoalGraphUrl = (pathname: string, search: string): { readonly kind: "none" } | { readonly kind: "invalid" } | { readonly kind: "goal"; readonly goalId: string } => {
+  if (parseRoute(pathname).kind !== "project") return { kind: "none" };
+  const params = new URLSearchParams(search);
+  const values = params.getAll("goalGraph");
+  if (values.length === 0) return { kind: "none" };
+  const tabs = params.getAll("tab");
+  const goalId = values.length === 1 ? canonicalId(values[0]!) : null;
+  return goalId !== null && goalId === values[0] && tabs.length === 1 && tabs[0] === "tasks" && !params.has("chain")
+    ? { kind: "goal", goalId }
+    : { kind: "invalid" };
+};
+
 export const parseTaskChainUrl = (pathname: string, search: string): { readonly kind: "none" } | { readonly kind: "invalid" } | { readonly kind: "chain"; readonly taskId: string } => {
   const route = parseRoute(pathname, search);
   if (route.kind !== "project" || route.tab !== "tasks") return { kind: "none" };
-  const values = new URLSearchParams(search).getAll("chain");
+  const params = new URLSearchParams(search);
+  if (params.has("goalGraph")) return { kind: "none" };
+  const values = params.getAll("chain");
   if (values.length === 0) return { kind: "none" };
   const taskId = values.length === 1 ? canonicalId(values[0]!) : null;
   return taskId !== null && taskId === values[0] ? { kind: "chain", taskId } : { kind: "invalid" };

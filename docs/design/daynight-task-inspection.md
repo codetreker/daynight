@@ -43,6 +43,8 @@ ProjectPage 持有当前图资源的 `projectGraphWitness`、详情资源和列�
 
 `GoalGraphDialog` 使用共享弹窗外壳及项目已有 Clock/Pause provider，图内显示后台同步错误和重试，同时保留有效内容。项目图 target 由显示摘要中的资源类型决定：Goal 可以为空或在筛选/分页之外，Task witness 仍解析为多成员普通链。history 只保存 UUID；Goal 卡片打开详情时保留同一个图和 witness。内容历史退休时，`useProjectHistory` 在同一次渲染仅为同一用户、项目、scope 与已提交当前条目的已显示 Goal 保留分区、类别和 witness，清除详情及其子层；布局 effect 将该选择绑定当前代际。独立撤权计数确保 accessRevoked 与 historyChanged 同批或先后发生时都不能沿用旧选择；主体冲突、scope 失效或项目切换同样不保留。历史条目继续退休，已准入的关闭、切页和前进后退立即生效，不因快照到达自动打开或抢焦点。新当前快照确认 Goal 不存在时关闭图；成员数为零则同一弹窗及画布宿主保留，显示空态。最后一次显示的投影仅用于持续呈现，不能授权旧详情、读取或写入；准入机制由[任务同步设计](daynight-task-sync.md#6-投影时钟与详情)拥有。入口和来源焦点的所有权见 [Web 设计](daynight-web.md#项目详情-projectsprojectid)，范围及阅读要求见 [Goal 需求](../spec/daynight-goals.md#goal-整体依赖图)，共享卡片动作的取舍见[Goal 图检查决策](../../.agents/notes/implemented/feature/2026-11-15-goal-graph-inspection.md)。
 
+Goal 地址意图由原始查询解析，项目 owner 仅以当前身份和项目的已确认完整快照承认 Goal 类型；缓存显示、筛选和分页不提供准入证明。地址与阅读选择经同一历史提交，直接打开使用 Goals 视图并保留参数，以支持登录回跳和刷新。待验证的不同目标不显示旧图或详情；同一已承认条目保留图与有效阅读状态。关闭、切换阅读目标或确认目标不可用时清除绑定，遍历旧条目重新遵守当前准入。退休草稿可能接纳已到达的历史目标；清理旧图地址前须确认导航仍位于原条目，不能覆盖已接纳的目标。初始失败保留意图并可重试，后台失败保留已承认内容；权限、身份及读取世代失效不能由迟到结果恢复。详细地址约束和取舍见 [Goal 图地址决策](../../.agents/notes/implemented/feature/2026-11-18-goal-graph-address.md)。
+
 ## 完整依赖与可见交互
 
 以下 P、渐进 S、方向展开及链外导航描述普通链；完整 H、检查样式和独立 Details 由两类图共享。Goal 的投影和选择生命周期由上一节拥有。

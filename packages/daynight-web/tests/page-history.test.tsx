@@ -231,6 +231,48 @@ describe('Project reading history', () => {
     expect(readProjectHistory(projectHistory(user, project, description), user, project)).toEqual(description);
   });
 
+  it('keeps a Goal address pending until its reader is admitted and closes it atomically behind the draft guard', () => {
+    history.replaceState(null, '', `${path}?tab=tasks&goalGraph=${root}#chain=${child}`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      expect(result.current.selection).toEqual({ section: 'tasks', view: 'goals', projectGraphWitness: null, detail: null });
+      expect(navigation.snapshot().view).toBeUndefined();
+      const linked = { section: 'tasks', view: 'goals', projectGraphWitness: root, detail: null } as const;
+      act(() => result.current.select(linked, true, undefined, 'goal'));
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${root}`);
+      expect(location.hash).toBe('');
+      expect(navigation.snapshot().view).toEqual(projectHistory(user, project, linked));
+      const discard = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      act(() => result.current.select({ ...linked, projectGraphWitness: null }, true));
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${root}`);
+      expect(result.current.selection).toEqual(linked);
+      act(() => navigation.cancel());
+      expect(discard).not.toHaveBeenCalled();
+      act(() => result.current.select({ ...linked, projectGraphWitness: null }, true));
+      act(() => navigation.confirm());
+      expect(location.search).toBe('?tab=tasks');
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      expect(discard).toHaveBeenCalledOnce();
+      release(); unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('does not normalize a missing tab into a valid Goal address before rejecting the original input', () => {
+    history.replaceState(null, '', `${path}?goalGraph=${root}`);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, { section: 'tasks', view: 'chains' }, scope));
+      expect(location.search).toBe(`?goalGraph=${root}`);
+      act(() => result.current.select(result.current.selection, true, undefined, 'goal-invalid'));
+      expect(location.search).toBe('?tab=tasks');
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
   it.each(['overview', 'tasks', 'prs', 'tags'] as const)('uses explicit %s over the preferred section on first render', section => {
     history.replaceState(null, '', `${path}?other=retained&tab=${section}`);
     const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });

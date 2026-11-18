@@ -41,6 +41,8 @@ vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, re
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}
 </div>)}{pagination !== undefined && <ListPagination label="任务链列表" {...pagination} />}</div> }));
+vi.mock("../src/features/task-graph/GoalGraphDialog", () => ({ GoalGraphDialog: ({ goalId, onClose, onOpenTask, onRootChange }: { goalId: string; onClose: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onRootChange?: (element: HTMLElement | null) => void }) =>
+  <div ref={onRootChange} className="task-chain-dialog" role="dialog" data-testid={`goal-graph-${goalId}`}><button onClick={onClose}>关闭整体图</button><button onClick={event => onOpenTask(goalId, event.currentTarget)}>打开整体图详情</button></div> }));
 vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, navigation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
   projectId: string; taskId: string; snapshot: GraphSnapshot | null; observation: { kind: string }; navigation: { tab: string }; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
 }) => {
@@ -79,6 +81,10 @@ const graph = (items = seeds, id = projectId): TaskGraph => {
       done: tasks.filter((task) => task.status === "done").length, cancelled: 0, inProgress: tasks.filter((task) => task.status === "in_progress").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === "todo" && !task.ready).length },
   };
+};
+const goalGraph = (id = A): TaskGraph => {
+  const value = graph([{ id, title: '链接 Goal', status: 'todo', dependsOn: [] }]);
+  return { ...value, tasks: value.tasks.map(task => ({ ...task, type: 'goal' as const })) };
 };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -140,6 +146,221 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it('opens a linked empty Goal only after the authoritative snapshot, keeps its URL, and removes it on close', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}#chain=${B}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+    await act(async () => pending.resolve(goalGraph()));
+    expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+    expect(location.hash).toBe(''); expect(history.length).toBe(length);
+    expect(localStorage.getItem(`daynight:project-section:${projectId}`)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭整体图' }));
+    expect(location.search).toBe('?tab=tasks');
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+  });
+
+  it.each([`goalGraph=${A}`, `tab=tasks&goalGraph=bad`, `tab=tasks&goalGraph=${A}&chain=${B}`])('rejects the original malformed Goal address %s without waiting for data', async query => {
+    history.replaceState(null, '', `/projects/${projectId}?${query}#chain=${B}`);
+    graphRequest.mockReturnValue(deferred<TaskGraph>().promise);
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+    expect(new URLSearchParams(location.search).has('goalGraph')).toBe(false);
+    expect(new URLSearchParams(location.search).has('chain')).toBe(false);
+    expect(location.hash).toBe('');
+  });
+
+  it.each([A, X])('rejects a Task or absent Goal ID %s only after the complete snapshot', async id => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${id}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    expect(location.search).toContain(`goalGraph=${id}`);
+    await act(async () => pending.resolve(graph()));
+    expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+    expect(location.search).toBe('?tab=tasks');
+    expect(screen.queryByTestId(`goal-graph-${id}`)).toBeNull();
+  });
+
+  it('keeps a valid Goal address on an initial failure and opens it after retry', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    graphRequest.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(goalGraph());
+    render(<ProjectPage projectId={projectId} />);
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+  });
+
+  it('opens a Goal hidden by pagination without moving the list page', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    const items = [A, ...Array.from({ length: 22 }, (_, i) => `30000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`)];
+    const value = graph(items.map(id => ({ id, title: `Goal ${id}`, status: 'todo' as const, dependsOn: [] })));
+    graphRequest.mockResolvedValue({ ...value, tasks: value.tasks.map(task => ({ ...task, type: 'goal' as const, createdAt: task.id === A ? '2026-10-19T12:00:00Z' : time })) });
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+    expect(document.getElementById(`project-goal-graph-${A}`)).toBeNull();
+    expect(screen.getByText('第 1 / 2 页')).toBeInTheDocument();
+    expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+  });
+
+  it('does not admit a cached Goal until the new authoritative project snapshot confirms it', async () => {
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(goalGraph()).mockReturnValueOnce(pending.promise);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      await waitForGraph();
+      first.unmount();
+      browserNavigation().dispose();
+      history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+      const second = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+      try {
+        await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText('链接 Goal')).toBeVisible();
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        await act(async () => pending.resolve(resetSnapshot(graph([]))));
+        expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+        expect(location.search).toBe('?tab=tasks');
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+      } finally { second.unmount(); }
+    } finally { first.unmount(); scope.dispose(); }
+  });
+
+  it('admits only the latest Goal URL when a cached background precedes a delayed snapshot', async () => {
+    const items = [A, B].map(id => ({ id, title: `Cached Goal ${id}`, status: 'todo' as const, dependsOn: [] }));
+    const original = graph(items);
+    const goals = { ...original, tasks: original.tasks.map(task => ({ ...task, type: 'goal' as const })) };
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(goals).mockReturnValueOnce(pending.promise);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      await waitForGraph();
+      first.unmount();
+      browserNavigation().dispose();
+      history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+      const second = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+      try {
+        await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText(`Cached Goal ${A}`)).toBeVisible();
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        act(() => browserNavigation().navigate(`/projects/${projectId}?tab=tasks&goalGraph=${B}`));
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${B}`);
+        await act(async () => pending.resolve(goals));
+        expect(await screen.findByTestId(`goal-graph-${B}`)).toBeVisible();
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${B}`);
+      } finally { second.unmount(); }
+    } finally { first.unmount(); scope.dispose(); }
+  });
+
+  it('does not use a Goal cached in another project to admit the current project URL', async () => {
+    history.replaceState(null, '', `/projects/${otherProject}`);
+    const foreign = goalGraph();
+    graphRequest.mockResolvedValueOnce({ ...foreign, project: graph([], otherProject).project }).mockResolvedValueOnce(graph([]));
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={otherProject} />, { taskCache: { scope } });
+    try {
+      await waitForGraph();
+      first.unmount();
+      browserNavigation().dispose();
+      history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+      const second = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+      try {
+        expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+        expect(location.search).toBe('?tab=tasks');
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+      } finally { second.unmount(); }
+    } finally { first.unmount(); scope.dispose(); }
+  });
+
+  it('does not open a pending linked Goal after leaving the project task section', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    fireEvent.click(sectionTabs().getByRole('tab', { name: '标签' }));
+    expect(location.search).toBe('?tab=tags');
+    await act(async () => pending.resolve(goalGraph()));
+    await waitForGraph();
+    expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+  });
+
+  it('retires a nested draft and removes the link when a confirmed refresh deletes its Goal', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    graphRequest.mockResolvedValue(goalGraph());
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '打开整体图详情' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+      const discard = vi.fn();
+      const release = browserNavigation().register({ scope: { identity: scope, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+      graphRequest.mockResolvedValue(resetSnapshot(graph([])));
+      fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+      await waitFor(() => expect(location.search).toBe('?tab=tasks'));
+      expect(discard).toHaveBeenCalledOnce();
+      expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+      expect(screen.queryByTestId('selected-task')).toBeNull();
+      expect(browserNavigation().decision()).toBeNull();
+      release();
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it('keeps linked Goal details and drafts on a normal refresh in the same history', async () => {
+    history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+    graphRequest.mockResolvedValue(goalGraph());
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: '打开整体图详情' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+      const discard = vi.fn();
+      const release = browserNavigation().register({ scope: { identity: scope, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+      fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
+      expect(discard).not.toHaveBeenCalled();
+      expect(screen.getByTestId(`goal-graph-${A}`)).toBeVisible();
+      expect(screen.getByTestId('selected-task')).toHaveTextContent(A);
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+      release();
+    } finally { view.unmount(); scope.dispose(); }
+  });
+
+  it.each(['indexed', 'native'] as const)('does not rewrite a different %s entry with the same Goal URL during revocation', async kind => {
+    const url = `/projects/${projectId}?tab=tasks&goalGraph=${A}`;
+    history.replaceState(null, '', url);
+    graphRequest.mockResolvedValue(goalGraph());
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+      const target = kind === 'indexed' ? history.state : { nativeMarker: 'target' };
+      fireEvent.click(screen.getByRole('button', { name: '打开整体图详情' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+      const discard = vi.fn();
+      const release = browserNavigation().register({ scope: { identity: scope, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+      act(() => {
+        history.replaceState(target, '', url);
+        dispatchEvent(new PopStateEvent('popstate', { state: target }));
+        if (kind === 'indexed') expect(browserNavigation().decision()).not.toBeNull();
+        scope.suspendProject(projectId);
+      });
+      expect(discard).toHaveBeenCalledOnce();
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+      if (kind === 'indexed') expect(history.state.__daynightNavigation.entryId).toBe(target.__daynightNavigation.entryId);
+      else expect(history.state).toEqual({ nativeMarker: 'target' });
+      release();
+    } finally { view.unmount(); scope.dispose(); }
+  });
   it.each([["overview", "概览"], ["tasks", "任务列表"], ["prs", "PR 列表"], ["tags", "标签"]] as const)(
     "opens %s directly despite a conflicting preference and does not save it", async (tab, label) => {
       history.replaceState(null, "", `/projects/${projectId}?tab=${tab}`);

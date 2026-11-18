@@ -240,6 +240,16 @@ describe('window navigation admission', () => {
     expect(owner.snapshot().pathname).toBe('/projects');
   });
 
+  it('distinguishes a native traversal between unindexed entries with the same URL', () => {
+    arrival({ foreign: 1 }, '/account#native');
+    const first = owner.snapshot();
+    expect(first.entryId).toBeNull();
+    arrival({ foreign: 2 }, '/account#native');
+    expect(owner.snapshot()).not.toBe(first);
+    expect(owner.snapshot()).toEqual(first);
+    expect(history.state).toEqual({ foreign: 2 });
+  });
+
   it('does not trust copied fragment markers or invalid indexes', () => {
     const initial = history.state;
     owner.register(draft());

@@ -78,7 +78,8 @@ device-issued PAT's initially empty and subsequently recorded usage in the
 production Web account list after a successful CLI request, CLI project
 and task creation, default proposed readback, explicit todo creation for confirmed
 reference work, project detail and attachment-tab Back/Forward, direct Web proposed-to-in_progress modification, CLI readback and
-completion, and Web reload. A second Task is claimed, registered, released and
+completion, and Web reload. An anonymous browser opens a CLI-created Goal's
+graph address through OAuth, then verifies reload and closing the graph. A second Task is claimed, registered, released and
 claimed again through the real service; CLI reads both Session identities and the
 Web shows the retained history without the old current claim. These API registrations
 do not start a Worker process. A registered Worker's monitoring read returns an
@@ -187,6 +188,12 @@ labels to reconcile only its resources. It can reclaim files after the original
 runner process is dead, and it does not replace the original test failure with
 success. Only results and logs are uploaded; private files and build artifacts
 stay excluded.
+
+The Playwright process has a seven-minute limit within the journey step; each
+test retains its own deadline. This leaves room for the sequential login and
+cross-client flows on CI without changing their assertions or the independent
+recovery step's deadline. It leaves less time for normal cleanup within the
+journey step when the process approaches its limit.
 
 Dependency caches can accelerate preparation, but every invocation still builds
 and runs the current checkout. The [test-writing rules](../../docs/writing_tests.md)
