@@ -35,8 +35,14 @@ func parallelRootDatabaseTest(t *testing.T) {
 	t.Cleanup(func() { <-rootDatabasePermits })
 }
 
+const rootDatabaseEnv = "DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL"
+
+var (
+	sharedTestDatabaseURL = os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
+	rootTestDatabaseURL   = os.Getenv(rootDatabaseEnv)
+)
+
 func TestMain(m *testing.M) {
-	const rootDatabaseEnv = "DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL"
 	if database := os.Getenv(rootDatabaseEnv); database != "" {
 		if err := os.Setenv("DAYNIGHT_TEST_DATABASE_URL", database); err != nil {
 			log.Fatal(err)
@@ -51,6 +57,41 @@ func TestMain(m *testing.M) {
 		schemaManagement.pool.Close()
 	}
 	os.Exit(code)
+}
+
+func TestDedicatedRootDatabaseRoutesFixtures(t *testing.T) {
+	if rootTestDatabaseURL == "" {
+		t.Skip("dedicated Store root database is not configured")
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	expected, err := pgx.ParseConfig(rootTestDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := pgx.Connect(ctx, sharedTestDatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shared.Close(cleanup); err != nil {
+			t.Error(err)
+		}
+	})
+
+	var sharedName, fixtureName string
+	if err := shared.QueryRow(ctx, "SELECT current_database()").Scan(&sharedName); err != nil {
+		t.Fatal(err)
+	}
+	if err := emptyPool(t).QueryRow(ctx, "SELECT current_database()").Scan(&fixtureName); err != nil {
+		t.Fatal(err)
+	}
+	if fixtureName == sharedName || fixtureName != expected.Database {
+		t.Fatalf("Store root fixture uses database %q, want %q distinct from shared database %q", fixtureName, expected.Database, sharedName)
+	}
 }
 
 func scopedDatabaseURL(t *testing.T) string {

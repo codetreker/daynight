@@ -1256,8 +1256,10 @@ overlay, prepares the pinned UniAuth fixture, and runs module tests and coverage
 Its optional `--coverage` argument selects the same check. Module CI provisions
 a second database in its PostgreSQL service and passes its URL as
 `DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL`. Only the PostgreSQL Store root test
-package consumes this optional URL. Local runs can set it to a second isolated
-database on the same instance to reproduce CI's migration-lock isolation.
+package consumes this optional URL. With the override configured, a fixture test
+checks the actual root database and the shared database identities. Local runs
+can set the override to a second isolated database on the same instance to
+reproduce CI's migration-lock isolation.
 The independent
 startup/shutdown check runs the command tests with `-tags=startupshutdown` and
 the controlled Webhook Runner abrupt-recovery witness with its dedicated test
