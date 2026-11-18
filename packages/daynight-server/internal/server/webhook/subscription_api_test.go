@@ -50,10 +50,25 @@ func verifyCatalog(t *testing.T, f *httpFixture, actor httpActor) {
 	}
 }
 
+func TestHTTPSubscriptions(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	// Invalid arrays must leave all four configuration tables empty before the
+	// positive cases create subscriptions in this schema.
+	t.Run("arrays_reject_invalid_values", func(t *testing.T) {
+		testHTTPSubscriptionArraysRejectInvalidValues(t, fixture.forCase(t))
+	})
+	t.Run("owner_eligibility", func(t *testing.T) {
+		testHTTPSubscriptionOwnerEligibility(t, fixture.forCase(t))
+	})
+	t.Run("many_independent_subscriptions_and_summary", func(t *testing.T) {
+		testHTTPManyIndependentSubscriptionsAndSummary(t, fixture.forCase(t))
+	})
+}
+
 // T02-A01: caller-owned production mux, real auth/PG and fixed catalog exercise
 // owner authorization, Team ownership and direct grant union through HTTP.
-func TestHTTPSubscriptionOwnerEligibility(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPSubscriptionOwnerEligibility(t *testing.T, f *httpFixture) {
+	t.Helper()
 	admin, member, other := f.actor(t), f.actor(t), f.actor(t)
 	team, owned, direct, denied := seedHTTPProjects(t, f, admin, member, other)
 	verifyCatalog(t, f, admin)
@@ -107,8 +122,8 @@ func TestHTTPSubscriptionOwnerEligibility(t *testing.T) {
 
 // T02-A12: 51 identical project/event choices remain independently addressable
 // through create and replacement, and summary counts derive from real rows.
-func TestHTTPManyIndependentSubscriptionsAndSummary(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPManyIndependentSubscriptionsAndSummary(t *testing.T, f *httpFixture) {
+	t.Helper()
 	admin, member, other := f.actor(t), f.actor(t), f.actor(t)
 	_, _, project, _ := seedHTTPProjects(t, f, admin, member, other)
 	base := "/api/v1/me/webhooks"
@@ -194,8 +209,8 @@ func TestHTTPManyIndependentSubscriptionsAndSummary(t *testing.T) {
 }
 
 // Invalid arrays are rejected without creating or changing configuration.
-func TestHTTPSubscriptionArraysRejectInvalidValues(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPSubscriptionArraysRejectInvalidValues(t *testing.T, f *httpFixture) {
+	t.Helper()
 	actor, member, other := f.actor(t), f.actor(t), f.actor(t)
 	_, _, project, _ := seedHTTPProjects(t, f, actor, member, other)
 	base := "/api/v1/me/webhooks"

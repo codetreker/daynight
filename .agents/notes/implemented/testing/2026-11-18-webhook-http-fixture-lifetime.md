@@ -4,21 +4,27 @@ Status: implemented
 
 ## Problem
 
-The Webhook HTTP configuration and committed-write tests repeatedly create the
-same PostgreSQL schema, pool and base listener. Their request and readback
-assertions use distinct owners, endpoints and operation IDs. The expensive
-fixture preparation is repeated even within pairs of cases that can safely
-share the same database and listener.
+The Webhook HTTP configuration, committed-write and subscription tests
+repeatedly create the same PostgreSQL schema, pool and base listener. Most
+readback assertions scope their queries to distinct owners, endpoints and
+operation IDs. The invalid subscription array case is an exception because
+its rejected creates must leave all four configuration tables empty.
 
 ## Decision
 
 The owner CRUD and byte-boundary cases run as sequential children in the
-configuration lifecycle test. The response-loss and post-commit authorization
-groups also each open one fixture in their parent. These three parent tests
-own their schema, pool and base listener. Every child has its own thirty-second
-context and fresh actor, credential, owner and operation data. The assertions
-read only scenario-owned rows, so the groups need no data reset between
-children. [Webhook DAO fixture decision](2026-11-10-webhook-dao-group-fixtures.md)
+configuration lifecycle test. The response-loss, post-commit authorization and
+subscription groups also each open one fixture in their parent. Each parent
+owns its schema, pool and base listener. Each scenario has a thirty-second
+context and fresh actor, credential, owner and operation data.
+[Webhook DAO fixture decision](2026-11-10-webhook-dao-group-fixtures.md)
+
+The subscription group starts with invalid arrays, so the global SQL count
+verifies the absence of endpoint, subscription, binding and operation writes.
+Its valid control and subsequent invalid patches retain endpoint-specific
+readback. The eligibility and 51-subscription scenarios then use new users,
+Teams, Projects and operations. Their assertions scope reads to those owners
+and endpoints, so the group needs no data reset between scenarios.
 
 Response-loss injection retains a case-local writer, production router and
 logger. The authorization-change cases retain a case-local post-commit gate,
@@ -30,16 +36,18 @@ independent SQL verification remain in the tests.
 ## Alternatives
 
 **Create a fresh schema and base listener for every case.** This makes isolation
-independent of query scopes but repeats migrations and resource setup. The
-grouped cases already scope data and checks to their own actors and IDs.
+independent of query scopes but repeats migrations and resource setup. Running
+the subscription zero-effect case first preserves its global observation.
+The remaining assertions already use scenario-owned data.
 
 **Share a fixture across the package.** Schema-wide failure injection and
-other cases have different lifetime requirements. Restricting reuse to three
+other cases have different lifetime requirements. Restricting reuse to focused
 parents keeps those mechanisms independent and lets each parent own teardown.
 
 ## Consequences
 
-The selected cases use three schema and base listener lifecycles across the
-three test groups. Their setup still requires an isolated PostgreSQL database.
-Cases involving schema mutations, history, physical COMMIT acknowledgement
-loss or concurrent transaction locks retain their own infrastructure.
+The original configuration and committed-write groups share three lifecycles
+among six cases. The three subscription scenarios share one additional
+lifecycle. Their setup still requires an isolated PostgreSQL database. Cases
+involving schema mutations, history, physical COMMIT acknowledgement loss or
+concurrent transaction locks retain their own infrastructure.
