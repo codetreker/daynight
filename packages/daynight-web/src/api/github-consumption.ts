@@ -12,7 +12,17 @@ export type ProjectGitHubStatus = GitHubStatus & {
   readonly canManageConnection: boolean;
   readonly app: { readonly id: string; readonly githubAppId: string; readonly name: string; readonly githubSlug: string } | null;
   readonly grantId: string | null;
+  readonly projectWebhook: ProjectWebhookStatus | null;
 };
+export type ProjectWebhookStatus = {
+  readonly version: string | null;
+  readonly enabled: boolean;
+  readonly repositoryId: string | null;
+  readonly lastReceivedAt: string | null;
+  readonly webhookUrl: string;
+  readonly state: "unconfigured" | "disabled" | "repository_mismatch" | "waiting" | "received";
+};
+export type ProjectWebhookInput = { readonly version: string | null; readonly enabled: boolean; readonly repositoryId?: string; readonly secret?: string };
 type Admission = TaskResponseAdmission;
 type AppSelection = { readonly appResourceId: string; readonly appVersion: string; readonly grantId: string; readonly ownershipVersion: string };
 
@@ -49,6 +59,21 @@ const syncError = (value: unknown) => {
   const data = record(value);
   return { code: nonemptyString(data.code), message: string(data.message), at: nullableTimestamp(data.at) };
 };
+const projectWebhook = (value: unknown, project: string): ProjectWebhookStatus => {
+  const data = record(value);
+  const version = data.version === null ? null : decimal(data.version);
+  const enabled = boolean(data.enabled);
+  const repositoryId = data.repositoryId === null ? null : decimal(data.repositoryId);
+  const lastReceivedAt = nullableTimestamp(data.lastReceivedAt);
+  const webhookUrl = nonemptyString(data.webhookUrl);
+  let url: URL;
+  try { url = new URL(webhookUrl); } catch { return malformed(); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== `/api/v1/github/projects/${project}/webhook`) return malformed();
+  const state = data.state;
+  if (state !== 'unconfigured' && state !== 'disabled' && state !== 'repository_mismatch' && state !== 'waiting' && state !== 'received') return malformed();
+  if (state === 'unconfigured' ? version !== null || enabled || repositoryId !== null || lastReceivedAt !== null : version === null || repositoryId === null || (state === 'disabled') === enabled || state === 'received' && lastReceivedAt === null || (state === 'waiting' || state === 'disabled') && lastReceivedAt !== null) return malformed();
+  return { version, enabled, repositoryId, lastReceivedAt, webhookUrl, state };
+};
 const parseStatus = (value: unknown, project: string): ProjectGitHubStatus => {
   const data = record(value), poll = record(data.poll), webhook = record(data.webhook);
   const connection = data.connection;
@@ -64,6 +89,7 @@ const parseStatus = (value: unknown, project: string): ProjectGitHubStatus => {
     webhook: { running: boolean(webhook.running), lastReceivedAt: nullableTimestamp(webhook.lastReceivedAt), lastAttemptAt: nullableTimestamp(webhook.lastAttemptAt), lastSuccessAt: nullableTimestamp(webhook.lastSuccessAt), error: syncError(webhook.error) },
     canManageConnection, app: data.app === null ? null : app(data.app),
     grantId: !canManageConnection && data.grantId === undefined ? null : data.grantId === null ? null : id(data.grantId),
+    projectWebhook: data.projectWebhook === undefined ? null : projectWebhook(data.projectWebhook, project),
   };
   if (result.projectId !== project || connection === "connected" && (result.app === null || result.installation === null || result.repository === null || canManageConnection && result.grantId === null)) return malformed();
   return result;
@@ -136,4 +162,18 @@ export const saveProjectGitHubSettings = (projectId: string, input: { readonly v
 export const updateProjectGitHubSync = (projectId: string, input: { readonly version: string; readonly syncEnabled: boolean }, signal: AbortSignal, admission: Admission): Promise<ProjectGitHubStatus> => {
   if (typeof input.syncEnabled !== "boolean") throw new ApiError("protocol");
   return mutation(projectId, "/sync", input.version, input, signal, admission, "PATCH", result => result.syncEnabled === input.syncEnabled);
+};
+export const updateProjectWebhook = (projectId: string, input: ProjectWebhookInput, signal: AbortSignal, admission: Admission): Promise<ProjectWebhookStatus> => {
+  const project = requestId(projectId);
+  if (input.version !== null) requireDecimal(input.version);
+  if (typeof input.enabled !== 'boolean') throw new ApiError('protocol');
+  if (input.repositoryId !== undefined) requireDecimal(input.repositoryId);
+  if (input.secret !== undefined && (!input.secret.isWellFormed() || input.secret.length === 0 || new TextEncoder().encode(input.secret).length > 4096)) throw new ApiError('protocol');
+  const body = { expectedUserId: requestId(admission.userId), version: input.version, enabled: input.enabled, ...(input.repositoryId === undefined ? {} : { repositoryId: input.repositoryId }), ...(input.secret === undefined ? {} : { secret: input.secret }) };
+  return call(`/api/v1/projects/${project}/github/webhook`, signal, admission, value => {
+    const result = projectWebhook(value, project);
+    const previous = input.version === null ? 0n : BigInt(input.version);
+    if (result.version === null || (BigInt(result.version) !== previous && BigInt(result.version) !== previous + 1n) || result.enabled !== input.enabled || input.repositoryId !== undefined && result.repositoryId !== input.repositoryId) return malformed();
+    return result;
+  }, 'PATCH', body);
 };

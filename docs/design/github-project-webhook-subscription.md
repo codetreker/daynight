@@ -21,3 +21,7 @@
 `PATCH /api/v1/projects/{projectId}/github/webhook` 接受 `expectedUserId`、`version`、`enabled` 及可选的 `repositoryId`、`secret`，返回相同安全对象。`version` 必须存在，首次为 null，此后为规范的正 int64 十进制字符串；`repositoryId` 如提供则同样为规范的正 int64 十进制字符串。`enabled` 必须为布尔值，未知或重复字段以及无效 Unicode 会被拒绝。首次绑定及换库要求当前仓库 ID 和 secret；secret 是 1 至 4096 字节的有效 UTF-8。项目成员可读取安全状态，只有有效 Project 管理员可写。响应和日志不包含 secret。
 
 旧 GET 保持既有响应；生产路由接线由后续能力负责。项目连接和权限机制见[项目连接](github-app-project-connection.md)。
+
+## 项目设置界面
+
+Web 项目 GitHub 设置消费可选的订阅对象，旧服务省略对象时仍保留连接、轮询和 PR 同步设置。订阅写入使用独立版本；连接和轮询写入的响应不替换订阅状态。读取和写入按项目、登录身份及请求顺序接纳，冲突或未知提交后重新读取而不重发；安全投影不能证明 secret 是否已保存。界面分别呈现有效收件与 PR 同步结果。项目管理员可输入或生成随机 secret，并由用户主动复制草稿；关闭或保存成功后清除草稿，普通成员只读。
