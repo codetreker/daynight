@@ -201,6 +201,17 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     }
   });
 
+  it("rejects mismatches on either manifest ownership key", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    const binding = await prepareCleanupFixture(f, adapter);
+    const other = changedClaim(f.owner);
+    for (const owner of [{ ...f.owner, worktreeId: other.worktreeId }, { ...f.owner, claimId: other.claimId }]) {
+      await expect(adapter.verifyWorktree(f.project, owner, operation())).rejects.toThrow("belongs to another original resource");
+    }
+    expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+  });
+
   it("finds an owned worktree after a lost binding without creating or resetting one", async () => {
     const f = await fixture(); const adapter = manager(f.root);
     await expect(adapter.findWorktree(f.project, f.owner, operation())).rejects.toThrow("manifest is missing");

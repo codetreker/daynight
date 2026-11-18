@@ -181,8 +181,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     const identity = coordinates(owner);
     if (identity.projectId !== uuid(project.projectId, "Project ID")) throw new Error("The resource owner does not belong to this project.");
     const store = createWorktreeManifestStore(repository.commonDirectory);
-    const manifest = store.read(identity.worktreeId);
-    const claim = store.findClaim(identity);
+    const { byWorktreeId: manifest, byClaim: claim } = store.lookupOwner(identity);
     if (manifest !== null && !sameResourceOwner(manifest, identity) || claim !== null && !sameResourceOwner(claim, identity)) throw new WorktreeValidationError("The worktree manifest belongs to another original resource.");
     return manifest;
   };
