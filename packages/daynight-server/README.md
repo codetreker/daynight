@@ -1229,6 +1229,15 @@ module validation. The final gate requires actual success for both selected Go
 jobs. Their separate [coverage partitions](#coverage) retain all production code
 and the same numerical thresholds.
 
+### Worker read-only transport tests
+
+The WebSocket and Broker tests use real HTTP routes, credential parsing and
+channels with controlled actor and Worker facts. They retain actual deadlines,
+cancellation, fences, frames, capabilities and JSON delivery. The PostgreSQL
+revocation and native acceptance cases use actual credentials and reports.
+The [read-only transport fixture decision](../../.agents/notes/implemented/testing/2026-11-18-worker-readonly-transport-fixtures.md)
+records the proof boundary.
+
 ### Project HTTP tests
 
 `internal/server/project` tests use the real request-authentication parser and
