@@ -609,3 +609,8 @@ func (p *strictWriteProject) RotateTagCatalogEpoch(context.Context) error {
 	p.f.unexpected("RotateTagCatalogEpoch")
 	return nil
 }
+
+func (f *strictStepWrite) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	f.t.Fatal("unexpected WorkerClaimAdmissionDAO call")
+	return nil
+}

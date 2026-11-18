@@ -936,3 +936,8 @@ func (mock *projectWriterMock) RotateTagCatalogEpoch(context.Context) error {
 }
 
 func (s *taskSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", false)
+	return nil
+}

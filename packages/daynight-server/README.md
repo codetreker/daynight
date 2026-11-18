@@ -2754,6 +2754,15 @@ undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
 
+`ProjectWriteScope.WorkerClaimAdmissionDAO()` exposes a narrow desired-target read
+bound to the enclosing Project transaction. It retains an existing Worker row lock
+until transaction completion. A missing row is reread under the report's shared
+account admission lock, preventing first-report insertion through the same boundary.
+Only Raw, revision and update time are projected; absent or uninitialized targets
+return nil, while query and cancellation errors remain errors. The
+[configuration design](../../docs/design/daynight-worker-configuration.md#项目事务内的目标读取资源)
+owns the resource's lock ordering and interpretation boundaries.
+
 The shared `model.Project` and `model.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
 candidate reachability. The static property registry in `internal/core/model/taskproperty/`
