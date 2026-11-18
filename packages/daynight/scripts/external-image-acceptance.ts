@@ -32,6 +32,7 @@ type CommandResult = Awaited<ReturnType<RunCommand>>;
 type ManagedCommand = { readonly pid: number; finished: Promise<CommandResult>; stop(): Promise<void> };
 type RunRecord = { schemaVersion: 1; runtimeDirectory: string; phase: "build" | "environment"; ownerUid: number; ownerGid: number; githubRunId: string; githubRunAttempt: string };
 const e2e = async <T>(name: string): Promise<T> => import(new URL(`../../e2e_tests/src/${name}.ts`, import.meta.url).href) as Promise<T>;
+const { ExternalImageStages } = await import(new URL("./external-image-harness/stages.ts", import.meta.url).href) as typeof import("./external-image-harness/stages.js");
 const { runCommand, startCommand } = await e2e<{ runCommand: RunCommand; startCommand(command: string, args: readonly string[], options: Parameters<RunCommand>[2]): ManagedCommand }>("command");
 const { recoverEnvironment } = await e2e<{ recoverEnvironment(options: { repository: string; runDirectory: string; phase: "build" | "environment" }): Promise<void> }>("recovery");
 const exists = async (filename: string): Promise<boolean> => {
@@ -67,13 +68,16 @@ const loadRun = async (): Promise<RunRecord> => {
 const recover = async (): Promise<void> => {
   if (!await exists(path.join(runDirectory, "run.json"))) return;
   const record = await loadRun(), errors: unknown[] = [];
-  try { await network("cleanup"); } catch (error) { errors.push(error); }
+  let networkStopped = false;
+  try { await network("cleanup"); networkStopped = true; } catch (error) { errors.push(error); }
   try { await copyNetworkEvidence(); } catch (error) { errors.push(error); }
-  try {
-    await recoverEnvironment({ repository, runDirectory: record.runtimeDirectory, phase: record.phase });
-    const receipt = path.join(record.runtimeDirectory, "results/environment-cleanup.json");
-    if (await exists(receipt)) await copyFile(receipt, path.join(results, "environment-cleanup.json"));
-  } catch (error) { errors.push(error); }
+  if (networkStopped) {
+    try {
+      await recoverEnvironment({ repository, runDirectory: record.runtimeDirectory, phase: record.phase });
+      const receipt = path.join(record.runtimeDirectory, "results/environment-cleanup.json");
+      if (await exists(receipt)) await copyFile(receipt, path.join(results, "environment-cleanup.json"));
+    } catch (error) { errors.push(error); }
+  }
   if (!errors.length) await rm(privateDirectory, { recursive: true, force: true });
   await persist(path.join(results, "independent-cleanup.json"), { verified: errors.length === 0, finishedAt: new Date().toISOString(), failures: errors.map(String) });
   if (errors.length) throw new AggregateError(errors, "External image regression recovery failed.");
@@ -96,12 +100,14 @@ process.once("SIGINT", interrupt); process.once("SIGTERM", interrupt);
 let environment: Environment | undefined, controller: ManagedCommand | undefined;
 let forward: Awaited<ReturnType<typeof startForward>> | undefined;
 const errors: unknown[] = [];
+const stages = new ExternalImageStages(repository, runtimeDirectory);
 const manifest: Record<string, unknown> = { startedAt: new Date().toISOString(), status: "running", sourceURLs,
   scope: "external Markdown source integration regression", input: "controlled complete Markdown; no native model invocation", sourceTransport: "real public HTTP/HTTPS; production DNS, peer and certificate checks", service: "real isolated Go/PostgreSQL/UniAuth; controlled OAuth identity" };
 
 const load = async <T>(name: string): Promise<T> => import(new URL(`../dist/${name}.js`, import.meta.url).href) as Promise<T>;
 try {
   console.log(`External image source regression: ${runDirectory}`);
+  await stages.initialize();
   const { buildArtifacts } = await e2e<{ buildArtifacts(options: { repository: string; runDirectory: string; signal: AbortSignal }): Promise<{ directory: string; sourceRevision: string; sourceFingerprint: string; hashes: Record<string, string> }> }>("build");
   const artifacts = await buildArtifacts({ repository, runDirectory: runtimeDirectory, signal: cancellation.signal });
   manifest.artifacts = artifacts;
@@ -114,13 +120,16 @@ try {
   await rename(binary, `${binary}.bin`);
   await writeFile(binary, '#!/bin/sh\nset -eu\nexport DAYNIGHT_IMAGE_NODE_PATH=/usr/local/bin/node\nexport DAYNIGHT_IMAGE_HELPER_PATH=/opt/e2e/image-validator/image-validation-helper.js\nexport DAYNIGHT_IMAGE_MANIFEST_PATH=/opt/e2e/image-validator/image-validation-manifest.json\nexport DAYNIGHT_IMAGE_TEMP_DIRECTORY=/run/private/image-validation\nexec /opt/e2e/daynight-server.bin "$@"\n', { mode: 0o755 });
   await mkdir(path.join(runtimeDirectory, "private/image-validation"), { mode: 0o700 });
+  await stages.finishBuild(cancellation.signal);
   const { startEnvironment } = await e2e<{ startEnvironment(options: { repository: string; runDirectory: string; artifactsDirectory: string; signal: AbortSignal }): Promise<Environment> }>("environment");
+  stages.beginEnvironment();
   record.phase = "environment"; await persist(path.join(runDirectory, "run.json"), record);
   environment = await startEnvironment({ repository, runDirectory: runtimeDirectory, artifactsDirectory: artifacts.directory, signal: cancellation.signal });
   manifest.resources = environment.resourceIdentity;
   const { authenticate } = await import(new URL("./external-image-harness/auth.ts", import.meta.url).href) as typeof import("./external-image-harness/auth.js");
   const { requestService, startForward } = await import(new URL("./external-image-harness/service.ts", import.meta.url).href) as typeof import("./external-image-harness/service.js");
   const identity = await authenticate({ environment, directory: privateDirectory, artifacts: artifacts.directory, repository, run: runCommand, signal: cancellation.signal });
+  await stages.finishEnvironment(cancellation.signal);
   manifest.authentication = { userId: identity.userId, tokenId: identity.tokenId, provider: "isolated OAuth provider", certificateVerification: "explicit fixture CA; no TLS verification bypass" };
   const daynightCA = path.join(artifacts.directory, "daynight-ca.pem"), ca = await readFile(daynightCA);
   forward = await startForward(environment.baseURL, ca);
@@ -229,20 +238,34 @@ try {
   await persist(path.join(results, "session-disconnected.json"), observed);
   assert.deepEqual(await readOriginals("controller-stopped"), original);
   manifest.status = "passed";
-} catch (error) { errors.push(error); manifest.status = "failed"; }
+} catch (error) {
+  errors.push(error); manifest.status = "failed";
+  try { await stages.settleFailure(cancellation.signal.aborted); } catch (stageError) { errors.push(stageError); }
+}
 finally {
   const cleanupErrors: unknown[] = [];
   if (controller) { try { await controller.stop(); } catch (error) { cleanupErrors.push(error); } }
   try { await network("cleanup"); } catch (error) { cleanupErrors.push(error); }
   try { await copyNetworkEvidence(); } catch (error) { cleanupErrors.push(error); }
   try { await forward?.close(); } catch (error) { cleanupErrors.push(error); }
-  try { await environment?.close(); } catch (error) { cleanupErrors.push(error); }
+  let ownerVerified = false;
+  try { await stages.verifyOwner(); ownerVerified = true; } catch (error) { cleanupErrors.push(error); }
+  if (ownerVerified && cleanupErrors.length === 0 && environment) {
+    try { await environment.close(); } catch (error) { cleanupErrors.push(error); }
+  }
   try {
-    await recoverEnvironment({ repository, runDirectory: runtimeDirectory, phase: record.phase });
     const receipt = path.join(runtimeDirectory, "results/environment-cleanup.json");
-    if (await exists(receipt)) await copyFile(receipt, path.join(results, "environment-cleanup.json"));
+    if (record.phase === "environment") {
+      const observed = JSON.parse(await readFile(receipt, "utf8")) as { verified: boolean };
+      await copyFile(receipt, path.join(results, "environment-cleanup.json"));
+      if (!observed.verified) throw new Error("Runtime cleanup was not verified; original resources and evidence are retained.");
+    }
   } catch (error) { cleanupErrors.push(error); }
-  if (!cleanupErrors.length) { try { await rm(privateDirectory, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); } }
+  if (!cleanupErrors.length && ownerVerified) {
+    for (const directory of [privateDirectory, path.join(runtimeDirectory, "private"), path.join(runtimeDirectory, "artifacts")]) {
+      try { await rm(directory, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
+    }
+  }
   errors.push(...cleanupErrors);
   manifest.finishedAt = new Date().toISOString(); manifest.cleanupVerified = cleanupErrors.length === 0;
   manifest.failures = errors.map(String); if (errors.length) manifest.status = "failed";

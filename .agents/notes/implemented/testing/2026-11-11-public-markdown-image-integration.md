@@ -45,6 +45,14 @@ IPv6 is disabled and observed in the namespaces. The regression records actual
 host, Docker and namespace networks, rules, counters and cleanup results under
 its temporary run directory.
 
+Host route and interface addresses remain numeric inputs. A hosted runner may
+also add a nonstandard hosts row containing its FQDN and short name without a
+numeric address. The inventory recognizes that shape only when one name matches
+the kernel hostname, resolves both names using the host resolver and protects
+every returned IPv4 and IPv6 address. Unrecognized or unresolvable inputs fail
+before network mutation. The source and resolved addresses are recorded with the
+deployment inventory.
+
 The operator declaration follows the existing [egress profile decision](../architecture/2026-11-10-image-egress-profiles.md).
 Its policy identity contains the digest of installed stateless rules. The
 regression rechecks that digest before namespace execution and source shutdown.
@@ -75,6 +83,11 @@ and translation policy are not created by this regression. Automating changes
 there would affect unrelated resources and still leave unobserved deployment
 facts. The script therefore rejects ordinary local execution.
 
+**Discard nonnumeric hosts rows or protect only their names.** Either approach
+can omit addresses associated with the host. The bounded exception for the
+observed runner identity retains both names and every resolver result; other
+nonnumeric rows remain errors.
+
 **Create a general acceptance platform or public fixture service.** Those add
 service ownership, credentials and ongoing resource costs beyond Markdown
 source persistence. The regression instead uses fixed read-only public images
@@ -91,6 +104,11 @@ failure or cancellation. Cleanup cannot turn a failed test into success.
 Linux pidfds bind signals and exit observations to the original processes.
 Unconfirmed process exit retains namespace names and guards for retry instead
 of reporting successful cleanup after unlinking a still-referenced namespace.
+The regression registers its runner with the product E2E ownership protocol and
+records build and environment completion only after their commands are quiescent.
+The original runner uses owner recovery before closing the environment; the
+independent cleanup step uses the separate recovery path after the runner exits.
+Unconfirmed stages retain their resources and evidence.
 
 The included guarantees are real source-to-service bytes, immutable resource
 identity, original/final destination admission and attributable cleanup. Native
