@@ -63,6 +63,7 @@ func (f appLifecycleFixture) assertStopped(t *testing.T, impact int64) {
 func TestAppProjectTransferStopsEvenWithSameAppDestination(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
+	mustQueryExec(t, f.db, `UPDATE project_github SET hook_repository_id=10,hook_version=1,hook_enabled=true,hook_secret='secret'::bytea WHERE project_id=$1`, f.project.ID)
 	target := f.target(t)
 	mustQueryExec(t, f.db, `INSERT INTO github_app_team_grants(id,app_resource_id,team_id) VALUES($1,$2,$3)`, uuid.NewString(), f.app, target.ID)
 	invite := uuid.NewString()
@@ -76,6 +77,10 @@ func TestAppProjectTransferStopsEvenWithSameAppDestination(t *testing.T) {
 		t.Fatalf("transfer %+v %v", receipt, err)
 	}
 	f.assertStopped(t, 2)
+	var hookRetained bool
+	if err := f.db.Pool.QueryRow(t.Context(), `SELECT hook_repository_id=10 AND hook_version=1 AND hook_enabled AND hook_secret='secret'::bytea FROM project_github WHERE project_id=$1`, f.project.ID).Scan(&hookRetained); err != nil || !hookRetained {
+		t.Fatalf("transfer retained webhook=%t: %v", hookRetained, err)
+	}
 	var retained bool
 	if err := f.db.Pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM project_grants WHERE project_id=$1)=$3 AND EXISTS(SELECT 1 FROM project_invitations WHERE id=$2)`, f.project.ID, invite, grantsBefore).Scan(&retained); err != nil || !retained {
 		t.Fatalf("Project grants/invitation retention %t %v", retained, err)
@@ -107,6 +112,7 @@ func TestAppProjectSameTeamPreservesConnectionAndIntent(t *testing.T) {
 func TestAppProjectDeletionStopsAndRetainsHistoricalData(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	f := lifecycleFixture(t)
+	mustQueryExec(t, f.db, `UPDATE project_github SET hook_repository_id=10,hook_version=1,hook_enabled=true,hook_secret='secret'::bytea,hook_last_received_at=now() WHERE project_id=$1`, f.project.ID)
 	task, sessionID := uuid.NewString(), uuid.NewString()
 	mustQueryExec(t, f.db, `INSERT INTO tasks(id,project_id,title,status,deleted_at) VALUES($1,$2,'Historical task','done',now())`, task, f.project.ID)
 	mustQueryExec(t, f.db, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,grant_hash,grant_expires_at,connection_expires_at) VALUES($1,$2,$3,$4,$5,$6,'{}','{"lifecycle":"active","controls":{"x":1}}','active-grant',now()+interval '1 hour',now()+interval '1 hour')`, sessionID, f.project.ID, task, uuid.NewString(), f.actor.UserID, uuid.NewString())
@@ -116,6 +122,10 @@ func TestAppProjectDeletionStopsAndRetainsHistoricalData(t *testing.T) {
 		t.Fatalf("delete %+v %v", r, err)
 	}
 	f.assertStopped(t, 2)
+	var hookCleared bool
+	if err := f.db.Pool.QueryRow(t.Context(), `SELECT hook_repository_id IS NULL AND hook_version IS NULL AND NOT hook_enabled AND hook_secret IS NULL AND hook_last_received_at IS NULL FROM project_github WHERE project_id=$1`, f.project.ID).Scan(&hookCleared); err != nil || !hookCleared {
+		t.Fatalf("deleted webhook cleared=%t: %v", hookCleared, err)
+	}
 	var deleted, granted bool
 	if err := f.db.Pool.QueryRow(t.Context(), `SELECT deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM project_grants WHERE project_id=$1) FROM projects WHERE id=$1`, f.project.ID).Scan(&deleted, &granted); err != nil || !deleted || !granted {
 		t.Fatalf("deleted=%t historical grant=%t: %v", deleted, granted, err)
@@ -124,6 +134,56 @@ func TestAppProjectDeletionStopsAndRetainsHistoricalData(t *testing.T) {
 	if err := f.db.Pool.QueryRow(t.Context(), `SELECT snapshot->>'lifecycle'='draining' AND snapshot->'controls' IS NULL AND grant_hash IS NULL AND grant_expires_at IS NULL AND connection_expires_at IS NULL AND (SELECT count(*)=1 FROM session_events WHERE session_id=$1), (SELECT version=3 AND generation=4 AND revision=5 FROM project_github WHERE project_id=$2) FROM task_sessions WHERE id=$1`, sessionID, f.project.ID).Scan(&retired, &fencedOnce); err != nil || !retired || !fencedOnce {
 		t.Fatalf("Session retirement=%t single connection fence=%t: %v", retired, fencedOnce, err)
 	}
+}
+
+func TestAppProjectDeletionWebhookCleanupFailureRollsBack(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	f := lifecycleFixture(t)
+	mustQueryExec(t, f.db, `UPDATE project_github SET hook_repository_id=10,hook_version=1,hook_enabled=true,hook_secret='secret'::bytea WHERE project_id=$1`, f.project.ID)
+	mustQueryExec(t, f.db, `CREATE FUNCTION reject_hook_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected webhook cleanup failure'; END $$; CREATE TRIGGER reject_hook_cleanup BEFORE UPDATE OF hook_repository_id ON project_github FOR EACH ROW EXECUTE FUNCTION reject_hook_cleanup()`)
+	_, err := projectservice.NewAppProjects(f.db).Delete(t.Context(), f.actor, f.project.ID)
+	var failure *projectservice.DeletionFailure
+	if !errors.As(err, &failure) || failure.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("cleanup failure lost completion: %v", err)
+	}
+	var intact bool
+	if err := f.db.Pool.QueryRow(t.Context(), `SELECT p.deleted_at IS NULL AND c.enabled AND c.app_resource_id=$2 AND c.hook_repository_id=10 AND c.hook_secret='secret'::bytea AND (SELECT impact_version=1 FROM github_apps WHERE id=$2) FROM projects p JOIN project_github c ON c.project_id=p.id WHERE p.id=$1`, f.project.ID, f.app).Scan(&intact); err != nil || !intact {
+		t.Fatalf("cleanup failure did not roll back=%t: %v", !intact, err)
+	}
+}
+
+func TestAppProjectDeletionClearsDisconnectedWebhookAndRollsBack(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	f := lifecycleFixture(t)
+	mustQueryExec(t, f.db, `UPDATE project_github SET enabled=false,sync_enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL,hook_repository_id=10,hook_version=2,hook_enabled=true,hook_secret='secret'::bytea,hook_last_received_at=now() WHERE project_id=$1`, f.project.ID)
+	ctx := t.Context()
+	assertState := func(wantCleared bool) {
+		t.Helper()
+		var cleared, deleted bool
+		err := f.db.Pool.QueryRow(ctx, `SELECT hook_repository_id IS NULL AND hook_version IS NULL AND NOT hook_enabled AND hook_secret IS NULL AND hook_last_received_at IS NULL, (SELECT deleted_at IS NOT NULL FROM projects WHERE id=$1) FROM project_github WHERE project_id=$1`, f.project.ID).Scan(&cleared, &deleted)
+		if err != nil || cleared != wantCleared || deleted != wantCleared {
+			t.Fatalf("cleared=%t deleted=%t, want=%t: %v", cleared, deleted, wantCleared, err)
+		}
+	}
+	sentinel := errors.New("rollback after deletion")
+	c, err := f.db.WriteGitHubProjectDeletion(ctx, f.project.ID, func(scope store.GitHubProjectDeletionScope) error {
+		if _, err := scope.GitHubDAO().LockBinding(ctx); err != nil {
+			return err
+		}
+		if _, err := scope.ProjectDAO().MarkDeleted(ctx); err != nil {
+			return err
+		}
+		return sentinel
+	})
+	if c.Outcome != store.TransactionNotCommitted || !errors.Is(err, sentinel) {
+		t.Fatalf("rollback: %+v %v", c, err)
+	}
+	assertState(false)
+	result, err := projectservice.NewAppProjects(f.db).Delete(ctx, f.actor, f.project.ID)
+	if err != nil || !result.Deleted {
+		t.Fatalf("delete: %+v %v", result, err)
+	}
+	assertState(true)
 }
 
 func TestAppProjectDeletionStorageFailureRollsBackRetirement(t *testing.T) {

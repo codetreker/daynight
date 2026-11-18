@@ -264,7 +264,7 @@ func TestPrivateTransferProjectLifecycleSerializesProjectDeletion(t *testing.T) 
 			var blocker int32
 			query := `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1%'`
 			if deletionFirst {
-				query = `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'DELETE FROM project_github_pending_prs%'`
+				query = `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE 'UPDATE project_github SET hook_repository_id=NULL%'`
 			}
 			if err := f.database.Pool.QueryRow(ctx, query).Scan(&blocker); err != nil {
 				t.Fatal(err)
