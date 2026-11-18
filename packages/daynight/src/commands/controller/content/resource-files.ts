@@ -309,10 +309,14 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
       if (!failures.length) {
         // Restored originals no longer need these exact backups. Persist their
         // ownership before attempting cleanup after the completed rollback.
-        try {
-          updateIndex(backups.map(file => `${file === descriptor ? "resources" : "blobs"}/${basename(file)}${suffix}`));
-          retryCleanup();
-        } catch (cleanup) { throw new AggregateError([error, cleanup], "Resource deletion rollback retained backups requiring cleanup.", { cause: error }); }
+        if (backups.length) {
+          try {
+            const restored = readIndex(root)?.value ?? { entries: [], resources: [...resources.keys()].map(name).sort() };
+            const cleanup = [...new Set([...(restored.cleanup ?? []), ...backups.map(file => `${file === descriptor ? "resources" : "blobs"}/${basename(file)}${suffix}`)])];
+            publishIndex(root, { ...restored, cleanup });
+            retryCleanup();
+          } catch (cleanup) { throw new AggregateError([error, cleanup], "Resource deletion rollback retained backups requiring cleanup.", { cause: error }); }
+        }
         throw error;
       }
       // The backup paths remain available even if restoration itself failed.
