@@ -259,6 +259,9 @@ var workerTaskTagFilterSQL string
 //go:embed schema/migrations/084_project_github_webhook.sql
 var projectGitHubWebhookSQL string
 
+//go:embed schema/migrations/085_github_webhook_status.sql
+var githubWebhookStatusSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -351,6 +354,7 @@ var schemaMigrations = []migration{
 	{version: 82, sql: workerTaskTagFilterSQL},
 	{version: 83, sql: migration083.SQL(), transform: migration083.Apply, transformSource: migration083.TransformSource()},
 	{version: 84, sql: projectGitHubWebhookSQL},
+	{version: 85, sql: githubWebhookStatusSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

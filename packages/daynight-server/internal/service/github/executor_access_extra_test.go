@@ -15,12 +15,7 @@ import (
 
 type accessTestDAO struct {
 	store.GitHubWorkDAO
-	ack     func(context.Context, store.GitHubLease, string) (bool, error)
-	pending func(context.Context, store.GitHubLease) (bool, bool, error)
-}
-
-func (d accessTestDAO) HasPending(ctx context.Context, l store.GitHubLease) (bool, bool, error) {
-	return d.pending(ctx, l)
+	ack func(context.Context, store.GitHubLease, string) (bool, error)
 }
 
 func (d accessTestDAO) AckAccessHint(ctx context.Context, l store.GitHubLease, id string) (bool, error) {
@@ -45,11 +40,6 @@ func TestExecutorAcknowledgesAccessHintOnlyAfterVerification(t *testing.T) {
 						}
 						acks++
 						return true, nil
-					}, func(_ context.Context, l store.GitHubLease) (bool, bool, error) {
-						if l != f.lease || acks != 1 {
-							t.Fatal("pending read before conditional access acknowledgement")
-						}
-						return false, true, nil
 					}})
 				})
 			}
@@ -83,22 +73,27 @@ func TestExecutorAcknowledgesAccessHintOnlyAfterVerification(t *testing.T) {
 	}
 }
 
-func TestEventAccessFailureKeepsHintAndRetryInWebhookChannel(t *testing.T) {
+func TestAccessFailurePreservesPRChannels(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		failure   error
 		wantNext  time.Duration
 		wantState string
+		hinted    bool
 	}{
-		{"temporary", errors.New("temporary"), 30 * time.Second, "available"},
-		{"confirmed denial", &remote.Error{Code: "permission_denied", Status: 403}, 5 * time.Minute, "unavailable"},
+		{"hint temporary", errors.New("temporary"), 30 * time.Second, "available", true},
+		{"hint confirmed denial", &remote.Error{Code: "permission_denied", Status: 403}, 5 * time.Minute, "unavailable", true},
+		{"scheduled temporary", errors.New("temporary"), 30 * time.Second, "available", false},
+		{"scheduled confirmed denial", &remote.Error{Code: "permission_denied", Status: 403}, 5 * time.Minute, "unavailable", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPollFixture(t)
 			f.workKind = "access"
-			hint, pollCode := "original-hint", "prior-poll-error"
-			f.connection.AccessHintID = &hint
-			f.connection.PollErrorCode = &pollCode
+			hint, pollCode, webhookCode := "original-hint", "prior-poll-error", "prior-webhook-error"
+			if tc.hinted {
+				f.connection.AccessHintID = &hint
+			}
+			f.connection.PollErrorCode, f.connection.WebhookErrorCode = &pollCode, &webhookCode
 			f.connection.NextAccessCheckAt = &f.now
 			r := f.remote()
 			r.verify = func(ctx context.Context, _ int64, _, _ string) (githubpr.RepositoryObservation, error) {
@@ -118,21 +113,25 @@ func TestEventAccessFailureKeepsHintAndRetryInWebhookChannel(t *testing.T) {
 			}
 			w := f.runtimes[len(f.runtimes)-1]
 			next := f.now.Add(tc.wantNext)
-			if w.WebhookErrorCode == nil || w.LastWebhookAttemptAt == nil || !w.LastWebhookAttemptAt.Equal(f.now) || w.LastWebhookSuccessAt != nil || w.PollErrorCode == nil || *w.PollErrorCode != pollCode || w.AccessState != tc.wantState || w.NextAccessCheckAt == nil || !w.NextAccessCheckAt.Equal(next) || w.NotBefore != nil || !w.ReleaseClaim {
+			if w.WebhookErrorCode == nil || *w.WebhookErrorCode != webhookCode || w.LastWebhookAttemptAt != nil || w.LastWebhookSuccessAt != nil || w.PollErrorCode == nil || *w.PollErrorCode != pollCode || w.NextPollAt != nil && tc.wantState == "unavailable" || w.AccessState != tc.wantState || w.NextAccessCheckAt == nil || !w.NextAccessCheckAt.Equal(next) || w.NotBefore != nil || !w.ReleaseClaim {
 				t.Fatalf("failed event access: %+v", w)
 			}
 		})
 	}
 }
 
-func TestEventAccessSuccessPreservesPollAndClearsWebhookOnlyWhenDrained(t *testing.T) {
-	for _, pending := range []bool{false, true} {
-		t.Run(map[bool]string{false: "drained", true: "PR pending"}[pending], func(t *testing.T) {
+func TestAccessSuccessPreservesPRChannels(t *testing.T) {
+	for _, hinted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "scheduled", true: "installation hint"}[hinted], func(t *testing.T) {
 			f := newPollFixture(t)
 			f.workKind = "access"
 			hint, pollCode, webhookCode := "original-hint", "prior-poll-error", "prior-webhook-error"
-			f.connection.AccessHintID = &hint
+			if hinted {
+				f.connection.AccessHintID = &hint
+			}
 			f.connection.PollErrorCode, f.connection.WebhookErrorCode = &pollCode, &webhookCode
+			oldAttempt, oldSuccess := f.now.Add(-time.Hour), f.now.Add(-2*time.Hour)
+			f.connection.LastWebhookAttemptAt, f.connection.LastWebhookSuccessAt = &oldAttempt, &oldSuccess
 			f.connection.NextAccessCheckAt = &f.now
 			old := f.db.write
 			acks := 0
@@ -144,11 +143,6 @@ func TestEventAccessSuccessPreservesPollAndClearsWebhookOnlyWhenDrained(t *testi
 						}
 						acks++
 						return true, nil
-					}, func(_ context.Context, l store.GitHubLease) (bool, bool, error) {
-						if l != f.lease || acks != 1 {
-							t.Fatal("pending read before acknowledgement")
-						}
-						return pending, true, nil
 					}})
 				})
 			}
@@ -156,7 +150,11 @@ func TestEventAccessSuccessPreservesPollAndClearsWebhookOnlyWhenDrained(t *testi
 				t.Fatal(err)
 			}
 			w := f.runtimes[len(f.runtimes)-1]
-			if acks != 1 || w.LastWebhookAttemptAt == nil || !w.LastWebhookAttemptAt.Equal(f.now) || w.LastWebhookSuccessAt == nil || !w.LastWebhookSuccessAt.Equal(f.now) || w.PollErrorCode == nil || *w.PollErrorCode != pollCode || (w.WebhookErrorCode != nil) != pending || pending && *w.WebhookErrorCode != webhookCode {
+			wantAcks := 0
+			if hinted {
+				wantAcks = 1
+			}
+			if acks != wantAcks || !w.LastWebhookAttemptAt.Equal(oldAttempt) || !w.LastWebhookSuccessAt.Equal(oldSuccess) || w.PollErrorCode == nil || *w.PollErrorCode != pollCode || w.WebhookErrorCode == nil || *w.WebhookErrorCode != webhookCode {
 				t.Fatalf("successful event access: %+v", w)
 			}
 		})
@@ -181,7 +179,7 @@ func TestEventAccessRateLimitAndStaleAcknowledgement(t *testing.T) {
 			t.Fatalf("access: %v", err)
 		}
 		w := f.runtimes[len(f.runtimes)-1]
-		if w.WebhookErrorCode == nil || *w.WebhookErrorCode != "github_rate_limited" || w.PollErrorCode != nil || w.NextAccessCheckAt == nil || !w.NextAccessCheckAt.Equal(retry) || w.NotBefore == nil || !w.NotBefore.Equal(retry) {
+		if w.WebhookErrorCode != nil || w.LastWebhookAttemptAt != nil || w.PollErrorCode != nil || w.NextAccessCheckAt == nil || !w.NextAccessCheckAt.Equal(retry) || w.NotBefore == nil || !w.NotBefore.Equal(retry) {
 			t.Fatalf("rate limit: %+v", w)
 		}
 	})
@@ -193,10 +191,7 @@ func TestEventAccessRateLimitAndStaleAcknowledgement(t *testing.T) {
 		old := f.db.write
 		f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
 			return old(ctx, id, func(dao store.GitHubWorkDAO) error {
-				return work(accessTestDAO{dao, func(context.Context, store.GitHubLease, string) (bool, error) { return false, nil }, func(context.Context, store.GitHubLease) (bool, bool, error) {
-					t.Fatal("pending read after stale acknowledgement")
-					return false, false, nil
-				}})
+				return work(accessTestDAO{dao, func(context.Context, store.GitHubLease, string) (bool, error) { return false, nil }})
 			})
 		}
 		if err := f.run(f.remote()); !errors.Is(err, errLease) {
@@ -343,19 +338,12 @@ func (d accessFaultDAO) AckAccessHint(_ context.Context, _ store.GitHubLease, _ 
 	}
 	return true, nil
 }
-func (d accessFaultDAO) HasPending(context.Context, store.GitHubLease) (bool, bool, error) {
-	if d.fail == "pending" {
-		return false, false, d.cause
-	}
-	return false, true, nil
-}
-
 func TestAccessDatabaseFailuresPropagateWithoutCompletion(t *testing.T) {
 	for _, tc := range []struct{ name, operation, fault string }{
 		{"renew connection", "renew", "connection"}, {"renew clock", "renew", "clock"}, {"renew write", "renew", "renew"},
 		{"runtime connection", "runtime", "connection"}, {"runtime clock", "runtime", "clock"}, {"runtime write", "runtime", "save"},
 		{"save failed access", "failure", "save"},
-		{"ack successful access", "access", "ack"}, {"pending successful access", "access", "pending"},
+		{"ack successful access", "access", "ack"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPollFixture(t)
