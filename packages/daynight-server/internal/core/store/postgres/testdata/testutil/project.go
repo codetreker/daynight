@@ -24,11 +24,13 @@ func QueryID(number int) string { return fmt.Sprintf("00000000-0000-4000-8000-%0
 
 // Historical fixtures must write the source schema before a migration can run.
 func CreateProject(ctx context.Context, pool *pgxpool.Pool, writer ProjectFixtureWriter, id, name, repoURL string) (model.Project, error) {
-	var current bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=32)`).Scan(&current); err != nil {
+	var ownership, current bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=32),
+		EXISTS(SELECT 1 FROM schema_migrations WHERE version=82)`).Scan(&ownership, &current); err != nil {
 		return model.Project{}, err
 	}
-	if current {
+	var owner model.User
+	if ownership {
 		now := time.Now().UTC()
 		hash := sha256.Sum256([]byte(uuid.NewString()))
 		user, err := SeedIdentitySession(ctx, writer, model.User{ID: uuid.NewString(), UniAuthID: "fixture:" + uuid.NewString()},
@@ -36,7 +38,10 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, writer ProjectFixtur
 		if err != nil {
 			return model.Project{}, err
 		}
-		return CreatePrivateProject(ctx, writer, model.Principal{UserID: user.ID}, id, name, repoURL)
+		if current {
+			return CreatePrivateProject(ctx, writer, model.Principal{UserID: user.ID}, id, name, repoURL)
+		}
+		owner = user
 	}
 	var project model.Project
 	err := pool.QueryRow(ctx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,$2,$3)
@@ -45,8 +50,17 @@ func CreateProject(ctx context.Context, pool *pgxpool.Pool, writer ProjectFixtur
 	if err != nil {
 		return model.Project{}, pg.QueryError("create historical fixture project", err)
 	}
-	if err := SeedHistoricalProjectAdmin(ctx, pool, id); err != nil {
-		return model.Project{}, err
+	if ownership {
+		if _, err := pool.Exec(ctx, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, id, owner.PersonalTeam.ID); err != nil {
+			return model.Project{}, err
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, id, owner.ID); err != nil {
+			return model.Project{}, err
+		}
+	} else {
+		if err := SeedHistoricalProjectAdmin(ctx, pool, id); err != nil {
+			return model.Project{}, err
+		}
 	}
 	return project, nil
 }
