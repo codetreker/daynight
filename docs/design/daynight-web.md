@@ -1023,8 +1023,8 @@ Project、分页 Project 与图内 Project 的 settings.version 和 ownership.ve
 JSON 数字；缺失或错误 settings/ownership 不补默认值。
 
 成员表分别展示 effective role、owner Team 继承角色和真实 direct grant。有效 admin 可为
-仅继承的 participant 新增 grant，或按真实 role/version 替换、移除现有 grant；不能按任意
-用户 ID 加人，也不为最后一条 direct admin 设置保护。members 的 items 与 actorAccess
+仅继承的 participant 新增 grant，或按真实 role/version 替换、移除现有 grant；grant 管理不接受
+项目外的用户，也不为最后一条 direct admin 设置保护。members 的 items 与 actorAccess
 由同一快照返回；MembersPanel 通过既有 access owner 的观察次序和身份/project 屏障发布
 本人来源，不用旧角色与新名册混合展示。claim-owner 资料读取继续只承担展示。
 
@@ -1035,6 +1035,8 @@ JSON 数字；缺失或错误 settings/ownership 不补默认值。
 旧身份内容。网络、协议或未知提交错误不自动重放，明确读取当前事实后才能审阅新操作，
 该读取不能恢复原回执。外部 Project admin 仅使用项目范围的名册和授权接口，不读取
 owner Team 目录或设置。
+
+项目成员搜索与 Team 共用候选表现、定位和分页读取，项目适配器使用独立搜索接口及当前身份、项目和权限代次。完整可信名册判断已有访问。独立直加操作在派发前同步保留项目工作空间并废弃旧名册读取；可信回执只有在当前准入及归属匹配、没有更新的名册观测和权限复核时局部应用，否则保存确认事实并读取当前名册。已派发操作独立于查询与页面展示，离页不抢焦点。未知结果以身份实例、项目和目标保留最小防重状态，核对使用独立 members GET，不依赖邀请读取，也不解除防重。确认撤权清除候选和私有反馈；恢复准入不恢复旧候选或重发。身份实例失效清除旧范围。
 
 ## 项目删除
 

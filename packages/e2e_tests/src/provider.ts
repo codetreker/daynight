@@ -11,7 +11,7 @@ type Authorization = {
   state: string;
   challenge: string;
 };
-type Identity = "admin" | "member";
+type Identity = "admin" | "member" | "collaborator";
 
 export const providerClientId = "product-e2e-github";
 export const providerClientSecret = "product-e2e-github-secret";
@@ -160,7 +160,7 @@ export const startProvider = async (options: {
       }
       const requestId = identifier();
       requests.set(requestId, authorization);
-      respond(response, 200, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Local GitHub authorization</title></head><body><h1>Local GitHub authorization</h1><form method="post" action="/login/oauth/authorize"><input type="hidden" name="request" value="${requestId}"><button type="submit" name="identity" value="admin">Authorize local identity</button><button type="submit" name="identity" value="member">Authorize member identity</button></form></body></html>`, "text/html; charset=utf-8");
+      respond(response, 200, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Local GitHub authorization</title></head><body><h1>Local GitHub authorization</h1><form method="post" action="/login/oauth/authorize"><input type="hidden" name="request" value="${requestId}"><button type="submit" name="identity" value="admin">Authorize local identity</button><button type="submit" name="identity" value="member">Authorize member identity</button><button type="submit" name="identity" value="collaborator">Authorize collaborator identity</button></form></body></html>`, "text/html; charset=utf-8");
       return;
     }
     if (url.hostname === "github.com" && url.pathname === "/login/oauth/authorize" && request.method === "POST") {
@@ -173,7 +173,7 @@ export const startProvider = async (options: {
         return;
       }
       const identity = parameters.get("identity") ?? "admin";
-      if (identity !== "admin" && identity !== "member") { json(response, 400, { error: "invalid_identity" }); return; }
+      if (identity !== "admin" && identity !== "member" && identity !== "collaborator") { json(response, 400, { error: "invalid_identity" }); return; }
       const code = identifier();
       codes.set(code, { ...authorization, identity });
       const callback = new URL(authorization.redirectUri);
@@ -205,9 +205,10 @@ export const startProvider = async (options: {
         return;
       }
       const identity = tokens.get(authorization.slice("Bearer ".length))!;
-      const email = identity === "admin" ? "admin@example.test" : "member@example.test";
+      const email = `${identity}@example.test`;
       if (url.pathname === "/user") {
-        json(response, 200, { id: identity === "admin" ? 1 : 2, login: `e2e-${identity}`, email, name: identity === "admin" ? "E2E Administrator" : "E2E Member", avatar_url: null });
+        const profiles = { admin: { id: 1, name: "E2E Administrator" }, member: { id: 2, name: "E2E Member" }, collaborator: { id: 3, name: "E2E Collaborator" } };
+        json(response, 200, { ...profiles[identity], login: `e2e-${identity}`, email, avatar_url: null });
       } else {
         json(response, 200, url.searchParams.get("page") === null || url.searchParams.get("page") === "1" ? [{ email, primary: true, verified: true }] : []);
       }
