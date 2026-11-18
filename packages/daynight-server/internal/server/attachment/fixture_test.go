@@ -428,6 +428,10 @@ type attachmentSnapshot struct {
 func (s *attachmentSnapshot) ProjectDAO() store.ProjectReader       { return s.project }
 func (s *attachmentSnapshot) TaskDAO() store.TaskReader             { return s.task }
 func (s *attachmentSnapshot) AttachmentDAO() store.AttachmentReader { return s.attachmentFn() }
+func (s *attachmentSnapshot) UserCandidateDAO() store.UserCandidateReader {
+	s.reject("UserCandidateDAO")
+	return nil
+}
 func (s *attachmentSnapshot) CredentialDAO() store.CredentialReader {
 	s.reject("CredentialDAO")
 	return nil

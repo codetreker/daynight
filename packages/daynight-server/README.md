@@ -3278,6 +3278,20 @@ error code and duration; names and credentials are excluded. The
 | `GET` | `/api/v1/projects` | `200`, project page |
 | `GET` | `/api/v1/projects/{projectId}` | `200`, project |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | `200`, full project with saved settings |
+| `POST` | `/api/v1/projects/{projectId}/member-candidates/search` | `200`, registered account candidate page for effective admins |
+
+Candidate search accepts exactly required `expectedUserId,query` and optional
+`limit,cursor`. Inherited, independently granted and Personal Project admins use
+the same effective-role check; members and nonparticipants cannot read the
+directory. A read snapshot revalidates the credential and Project authority before
+the shared account query. Empty searches still authorize. Literal name/email
+matching, ASCII case folding and UUID seek pagination match Team search, while
+Project cursors bind their own resource, user, credential, normalized query and
+page size. Team cursor behavior remains unchanged. The no-store response contains
+`{items,nextCursor,actorRole:"admin"}`, with actual account IDs and nullable profile
+fields. Snapshot failures suppress results; queries, cursors and profiles stay
+out of diagnostics. The [authentication requirements](../../docs/spec/daynight-auth.md#项目管理员候选搜索)
+own exact limits and refusal behavior.
 
 Creation accepts `name`, `repoUrl`, required `expectedUserId` and optional
 `teamId`. The expected user must match the principal before domain SQL. The

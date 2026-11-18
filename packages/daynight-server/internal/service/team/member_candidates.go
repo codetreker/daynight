@@ -27,7 +27,7 @@ func (s *Teams) SearchMemberCandidates(ctx context.Context, p model.Principal, i
 				return err
 			}
 			var err error
-			result, err = core.SearchMemberCandidates(ctx, scope.TeamDAO(), p, id, search)
+			result, err = core.SearchMemberCandidates(ctx, scope.TeamDAO(), scope.UserCandidateDAO(), p, id, search)
 			return err
 		}, &refusal)
 	})

@@ -23,6 +23,7 @@ type ProjectOperations interface {
 }
 
 type MembershipOperations interface {
+	SearchMemberCandidates(ctx context.Context, principal model.Principal, id string, input coreproject.CandidateSearchInput) (coreproject.CandidatePage, error)
 	ListWithAccess(ctx context.Context, principal model.Principal, id string) (coreproject.ProjectParticipants, error)
 	SetRole(ctx context.Context, principal model.Principal, projectID, userID string, input coreproject.SetProjectMemberRole) (model.ProjectGrant, error)
 	Remove(ctx context.Context, principal model.Principal, projectID, userID string, input coreproject.RemoveProjectMember) error
