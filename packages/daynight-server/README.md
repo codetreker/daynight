@@ -1780,6 +1780,14 @@ Private conversation data is checked at proposed durable writes. Store tests
 separately prove SQL mapping, duplicate queries, locks, transactions, persistence
 and deletion; Bot and Task service tests own cross-module orchestration.
 
+Session service archive admission and terminal read error tests run the real
+entry points with controlled transaction-scoped reads. They verify credential
+and Project authorization before archive metadata, and stop at the failing
+terminal query. Real PostgreSQL still establishes missing-row error mapping,
+connection reuse, and persisted terminal reads. The
+[Session archive read decision](../../.agents/notes/implemented/testing/2026-11-18-session-archive-read-fixtures.md)
+records the proof boundary.
+
 From this module, run the complete database-independent Session suite with:
 
 ```bash

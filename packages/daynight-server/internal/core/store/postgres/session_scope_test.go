@@ -14,6 +14,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -405,6 +406,31 @@ func TestSessionWriterReturnsItsOnlyPhysicalConnection(t *testing.T) {
 	if acquired := database.Pool.Stat().AcquiredConns(); acquired != 0 {
 		t.Fatalf("completed transaction retained a physical connection: acquired=%d", acquired)
 	}
+
+	var missingRow *store.Error
+	completion, err = database.WriteSession(ctx, func(scope store.SessionScope) error {
+		metadata, err := scope.SessionDAO().ArchiveMetadata(ctx, queryID(99))
+		if metadata != (store.ArchiveMetadata{}) || !errors.As(err, &missingRow) || !missingRow.MissingRow ||
+			missingRow.DatabaseFailure || !errors.Is(err, pgx.ErrNoRows) || !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("absent Session returned archive metadata or lost its missing row cause: metadata=%+v error=%v", metadata, err)
+		}
+		if acquired := database.Pool.Stat().AcquiredConns(); acquired != 1 {
+			t.Fatalf("missing metadata callback did not own the physical connection: acquired=%d", acquired)
+		}
+		return err
+	})
+	var transaction *store.TransactionError
+	isDatabaseFailure, _ := store.DatabaseErrorFacts(err)
+	if missingRow == nil || !errors.Is(err, missingRow) || !errors.As(err, &transaction) ||
+		isDatabaseFailure || transaction.Phase != "operation" ||
+		completion.Outcome != store.TransactionNotCommitted || transaction.Outcome != store.TransactionNotCommitted ||
+		transaction.CommitAttempted || transaction.CleanupFailed {
+		t.Fatalf("missing metadata transaction did not retain the callback error and rollback: completion=%+v error=%v", completion, err)
+	}
+	if acquired := database.Pool.Stat().AcquiredConns(); acquired != 0 {
+		t.Fatalf("rolled back transaction retained a physical connection: acquired=%d", acquired)
+	}
+
 	acquireCtx, stopAcquire := context.WithTimeout(ctx, time.Second)
 	defer stopAcquire()
 	connection, err := database.Pool.Acquire(acquireCtx)

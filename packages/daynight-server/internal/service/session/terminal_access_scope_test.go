@@ -17,6 +17,9 @@ type terminalAccessDAO struct {
 	t       *testing.T
 	ctx     context.Context
 	actor   model.Principal
+	project string
+	task    string
+	session string
 	failure string
 	cause   error
 	calls   []string
@@ -30,7 +33,7 @@ func (d *terminalAccessDAO) step(name string) error {
 	return nil
 }
 func (d *terminalAccessDAO) LockArchiveTask(ctx context.Context, project, task string) (store.SessionTask, bool, error) {
-	if ctx != d.ctx || project != "project" || task != "task" {
+	if ctx != d.ctx || project != d.project || task != d.task {
 		d.t.Fatal("task scope changed")
 	}
 	return store.SessionTask{}, false, d.step("task")
@@ -42,13 +45,13 @@ func (d *terminalAccessDAO) LockCredential(ctx context.Context, actor model.Prin
 	return d.step("credential")
 }
 func (d *terminalAccessDAO) ProjectAccess(ctx context.Context, user, project string) (model.ProjectAccess, error) {
-	if ctx != d.ctx || user != d.actor.UserID || project != "project" {
+	if ctx != d.ctx || user != d.actor.UserID || project != d.project {
 		d.t.Fatal("project scope changed")
 	}
 	return model.ProjectAccess{}, d.step("project")
 }
 func (d *terminalAccessDAO) LockTerminal(ctx context.Context, id string) ([]byte, error) {
-	if ctx != d.ctx || id != "session" {
+	if ctx != d.ctx || id != d.session {
 		d.t.Fatal("session scope changed")
 	}
 	if err := d.step("load"); err != nil {
@@ -74,7 +77,7 @@ func TestTerminalHistoryScopeStopsBeforeWorkOnFailure(t *testing.T) {
 			ctx := t.Context()
 			actor := model.Principal{Kind: model.PATCredential, UserID: "reader", CredentialID: "credential"}
 			cause := errors.New("scope operation failed")
-			dao := &terminalAccessDAO{t: t, ctx: ctx, actor: actor, failure: failure, cause: cause}
+			dao := &terminalAccessDAO{t: t, ctx: ctx, actor: actor, project: "project", task: "task", session: "session", failure: failure, cause: cause}
 			scope := terminalAccessScope{dao: dao}
 			writer := archiveCompletionOrderWriter(func(actual context.Context, run func(store.SessionScope) error) (store.Completion, error) {
 				if actual != ctx {
