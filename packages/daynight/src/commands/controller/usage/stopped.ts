@@ -3,7 +3,7 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "../launch-ti
 import type { ControllerSnapshot } from "../lifecycle-store.js";
 import { withStoppedControllerStorage } from "../stopped-storage.js";
 import { runSqliteImmediate } from "../../../platform/sqlite-access.js";
-import { openUsageStore } from "./store.js";
+import { countRetainedUsage, openUsageStore } from "./store.js";
 import type { UsageStore } from "./types.js";
 import { createUsageUploader } from "./uploader.js";
 
@@ -25,11 +25,11 @@ const stoppedUsageAccess = (journalPath: string, ticket: ControllerLaunchTicket)
       return method(...args);
     }),
   });
-  const pending = (): number => local(db => db.transaction(() => (db.prepare("SELECT count(*) AS count FROM usage_outbox").get() as { count: number }).count).deferred());
+  const pending = (): number => local(db => db.transaction(() => countRetainedUsage(db)).deferred());
   return { store, pending, endedAt: () => (JSON.parse(original!) as ControllerSnapshot).stoppedAt };
 };
 
-/** Includes quarantined evidence: unresolved records cannot silently lose their sole copy. */
+/** Includes quarantine and local conflicts: ACKs do not resolve contradictory ingress. */
 export const countStoppedControllerUsage = (options: { journalPath: string; ticket: ControllerLaunchTicket }): number => stoppedUsageAccess(options.journalPath, options.ticket).pending();
 
 /** A bounded late-report attempt using only retained original usage grants. */

@@ -4,6 +4,12 @@ import type { UsageAck, UsageGrant, UsagePayload, UsageQueuedEvent, UsageState, 
 
 const MAX_BYTES = 16 * 1024 * 1024, RESERVED_BYTES = 4096, MAX_EVENTS = 20_000, MAX_SOURCES = 100_000;
 const MAX_SEQUENCE = 9_223_372_036_854_775_807n;
+/** Local contradictions have no uploadable event, so an ACK cannot resolve them. */
+export const countRetainedUsage = (db: Database.Database): number => {
+  if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE name='usage_outbox' AND type='table'").get()) return 0;
+  const row = db.prepare("SELECT (SELECT count(*) FROM usage_outbox) + (SELECT count(*) FROM usage_meta WHERE key='source_conflict' AND json_type(value)<>'null') AS count").get() as { count: number };
+  return row.count;
+};
 const canonical = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonical);
   if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, canonical(item)]));

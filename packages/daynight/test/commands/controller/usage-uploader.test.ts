@@ -31,9 +31,13 @@ const setup = async (configuration: { exactVersion?: string; capabilityStatus?: 
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   cleanups.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   const address = server.address(); if (!address || typeof address === "string") throw new Error("No HTTP fixture address.");
-  let connected = true;
-  const uploader = createUsageUploader({ serverOrigin: `http://127.0.0.1:${address.port}`, store, identity, connection: () => connected ? { connectionEpoch: "3", nativeSessionId: state.nativeSessionId } : null, readParentToken: async () => "parent-token" });
-  cleanups.push(() => uploader.close());
+  let connected = true, connectionEpoch = "3";
+  const reopen = () => {
+    const uploader = createUsageUploader({ serverOrigin: `http://127.0.0.1:${address.port}`, store, identity, connection: () => connected ? { connectionEpoch, nativeSessionId: state.nativeSessionId } : null, readParentToken: async () => "parent-token" });
+    cleanups.push(() => uploader.close());
+    return uploader;
+  };
+  const uploader = reopen();
   const enqueue = () => store.enqueueMeasurement(state.stateId, { sourceKey: `copilot-event-v1:${randomUUID()}`, profileId: capability.profileId, revisionAuthority: "immutable", sourceRevision: "1", finality: "final", disposition: "active", aggregationRole: "counted", includedInSourceKey: null, nativeTurnId: null, nativeCallId: null, model: "model", metrics: { inputTokens: null, outputTokens: "17", cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: null, providerTotalTokens: null }, nativeMetrics: { outputTokens: "17" }, reasonCodes: [], observedAt: new Date().toISOString() });
   const grant = () => store.saveGrant(state.stateId, { token: "g".repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, "1");
   const success = (body: Record<string, unknown>, mutate: (rows: Record<string, unknown>[]) => void = () => {}) => {
@@ -42,7 +46,7 @@ const setup = async (configuration: { exactVersion?: string; capabilityStatus?: 
     mutate(results); return { protocol: "daynight.usage.v1", batchId: body.batchId, results, observedAt: new Date().toISOString() };
   };
   const json = (response: ServerResponse, value: unknown, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
-  return { store, state, identity, remote, calls, uploader, enqueue, grant, success, json, disconnect: () => { connected = false; }, handler: (value: typeof handler) => { handler = value; } };
+  return { store, state, identity, remote, calls, uploader, reopen, enqueue, grant, success, json, disconnect: () => { connected = false; }, reconnect: (epoch: string) => { connected = true; connectionEpoch = epoch; }, handler: (value: typeof handler) => { handler = value; } };
 };
 
 test("registers the original connection and uploads with a separate grant and exact acknowledgement", async () => {
@@ -143,13 +147,60 @@ test("recovers a lost registration token with one observed-version grant rotatio
   expect(f.store.pending(f.state.stateId)).toHaveLength(0);
 });
 
-test("does not repeat a grant rotation whose response was lost", async () => {
+test.each(["registration_unavailable", "usage_changed"])("recovers a lost registration after a no-write %s rotation refusal using fresh authority", async code => {
   vi.useFakeTimers({ toFake: ["Date"] });
   const f = await setup(); f.enqueue();
-  f.handler((request, response) => { if (request.method === "GET") f.json(response, f.remote()); else response.destroy(); });
+  const original = f.store.pending(f.state.stateId)[0]!;
+  let registered = false, rotations = 0;
+  f.handler((request, response, body) => {
+    if (request.method === "GET") {
+      if (!registered) f.json(response, {}, 404);
+      else {
+        // The relay reconnects while the original state read is in flight.
+        f.reconnect("4");
+        f.json(response, { ...f.remote(), rowVersion: rotations === 0 ? "1" : "7" });
+      }
+    } else if (request.url?.endsWith("registrations")) {
+      registered = true; response.destroy();
+    } else if (request.url?.endsWith("grant")) {
+      if (++rotations === 1) f.json(response, { error: { code } }, 409);
+      else f.json(response, { state: { ...f.remote(), rowVersion: "8" }, grant: { token: "g".repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString() } });
+    } else f.json(response, f.success(body));
+  });
+  await f.uploader.tick();
+  expect(f.store.getState(f.state.stateId).registrationAttempted).toBe(true);
+  vi.setSystemTime(Date.now() + 2000); await f.uploader.tick();
+  expect(f.store.getState(f.state.stateId).grantRequestAttempted).toBe(false);
+  expect(f.store.pending(f.state.stateId)).toEqual([original]);
+  await f.uploader.tick(); expect(rotations).toBe(1);
+  vi.setSystemTime(Date.now() + 3000); await f.uploader.tick();
+  expect(f.calls.filter(call => call.path.endsWith("registrations"))).toHaveLength(1);
+  expect(f.calls.filter(call => call.path.endsWith("grant")).map(call => call.body)).toEqual([
+    { expectedRowVersion: "1", ...f.identity, connectionEpoch: "3" },
+    { expectedRowVersion: "7", ...f.identity, connectionEpoch: "4" },
+  ]);
+  expect(f.store.getState(f.state.stateId).reasons).not.toContain("collector_failed");
+  expect(f.store.getState(f.state.stateId).rowVersion).toBe("8");
+  expect(f.calls.find(call => call.path.endsWith("batches"))?.body.events).toEqual([original.payload]);
+  expect(f.store.pending(f.state.stateId)).toHaveLength(0);
+});
+
+test.each(["lost-response", "server-error", "unrecognized-conflict"])("does not repeat a grant rotation after an unknown %s outcome, including restart", async outcome => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const f = await setup(); f.enqueue();
+  f.handler((request, response) => {
+    if (request.method === "GET") f.json(response, f.remote());
+    else if (outcome === "lost-response") response.destroy();
+    else f.json(response, { error: { code: outcome === "server-error" ? "registration_unavailable" : "unknown_conflict" } }, outcome === "server-error" ? 503 : 409);
+  });
   await f.uploader.tick(); vi.setSystemTime(Date.now() + 2000); await f.uploader.tick();
+  await f.uploader.close();
+  f.reconnect("5");
+  const recovered = f.reopen();
+  await recovered.tick();
   expect(f.calls.filter(call => call.path.endsWith("grant"))).toHaveLength(1);
   expect(f.store.getState(f.state.stateId).grantRequestAttempted).toBe(true);
+  expect(f.store.getState(f.state.stateId).reasons).toContain("collector_failed");
   expect(f.store.pending(f.state.stateId)).toHaveLength(1);
 });
 

@@ -66,7 +66,10 @@ SDK/runtime qualification permits measurement uploads. A bounded HTTP uploader
 checks complete per-event receipts before deletion. Stopped Worker maintenance
 uses the original journal and retained grant without reopening native execution,
 and runs independently of history archiving. Pending or quarantined measurements
-retain their sole journal even when recording discard was requested.
+and unresolved local source-conflict evidence retain their sole journal during
+explicit and automatic recording discard. Local conflicts have no uploadable
+event; acknowledging the accepted measurement and partial state cannot resolve
+or delete that evidence even after the outbox becomes empty.
 
 ## Alternatives
 

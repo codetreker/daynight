@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { openUsageStore, usageBodyHash } from "../../../src/commands/controller/usage/store.js";
+import { countRetainedUsage, openUsageStore, usageBodyHash } from "../../../src/commands/controller/usage/store.js";
 import { openControllerOutbox } from "../../../src/commands/controller/outbox-store.js";
 import type { UsageAck, UsageQueuedEvent } from "../../../src/commands/controller/usage/types.js";
 
@@ -84,6 +84,29 @@ test("same-source contradictions retain the original value and quarantine does n
   store.quarantine(original.eventId, "source_conflict"); store.enqueueMeasurement(state.stateId, measurement("unrelated"));
   expect(store.pending(state.stateId).map(row => row.payload.sourceKey)).toEqual(["unrelated"]);
   expect(store.enqueueMeasurement(state.stateId, measurement())).toBe("duplicate");
+});
+
+test("ACKs cannot resolve local contradictions or release their journal across restart", () => {
+  const { db, store } = fixture(), state = store.ensureState("1", "native", "v");
+  expect(countRetainedUsage(db)).toBe(0);
+  store.enqueueMeasurement(state.stateId, measurement());
+  expect(store.enqueueMeasurement(state.stateId, { ...measurement(), model: "contradiction" })).toBe("conflict");
+  store.enqueueState(state.stateId, { collectionState: "partial", capability: {}, reasonCodes: [], nativeStartedAt: null, nativeEndedAt: null, observedAt: "2026-11-18T03:00:00Z", seal: true });
+  const conflict = db.prepare("SELECT value FROM usage_meta WHERE key='source_conflict'").get();
+  const flight = store.pending(state.stateId);
+  expect(store.acknowledge(flight, flight.map(ack))).toBe(true);
+  expect(store.pending(state.stateId)).toEqual([]);
+  expect(countRetainedUsage(db)).toBe(1);
+  db.close(); const reopened = new Database(db.name); databases.push(reopened);
+  expect(countRetainedUsage(reopened)).toBe(1);
+  expect(reopened.prepare("SELECT value FROM usage_meta WHERE key='source_conflict'").get()).toEqual(conflict);
+});
+
+test("legacy journals and null conflict slots have no unresolved retention", () => {
+  const legacy = new Database(":memory:"); databases.push(legacy);
+  expect(countRetainedUsage(legacy)).toBe(0);
+  legacy.exec(schema); legacy.prepare("INSERT INTO usage_meta(key,value) VALUES('source_conflict','null')").run();
+  expect(countRetainedUsage(legacy)).toBe(0);
 });
 
 test("state events retain monotonic sequences and hashes across restart", () => {

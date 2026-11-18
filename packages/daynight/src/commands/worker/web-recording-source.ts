@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { acquireInstanceLockSync, InstanceLockHeldError } from "../../platform/instance-lock.js";
 import { controllerExecutionDirectory, readLaunchTicket } from "../controller/launch-ticket.js";
 import { countStoppedControllerUsage } from "../controller/usage/stopped.js";
+import { countRetainedUsage } from "../controller/usage/store.js";
 import { controllerStorageConnectionIsOpen } from "../controller/storage-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
 import type { LocalTask } from "./backends/web-types.js";
@@ -70,8 +71,7 @@ export const deleteWebRecording = async (home: string, task: LocalTask, read: ()
     if (existsSync(journalPath)) {
       const journal = new Database(journalPath, { readonly: true, fileMustExist: true });
       try {
-        const table = journal.prepare("SELECT 1 FROM sqlite_schema WHERE name='usage_outbox' AND type='table'").get();
-        retainsUsage = table !== undefined && journal.prepare("SELECT 1 FROM usage_outbox LIMIT 1").get() !== undefined;
+        retainsUsage = journal.transaction(() => countRetainedUsage(journal)).deferred() !== 0;
       } catch (error) {
         // Explicit recording deletion already covers unreadable legacy recordings.
         if (!(error instanceof Database.SqliteError) || error.code !== "SQLITE_NOTADB") throw error;
@@ -80,7 +80,7 @@ export const deleteWebRecording = async (home: string, task: LocalTask, read: ()
     if (retainsUsage) {
       const ticket = await readLaunchTicket(home, found.webExecution.launchId);
       if (ticket.executionId !== found.webExecution.executionId || ticket.executionGeneration !== found.webExecution.executionGeneration || ticket.claimId !== found.claimId || ticket.sessionId !== found.webExecution.sessionId || ticket.workerId !== found.workerId || ticket.serverOrigin !== found.serverOrigin) throw new Error("Usage retention does not identify the original recording.");
-      if (countStoppedControllerUsage({ journalPath, ticket }) !== 0) throw new Error("The original recording still owns pending or quarantined usage; its journal must be retained.");
+      if (countStoppedControllerUsage({ journalPath, ticket }) !== 0) throw new Error("The original recording still owns pending or quarantined usage or unresolved local conflicts; its journal must be retained.");
     }
     await rm(controllerExecutionDirectory(home, found.webExecution.executionId), { recursive: true, force: true });
   }, signal);

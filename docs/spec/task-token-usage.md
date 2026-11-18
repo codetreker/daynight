@@ -102,7 +102,8 @@ Controller 用量队列与 Session timeline 的 cumulative ACK 相互隔离。�
 本次 flight 的用量回执才能清理对应事件；断网或响应未知时保留原身份重发。
 原生停止后的补传使用原 journal 和有效 grant，不重新取得 claim、注册新执行或
 延长原授权窗口。Worker 的历史归档开关不关闭补传；唯一 journal 中存在待发或
-隔离计量时保留该 journal，不能随历史录制删除。
+隔离计量或未解决的本地来源冲突时保留该 journal，显式删除和自动清理历史录制均不得
+丢弃它。已接受计量与 partial 状态的 ACK 不解决本地冲突，不清除其证据。
 
 每次写入重新核验 grant/hash/期限/撤销、原父凭据、账户、当前 membership、
 资源存在以及 Task allowAgents/pause。结束后补报仅能写原 anchor，不能改变新执行。

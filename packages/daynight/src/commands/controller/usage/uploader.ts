@@ -113,6 +113,11 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     });
     if (result.response.status === 429) store.clearGrantAttempted(state.stateId);
     if (refusal(state, result.response)) return false;
+    if (result.response.status === 409 && ["registration_unavailable", "usage_changed"].includes(String(object(result.value.error).code))) {
+      // These refusals precede grant replacement. Reobserve the original
+      // connection and row version next time; unknown outcomes keep the fence.
+      store.clearGrantAttempted(state.stateId); delay(); return false;
+    }
     if (!result.response.ok || !saveReceipt(state, result.value)) { delay(); return false; }
     return true;
   };

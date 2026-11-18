@@ -172,8 +172,10 @@ Retry-After。401/403/410 停止对应上传，不能换凭据绕过撤权。Con
 drain 最多五秒；Worker 在原 Controller 已确认停止后，按原 ticket/hash、Session、
 claim、代次和 Worker 身份重新核验 journal，以原 grant 有界补传。SQLite 操作各自
 取得 stopped-storage permit，网络期间不持数据库连接或事务，不启动原生进程。
-补传独立于历史归档开关及归档成功状态。仍有待发或隔离计量时保留唯一 journal，
-不能通过删除历史录制一起丢弃它。
+补传独立于历史归档开关及归档成功状态。保留判定同时读取 `usage_outbox`（含隔离行）
+和 `usage_meta.source_conflict` 的非 null 冲突证据槽；后者没有可上传事件，不能因
+已接受计量及 partial 状态收到 ACK 而视为解决。任一证据仍存在时保留唯一 journal，
+显式删除和自动清理历史录制均不能丢弃它。
 
 Copilot ephemeral 通知在 SDK/helper 到 durable ingress 之前仍可能丢失，原生历史
 不能重放这一窗口。因此该平面始终记录 native_recovery_gap，结束只能 partial，
