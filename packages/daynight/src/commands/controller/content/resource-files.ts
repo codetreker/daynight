@@ -145,10 +145,9 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   const retryCleanup = (): void => {
     assertWritable(); assertDirectories(); assertSessionManifest(root, sessionId);
     const index = readIndex(root)?.value;
-    if (!index?.cleanup?.length) return;
     // The atomic resource inventory records only backups whose original
     // deletion committed. Never infer ownership by scanning leftover files.
-    for (const relative of index.cleanup) {
+    for (const relative of index?.cleanup ?? []) {
       const file = join(root, relative);
       let metadata;
       try { metadata = lstatSync(file); }
@@ -156,9 +155,16 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
       if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("Invalid retained resource backup.");
       unlinkSync(file);
     }
-    syncDirectory(resourceDirectory); syncDirectory(blobDirectory);
-    const { cleanup: _cleanup, ...remaining } = index;
-    publishIndex(root, remaining);
+    if (index?.cleanup?.length) {
+      syncDirectory(resourceDirectory); syncDirectory(blobDirectory);
+      const { cleanup: _cleanup, ...remaining } = index;
+      publishIndex(root, remaining);
+    }
+    // A rollback can restore the originals but fail before publishing backup
+    // ownership. Such files remain recovery evidence across process restarts;
+    // their names alone never authorize deletion or successful retirement.
+    const unregistered = [resourceDirectory, blobDirectory].flatMap(directory => readdirSync(directory).filter(name => name.endsWith(".delete")).map(name => join(directory, name)));
+    if (unregistered.length) throw new Error(`Unregistered resource backups require recovery: ${unregistered.join(", ")}`);
   };
   const tryCleanup = (): void => {
     try { retryCleanup(); }

@@ -73,10 +73,18 @@ test.each([false, true])("persists committed cleanup across reopen without rolli
   expect(reopened.resources.size).toBe(0);
   expect(() => reopened.retryCleanup()).toThrow("controlled backup cleanup failure");
   faults.operation = "";
-  stale.retryCleanup();
+  expect(() => stale.retryCleanup()).toThrow(`Unregistered resource backups require recovery: ${unknown}`);
   await expect(readFile(path.join(files.root, backup))).rejects.toMatchObject({ code: "ENOENT" });
   expect(await readFile(unknown, "utf8")).toBe("not registered by this owner");
   expect(JSON.parse(await readFile(path.join(files.root, "index.json"), "utf8"))).toEqual({ entries: [], resources: [] });
+});
+
+test.each(["resources", "blobs"])("strict cleanup detects unregistered zero-byte backups in %s without an index", async directory => {
+  const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId);
+  const backup = path.join(files.root, directory, "unknown.delete");
+  await writeFile(backup, ""); await rm(path.join(files.root, "index.json"));
+  expect(() => files.retryCleanup()).toThrow(`Unregistered resource backups require recovery: ${backup}`);
+  expect(await readFile(backup)).toEqual(Buffer.alloc(0));
 });
 
 test("cleanup refuses a registered symbolic link without following its target", async () => {

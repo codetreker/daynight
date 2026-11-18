@@ -46,6 +46,8 @@ Controller journal 的唯一编号序列为 `001`–`015`，当前格式为 v15�
 
 资源释放在删除原文件并刷盘相关目录后，以发布新资源索引作为最后的逻辑提交动作。发布抛错时先读回实际索引：完整匹配新清单则保留已删除状态与清理责任，不恢复原文件；确认仍为旧清单才尝试回滚；无法确认或出现其他清单时保留备份并报告需要恢复。可见新索引只证明逻辑发布，不能代替严格清理最终索引发布与根目录刷盘的成功证据。
 
+严格清理还检查 `resources` 与 `blobs` 目录中的残留 `.delete` 项，即使索引没有 `cleanup` 清单也不能跳过。回滚后备份登记若在 rename 前失败，未登记备份仍会在重开后阻止退休完成。检测残留仅用于报告需要恢复，不赋予未知文件删除权限；不得从文件名推断归属、补登记或自动删除。普通资源释放与预算准入对这一清理错误仍只警告，保留各自已提交状态和原有准入检查。
+
 ## 旧格式导入
 
 canonical 010 沿原迁移链处理 v1–9。旧 writer 准入继续由 `assertJournalMigrationAllowed` 和原存储 permit 负责。原 execution、Session、claim、generation、native 身份、未决 operation、outbox、图片关联、`input_message_origins` 和原停止证据均保留。upgrade-only 可保留 stopping、paused 或 `nativeStopped=false`；导入不制造 stopped。

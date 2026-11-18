@@ -62,6 +62,14 @@ permits restoration. Unknown or unexpected inventory preserves backups and
 reports a recovery error. A visible new index does not prove its directory sync
 succeeded; strict cleanup must still complete durable publication.
 
+Strict cleanup also detects remaining `.delete` entries in the resource and blob
+directories, even without an indexed cleanup inventory. A failed backup
+registration after rollback therefore remains a completion blocker across
+reopen. Detection grants no deletion authority: unregistered entries are
+preserved and reported for recovery, never adopted or deleted by filename.
+Ordinary release and budget admission retain best-effort cleanup warnings and
+their existing commit and admission semantics.
+
 ## Alternatives
 
 **Filter the original shared table.** This was deferred by the original save

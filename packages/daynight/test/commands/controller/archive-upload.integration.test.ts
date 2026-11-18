@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import sharp from "sharp";
-import { mkdtemp, mkdir, rm, unlink, stat, readFile, writeFile, open } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, unlink, stat, readFile, writeFile, open, readdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -20,10 +20,18 @@ import { controllerJournalFormat } from "../../../src/commands/controller/journa
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
 import { createMarkdownImageProjector } from "../../../src/commands/controller/markdown/projection.js";
-const cleanupFault = vi.hoisted(() => ({ blob: "" }));
+const cleanupFault = vi.hoisted(() => ({ blob: "", publicationRoot: "", pinsFailed: false, indexFailed: false }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, unlinkSync: (file: Parameters<typeof fs.unlinkSync>[0]) => {
+  return { ...fs, renameSync: (from: Parameters<typeof fs.renameSync>[0], to: Parameters<typeof fs.renameSync>[1]) => {
+    if (cleanupFault.publicationRoot && String(to) === path.join(cleanupFault.publicationRoot, "resource-pins.json") && !cleanupFault.pinsFailed) {
+      cleanupFault.pinsFailed = true; throw new Error("Controlled pins publication failure.");
+    }
+    if (cleanupFault.publicationRoot && String(to) === path.join(cleanupFault.publicationRoot, "index.json") && cleanupFault.pinsFailed && !cleanupFault.indexFailed && JSON.parse(fs.readFileSync(from, "utf8")).cleanup?.length) {
+      cleanupFault.indexFailed = true; throw new Error("Controlled rollback cleanup publication failure.");
+    }
+    fs.renameSync(from, to);
+  }, unlinkSync: (file: Parameters<typeof fs.unlinkSync>[0]) => {
     if (cleanupFault.blob && String(file).startsWith(cleanupFault.blob + ".") && String(file).endsWith(".delete")) throw Object.assign(new Error("Retained tool blob cleanup denied."), { code: "EPERM" });
     fs.unlinkSync(file);
   } };
@@ -151,6 +159,49 @@ test("Task body archive refuses unsupported service before source-tail or conten
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("upgrade_required");
   expect(methods).toEqual(["GET"]);
   await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("archive retirement stays blocked across reopen when rollback backup ownership could not be published", async () => {
+  const f = await fixture({ finalizeStop: false, historyPolicy: "task_body" });
+  const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const bytes = Buffer.from("tool-only recovery evidence"), resource = { resourceId: randomUUID(), status: "available" as const, name: "tool.txt", mediaType: "text/plain", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
+  store.saveResource(resource, bytes);
+  store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "tool_call", callId: "call-1", name: "shell", input: "private command", output: [{ type: "resource", resourceId: resource.resourceId, label: "tool output" }], status: "completed", truncated: false });
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
+  const root = `${f.journalPath}.pending-content`, receiptPath = `${f.journalPath}.archive-receipt-1.json`, bodies: string[] = [], methods: string[] = [];
+  const receiver = archiveTestReceiver({ bodies, sourceThrough });
+  const request: typeof fetch = async (input, init) => {
+    methods.push(init?.method ?? "GET");
+    const response = await receiver.request(input, init); response.headers.set("Daynight-Task-Body-History-Version", "1"); return response;
+  };
+  const options = { ...f, serverToken: "test", request };
+  cleanupFault.publicationRoot = root;
+  try {
+    await expect(uploadStoppedControllerArchive(options)).rejects.toThrow();
+    expect(cleanupFault.pinsFailed).toBe(true); expect(cleanupFault.indexFailed).toBe(true);
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8")); expect(receipt).toMatchObject({ state: "ready", schemaVersion: 3 });
+    const backups: string[] = [];
+    for (const directory of ["resources", "blobs"]) {
+      for (const file of await readdir(path.join(root, directory))) if (file.endsWith(".delete")) backups.push(path.join(root, directory, file));
+    }
+    expect(backups).toHaveLength(2);
+    expect(JSON.parse(await readFile(path.join(root, "index.json"), "utf8"))).not.toHaveProperty("cleanup");
+    expect(resourceFiles.openResourceFiles(f.journalPath, f.ticket.sessionId).resources.has(resource.resourceId)).toBe(true);
+    cleanupFault.publicationRoot = ""; methods.length = 0;
+    const failure = await uploadStoppedControllerArchive(options).then(() => null, (error: unknown) => error);
+    expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("Unregistered resource backups require recovery:") })]));
+    for (const backup of backups) expect(errorCauses(failure).some(error => error.message.includes(backup))).toBe(true);
+    expect(methods).toEqual(["GET"]); expect(bodies).toHaveLength(1);
+    expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(receipt);
+    const reopened = resourceFiles.openResourceFiles(f.journalPath, f.ticket.sessionId);
+    expect(reopened.resources.has(resource.resourceId)).toBe(false);
+    expect(() => reopened.retryCleanup()).toThrow("Unregistered resource backups require recovery");
+    for (const backup of backups) {
+      const retained = await readFile(backup);
+      if (backup.includes(`${path.sep}blobs${path.sep}`)) expect(retained).toEqual(bytes);
+      else expect(JSON.parse(retained.toString()).resource).toEqual(resource);
+    }
+  } finally { cleanupFault.publicationRoot = ""; cleanupFault.pinsFailed = false; cleanupFault.indexFailed = false; }
 });
 
 test("classifies complete nontruncated Markdown failure before archive IO and preserves its original source", async () => {
