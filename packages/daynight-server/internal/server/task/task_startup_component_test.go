@@ -147,6 +147,14 @@ func startupExpectWrite(t *testing.T, f *startupTaskFixture, current model.Task,
 			panic("invalid startup DAO call")
 		}
 	}
+	if observed != nil {
+		scope.WorkerClaimAdmissionDAOFn = func() store.WorkerClaimAdmissionDAO {
+			return taskHTTPClaimAdmission{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+				check(ctx, "admission", user == principal.UserID && worker != "" && counts["task"] == 1)
+				return nil, nil
+			}}
+		}
+	}
 	project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {
 		check(ctx, "access", reflect.DeepEqual(actual, principal))
 		return model.ProjectAccess{ProjectID: current.ProjectID, UserID: principal.UserID, Role: model.ProjectMemberRole}, nil

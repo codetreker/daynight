@@ -146,11 +146,12 @@ var _ store.SnapshotScope = (*taskSnapshotScopeMock)(nil)
 
 type taskProjectScopeMock struct {
 	taskMockBase
-	EligibilityDAOFn func() store.WebhookEligibilityDAO
-	CaptureDAOFn     func() store.WebhookCaptureDAO
-	ProjectDAOFn     func() store.ProjectWriteDAO
-	TaskDAOFn        func() store.TaskWriteDAO
-	SessionDAOFn     func() store.ProjectSessionDAO
+	EligibilityDAOFn          func() store.WebhookEligibilityDAO
+	CaptureDAOFn              func() store.WebhookCaptureDAO
+	ProjectDAOFn              func() store.ProjectWriteDAO
+	TaskDAOFn                 func() store.TaskWriteDAO
+	SessionDAOFn              func() store.ProjectSessionDAO
+	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
 }
 
 func (mock *taskProjectScopeMock) EligibilityDAO() store.WebhookEligibilityDAO {
@@ -949,6 +950,6 @@ func (mock *projectWriterMock) RepositoryOccupied(ctx context.Context, team, ide
 }
 
 func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
-	mock.need("WorkerClaimAdmissionDAO", false)
-	return nil
+	mock.need("WorkerClaimAdmissionDAO", mock.WorkerClaimAdmissionDAOFn != nil)
+	return mock.WorkerClaimAdmissionDAOFn()
 }

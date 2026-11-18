@@ -17,6 +17,8 @@ type WorkerProjectConfiguration struct {
 }
 
 type WorkerConfiguration struct {
+	TaskTagFilter               *TagNameFilter               `json:"taskTagFilter,omitempty"`
+	PreserveTaskTagFilter       bool                         `json:"-"`
 	ArchiveSessions             *bool                        `json:"-"`
 	PreserveArchiveSessions     bool                         `json:"-"`
 	ToolPaths                   WorkerToolPaths              `json:"toolPaths"`

@@ -8,22 +8,22 @@ import (
 	"testing"
 
 	repositoryidentity "github.com/codetreker/daynight/packages/daynight-server/internal/core/repositoryidentity/v1"
-	migration082 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/082"
+	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestRepositoryIdentityMigrationFrozenChecksum(t *testing.T) {
-	const installedChecksum = "23af4a55489e2f61c97adcc67f7f01c3dd6759cace2f63603bef82bc2453335d"
-	if got := schemaMigrations[81].checksum(); got != installedChecksum {
-		t.Fatalf("migration 82 no longer matches its installed ledger checksum: got=%s want=%s", got, installedChecksum)
+	const installedChecksum = "e8bfe8ec97c4f3784d395ef509c32c37f9e90c9987ee56e7ae8cafc43cec8e88"
+	if got := schemaMigrations[82].checksum(); got != installedChecksum {
+		t.Fatalf("migration 83 no longer matches its installed ledger checksum: got=%s want=%s", got, installedChecksum)
 	}
 }
 
 func repositoryMigrationFixture(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
 	pool := emptyPool(t)
-	if err := migrate(t.Context(), pool, schemaMigrations[:81]); err != nil {
+	if err := migrate(t.Context(), pool, schemaMigrations[:82]); err != nil {
 		t.Fatal(err)
 	}
 	team := uuid.NewString()
@@ -59,7 +59,7 @@ func TestRepositoryIdentityMigrationPreservesHistoricalFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	ctx := migration082.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
+	ctx := migration083.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
@@ -74,16 +74,16 @@ func TestRepositoryIdentityMigrationPreservesHistoricalFacts(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT repository_identity FROM projects WHERE id=$1`, unknown).Scan(&legacy); err != nil || legacy != nil {
 		t.Fatalf("unknown legacy identity: %v %v", legacy, err)
 	}
-	if output := logs.String(); !strings.Contains(output, unknown) || !strings.Contains(output, `"migration_version":82`) || !strings.Contains(output, "project_repository_identity_unavailable") || strings.Contains(output, "private-credential") || strings.Contains(output, "host/repo") {
+	if output := logs.String(); !strings.Contains(output, unknown) || !strings.Contains(output, `"migration_version":83`) || !strings.Contains(output, "project_repository_identity_unavailable") || strings.Contains(output, "private-credential") || strings.Contains(output, "host/repo") {
 		t.Fatalf("missing or unredacted migration diagnostic: %s", output)
 	}
 	if err := migrate(t.Context(), pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(t.Context(), pool, schemaMigrations[:81]); err == nil || !strings.Contains(err.Error(), "82 is not an ordered prefix") {
+	if err := migrate(t.Context(), pool, schemaMigrations[:82]); err == nil || !strings.Contains(err.Error(), "83 is not an ordered prefix") {
 		t.Fatalf("old binary accepted upgraded database: %v", err)
 	}
-	if !strings.Contains(schemaMigrations[81].transformSource, repositoryidentity.Source) {
+	if !strings.Contains(schemaMigrations[82].transformSource, repositoryidentity.Source) {
 		t.Fatal("migration checksum omits repository identity rules")
 	}
 }
@@ -104,7 +104,7 @@ func TestRepositoryIdentityMigrationRollsBackConflicts(t *testing.T) {
 				t.Fatalf("migration conflict diagnostic: %v", err)
 			}
 			var columns, ledger int
-			if err := pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='projects' AND column_name='repository_identity'),(SELECT count(*) FROM schema_migrations WHERE version=82)`).Scan(&columns, &ledger); err != nil || columns != 0 || ledger != 0 {
+			if err := pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='projects' AND column_name='repository_identity'),(SELECT count(*) FROM schema_migrations WHERE version=83)`).Scan(&columns, &ledger); err != nil || columns != 0 || ledger != 0 {
 				t.Fatalf("failed migration persisted schema or ledger: %d %d %v", columns, ledger, err)
 			}
 			if _, err := pool.Exec(t.Context(), `UPDATE projects SET deleted_at=statement_timestamp() WHERE id=$1`, two); err != nil {

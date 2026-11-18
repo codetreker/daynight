@@ -528,22 +528,24 @@ starting the candidate service. Keep and verify a restorable paired database/fil
 backup. The migration advisory lock coordinates migrators, not old writers;
 mixed old/new writing can violate the new occupancy rule.
 
-Migration 082 adds `projects.repository_identity text COLLATE "C"`, backfills in
+Migration 083 adds `projects.repository_identity text COLLATE "C"`, backfills in
 bounded batches using the frozen `repositoryidentity/v1` transform, and checks
 active occupancy within each Team before committing its ledger entry. Its frozen
 Go source and SQL live under
-`internal/core/store/postgres/schema/migrations/082/`; the SQL retains its
-`migrations/082_project_repository_identity.sql` relative path within that leaf
-package. A separate `register.go` exposes SQL without changing the frozen source
-or SQL bytes. The checksum includes the frozen identity source and `migration082`
-transform source and remains unchanged by the directory move.
+`internal/core/store/postgres/schema/migrations/083/`; the SQL retains its
+`migrations/083_project_repository_identity.sql` relative path within that leaf
+package. A separate `register.go` exposes SQL without changing frozen content.
+The checksum includes the identity source and `migration083` transform source,
+including its version-specific diagnostics. Changing those diagnostics changes
+the checksum; relocating unchanged files does not. The published Worker task-tag
+filter migration retains version 082 and its existing ledger checksum.
 Original addresses, business timestamps, versions, grants and history survive.
 Equivalent active identities or duplicate active unparseable raw addresses in
 one Team abort the migration with Team and Project IDs and roll back all changes
 from that migration. Correct the identified records through an authorized data
 decision before retrying. Do not merge, delete or reassign records automatically.
 An isolated unparseable address retains a NULL identity and its raw value;
-diagnostics contain `migration_version=82`, `project_id` and
+diagnostics contain `migration_version=83`, `project_id` and
 `error_kind=project_repository_identity_unavailable`, never the address or
 credentials. Known repositories remain usable.
 
@@ -1920,6 +1922,16 @@ query, locking, snapshot, commit and rollback observations. The
 [Task validation decision](../../.agents/notes/implemented/testing/2026-11-06-task-request-candidate-isolation.md)
 records the read-before-validation distinction.
 
+### MCP download tests
+
+Pre-copy admission and existing transfer tests run the real download and
+transfer lifecycle code with controlled transaction-scoped records. They verify
+exact binding, expiry, retry after a failed precheck, and no content copy for
+a reused transfer. Real file and PostgreSQL tests retain snapshot copying,
+slot contention, revocation, and restart behavior. The
+[MCP download admission decision](../../.agents/notes/implemented/testing/2026-11-18-mcpdownload-admission-fixtures.md)
+records the proof boundary.
+
 ### Attachment service and store tests
 
 The complete `internal/service/attachment` suite"
@@ -2447,7 +2459,7 @@ records the proof allocation and alternatives.
 format produced by the complete embedded migration history in
 `internal/core/store/postgres/schema/migrations/`. Migrations with frozen Go
 transforms retain their independent packages and internal layouts in the
-`026/` and `082/` version directories under that same history root. Their
+`026/` and `083/` version directories under that same history root. Their
 registration files expose the original SQL and transformation checksums without
 rewriting frozen content. The snapshot includes the
 migration-ledger table definition, required initial rows and sequence state;

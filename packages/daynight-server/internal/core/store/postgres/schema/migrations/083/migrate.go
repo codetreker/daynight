@@ -1,4 +1,4 @@
-package migration082
+package migration083
 
 import (
 	"context"
@@ -40,7 +40,7 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
 	for {
 		rows, err := tx.Query(ctx, `SELECT id::text,repo_url FROM projects WHERE ($1='' OR id>NULLIF($1,'')::uuid) ORDER BY id LIMIT 256`, after)
 		if err != nil {
-			return fmt.Errorf("migration 82 read Projects: %w", err)
+			return fmt.Errorf("migration 83 read Projects: %w", err)
 		}
 		type record struct{ id, address string }
 		batch := make([]record, 0, 256)
@@ -48,13 +48,13 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
 			var value record
 			if err := rows.Scan(&value.id, &value.address); err != nil {
 				rows.Close()
-				return fmt.Errorf("migration 82 scan Project: %w", err)
+				return fmt.Errorf("migration 83 scan Project: %w", err)
 			}
 			batch = append(batch, value)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("migration 82 read Projects: %w", err)
+			return fmt.Errorf("migration 83 read Projects: %w", err)
 		}
 		if len(batch) == 0 {
 			break
@@ -62,9 +62,9 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
 		for _, value := range batch {
 			identity, err := repositoryidentity.RepositoryIdentity(value.address)
 			if err != nil {
-				migrationLogger(ctx).WarnContext(ctx, "Historical Project repository identity unavailable", "phase", "repository_identity_backfill", "migration_version", 82, "project_id", value.id, "error_kind", "project_repository_identity_unavailable")
+				migrationLogger(ctx).WarnContext(ctx, "Historical Project repository identity unavailable", "phase", "repository_identity_backfill", "migration_version", 83, "project_id", value.id, "error_kind", "project_repository_identity_unavailable")
 			} else if _, err := tx.Exec(ctx, `UPDATE projects SET repository_identity=$2 WHERE id=$1`, value.id, identity); err != nil {
-				return fmt.Errorf("migration 82 update Project %s: %w", value.id, err)
+				return fmt.Errorf("migration 83 update Project %s: %w", value.id, err)
 			}
 			after = value.id
 		}
@@ -74,7 +74,7 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
  GROUP BY o.team_id,(p.repository_identity IS NULL),COALESCE(p.repository_identity,p.repo_url COLLATE "C")
  HAVING count(*)>1 ORDER BY o.team_id`)
 	if err != nil {
-		return fmt.Errorf("migration 82 inspect repository conflicts: %w", err)
+		return fmt.Errorf("migration 83 inspect repository conflicts: %w", err)
 	}
 	defer rows.Close()
 	var conflicts []string
@@ -82,16 +82,16 @@ func Apply(ctx context.Context, tx pgx.Tx) error {
 		var teamID string
 		var projectIDs []string
 		if err := rows.Scan(&teamID, &projectIDs); err != nil {
-			return fmt.Errorf("migration 82 scan repository conflicts: %w", err)
+			return fmt.Errorf("migration 83 scan repository conflicts: %w", err)
 		}
-		migrationLogger(ctx).ErrorContext(ctx, "Project repository ownership conflict", "migration_version", 82, "phase", "repository_identity_conflicts", "error_kind", "project_repository_conflict", "team_id", teamID, "project_ids", projectIDs)
+		migrationLogger(ctx).ErrorContext(ctx, "Project repository ownership conflict", "migration_version", 83, "phase", "repository_identity_conflicts", "error_kind", "project_repository_conflict", "team_id", teamID, "project_ids", projectIDs)
 		conflicts = append(conflicts, fmt.Sprintf("Team %s Projects [%s]", teamID, strings.Join(projectIDs, ", ")))
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("migration 82 inspect repository conflicts: %w", err)
+		return fmt.Errorf("migration 83 inspect repository conflicts: %w", err)
 	}
 	if len(conflicts) != 0 {
-		return fmt.Errorf("migration 82 project_repository_conflict: %s", strings.Join(conflicts, "; "))
+		return fmt.Errorf("migration 83 project_repository_conflict: %s", strings.Join(conflicts, "; "))
 	}
 	return nil
 }

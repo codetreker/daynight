@@ -112,7 +112,7 @@ packages/daynight-server/
                 └── schema/
                     └── migrations/
                         ├── 026/
-                        └── 082/
+                        └── 083/
 ```
 
 `cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。HTTP、Session、Webhook 工作与依赖释放共用 `DAYNIGHT_SHUTDOWN_TIMEOUT`，上限十秒。超时后取消请求、通知 Operation 停止并强关 transport；已准入 transport 的断连收尾仍可启动所需事务。只有全部使用者退出后应用才关闭文件和数据库，未确认停止时保留资源供关闭重试并返回错误。Webhook 的监督和关闭顺序见[运行设计](webhook-runtime.md)。
@@ -599,15 +599,17 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 使用独立且有界的 context，避免已取消的启动 context 跳过解锁。
 
 当前 snapshot 与完整迁移历史统一位于 `postgres/schema`：普通 SQL 在 `schema/migrations`，
-包含冻结 Go transform 的迁移各自保留版本目录与内部布局。迁移 082 的源码在
-`schema/migrations/082/migrate.go`，SQL 在其 `migrations/082_project_repository_identity.sql`，
-独立 `register.go` 向根注册表暴露 SQL。冻结文件与 SQL 原文不随目录移动改写，保留原 checksum。
+包含冻结 Go transform 的迁移各自保留版本目录与内部布局。仓库身份迁移 083 的源码在
+`schema/migrations/083/migrate.go`，SQL 在其 `migrations/083_project_repository_identity.sql`，
+独立 `register.go` 向根注册表暴露 SQL。冻结文件与 SQL 原文不随目录移动改写；只移动目录不改变
+checksum。Worker 标签筛选继续使用其已发布的迁移 082，版本及账本内容保持不变。
 
-迁移 082 在同一个事务中增加 nullable `repository_identity`、分批计算回填并检查存量重复。
-`migration082` 冻结 transform，运行时与迁移共用 `repositoryidentity/v1`，迁移 checksum
-包含两份实际源码；未来身份语义变化必须用新迁移重算及复查冲突。回填不改地址原文、业务时间、
+迁移 083 在同一个事务中增加 nullable `repository_identity`、分批计算回填并检查存量重复。
+`migration083` 冻结 transform，运行时与迁移共用 `repositoryidentity/v1`，迁移 checksum
+包含两份实际源码及其中的版本诊断；版本诊断的变化也会改变 checksum。身份规范化和 SQL 算法
+保持原规则，未来身份语义变化必须用新迁移重算及复查冲突。回填不改地址原文、业务时间、
 版本、授权或历史。活跃项目按 Team 和身份检查重复；无法解析的记录保留 NULL，诊断含
-`migration_version=82`、`project_id` 和 `error_kind=project_repository_identity_unavailable`，
+`migration_version=83`、`project_id` 和 `error_kind=project_repository_identity_unavailable`，
 不含地址或凭据。活跃 NULL 中同 Team 重复原文同样使迁移失败。冲突报告 Team 与 Project ID，
 并连同字段、回填和 ledger 整体回滚。空库初始化使用包含该列的当前 schema snapshot；
 恢复操作由[服务指南](../../packages/daynight-server/README.md#team-repository-uniqueness-upgrade)拥有。

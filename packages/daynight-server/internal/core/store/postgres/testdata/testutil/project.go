@@ -26,7 +26,7 @@ func QueryID(number int) string { return fmt.Sprintf("00000000-0000-4000-8000-%0
 func CreateProject(ctx context.Context, pool *pgxpool.Pool, writer ProjectFixtureWriter, id, name, repoURL string) (model.Project, error) {
 	var ownership, current bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=32),
-		EXISTS(SELECT 1 FROM schema_migrations WHERE version=82)`).Scan(&ownership, &current); err != nil {
+		EXISTS(SELECT 1 FROM schema_migrations WHERE version=83)`).Scan(&ownership, &current); err != nil {
 		return model.Project{}, err
 	}
 	var owner model.User

@@ -393,7 +393,9 @@ func TestExchangeConfigurationAssistantHostCompatibility(t *testing.T) {
 			if bootstrap {
 				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
 					calls = append(calls, "desired")
-					if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(value, compatibilityConfiguration()) {
+					expected := compatibilityConfiguration()
+					expected.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
+					if actual != ctx || user != principal.UserID || worker != workerID || revision != 1 || !reflect.DeepEqual(value, expected) {
 						t.Errorf("configuration write = %s/%s revision=%d value=%+v context=%v", user, worker, revision, value, actual)
 					}
 					return model.WorkerDesiredConfiguration{Revision: "1", UpdatedAt: at, Value: compatibilityConfiguration()}, nil
@@ -434,6 +436,7 @@ func TestExchangeConfigurationBootstrapAndIndependentObservationCAS(t *testing.T
 	value.Projects = []model.WorkerProjectConfiguration{{ProjectID: configurationInputProjectA, NativeOverrides: map[string]json.RawMessage{}}}
 	d = checkedConfigurationScope(t, &configurationDAO{current: model.WorkerConfigurationResource{ObservationRevision: "0"}})
 	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{Bootstrap: &value})
+	value.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
 	if err != nil || receipt.Desired.Revision != "1" || !reflect.DeepEqual(receipt.Desired.Value, value) || d.desiredWrites != 1 || len(d.accesses) != 1 || d.accesses[0] != configurationInputProjectA {
 		t.Fatalf("initial selected project configuration: %+v accesses=%v %v", receipt, d.accesses, err)
 	}
@@ -815,7 +818,11 @@ func TestConfigurationBootstrapCloudAuthority(t *testing.T) {
 				}
 				d.desired = func(actual context.Context, user, worker string, revision int64, value model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error) {
 					calls = append(calls, "desired")
-					if actual != ctx || user != authorityUser || worker != authorityWorker || revision != tc.writeRevision || !reflect.DeepEqual(value, authorityConfiguration(max, authorityProject)) || d.desiredWrites != 1 {
+					expected := authorityConfiguration(max, authorityProject)
+					if tc.exchange {
+						expected.TaskTagFilter = &model.TagNameFilter{Names: []string{}, Match: "any"}
+					}
+					if actual != ctx || user != authorityUser || worker != authorityWorker || revision != tc.writeRevision || !reflect.DeepEqual(value, expected) || d.desiredWrites != 1 {
 						t.Errorf("desired write differs: %s/%s revision=%d value=%+v writes=%d", user, worker, revision, value, d.desiredWrites)
 					}
 					return model.WorkerDesiredConfiguration{Revision: strconv.FormatInt(tc.writeRevision, 10), UpdatedAt: tc.writeAt, Value: authorityConfiguration(max, authorityProject)}, nil
