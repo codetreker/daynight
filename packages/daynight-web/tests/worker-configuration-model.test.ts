@@ -4,6 +4,32 @@ import { configurationResource, configurationValue } from './helpers/worker-conf
 import { workerId } from './helpers/workers';
 
 describe('Worker configuration draft', () => {
+  it.each([
+    ['pollIntervalMs', '999', false], ['pollIntervalMs', '1000', true], ['pollIntervalMs', '60000', true], ['pollIntervalMs', '60001', false], ['pollIntervalMs', '100000', false],
+    ['maxConcurrent', '0', false], ['maxConcurrent', '1', true], ['maxConcurrent', '64', true], ['maxConcurrent', '65', false],
+    ['recoveryLimit', '-1', false], ['recoveryLimit', '0', true], ['recoveryLimit', '10', true], ['recoveryLimit', '11', false],
+  ] as const)('validates %s=%s against its write range', (key, raw, valid) => {
+    const draft = { ...draftFromValue(configurationValue()), [key]: raw };
+    const parsed = parseConfigurationDraft(draft);
+    expect(parsed.errors).toEqual(valid ? {} : { [key]: 'integer' });
+    expect(parsed.value?.[key] ?? null).toBe(valid ? Number(raw) : null);
+    expect(draft[key]).toBe(raw);
+  });
+  it.each(['maxConcurrent', 'pollIntervalMs', 'recoveryLimit'] as const)('rejects malformed %s without rewriting it', key => {
+    for (const raw of ['', ' ', '1.5', 'abc', '1e3', '9007199254740992']) {
+      const draft = { ...draftFromValue(configurationValue()), [key]: raw };
+      expect(parseConfigurationDraft(draft)).toEqual({ value: null, errors: { [key]: 'integer' } });
+      expect(draft[key]).toBe(raw);
+    }
+  });
+  it('keeps native feedback independent of out-of-range historical numbers', () => {
+    const value = { ...configurationValue(), maxConcurrent: 65, pollIntervalMs: 100_000, recoveryLimit: 11, projects: [{ projectId: workerId(3), nativeOverrides: {} }] };
+    const draft = draftFromValue(value), parsed = parseConfigurationDraft(draft);
+    expect(parsed.errors).toEqual({ maxConcurrent: 'integer', pollIntervalMs: 'integer', recoveryLimit: 'integer' });
+    const changes = configurationFieldChanges(draft, value, parsed.errors);
+    expect(changes.native).toBe(false); expect(changes.projects.get(workerId(3))).toBe(false);
+    expect(draft).toMatchObject({ maxConcurrent: '65', pollIntervalMs: '100000', recoveryLimit: '11' });
+  });
   it('includes valid pending tag input and compares normalized filter semantics', () => {
     const value = { ...configurationValue(), taskTagFilter: { names: ['Backend', 'urgent'], match: 'all' as const } };
     const base = draftFromValue(value);

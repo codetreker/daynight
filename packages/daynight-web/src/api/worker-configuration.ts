@@ -223,7 +223,7 @@ export const saveWorkerConfiguration = async (workerId: string, revision: string
     if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource, { archiveSessions: archiveSupported, semanticTagFilter: true })) throw new ApiError('protocol', response.status);
     admission.onConfirmed?.(resource);
     return resource;
-  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: archiveSupported && response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }), false, admission.onRejected);
+  }, decoder({ controlMode: false, toolPaths: true, archiveSessions: archiveSupported && response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }), true, admission.onRejected);
 };
 export const listWorkerConfigurationProjects = async (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission: WorkerReadAdmission): Promise<ProjectPage> => {
   const userId = requestId(admission.userId), parameters = new URLSearchParams();

@@ -41,6 +41,59 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
+  it.each([
+    ['Concurrent task limit', '65', '64', '1–64'],
+    ['Task polling interval', '100000', '1000', '1,000–60,000 ms'],
+    ['Automatic recovery limit', '11', '10', '0–10'],
+  ] as const)('retains invalid %s, displays its range and saves one corrected value', async (name, invalid, valid, range) => {
+    let resource = configurationResource();
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') resource = configurationResource('2', JSON.parse(String(init.body)).value);
+      return configurationResponse(resource);
+    });
+    mount(); await flush(); change(name, invalid);
+    const field = input(name), errorId = field.getAttribute('aria-describedby')!.split(' ').find(id => id.endsWith('-error'))!;
+    expect(field).toHaveValue(invalid); expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(document.getElementById(errorId)).toHaveTextContent(range);
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Configuration' })); await flush();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    change(name, valid); expect(field).toHaveAttribute('aria-invalid', 'false'); expect(document.getElementById(errorId)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+    save(); await flush();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    expect(field).toHaveValue(valid);
+  });
+  it('loads historical out-of-range numbers without automatic correction or saving', async () => {
+    const value = { ...configurationValue(), maxConcurrent: 65, pollIntervalMs: 100_000, recoveryLimit: 11 };
+    let resource = observed('1', value, globals(value));
+    const fetch = install((_url, init) => {
+      if (init.method === 'PUT') resource = configurationResource('2', JSON.parse(String(init.body)).value);
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    expect(input()).toHaveValue('65'); expect(input('Task polling interval')).toHaveValue('100000'); expect(input('Automatic recovery limit')).toHaveValue('11');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    await advance(); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+    change('Concurrent task limit', '64'); change('Task polling interval', '60000'); change('Automatic recovery limit', '10');
+    save(); await flush();
+    const writes = fetch.mock.calls.filter(([, init]) => init?.method === 'PUT');
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(String(writes[0]![1]!.body)).value).toMatchObject({ maxConcurrent: 64, pollIntervalMs: 60000, recoveryLimit: 10 });
+  });
+  it.each([[400, 'invalid_input', true], [400, 'invalid_request', false], [403, 'invalid_input', false]] as const)('shows server validation text only for a 400 invalid_input save refusal (%s %s)', async (status, code, visible) => {
+    const message = 'pollIntervalMs: <img src=x onerror=alert(1)> must be between 1000 and 60000. ' + 'LongValidationDetail'.repeat(30);
+    const fetch = install((_url, init) => init.method === 'PUT' ? configurationResponse({ error: { code, message, requestId: 'validation-request' } }, status) : configurationResponse(configurationResource()));
+    mount(); await flush(); change('Task polling interval', '50000'); save(); await flush();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Configuration could not be saved.'); expect(alert).toHaveTextContent('validation-request');
+    if (visible) { expect(alert).toHaveTextContent(message); expect(alert).toHaveTextContent('Your draft has been kept.'); }
+    else expect(alert).not.toHaveTextContent(message);
+    expect(alert.querySelector('img')).toBeNull(); expect(input('Task polling interval')).toHaveValue('50000');
+    expect(input('Task polling interval')).toHaveAttribute('aria-invalid', 'false');
+    await advance();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
   it('distinguishes applied tools from an unconfirmed editable setting', async () => {
     const value = { ...configurationValue(), enableSudoCleanup: false, toolPaths: automaticToolPaths() };
     install(() => configurationResponse(observed('1', value, globals(value))));
