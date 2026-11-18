@@ -12,6 +12,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
@@ -42,10 +43,33 @@ func serviceWorkerReport() model.WorkerReport {
 	}}
 }
 
-func TestWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
+func openWorkerIntegrationStore(t *testing.T) *postgres.Store {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	database, err := postgres.Open(ctx, testsupport.ServiceDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(database.Close)
+	return database
+}
+
+func TestWorkerSnapshots(t *testing.T) {
+	database := openWorkerIntegrationStore(t)
+	t.Run("unknown_empty_and_stale_observations", func(t *testing.T) {
+		testWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t, database)
+	})
+	t.Run("pagination_clock_and_expired_detail", func(t *testing.T) {
+		testWorkerSnapshotsPaginationClockAndExpiredDetail(t, database)
+	})
+}
+
+func testWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T, database *postgres.Store) {
+	t.Helper()
+	principal := testsupport.ServicePrincipal(t, database)
 	workers := NewWorkers(database)
-	ctx := context.Background()
+	ctx := t.Context()
 	id := uuid.NewString()
 	report := serviceWorkerReport()
 	for range 2 {
@@ -89,9 +113,10 @@ func TestWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T) {
 	}
 }
 
-func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	ctx := context.Background()
+func testWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T, database *postgres.Store) {
+	t.Helper()
+	principal := testsupport.ServicePrincipal(t, database)
+	ctx := t.Context()
 	workers := NewWorkers(database)
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	for _, id := range ids {
@@ -122,7 +147,7 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 		t.Fatalf("pagination lost or repeated workers: %v", seen)
 	}
 	var lastReported time.Time
-	if err := database.Pool.QueryRow(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '121 seconds' WHERE worker_id=$1 RETURNING last_seen_at", ids[0]).Scan(&lastReported); err != nil {
+	if err := database.Pool.QueryRow(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '121 seconds' WHERE user_id=$1 AND worker_id=$2 RETURNING last_seen_at", principal.UserID, ids[0]).Scan(&lastReported); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -131,7 +156,7 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 			t.Fatalf("reads refreshed or misreported the liveness clock: %+v, %v", detail, err)
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '73 hours' WHERE worker_id=$1", ids[0]); err != nil {
+	if _, err := database.Pool.Exec(ctx, "UPDATE workers SET last_seen_at=statement_timestamp()-interval '73 hours' WHERE user_id=$1 AND worker_id=$2", principal.UserID, ids[0]); err != nil {
 		t.Fatal(err)
 	}
 	_, err := workers.Get(ctx, principal, ids[0])

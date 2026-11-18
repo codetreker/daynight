@@ -1465,6 +1465,28 @@ env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
 
 [Worker service refusal decision](../../.agents/notes/implemented/testing/2026-11-18-worker-service-refusal-fixtures.md)
 
+### Worker service PostgreSQL fixture groups
+
+The snapshot, read-only OAuth and report capacity groups each own one isolated
+PostgreSQL schema and pool. Their sequential scenarios create independent
+owners and Workers. The snapshot scenarios retain the heartbeat writes between
+pages, owner isolation, liveness clock and expiry checks. The OAuth scenarios
+use separate PATs and credential families and cancel their contexts, close
+their brokers and join their request goroutines before releasing the schema.
+The capacity scenarios compare complete stored Worker rows on refusal and
+exercise a stale configuration observation against real SQL.
+
+With `DAYNIGHT_TEST_DATABASE_URL` set to an isolated PostgreSQL database, run:
+
+```bash
+source scripts/env.sh
+go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^Test(WorkerSnapshots|ReadOnlyAPIUsesCurrentFamilyBeforeDeliveryAndReturn|WorkerReportCapacityRollback)$' \
+  ./internal/service/worker
+```
+
+[Worker service integration fixture decision](../../.agents/notes/implemented/testing/2026-11-18-worker-service-integration-fixtures.md)
+
 ### Worker HTTP tests
 
 `internal/server/worker` owns the Worker route input, telemetry, privacy and

@@ -18,9 +18,10 @@ import (
 )
 
 func TestReadOnlyAPIUsesCurrentFamilyBeforeDeliveryAndReturn(t *testing.T) {
+	db := openWorkerIntegrationStore(t)
 	for _, stage := range []string{"delivery", "return"} {
 		t.Run(stage, func(t *testing.T) {
-			_, db, _, owner := testsupport.ProjectService(t)
+			owner := testsupport.ServicePrincipal(t, db)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			workerID := uuid.NewString()
@@ -68,7 +69,12 @@ func TestReadOnlyAPIUsesCurrentFamilyBeforeDeliveryAndReturn(t *testing.T) {
 				}
 				return authority.RecheckAPIAccess(ctx, principal)
 			})
-			defer broker.Close()
+			var requests sync.WaitGroup
+			defer func() {
+				cancel()
+				broker.Close()
+				requests.Wait()
+			}()
 			connection, err := broker.Connect(ctx, producer, workerID, ro.Hello{Type: "hello", Protocol: ro.Protocol, CapabilityGeneration: uuid.NewString(), Operations: []string{"directory.list"}})
 			if err != nil {
 				t.Fatal(err)
@@ -79,7 +85,9 @@ func TestReadOnlyAPIUsesCurrentFamilyBeforeDeliveryAndReturn(t *testing.T) {
 			}
 			start := func(principal model.Principal) (<-chan outcome, ro.Message) {
 				answer := make(chan outcome, 1)
+				requests.Add(1)
 				go func() {
+					defer requests.Done()
 					result, err := broker.Request(ctx, principal, workerID, readOnlyRequest())
 					answer <- outcome{result, err}
 				}()
