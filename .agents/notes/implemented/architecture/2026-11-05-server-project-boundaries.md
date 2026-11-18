@@ -33,7 +33,10 @@ rationale. `ProjectScope` remains a query value for scoped project pagination.
 Repository registration uses `core/project` to select a unique visible match,
 reject ambiguity and require confirmation before creation. The service reads all
 pages in one snapshot and coordinates creation separately; matching does not
-make repository identity globally unique.
+make repository identity globally unique. The later
+[Team repository uniqueness decision](2026-11-18-team-project-repository-uniqueness.md)
+adds shared create/transfer enforcement within each owner Team while preserving
+the separation between lookup and actual writes.
 
 ## Alternatives
 

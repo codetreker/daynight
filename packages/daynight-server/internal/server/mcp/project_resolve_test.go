@@ -617,7 +617,7 @@ func (d projectHTTPCreateDAO) LockCreationTeam(ctx context.Context, id string) (
 func (d projectHTTPCreateDAO) CreationTeamMember(ctx context.Context, id string) (bool, error) {
 	return requireCallback(d.t, "ProjectCreation.CreationTeamMember", d.MemberCall)(ctx, id)
 }
-func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, team string) (model.Project, model.ProjectAccess, error) {
+func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, identity, team string) (model.Project, model.ProjectAccess, error) {
 	return requireCallback(d.t, "ProjectCreation.InsertProject", d.InsertCall)(ctx, id, name, repo, team)
 }
 func projectHTTPCheck(t *testing.T, got, want any) {
@@ -651,4 +651,25 @@ func requireCallback[T any](t *testing.T, name string, callback T) T {
 		unexpectedHTTPCall(t, name)
 	}
 	return callback
+}
+
+func (d projectHTTPCreateDAO) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	if identity == "" {
+		panic("missing creation identity")
+	}
+	return false, nil
+}
+
+func (d mcpOrgProjectWriter) RepositoryIdentity(ctx context.Context) (*string, error) {
+	if d.MoveOwnershipCall == nil {
+		d.t.Fatal("unexpected repository identity read")
+	}
+	identity := "scp://host:repo"
+	return &identity, nil
+}
+func (d mcpOrgProjectWriter) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	if d.MoveOwnershipCall == nil || identity != "scp://host:repo" {
+		d.t.Fatal("unexpected repository occupancy read")
+	}
+	return false, nil
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
+	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -252,7 +253,7 @@ var workerArchiveSessionsSQL string
 //go:embed schema/migrations/081_worker_alias.sql
 var workerAliasSQL string
 
-//go:embed migrations/082_worker_task_tag_filter.sql
+//go:embed schema/migrations/082_worker_task_tag_filter.sql
 var workerTaskTagFilterSQL string
 
 type migration struct {
@@ -345,6 +346,7 @@ var schemaMigrations = []migration{
 	{version: 80, sql: workerArchiveSessionsSQL},
 	{version: 81, sql: workerAliasSQL},
 	{version: 82, sql: workerTaskTagFilterSQL},
+	{version: 83, sql: migration083.SQL(), transform: migration083.Apply, transformSource: migration083.TransformSource()},
 }
 
 const migrationLock int64 = 0x4441594e49474854

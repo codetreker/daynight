@@ -48,7 +48,7 @@ func (f *repositoryCreationPlan) CreationTeamMember(ctx context.Context, id stri
 	}
 	return true, nil
 }
-func (f *repositoryCreationPlan) InsertProject(ctx context.Context, id, name, address, team string) (model.Project, model.ProjectAccess, error) {
+func (f *repositoryCreationPlan) InsertProject(ctx context.Context, id, name, address, identity, team string) (model.Project, model.ProjectAccess, error) {
 	f.inserts++
 	if ctx != f.ctx || uuid.Validate(id) != nil || name != "Repository" || address != resolveAddress || team != resolveTeam {
 		f.t.Fatalf("unexpected creation: %s %s %s %s", id, name, address, team)
@@ -264,4 +264,8 @@ func TestRegisterRepositoryDoesNotCreateAfterSnapshotFailure(t *testing.T) {
 			t.Fatalf("result=%+v created=%v error=%v writes=%d", got, created, err, fixture.writes)
 		}
 	}
+}
+
+func (f *repositoryCreationPlan) RepositoryOccupied(ctx context.Context, team, identity string) (bool,error) {
+ if ctx != f.ctx || team != resolveTeam || identity != "github.com/Org/Repo" { f.t.Fatal("unexpected repository occupancy") }; return false,nil
 }

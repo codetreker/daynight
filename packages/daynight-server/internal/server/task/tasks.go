@@ -246,7 +246,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "automaticCandidate", "workerId", "assignedTo", "include", "type", "parentId", "tagIds", "tagMatch", "untagged")
+	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "platformSpecific", "automaticCandidate", "workerId", "candidateWorkerId", "assignedTo", "include", "type", "parentId", "tagIds", "tagMatch", "untagged")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -311,6 +311,9 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 	}
 	if value, exists := values["workerId"]; exists {
 		result.WorkerID = &value[0]
+	}
+	if value, exists := values["candidateWorkerId"]; exists {
+		result.CandidateWorkerID = &value[0]
 	}
 	return result, nil
 }

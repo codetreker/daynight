@@ -137,7 +137,7 @@ func githubIntegrationRemote(t *testing.T) (*githubFixtureConfig, func(string)) 
 func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	config, change := githubIntegrationRemote(t)
 	f := newFixtureConfigured(t, false, config)
-	project := createProject(t, f, "GitHub sync")
+	project := createProjectAtRepository(t, f, "GitHub sync", "https://github.com/example/integration")
 	base := "/api/v1/projects/" + project.ID
 	key, err := os.ReadFile(config.privateKey)
 	if err != nil {
@@ -298,10 +298,13 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `DROP INDEX project_pull_requests_author_number`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82)`); err != nil || result.RowsAffected() != 6 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83)`); err != nil || result.RowsAffected() != 7 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

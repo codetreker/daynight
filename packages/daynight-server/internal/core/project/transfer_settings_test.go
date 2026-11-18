@@ -30,15 +30,17 @@ func transferTestFault(t *testing.T, err error, code string) {
 
 type transferTestDAO struct {
 	store.ProjectWriteDAO
-	calls          []string
-	ownership      model.ProjectOwnership
-	source, target store.TransferTeam
-	access         model.ProjectAccess
-	project        model.Project
-	fail           string
-	cause          error
-	accessCount    int
-	afterAccess    error
+	calls           []string
+	ownership       model.ProjectOwnership
+	source, target  store.TransferTeam
+	access          model.ProjectAccess
+	project         model.Project
+	fail            string
+	cause           error
+	accessCount     int
+	afterAccess     error
+	identityMissing bool
+	occupied        bool
 }
 
 func (d *transferTestDAO) call(name string) error {
@@ -148,7 +150,7 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 	if err != nil || !receipt.Changed || receipt.ActorAccess != nil || receipt.Ownership.TeamID != transferTestTarget || receipt.Ownership.Version != 6 {
 		t.Fatalf("receipt %#v, %v", receipt, err)
 	}
-	if want := []string{"ownership", "teams", "access", "move", "access"}; !reflect.DeepEqual(d.calls, want) {
+	if want := []string{"ownership", "teams", "access", "identity", "occupancy", "move", "access"}; !reflect.DeepEqual(d.calls, want) {
 		t.Fatalf("order %v, want %v", d.calls, want)
 	}
 	tests := []struct {
@@ -308,4 +310,15 @@ func TestTransferPreviewAuthorizationAndErrors(t *testing.T) {
 			t.Fatalf("%s lost cause %v", stage, err)
 		}
 	}
+}
+
+func (d *transferTestDAO) RepositoryIdentity(ctx context.Context) (*string, error) {
+	if d.identityMissing {
+		return nil, d.call("identity")
+	}
+	identity := "scp://host:repo"
+	return &identity, d.call("identity")
+}
+func (d *transferTestDAO) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	return d.occupied, d.call("occupancy")
 }
