@@ -26,4 +26,5 @@ touch and precision behavior and allow the two views to diverge.
 
 The component can be verified independently with synthetic series. Consumers must
 provide a nonempty series, unique keys and a maximum covering every value. Short
-axis labels may be truncated; complete readings remain available through the chart.
+axis labels may be truncated; partially clipped scroll-edge labels are hidden until
+they fit, while complete readings remain available through the chart.

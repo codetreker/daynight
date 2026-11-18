@@ -11,3 +11,8 @@
 .statistics-state.error { background:#fff0ef; color:#a3322b; }
 @media (max-width:740px) { .statistics-stack { gap:16px; } .statistics-chart,.statistics-header,.statistics-state { padding-left:12px; padding-right:12px; } .statistics-header { min-height:58px; } }
 @media (max-width:480px) { .statistics-header h2 { font-size:15px; } .statistics-total strong { font-size:23px; } }
+@media (max-width:480px) {
+  .statistics-chart-heading { flex-wrap:wrap; }
+  .statistics-chart-heading h3 { flex:1 0 100%; }
+  .statistics-chart-heading .pr-author-trigger { flex:0 1 100%; min-width:0; }
+}

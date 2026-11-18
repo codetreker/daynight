@@ -688,3 +688,73 @@ test('project navigation labels remain distinct at 320px in both languages', asy
   }
   expect(state.unexpected).toEqual([]);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) test(`statistics headings and long authors fit 320px in ${locale}`, async ({ page }) => {
+  const state = await installPrList(page, locale);
+  const longLogin = 'very-long-github-username-for-testing-visibility-and-wrapping';
+  await page.route('**/pull-request-statistics?*', async route => {
+    const url = new URL(route.request().url()), authorId = url.searchParams.get('authorId');
+    const daily = Array(30).fill('0'); daily[29] = '4';
+    const authorDaily = Array(30).fill('0'); authorDaily[29] = '2';
+    await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: longLogin } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+  });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(`/projects/${projectId}?tab=statistics`);
+  const panel = page.locator('#project-section-panel-statistics');
+  const headings = panel.locator('.statistics-chart-heading');
+  await expect(headings).toHaveCount(2);
+  for (const heading of await headings.all()) {
+    const title = heading.locator('h3'), control = heading.locator('select, button');
+    await expect(title).toBeVisible(); await expect(control).toBeVisible();
+    const geometry = await heading.evaluate(element => {
+      const title = element.querySelector('h3')!, control = element.querySelector('select, button')!;
+      const box = element.getBoundingClientRect(), titleBox = title.getBoundingClientRect(), controlBox = control.getBoundingClientRect();
+      const style = getComputedStyle(title);
+      return { title: { left: titleBox.left, right: titleBox.right, bottom: titleBox.bottom, height: titleBox.height, scroll: title.scrollWidth, client: title.clientWidth },
+        control: { left: controlBox.left, right: controlBox.right, top: controlBox.top, width: controlBox.width }, box: { left: box.left, right: box.right }, lineHeight: parseFloat(style.lineHeight) };
+    });
+    expect(geometry.title.left).toBeGreaterThanOrEqual(geometry.box.left - 1);
+    expect(geometry.title.right).toBeLessThanOrEqual(geometry.box.right + 1);
+    expect(geometry.title.scroll).toBeLessThanOrEqual(geometry.title.client + 1);
+    expect(geometry.title.height).toBeLessThanOrEqual(geometry.lineHeight * 2 + 1);
+    expect(geometry.control.top).toBeGreaterThanOrEqual(geometry.title.bottom - 1);
+    expect(geometry.control.left).toBeGreaterThanOrEqual(geometry.box.left - 1);
+    expect(geometry.control.right).toBeLessThanOrEqual(geometry.box.right + 1);
+    expect(geometry.control.width).toBeGreaterThanOrEqual(44);
+  }
+  for (const card of await panel.locator('.statistics-card').all()) {
+    const labels = card.locator('.bar-chart__labels span');
+    await expect(labels).toHaveCount(5);
+    for (const label of await labels.all()) expect(await label.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    const scroller = card.locator('.bar-chart__scroll');
+    for (const position of [0, 0.5, 1]) {
+      await scroller.evaluate((element, fraction) => { element.scrollLeft = (element.scrollWidth - element.clientWidth) * fraction; }, position);
+      await expect.poll(() => scroller.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const shown = [...element.querySelectorAll('.bar-chart__labels span')].filter(label => getComputedStyle(label).visibility === 'visible');
+        return shown.length > 0 && shown.every(label => {
+          const box = label.getBoundingClientRect();
+          return box.left >= bounds.left - 1 && box.right <= bounds.right + 1;
+        });
+      })).toBe(true);
+    }
+  }
+  const picker = panel.locator('.pr-author-trigger');
+  await picker.click();
+  const menu = page.locator('.pr-author-menu');
+  await menu.getByRole('combobox').fill('very-long');
+  const option = menu.getByRole('option', { name: new RegExp(longLogin) });
+  await expect(option).toBeVisible();
+  const menuBox = (await menu.boundingBox())!, optionBox = (await option.boundingBox())!;
+  expect(menuBox.x).toBeGreaterThanOrEqual(0); expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(320);
+  expect(optionBox.x).toBeGreaterThanOrEqual(menuBox.x - 1); expect(optionBox.x + optionBox.width).toBeLessThanOrEqual(menuBox.x + menuBox.width + 1);
+  expect(await option.locator('.pr-author-name').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await option.click();
+  await expect(picker).toHaveAttribute('title', new RegExp(longLogin));
+  await expect(picker).toHaveAttribute('aria-label', new RegExp(longLogin));
+  await expect(panel.getByRole('listbox', { name: locale === 'en' ? 'PRs created daily' : '每日新建 PR' }).getByRole('option').last()).toHaveAttribute('aria-label', /: 2$/);
+  const pickerBox = (await picker.boundingBox())!, parentBox = (await picker.locator('..').boundingBox())!;
+  expect(pickerBox.x).toBeGreaterThanOrEqual(parentBox.x - 1); expect(pickerBox.x + pickerBox.width).toBeLessThanOrEqual(parentBox.x + parentBox.width + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(state.unexpected).toEqual([]);
+});
