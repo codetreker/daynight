@@ -8,7 +8,7 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createMarkdownImageProjector } from "../../../src/commands/controller/markdown/projection.js";
-import { MarkdownAnalysisError } from "../../../src/commands/controller/markdown/parser.js";
+import { MarkdownAnalysisError, type MarkdownSourceNode } from "../../../src/commands/controller/markdown/parser.js";
 import { repairStoppedMarkdownProjections, type StoppedMarkdownImageResolver } from "../../../src/commands/controller/stopped-markdown-repair.js";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
@@ -185,8 +185,17 @@ test("multiple retained revision lineages for one range refuse repair without ch
   expect(after.entry).toEqual(before.entry); expect(after.state).toEqual(before.state); expect(after.outbox).toEqual(before.outbox); expect(after.execution).toEqual(before.execution);
 }, 15_000);
 
+const transactionFixture = async () => {
+  const text = "![image](original.png)";
+  const parse = vi.fn(async (source: string): Promise<MarkdownSourceNode[]> => {
+    expect(source).toBe(text);
+    return [{ start: 0, end: 22, destination: "original.png", label: "image", linkHref: null }];
+  });
+  return { ...await fixture(text), projector: createMarkdownImageProjector({ parse }), parse };
+};
+
 test("interruption after durable analysis keeps the original and resumes the same plan", async () => {
-  const f = await fixture("![image](original.png)"), before = f.inspect(), controller = new AbortController();
+  const f = await transactionFixture(), before = f.inspect(), controller = new AbortController();
   await expect(repairStoppedMarkdownProjections({ ...f, signal: controller.signal, resolveImage: async source => { controller.abort(new Error("interrupted")); return resolveImage(source, {} as never); } })).rejects.toThrow("interrupted");
   const interrupted = f.inspect(); expect(interrupted.entry).toEqual(before.entry); expect(interrupted.plan).toBeDefined();
   expect(await repairStoppedMarkdownProjections({ ...f, resolveImage })).toEqual({ repaired: [f.entryId], failures: [] });
@@ -205,7 +214,7 @@ test("concurrent repair uses one committed source revision and never replaces th
 });
 
 test("a failed SQL commit preserves original rows and reuses already published resource bytes after restart", async () => {
-  const f = await fixture("![image](original.png)"), before = f.inspect(), open = outbox.openControllerOutbox;
+  const f = await transactionFixture(), before = f.inspect(), open = outbox.openControllerOutbox;
   const injected = vi.spyOn(outbox, "openControllerOutbox").mockImplementation((db, context) => {
     const store = open(db, context);
     return { ...store, append(sequence, value) { store.append(sequence, value); throw new Error("injected after append"); } };
@@ -219,13 +228,13 @@ test("a failed SQL commit preserves original rows and reuses already published r
 });
 
 test("revoked outer execution authorization prevents commit after analysis", async () => {
-  const f = await fixture("![image](original.png)"), before = f.inspect(); let revoked = false;
+  const f = await transactionFixture(), before = f.inspect(); let revoked = false;
   await expect(repairStoppedMarkdownProjections({ ...f, beforeWrite: async () => { if (revoked) throw new Error("authorization revoked"); }, resolveImage: async (source, context) => { revoked = true; return resolveImage(source, context); } })).rejects.toThrow("authorization revoked");
   const after = f.inspect(); expect(after.entry).toEqual(before.entry); expect(after.state).toEqual(before.state); expect(after.outbox).toEqual(before.outbox); expect(after.execution).toEqual(before.execution);
 });
 
 test.each(["missing", "corrupt"])("refuses a %s retained resource blob without removing the failed projection", async kind => {
-  const f = await fixture("![image](original.png)"), before = f.inspect(), open = outbox.openControllerOutbox;
+  const f = await transactionFixture(), before = f.inspect(), open = outbox.openControllerOutbox;
   const injected = vi.spyOn(outbox, "openControllerOutbox").mockImplementation((db, context) => {
     const store = open(db, context);
     return { ...store, append() { throw new Error("retain published bytes before SQL commit"); } };
@@ -239,8 +248,8 @@ test.each(["missing", "corrupt"])("refuses a %s retained resource blob without r
 });
 
 test.each(["body", "entry", "destination", "retained"])("rejects a changed prepared %s even when its self-reported hash was recomputed", async field => {
-  const f = await fixture("![image](original.png)"), before = f.inspect();
-  await repairStoppedMarkdownProjections(f);
+  const f = await transactionFixture(), before = f.inspect();
+  expect(await repairStoppedMarkdownProjections(f)).toEqual({ repaired: [], failures: [{ entryId: f.entryId, code: "image_source_unavailable" }] });
   const plan = JSON.parse(f.inspect().plan!.value), state = plan.parsedState;
   if (field === "body") state.input.content[0].text = "changed original body";
   if (field === "entry") { state.entryId = randomUUID(); state.input.entryId = state.entryId; }
@@ -251,6 +260,7 @@ test.each(["body", "entry", "destination", "retained"])("rejects a changed prepa
   try { db.prepare("UPDATE image_runtime_state SET value=? WHERE key=?").run(JSON.stringify(plan), `stopped_markdown_repair:${f.entryId}`); } finally { db.close(); }
   const resolver = vi.fn(resolveImage);
   expect(await repairStoppedMarkdownProjections({ ...f, resolveImage: resolver })).toEqual({ repaired: [], failures: [{ entryId: f.entryId, code: "repair_plan_changed" }] });
+  expect(f.parse.mock.calls).toEqual([[f.text], [f.text]]);
   expect(resolver).not.toHaveBeenCalled();
   const after = f.inspect(); expect(after.entry).toEqual(before.entry); expect(after.state).toEqual(before.state); expect(after.outbox).toEqual(before.outbox); expect(after.execution).toEqual(before.execution);
 });
