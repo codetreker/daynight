@@ -79,6 +79,35 @@ class AdmissionTests(unittest.TestCase):
             with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(ValueError, diagnostic):
                 operation()
 
+        with self.assertRaisesRegex(ValueError, "<redacted invalid value>") as failure:
+            network.protected_domains("https://user:secret@example.org alias\n", [])
+        self.assertNotIn("secret", str(failure.exception))
+
+    def test_invalid_host_inventory_aborts_before_network_mutation(self):
+        for invalid_route in (True, False):
+            calls = []
+            def fake_command(*args, **kwargs):
+                calls.append(args)
+                if args[0] == "dig":
+                    return SimpleNamespace(stdout="93.184.216.34\n", returncode=0)
+                if args[:3] == ("ip", "-j", "address"):
+                    return SimpleNamespace(stdout="[]", returncode=0)
+                if args[:3] == ("ip", "-j", "route"):
+                    return SimpleNamespace(stdout=json.dumps([{"gateway": "runner.example"}] if invalid_route else []), returncode=0)
+                if args[:4] == ("ip", "-6", "-j", "route"):
+                    return SimpleNamespace(stdout="[]", returncode=0)
+                self.fail(f"Unexpected command before inventory rejection: {args}")
+            with self.subTest(invalid_route=invalid_route), tempfile.TemporaryDirectory(dir=SCRATCH) as directory, \
+                 patch.dict(network.os.environ, {"SUDO_UID": "1001", "SUDO_GID": "1001"}), \
+                 patch.object(network.shutil, "which", return_value="/tool"), \
+                 patch.object(network, "command", side_effect=fake_command), \
+                 patch.object(network, "service_assets", return_value={"protectedCidrs": [], "protectedDomains": []}), \
+                 patch.object(network.Path, "read_text", return_value="not-an-ip alias\n"):
+                with self.assertRaisesRegex(ValueError, "ip route\\[0\\]\\.gateway" if invalid_route else "/etc/hosts line 1 address"):
+                    network.setup(Path(directory) / "run", "8080", ["http://example.org/a.png", "https://example.org/a.png"])
+                self.assertFalse((Path(directory) / "run").exists())
+                self.assertFalse(any(call[0] in ("nft", "iptables") or "netns" in call for call in calls))
+
     def test_cleanup_keeps_network_when_process_exit_is_unconfirmed(self):
         calls = []
         def fake_command(*args, **kwargs):

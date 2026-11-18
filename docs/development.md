@@ -1017,6 +1017,9 @@ fabricating DNS, peer or TLS results. All namespace processes, network links,
 firewall entries and changes to host forwarding have an owned cleanup receipt.
 Cleanup confirms process exit with pidfds before deleting namespace names;
 unconfirmed exit keeps the names and guards and produces a failed receipt.
+The runner records build and environment completion only after command
+quiescence, verifies its fixture ownership before closing the runtime, and leaves
+unconfirmed resources for independent recovery after the runner has stopped.
 
 The workflow uploads only the run directory's `results/`, including source
 revision, image identities and hashes, network observations and cleanup

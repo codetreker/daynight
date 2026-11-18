@@ -82,15 +82,22 @@ def source_urls(values):
 def inventory_address(value, source):
     try:
         return ipaddress.ip_address(value)
-    except ValueError as error:
-        raise ValueError(f"Invalid IP address in {source}: {value!r}") from error
+    except ValueError:
+        raise ValueError(f"Invalid IP address in {source}: {inventory_value(value)}") from None
 
 
 def inventory_network(value, source):
     try:
         return ipaddress.ip_network(value, strict=False)
-    except ValueError as error:
-        raise ValueError(f"Invalid IP network in {source}: {value!r}") from error
+    except ValueError:
+        raise ValueError(f"Invalid IP network in {source}: {inventory_value(value)}") from None
+
+
+def inventory_value(value):
+    # Unexpected metadata may contain credentials; only emit address-like text.
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9:._/%-]{1,253}", value):
+        return repr(value)
+    return "<redacted invalid value>"
 
 
 def protected_cidrs(addresses, routes):

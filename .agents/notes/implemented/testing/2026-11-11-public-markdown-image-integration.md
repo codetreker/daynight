@@ -91,6 +91,11 @@ failure or cancellation. Cleanup cannot turn a failed test into success.
 Linux pidfds bind signals and exit observations to the original processes.
 Unconfirmed process exit retains namespace names and guards for retry instead
 of reporting successful cleanup after unlinking a still-referenced namespace.
+The regression registers its runner with the product E2E ownership protocol and
+records build and environment completion only after their commands are quiescent.
+The original runner uses owner recovery before closing the environment; the
+independent cleanup step uses the separate recovery path after the runner exits.
+Unconfirmed stages retain their resources and evidence.
 
 The included guarantees are real source-to-service bytes, immutable resource
 identity, original/final destination admission and attributable cleanup. Native
