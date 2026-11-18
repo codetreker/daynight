@@ -135,6 +135,41 @@ it('preserves displayed records after a later page fails', async () => {
   expect(screen.getByRole('heading', { name: 'copilot · exact-model' })).toBeVisible();
 });
 
+it.each(['filters', 'execution sources'] as const)('preserves %s when refreshing a later records page', async mode => {
+  const queries: URLSearchParams[] = [];
+  const metrics = Object.fromEntries([...usageMetricKeys, 'providerTotalTokens'].map(key => [key, null]));
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.endsWith('capabilities')) return reply({ protocol: 'daynight.usage.v1' });
+    if (url.endsWith('task-summaries')) return reply({ items: [{ taskId: task, summary: summary() }] });
+    queries.push(new URL(url, 'https://daynight.test').searchParams);
+    return reply({ items: [{ id: other, recordKind: 'execution_state', sessionId: task, stateId: null, executionGeneration: '1', provider: 'copilot', model: 'exact-model', sourceKey: null, profileId: 'test-profile', providerVersion: '1', collectionState: 'complete', metrics, reasonCodes: [], observedAt: now, updatedAt: now }], nextCursor: 'next', snapshotToken: 'snapshot', observedAt: now });
+  }));
+  renderWithLocale(<TaskUsagePanel projectId={project} taskId={task} active />, { locale: 'en', taskCache: true });
+  await screen.findByRole('heading', { name: 'copilot · exact-model' });
+  if (mode === 'execution sources') {
+    fireEvent.click(screen.getByRole('button', { name: 'View execution sources' }));
+  } else {
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'copilot' } });
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'exact-model' } });
+    fireEvent.change(screen.getByLabelText('Execution State ID'), { target: { value: other } });
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+  }
+  await waitFor(() => expect(queries).toHaveLength(2));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Next page' })).toBeEnabled());
+  const expected = mode === 'execution sources'
+    ? { limit: '50', kind: 'measurement', stateId: other }
+    : { limit: '50', kind: 'execution_state', provider: 'copilot', model: 'exact-model', stateId: other };
+  expect(Object.fromEntries(queries[1]!)).toEqual(expected);
+  fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+  await waitFor(() => expect(queries).toHaveLength(3));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+  expect(Object.fromEntries(queries[2]!)).toEqual({ ...expected, cursor: 'next' });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(queries).toHaveLength(4));
+  expect(Object.fromEntries(queries[3]!)).toEqual(expected);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'First page' })).toBeDisabled());
+});
+
 it('retains the native reset fault and sends a bounded records query', async () => {
   const fetch = vi.fn(async (_url: string) => reply({ error: { code: 'reset_required', requestId: 'usage.3' } }, 409));
   vi.stubGlobal('fetch', fetch);
