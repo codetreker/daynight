@@ -120,7 +120,12 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   await page.setViewportSize({ width, height: 900 });
   await install(page, true, locale); await page.goto(`/workers/${target}`);
   await expect(page.getByText('6 / 6')).toBeVisible();
-  if (locale === 'en' && width <= 390) expect(await page.locator('.monitoring-time').evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
+  if (locale === 'en' && width <= 390) {
+    await page.evaluate(() => { const original = performance.now.bind(performance); Object.defineProperty(performance, 'now', { configurable: true, value: () => original() + 90_000 }); });
+    const time = page.locator('.monitoring-time');
+    await expect(time).toContainText('Runtime observation is stale');
+    expect(await time.evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
+  }
   const taskPanel = page.locator('.worker-task-heading-label').locator('xpath=ancestor::section[1]');
   const taskLink = taskPanel.getByRole('link', { name: longTitle });
   await expect(taskLink).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
