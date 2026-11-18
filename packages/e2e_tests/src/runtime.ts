@@ -6,6 +6,7 @@ import path from 'node:path';
 import { runCommand, startCommand, type ManagedCommand } from './command.ts';
 import { createLifecycle } from './lifecycle.ts';
 import { providerClientId, providerClientSecret, startProvider } from './provider.ts';
+import { providerDiagnosticSink, writeProviderDiagnostics } from './provider-diagnostics.ts';
 import { writeServerConfig } from './server-config.ts';
 
 type RuntimeConfiguration = { serverPort: number; authPort: number; proxyPort: number; databaseURL: string; redisURL: string };
@@ -139,12 +140,27 @@ const main = async (): Promise<void> => {
   await mkdir(path.join(runDirectory, 'private', 'storage'), { recursive: true, mode: 0o700 });
   const daynightRoot = path.join(runDirectory, 'private', 'daynight');
   await mkdir(daynightRoot, { recursive: true, mode: 0o700 });
+  const providerLog = path.join(runDirectory, 'logs', 'provider-diagnostics.json');
+  writeProviderDiagnostics(providerLog, { events: [], complete: false, truncated: false });
+  const recordProvider = providerDiagnosticSink(providerLog, error => {
+    failure = failure === undefined ? error : new AggregateError([failure, error], 'Runtime and provider diagnostic write failed.', { cause: failure });
+    signalController.abort(failure);
+    wake();
+  });
   const provider = await startProvider({
     port: configuration.proxyPort,
     certificatePath: path.join(artifacts, 'provider-ca.pem'),
     keyPath: path.join(artifacts, 'provider-key.pem'),
+    onDiagnostics: recordProvider,
   });
-  lifecycle.defer(provider.close);
+  lifecycle.defer(async () => {
+    const failures: unknown[] = [];
+    try { await provider.close(); } catch (error) { failures.push(error); }
+    try { writeProviderDiagnostics(providerLog, provider.diagnostics()); }
+    catch (error) { failures.push(error); }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Provider shutdown and diagnostic write failed.', { cause: failures[0] });
+  });
   const publicPorts = new Set([configuration.serverPort, configuration.authPort, configuration.proxyPort]);
   const authInternalPort = await reservePort(publicPorts);
   await forward(configuration.authPort, authInternalPort);

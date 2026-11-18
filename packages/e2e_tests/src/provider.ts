@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHTTPSServer } from "node:https";
 import type { Socket } from "node:net";
+import type { TLSSocket } from "node:tls";
 
 type Authorization = {
   clientId: string;
@@ -18,6 +19,47 @@ export const providerClientSecret = "product-e2e-github-secret";
 export type Provider = {
   port: number;
   close: () => Promise<void>;
+  diagnostics: () => ProviderDiagnostics;
+};
+
+type ProviderEvent = {
+  sequence: number;
+  type: "connect" | "tls_ready" | "tls_error" | "http_request" | "http_finish";
+  connectionId: number | "unknown";
+  target?: "github.com:443" | "api.github.com:443" | "other";
+  accepted?: boolean;
+  headPresent?: boolean;
+  method?: string;
+  origin?: string;
+  path?: string;
+  status?: number;
+  errorCode?: string;
+};
+
+export type ProviderDiagnostics = { events: ProviderEvent[]; complete: boolean; truncated: boolean };
+const eventLimit = 256;
+const errorCodes = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "ERR_SSL_WRONG_VERSION_NUMBER", "ERR_SSL_UNEXPECTED_EOF_WHILE_READING", "ERR_SSL_HTTP_REQUEST", "ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN", "ERR_SSL_TLSV1_ALERT_UNKNOWN_CA"]);
+const safeErrorCode = (error: Error): string => {
+  const code: unknown = "code" in error ? error.code : undefined;
+  return typeof code === "string" && errorCodes.has(code) ? code : "other";
+};
+const endpoint = (request: IncomingMessage): { origin: string; path: string } => {
+  const host = request.headers.host;
+  if (host !== "github.com" && host !== "github.com:443" && host !== "api.github.com" && host !== "api.github.com:443") return { origin: "other", path: "other" };
+  try {
+    const url = new URL(request.url ?? "", `https://${host}`);
+    if (url.origin === "https://github.com" && (url.pathname === "/login/oauth/authorize" || url.pathname === "/login/oauth/access_token")) return { origin: url.origin, path: url.pathname };
+    if (url.origin === "https://api.github.com" && (url.pathname === "/user" || url.pathname === "/user/emails")) return { origin: url.origin, path: url.pathname };
+  } catch { /* Invalid requests have no recognized endpoint. */ }
+  return { origin: "other", path: "other" };
+};
+
+// Socket wrappers change at TLS handoff; only a live public endpoint tuple can
+// associate them without relying on Node's private socket implementation.
+const socketTuple = (socket: Socket): string | undefined => {
+  const { localAddress, localPort, remoteAddress, remotePort } = socket;
+  if (localAddress === undefined || localPort === undefined || remoteAddress === undefined || remotePort === undefined) return undefined;
+  return JSON.stringify([localAddress, localPort, remoteAddress, remotePort]);
 };
 
 const identifier = (): string => randomBytes(24).toString("base64url");
@@ -57,12 +99,35 @@ export const startProvider = async (options: {
   port: number;
   certificatePath: string;
   keyPath: string;
+  testStall?: "tls" | "http";
+  onDiagnostics?: (diagnostics: ProviderDiagnostics) => void;
 }): Promise<Provider> => {
   const [cert, key] = await Promise.all([readFile(options.certificatePath), readFile(options.keyPath)]);
   const requests = new Map<string, Authorization>();
   const codes = new Map<string, Authorization & { identity: Identity }>();
   const tokens = new Map<string, Identity>();
   const sockets = new Set<Socket>();
+  const connections = new Map<string, number>();
+  const tlsConnections = new WeakMap<TLSSocket, number | "unknown">();
+  const events: ProviderEvent[] = [];
+  let truncated = false;
+  let complete = false;
+  let ended = false;
+  let nextConnectionId = 0;
+  let nextSequence = 0;
+  const record = (event: Omit<ProviderEvent, "sequence">): void => {
+    if (ended) return;
+    if (events.length === eventLimit) {
+      if (!truncated) { truncated = true; options.onDiagnostics?.({ events: events.map((item) => ({ ...item })), complete, truncated }); }
+      return;
+    }
+    events.push({ sequence: ++nextSequence, ...event });
+    options.onDiagnostics?.({ events: events.map((item) => ({ ...item })), complete, truncated });
+  };
+  const identify = (socket: Socket): number | "unknown" => {
+    const tuple = socketTuple(socket);
+    return tuple === undefined ? "unknown" : connections.get(tuple) ?? "unknown";
+  };
   let closing = false;
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -152,6 +217,12 @@ export const startProvider = async (options: {
   };
 
   const secure = createHTTPSServer({ cert, key }, (request, response) => {
+    const connectionId = tlsConnections.get(request.socket as TLSSocket) ?? "unknown";
+    const method = request.method === "GET" || request.method === "POST" ? request.method : "other";
+    const safeEndpoint = endpoint(request);
+    record({ type: "http_request", connectionId, method, ...safeEndpoint });
+    response.once("finish", () => record({ type: "http_finish", connectionId, method, ...safeEndpoint, status: response.statusCode }));
+    if (options.testStall === "http") return;
     void handle(request, response).catch((error: unknown) => {
       if (response.headersSent) {
         response.destroy(error instanceof Error ? error : new Error(String(error)));
@@ -160,20 +231,38 @@ export const startProvider = async (options: {
       }
     });
   });
+  secure.on("secureConnection", (socket) => {
+    const connectionId = identify(socket);
+    tlsConnections.set(socket, connectionId);
+    record({ type: "tls_ready", connectionId });
+  });
+  secure.on("tlsClientError", (error, socket) => {
+    record({ type: "tls_error", connectionId: identify(socket), errorCode: safeErrorCode(error) });
+  });
   const proxy = createHTTPServer((_request, response) => json(response, 403, { error: "CONNECT_required" }));
   proxy.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
     socket.on("error", (error) => {
-      if (!closing) console.error(`Local provider connection failed: ${error.message}`);
+      if (!closing) console.error(`Local provider connection failed: ${safeErrorCode(error)}`);
     });
   });
   proxy.on("connect", (request, socket, head) => {
-    if (closing || (request.url !== "github.com:443" && request.url !== "api.github.com:443")) {
+    const connectionId = ++nextConnectionId;
+    const tuple = socketTuple(socket as Socket);
+    if (tuple !== undefined) {
+      connections.set(tuple, connectionId);
+      socket.once("close", () => { if (connections.get(tuple) === connectionId) connections.delete(tuple); });
+    }
+    const target = request.url === "github.com:443" || request.url === "api.github.com:443" ? request.url : "other";
+    const accepted = !closing && target !== "other";
+    record({ type: "connect", connectionId, target, accepted, headPresent: head.length !== 0 });
+    if (!accepted) {
       socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
       return;
     }
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (options.testStall === "tls") return;
     if (head.length !== 0) socket.unshift(head);
     secure.emit("connection", socket);
   });
@@ -189,15 +278,19 @@ export const startProvider = async (options: {
   let closePromise: Promise<void> | undefined;
   return {
     port: address.port,
+    diagnostics: () => ({ events: events.map((event) => ({ ...event })), complete, truncated }),
     close: () => {
       closePromise ??= (async () => {
-        closing = true;
-        requests.clear();
-        codes.clear();
-        tokens.clear();
-        const closed = new Promise<void>((resolve, reject) => proxy.close((error) => error === undefined ? resolve() : reject(error)));
-        for (const socket of sockets) socket.destroy();
-        await closed;
+        try {
+          closing = true;
+          requests.clear();
+          codes.clear();
+          tokens.clear();
+          const closed = new Promise<void>((resolve, reject) => proxy.close((error) => error === undefined ? resolve() : reject(error)));
+          for (const socket of sockets) socket.destroy();
+          await closed;
+          complete = true;
+        } finally { ended = true; }
       })();
       return closePromise;
     },
