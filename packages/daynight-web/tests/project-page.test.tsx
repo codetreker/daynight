@@ -334,6 +334,33 @@ describe("project dashboard", () => {
       release();
     } finally { view.unmount(); scope.dispose(); }
   });
+
+  it.each(['indexed', 'native'] as const)('does not rewrite a different %s entry with the same Goal URL during revocation', async kind => {
+    const url = `/projects/${projectId}?tab=tasks&goalGraph=${A}`;
+    history.replaceState(null, '', url);
+    graphRequest.mockResolvedValue(goalGraph());
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      expect(await screen.findByTestId(`goal-graph-${A}`)).toBeVisible();
+      const target = kind === 'indexed' ? history.state : { nativeMarker: 'target' };
+      fireEvent.click(screen.getByRole('button', { name: '打开整体图详情' }));
+      expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+      const discard = vi.fn();
+      const release = browserNavigation().register({ scope: { identity: scope, projectId, taskId: A }, isDirty: () => true, discard, survives: () => false });
+      act(() => {
+        history.replaceState(target, '', url);
+        dispatchEvent(new PopStateEvent('popstate', { state: target }));
+        if (kind === 'indexed') expect(browserNavigation().decision()).not.toBeNull();
+        scope.suspendProject(projectId);
+      });
+      expect(discard).toHaveBeenCalledOnce();
+      expect(location.search).toBe(`?tab=tasks&goalGraph=${A}`);
+      if (kind === 'indexed') expect(history.state.__daynightNavigation.entryId).toBe(target.__daynightNavigation.entryId);
+      else expect(history.state).toEqual({ nativeMarker: 'target' });
+      release();
+    } finally { view.unmount(); scope.dispose(); }
+  });
   it.each([["overview", "概览"], ["tasks", "任务列表"], ["prs", "PR 列表"], ["tags", "标签"]] as const)(
     "opens %s directly despite a conflicting preference and does not save it", async (tab, label) => {
       history.replaceState(null, "", `/projects/${projectId}?tab=${tab}`);

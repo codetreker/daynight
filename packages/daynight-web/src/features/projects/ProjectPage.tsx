@@ -160,13 +160,18 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       const current = currentLocation.current;
       if (parseGoalGraphUrl(current.pathname, current.search).kind !== "none") {
         retireGraphReadersRef.current(currentSelection.current);
-        historyRef.current.select({ ...currentSelection.current, projectGraphWitness: null, detail: null }, true, undefined, "goal-invalid");
+        // Retiring a draft may admit an already-arrived history destination.
+        if (navigation.snapshot() === current)
+          historyRef.current.select({ ...currentSelection.current, projectGraphWitness: null, detail: null }, true, undefined, "goal-invalid");
       }
       return;
     }
     const reading = currentSelection.current;
     if (!event.historyChanged || (reading.detail === null && reading.projectGraphWitness === null)) return;
-    if (parseGoalGraphUrl(currentLocation.current.pathname, currentLocation.current.search).kind === "goal") retireGraphReadersRef.current(reading);
+    const current = currentLocation.current;
+    if (navigation.snapshot() !== current) { retiredReading.current = null; return; }
+    if (parseGoalGraphUrl(current.pathname, current.search).kind === "goal") retireGraphReadersRef.current(reading);
+    if (navigation.snapshot() !== current) { retiredReading.current = null; return; }
     const goalWitness = reading.projectGraphWitness !== null && displayedGoal.current === reading.projectGraphWitness ? reading.projectGraphWitness : null;
     retiredReading.current = { summaryId: reading.detail?.source === "summary" ? reading.detail.id : null,
       snapshot: currentGraphSnapshot.current, entryId: browserNavigation().snapshot().entryId, section: reading.section, view: reading.view,
@@ -292,7 +297,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     const goalUrl = parseGoalGraphUrl(location.pathname, location.search);
     const lostLinkedGoal = goalUrl.kind === "goal" && goalUrl.goalId === graphWitness && currentSnapshot.summaries.get(graphWitness)?.type !== "goal";
     if (!lostLinkedGoal && openGraphTarget !== null) return;
+    if (navigation.snapshot() !== location) return;
     if (lostLinkedGoal) retireGraphReaders(selection);
+    if (navigation.snapshot() !== location) return;
     history.select({ ...selection, projectGraphWitness: null, ...(lostLinkedGoal ? { detail: null } : {}) }, true);
     if (section !== "tasks") focusVisible(document.getElementById(`project-section-tab-${section}`));
     else if (activeView !== "chains" && activeView !== "goals") focusVisible(document.getElementById(`project-task-tab-${activeView}`));

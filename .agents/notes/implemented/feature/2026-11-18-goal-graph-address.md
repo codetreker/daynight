@@ -35,3 +35,5 @@ The address survives login and reload without serializing graph content, drafts
 or authority. Opening waits for current project admission, and invalid or
 revoked targets cannot be restored from cached presentation alone. History and
 the retained address must remain synchronized when the reader changes or closes.
+Retiring a draft can admit an already-arrived history destination; cleanup of
+the old graph address must not replace that destination.

@@ -120,6 +120,9 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
   let releaseEdit: (() => void) | null = null;
   let failNextSync = false;
   let holdNextSync = false;
+  let denyHeldSync = false;
+  let latestHeldSync = false;
+  let projectRevoked = false;
   let releaseSync: (() => void) | null = null;
   let heldSyncFinished = false;
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
@@ -128,20 +131,21 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
-    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
+    if (path === `/api/v1/projects/${projectId}`) return projectRevoked ? send({ error: { code: 'not_found', message: 'Not found', requestId: goalId } }, 404) : send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
-    if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
+    if (path === `/api/v1/projects/${projectId}/access`) return projectRevoked ? send({ error: { code: 'not_found', message: 'Not found', requestId: goalId } }, 404) : send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/tags`) return send({ items: [], catalogEpoch: taskSyncEpoch(projectId), nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/task-assignees` && failPeople) return send({ error: { code: 'unavailable', message: 'Assignee service unavailable', requestId: 'people-error' } }, 503);
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: ownerName, avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
-      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, ...(sessionStates[layoutWorkerId] === undefined ? {} : { taskObservations: { [layoutWorkerId]: { taskVersion: details.find(item => item.id === layoutWorkerId)!.version, state: 'working' as const, observedAt: currentGraph.observedAt, freshUntil: '2055-01-01T00:01:00Z', needsAttention: false, canOpen: true } } }), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties, tagsForTask: task => details.find(item => item.id === task.id)!.tags });
+      const makeResponse = () => taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, ...(sessionStates[layoutWorkerId] === undefined ? {} : { taskObservations: { [layoutWorkerId]: { taskVersion: details.find(item => item.id === layoutWorkerId)!.version, state: 'working' as const, observedAt: currentGraph.observedAt, freshUntil: '2055-01-01T00:01:00Z', needsAttention: false, canOpen: true } } }), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties, tagsForTask: task => details.find(item => item.id === task.id)!.tags });
+      const response = makeResponse();
       if (holdNextSync) {
         holdNextSync = false; await new Promise<void>(resolve => { releaseSync = resolve; }); releaseSync = null;
-        try { await send(response); } finally { heldSyncFinished = true; }
+        try { if (denyHeldSync) { denyHeldSync = false; projectRevoked = true; await send({ error: { code: 'not_found', message: 'Not found', requestId: goalId } }, 404); } else { const result = latestHeldSync ? makeResponse() : response; latestHeldSync = false; await send(result); } } finally { heldSyncFinished = true; }
         return;
       }
       return send(response);
@@ -285,7 +289,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       detailFixture(projectId, layoutStandaloneId, { title: 'Ordinary task' })];
     sessionStates = { [layoutWorkerId]: 'working' };
     currentGraph = { ...graphFixture(details), observedAt: '2055-01-01T00:00:00Z' };
-  }, completeOtherGoal: () => { details = details.map(item => item.id === otherGoalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T09:59:40Z' } : item); currentGraph = graphFixture(details); }, emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
+  }, completeOtherGoal: () => { details = details.map(item => item.id === otherGoalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T09:59:40Z' } : item); currentGraph = graphFixture(details); }, emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, holdDeniedSync: () => { holdNextSync = true; denyHeldSync = true; }, holdLatestSync: () => { holdNextSync = true; latestHeldSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
     details = details.map(item => item.id === goalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n } : item);
     currentGraph = graphFixture(details);
   }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, setTaskDescription: (description: string) => { details = details.map(item => item.id === singleId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
@@ -3362,6 +3366,47 @@ test('linked Goal graph keeps its URL through Back and Forward and protects nest
   await page.reload();
   await expect(graphDialog).toHaveCount(0);
   expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]); expect(writes).toEqual([]);
+});
+
+for (const [kind, leave] of [['revocation', false], ['revocation', true], ['history replacement', true]] as const) test(`${kind} ${leave ? 'preserves an arrived Back destination' : 'clears the linked Goal on its original entry'}`, async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto('/projects');
+  await page.evaluate(({ projectId, goalId }) => window.openGoalGraphAddress(projectId, goalId), { projectId, goalId });
+  const graphDialog = page.locator(`#task-graph-${goalId}`);
+  await expect(graphDialog).toBeVisible();
+  await graphDialog.getByRole('button', { name: 'Goal details', exact: true }).click();
+  const detail = page.locator('.goal-detail-surface');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await detail.locator('.thread-composer textarea').fill('Private draft');
+  if (kind === 'revocation') fixture.holdDeniedSync();
+  else fixture.holdLatestSync();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(fixture.syncHeld).toBe(true);
+  if (leave) {
+    await page.evaluate(() => history.go(-3));
+    await expect(page.getByRole('alertdialog', { name: 'Discard unsaved changes?' })).toBeVisible();
+  }
+  if (kind === 'history replacement') { fixture.retireGoal(); fixture.advanceEpoch(); }
+  fixture.releaseSync();
+  await expect.poll(fixture.heldSyncFinished).toBe(true);
+  await expect(page).toHaveURL(leave ? /\/projects$/ : new RegExp(`/projects/${projectId}\\?tab=tasks$`));
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+  await expect(page.getByRole('alertdialog', { name: 'Discard unsaved changes?' })).toHaveCount(0);
+});
+
+test('revocation clears a linked Goal in its original unindexed native entry', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto('/projects');
+  await page.evaluate(({ projectId, goalId }) => window.openNativeGoalGraphAddress(projectId, goalId), { projectId, goalId });
+  await expect(page.locator(`#task-graph-${goalId}`)).toBeVisible();
+  expect(await page.evaluate(() => history.state)).toEqual({ nativeMarker: 'retained' });
+  fixture.holdDeniedSync();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(fixture.syncHeld).toBe(true);
+  fixture.releaseSync();
+  await expect.poll(fixture.heldSyncFinished).toBe(true);
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=tasks$`));
+  expect(await page.evaluate(() => history.state)).toEqual({ nativeMarker: 'retained' });
 });
 
 test('Empty Goal opens a graph without manufacturing nodes or a loading failure', async ({ page }) => {

@@ -116,9 +116,9 @@ export class BrowserNavigation {
     this.observed = this.readEntry();
     this.adopt(this.observed);
   }
-  private adopt(entry: Entry): void {
+  private adopt(entry: Entry, force = false): void {
     this.accepted = entry;
-    if (this.location.pathname === entry.url.pathname && this.location.search === entry.url.search && this.location.hash === entry.url.hash &&
+    if (!force && this.location.pathname === entry.url.pathname && this.location.search === entry.url.search && this.location.hash === entry.url.hash &&
       this.location.entryId === entry.entryId && sameValue(this.location.view, entry.view)) return;
     this.location = this.toLocation(entry);
     for (const listener of this.listeners) listener();
@@ -254,9 +254,13 @@ export class BrowserNavigation {
     } else if (from === current) this.finishRestore();
     else this.browser.history.go(from - current);
   }
-  private traversed = (): void => {
+  private traversed = (event: Event): void => {
     const entry = this.readEntry();
-    if (entry.url.href === this.observed.url.href && entry.index === this.observed.index && entry.entryId === this.observed.entryId && sameValue(entry.view, this.observed.view)) return;
+    if (entry.url.href === this.observed.url.href && entry.index === this.observed.index && entry.entryId === this.observed.entryId && sameValue(entry.view, this.observed.view)) {
+      // Unindexed native entries have no stable identity, even when their URLs match.
+      if (entry.index === null && event.type === 'popstate') this.adopt(entry, true);
+      return;
+    }
     this.observed = entry;
     if (this.restoring) { this.restore(); return; }
     // Native fragments and foreign/unindexed entries retain their native, unguarded behavior.
