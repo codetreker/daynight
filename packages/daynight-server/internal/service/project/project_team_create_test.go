@@ -33,7 +33,7 @@ func TestCreateProjectTeamAndIdentity(t *testing.T) {
 		{admin, &team.ID, "https://example.com/Org/Repo.git", model.ProjectAdmin},
 		{member, &team.ID, "ssh://git@example.com:2222/Org/Repo.git", model.ProjectMemberRole},
 		{admin, nil, "git@example.com:Org/Repo.git", model.ProjectAdmin},
-		{admin, &personalTeam, "git@example.com:Org/Repo.git", model.ProjectAdmin},
+		{admin, &personalTeam, "git@example.com:Org/ExplicitPersonalRepo.git", model.ProjectAdmin},
 	} {
 		project, access, err := projects.CreateWithAccess(ctx, test.actor, coreproject.CreateProject{Name: "  原始 name  ", RepoURL: test.repo, TeamID: test.team, ExpectedUserID: test.actor.UserID})
 		if err != nil {
