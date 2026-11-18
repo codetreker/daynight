@@ -56,7 +56,7 @@ func queryFailureFacts(err error) (bool, string) {
 		return false, ""
 	}
 	switch err.(type) {
-	case *model.Fault, *taskproperties.ValidationError, *store.Error:
+	case *model.Fault, *model.UsageFault, *taskproperties.ValidationError, *store.Error:
 		return false, ""
 	}
 	if err == io.EOF || err == io.ErrUnexpectedEOF {

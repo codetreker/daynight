@@ -262,6 +262,9 @@ var projectGitHubWebhookSQL string
 //go:embed schema/migrations/085_github_webhook_status.sql
 var githubWebhookStatusSQL string
 
+//go:embed schema/migrations/086_usage_records.sql
+var usageRecordsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -355,6 +358,7 @@ var schemaMigrations = []migration{
 	{version: 83, sql: migration083.SQL(), transform: migration083.Apply, transformSource: migration083.TransformSource()},
 	{version: 84, sql: projectGitHubWebhookSQL},
 	{version: 85, sql: githubWebhookStatusSQL},
+	{version: 86, sql: usageRecordsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

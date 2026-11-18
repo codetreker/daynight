@@ -28,6 +28,7 @@ import (
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	usageapp "github.com/codetreker/daynight/packages/daynight-server/internal/service/usage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
@@ -58,6 +59,7 @@ type App struct {
 	ProjectDirectMembers *projectservice.DirectMembers
 	APIIssuer            *oauthservice.UserAPIIssuer
 	ImageValidationError error
+	UsageError           error
 	oauthMaintenance     *oauthservice.MaintenanceRunner
 
 	closeLock         chan struct{}
@@ -107,6 +109,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
+	app.Usage, app.UsageError = usageapp.FromEnvironment(database, c.S2S.SharedKey)
 	app.closeLock <- struct{}{}
 	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
 	app.ProjectDirectMembers = projectservice.NewDirectMembers(database, c.Server.PublicOrigin+"/api/v1")
@@ -253,6 +256,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	if app.PreviewSSOError != nil {
 		return failOpen(app.PreviewSSOError)
+	}
+	if app.UsageError != nil {
+		return failOpen(app.UsageError)
 	}
 	app.CredentialUsage, err = credentialusage.New(database.Transactions, logger, nil)
 	if err != nil {
