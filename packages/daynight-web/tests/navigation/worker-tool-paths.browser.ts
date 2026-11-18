@@ -4,6 +4,7 @@ import { WORKER_TIME, workerDetail } from '../helpers/workers';
 import { deferredRead, installTools, observedConfiguration, openToolConfiguration, pathChoice, reportedDetail, targetWorker, toolActual, toolObservation, toolPaths, toolReport } from './worker-tool-paths-fixture';
 
 const configuration = (page: Page) => page.locator('[data-worker-panel="configuration"]:visible');
+const refreshConfiguration = (page: Page) => configuration(page).getByRole('button', { name: /^(刷新|Refresh)$/, exact: true });
 const toolsSummary = (page: Page) => configuration(page).locator('summary').filter({ hasText: /^工具路径/ });
 const field = (page: Page, tool = 'codex') => page.locator(`#config-toolPaths-${tool}`);
 const facts = (page: Page, tool = 'codex', context = 'web') => configuration(page).locator(`.worker-tool-path-details[data-tool="${tool}"] .worker-tool-context[data-context="${context}"]`);
@@ -57,8 +58,8 @@ for (const width of [1440, 320]) for (const locale of ['zh-CN', 'en'] as const) 
     expect(await field(page).evaluate((element, original) => element === original, originalInput)).toBe(true);
     await page.keyboard.press('Enter'); await expect(details).not.toHaveAttribute('open');
     const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}/configuration` && value.request().method() === 'GET');
-    await page.locator('.configuration-toolbar button').click(); await response;
-    await expect(page.locator('.configuration-toolbar button')).toBeEnabled();
+    await refreshConfiguration(page).click(); await response;
+    await expect(refreshConfiguration(page)).toBeEnabled();
     await expect(details).not.toHaveAttribute('open');
     await expect(field(page)).toHaveValue('/opt/unsaved/shortcut/codex');
     expect(state.writes).toHaveLength(0); await noOverflow(page);
@@ -346,7 +347,7 @@ test('conflicts retain the draft and never replay a tool path write', async ({ p
   state.mode = 'conflict'; await field(page).fill('/opt/conflict/codex'); await save(page).click();
   await expect(page.getByText('云端配置已被其他页面修改。', { exact: true })).toBeVisible();
   await expect(field(page)).toHaveValue('/opt/conflict/codex'); await expect(save(page)).toBeDisabled();
-  await page.locator('.configuration-toolbar button').click();
+  await refreshConfiguration(page).click();
   await expect.poll(() => state.configurationReads).toBeGreaterThan(1); expect(state.writes).toHaveLength(1);
 });
 

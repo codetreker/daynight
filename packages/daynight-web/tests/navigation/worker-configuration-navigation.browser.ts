@@ -7,9 +7,13 @@ const target = workerId(1), personalId = workerId(90), projectId = workerId(301)
 const workerPath = `/workers/${target}`;
 const personal = { id: personalId, kind: 'personal', name: null };
 const project = { id: projectId, name: 'Alpha project', repoUrl: 'https://example.test/alpha.git', settings: { version: 1, executionWarningMinutes: 60 }, ownership: { teamId: personalId, version: 1 }, createdAt: WORKER_TIME, updatedAt: WORKER_TIME };
-const install = async (page: Page) => {
-  const state = { resource: configurationResource(), unavailable: false, userId: WORKER_USER, writes: [] as string[] };
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
+const configurationGate = (method: 'GET' | 'PUT' = 'GET') => {
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  return { method, started: started.promise, finish: finish.resolve, wait: finish.promise, notify: started.resolve };
+};
+const install = async (page: Page, locale: 'zh-CN' | 'en' = 'zh-CN') => {
+  const state = { resource: configurationResource(), unavailable: false, readFailure: false, userId: WORKER_USER, writes: [] as string[], reads: 0, gate: null as ReturnType<typeof configurationGate> | null };
+  await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (json: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, json, headers: { 'Daynight-User-ID': state.userId, ...extra } });
@@ -28,6 +32,12 @@ const install = async (page: Page) => {
     if (path === '/api/v1/me/workers') return send(workerPage());
     if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
     if (path === `/api/v1/me/workers/${target}/configuration`) {
+      const gate = state.gate;
+      if (gate !== null && request.method() === gate.method) { state.gate = null; gate.notify(); await gate.wait; }
+      if (request.method() === 'GET') {
+        state.reads++;
+        if (state.readFailure) return send({ error: { code: 'internal_error', message: 'Configuration read failed', requestId: 'fixture' } }, 500);
+      }
       if (state.unavailable) return missing();
       if (request.method() === 'PUT') state.resource = configurationResource(String(BigInt(state.resource.desired!.revision) + 1n), request.postDataJSON().value as WorkerConfigurationValue);
       return send(state.resource, 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
@@ -46,6 +56,104 @@ const back = (page: Page) => page.locator('a.worker-back-link').click();
 const dialog = (page: Page) => page.getByRole('alertdialog');
 const keep = (page: Page) => dialog(page).getByRole('button', { name: '继续编辑' });
 const discard = (page: Page) => dialog(page).getByRole('button', { name: '放弃并离开' });
+const configuration = (page: Page) => page.locator('[data-worker-panel="configuration"]:visible');
+const refresh = (page: Page) => configuration(page).getByRole('button', { name: /^(刷新|正在刷新…|Refresh|Refreshing…)$/, exact: true });
+
+const expectRefreshLayout = async (page: Page, settings: string) => {
+  const panel = configuration(page).locator('.config-panel').first(), header = panel.locator(':scope > header');
+  await expect(header.getByRole('heading', { name: settings, exact: true })).toBeVisible();
+  await expect(header.getByRole('button')).toHaveCount(1);
+  const layout = await header.evaluate(element => {
+    const heading = element.querySelector('h2')!, button = element.querySelector('button')!;
+    const title = heading.getBoundingClientRect(), action = button.getBoundingClientRect(), parent = element.getBoundingClientRect();
+    return { separated: title.right <= action.left, sameRow: title.top < action.bottom && action.top < title.bottom,
+      contained: action.left >= parent.left && action.right <= parent.right, readable: button.scrollWidth <= button.clientWidth && heading.scrollWidth <= heading.clientWidth };
+  });
+  expect(layout).toEqual({ separated: true, sameRow: true, contained: true, readable: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+};
+
+for (const width of [1360, 390, 320]) for (const locale of ['zh-CN', 'en'] as const) {
+  test(`${width}px ${locale} runtime header contains compact keyboard refresh and preserves the draft`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    const state = await install(page, locale); await open(page);
+    const settings = locale === 'zh-CN' ? '运行设置' : 'Runtime settings';
+    const source = configuration(page).locator('.configuration-source'), summary = source.locator(':scope > summary');
+    const panel = configuration(page).locator('.config-panel').first();
+    await expectRefreshLayout(page, settings);
+    const compactGap = await panel.evaluate((element, source) => element.getBoundingClientRect().top - source!.getBoundingClientRect().bottom, await source.elementHandle());
+    expect(compactGap).toBeGreaterThanOrEqual(0); expect(compactGap).toBeLessThanOrEqual(24);
+    await info.attach('compact-runtime-header', { body: await page.screenshot(), contentType: 'image/png' });
+    await summary.focus(); await page.keyboard.press('Enter'); await expect(source).toHaveAttribute('open', '');
+    await expect(source.locator('pre')).toHaveText(JSON.stringify(state.resource.desired!.value));
+    const sourceWidth = await source.evaluate(element => element.getBoundingClientRect().width);
+    expect(await source.locator('pre').evaluate(element => element.getBoundingClientRect().width)).toBe(sourceWidth);
+    await page.locator('#config-maxConcurrent').fill('7');
+    await page.locator('#config-native-args').fill('[unfinished raw input');
+    const gate = configurationGate(); state.gate = gate;
+    const reads = state.reads;
+    await refresh(page).focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
+    await expect(refresh(page)).toBeFocused();
+    expect(await refresh(page).evaluate(element => { const style = getComputedStyle(element); return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0; })).toBe(true);
+    await page.keyboard.press('Enter'); await gate.started;
+    try {
+      await expect(refresh(page)).toHaveText(locale === 'zh-CN' ? '正在刷新…' : 'Refreshing…');
+      await expect(refresh(page)).toBeDisabled(); await expectRefreshLayout(page, settings);
+      await expect(source).toHaveAttribute('open', '');
+      await expect(page.locator('#config-maxConcurrent')).toHaveValue('7');
+      await expect(page.locator('#config-native-args')).toHaveValue('[unfinished raw input');
+      expect(state.writes).toEqual([]);
+      await info.attach('refresh-in-flight', { body: await panel.locator(':scope > header').screenshot(), contentType: 'image/png' });
+    } finally { gate.finish(); }
+    await expect(refresh(page)).toBeEnabled(); expect(state.reads).toBeGreaterThan(reads);
+    await expect(page.locator('#config-maxConcurrent')).toHaveValue('7');
+    await expect(page.locator('#config-native-args')).toHaveValue('[unfinished raw input');
+    await expect(source).toHaveAttribute('open', ''); expect(state.writes).toEqual([]);
+    await summary.focus(); await page.keyboard.press('Enter'); await expect(source).not.toHaveAttribute('open');
+    expect(await panel.evaluate((element, source) => element.getBoundingClientRect().top - source!.getBoundingClientRect().bottom, await source.elementHandle())).toBe(compactGap);
+  });
+}
+
+test('runtime refresh retains read failure recovery and stays disabled during saving and identity pause', async ({ page, context }) => {
+  const state = await install(page); await open(page);
+  await page.locator('#config-maxConcurrent').fill('4');
+  state.readFailure = true; await refresh(page).click();
+  await expect(configuration(page).getByRole('alert')).toContainText('读取配置失败');
+  await expect(page.locator('#config-maxConcurrent')).toHaveValue('4');
+  state.readFailure = false; await configuration(page).getByRole('button', { name: '重试', exact: true }).click();
+  await expect(configuration(page).getByRole('alert')).toHaveCount(0); await expect(refresh(page)).toBeEnabled();
+  const gate = configurationGate('PUT'); state.gate = gate;
+  await configuration(page).getByRole('button', { name: '保存配置', exact: true }).click(); await gate.started;
+  try { await expect(refresh(page)).toBeDisabled(); } finally { gate.finish(); }
+  await expect(refresh(page)).toBeEnabled(); expect(state.writes).toEqual([`PUT /api/v1/me/workers/${target}/configuration`]);
+  const other = await context.newPage();
+  try {
+    await other.route('**/api/v1/me', route => route.fulfill({ json: { id: WORKER_USER, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }, headers: { 'Daynight-User-ID': WORKER_USER } }));
+    await other.goto('/');
+    await expect.poll(() => other.evaluate(() => localStorage.getItem('daynight.activeUser'))).toBe(JSON.stringify(WORKER_USER));
+    await other.evaluate(user => localStorage.setItem('daynight.activeUser', JSON.stringify(user)), workerId(88));
+    await expect(page.getByText('账户已变化', { exact: true })).toBeVisible();
+    await expect(refresh(page)).toBeDisabled();
+  } finally { await other.close(); }
+});
+
+test('initial loading, uninitialized and unavailable configuration keep their independent actions', async ({ page }) => {
+  const state = await install(page), gate = configurationGate(); state.gate = gate;
+  await page.goto(`/workers/${target}`); await page.locator('[data-worker-tab="configuration"]:visible').click(); await gate.started;
+  try {
+    await expect(configuration(page).getByRole('heading', { name: '正在读取配置', exact: true })).toBeVisible();
+    await expect(refresh(page)).toHaveCount(0);
+  } finally { state.resource = { ...configurationResource(), desired: null }; gate.finish(); }
+  await expect(configuration(page).locator('.state-box')).toContainText('尚未接入配置管理');
+  await expect(refresh(page)).toBeEnabled();
+  state.unavailable = true; await refresh(page).click();
+  await expect(configuration(page).getByRole('button', { name: '重试', exact: true })).toBeEnabled();
+  await expect(configuration(page).locator('.config-panel')).toHaveCount(0);
+  state.unavailable = false; state.resource = configurationResource();
+  await configuration(page).getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.locator('#config-maxConcurrent')).toHaveValue('2'); await expect(refresh(page)).toBeEnabled();
+  expect(state.writes).toEqual([]);
+});
 
 for (const width of [1360, 390]) {
   test.describe(`${width}px configuration departure`, () => {

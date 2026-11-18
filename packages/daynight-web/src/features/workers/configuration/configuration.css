@@ -3,7 +3,6 @@
 .worker-tabs button[aria-selected="true"] { border-color: var(--indigo); color: var(--indigo); font-weight: 600; }
 .worker-tabs button:focus-visible { outline: 3px solid #8c8cf0; outline-offset: -3px; border-radius: 4px; }
 .worker-section[hidden] { display: none; }
-.configuration-toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
 .configuration-layout { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 22px; align-items: start; }
 .configuration-main, .configuration-aside { min-width: 0; }
 .configuration-aside { position: sticky; top: 20px; }
