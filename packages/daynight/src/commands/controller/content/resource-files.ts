@@ -1,5 +1,5 @@
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { parseSessionResource, parseStoredSessionResource, type SessionResource } from "../../../session/protocol.js";
 import { syncDirectory, writeDurableJson } from "../../../platform/durable-json.js";
@@ -15,13 +15,14 @@ const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value)
 // reader still owns its FD. Retirement must observe both owners' leases.
 const activeLeases = new Map<string, number>();
 
-type PendingContentIndex = { entries: string[]; resources: string[] };
+type PendingContentIndex = { entries: string[]; resources: string[]; cleanup?: string[] };
 const readIndex = (root: string): { source: Buffer; value: PendingContentIndex } | undefined => {
   const file = join(root, "index.json");
   if (!existsSync(file)) return undefined;
   const source = readFileSync(file), value = JSON.parse(source.toString("utf8")) as PendingContentIndex;
   if (!Array.isArray(value.entries) || !Array.isArray(value.resources)) throw new Error("Invalid pending content index.");
   if ([...value.entries, ...value.resources].some(name => typeof name !== "string" || !/^[a-f0-9]{64}\.json$/.test(name))) throw new Error("Pending archive source is incomplete.");
+  if (value.cleanup !== undefined && (!Array.isArray(value.cleanup) || value.cleanup.some(name => typeof name !== "string" || !/^(?:resources\/[a-f0-9]{64}\.json|blobs\/[a-f0-9]{64}\.bin)\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.delete$/.test(name)))) throw new Error("Invalid pending resource cleanup inventory.");
   return { source, value };
 };
 const validatedIndex = (root: string): PendingContentIndex | undefined => {
@@ -135,17 +136,37 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   // The journal owns the durable timeline inventory. Rewriting a growing
   // entry list on each insert would make an otherwise linear archive quadratic.
   // Resources have their own small inventory because their bytes do not live in SQL.
-  const updateIndex = () => publishIndex(root, { entries: [], resources: [...resources.keys()].map(name).sort() });
+  const nextIndex = (retired: readonly string[] = []): PendingContentIndex => {
+    const cleanup = [...new Set([...(readIndex(root)?.value.cleanup ?? []), ...retired])];
+    return { entries: [], resources: [...resources.keys()].map(name).sort(), ...(cleanup.length ? { cleanup } : {}) };
+  };
+  const updateIndex = (retired: readonly string[] = []) => publishIndex(root, nextIndex(retired));
   let descriptorBytes = [...resources.values()].reduce((sum, value) => sum + encodedBytes(value.resource), 0);
-  const pendingCleanup = new Set<string>();
   const retryCleanup = (): void => {
-    for (const file of pendingCleanup) {
-      try { if (existsSync(file)) unlinkSync(file); pendingCleanup.delete(file); } catch {}
+    assertWritable(); assertDirectories(); assertSessionManifest(root, sessionId);
+    const index = readIndex(root)?.value;
+    if (!index?.cleanup?.length) return;
+    // The atomic resource inventory records only backups whose original
+    // deletion committed. Never infer ownership by scanning leftover files.
+    for (const relative of index.cleanup) {
+      const file = join(root, relative);
+      let metadata;
+      try { metadata = lstatSync(file); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+      if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("Invalid retained resource backup.");
+      unlinkSync(file);
     }
+    syncDirectory(resourceDirectory); syncDirectory(blobDirectory);
+    const { cleanup: _cleanup, ...remaining } = index;
+    publishIndex(root, remaining);
+  };
+  const tryCleanup = (): void => {
+    try { retryCleanup(); }
+    catch (error) { process.emitWarning(`Retained resource cleanup remains pending: ${String(error)}`); }
   };
   const checkResourceBudget = (resource?: SessionResource): void => {
     assertDirectories();
-    retryCleanup();
+    tryCleanup();
     const known = new Set([...resources.keys()].map(id => name(id).replace(/\.json$/, ".bin")));
     let bytes = 0, orphans = 0;
     for (const file of readdirSync(blobDirectory).filter(file => file.endsWith(".bin") || /\.bin\.[a-f0-9-]+\.delete$/.test(file))) {
@@ -238,6 +259,7 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     const oldPins = existsSync(pinsPath) ? JSON.parse(readFileSync(pinsPath, "utf8")) as unknown : undefined;
     const oldIndex = readIndex(root)?.value;
     let pinsAttempted = false, indexAttempted = false;
+    let committedIndex: PendingContentIndex | undefined;
     try {
       // Retain both originals until every fallible deletion and metadata update
       // succeeds. Hard links avoid copying a potentially large immutable blob.
@@ -247,9 +269,30 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
       if (previous) { descriptorBytes -= encodedBytes(previous.resource); resources.delete(id); }
       delete pins[id];
       pinsAttempted = true; writeDurableJson(pinsPath, pins);
-      indexAttempted = true; updateIndex();
       syncDirectory(blobDirectory); syncDirectory(resourceDirectory);
+      committedIndex = nextIndex(backups.map(file => `${file === descriptor ? "resources" : "blobs"}/${basename(file)}${suffix}`));
+      indexAttempted = true; publishIndex(root, committedIndex);
     } catch (error) {
+      if (indexAttempted) {
+        // A failed directory flush can follow the atomic index rename. Once
+        // that deletion inventory is visible, restoring only some originals
+        // would turn its cleanup authority into permission to erase recovery
+        // evidence. Observe publication before deciding whether rollback is safe.
+        let current: PendingContentIndex | undefined;
+        try { current = readIndex(root)?.value; }
+        catch (observation) {
+          recoveryNeeded = true;
+          throw new AggregateError([error, observation], "Resource deletion publication is unknown; retained backups require recovery.", { cause: error });
+        }
+        if (JSON.stringify(current) === JSON.stringify(committedIndex)) {
+          process.emitWarning(`Resource deletion index was published before its acknowledgement failed: ${String(error)}`);
+          tryCleanup(); return;
+        }
+        if (JSON.stringify(current) !== JSON.stringify(oldIndex)) {
+          recoveryNeeded = true;
+          throw new Error("Resource deletion inventory changed; retained backups require recovery.", { cause: error });
+        }
+      }
       if (previous && !resources.has(id)) { resources.set(id, previous); descriptorBytes += encodedBytes(previous.resource); }
       if (previousPins !== undefined) pins[id] = previousPins;
       const failures: unknown[] = [];
@@ -264,24 +307,23 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
         try { if (oldIndex === undefined) { if (existsSync(indexPath)) unlinkSync(indexPath); } else publishIndex(root, oldIndex); } catch (failure) { failures.push(failure); }
       }
       if (!failures.length) {
-        for (const file of backups) { try { unlinkSync(file + suffix); } catch {} }
+        // Restored originals no longer need these exact backups. Persist their
+        // ownership before attempting cleanup after the completed rollback.
+        try {
+          updateIndex(backups.map(file => `${file === descriptor ? "resources" : "blobs"}/${basename(file)}${suffix}`));
+          retryCleanup();
+        } catch (cleanup) { throw new AggregateError([error, cleanup], "Resource deletion rollback retained backups requiring cleanup.", { cause: error }); }
         throw error;
       }
       // The backup paths remain available even if restoration itself failed.
       recoveryNeeded = true;
       throw new AggregateError([error, ...failures], `Resource deletion failed; retained sources: ${backups.map(file => file + suffix).join(", ")}`, { cause: error });
     }
-    // Only this owner knows that these backups are no longer needed. Retry its
-    // failed cleanup on future admissions; other openers conservatively charge
-    // any distinct retained blob as an orphan.
-    for (const file of backups) {
-      try { unlinkSync(file + suffix); }
-      catch (error) {
-        pendingCleanup.add(file + suffix);
-        process.emitWarning(`Could not remove retained resource backup ${file + suffix}: ${String(error)}`);
-      }
-    }
+    // Logical release has committed. Ordinary callers must not mistake a
+    // backup cleanup failure for a rollback; stopped retirement explicitly
+    // requires retryCleanup to finish before reporting archive completion.
+    tryCleanup();
   };
-  return { root, get resources() { assertWritable(); return resources; }, saveResource, publishMigrationResource, writeResource, importResourceFile, acquireResource, pinResource, unpinResource, releaseResource, assertResourceReleasable, descriptorBytes: () => { assertWritable(); return descriptorBytes; } };
+  return { root, get resources() { assertWritable(); return resources; }, saveResource, publishMigrationResource, writeResource, importResourceFile, acquireResource, pinResource, unpinResource, releaseResource, retryCleanup, assertResourceReleasable, descriptorBytes: () => { assertWritable(); return descriptorBytes; } };
 };
 export type ResourceFiles = ReturnType<typeof openResourceFiles>;

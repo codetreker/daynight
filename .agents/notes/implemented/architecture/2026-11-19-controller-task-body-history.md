@@ -45,6 +45,23 @@ and local cleanup success remain distinct facts. The
 [SQLite content design](../../../../docs/design/session-sqlite-content.md) owns
 the precise transaction, receipt, compaction and checkpoint conditions.
 
+The resource owner's existing index durably records the exact deletion backups
+that no longer serve recovery. Cleanup consumes this inventory across reopen,
+verifies file ownership and type, and clears it only after deletion and directory
+sync succeed. Ordinary resource release reports its logical commit even if
+subsequent backup cleanup warns and remains pending. Stopped online retirement
+requires strict backup cleanup before compaction and completion; failure retains
+the confirmed archive receipt and the remaining cleanup obligation. Backups
+still needed after failed resource restoration remain recovery evidence.
+
+Publishing the new resource inventory is the final logical release commit,
+after original-file deletion and directory sync. If publication throws, the
+owner reads the actual index before deciding whether rollback is valid. An
+exact new inventory preserves the committed deletion; a confirmed old inventory
+permits restoration. Unknown or unexpected inventory preserves backups and
+reports a recovery error. A visible new index does not prove its directory sync
+succeeded; strict cleanup must still complete durable publication.
+
 ## Alternatives
 
 **Filter the original shared table.** This was deferred by the original save
@@ -61,6 +78,11 @@ without transmitting the tool body.
 and receipts describe full history. Reinterpreting them would change the meaning
 of already accepted evidence. Migration therefore defaults to `legacy`; only
 initial execution creation chooses the new Task policy.
+
+**Keep pending backup cleanup only in memory.** Reopening would lose cleanup
+ownership after a logically committed release. The existing durable index
+preserves exact paths without introducing another manifest or inferring ownership
+from a directory scan.
 
 ## Consequences
 

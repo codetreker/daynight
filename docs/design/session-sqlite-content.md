@@ -42,6 +42,10 @@ Controller journal 的唯一编号序列为 `001`–`015`，当前格式为 v15�
 
 资源仍由原文件拥有者管理。`openSessionContent` 的组合层在同一同步读快照中检查合并在线内容和 `native_input_publication_images`，并要求资源拥有者的 lease/pin 检查通过才允许释放。媒体导入后的清理也使用这一受保护的资源接口。`metadataBytes()` 查询两表合并的当前 SQL totals 并加 descriptor 字节，只表示逻辑元数据，不代替实际 DB/WAL/SHM 物理计量。
 
+资源删除的恢复备份由同一 `index.json` 的可选 `cleanup` 清单持久登记，路径仅允许资源 descriptor 或 blob 的具名 `.delete` 备份。资源拥有者将不再需要恢复的确切备份路径与当前资源清单一起发布；重开后按清单重试，不扫描目录猜测文件归属。`retryCleanup()` 核对写权限、目录与 Session 身份，只删除登记的普通文件，允许已删除项缺失，拒绝 symlink 或其他文件类型；资源和 blob 目录刷盘成功后才发布移除 `cleanup` 的索引。删除、刷盘或索引发布失败明确报错，重入按实际索引继续处理尚存登记，已删除项可幂等确认；最后索引发布若在 rename 后刷盘失败，不能断言清单仍在。若原资源恢复失败，仍用于恢复的备份与原错误链保留，不能当作普通待清理文件。普通 `releaseResource` 逻辑提交后尝试清理备份，清理失败发出警告，不把已提交的资源释放报告为回滚。
+
+资源释放在删除原文件并刷盘相关目录后，以发布新资源索引作为最后的逻辑提交动作。发布抛错时先读回实际索引：完整匹配新清单则保留已删除状态与清理责任，不恢复原文件；确认仍为旧清单才尝试回滚；无法确认或出现其他清单时保留备份并报告需要恢复。可见新索引只证明逻辑发布，不能代替严格清理最终索引发布与根目录刷盘的成功证据。
+
 ## 旧格式导入
 
 canonical 010 沿原迁移链处理 v1–9。旧 writer 准入继续由 `assertJournalMigrationAllowed` 和原存储 permit 负责。原 execution、Session、claim、generation、native 身份、未决 operation、outbox、图片关联、`input_message_origins` 和原停止证据均保留。upgrade-only 可保留 stopping、paused 或 `nativeStopped=false`；导入不制造 stopped。
@@ -93,9 +97,9 @@ VACUUM 在原连接同步执行；执行期间将 `SQLITE_TMPDIR`、`TMPDIR`、`
 
 退休持原 stopped storage permit 并重新核对 execution 身份；要求 `nativeStopped=true`、`lifecycle=stopped`、`owner_pid=null` 和 `last_sequence=last_acknowledged`。清理函数还核对 Session、generation 及本地 receipt 的 ready/schema3/摘要/长度字段。正文图片与 `native_input_publication_images` 引用形成保留集合，其余资源必须先通过文件 lease/pin 准入。
 
-在线条目、online totals、非正文图片位置以及所属 Markdown projection/source/context 在同一个 immediate 事务中清理，临时启用 `secure_delete` 并在 finally 恢复原值。随后通过受保护资源接口逐项删除独占资源；共享正文和原生输入图片保持可读。有 freelist 时执行 VACUUM，再执行 `wal_checkpoint(TRUNCATE)`；busy 明确报错，不能声称物理退休完成。
+在线条目、online totals、非正文图片位置以及所属 Markdown projection/source/context 在同一个 immediate 事务中清理，临时启用 `secure_delete` 并在 finally 恢复原值。随后通过受保护资源接口逐项删除独占资源；共享正文和原生输入图片保持可读。严格调用资源拥有者的 `retryCleanup()` 完成持久清单中的备份删除后，有 freelist 时执行 VACUUM，再执行 `wal_checkpoint(TRUNCATE)`；备份清理失败或 checkpoint busy 均明确报错，不能声称物理退休完成。
 
-SQL 与资源文件删除不是一个原子事务。资源删除或压缩失败保留已提交阶段、journal 和剩余文件；重入从剩余资源重新枚举，不因在线行已清空而跳过失败资源。确认的 archive receipt 不因本地清理失败而变为未提交；清理成功也不提供服务端七天期限或本机原生恢复材料淘汰能力。
+SQL 与资源文件删除不是一个原子事务。资源删除、备份清理或压缩失败保留已提交阶段、journal 和剩余文件；重入从剩余资源重新枚举，并继续消费持久备份清单，不因在线行已清空或资源已逻辑释放而跳过失败清理。确认的 archive receipt 不因本地清理失败而变为未提交；清理成功也不提供服务端七天期限或本机原生恢复材料淘汰能力。
 
 ## 可观察结果与验证
 

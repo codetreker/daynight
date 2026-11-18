@@ -20,6 +20,14 @@ import { controllerJournalFormat } from "../../../src/commands/controller/journa
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
 import { createMarkdownImageProjector } from "../../../src/commands/controller/markdown/projection.js";
+const cleanupFault = vi.hoisted(() => ({ blob: "" }));
+vi.mock("node:fs", async original => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, unlinkSync: (file: Parameters<typeof fs.unlinkSync>[0]) => {
+    if (cleanupFault.blob && String(file).startsWith(cleanupFault.blob + ".") && String(file).endsWith(".delete")) throw Object.assign(new Error("Retained tool blob cleanup denied."), { code: "EPERM" });
+    fs.unlinkSync(file);
+  } };
+});
 const errorCauses = (error: unknown): Error[] => {
   const values: Error[] = [];
   for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
@@ -76,7 +84,7 @@ const migrate = (db: Database.Database): void => {
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
 
-test.each([false, true])("Task body archive excludes tool resources and retires online content with retryable cleanup (lease: %s)", async holdLease => {
+test.each(["none", "lease", "backup"])("Task body archive excludes tool resources and retires online content with retryable cleanup (%s)", async fault => {
   const f = await fixture({ finalizeStop: false, historyPolicy: "task_body" });
   const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const resources = ["body-image", "tool-exclusive-image"].map(name => {
@@ -89,7 +97,8 @@ test.each([false, true])("Task body archive excludes tool resources and retires 
   store.projectTimeline({ entryId: toolId, revision: "1", kind: "tool_call", callId: "call-1", name: "shell", input: "private command", output: [{ type: "text", text: "tool-exclusive-marker" }, { type: "resource", resourceId: toolResource.resourceId, label: "tool image" }], status: "completed", truncated: false });
   const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
   const files = resourceFiles.openResourceFiles(f.journalPath, f.ticket.sessionId);
-  const lease = holdLease ? files.acquireResource(toolResource.resourceId) : null;
+  const lease = fault === "lease" ? files.acquireResource(toolResource.resourceId) : null;
+  if (fault === "backup") cleanupFault.blob = path.join(files.root, "blobs", `${createHash("sha256").update(toolResource.resourceId).digest("hex")}.bin`);
   const bodies: string[] = [], methods: string[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough });
   const request: typeof fetch = async (input, init) => {
@@ -99,16 +108,25 @@ test.each([false, true])("Task body archive excludes tool resources and retires 
   };
   const options = { ...f, serverToken: "test", request }, receiptPath = `${f.journalPath}.archive-receipt-1.json`;
   try {
-    if (lease) {
+    if (fault !== "none") {
       const failure = await uploadStoppedControllerArchive(options).then(() => null, (error: unknown) => error);
-      expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Resource has an active lease or reference." })]));
+      expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: lease ? "Resource has an active lease or reference." : "Retained tool blob cleanup denied." })]));
       expect(JSON.parse(await readFile(receiptPath, "utf8"))).toMatchObject({ state: "ready", schemaVersion: 3 });
-      expect(files.resources.has(toolResource.resourceId)).toBe(true);
-      lease.close(); methods.length = 0;
+      const reopened = resourceFiles.openResourceFiles(f.journalPath, f.ticket.sessionId);
+      expect(reopened.resources.has(toolResource.resourceId)).toBe(fault === "lease");
+      if (fault === "backup") {
+        const index = JSON.parse(await readFile(path.join(files.root, "index.json"), "utf8"));
+        expect(index.cleanup).toHaveLength(2);
+        const backup = index.cleanup.find((file: string) => file.startsWith("blobs/"));
+        expect(await readFile(path.join(files.root, backup), "utf8")).toBe("tool-exclusive-image");
+        await expect(uploadStoppedControllerArchive(options)).rejects.toThrow();
+        expect(JSON.parse(await readFile(receiptPath, "utf8"))).toMatchObject({ state: "ready", schemaVersion: 3 });
+      }
+      lease?.close(); cleanupFault.blob = ""; methods.length = 0;
     }
     const receipt = await uploadStoppedControllerArchive(options);
     expect(receipt).toMatchObject({ state: "ready", schemaVersion: 3 });
-    if (holdLease) expect(methods).toEqual(["GET"]);
+    if (fault !== "none") expect(methods).toEqual(["GET"]);
     expect(bodies).toHaveLength(1);
     const manifest = JSON.parse(bodies[0]!);
     expect(manifest).toMatchObject({ schemaVersion: 3, contentPolicy: "task_body" });
@@ -122,8 +140,9 @@ test.each([false, true])("Task body archive excludes tool resources and retires 
     } finally { db.close(); }
     const retained = resourceFiles.openResourceFiles(f.journalPath, f.ticket.sessionId);
     expect(retained.resources.has(bodyResource.resourceId)).toBe(true); expect(retained.resources.has(toolResource.resourceId)).toBe(false);
+    expect(JSON.parse(await readFile(path.join(files.root, "index.json"), "utf8"))).not.toHaveProperty("cleanup");
     expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(receipt);
-  } finally { lease?.close(); }
+  } finally { cleanupFault.blob = ""; lease?.close(); }
 });
 
 test("Task body archive refuses unsupported service before source-tail or content writes", async () => {

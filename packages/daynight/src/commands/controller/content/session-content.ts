@@ -126,6 +126,7 @@ export const retireStoppedOnlineContent = (journal: string, sessionId: string, d
     }).immediate();
   } finally { db.pragma(`secure_delete = ${secureDelete === 0 ? "OFF" : secureDelete === 2 ? "FAST" : "ON"}`); }
   for (const id of removable) content.resourceFiles.releaseResource(id);
+  content.resourceFiles.retryCleanup();
   if ((db.pragma("freelist_count", { simple: true }) as number) > 0) db.exec("VACUUM");
   const checkpoint = db.pragma("wal_checkpoint(TRUNCATE)") as { busy: number }[];
   if (checkpoint.some(result => result.busy !== 0)) throw new Error("Online detail retirement is waiting for journal readers to release their snapshots.");
