@@ -122,6 +122,22 @@ export const projectSectionUrl = (projectId: string, section: ProjectSection): s
   return `/projects/${encodeURIComponent(projectId)}?${new URLSearchParams({ tab: section })}`;
 };
 
+/** A chain link locates a current ordinary component through one of its members. */
+export const buildTaskChainUrl = (projectId: string, taskId: string): string => {
+  const project = canonicalId(projectId), task = canonicalId(taskId);
+  if (project === null || task === null) throw new ApiError("protocol");
+  return new URL(`/projects/${project}?${new URLSearchParams({ tab: "tasks", chain: task })}`, window.location.origin).href;
+};
+
+export const parseTaskChainUrl = (pathname: string, search: string): { readonly kind: "none" } | { readonly kind: "invalid" } | { readonly kind: "chain"; readonly taskId: string } => {
+  const route = parseRoute(pathname, search);
+  if (route.kind !== "project" || route.tab !== "tasks") return { kind: "none" };
+  const values = new URLSearchParams(search).getAll("chain");
+  if (values.length === 0) return { kind: "none" };
+  const taskId = values.length === 1 ? canonicalId(values[0]!) : null;
+  return taskId !== null && taskId === values[0] ? { kind: "chain", taskId } : { kind: "invalid" };
+};
+
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/webhooks") return webhookRoute(search);
   if (pathname === "/github-apps") return { kind: "githubApps", appId: null };

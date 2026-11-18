@@ -345,6 +345,27 @@ describe('Project reading history', () => {
     } finally { scope.dispose(); }
   });
 
+  it('consumes a native chain query only after the draft decision and preserves unrelated state', () => {
+    history.replaceState(null, '', `${path}?tab=tasks&other=kept&chain=${root}#task=${root}`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => { history.pushState({ foreign: true }, '', `${path}?tab=tasks&other=kept&chain=${root}#task=${root}`); dispatchEvent(new PopStateEvent('popstate')); });
+      const length = history.length, discard = vi.fn(), commit = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      const next = { ...selection, detail: null };
+      act(() => result.current.select(next, false, commit, 'chain'));
+      expect(location.search).toContain(`chain=${root}`); expect(commit).not.toHaveBeenCalled();
+      act(() => navigation.confirm());
+      expect(location.search).toBe('?tab=tasks&other=kept'); expect(location.hash).toBe('');
+      expect(history.length).toBe(length); expect(history.state).toEqual({ foreign: true });
+      expect(navigation.snapshot()).toMatchObject({ entryId: null, view: projectHistory(user, project, next) });
+      expect(discard).toHaveBeenCalledOnce(); expect(commit).toHaveBeenCalledOnce();
+      release(); unmount();
+    } finally { scope.dispose(); }
+  });
+
   it.each(['history', 'access'] as const)('never revives a native fragment reading after %s retirement and rerender', kind => {
     history.replaceState(null, '', `${path}?tab=prs`);
     const navigation = browserNavigation();
