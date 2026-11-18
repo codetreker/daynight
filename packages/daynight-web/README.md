@@ -1070,7 +1070,10 @@ Failures stay visible and retryable. Trusted same-user project 404 responses
 withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md) records the rationale for the versioning, HTTP cache and scan-cost trade-offs.
 
-The task toolbar orders Assignee, Status and Tag filter. The ordinary Goal view
+The ordinary task toolbar orders Assignee, Status, Platform and Tag filter. The
+platform selection is shared by standalone and chain views for the project visit;
+All tasks is unrestricted, Any platform matches only an unset requirement, and
+Linux, Windows and macOS match exactly. Goal and search omit this condition. The ordinary Goal view
 adds one Child task tag filter after them, applying the same condition to every
 Goal's direct-child rows. Child filtering is independent of each Goal's own tags
 and retains its selection through category changes, pagination and collapse.
@@ -1097,10 +1100,12 @@ write after matching the Tag and color versions. Conflicts preserve the draft;
 an unknown write is not resent and a later read cannot prove its outcome.
 
 Assignee supports All, Assigned to me, Unassigned and a person; status supports
-all five Task statuses. Project conditions must match the same task before
+all five Task statuses. Platform uses the synchronized requirement without extra
+requests. Project conditions must match the same task before
 pagination. Standalone rows match directly; a chain with any matching ordinary
 member retains its real representative and all ordinary children. Changing
-project filters resets the task lists to page one. Full-chain progress, readiness,
+assignee, status or tag filters resets the task lists to page one; changing
+platform resets only the two ordinary lists. Full-chain progress, readiness,
 dependencies, statistics and graph use the complete index. Child filtering also
 preserves Goal composition, in-progress and pause counts, and Session summaries.
 Overview positioning adjusts project filters that hide its target. Tag panels
@@ -1594,7 +1599,7 @@ exact newest-first order remains stable; the standalone aggregate follows
 matching-status chains.
 Pagination shows the current item range and filtered total with previous/next
 controls; one-page results have no pager. Each list retains its own page during
-the project visit. Changing either filter resets both task lists to page one; shrinking
+the project visit. Changing assignee, status, tag or platform resets both ordinary task lists to page one; shrinking
 results clamp the page immediately. These display slices do not truncate the
 cached graph, statistics, Goal progress or dependency context, and do not add
 requests or stored page preferences.
@@ -1695,7 +1700,7 @@ prerequisite context does not contribute to chain progress or status. The former
 shared-membership badge is removed: a task can recur as context while its actual
 component membership remains unique.
 
-Both categories share assignee and status filters and the current
+Both categories share assignee, status, platform and tag filters and the current
 task-list page position; category switching does not restore an older offset. Chain
 ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The
