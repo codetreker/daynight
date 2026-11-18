@@ -21,7 +21,7 @@ func readOnlyModelFixture() json.RawMessage {
 	return json.RawMessage(`{"schemaVersion":1,"provider":"codex","cwd":"/workspace","configurationGeneration":"` + strings.Repeat("a", 64) + `","catalogGeneration":"66666666-6666-4666-8666-666666666666","models":[{"id":"native-model","label":"Native <Model> & 能力","aliases":[],"hidden":false,"reasoningEfforts":["low","high"],"defaultReasoningEffort":"high"}],"defaults":{"model":{"value":"native-model","source":"native"},"reasoningEffort":{"value":"high","source":"native"}},"selectionError":null,"nextCursor":null}`)
 }
 func TestReadOnlyHTTPModelDiscoveryPreservesCapabilitiesAndBinding(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTransportFixture(t)
 	c, ready := f.connect(t, f.worker, f.token, "directory.list", "model.list")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -73,7 +73,7 @@ func TestReadOnlyHTTPModelDiscoveryPreservesCapabilitiesAndBinding(t *testing.T)
 	}
 }
 func TestReadOnlyHTTPDirectoryOnlyWorkerRejectsModelDiscovery(t *testing.T) {
-	f := newReadOnlyFixture(t)
+	f := newReadOnlyTransportFixture(t)
 	f.connect(t, f.worker, f.token)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

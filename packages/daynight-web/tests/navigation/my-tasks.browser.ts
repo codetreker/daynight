@@ -21,6 +21,49 @@ const payload = { observedAt: '2026-11-13T10:00:00Z', responseTaskAt: '2026-11-1
   items: [...Array.from({ length: 16 }, (_, i) => row(i + 1)), { ...row(17), project: { ...project, id: otherProjectId, name: 'Other project', matchedTaskCount: 1 } }], nextCursor: null };
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`heading starts with the title in every task state at ${width}px in ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    let request = 0;
+    let release!: () => void;
+    await page.route('**/api/v1/me/in-progress-tasks?*', async route => {
+      request++;
+      if (request === 1) {
+        await new Promise<void>(resolve => { release = resolve; });
+        await route.fulfill({ json: { ...payload, totalTaskCount: 0, totalProjectCount: 0, sessionPartial: false, items: [] }, headers: { 'Daynight-User-ID': userId } });
+      } else if (request === 2) {
+        await route.fulfill({ status: 500, json: { error: { code: 'internal_error', message: 'Failed' } } });
+      } else {
+        await route.fulfill({ json: payload, headers: { 'Daynight-User-ID': userId } });
+      }
+    });
+    await page.goto('/tests/navigation/my-tasks-browser.html');
+    await page.getByLabel('Language').selectOption(locale);
+    const heading = page.locator('.my-tasks-page .page-heading');
+    const title = heading.getByRole('heading', { level: 1, name: locale === 'en' ? 'In-progress tasks' : '进行中的任务' });
+    const refresh = heading.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' });
+    const checkHeading = async () => {
+      await expect(title).toBeVisible();
+      await expect(heading.locator('.subtitle')).toHaveText(locale === 'en' ? 'Tasks assigned to you across all your projects.' : '查看分配给你的所有项目中的任务。');
+      await expect(refresh).toBeVisible();
+      await expect(heading.locator('.eyebrow')).toHaveCount(0);
+      expect(await title.evaluate(element => element.parentElement?.firstElementChild === element && element.getBoundingClientRect().top === element.parentElement.getBoundingClientRect().top)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    };
+    await expect(page.getByText(locale === 'en' ? 'Loading tasks…' : '正在加载任务…')).toBeVisible();
+    await checkHeading();
+    release();
+    await expect(page.getByText(locale === 'en' ? 'No in-progress tasks' : '没有进行中的任务')).toBeVisible();
+    await checkHeading();
+    await refresh.click();
+    await expect(page.getByText(locale === 'en' ? 'Tasks could not be updated.' : '无法更新任务。')).toBeVisible();
+    await checkHeading();
+    await page.getByRole('button', { name: locale === 'en' ? 'Retry' : '重试' }).click();
+    await expect(page.getByRole('link', { name: longTask, exact: true })).toBeVisible();
+    await checkHeading();
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
   test(`manual empty Session leaves no space at ${width}px in ${locale}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     let allowAgents = false;

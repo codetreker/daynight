@@ -385,16 +385,19 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 	prepareRepository := func(p model.Principal, name, repo string, v model.Project, matching bool) {
 		t.Helper()
 		read := projectHTTPCount(t, 1)
-		mcpOrgRead(t, tx, 1, mcpOrgProjectReader{ScopedProjectsCall: func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+		mcpOrgRead(t, tx, 1, mcpOrgProjectReader{FindVisibleRepositoryForCreationCall: func(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error) {
 			read()
 			projectHTTPCheck(t, actor, p)
-			projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeAll})
-			projectHTTPCheck(t, page, store.Page{Limit: 100})
-			items := []model.Project{}
-			if matching {
-				items = []model.Project{v}
+			projectHTTPCheck(t, teamID, personal[0])
+			wantIdentity, err := coreproject.RepositoryIdentity(repo)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return store.ProjectPage{Items: items}, nil
+			projectHTTPCheck(t, identity, wantIdentity)
+			if matching {
+				return []model.Project{v}, nil
+			}
+			return nil, nil
 		}}, nil)
 		if matching {
 			return
@@ -498,12 +501,12 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 	project := projectHTTPRecord("f0000000-0000-4000-8000-000000000000", "Project", "https://github.com/acme/test.git", personal[0])
 	args := map[string]any{"name": project.Name, "repoUrl": project.RepoURL, "team": "personal"}
 	read := projectHTTPCount(t, 1)
-	mcpOrgRead(t, tx, 1, mcpOrgProjectReader{ScopedProjectsCall: func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+	mcpOrgRead(t, tx, 1, mcpOrgProjectReader{FindVisibleRepositoryForCreationCall: func(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error) {
 		read()
 		projectHTTPCheck(t, actor, actors[0])
-		projectHTTPCheck(t, scope, store.ProjectScope{Kind: store.ProjectScopeAll})
-		projectHTTPCheck(t, page, store.Page{Limit: 100})
-		return store.ProjectPage{Items: []model.Project{}}, nil
+		projectHTTPCheck(t, teamID, personal[0])
+		projectHTTPCheck(t, identity, "github.com/acme/test")
+		return nil, nil
 	}}, nil)
 	response, failed = call(0, "project_create", args)
 	if !failed || obj(response["error"])["code"] != "invalid_input" {
@@ -521,7 +524,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 		t.Fatalf("create receipt: %+v", data)
 	}
 	prepareRepository(actors[0], "Different", "git@github.com:acme/test.git", project, true)
-	response, failed = call(0, "project_create", map[string]any{"name": "Different", "repoUrl": "git@github.com:acme/test.git", "team": target.ID})
+	response, failed = call(0, "project_create", map[string]any{"name": "Different", "repoUrl": "git@github.com:acme/test.git", "team": personal[0]})
 	if failed || obj(response["data"])["created"] != false || obj(obj(response["data"])["project"])["id"] != id {
 		t.Fatalf("reuse: %+v", response)
 	}

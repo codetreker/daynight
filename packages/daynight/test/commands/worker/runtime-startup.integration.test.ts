@@ -563,9 +563,9 @@ describe("worker cloud-first startup", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
-  it("retains an unsupported raw mode without preparing or admitting the target", async () => {
+  it("retains an invalid current native target without preparing or admitting it", async () => {
     const f = await fixture(false, false), base = desired();
-    const target: WorkerCloudDesired = { ...base, value: { ...base.value, agentControlMode: "herdr" } };
+    const target: WorkerCloudDesired = { ...base, value: { ...base.value, native: { ...base.value.native, model: " " } } };
     mocks.remote().configuration.mockResolvedValue(resource(target)); mocks.remote.mockClear();
     let channel: ReporterOptions["configuration"];
     mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration; return reporter(); });
@@ -578,7 +578,7 @@ describe("worker cloud-first startup", () => {
       expect(mocks.coordinator).not.toHaveBeenCalled();
 
       expect(mocks.probe).not.toHaveBeenCalled();
-      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("unsupported agentControlMode") }));
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("missing required settings or contains unsupported current values") }));
     } finally { cancellation.abort(); await running; }
   });
 

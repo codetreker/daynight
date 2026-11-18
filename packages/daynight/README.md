@@ -584,22 +584,25 @@ with `-`, use `daynight project create -- -name` or put an explicit repository
 option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
-Creation first scans every accessible project page and compares canonical repository
-identities. With one match it reports `Project already exists.` and the existing
-project, without resolving a Team, confirming or writing. Multiple matches fail
-with their IDs. With no match, `--team <uuid|personal>` selects the target; without
-it, the CLI uses the configured default for the current service and account, or
-Personal when no default is configured. An invalid or inaccessible default fails
-without falling back. The target must be accessible to the current user.
+Creation first selects `--team <uuid|personal>`, the configured default for the
+current service and account, or Personal when no default is configured. It scans
+every accessible project page and compares canonical repository identities only
+within that owner Team. One match returns `Project already exists.` and the existing
+project without confirmation or writing, even when access comes from a direct
+Project grant rather than Team membership. Multiple matches fail with their IDs.
+An invalid default fails without fallback. Unparseable historical repository
+addresses do not match; page and response failures stop creation.
 
-Creation requires confirmation: `--confirm` skips the interactive prompt, and a
+When no project matches, creation requires Team membership and confirmation:
+`--confirm` skips the interactive prompt, and a
 noninteractive invocation without it fails before writing. The CLI binds the
 request and response to the current user and submits the original name and
 repository address. The creator receives a direct admin grant. An unknown write is
 not automatically replayed. Lookup failures and exhausted command budgets stop
 before creation.
-This client preflight does not provide atomic uniqueness against concurrent
-creators, and the service continues to allow duplicate repository registrations.
+The service enforces same-Team repository uniqueness and reports a
+`project_repository_conflict` when a concurrent creation wins. The CLI does not
+replay that write.
 Project commands do not write repository bindings or ignore rules. Lists traverse
 all pages. Human output uses complete labeled project blocks with visible
 terminal-control escapes. JSON preserves resource fields and nanosecond timestamp

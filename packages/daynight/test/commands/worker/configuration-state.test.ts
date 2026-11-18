@@ -22,7 +22,7 @@ describe("Worker configuration fact transitions", () => {
     expect(findCurrentConfigurationItem(pending, { kind: "agentControlMode" })).toBeUndefined();
     expect(configurationSnapshot(pending, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBe("web");
     expect(configurationSnapshot(pending, false, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
-    const unsupported = transitionConfigurationDesired(pending, receiveWorkerDesired(JSON.stringify({ ...desired("2"), value: { ...desired("2").value, agentControlMode: "herdr" } })), new Set(), ids());
+    const unsupported = transitionConfigurationDesired(pending, receiveWorkerDesired(JSON.stringify({ ...desired("2"), value: { ...desired("2").value, native: { ...native, agent: "future" } } })), new Set(), ids());
     expect(configurationSnapshot(unsupported, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
   });
 
@@ -57,7 +57,7 @@ describe("Worker configuration fact transitions", () => {
     expect(acceptConfigurationProjection(updated, oldReport, new Set())).toBe(updated);
   });
 
-  it.each(["unsupported mode", "oversized target"] as const)("keeps existing work while %s is unreadable for application", scenario => {
+  it.each(["unsupported native agent", "oversized target"] as const)("keeps existing work while %s is unreadable for application", scenario => {
     const selected = id(70), removing = id(71), unrelated = id(72);
     const currentTarget = desired("1", [selected]);
     const preparation = tracked(1, { kind: "projectPreparation", projectId: selected }, true);
@@ -65,7 +65,7 @@ describe("Worker configuration fact transitions", () => {
     const stop = { ...tracked(3, { kind: "projectRemoval", projectId: removing }), started: true };
     const original = { ...empty(currentTarget), currentItems: [preparation, appliedNative, stop], projectionCursor: id(1) };
     const raw = desired("2", [unrelated]);
-    const invalid = { ...raw, value: { ...raw.value, ...(scenario === "unsupported mode" ? { agentControlMode: "herdr" as const } : { maxConcurrent: 65 }) } };
+    const invalid = { ...raw, value: { ...raw.value, ...(scenario === "unsupported native agent" ? { native: { ...native, agent: "future" } } : { maxConcurrent: 65 }) } };
     const nextId = ids();
     const next = transitionConfigurationDesired(original, receiveWorkerDesired(JSON.stringify(invalid)), new Set([stop.recordId]), nextId);
     expect(JSON.parse(next.authority.desiredJson!)).toEqual(invalid);
@@ -209,7 +209,7 @@ const valueProof = (_cache: WorkerConfigurationCache, value: WorkerCloudNative):
 describe("Worker configuration projection acceptance", () => {
   it("does not report mode or adopt tools for unsupported raw authority", () => {
     const base = desired();
-    for (const value of [{ ...base.value, agentControlMode: "herdr" }, { ...base.value, toolPaths: { ...base.value.toolPaths!, herdr: null } }, (({ toolPaths: _tools, ...rest }) => rest)(base.value)]) {
+    for (const value of [{ ...base.value, native: { ...native, agent: "future" } }, { ...base.value, toolPaths: { codex: { kind: "future" }, copilot: { kind: "auto" } } }, (({ toolPaths: _tools, ...rest }) => rest)(base.value)]) {
       const cache = empty({ ...base, value } as WorkerCloudDesired), raw = cache.authority.desiredJson;
       const report = projectConfigurationReport(cache, options).report;
       expect(report).not.toHaveProperty("controlModeBootstrap");

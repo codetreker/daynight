@@ -13,8 +13,9 @@ whose actual provenance cannot be inferred from the current target.
 ## Decision
 
 The configuration manager applies current targets through the Web execution
-path. An explicit Herdr target remains unchanged in raw authority and is
-reported as unsupported. An omitted local mode uses Web; an explicit local
+path. Retired cloud mode members remain unchanged in raw authority and follow
+the [unknown-member reception decision](../bug-fix/2026-11-18-worker-retired-configuration-members.md);
+current known settings determine applicability. An omitted local mode uses Web; an explicit local
 Herdr candidate is rejected with a correction, without rewriting the file.
 The original schema 9 decision omitted mode application items to avoid inventing
 success merely from the desired value. The later [mode adoption decision](2026-11-18-worker-web-mode-adoption.md)

@@ -59,13 +59,15 @@ describe("Worker Web configuration", () => {
     expect(restarted.manager.report().observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
   });
 
-  it("retains an explicit legacy mode without applying it", async () => {
+  it("applies current settings while retaining an explicit retired mode", async () => {
     const run = await fixture(), initial = desired();
     await run.manager.receive(receivedDesired(initial)); await run.manager.settle();
-    const legacy = { ...desired("2"), value: { ...initial.value, agentControlMode: "web" as const } };
+    const legacy = { ...desired("2"), value: { ...initial.value, maxConcurrent: 4, agentControlMode: "herdr" as const } };
     await run.manager.receive(receivedDesired(legacy)); await run.manager.settle();
-    expect(run.manager.current().effective.native).toBeNull();
-    expect(run.manager.report().observation).toBeNull();
+    expect(run.manager.current().effective.native).toEqual(initial.value.native);
+    expect(run.manager.current().effective.maxConcurrent).toBe(4);
+    expect(run.manager.current().effective.agentControlMode).toBe("web");
+    expect(run.manager.report().observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
     expect(JSON.parse((await run.disk()).authority.desiredJson!)).toEqual(legacy);
   });
 });

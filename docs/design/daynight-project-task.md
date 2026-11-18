@@ -381,7 +381,7 @@ flowchart TD
 
 | CLI 操作 | API |
 |---|---|
-| `project create <name> [--repo <repo>] [--team <uuid\|personal>] [--confirm]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`、解析并验证目标 Team，确认后提交 `teamId`、真实 `expectedUserId` 和原始 `name`、`repoUrl` |
+| `project create <name> [--repo <repo>] [--team <uuid\|personal>] [--confirm]` | 读取 `/me` 并解析目标 Team；完整 `GET /api/v1/projects` 预检按归属与仓库匹配；仅零匹配时验证 Team 成员资格，确认后提交 `teamId`、真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
 | `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
@@ -429,9 +429,10 @@ Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主
 失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
 配置，既有全范围 Project 发现继续使用原列表方法。
 
-Project 创建先对全部可访问项目的完整分页进行仓库匹配。唯一匹配直接返回，多个
-匹配报告歧义；两者均不解析默认、确认或写入。零匹配才复用当前用户和目标解析：
-显式目标优先，配置缺失时使用 Personal，失效配置明确失败。确认阶段不持配置锁，
+Project 创建先解析当前用户和目标：显式目标优先，配置缺失时使用 Personal，
+无效配置明确失败。完整读取可访问项目后按 `ownership.teamId` 筛选并匹配仓库；
+唯一匹配直接返回，多个匹配报告歧义，两者均不验证成员资格、确认或写入。只有零匹配
+时才读取目标 Team 验证成员资格，因此独立 Project grant 也能支持复用。确认阶段不持配置锁，
 缺少 `--confirm` 的非 TTY 调用在写入前拒绝。请求与响应绑定真实主体，服务端在
 事务内重新检查 Team 成员资格；未知提交不自动重放。
 
@@ -566,18 +567,19 @@ create/update 的 --required-platform 设置枚举，update --clear-required-pla
 
 创建先确定 repo：显式 `--repo` 直接使用原值，并跳过工作目录查询及 Git；省略时
 直接复用 `repository/git.ts` 的 `discoverRepository`，读取当前 worktree 有效
-`origin`，包含 `insteadOf` 展开。随后将该地址及全部列表结果的 `repoUrl` 交给
-`repository/identity.ts` 的同一正规化器比较。零匹配时读取当前用户并绑定创建请求与响应主体，
-再 POST 原始名称和原始地址；
+`origin`，包含 `insteadOf` 展开。随后解析目标 Team，读取完整可见列表并先筛选归属，
+将该地址及目标 Team 候选的 `repoUrl` 交给 `repository/identity.ts` 的同一正规化器比较。
+零匹配时绑定创建请求与响应主体，确认后 POST 原始名称和原始地址；
 唯一匹配通过既有资源渲染器输出 `Project already exists.` 及完整 project，不改名
 或更新 repo；多匹配列出 ID 并失败。此路径不调用 task 的 `resolveProject`，因此
 不读取或保存 `.daynight/project.yml`，也不写 ignore 规则。
 
 Git、完整分页、身份比较和后续 POST 共用同一 `Operation`；每步完成后检查取消和
-剩余期限，预检失败不能进入创建。身份比较失败保留具体错误，也不能变成零匹配。
+剩余期限，预检失败不能进入创建。输入地址解析失败保留具体错误；目标 Team 中历史候选
+地址的身份解析错误不参与匹配，其他错误继续传播。
 完整扫描不是服务端事务，扫描完成与 POST 之间仍可能有并发创建。服务在共享创建和转移事务
 中强制同 Team 的活跃仓库身份唯一，并用 `project_repository_conflict` 拒绝竞争失败的写入；
-CLI 保持既有 409 错误处理，不自动重放。该服务约束不改变本地完整可见范围的复用流程。
+CLI 报告已知 409 冲突，不自动重放。独立仓库发现仍在完整可见范围内查找。
 
 更新参数先转换为字段存在性明确的 patch：空描述写 `""`，未出现描述选项不写 key。
 compileDependencies 只在关系选项出现时加载 UUID 校验；普通 N 与外部 E 均正规化、去重并排序，

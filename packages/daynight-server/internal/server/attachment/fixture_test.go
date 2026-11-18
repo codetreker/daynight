@@ -522,6 +522,11 @@ func (s *authenticationDAO) Authenticate(_ context.Context, kind model.Credentia
 
 type unexpectedProjectReader struct{ unexpectedDAO }
 
+func (mock *unexpectedProjectReader) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	mock.reject("FindVisibleRepositoryForCreation")
+	panic("unreachable")
+}
+
 func (s *unexpectedProjectReader) Project(context.Context, string) (model.Project, error) {
 	s.reject("Project")
 	panic("unreachable")

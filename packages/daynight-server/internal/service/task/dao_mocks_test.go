@@ -489,6 +489,11 @@ type projectReaderMock struct {
 	TransferRoleFn        func(context.Context, string, string, string) (*model.ProjectRole, error)
 }
 
+func (mock *projectReaderMock) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	mock.need("FindVisibleRepositoryForCreation", false)
+	panic("unreachable")
+}
+
 func (mock *projectReaderMock) Project(p0 context.Context, p1 string) (model.Project, error) {
 	mock.need("Project", mock.ProjectFn != nil)
 	return mock.ProjectFn(p0, p1)

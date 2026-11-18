@@ -52,7 +52,7 @@ path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控�
 
 Worker 对配置 GET、普通报告回执及 prompts 联合回执使用配置专用源文本载体，完整保留 desired 与外层未知元数据，持久目标只保存 desired 原始 JSON。native、projects、nativeOverrides 与 toolPaths 已知对象中的未知兄弟同样保留。未知数字不经普通 number 解码后回写；合法负数、小数、指数和超安全整数保持数据含义。字符串、boolean/null、数组顺序和对象成员均保持，空白排版不构成保证。重复解码键、深度和原有字节边界继续有效。
 
-known 仅从已知路径投影并按当前合同严格验证。目标 JSON 结构合法但已知字段的类型或值不受当前 Worker 支持时，Worker 保留完整原文、真实 revision 和时间，记录不可应用状态，不推断默认值、不生成部分 known 目标，也不将其当作 desired:null 发起首次导入；合法新目标到达后再按正常规则协调。schema 10 持久记录 pendingApplication，以区分尚未协调的目标与已协调的 Web 目标；该标志不表示各项应用成功，恢复时不能把不支持目标之前的账本直接视为新目标已应用。目标和回执外壳、revision、时间、重复解码键、深度、观察版本关系及能力协商边界仍严格校验；违例明确拒绝。未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
+known 仅从已知路径投影并按当前合同严格验证。已退役的 agentControlMode（包括 web、herdr 或其他合法 JSON 值）和 toolPaths.herdr 与普通未知成员采用相同保留规则，不进入 known，也不阻止其余有效的当前设置应用。当前必需的 toolPaths、codex/copilot 槽、已知值和能力回显仍须通过原有校验；退役成员不能补足缺失设置。目标 JSON 结构合法但已知字段的类型或值不受当前 Worker 支持时，Worker 保留完整原文、真实 revision 和时间，记录不可应用状态，不推断默认值、不生成部分 known 目标，也不将其当作 desired:null 发起首次导入；合法新目标到达后再按正常规则协调。schema 10 持久记录 pendingApplication，以区分尚未协调的目标与已协调的 Web 目标；该标志不表示各项应用成功，恢复时不能把不支持目标之前的账本直接视为新目标已应用。目标和回执外壳、revision、时间、重复解码键、深度、观察版本关系及能力协商边界仍严格校验；违例明确拒绝。未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
 
 可应用目标中仅未知字段、更高 revision 或 updatedAt 变化时，Worker 更新完整目标并保持已知应用身份、applicationRevision 与在途工作；已知目标变化才正常应用。报告 observation.desiredRevision 使用最新收到版本，item.targetRevision 仍为真实应用目标版本。同 revision 的 desired 必须在双方可见内容上 JSON 语义相等：对象成员顺序无关，数组顺序有关，等值十进制数字写法相等且不经浮点舍入。双方均可见的原始目标必须完整比较，包括未知子树。归档能力协商可使 archiveSessions 仅在一方出现；支持归档的客户端对其使用同版本投影规则。此前收到、因同版本投影被隐藏的字段保留为历史源事实，不作为当前目标或应用证据；同版本再次出现时核对该事实，版本变化或权威重置不得将旧事实当作新目标。其他语义差异为协议错误。投影变化按当前收到的目标重新协调已知项。迟到较低回执不回退目标；回执暴露较低目标或观测计数时 Worker 重新执行认证 GET，以确认并恢复服务状态。缓存格式、应用版本消费者和恢复由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#云端接收与本机提交)拥有。
 
@@ -154,6 +154,8 @@ baseRevision 允许初始 "0"。desiredRevision 和每项 targetRevision 为正 
 ## Web 消费者
 
 “我的 Worker”详情的配置表单编辑 desired.value，以 desired.revision 保存完整目标；observationRevision 与 observation 只用于展示最近应用报告。近期快照超窗的 404 不代表配置不存在，配置读取失败也不清除独立运行观测。desired:null 表示尚未首次导入，Web 不能使用 PUT 建立初值。
+
+已初始化配置的“刷新”位于首个“运行设置”面板的标题行，左侧为标题、右侧为按钮，不占用页签下方的独立行。正常且无通知、原文折叠关闭时，折叠入口与首面板之间的间距不超过 24 CSS px；中英文桌面及 320/390px 窄屏下，正常和刷新中标签完整可读，无重叠或横向滚动，键盘可操作且焦点可见。刷新只发起配置读取，保留草稿、输入原文与原文展开；读取准入暂停、刷新中或保存期间禁用。原文展开保留可读宽度，关闭后恢复紧凑布局。首载、未初始化、不可用和失败状态保留各自的重试或刷新入口。
 
 Web 对成功配置响应保留完整未知目标和未知观测项，已知字段仍按类型、范围、必填和身份规则严格校验；未知项不生成控件或应用成功。编辑已知字段时保留同一目标版本下未修改的未知数据，包括无法由 JavaScript number 精确表示的数值。明确移除项目时一并移除该项目的未知内容；保留的项目按 projectId 对齐。回执和未知结果查询核对完整目标语义，不能只比较已知字段。后台读取不将新版本基底静默用于旧草稿。页面可展开查看已保存配置响应的原始 JSON；冲突详情在读到新版本后展示该响应原文，保留未知字段与数字拼写，并说明能力协商可能使响应省略字段。编辑草稿不会修改已显示的响应。
 

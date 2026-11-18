@@ -71,3 +71,7 @@ Do not lower-case or decode paths to manufacture a match.
 | Authentication, query or identity-processing failure | Preserve the failure; it is not absence. |
 
 Resolution does not register a Project, configure a local binding/default, inspect Git configuration or contact the remote repository.
+
+## Register a repository
+
+`project_create` resolves the selected `team` first. A unique accessible Project with the same repository identity in that Team is returned with `created: false`, including access through a direct Project grant. Multiple visible matches return `resource_conflict`. With no match, creation requires `confirm: true`; a concurrent or inaccessible occupant can cause `project_repository_conflict`. Unknown write outcomes must be observed before any new decision. Other Teams do not participate in reuse.
