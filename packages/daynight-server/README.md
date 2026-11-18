@@ -2393,6 +2393,29 @@ record the proof allocation. Measurements include receiving Store, core and
 process work; supplied receipts and completion outcomes are not evidence of
 physical persistence.
 
+### Bot definition HTTP tests
+
+The three `TestBotsHTTP` definition cases register the production Bot routes,
+request logging and PAT middleware. Strict List, ListWorker, Get and DeleteBot
+callbacks check the credential, context, principal, identifiers, page arguments
+and exact deletion version. Route parsing and authentication refusals leave the
+callbacks unused. The responses exercise empty and paginated lists, pending
+deletion receipts, Worker inventory, decimal versions, UTC timestamps and
+definition redaction. List and detail facts are supplied independently for each
+request.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestBotsHTTP(EmptyList|ReadDeleteIntentAndWorkerInventory|StrictInputAndAuthentication)$' \
+  ./internal/server/bot
+```
+
+Core verifies whether a cursor is admissible in the requested Worker scope.
+PostgreSQL and integrated Bot tests retain storage pagination, deletion intent
+and cleanup transitions. [Bot definition HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-definition-http-test-owners.md)
+
 ### MCP protocol tests
 
 `internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,

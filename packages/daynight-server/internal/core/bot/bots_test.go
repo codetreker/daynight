@@ -209,6 +209,45 @@ func TestCreateIdentityAndFailurePaths(t *testing.T) {
 	assertFault(t, err, "resource_conflict")
 }
 
+func TestListCursorPreservesWorkerScope(t *testing.T) {
+	principal := model.Principal{UserID: "11111111-1111-4111-8111-111111111111"}
+	createdAt := time.Date(2026, 11, 18, 12, 0, 0, 123456000, time.UTC)
+	records := store.BotPage{
+		Items: []model.Bot{
+			{ID: "22222222-2222-4222-8222-222222222222", OwnerUserID: principal.UserID, CreatedAt: createdAt.Add(-time.Second)},
+			{ID: botID, OwnerUserID: principal.UserID, CreatedAt: createdAt},
+		},
+		HasMore: true,
+	}
+	for _, tc := range []struct {
+		name      string
+		issuedFor *string
+		readFor   *string
+		accepted  bool
+	}{
+		{name: "global to global", accepted: true},
+		{name: "global to Worker", readFor: ptr(workerID)},
+		{name: "Worker to same Worker", issuedFor: ptr(workerID), readFor: ptr(workerID), accepted: true},
+		{name: "Worker to different Worker", issuedFor: ptr(workerID), readFor: ptr("33333333-3333-4333-8333-333333333333")},
+		{name: "Worker to global", issuedFor: ptr(workerID)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := ListResult(principal, tc.issuedFor, records)
+			if err != nil || result.NextCursor == nil {
+				t.Fatalf("issue Bot list cursor: %+v %v", result, err)
+			}
+			page, err := ListPage(principal, tc.readFor, model.PageRequest{Limit: 2, Cursor: result.NextCursor})
+			if !tc.accepted {
+				assertFault(t, err, "invalid_input")
+				return
+			}
+			if err != nil || page.Limit != 2 || page.After == nil || page.After.ID != botID || !page.After.CreatedAt.Equal(createdAt) {
+				t.Fatalf("Bot list continuation lost its last-record keyset: %+v %v", page, err)
+			}
+		})
+	}
+}
+
 func TestReadScopeAndCompletionErrors(t *testing.T) {
 	ctx := context.Background()
 	p := model.Principal{UserID: "owner"}
