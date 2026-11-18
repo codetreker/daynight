@@ -23,7 +23,8 @@ dependency replacement and Session history guidance at their existing URIs. The
 [Task read/write decision](2026-11-18-mcp-task-read-write.md) separates Task
 reads and lifecycle writes while preserving the original read URI. The
 [dependency decision](2026-11-18-mcp-dependency-read-write.md) separates graph
-reads from relationship writes. The [topic guide decision](2026-11-11-mcp-topic-manuals.md) explains the original
+reads from relationship writes. The [Session history decision](2026-11-18-mcp-session-history.md)
+separates observation and history reads. The [topic guide decision](2026-11-11-mcp-topic-manuals.md) explains the original
 operation boundaries; the [overview entry decision](2026-11-18-mcp-overview-entry.md)
 explains the handshake. The [server design](../../../../docs/design/daynight-server.md#http-传输准入)
 owns the current publication mechanism.

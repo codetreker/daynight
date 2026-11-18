@@ -34,21 +34,21 @@ func TestPostgresSchemaRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	migration, err := os.ReadFile("../migrations/048_webhook_management.sql")
+	migration, err := os.ReadFile("../schema/migrations/048_webhook_management.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = conn.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
-	migration, err = os.ReadFile("../migrations/051_webhook_delivery.sql")
+	migration, err = os.ReadFile("../schema/migrations/051_webhook_delivery.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = conn.Exec(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
-	migration, err = os.ReadFile("../migrations/052_webhook_redelivery.sql")
+	migration, err = os.ReadFile("../schema/migrations/052_webhook_redelivery.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

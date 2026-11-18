@@ -341,6 +341,27 @@ function expireDeadline(){assertActive();realClearTimeout(target.handle);target.
 function waitForStage(stage,outcome,details){return Promise.race([stage,outcome.then(()=>{throw new Error('Command settled before the required stage: '+details());})]);}
 `;
 
+// Only the timeout variants install this in their isolated updater driver.
+const controlledCommandExpiry = `
+import assert from 'node:assert/strict';
+const realSetTimeout=globalThis.setTimeout,realClearTimeout=globalThis.clearTimeout;
+let commandTimer,expireCommand,active=false;
+globalThis.setTimeout=(callback,ms,...args)=>{
+  if(ms!==3000)return realSetTimeout(callback,ms,...args);
+  assert.equal(commandTimer,undefined,'expected one command deadline');
+  commandTimer=realSetTimeout(()=>{},60000);commandTimer.unref();active=true;
+  expireCommand=()=>callback(...args);
+  return commandTimer;
+};
+globalThis.clearTimeout=(handle)=>{if(handle===commandTimer)active=false;return realClearTimeout(handle);};
+process.on('message',message=>{
+  if(message!=='expire-command')return;
+  assert.equal(active,true,'expected an active 3000ms command deadline');
+  active=false;realClearTimeout(commandTimer);expireCommand();
+  process.stdout.write('Command expiry delivered: 3000ms\\n');
+});
+`;
+
 describe("update subprocess supervision", () => {
   it("waits for the complete PID to be atomically published", async () => {
     const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-refresh-supervision");
@@ -462,6 +483,7 @@ else{spawn(process.execPath,[__filename,'leaf',process.argv[2]],{stdio:'inherit'
     const { environment: _environment, ...driverCommand } = command;
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
     const driver = `import {runUpdateCommand} from ${JSON.stringify(moduleUrl)};
+${interruption === "timeout" ? controlledCommandExpiry : ""}
 process.on('message',message=>{if(message==='SIGINT'||message==='SIGTERM')process.emit(message);});
 const before=[process.listenerCount('SIGINT'),process.listenerCount('SIGTERM')];
 try{await runUpdateCommand({...${JSON.stringify(driverCommand)},environment:process.env});process.stdout.write('Unexpected success');process.exitCode=1;}
@@ -481,11 +503,13 @@ if(process.connected)process.disconnect();`;
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
       const pgid = process.platform === "win32" ? undefined : processGroupOf(Number(await waitForFile(leafPid)));
-      if (interruption !== "timeout") {
+      if (interruption === "timeout") child.send("expire-command");
+      else {
         if (process.platform === "win32") child.send(interruption);
         else child.kill(interruption);
       }
       expect(await closed, output).toBe(0);
+      if (interruption === "timeout") expect(output).toContain("Command expiry delivered: 3000ms");
       expect(output).toContain(interruption === "timeout" ? "timed out after 3 seconds" : `interrupted by ${interruption}`);
       expect(output).toContain("Handlers restored: true");
       if (pgid !== undefined) {
@@ -521,7 +545,9 @@ if(process.connected)process.disconnect();`;
     const helper = path.resolve(import.meta.dirname, "../../../dist/commands/skill/refresh-installed.js");
     const command = { executable: process.execPath, arguments: [helper], cwd: directory, timeoutMs: interruption === "timeout" ? 3_000 : 10_000, output: "capture", cleanupProcessGroup: true };
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
-    const driver = `import {runUpdateCommand} from ${JSON.stringify(moduleUrl)};process.on('message',signal=>process.emit(signal));try { await runUpdateCommand({...${JSON.stringify(command)},environment:process.env});process.exitCode=1; } catch(error) { for(let current=error;current;current=current.cause)process.stdout.write(current.message+'\\n'); }if(process.connected)process.disconnect();`;
+    const driver = `import {runUpdateCommand} from ${JSON.stringify(moduleUrl)};
+${interruption === "timeout" ? controlledCommandExpiry : ""}
+process.on('message',signal=>{if(signal==='SIGINT'||signal==='SIGTERM')process.emit(signal);});try { await runUpdateCommand({...${JSON.stringify(command)},environment:process.env});process.exitCode=1; } catch(error) { for(let current=error;current;current=current.cause)process.stdout.write(current.message+'\\n'); }if(process.connected)process.disconnect();`;
     const child = spawn(process.execPath, ["--input-type=module", "--eval", driver], {
       cwd: directory, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, HOME: home, USERPROFILE: home },
       stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
@@ -543,8 +569,9 @@ if(process.connected)process.disconnect();`;
         if (Date.now() >= deadline) throw new Error(`The refresh Git fixture did not start: ${output}`);
         await new Promise((resolve) => { setTimeout(resolve, 20); });
       }
-      if (interruption !== "timeout") child.send(interruption);
+      child.send(interruption === "timeout" ? "expire-command" : interruption);
       expect(await closed, output).toBe(0);
+      if (interruption === "timeout") expect(output).toContain("Command expiry delivered: 3000ms");
       expect(output).toContain(interruption === "timeout" ? "timed out after 3 seconds" : `interrupted by ${interruption}`);
       // ESRCH after the updater resolves is the process-group completion barrier;
       // the earlier marker and ticks prove this was the active fixture's group.

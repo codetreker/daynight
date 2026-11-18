@@ -1,7 +1,7 @@
 import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import type { GraphTask, Project, TaskStatus } from "../../api/types";
+import type { ExecutionPlatform, GraphTask, Project, TaskStatus } from "../../api/types";
 import { navigate, parseTaskChainUrl } from "../../app/router";
 import { browserNavigation } from "../../app/navigation";
 import { useBrowserLocation } from "../../app/browser-location";
@@ -42,6 +42,7 @@ import { useTaskSearch } from "../task-search/useTaskSearch";
 import { ProjectTags } from "../task-tags/ProjectTags";
 import { TagFilter, useTagFilter, matchesTagFilter, type TagFilterValue } from "../task-tags/TagFilter";
 import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -51,6 +52,9 @@ const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
 };
 
 const emptyIds: readonly string[] = [];
+type PlatformFilter = "all" | "any" | ExecutionPlatform;
+const matchesPlatform = (task: GraphTask, filter: PlatformFilter) =>
+  filter === "all" || (filter === "any" ? task.requiredPlatform === null : task.requiredPlatform === filter);
 
 const matchesTaskTags = (snapshot: GraphSnapshot, task: GraphTask, filter: TagFilterValue) => {
   const summary = snapshot.summaries.get(task.id);
@@ -81,6 +85,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const viewer = useTaskCacheScope();
   const { filter: assigneeFilter, onFilterChange: setAssigneeFilter, issue: assigneeIssue } = useProjectAssigneeFilter(projectId, viewer.userId);
   const { filter: statusFilter, onFilterChange: setStatusFilter, issue: statusIssue } = useProjectStatusFilter(projectId, viewer.userId);
+  const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.reconcile), [sessions, projectId, graph.reconcile]);
   const { locale, messages: { workspace: { project: m, projects, app, preferences, overview }, auth: { shell: auth } }, format } = useI18n();
@@ -164,9 +169,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const prPosition = useRef(0);
   const snapshot = graph.displaySnapshot;
   const currentSnapshot = graph.snapshot;
-  const overviewFence = useRef({ snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid });
-  overviewFence.current = { snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid };
-  useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [selection, snapshot, assigneeFilter, statusFilter, tagFilter.value, tagFilter.invalid]);
+  const overviewFence = useRef({ snapshot, assigneeFilter, statusFilter, platformFilter, value: tagFilter.value, invalid: tagFilter.invalid });
+  overviewFence.current = { snapshot, assigneeFilter, statusFilter, platformFilter, value: tagFilter.value, invalid: tagFilter.invalid };
+  useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [selection, snapshot, assigneeFilter, statusFilter, platformFilter, tagFilter.value, tagFilter.invalid]);
   const snapshotReady = snapshot !== null;
   const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks" && !searchActive);
   useLayoutEffect(() => {
@@ -210,7 +215,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
       matchesTaskStatus(statusFilter, task.status) && !tagFilter.invalid &&
-      matchesTaskTags(snapshot, task, tagFilter.value)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId, tagFilter.value, tagFilter.invalid]);
+      matchesTaskTags(snapshot, task, tagFilter.value) && matchesPlatform(task, platformFilter)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId, tagFilter.value, tagFilter.invalid, platformFilter]);
   const scopedChainIds = (categories?.chains ?? emptyIds).filter((id) => scopedMembers.has(id));
   const scopedStandaloneIds = (categories?.standalone ?? emptyIds).filter((id) => scope?.standaloneIds.includes(id));
   const unfinishedMatches = (id: string) => {
@@ -240,6 +245,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const selectStandalonePage = (page: number) => { standalonePagination.onPageChange(page); setPageNavigation("standalone"); };
   const changeAssigneeFilter = (filter: AssigneeFilter) => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); goalPagination.onPageChange(1); setAssigneeFilter(filter); };
   const changeStatusFilter = (filter: readonly TaskStatus[]) => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); goalPagination.onPageChange(1); setStatusFilter(filter); };
+  const changePlatformFilter = (filter: PlatformFilter) => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); setPlatformFilter(filter); };
   const selectOverviewPage = (page: number) => { overviewPagination.onPageChange(page); setPageNavigation("overview"); };
   useLayoutEffect(() => {
     if (pageNavigation === null) return;
@@ -462,13 +468,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (originalTrigger.current === null) originalTrigger.current = trigger;
       if (search.applied !== null) search.clear();
       setNotice(null); setAssigneeFilter({ kind: "all" }); setStatusFilter(ALL_TASK_STATUSES);
+      if (!tagFilter.invalid && members.some((member) => matchesTaskTags(snapshot, member, tagFilter.value)) &&
+        !members.some((member) => matchesTaskTags(snapshot, member, tagFilter.value) && matchesPlatform(member, platformFilter))) {
+        chainPagination.onPageChange(1); standalonePagination.onPageChange(1); setPlatformFilter("all");
+      }
       if (section !== "tasks") { saveSectionPosition(); if (!fromFragment) onSectionChange("tasks"); }
       if (!fromFragment && view !== activeView) onViewChange(view);
       setNavigationWitness(id);
     };
     if (section === "tasks" && activeView === view && graphWitness === null && detailSelection === null && !fromFragment) commit();
     else select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
-  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, setStatusFilter, tagFilter.value, tagFilter.invalid, section, saveSectionPosition, onSectionChange, onViewChange]);
+  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, setStatusFilter, tagFilter.value, tagFilter.invalid, platformFilter, chainPagination.onPageChange, standalonePagination.onPageChange, section, saveSectionPosition, onSectionChange, onViewChange]);
 
   const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement, fromFragment: boolean | 'chain' = false) => {
     const select: typeof history.select = (next, replace, onCommit) => history.select(next, replace, onCommit, fromFragment);
@@ -540,6 +550,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           goalPagination.onPageChange(1);
           tagFilter.update({ ...tagFilter.value, tagIds: [], untagged: false });
         }
+        const platformMatches = (task: GraphTask) => matchesAssignee(task.assignedTo, filters.assignee, viewer.userId) &&
+          matchesTaskStatus(filters.status, task.status) && (clearTags || matchesTaskTags(snapshot, task, tagFilter.value)) && matchesPlatform(task, platformFilter);
+        if (!blocked && tasks.length > 0 && !(target.kind === "standalone" ? tasks.every(platformMatches) : tasks.some(platformMatches))) {
+          chainPagination.onPageChange(1); standalonePagination.onPageChange(1); setPlatformFilter("all");
+        }
       }
       setListTarget(blocked ? null : target);
       if (view !== activeView) onViewChange(view);
@@ -563,12 +578,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       try { await viewer.ready(signal); } catch { return; }
       const current = overviewFence.current;
       if (signal.aborted || viewer.isInvalidated || viewer.isProjectSuspended(projectId) || currentSelection.current !== selection || current.snapshot !== snapshot ||
-        current.assigneeFilter !== assigneeFilter || current.statusFilter !== statusFilter || current.value !== tagFilter.value || current.invalid !== tagFilter.invalid) return;
+        current.assigneeFilter !== assigneeFilter || current.statusFilter !== statusFilter || current.platformFilter !== platformFilter || current.value !== tagFilter.value || current.invalid !== tagFilter.invalid) return;
       if (missing) tagFilter.markInvalid();
       if (!verified && !missing) { setNotice({ kind: "overview-tag-check-failed" }); return; }
       navigateToTarget(verified, missing);
     })();
-  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
+  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, platformFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
   const attemptedFragment = useRef<typeof location | null>(null);
   useEffect(() => {
@@ -715,7 +730,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} tagFilter={<TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />} />
             <div hidden={searchActive} inert={searchActive}>
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} observationStore={graph.observationStore} pausedTasks={pausedTasks} onOpenPausedTask={onOpenPausedTask} onPausedFocusFallback={onPausedFocusFallback} active={section === "tasks" && !searchActive}
-              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><TaskStatusFilter value={statusFilter} onChange={changeStatusFilter} />{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
+              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><TaskStatusFilter value={statusFilter} onChange={changeStatusFilter} />{!searchActive && activeView !== "goals" && <label className="task-status-filter">{locale === "zh-CN" ? "平台" : "Platform"}<NativeSelect density="filter" touchMode="responsive" focusTone="task" value={platformFilter} onChange={(event) => changePlatformFilter(event.currentTarget.value as PlatformFilter)}><option value="all">{locale === "zh-CN" ? "所有任务" : "All tasks"}</option><option value="any">{locale === "zh-CN" ? "任何平台" : "Any platform"}</option><option value="linux">Linux</option><option value="windows">Windows</option><option value="macos">macOS</option></NativeSelect></label>}{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
               unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,

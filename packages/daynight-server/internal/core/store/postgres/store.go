@@ -3,8 +3,9 @@ package postgres
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration082"
 	"log/slog"
+
+	migration082 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/082"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5/pgconn"

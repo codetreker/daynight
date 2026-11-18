@@ -17,7 +17,7 @@ Read this overview before using Daynight tools. Use `tools/list` for current inp
 | Read attachment metadata/bytes or resolve paths | [Attachment reads](daynight://manuals/attachment-reads.md) |
 | Publish or remove attachments | [Attachment writes](daynight://manuals/attachment-writes.md); Attachment reads for unknown path rules or reading back bytes |
 | Observe ongoing work, locate or inspect Sessions | [Session reads](daynight://manuals/session-reads.md) |
-| Read Session history or complete entries | [Session reads](daynight://manuals/session-reads.md) |
+| Read Session history or complete entries | [Session history](daynight://manuals/session-history.md) |
 | Send to an exact Session or query its original operation | [Session messages](daynight://manuals/session-messages.md); Session reads when target identity, state or admission must be established |
 | Hand off work or complete an explicitly owned Worker claim | [Worker operations](daynight://manuals/worker-operations.md) |
 

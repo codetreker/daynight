@@ -47,6 +47,7 @@ export const browserConfigs = [
   'native-select-playwright.config.ts',
   'create-project-mobile-playwright.config.ts',
   'task-view-continuity-playwright.config.ts',
+  'project-platform-filter-playwright.config.ts',
   'project-tags-playwright.config.ts',
   'graph-visibility-browser-playwright.config.ts',
   'team-invitation-browser-playwright.config.ts',

@@ -12,6 +12,8 @@ import { validateImageFile } from "../../../../dist/commands/controller/media/im
 
 const [root, mode, mediaPath, mediaType = "image/png", expectedFrames = "1"] = process.argv.slice(2), log = path.join(root, "requests.log");
 const children = [], events = [], losses = [], traces = [];
+const gracefulNativeShutdown = ["route-undeclared-transport", "read-authority", "graceful-shutdown"].includes(mode);
+const nativeStopSignals = [];
 const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
 const routeClockArmed = path.join(root, "route-clock-armed-5000"), routeClockRelease = path.join(root, "route-clock-release");
 if (mode === "route-timeout") {
@@ -36,9 +38,15 @@ const within = async (result, stage) => {
 let maxFrameBytes = 0, peakControllerRss = process.memoryUsage().rss, decodedImages = 0, bridgeSecretLeak = false, secretTail = "";
 const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNativeSessionId: null,
   executable: fileURLToPath(new URL("copilot-bridge-native.mjs", import.meta.url)),
-  env: { ...environment, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType }, onTimeline() {}, onState() {},
+  env: { ...environment, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType,
+    DAYNIGHT_TEST_BRIDGE_SHUTDOWN: gracefulNativeShutdown ? "exit" : "linger" }, onTimeline() {}, onState() {},
   onSpawn(child) {
     children.push(child);
+    if (children.length === 1 && mode === "normal") {
+      // Observe the signal without changing what the live native process receives.
+      const kill = child.kill.bind(child);
+      child.kill = signal => { nativeStopSignals.push(signal); return kill(signal); };
+    }
     if (children.length === 2) {
       let bytes = 0;
       child.stdout.on("data", chunk => { const scan = secretTail + String(chunk); bridgeSecretLeak ||= scan.includes("endpoint-secret-canary"); secretTail = scan.slice(-64); peakControllerRss = Math.max(peakControllerRss, process.memoryUsage().rss); for (const byte of chunk) { bytes++; if (byte === 10) { maxFrameBytes = Math.max(maxFrameBytes, bytes); bytes = 0; } } });
@@ -218,7 +226,9 @@ try {
     for (const child of children) assert(child.exitCode !== null || child.signalCode !== null, "Owned process must exit before returning.");
   }
 }
-if (mode === "graceful-shutdown") assert(children.every(child => child.exitCode === 0 && child.signalCode === null), "Graceful shutdown must join both children without signals.");
+if (gracefulNativeShutdown || mode === "normal") assert.equal(records().filter(record => record.method === "runtime.shutdown").length, 1);
+if (gracefulNativeShutdown) assert(children.every(child => child.exitCode === 0 && child.signalCode === null && !child.killed), "Graceful shutdown must join both children without signals.");
+if (mode === "normal") assert.deepEqual(nativeStopSignals, ["SIGTERM"], "A native process that acknowledges shutdown and lingers must be stopped once.");
 assert.equal(bridgeSecretLeak, false, "Endpoint credentials crossed the bridge.");
 if (["kill-helper", "kill-native", "malformed"].includes(mode)) assert(traces.every(line => line === "Copilot SDK cleanup failed; the owned runtime was terminated."), traces.join(""));
 else assert.equal(traces.join(""), "", traces.join(""));

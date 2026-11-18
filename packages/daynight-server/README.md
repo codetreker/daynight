@@ -565,14 +565,16 @@ or invoke business operations.
 The handshake instructions introduce Daynight and direct clients to read
 `daynight://manuals/overview.md` with `resources/read` before using its tools;
 the URI can be read without first listing Resources. Authenticated MCP clients
-can also use `resources/list` to discover the overview and thirteen topic manuals,
+can also use `resources/list` to discover the overview and fifteen topic manuals,
 and `resources/read` to obtain each complete Markdown document. The overview
 routes by operation, distinguishes required and conditional topics, and explains
 result envelopes and schematic examples. Clients can reuse complete guidance
 while it remains applicable. Task reads and lifecycle writes have separate topics;
-dependency graph reads and writes also have separate topics. Session observations
-and history share a complete topic. Dependency-only writes require dependencies,
-dependency-writes and write-safety;
+dependency graph reads and writes also have separate topics. Session observations,
+location and inspection use session-reads; history pages and complete entries for
+an exact Session and source use session-history. Sending requires session-reads
+when establishing identity or admission; recovery retains the original operation.
+Dependency-only writes require dependencies, dependency-writes and write-safety;
 creation with dependencies or mixed updates also require task-writes.
 Steps, Thread, Session messages, and attachment reads and writes have separate
 guides. Every write requires the common write-safety guide and its operation's
@@ -2249,6 +2251,12 @@ login state and capacity at the database lock. The
 [login route fixture decision](../../.agents/notes/implemented/testing/2026-11-18-login-route-fixtures.md)
 records the proof boundary.
 
+Device authorization form and Origin tests use controlled identity operations
+with the real HTTP adapter. Approval, redemption, expiry, quota and account
+switch tests retain the physical credential and request lifecycles. The
+[device form decision](../../.agents/notes/implemented/testing/2026-11-18-device-form-fixtures.md)
+records the proof boundary.
+
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
 WebSocket traffic share one actual application and Engine. Runtime tests group
@@ -2431,7 +2439,9 @@ records the proof allocation and alternatives.
 ### Schema snapshot maintenance
 
 `internal/core/store/postgres/schema/current.sql` records the final PostgreSQL
-format produced by the complete embedded migration history. It includes the
+format produced by the complete embedded migration history in
+`internal/core/store/postgres/schema/migrations/` and migration 026 in
+`internal/core/store/postgres/schema/migrations/026/`. The snapshot includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
 Runtime startup uses the snapshot for an empty target namespace and retains

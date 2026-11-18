@@ -8,10 +8,17 @@ import (
 	"testing"
 
 	repositoryidentity "github.com/codetreker/daynight/packages/daynight-server/internal/core/repositoryidentity/v1"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration082"
+	migration082 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/082"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestRepositoryIdentityMigrationFrozenChecksum(t *testing.T) {
+	const installedChecksum = "23af4a55489e2f61c97adcc67f7f01c3dd6759cace2f63603bef82bc2453335d"
+	if got := schemaMigrations[81].checksum(); got != installedChecksum {
+		t.Fatalf("migration 82 no longer matches its installed ledger checksum: got=%s want=%s", got, installedChecksum)
+	}
+}
 
 func repositoryMigrationFixture(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
