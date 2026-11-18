@@ -433,9 +433,8 @@ func TestProductionCrossInstanceDeletionCancelsPendingContent(t *testing.T) {
 	if _, err = f.service.Poll(ctx, v.ControllerFence); err == nil {
 		t.Fatal("revoked instance served cached controller")
 	}
-	if _, err = f.service.TestSnapshot(ctx, f.owner, v.SessionID); err == nil {
-		t.Fatal("revoked instance served cached snapshot")
-	}
+	snapshot, err := f.service.TestSnapshot(ctx, f.owner, v.SessionID)
+	requireServiceError(t, rejectPublishedSessionResult(t, snapshot, err), "resource_conflict")
 }
 
 func TestProductionDispatchAndReconcileRevalidateRevokedActor(t *testing.T) {
