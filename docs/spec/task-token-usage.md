@@ -183,7 +183,8 @@ permission_revoked,collector_failed,scope_restricted,native_integer_unrepresenta
 input_cache_semantics_unknown`。
 
 ETag 基于可见完整投影，包含有效状态和权限/成员变化，排除 observedAt；
-If-None-Match 返回 304 前仍须重新授权。
+批量 summary 还包含按请求顺序排列的 Task ID，即使各项统计值相同，
+切换任务或调整顺序也不能沿用旧 ETag。If-None-Match 返回 304 前仍须重新授权。
 
 records 使用 `kind=measurement|execution_state`，支持 stateId/model/provider/
 aggregationRole 精确过滤，limit 1..100，按 `(createdAt,id)` 升序 keyset。

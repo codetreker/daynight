@@ -41,6 +41,9 @@ generation transitions preserve stopped collectors' gaps without revoking
 their valid late-report windows.
 State-inclusive page revisions include the effective state and reasons at one
 operation clock in the same read snapshot, not the clock value itself.
+Batch summary validators include ordered Task IDs alongside the item summary
+hashes and permission token. Equal usage values do not identify the selected
+Tasks or their requested order, so summary hashes alone cannot validate a batch.
 Authorization locks the original PAT and account before the Session, matching
 the existing Test registration ordering and retaining the account-deletion
 barrier.

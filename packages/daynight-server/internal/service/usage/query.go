@@ -140,9 +140,9 @@ func (s *Service) TaskSummaries(ctx context.Context, p model.Principal, project 
 			return err
 		}
 		out.ObservedAt = now
-		hashes := []string{}
+		hashes := [][2]string{}
 		for _, item := range out.Items {
-			hashes = append(hashes, item.Summary.ETag)
+			hashes = append(hashes, [2]string{item.TaskID, item.Summary.ETag})
 		}
 		out.ETag, err = core.Hash([]any{hashes, permission})
 		return err

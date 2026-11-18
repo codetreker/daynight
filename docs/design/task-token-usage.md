@@ -127,7 +127,8 @@ summary 在 SQL 内按当前 active/counted 行聚合指标、null 数量和更�
 也不让未过滤的相关探测抬高计划成本、触发昂贵的 JIT 编译。
 覆盖 state 仅取身份、能力判定、收集状态、原因和期限字段，不读取完整账本行；
 records 与 state API 仍使用独立的完整记录投影。
-投影决定 ETag，授权先于条件响应。
+投影决定 ETag，授权先于条件响应。批量 summary 散列请求顺序中的
+`(taskId, summary.etag)` 对及权限 token；相同统计值不能掩盖任务选择或顺序变化。
 
 records 在 repeatable-read 快照中授权、计算过滤集合 revision 并 keyset 查询。
 revision 包含稳定顺序的行 ID/rowVersion；页面可能含 state 时，还纳入同一快照、
