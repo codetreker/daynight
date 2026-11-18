@@ -2210,6 +2210,13 @@ Store tests cover issuance, expiry, revocation and persisted metadata. The
 [PAT response decision](../../.agents/notes/implemented/testing/2026-11-18-pat-http-error-fixtures.md)
 records that split.
 
+Login HTTP tests use controlled admission and completion results for input
+limits, secure cookies, redirects and capacity responses. Real identity and
+Store tests retain return-path validation, one-time consumption, persisted
+login state and capacity at the database lock. The
+[login route fixture decision](../../.agents/notes/implemented/testing/2026-11-18-login-route-fixtures.md)
+records the proof boundary.
+
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
 WebSocket traffic share one actual application and Engine. Runtime tests group

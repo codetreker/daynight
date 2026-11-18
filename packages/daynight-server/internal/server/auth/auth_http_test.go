@@ -267,10 +267,8 @@ func TestIdentityHTTPCallbackFailures(t *testing.T) {
 }
 
 func TestIdentityHTTPDefaultLoginDestination(t *testing.T) {
-	h := authTestHarness(t)
-	state, binding := h.Start(t, "")
-	result := h.Request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"default-destination"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if result.Code != http.StatusSeeOther || result.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects" {
+	response := completeStrictLogin(t, "", "/projects", "default-destination")
+	if response.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects" {
 		t.Fatal("login without a destination did not enter the project workspace")
 	}
 }
@@ -388,21 +386,10 @@ func TestIdentityHTTPUserDisappearsAfterCredentialAdmission(t *testing.T) {
 }
 
 func TestIdentityHTTPLoginReturnsToTestSessionDeepLink(t *testing.T) {
-	h := authTestHarness(t)
-	destination := "/test-sessions/10000000-0000-0000-0000-000000000001"
-	state, binding := h.Start(t, destination)
-	response := h.Request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"test-session-owner"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/auth/complete?"+(url.Values{"returnPath": {destination}, "callbackPath": {"/api/v1/auth/callback"}}).Encode() {
+	const destination = "/test-sessions/10000000-0000-4000-8000-000000000001"
+	response := completeStrictLogin(t, destination, destination, "test-session-owner")
+	if response.Header().Get("Location") != "/auth/complete?"+(url.Values{"returnPath": {destination}, "callbackPath": {"/api/v1/auth/callback"}}).Encode() {
 		t.Fatalf("login lost Test Session destination: %d %s", response.Code, response.Header().Get("Location"))
-	}
-	found := false
-	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == h.Auth.SessionCookieName() {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("successful callback omitted login session")
 	}
 }
 
