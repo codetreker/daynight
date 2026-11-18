@@ -58,7 +58,7 @@ const RepresentativeDetail = ({ task, rootId, title, onOpenTask }: { readonly ta
   const { messages: { graph: m } } = useI18n();
   const completion = useCompletionTime(completedAtFor(task));
   const hint = useCompletionHint(completion);
-  return <><button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} aria-describedby={completion === null ? undefined : hint.descriptionId} ref={hint.triggerRef} {...hint.triggerEvents} onClick={(event) => { hint.triggerEvents.onClick(); onOpenTask(rootId, event.currentTarget); }}>{m.goalDetails}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</button>{hint.hint}</>;
+  return <><button className="goal-detail-link" id={`chain-task-${rootId}-${rootId}`} type="button" aria-haspopup="dialog" aria-label={m.representativeTaskDetailsLabel({ title })} aria-describedby={completion === null ? undefined : hint.descriptionId} ref={hint.triggerRef} {...hint.triggerEvents} onClick={(event) => { hint.triggerEvents.onClick(); onOpenTask(rootId, event.currentTarget); }}>{m.representativeTaskDetails}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</button>{hint.hint}</>;
 };
 
 const ChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, revealTaskId, onRevealed, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
