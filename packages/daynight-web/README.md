@@ -1482,7 +1482,7 @@ internal state styles for both icon-only and text actions. Its CSS is imported
 by the component. Consumers provide localized labels, actions and external
 layout, while retaining clipboard writes, admission, pending and feedback
 lifecycles. `ValueCopyButton` serves Task and Goal rows and Task/Goal details; other
-features retain their own asynchronous flows. See the [UI principles](../../docs/ui-design.md#share-copy-button-presentation)
+features retain their own asynchronous flows. See the [Web design](../../docs/design/daynight-web.md#复制控件的职责)
 for geometry, focus and disabled presentation.
 
 ## Shared native selection
@@ -1495,7 +1495,7 @@ arrow and the stateless SelectTrigger for real button or summary hosts. Its CSS
 owns common tokens and custom trigger presentation. It
 supports native single-line, size-based list and multiple selection. The [component design](../../docs/design/native-select.md)
 owns its props, geometry, touch modes and popup-helper usage. The
-[UI principles](../../docs/ui-design.md#share-native-selection-presentation)
+[UI principles](../../docs/ui-design.md#shared-controls)
 own the reuse rules.
 
 Pages provide their options, value, labels, constraints, event handlers and real
