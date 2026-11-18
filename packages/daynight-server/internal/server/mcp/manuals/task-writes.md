@@ -2,7 +2,7 @@
 
 Start with [Overview](daynight://manuals/overview.md).
 
-Read with [Write safety](daynight://manuals/write-safety.md) for Task/Goal creation, metadata, status, deletion and property mutations. For an existing resource, read its complete current Task definition and required inputs, then use that observation's exact decision version. Consult [Task reads](daynight://manuals/tasks.md) when the decision needs projection/status details beyond this topic. Read [Materials](daynight://manuals/materials.md) when defining or replacing formal material, and [Dependencies](daynight://manuals/dependencies.md) when submitting dependency fields.
+Read with [Write safety](daynight://manuals/write-safety.md) for Task/Goal creation, metadata, status, deletion and property mutations. For an existing resource, read its complete current Task definition and required inputs, then use that observation's exact decision version. Consult [Task reads](daynight://manuals/tasks.md) when the decision needs projection/status details beyond this topic. Read [Materials](daynight://manuals/materials.md) when defining or replacing formal material, and [Dependency writes](daynight://manuals/dependency-writes.md) when submitting dependency fields.
 
 ## Creation and metadata
 
@@ -10,7 +10,7 @@ Read with [Write safety](daynight://manuals/write-safety.md) for Task/Goal creat
 
 For `type: "goal"`, status defaults to `todo` and may initially be `todo`, `in_progress`, `done` or `cancelled`. Omitted `assignedTo` selects the current Account; explicit null leaves it unassigned. A Goal has no Parent, dependencies or execution platform and owns its description, properties, Thread and attachments independently of children.
 
-`task_update` changes metadata atomically; omitted fields remain unchanged and null clears nullable fields. Supplied `description` replaces the whole field. Dependencies are the whole-set exception explained in [Dependencies](daynight://manuals/dependencies.md).
+`task_update` changes metadata atomically; omitted fields remain unchanged and null clears nullable fields. Supplied `description` replaces the whole field. Dependencies are the whole-set exception explained in [Dependency writes](daynight://manuals/dependency-writes.md).
 
 An ordinary Task's `parentId` at creation/update must name a visible Goal in the same Project. On update, omission preserves ownership, null removes it, and a UUID assigns/transfers it. A Parent-only update is valid at the child's exact decision version. Parent changes do not alter dependencies, assignment or child status. A terminal Goal still accepts organization changes under each Task's rules.
 

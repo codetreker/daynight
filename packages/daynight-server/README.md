@@ -539,8 +539,9 @@ and `resources/read` to obtain each complete Markdown document. The overview
 routes by operation, distinguishes required and conditional topics, and explains
 result envelopes and schematic examples. Clients can reuse complete guidance
 while it remains applicable. Task reads and lifecycle writes have separate topics;
-dependency reads and replacement, and Session observations and history each share
-a complete topic. Dependency-only writes require dependencies and write-safety;
+dependency graph reads and writes also have separate topics. Session observations
+and history share a complete topic. Dependency-only writes require dependencies,
+dependency-writes and write-safety;
 creation with dependencies or mixed updates also require task-writes.
 Steps, Thread, Session messages, and attachment reads and writes have separate
 guides. Every write requires the common write-safety guide and its operation's

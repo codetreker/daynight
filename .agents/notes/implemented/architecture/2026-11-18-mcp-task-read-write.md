@@ -13,9 +13,10 @@ for ordinary queries and obscures which rules writers must read.
 The existing tasks Resource owns complete Task and Goal read guidance. A separate
 task-writes Resource owns creation, metadata, status, property and deletion
 conditions. The overview identifies the required reading set; writes also require
-write-safety. Dependency-only writes continue to use dependencies and write-safety,
+write-safety. Dependency-only writes use dependencies, dependency-writes and write-safety,
 while creation with dependencies and mixed updates also require task-writes.
-Dependency and Session topics retain their current mixed boundaries. The
+The [dependency decision](2026-11-18-mcp-dependency-read-write.md) separates
+graph reads from writes; the Session topic retains its mixed boundary. The
 [shared guidance decision](2026-11-18-mcp-shared-guidance.md) owns the common
 rules and the [topic guide decision](2026-11-11-mcp-topic-manuals.md) explains
 the original boundaries. The [server design](../../../../docs/design/daynight-server.md#http-传输准入)

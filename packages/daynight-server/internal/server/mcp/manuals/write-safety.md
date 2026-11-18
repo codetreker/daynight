@@ -14,7 +14,7 @@ Schema confirmation such as `confirm: true` and current-name/version inputs does
 
 ## Decide from an observation
 
-Read the resource and required material, decide, submit the intended change once, interpret the receipt, then verify the required result. [Tasks](daynight://manuals/tasks.md) defines projections; [Materials](daynight://manuals/materials.md) defines formal content ownership. Omitted metadata stays unchanged; [Dependencies](daynight://manuals/dependencies.md) owns whole-set replacement exceptions.
+Read the resource and required material, decide, submit the intended change once, interpret the receipt, then verify the required result. [Tasks](daynight://manuals/tasks.md) defines projections; [Materials](daynight://manuals/materials.md) defines formal content ownership. Omitted metadata stays unchanged; [Dependency writes](daynight://manuals/dependency-writes.md) owns whole-set replacement exceptions.
 
 Versions are positive signed-int64 decimal strings, `"1"` through `"9223372036854775807"`. Preserve every digit. Leading zeros, signs, fractions, exponent notation, zero and overflow are invalid; never pass through floating-point JSON numbers.
 
