@@ -96,6 +96,27 @@ func TestIdentityUnavailableRelationsPreserveOperationalFailure(t *testing.T) {
 			if !errors.As(err, &pg) || !errors.As(err, &dbError) || strings.Contains(err.Error(), "SELECT") || completion.Outcome != store.TransactionNotCommitted {
 				t.Fatalf("relation failure=%#v %v", completion, err)
 			}
+			if operation == "user" {
+				t.Run("authenticate-session", func(t *testing.T) {
+					ctx := t.Context()
+					var authenticationError *store.Error
+					var driver *pgconn.PgError
+					completion, err := db.WriteIdentity(ctx, func(sc store.IdentityScope) error {
+						principal, err := sc.IdentityDAO().Authenticate(ctx, model.SessionCredential, session.TokenHash, now)
+						if principal != (model.Principal{Kind: model.SessionCredential}) {
+							t.Fatalf("failed Session authentication returned actor data: %#v", principal)
+						}
+						if !errors.As(err, &authenticationError) || !authenticationError.DatabaseFailure ||
+							!errors.As(err, &driver) || driver.Code != "42P01" || errors.Is(err, model.ErrNotFound) {
+							t.Fatalf("missing users relation lost its authentication failure cause: %v", err)
+						}
+						return err
+					})
+					if completion.Outcome != store.TransactionNotCommitted || authenticationError == nil || !errors.Is(err, authenticationError) || !errors.Is(err, driver) {
+						t.Fatalf("failed Session authentication lost its rollback outcome or cause: %+v %v", completion, err)
+					}
+				})
+			}
 		})
 	}
 	db := isolatedStore(t)

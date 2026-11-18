@@ -14,8 +14,10 @@ import (
 
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const authRequestOrigin = "http://127.0.0.1:8787"
@@ -53,6 +55,9 @@ func newStrictAuthHTTP(t *testing.T) *strictAuthHTTP {
 			callbackCalls++
 			return authRequestOrigin + "/api/v1/auth/callback"
 		},
+		validateLogin: func(provider, returnPath string) error {
+			return h.consume("ValidateLogin", provider, returnPath).err
+		},
 		authenticate: func(ctx context.Context, kind model.CredentialKind, value string) (model.Principal, error) {
 			return authRequestResult[model.Principal](h.take(ctx, "Authenticate", kind, value))
 		},
@@ -61,6 +66,12 @@ func newStrictAuthHTTP(t *testing.T) *strictAuthHTTP {
 		},
 		createPAT: func(ctx context.Context, principal model.Principal, input identitycore.CreatePAT) (identitycore.MintedPAT, error) {
 			return authRequestResult[identitycore.MintedPAT](h.take(ctx, "CreatePAT", principal, input))
+		},
+		listPATs: func(ctx context.Context, principal model.Principal) ([]model.PersonalAccessToken, error) {
+			return authRequestResult[[]model.PersonalAccessToken](h.take(ctx, "ListPATs", principal))
+		},
+		updatePAT: func(ctx context.Context, principal model.Principal, tokenID string, input identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error) {
+			return authRequestResult[model.PersonalAccessToken](h.take(ctx, "UpdatePATExpiry", principal, tokenID, input))
 		},
 		revokePAT: func(ctx context.Context, principal model.Principal, tokenID string) error {
 			return h.take(ctx, "RevokePAT", principal, tokenID).err
@@ -84,7 +95,7 @@ func newStrictAuthHTTP(t *testing.T) *strictAuthHTTP {
 
 func (h *strictAuthHTTP) take(ctx context.Context, name string, args ...any) authRequestCall {
 	h.t.Helper()
-	if len(h.pending) == 0 || ctx.Value(authRequestContextKey{}) != h.requestMarker || httpx.RequestID(ctx) != "project-test" {
+	if ctx.Value(authRequestContextKey{}) != h.requestMarker || httpx.RequestID(ctx) != "project-test" {
 		h.t.Fatalf("unexpected authentication request operation %s: pending=%v context marker=%v request ID=%q",
 			name, len(h.pending), ctx.Value(authRequestContextKey{}) == h.requestMarker, httpx.RequestID(ctx))
 	}
@@ -92,6 +103,14 @@ func (h *strictAuthHTTP) take(ctx context.Context, name string, args ...any) aut
 		h.operationCtx = ctx
 	} else if h.operationCtx != ctx {
 		h.t.Fatalf("%s changed the admitted request context", name)
+	}
+	return h.consume(name, args...)
+}
+
+func (h *strictAuthHTTP) consume(name string, args ...any) authRequestCall {
+	h.t.Helper()
+	if len(h.pending) == 0 {
+		h.t.Fatalf("unexpected identity operation %s(%#v)", name, args)
 	}
 	want := h.pending[0]
 	h.pending = h.pending[1:]
@@ -176,4 +195,11 @@ func expectRejectedCredential(kind model.CredentialKind, value string) authReque
 
 func expectUser(principal model.Principal, user model.User) authRequestCall {
 	return authRequestCall{name: "User", args: []any{principal}, result: user}
+}
+
+func authMissingRelation(phase string) *store.Error {
+	return &store.Error{
+		Phase: phase, DatabaseFailure: true, SQLState: "42P01",
+		Cause: &pgconn.PgError{Code: "42P01", Message: "relation is unavailable"},
+	}
 }
