@@ -15,7 +15,8 @@ errors would hide a persistent holder and abandon owned resources.
 `test/helpers/tool-fixture-cleanup.ts` owns the root-removal function shared by
 the platform suites `tool-executables.test.ts` and `tool-launchers.test.ts`,
 `commands/worker/tool-selection.test.ts`, and
-`commands/controller/copilot-owned-process.test.ts`. Fixture cleanup follows operation disposal; the Worker selection fixture also
+`commands/controller/copilot-owned-process.test.ts`. The platform suites dispose
+their operations before cleanup. On success, the Worker selection fixture
 awaits its selection manager close before removing the root. The Copilot
 fixture first awaits runtime close and then the child close event under its
 existing five-second deadline; root removal follows in `afterEach`.
