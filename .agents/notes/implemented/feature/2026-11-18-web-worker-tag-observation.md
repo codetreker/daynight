@@ -8,7 +8,7 @@ A saved Worker tag filter and a Worker report are independent facts. A saved tar
 
 ## Decision
 
-The Web configuration panel displays the saved filter read-only and compares its canonical semantic digest with the reported application item. A panel-owned WebCrypto operation isolates results by account scope, Worker and target semantics. Checking and calculation failure remain visible and prevent an applied summary; the save receipt remains independent of this derived work. Missing service support and absent Worker observation are distinct. Other edits merge into the original source without rewriting the filter.
+The Web configuration panel displays the saved filter and compares its canonical semantic digest with the reported application item. A panel-owned WebCrypto operation isolates results by account scope, Worker and target semantics. Checking and calculation failure remain visible and prevent an applied summary; the save receipt remains independent of this derived work. Missing service support and absent Worker observation are distinct. The [editing decision](2026-11-18-web-worker-tag-editing.md) extends the same field and preserves unknown members.
 
 ## Alternatives
 
