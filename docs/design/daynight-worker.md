@@ -31,7 +31,7 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 |---|---|
 | 当前 claim 是否仍归本 Worker | Daynight 成功完整的自有 claim 清单；显式操作使用原 task 的精确版本读取 |
 | Web 原生操作及 generation | 原 Controller journal 与不可变 launch ticket |
-| 原 Controller/native 进程是否停止 | 原进程实例证明及 OS process group / Windows Job 实际成员 |
+| 原 Controller/native 进程是否停止 | 原进程实例证明及 OS process group / Windows Job 实际成员，或原检查点验证的同安装跨 boot 边界 |
 | IPC endpoint 是否已移除 | 文件系统，Windows 管道生命周期由原进程停止确认 |
 | Worktree 目录与 Git 管理注册是否仍在 | 当前文件系统与 Git 管理目录 |
 | Session 归档是否 ready | 服务端对原归档身份、长度与摘要的回执 |
@@ -404,6 +404,8 @@ Agent 完成全部交付和证据后，核验原 active claim、Worker 和 workt
 | release | 核验 owner/admin、原 claim 和指定版本；确认原 Web 执行停止后提交一次 release；有效 200 后完成原资源收尾。 |
 
 Release 在远端确认前保留 worktree，拒绝时仍可恢复原执行；确认成功后尚未完成本机收尾时，下一次 run 按原 claim 缺席继续处理。远端操作保留既有权限、精确版本和 release 的 stoppedConfirmed。停止后再检查取消，随后只提交一次 release；未知响应保留原错误和资源责任，不通过 GET 推断请求成功或重放。有效 200 后收尾失败明确报告释放已确认并保留错误原因。管理 runtime 只关闭自身句柄、释放锁；管理期间 runner 停机是这一单控制者方案的操作代价。
+
+`worker reboot-recovery <task-id> --project <project-id> --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id>` 只确认原 Windows Web Task 的跨重启停止事实。重启前加 `--prepare` 保存原执行检查点，完整重启后省略该选项验证同一 Windows 安装与新的 kernel boot；具体证据、拒绝及本机信任边界由 [Session 协议](task-session-protocol.md#windows-跨重启停止证明)拥有。该命令不取得 runner 实例锁，可以与在线 Worker 并存，但必须取得原 Controller 存储 permit，并在写入前重验当前 owner、active claim、本机 Worker、原 ticket 与原生 Session。原 `shutdown` intent 保持不变并允许取得停止证明，terminal intent 仍拒绝；否则正常关闭保存的 shutdown 会与缺失停止证明循环互锁。命令不改 claim、恢复预算或输入回执，也不启动进程；成功后仍由普通 Worker 按原 Session、原生 ID、工作树核验、shutdown 结算、暂停和预算规则恢复合法下一代。缺少原 Job lease 的同 boot 执行仍保留槽位，不能靠命令名称或心跳失效绕过完整停止证明。
 
 Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active claim，以原 claimId 和观察版本在同一事务中清除 worker、返回 todo、清空任务起止时间并设置 allowAgents=false。它无需本机实例锁或 stoppedConfirmed，不启动目标执行，也不承诺远端 agent 立即停止或撤销外部凭据。原 worker 下次成功完整自有清单发现 claim 缺席后，按普通终止流程收尾。自动领取须等新的明确许可操作。Transfer 和专用 Worker resume 入口均已移除；释放任务通过普通认领开始新执行。详情归属展示与确认交互由[认领架构](daynight-worker-claims.md#web-归属展示与撤回)拥有。
 

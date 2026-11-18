@@ -51,7 +51,10 @@ by their recorded birth and verifies full identity for still-running instances.
 After termination, all those original handles must be signaled and the same Job
 member inventory must be empty. Missing names, missing original leases or an
 unproven descendant boundary still refuse complete stop. No new Job framework
-or persistent process-handle registry is introduced.
+or persistent process-handle registry is introduced. Historical Task executions
+without that lease can use the separate
+[prepared reboot boundary](2026-11-19-windows-reboot-recovery.md); it does not
+weaken the same-boot Job completion requirement.
 
 The original absolute deadline governs acquisition, termination and waits;
 individual handles and polls do not renew it. A timed native wait derives its
@@ -108,5 +111,7 @@ makes their release part of the reported operation result. A deadline can refuse
 completion while the original is still terminating, preserving resources and
 errors for later observation. Native calls remain synchronous and cannot be
 forcibly interrupted by a JavaScript timer. This change does not qualify
-arbitrary escaped descendants, change POSIX signal policy or repair historical
-records that lack the original Job lease or durable stop proof.
+arbitrary escaped descendants or change POSIX signal policy. The original
+completion mechanism did not repair historical records missing both the Job
+lease and durable stop proof; the explicit reboot mechanism provides a distinct
+boundary for those records.
