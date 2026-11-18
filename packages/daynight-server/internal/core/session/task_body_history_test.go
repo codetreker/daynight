@@ -123,7 +123,7 @@ func (d *onlineImageRetirementDAO) RemoveSessionResourceReference(_ context.Cont
 func (d *onlineImageRetirementDAO) SessionResourceReferenceCount(context.Context, string, string) (int, error) {
 	return d.count, d.countFailure
 }
-func (d *onlineImageRetirementDAO) SessionUpload(context.Context, string, string) (store.SessionUploadRecord, error) {
+func (d *onlineImageRetirementDAO) SessionUploadByResource(context.Context, string, string) (store.SessionUploadRecord, error) {
 	d.uploadReads++
 	return d.upload, d.uploadFailure
 }
@@ -183,7 +183,7 @@ func TestTaskBodyRetirementWaitsForCapturesAndPreservesBodyPin(t *testing.T) {
 }
 
 func TestTaskBodyRetirementRejectsConflictingEvidenceAndPropagatesFailures(t *testing.T) {
-	for _, scenario := range []string{"occurrence", "missing-resource", "remove", "count", "upload", "wrong-blob", "pending-upload", "released", "save"} {
+	for _, scenario := range []string{"occurrence", "missing-resource", "remove", "count", "upload", "missing-owner", "wrong-blob", "pending-upload", "released", "save"} {
 		t.Run(scenario, func(t *testing.T) {
 			id, resource := uuid.NewString(), uuid.NewString()
 			callID := "tool"
@@ -204,6 +204,9 @@ func TestTaskBodyRetirementRejectsConflictingEvidenceAndPropagatesFailures(t *te
 			case "count":
 				d.countFailure, storageFailure, wantReads = failure, true, 0
 			case "upload":
+				d.uploadFailure, storageFailure = failure, true
+			case "missing-owner":
+				failure = model.ErrNotFound
 				d.uploadFailure, storageFailure = failure, true
 			case "wrong-blob":
 				d.upload.BlobID = uuid.NewString()
@@ -325,6 +328,143 @@ func TestTaskBodyActiveHistoryPreservesOnlineImageAuthority(t *testing.T) {
 				}
 			} else if err == nil || !jsonEqual(before, d.bundle.Ledger) {
 				t.Fatal("rejected checkpoint replaced image authority", err)
+			}
+		})
+	}
+}
+
+type sharedOnlineRetirementDAO struct {
+	*archiveFlowDAO
+	t                 *testing.T
+	session, resource string
+	captures          map[string]store.SessionCaptureRecord
+	counts            []int
+	owner             store.SessionUploadRecord
+	removed           []string
+	saved             []store.SessionUploadRecord
+	ownerReads        int
+}
+
+func (d *sharedOnlineRetirementDAO) SessionCaptureByImage(_ context.Context, session, image string) (store.SessionCaptureRecord, error) {
+	capture, ok := d.captures[image]
+	if session != d.session || !ok {
+		d.t.Fatal("unexpected capture query", session, image)
+	}
+	return capture, nil
+}
+func (d *sharedOnlineRetirementDAO) RemoveSessionResourceReference(_ context.Context, ref store.SessionResourceReference) error {
+	if ref.SessionID != d.session || ref.ResourceID != d.resource || ref.Kind != "message" {
+		d.t.Fatal(ref)
+	}
+	d.removed = append(d.removed, ref.ReferenceID)
+	return nil
+}
+func (d *sharedOnlineRetirementDAO) SessionResourceReferenceCount(_ context.Context, session, resource string) (int, error) {
+	if session != d.session || resource != d.resource || len(d.counts) == 0 {
+		d.t.Fatal("unexpected reference count", session, resource)
+	}
+	count := d.counts[0]
+	d.counts = d.counts[1:]
+	return count, nil
+}
+func (d *sharedOnlineRetirementDAO) SessionUploadByResource(_ context.Context, session, resource string) (store.SessionUploadRecord, error) {
+	if session != d.session || resource != d.resource {
+		d.t.Fatal("unexpected owner query", session, resource)
+	}
+	d.ownerReads++
+	return d.owner, nil
+}
+func (d *sharedOnlineRetirementDAO) SaveSessionUpload(_ context.Context, upload store.SessionUploadRecord) error {
+	d.saved = append(d.saved, upload)
+	return nil
+}
+
+func TestTaskBodyFinalHistoryReclaimsOriginalOwnerOfReusedOnlineResource(t *testing.T) {
+	for _, order := range []string{"original-first", "reuse-first", "owner-outside-positions", "multiple-reusers"} {
+		t.Run(order, func(t *testing.T) {
+			op, base, r := archiveFlowFixture(t)
+			resource, originalAttempt, call := uuid.NewString(), uuid.NewString(), "tool"
+			original := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "tool_output", CallID: &call, SourceKey: "original"}
+			reused := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "tool_output", CallID: &call, SourceKey: "reused"}
+			d := &sharedOnlineRetirementDAO{archiveFlowDAO: base, t: t, session: op.id, resource: resource, counts: []int{1, 0}, captures: map[string]store.SessionCaptureRecord{
+				original.ImageID: {Request: sp.ImageCaptureRequest{Occurrence: original, Locator: sp.ImageLocator{Kind: "local"}}, Receipt: sp.ImageCaptureReceipt{State: "committed", AttemptID: originalAttempt, ResourceID: &resource}},
+				reused.ImageID:   {Request: sp.ImageCaptureRequest{Occurrence: reused, Locator: sp.ImageLocator{Kind: "resource", ResourceID: resource}}, Receipt: sp.ImageCaptureReceipt{State: "committed", AttemptID: uuid.NewString(), ResourceID: &resource}},
+			}, owner: store.SessionUploadRecord{SessionID: op.id, BlobID: resource, Spec: sp.ImageUploadSpec{UploadID: originalAttempt}, Receipt: sp.ImageUploadReceipt{State: "complete", Resource: &sp.Resource{ResourceID: resource}}}}
+			positions := []sp.ImageOccurrence{original, reused}
+			if order == "reuse-first" {
+				positions = []sp.ImageOccurrence{reused, original}
+			}
+			if order == "owner-outside-positions" {
+				positions, d.counts = []sp.ImageOccurrence{reused}, []int{0}
+			}
+			if order == "multiple-reusers" {
+				third := reused
+				third.ImageID, third.EntryID = uuid.NewString(), uuid.NewString()
+				capture := d.captures[reused.ImageID]
+				capture.Request.Occurrence, capture.Receipt.AttemptID = third, uuid.NewString()
+				d.captures[third.ImageID] = capture
+				positions, d.counts = append(positions, third), []int{2, 1, 0}
+			}
+			h := sp.ArchiveHistoryContent{ContentPolicy: "task_body", HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: decimal(r.SourceSeq), Entries: []sp.TimelineEntry{taskBodyEntry(t, "3")}, Resources: []sp.Resource{}}
+			previous, err := makeArchiveLedger(h, h.HistoryEpoch, r.SourceSeq)
+			if err != nil {
+				t.Fatal(err)
+			}
+			previous.HistoryID, previous.OnlineImageOccurrences = uuid.NewString(), positions
+			base.bundle.Ledger = encode(previous)
+			op.execution.archiveRun = func(ctx context.Context, p model.Principal, _, _, id string, _ bool, work func(*Access) error) error {
+				if p != op.principal || id != op.id {
+					t.Fatal("wrong final history scope")
+				}
+				return work(&Access{tx: &operationTx{dao: d}, record: r})
+			}
+			body, id := encode(h), uuid.NewString()
+			put := func() error {
+				_, err := op.PutArchiveFile(t.Context(), "history", id, 0, int64(len(body)), archiveDigest(body), archiveDigest(body), body)
+				return err
+			}
+			if err = put(); err != nil {
+				t.Fatal(err)
+			}
+			if len(d.removed) != len(positions) || len(d.counts) != 0 || d.ownerReads != 1 || len(d.saved) != 1 || d.saved[0].Spec.UploadID != originalAttempt || d.saved[0].Receipt.State != "released" || d.saved[0].Receipt.Resource != nil {
+				t.Fatal(d.removed, d.counts, d.ownerReads, d.saved)
+			}
+			var final archiveLedger
+			if json.Unmarshal(base.bundle.Ledger, &final) != nil || len(final.OnlineImageOccurrences) != 0 || final.HistoryID != id {
+				t.Fatal(final)
+			}
+			if err = put(); err != nil || len(d.saved) != 1 || d.ownerReads != 1 {
+				t.Fatal("final history retry repeated ownership release", err, d.saved)
+			}
+		})
+	}
+}
+
+func TestTaskBodyReusedResourceRetainsBodyAndOtherPinsAndReleasedOwner(t *testing.T) {
+	for _, scenario := range []string{"body", "other-reference", "released-owner"} {
+		t.Run(scenario, func(t *testing.T) {
+			id, resource, call := uuid.NewString(), uuid.NewString(), "tool"
+			position := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "tool_output", CallID: &call, SourceKey: "reuse"}
+			d := &sharedOnlineRetirementDAO{t: t, session: id, resource: resource, counts: []int{1}, captures: map[string]store.SessionCaptureRecord{
+				position.ImageID: {Request: sp.ImageCaptureRequest{Occurrence: position, Locator: sp.ImageLocator{Kind: "resource", ResourceID: resource}}, Receipt: sp.ImageCaptureReceipt{State: "committed", AttemptID: uuid.NewString(), ResourceID: &resource}},
+			}, owner: store.SessionUploadRecord{SessionID: id, BlobID: resource, Spec: sp.ImageUploadSpec{UploadID: uuid.NewString()}, Receipt: sp.ImageUploadReceipt{State: "released"}}}
+			var body []sp.Resource
+			wantRemoved, wantReads := 1, 0
+			if scenario == "body" {
+				body = []sp.Resource{{ResourceID: resource}}
+				d.counts = nil
+				wantRemoved = 0
+			}
+			if scenario == "released-owner" {
+				d.counts = []int{0}
+				wantReads = 1
+			}
+			r := &record{Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id}}}}
+			if err := (&Execution{}).retireOnlineImageReferences(t.Context(), &operationTx{dao: d}, r, []sp.ImageOccurrence{position}, body); err != nil {
+				t.Fatal(err)
+			}
+			if len(d.removed) != wantRemoved || d.ownerReads != wantReads || len(d.saved) != 0 || len(d.counts) != 0 {
+				t.Fatal(d.removed, d.ownerReads, d.saved, d.counts)
 			}
 		})
 	}

@@ -28,7 +28,11 @@ history JSON remains unchanged, with policy exposed through negotiated headers.
 Active body history carries a bounded cumulative set of online image positions,
 without tool text. Final history empties that set and retires online references
 through the existing resource transaction and lease-aware reclamation. Shared
-body resources remain referenced. Live inspection keeps its complete online
+body resources remain referenced. Reclamation resolves the original upload by
+the unique Session/resource identity: a later capture may reuse the resource
+without creating its own upload. Capture order and attempt identity therefore
+cannot establish upload ownership. Missing ownership remains an explicit error
+within the original reference transaction. Live inspection keeps its complete online
 meaning. The [history design](../../../../docs/design/task-session-history.md)
 owns the wire fields and lifecycle.
 

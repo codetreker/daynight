@@ -63,7 +63,11 @@ func (s *Execution) retireOnlineImageReferences(ctx context.Context, tx *operati
 		if count != 0 {
 			continue
 		}
-		upload, err := dao.SessionUpload(ctx, r.Snapshot.SessionID, capture.Receipt.AttemptID)
+		owners, ok := tx.dao.(store.SessionResourceUploadDAO)
+		if !ok {
+			return fault("component_unsupported", "Resource upload ownership requires a server upgrade.")
+		}
+		upload, err := owners.SessionUploadByResource(ctx, r.Snapshot.SessionID, resource)
 		if err != nil {
 			return err
 		}
