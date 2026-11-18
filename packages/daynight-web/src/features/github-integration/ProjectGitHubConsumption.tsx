@@ -2,8 +2,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
 import { getGitHubPullRequestCounts, type GitHubInstallationCandidate, type GitHubPullRequestCounts } from '../../api/github-integration';
-import { listTeamGitHubApps, getProjectGitHubStatus, discoverProjectGitHubInstallation, connectProjectGitHub, disconnectProjectGitHub, saveProjectGitHubSettings, updateProjectGitHubSync, updateProjectWebhook, type ProjectGitHubStatus, type ProjectWebhookInput, type ProjectWebhookStatus, type TeamGitHubGrant } from '../../api/github-consumption';
-import { ProjectWebhookPanel } from './ProjectWebhookPanel';
+import { listTeamGitHubApps, getProjectGitHubStatus, discoverProjectGitHubInstallation, connectProjectGitHub, disconnectProjectGitHub, saveProjectGitHubSettings, updateProjectGitHubSync, type ProjectGitHubStatus, type TeamGitHubGrant } from '../../api/github-consumption';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { ManagementDialog } from '../management/ManagementDialog';
 import type { ProjectManagementGuard } from '../management/ProjectManagementGuard';
@@ -32,12 +31,6 @@ const minutes = (value: string): number | null => {
   if (!/^\d+$/.test(value)) return null;
   const n = Number(value);
   return Number.isSafeInteger(n) && n >= 1 && n <= 2_147_483_647 ? n : null;
-};
-const withWebhook = (connection: ProjectGitHubStatus, hook: ProjectWebhookStatus | null): ProjectGitHubStatus => {
-  if (hook === null) return { ...connection, projectWebhook: null };
-  const activeRepository = connection.connection === 'connected' || connection.connection === 'unavailable' ? connection.repository?.id : null;
-  const state = hook.version === null ? 'unconfigured' : !hook.enabled ? 'disabled' : activeRepository && hook.repositoryId !== activeRepository ? 'repository_mismatch' : hook.lastReceivedAt === null ? 'waiting' : 'received';
-  return { ...connection, projectWebhook: { ...hook, state } };
 };
 
 export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, onRoute, onRetentionChange, onStateChange, presentationGeneration, guard }: Props) => {
@@ -74,13 +67,6 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
   const [needsRead, setNeedsRead] = useState(false);
   const [confirmedPending, setConfirmedPending] = useState(false);
   const [draftConflict, setDraftConflict] = useState(false);
-  const [webhookSection, setWebhookSection] = useState({ dirty: false, pending: false, needsAttention: false });
-  const [webhookRetained, setWebhookRetained] = useState(false);
-  const [webhookUnavailable, setWebhookUnavailable] = useState(false);
-  const webhookAvailable = useRef(false);
-  const retainWebhook = useRef(false); retainWebhook.current = webhookRetained || webhookSection.dirty;
-  const updateWebhookSection = useCallback((value: { dirty: boolean; pending: boolean; needsAttention: boolean }) => setWebhookSection(old => old.dirty === value.dirty && old.pending === value.pending && old.needsAttention === value.needsAttention ? old : value), []);
-  useLayoutEffect(() => { if (!status?.projectWebhook) { updateWebhookSection({ dirty: false, pending: false, needsAttention: false }); setWebhookRetained(false); } }, [status?.projectWebhook, updateWebhookSection]);
   const statusRef = useRef<ProjectGitHubStatus | null>(null);
   const draftRef = useRef('');
   const dirtyRef = useRef(false);
@@ -90,9 +76,8 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
   const readAbort = useRef<AbortController | null>(null);
   const operation = useRef<AbortController | null>(null);
   const writing = useRef(false);
-  const writingKind = useRef<'save' | 'connect' | 'disconnect' | 'sync' | 'webhook' | null>(null);
+  const writingKind = useRef<'save' | 'connect' | 'disconnect' | 'sync' | null>(null);
   const unresolved = useRef(false);
-  const webhookUnresolved = useRef(false);
   const revoked = useRef(false);
   const dispatchedRef = useRef(false);
   const confirmedRef = useRef(false);
@@ -107,7 +92,7 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
   activeRef.current = active;
   const presentationRef = useRef(presentationGeneration);
   presentationRef.current = presentationGeneration;
-  const role = access.access?.effectiveRole ?? null;
+  const role = access.status === 'ready' ? access.access?.effectiveRole : null;
   const admin = role === 'admin';
   const connectionAdmin = access.status === 'ready' && access.access?.teamRole === 'admin' && status?.canManageConnection === true;
   const accessRef = useRef(access.access); accessRef.current = access.access;
@@ -131,14 +116,14 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
     previousDialog.current = dialog;
   }, [dialog, active, onRoute]);
   useEffect(() => { if (!busy && focusAfterSave.current) { focusAfterSave.current = false; if (active && onRoute) document.getElementById('github-poll-interval')?.focus(); } }, [busy, active, onRoute]);
-  useLayoutEffect(() => { onRetentionChange?.(busy || needsRead || completedDialog || webhookRetained); }, [busy, needsRead, completedDialog, webhookRetained, onRetentionChange]);
+  useLayoutEffect(() => { onRetentionChange?.(busy || needsRead || completedDialog); }, [busy, needsRead, completedDialog, onRetentionChange]);
   useEffect(() => {
     if (!onRoute) { readAbort.current?.abort(); ++sequence.current; if (!dispatchedRef.current) operation.current?.abort(); }
     else if (active && needsRead) void loadRef.current(true);
   }, [onRoute, active, needsRead]);
   useEffect(() => session.scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) { revoked.current = true; clearPrivate(); } }), [session, projectId, clearPrivate]);
   useEffect(() => {
-    if (session.scope.isInvalidated) { clearPrivate(); unresolved.current = false; webhookUnresolved.current = false; setNeedsRead(false); setConfirmedPending(false); guard.release('github'); }
+    if (session.scope.isInvalidated) { clearPrivate(); unresolved.current = false; setNeedsRead(false); setConfirmedPending(false); guard.release('github'); }
     else if (access.status === 'unavailable') clearPrivate();
     else if (role !== null && role !== 'admin') { dirtyRef.current = false; draftVersion.current = null; setDraftConflict(false); if (statusRef.current) setDraftValue(String(statusRef.current.pollIntervalMinutes)); }
     const owner = grantOwner.current;
@@ -156,7 +141,7 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
       await session.scope.ready(signal);
       const observedAccess = await session.waitForFreshAccess(signal, true);
       if (observedAccess === null) return false;
-      const [readStatus, countResult] = await Promise.all([
+      const [next, countResult] = await Promise.all([
         getProjectGitHubStatus(projectId, signal, { userId, onPrincipalMismatch: session.scope.principalMismatch }),
         getGitHubPullRequestCounts(projectId, signal, { userId, onPrincipalMismatch: session.scope.principalMismatch }).then(value => ({ value, error: null }), error => ({ value: null, error })),
       ]);
@@ -165,19 +150,14 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
       const admitted = await session.waitForFreshAccess(signal, true);
       if (!alive.current || signal.aborted || ticket !== sequence.current || admitted === null || admitted.ownership.teamId !== observedAccess.ownership.teamId || admitted.ownership.version !== observedAccess.ownership.version || !activeRef.current || !routeRef.current || session.scope.isProjectSuspended(projectId)) return false;
       const old = statusRef.current;
-      const incomingHook = readStatus.projectWebhook;
-      const previousHook = old?.projectWebhook;
-      const staleConnection = old !== null && (BigInt(readStatus.revision) < BigInt(old.revision) || BigInt(readStatus.version) < BigInt(old.version));
-      const missingHook = incomingHook === null;
-      const staleHook = incomingHook !== null && previousHook?.version != null && (incomingHook.version === null || BigInt(incomingHook.version) < BigInt(previousHook.version));
-      const hook = missingHook && (retainWebhook.current || webhookUnresolved.current || staleConnection) && previousHook || staleHook ? previousHook ?? null : incomingHook;
-      const next = withWebhook(staleConnection ? old : readStatus, hook);
+      if (old !== null && (BigInt(next.revision) < BigInt(old.revision) || BigInt(next.version) < BigInt(old.version))) return false;
       if (confirmedSyncFloor.current !== null && BigInt(next.version) < confirmedSyncFloor.current.floor) { setReadError(new Error('Older than confirmed configuration')); return false; }
       if (confirmedSave.current !== null && BigInt(next.version) < confirmedSave.current.floor) { setReadError(new Error('Older than confirmed configuration')); return false; }
       if (proof.current !== null && (proof.current.teamId !== admitted.ownership.teamId || proof.current.ownershipVersion !== admitted.ownership.version.toString() || proof.current.statusVersion !== next.version || !next.canManageConnection)) { ++discoverySequence.current; operation.current?.abort(); proof.current = null; setCandidate(null); setSelectedGrant(''); }
       if (!next.canManageConnection) { ++discoverySequence.current; if (!dispatchedRef.current) operation.current?.abort(); proof.current = null; grantOwner.current = null; setCandidate(null); setGrants([]); setSelectedGrant(''); if (dialogRef.current !== null) retireDialog(); }
-      revoked.current = false; statusRef.current = next; setStatus(next); webhookAvailable.current = !missingHook && !staleHook; setWebhookUnavailable(missingHook || staleHook);
-      if (!staleConnection) { setCounts(countResult.value !== null && countResult.value.revision === next.revision ? countResult.value : null); setCountError(countResult.error !== null); }
+      revoked.current = false; statusRef.current = next; setStatus(next);
+      setCounts(countResult.value !== null && countResult.value.revision === next.revision ? countResult.value : null);
+      setCountError(countResult.error !== null);
       if (confirmedSave.current !== null && BigInt(next.version) === confirmedSave.current.floor && next.pollIntervalMinutes === Number(confirmedSave.current.value)) {
         if (draftRevision.current === confirmedSave.current.revision) { dirtyRef.current = false; draftVersion.current = null; setDraftConflict(false); }
         else { draftVersion.current = next.version; setDraftConflict(false); }
@@ -186,8 +166,7 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
       confirmedSave.current = null; confirmedSyncFloor.current = null;
       if (!dirtyRef.current) setDraftValue(String(next.pollIntervalMinutes));
       else if (draftVersion.current !== null && draftVersion.current !== next.version) setDraftConflict(true);
-      if (!(unresolved.current && (webhookUnresolved.current ? missingHook || staleHook : staleConnection))) { unresolved.current = false; webhookUnresolved.current = false; if (!writing.current) guard.release('github'); setNeedsRead(false); setConfirmedPending(false); }
-      setReadError(null); return true;
+      unresolved.current = false; if (!writing.current) guard.release('github'); setReadError(null); setNeedsRead(false); setConfirmedPending(false); return true;
     } catch (error) {
       if (!alive.current || signal.aborted || ticket !== sequence.current || isAbortError(error)) return false;
       if (error instanceof ApiError && error.status === 404) { clearPrivate(); void session.revalidate(); }
@@ -306,7 +285,7 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
       confirmDialog();
       const current = await session.waitForFreshAccess(signal, true);
       if (signal.aborted || !alive.current || current === null || (connectionWrite ? current.teamRole !== 'admin' || current.ownership.teamId !== observedAccess.ownership.teamId || current.ownership.version !== observedAccess.ownership.version : current.effectiveRole !== 'admin') || revoked.current || !activeRef.current || !routeRef.current || presentationRef.current !== submittedPresentation || session.scope.isProjectSuspended(projectId)) { if (alive.current) { focusAfterSave.current = false; unresolved.current = true; setNeedsRead(true); setConfirmedPending(true); setFeedback(kind === 'save' && draftRevision.current === submittedRevision ? 'saved' : null); } return; }
-      if (statusRef.current === null || BigInt(next.revision) >= BigInt(statusRef.current.revision)) { const merged = withWebhook(next, statusRef.current?.projectWebhook ?? null); statusRef.current = merged; setStatus(merged); }
+      if (statusRef.current === null || BigInt(next.revision) >= BigInt(statusRef.current.revision)) { statusRef.current = next; setStatus(next); }
       setCounts(null);
       if (kind === 'save') {
         confirmedSave.current = null; setDraftConflict(false);
@@ -334,53 +313,13 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
     } finally { writing.current = false; writingKind.current = null; dispatchedRef.current = false; confirmedRef.current = false; if (operation.current === controller) operation.current = null; if (!unresolved.current || session.scope.isInvalidated) guard.release('github'); if (alive.current) { setBusy(false); if (statusRef.current !== null && !signal.aborted) void load(); } }
   };
 
-  const reloadWebhook = async (): Promise<ProjectWebhookStatus | null> => (await load(true)) && webhookAvailable.current ? statusRef.current?.projectWebhook ?? null : null;
-  const saveWebhook = async (input: ProjectWebhookInput): Promise<'saved' | 'conflict' | 'unknown' | 'error'> => {
-    const saved = statusRef.current;
-    const observedAccess = accessRef.current;
-    if (!saved?.projectWebhook || saved.projectWebhook.version !== input.version || !admin || !observedAccess || busy || needsRead || !active || !onRoute || !access.ready || !guard.tryAcquire('github')) return 'error';
-    const controller = new AbortController(); operation.current = controller;
-    const signal = AbortSignal.any([controller.signal, session.scope.signal, session.scope.mismatchSignal]);
-    let dispatched = false, rejected = false, confirmed = false;
-    const submittedPresentation = presentationGeneration;
-    writing.current = true; writingKind.current = 'webhook'; dispatchedRef.current = false; confirmedRef.current = false;
-    setBusy(true); onRetentionChange?.(true); ++sequence.current; readAbort.current?.abort();
-    try {
-      await session.scope.ready(signal);
-      const fresh = await session.waitForFreshAccess(signal, true);
-      if (!fresh || fresh.effectiveRole !== 'admin' || fresh.ownership.teamId !== observedAccess.ownership.teamId || fresh.ownership.version !== observedAccess.ownership.version || !activeRef.current || !routeRef.current) return 'error';
-      const next = await updateProjectWebhook(projectId, input, signal, { ...admission, onDispatch: () => { dispatched = true; dispatchedRef.current = true; }, onWriteConfirmed: () => { confirmed = true; confirmedRef.current = true; }, onWriteRejected: () => { rejected = true; } });
-      const current = await session.waitForFreshAccess(signal, true);
-      if (!alive.current || signal.aborted || current?.effectiveRole !== 'admin' || current.ownership.teamId !== observedAccess.ownership.teamId || current.ownership.version !== observedAccess.ownership.version || revoked.current || !activeRef.current || !routeRef.current || presentationRef.current !== submittedPresentation || session.scope.isProjectSuspended(projectId)) {
-        if (alive.current) { unresolved.current = true; webhookUnresolved.current = true; setNeedsRead(true); setConfirmedPending(true); }
-        return 'saved';
-      }
-      const latest = statusRef.current;
-      if (latest !== null && (latest.projectWebhook?.version === null || latest.projectWebhook?.version === undefined || next.version !== null && BigInt(next.version) >= BigInt(latest.projectWebhook.version))) {
-        const merged = withWebhook(latest, next); statusRef.current = merged; setStatus(merged);
-      }
-      return 'saved';
-    } catch (error) {
-      if (confirmed) { if (alive.current) { unresolved.current = true; webhookUnresolved.current = true; setNeedsRead(true); setConfirmedPending(true); } return 'saved'; }
-      const conflict = error instanceof ApiError && error.status === 409 && error.code === 'version_conflict';
-      const unknown = dispatched && (!rejected || !(error instanceof ApiError) || error.kind !== 'server' || error.status === null || error.status >= 500 || error.code === 'github_write_outcome_unknown');
-      if (alive.current && !session.scope.isInvalidated && (conflict || unknown || error instanceof ApiError && (error.status === 403 || error.status === 404))) { unresolved.current = true; webhookUnresolved.current = true; setNeedsRead(true); if (error instanceof ApiError && (error.status === 403 || error.status === 404)) void session.revalidate(); }
-      return conflict ? 'conflict' : unknown ? 'unknown' : 'error';
-    } finally {
-      writing.current = false; writingKind.current = null; dispatchedRef.current = false; confirmedRef.current = false;
-      if (operation.current === controller) operation.current = null;
-      if (!unresolved.current || session.scope.isInvalidated) guard.release('github');
-      if (alive.current) setBusy(false);
-    }
-  };
-
   const shown = status;
   const dirty = shown !== null && draft !== String(shown.pollIntervalMinutes);
   const invalid = minutes(draft) === null;
   const syncOperational = shown !== null && shown.syncEnabled && shown.serviceAvailable && shown.connection === 'connected';
   const needsAttention = readError !== null || operationError !== null || discoveryError !== null || countError || dirty && invalid || draftConflict || needsRead && !confirmedPending || shown?.connection === 'unavailable' || Boolean(syncOperational && (shown?.poll.error || shown?.webhook.error));
   const summaryPending = busy || confirmedPending;
-  useLayoutEffect(() => { onStateChange?.({ dirty: dirty || webhookSection.dirty, pending: summaryPending || webhookSection.pending, needsAttention: needsAttention || webhookSection.needsAttention }); }, [dirty, summaryPending, needsAttention, webhookSection, onStateChange]);
+  useLayoutEffect(() => { onStateChange?.({ dirty, pending: summaryPending, needsAttention }); }, [dirty, summaryPending, needsAttention, onStateChange]);
   const blocked = busy || needsRead || session.scope.hasIdentityMismatch || session.scope.isInvalidated || !admin || !active || !onRoute || !access.ready || guard.isBlocked('github');
   const connectionBlocked = busy || needsRead || session.scope.hasIdentityMismatch || session.scope.isInvalidated || !connectionAdmin || !active || !onRoute || !access.ready || guard.isBlocked('github');
   const labelTime = (value: string | null) => value === null ? m.never : format.dateTime(value);
@@ -402,7 +341,6 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
         </div>
         {shown.app !== null && <p>{m.currentApp}: <strong>{shown.app.name}</strong> ({shown.app.githubSlug}, {shown.app.githubAppId})</p>}
         {shown.connection === 'not_connected' && <div className="github-empty"><div><h3>{m.emptyTitle}</h3><p>{m.emptyBody}</p></div></div>}
-        {shown.projectWebhook && <>{webhookUnavailable && <p className="notice warning" role="alert">{locale === 'zh-CN' ? '当前无法核对项目 Webhook，请稍后重试。' : 'The project webhook cannot be checked right now. Try again later.'}</p>}<ProjectWebhookPanel status={shown.projectWebhook} repository={shown.connection === 'connected' || shown.connection === 'unavailable' ? shown.repository : null} admin={admin} blocked={blocked || webhookUnavailable} suspended={!active || !onRoute || session.scope.hasIdentityMismatch || session.scope.isInvalidated || !admin} save={saveWebhook} reload={reloadWebhook} onStateChange={updateWebhookSection} onRetentionChange={setWebhookRetained} /></>}
         <div className="github-sync-control"><div><strong id="github-sync-label">{m.syncLabel}</strong><p>{m.syncDescription}</p>{syncReason !== null && <p id="github-sync-reason" className="hint">{syncReason}</p>}</div>{admin ? <button className="task-automation-switch" type="button" role="switch" aria-labelledby="github-sync-label" aria-describedby={syncReason === null ? undefined : 'github-sync-reason'} aria-checked={shown.syncEnabled} aria-busy={busy && writingKind.current === 'sync'} aria-disabled={busy || needsRead || undefined} disabled={session.scope.hasIdentityMismatch || session.scope.isInvalidated || !active || !onRoute || !access.ready || guard.isBlocked('github') || syncReason !== null} onClick={() => { void run('sync'); }}><span aria-hidden="true" /></button> : <span className="github-sync-readonly">{shown.syncEnabled ? m.syncEnabledLabel : m.syncDisabledLabel}</span>}</div>
         <>
           <div className="github-overview"><div><strong>{!shown.syncEnabled ? m.syncOff : stopped ? m.stopped : shown.initializing || shown.poll.running ? m.syncing : shown.poll.error ? m.pollError : shown.webhook.error ? m.hookError : m.healthy}</strong><p>{!shown.syncEnabled ? m.syncOffDetail : stopped ? m.retained : shown.initializing ? m.noComplete : knownCounts && counts.counts.active === '0' && shown.poll.lastSuccessAt !== null ? m.emptySuccess : ''}</p></div>{knownCounts && <div className="github-counts"><div><strong>{counts.counts.active}</strong><span>{m.activeCount}</span></div><div><strong>{(BigInt(counts.counts.closed) + BigInt(counts.counts.merged)).toString()}</strong><span>{m.retainedCount}</span></div></div>}</div>{countError && <p className="hint error" role="alert">{m.countError}</p>}

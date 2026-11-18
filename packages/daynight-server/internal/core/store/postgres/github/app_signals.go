@@ -90,7 +90,7 @@ func (w *appSignalWriter) SignalAccess(ctx context.Context, p store.GitHubAppAcc
 	if err != nil {
 		return 0, err
 	}
-	tag, err := w.tx.Exec(ctx, `UPDATE project_github c SET access_hint_id=$5,access_delivery_id=$6,next_access_check_at=$7,claim_token=NULL,claim_kind=NULL,claim_until=NULL,revision=c.revision+1,updated_at=clock_timestamp()
+	tag, err := w.tx.Exec(ctx, `UPDATE project_github c SET access_hint_id=$5,access_delivery_id=$6,next_access_check_at=$7,last_webhook_received_at=GREATEST(c.last_webhook_received_at,$7::timestamptz),claim_token=NULL,claim_kind=NULL,claim_until=NULL,revision=c.revision+1,updated_at=clock_timestamp()
  WHERE c.app_resource_id=$1 AND c.app_id=$2 AND c.credential_version=$3 AND c.enabled AND c.sync_enabled AND c.installation_id=$4 AND c.project_id=ANY($8::uuid[])
  AND EXISTS (SELECT 1 FROM github_app_team_grants g JOIN project_ownership o ON o.team_id=g.team_id JOIN projects p ON p.id=o.project_id AND p.deleted_at IS NULL WHERE g.id=c.team_grant_id AND g.app_resource_id=$1 AND g.revoked_at IS NULL AND o.project_id=c.project_id)`, w.appID, w.githubAppID, w.credentialVersion, p.InstallationID, p.HintID, p.DeliveryID, p.ReceivedAt, ids)
 	if err != nil {

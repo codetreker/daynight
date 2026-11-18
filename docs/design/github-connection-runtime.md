@@ -10,9 +10,7 @@
 
 运行时与服务共享生命周期：停止新领取，取消在途工作，等待工作退出，再关闭 App client provider 和数据库。未完成 drain 时保留仍可能被使用的资源，并允许重试关闭。后台运行器异常退出进入服务监督和 readiness，不能静默停止同步。
 
-部署须先在 GitHub 注册 App、授予 Pull requests read 权限，并将 App 安装到目标仓库；在 Daynight 登记 App 凭据并向 owner Team 授权后才能连接。升级到迁移 077 前须停止并 drain 所有旧副本；迁移保留仓库、PR 和同步意愿，清除旧连接、领取和提示并推进 fence。迁移和替换完成后才能启动新副本，旧服务不可混跑。
-
-应用迁移 085 的准备版本前，同样须停止新流量并完整排空上一代服务及后台写入者，防止一次性清理后再次写入混用诊断。准备版本保留 App PR 接收链路，独立维护安装访问复查；项目接收入口仍未启用。规范化只清理混用显示，保留领取、队列与调度，失败时该条迁移及账本一起回滚。为后续项目入口激活保留准备版制品及其完整有序迁移版本和校验和；同库回退要求候选二进制账本完全一致，并先排空运行中的版本。账本不一致时使用已验证的配套备份恢复路径，明确备份后数据可能丢失。详细部署与恢复步骤见[服务端说明](../../packages/daynight-server/README.md)。
+部署须先在 GitHub 注册 App、授予 Pull requests read 权限，并将 App 安装到目标仓库；在 Daynight 登记 App 凭据并向 owner Team 授权后才能连接。升级到迁移 077 前须停止并 drain 所有旧副本；迁移保留仓库、PR 和同步意愿，清除旧连接、领取和提示并推进 fence。迁移和替换完成后才能启动新副本，旧服务不可混跑。详细部署与恢复步骤见[服务端说明](../../packages/daynight-server/README.md)。
 
 将每个 App 的 HTTPS Webhook 指向 `/api/v1/github/apps/{localAppId}/webhook` 并订阅 `pull_request`、`installation` 和 `installation_repositories`。反向代理须允许 26,214,400 字节的请求体。入口使用对应活 App 的 secret 验证原始字节，并在八秒预算内持久化提示；相关事件确认提交返回 202（包括零匹配），合法无关事件返回 204，失败或提交结果未知返回 503。入口不请求 GitHub，也不保存事件正文。提示按当前绑定和授权路由；周期同步补齐丢失的事实。细节见[Webhook 接收](github-app-webhook.md)。
 

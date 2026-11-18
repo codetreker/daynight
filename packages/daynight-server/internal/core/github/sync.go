@@ -220,15 +220,6 @@ func AccessSuccess(r *store.GitHubRuntimeWrite, c githubpr.Connection, now time.
 	}
 }
 
-// AccessRetry preserves the shared rate limit independently of PR diagnostics.
-func AccessRetry(r *store.GitHubRuntimeWrite, now time.Time, f Failure) {
-	next := RetryAt(now, f)
-	r.NextAccessCheckAt = &next
-	if f.Code == "github_rate_limited" {
-		r.NotBefore = &next
-	}
-}
-
 // AccessUnavailable is only for confirmed denial. Permanent removal or App
 // change requires reconnect; recoverable denial rechecks at the poll interval.
 func AccessUnavailable(r *store.GitHubRuntimeWrite, c githubpr.Connection, now time.Time, reason string, permanent bool) {
