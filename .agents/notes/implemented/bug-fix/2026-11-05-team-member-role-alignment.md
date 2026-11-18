@@ -12,9 +12,12 @@ of the control, leaving uneven space around the role text and arrow.
 ## Decision
 
 The Team roster shares column tracks across rows via subgrid. Identity, role
-and action occupy the same row, with the last-administrator explanation in a
-separate row. On narrow screens identity moves above the role and action, while
-the explanation can span the available width. Team and Project role selects use
+and action occupy the same row. On narrow screens identity moves above the role
+and action. The original layout placed the last-administrator explanation in a
+separate row to preserve alignment; the
+[last-admin leave hint decision](../feature/2026-11-18-last-admin-leave-hint.md)
+replaces that persistent row with an overlay anchored to the self-exit control.
+Team and Project role selects use
 equal 120px layout wrappers and the filter density of the
 [shared native select](../architecture/2026-11-14-shared-native-select.md).
 The common component owns arrow geometry and state styling; the select retains
@@ -34,6 +37,7 @@ desired spacing without replacing the select's interaction.
 
 ## Consequences
 
-Long identities and explanations wrap without shifting the role column. Shared
+Long identities wrap without shifting the role column. The last-admin hint does
+not participate in roster sizing. Shared
 tracks depend on CSS subgrid support. Disabled and forced-color arrow treatment
 belongs to the common component. The Project grant layout remains independent.

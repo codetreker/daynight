@@ -454,8 +454,13 @@ Members & invitations links. Native links preserve direct access, reload and bro
 history; the navigation wraps on narrow screens. General displays the saved name
 with its rename action, the selectable Team ID with an adjacent copy button for every
 viewer, and a separate deletion panel at the bottom. Its native disclosure starts closed and retains its state within the same Team settings instance across section, locale and background updates; operation errors remain visible outside it. Members & invitations contains
-the roster and its existing role, removal and self-departure actions, followed by
-admin-only invitation management. The
+the roster and its role, removal and self-departure actions, followed by
+admin-only invitation management. An ordinary Team's sole administrator sees the
+last-admin reason on hover or focus of their unavailable Leave Team button. The
+focusable button exposes its reason to assistive technology and has no departure
+handler. The viewport-contained overlay preserves roster geometry, stays open
+while hovered or focused, and closes on Escape or when both end. Other disabled
+states retain native disabled controls. The
 [settings sections decision](../../.agents/notes/implemented/feature/2026-11-10-team-settings-sections.md)
 records the grouping and lifetime choices.
 

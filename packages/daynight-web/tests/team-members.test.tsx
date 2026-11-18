@@ -96,6 +96,61 @@ describe("Team members", () => {
     expect(within(row(otherId)).getByRole("button", { name: "Remove" })).toBeDisabled();
     expect(within(row("Alice")).getByRole("button", { name: "Leave Team" })).toBeEnabled();
   });
+  it("explains the last admin exit restriction on hover or focus without opening a confirmation", async () => {
+    const fixture = setup({ other: "member" });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    const leave = within(row("Alice")).getByRole("button", { name: "Leave Team" });
+    const reason = document.getElementById(leave.getAttribute("aria-describedby")!)!;
+    expect(leave).toHaveAttribute("aria-disabled", "true");
+    expect(leave).not.toHaveAttribute("disabled");
+    expect(leave).toHaveAccessibleDescription("At least one admin must remain.");
+    expect(reason).not.toBeVisible();
+    expect(document.querySelector(".team-member-caption")).toBeNull();
+    expect(within(row("Alice")).getByRole("combobox")).toBeDisabled();
+    fireEvent.pointerEnter(leave); expect(reason).toBeVisible();
+    fireEvent.pointerLeave(leave); expect(reason).not.toBeVisible();
+    act(() => leave.focus()); expect(leave).toHaveFocus(); expect(reason).toBeVisible();
+    fireEvent.pointerEnter(leave); fireEvent.pointerLeave(leave); expect(reason).toBeVisible();
+    fireEvent.pointerEnter(leave); act(() => leave.blur()); expect(reason).toBeVisible();
+    fireEvent.pointerLeave(leave); expect(reason).not.toBeVisible();
+    act(() => leave.focus()); expect(reason).toBeVisible();
+    fireEvent.keyDown(leave, { key: "Escape" }); expect(reason).not.toBeVisible(); expect(leave).toHaveFocus();
+    act(() => leave.blur()); act(() => leave.focus()); expect(reason).toBeVisible();
+    fireEvent.click(leave); fireEvent.keyDown(leave, { key: "Enter" }); fireEvent.keyDown(leave, { key: " " });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(writes(fixture.fetcher)).toHaveLength(0);
+    const panel = (active: boolean) => <TeamMembersPanel teamId={teamId} active={active} admission={fixture.scope} onIdentityMismatch={fixture.mismatch} onChanged={fixture.changed} onLeft={fixture.left} />;
+    fixture.rerender(panel(false)); expect(reason).not.toBeVisible();
+    fixture.rerender(panel(true)); expect(reason).not.toBeVisible();
+    act(() => leave.blur()); act(() => leave.focus()); expect(reason).toBeVisible();
+    act(() => leave.blur()); expect(reason).not.toBeVisible();
+    fixture.unmount(); expect(reason).not.toBeInTheDocument();
+  });
+  it.each([
+    { name: "another last admin", actor: "member", other: "admin", personal: false },
+    { name: "multiple admins", actor: "admin", other: "admin", personal: false },
+    { name: "ordinary members", actor: "member", other: "member", personal: false },
+    { name: "Personal Team", actor: "admin", other: "member", personal: true },
+  ] as const)("does not attach the last admin exit reason to $name", async ({ actor, other, personal }) => {
+    setup({ actor, other, personal });
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    for (const button of within(document.querySelector(".team-members-list") as HTMLElement).getAllByRole("button")) {
+      expect(button).not.toHaveAttribute("aria-describedby");
+      fireEvent.pointerEnter(button); fireEvent.focus(button);
+    }
+    expect(screen.queryByRole("tooltip", { hidden: true })).toBeNull();
+    expect(screen.queryByText("At least one admin must remain.")).toBeNull();
+  });
+  it("still requires confirmation for an allowed exit and does not submit cancellation", async () => {
+    const fixture = setup();
+    await screen.findByText("Alice", { exact: false, selector: ".person-name" });
+    fireEvent.click(within(row("Alice")).getByRole("button", { name: "Leave Team" }));
+    const dialog = screen.getByRole("dialog", { name: "Leave Team" });
+    expect(within(dialog).getByRole("button", { name: "Leave Team" })).toBeEnabled();
+    expect(writes(fixture.fetcher)).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull(); expect(writes(fixture.fetcher)).toHaveLength(0);
+  });
   it("keeps Personal membership immutable", async () => {
     setup({ personal: true });
     await screen.findByText("Personal Team membership and role are fixed.");
