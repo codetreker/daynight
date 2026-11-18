@@ -3,11 +3,11 @@ package task_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -19,7 +19,7 @@ type taskStoreSequence struct {
 
 type taskStoreSuite struct {
 	database  *postgres.Store
-	truncate  string
+	tables    testutil.FixtureTableReset
 	sequences []taskStoreSequence
 	used      bool
 }
@@ -38,13 +38,14 @@ func newTaskStoreSuite(t *testing.T) *taskStoreSuite {
 		t.Fatal(err)
 	}
 	var tables []string
+	var schema string
 	for rows.Next() {
-		var schema, name string
+		var name string
 		if err := rows.Scan(&schema, &name); err != nil {
 			rows.Close()
 			t.Fatal(err)
 		}
-		tables = append(tables, pgx.Identifier{schema, name}.Sanitize())
+		tables = append(tables, name)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -53,7 +54,7 @@ func newTaskStoreSuite(t *testing.T) *taskStoreSuite {
 	if len(tables) == 0 {
 		t.Fatal("shared Task fixture has no mutable tables")
 	}
-	suite.truncate = "TRUNCATE " + strings.Join(tables, ",") + " RESTART IDENTITY"
+	suite.tables = testutil.NewFixtureTableReset(schema, tables)
 	rows, err = suite.database.Pool.Query(ctx, `SELECT namespace.nspname,sequence.relname
  FROM pg_class sequence JOIN pg_namespace namespace ON namespace.oid=sequence.relnamespace
  WHERE namespace.nspname=current_schema() AND sequence.relkind='S' ORDER BY sequence.relname`)
@@ -119,7 +120,7 @@ func (suite *taskStoreSuite) reset(t *testing.T) {
 			t.Errorf("rollback shared Task fixture reset: %v", err)
 		}
 	}()
-	if _, err := tx.Exec(ctx, suite.truncate); err != nil {
+	if err := suite.tables.Truncate(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
 	// Unowned sequences and nextval changes are not restored by table truncation.

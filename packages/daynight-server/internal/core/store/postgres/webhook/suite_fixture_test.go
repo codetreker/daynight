@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +25,7 @@ type webhookDAOSeed struct {
 type webhookDAOSuite struct {
 	conn        *pgx.Conn
 	application string
-	truncate    string
+	tables      testutil.FixtureTableReset
 	sequences   []webhookDAOSequence
 	seeds       []webhookDAOSeed
 	used        bool
@@ -71,26 +70,26 @@ func newWebhookDAOSuite(t *testing.T) *webhookDAOSuite {
 		qualified := pgx.Identifier{schema, name}.Sanitize()
 		suite.seeds = append(suite.seeds, webhookDAOSeed{name: qualified, rows: suite.seedRows(t, ctx, qualified)})
 	}
-	suite.captureTables(t, ctx, seedNames)
+	suite.captureTables(t, ctx, schema, seedNames)
 	suite.captureSequences(t, ctx)
 	return suite
 }
 
-func (suite *webhookDAOSuite) captureTables(t *testing.T, ctx context.Context, seeds []string) {
+func (suite *webhookDAOSuite) captureTables(t *testing.T, ctx context.Context, schema string, seeds []string) {
 	t.Helper()
-	rows, err := suite.conn.Query(ctx, `SELECT schemaname,tablename FROM pg_tables
- WHERE schemaname=current_schema() AND tablename<>ALL($1::text[]) ORDER BY tablename`, seeds)
+	rows, err := suite.conn.Query(ctx, `SELECT tablename FROM pg_tables
+ WHERE schemaname=$2 AND tablename<>ALL($1::text[]) ORDER BY tablename`, seeds, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	var tables []string
 	for rows.Next() {
-		var schema, name string
-		if err := rows.Scan(&schema, &name); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			t.Fatal(err)
 		}
-		tables = append(tables, pgx.Identifier{schema, name}.Sanitize())
+		tables = append(tables, name)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
@@ -98,7 +97,7 @@ func (suite *webhookDAOSuite) captureTables(t *testing.T, ctx context.Context, s
 	if len(tables) == 0 {
 		t.Fatal("shared Webhook fixture has no mutable tables")
 	}
-	suite.truncate = "TRUNCATE " + strings.Join(tables, ",") + " RESTART IDENTITY"
+	suite.tables = testutil.NewFixtureTableReset(schema, tables)
 }
 
 func (suite *webhookDAOSuite) captureSequences(t *testing.T, ctx context.Context) {
@@ -218,7 +217,7 @@ func (suite *webhookDAOSuite) reset(t *testing.T) {
 			t.Errorf("rollback shared Webhook reset: %v", err)
 		}
 	}()
-	if _, err := tx.Exec(ctx, suite.truncate); err != nil {
+	if err := suite.tables.Truncate(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
 	// Standalone sequences and nextval changes are not restored by TRUNCATE.

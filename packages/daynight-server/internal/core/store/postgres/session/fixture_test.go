@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -172,13 +171,11 @@ type sessionStoreSeed struct {
 }
 
 type sessionStoreSuite struct {
-	database    *postgres.Store
-	schema      string
-	mutable     []string
-	resetTables string
-	sequences   []sessionStoreSequence
-	seeds       []sessionStoreSeed
-	used        bool
+	database  *postgres.Store
+	tables    testutil.FixtureTableReset
+	sequences []sessionStoreSequence
+	seeds     []sessionStoreSeed
+	used      bool
 }
 
 func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
@@ -186,13 +183,13 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	suite := &sessionStoreSuite{database: isolatedStore(t)}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if err := suite.database.Pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&suite.schema); err != nil {
+	var schema string
+	if err := suite.database.Pool.QueryRow(ctx, `SELECT current_schema()`).Scan(&schema); err != nil {
 		t.Fatal(err)
 	}
 	if suite.database.Pool.Config().ConnConfig.RuntimeParams["application_name"] == "" {
 		t.Fatal("shared Session fixture has no application identity")
 	}
-	schema := suite.schema
 	seedNames := []string{"oauth_authorization_cleanup_cursor", "oauth_credential_cleanup_cursor", "private_transfer_ledger", "schema_migrations", "webhook_policies"}
 	for _, name := range seedNames {
 		qualified := pgx.Identifier{schema, name}.Sanitize()
@@ -202,7 +199,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names, probes []string
+	var names []string
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
@@ -210,7 +207,6 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 			t.Fatal(err)
 		}
 		names = append(names, name)
-		probes = append(probes, "(SELECT tableoid FROM "+pgx.Identifier{schema, name}.Sanitize()+" LIMIT 1)")
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -305,20 +301,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	if !slices.Equal(names, mutableTables) {
 		t.Fatalf("shared Session fixture mutable tables changed: %v", names)
 	}
-	suite.mutable = names
-	// PostgreSQL requires referencing tables in a TRUNCATE even when they are
-	// empty. Expand the exact set of populated tables through all inbound FKs.
-	suite.resetTables = `WITH RECURSIVE populated(oid) AS (` + strings.Join(probes, " UNION ALL ") + `),
-		affected(oid) AS (
-			SELECT oid FROM populated
-			UNION
-			SELECT constraint_row.conrelid FROM pg_constraint constraint_row
-			JOIN affected ON affected.oid=constraint_row.confrelid
-			WHERE constraint_row.contype='f'
-		)
-		SELECT coalesce(array_agg(c.relname::text ORDER BY c.relname), ARRAY[]::text[]),
-			coalesce(bool_and(c.relnamespace=$1::regnamespace), true)
-		FROM affected JOIN pg_class c USING (oid)`
+	suite.tables = testutil.NewFixtureTableReset(schema, names)
 	rows, err = suite.database.Pool.Query(ctx, `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind='S' ORDER BY c.relname`, schema)
 	if err != nil {
 		t.Fatal(err)
@@ -381,24 +364,8 @@ func (suite *sessionStoreSuite) reset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rollbackSessionTestTransaction(t, tx)
-	var tables []string
-	var local bool
-	if err := tx.QueryRow(ctx, suite.resetTables, suite.schema).Scan(&tables, &local); err != nil {
+	if err := suite.tables.Truncate(ctx, tx); err != nil {
 		t.Fatal(err)
-	}
-	if !local {
-		t.Fatalf("shared Session fixture reset crossed schema %s: %v", suite.schema, tables)
-	}
-	for i, name := range tables {
-		if !slices.Contains(suite.mutable, name) {
-			t.Fatalf("shared Session fixture reset reached non-mutable table %q", name)
-		}
-		tables[i] = pgx.Identifier{suite.schema, name}.Sanitize()
-	}
-	if len(tables) != 0 {
-		if _, err := tx.Exec(ctx, "TRUNCATE "+strings.Join(tables, ",")+" RESTART IDENTITY"); err != nil {
-			t.Fatal(err)
-		}
 	}
 	// setval also restores the standalone sequences and is not transactional.
 	for _, sequence := range suite.sequences {
