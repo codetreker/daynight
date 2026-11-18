@@ -8,7 +8,7 @@ A passive effect from an earlier render can observe updated project freshness re
 
 ## Decision
 
-Automatic project revalidation starts only when the shared impact read controller has no current owner. The existing read lifecycle clears that owner and publishes state when the operation finishes, allowing any still-needed revalidation to proceed. The [Team grant design](../../../../docs/design/github-app-team-grants.md) describes the resulting behavior and the [grant decision](../architecture/2026-11-16-github-app-team-grants.md) owns the authorization and privacy protocol.
+Automatic project revalidation starts only when the shared impact read controller has no current owner. The existing read lifecycle clears that owner and publishes state when the operation finishes, allowing any still-needed revalidation to proceed. Route or admission cleanup also releases the cancelled controller immediately, so a delayed cancelled response cannot block recovery or release a newer read. The [Team grant design](../../../../docs/design/github-app-team-grants.md) describes the resulting behavior and the [grant decision](../architecture/2026-11-16-github-app-team-grants.md) owns the authorization and privacy protocol.
 
 ## Alternatives
 

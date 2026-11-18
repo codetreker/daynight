@@ -371,6 +371,38 @@ describe('GitHub App Team access', () => {
     expect(screen.queryByText('app-unavailable')).toBeNull(); fireEvent.click(screen.getByRole('button', { name: 'Restore access' })); await waitFor(() => expect(screen.getByRole('button', { name: 'Authorize Team' })).toBeEnabled()); expect(mocks.create).toHaveBeenCalledOnce();
   });
 
+  it.each(['admission', 'route'] as const)('revalidates after %s interrupts a page even if the cancelled read settles late', async kind => {
+    const first = { id: other, name: 'First project', repoUrl: 'https://example.test/first' };
+    const second = { id: ownerId, name: 'Second project', repoUrl: 'https://example.test/second' };
+    const pending = deferred<{ items: typeof first[]; hiddenProjects: string; nextCursor: null }>();
+    const page = { items: [first], hiddenProjects: '1', nextCursor: 'next-page' };
+    let interruptedSignal: AbortSignal | undefined;
+    mocks.projects.mockImplementation(async (_app, _grant, cursor, signal) => {
+      if (cursor === null) return { ...page };
+      interruptedSignal = signal;
+      return pending.promise;
+    });
+    const view = render(subject());
+    try {
+      fireEvent.click(await screen.findByRole('button', { name: 'Revoke access' }));
+      const dialog = screen.getByRole('dialog');
+      fireEvent.click(await within(dialog).findByRole('button', { name: 'View accessible projects' }));
+      await within(dialog).findByText(/First project/);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Load more' }));
+      await waitFor(() => expect(interruptedSignal).toBeDefined());
+      view.rerender(subject(kind === 'admission' ? { admissionBlocked: true } : { active: false }));
+      expect(interruptedSignal!.aborted).toBe(true);
+      view.rerender(subject());
+      await waitFor(() => expect(mocks.projects.mock.calls.map(call => call[2])).toEqual([null, 'next-page', null]));
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Load more' })).toHaveAttribute('aria-disabled', 'false'));
+      await act(async () => pending.resolve({ items: [second], hiddenProjects: '1', nextCursor: null }));
+      expect(within(dialog).getByText(/First project/)).toBeVisible();
+      expect(within(dialog).queryByText(/Second project/)).toBeNull();
+    } finally {
+      pending.resolve({ items: [second], hiddenProjects: '1', nextCursor: null });
+    }
+  });
+
   it('keeps an in-flight next page when an action starts at the page commit boundary', async () => {
     const first = { id: other, name: 'First project', repoUrl: 'https://example.test/first' };
     const second = { id: ownerId, name: 'Second project', repoUrl: 'https://example.test/second' };
