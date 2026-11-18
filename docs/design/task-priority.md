@@ -385,8 +385,8 @@ claim 仍走现有 endpoint、descriptor、version、tag filter key 和事务。
 所选 Task 的 priority 修改也推进版本，使旧候选 claim 冲突。
 父 Goal/前置/权限/许可/暂停/平台/标签变化即使未改候选版本，也必须由
 claim 的事务门禁重验，不能依赖候选查询替代。基线 `ClaimAdmission` 未独立检查
-paused；实施时在共享自动领取 admission 增加通过 `taskproperty` 解码的
-paused=true 拒绝，返回 409 `invalid_transition`。这明确补齐优先级候选的
+blocked；实施时在共享自动领取 admission 增加通过 `taskproperty` 解码的
+blocked=true 拒绝，返回 409 `invalid_transition`。这明确补齐优先级候选的
 原子准入，不把新增检查误称为基线已有机制，也不改变已取得的 claim。
 两个 Worker 不会合法共享同一 active claim；排序选择并不令多项目原子化。
 
