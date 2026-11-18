@@ -13,12 +13,25 @@ import { validateImageFile } from "../../../../dist/commands/controller/media/im
 const [root, mode, mediaPath, mediaType = "image/png", expectedFrames = "1"] = process.argv.slice(2), log = path.join(root, "requests.log");
 const children = [], events = [], losses = [], traces = [];
 const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
+const routeClockArmed = path.join(root, "route-clock-armed-5000"), routeClockRelease = path.join(root, "route-clock-release");
+if (mode === "route-timeout") {
+  const preload = new URL("copilot-bridge-route-clock.mjs", import.meta.url);
+  for (const key of Object.keys(environment)) if (key.toUpperCase() === "NODE_OPTIONS") delete environment[key];
+  environment.NODE_OPTIONS = `--import=${preload.href} ${process.env.NODE_OPTIONS ?? ""}`.trim();
+  environment.DAYNIGHT_TEST_ROUTE_CLOCK_ROOT = root;
+}
 let permissionRequest;
 const correlation = new CopilotReadCorrelation("b".repeat(64), "fixture-session"), hidden = [];
 const records = () => readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
 const eventually = async predicate => {
   for (let attempt = 0; attempt < 400; attempt++) { if (predicate()) return; await delay(10); }
   throw new Error("Fixture observation timed out.");
+};
+const within = async (result, stage) => {
+  let timer;
+  try {
+    return await Promise.race([result, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${stage} did not complete.`)), 4000); })]);
+  } finally { clearTimeout(timer); }
 };
 let maxFrameBytes = 0, peakControllerRss = process.memoryUsage().rss, decodedImages = 0, bridgeSecretLeak = false, secretTail = "";
 const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNativeSessionId: null,
@@ -70,10 +83,15 @@ try {
     const session = await client.createSession(config);
     assert.equal(session.sessionId, "fixture-session");
     if (mode === "route-timeout") {
+      let settled = false;
       const pending = observeCopilotBridgeRoute(session);
-      await eventually(() => records().some(record => record.method === "session.provider.getEndpoint"));
-      assert.equal(await session.send({ prompt: "text while observation is pending" }), "sent-1");
-      assert.equal(await pending, null);
+      const markSettled = () => { settled = true; };
+      void pending.then(markSettled, markSettled);
+      await eventually(() => existsSync(routeClockArmed) && records().some(record => record.method === "session.provider.getEndpoint"));
+      assert.equal(await within(session.send({ prompt: "text while observation is pending" }), "Concurrent text acknowledgement"), "sent-1");
+      assert.equal(settled, false, "Route observation must still be pending after the text acknowledgement.");
+      writeFileSync(routeClockRelease, "", { flag: "wx" });
+      assert.equal(await within(pending, "Released route timeout"), null);
       assert.equal(await observeCopilotBridgeRoute(session), null);
       assert.equal(await session.send({ prompt: "text after observation timeout" }), "sent-2");
       assert.equal(records().filter(record => record.method === "session.provider.getEndpoint").length, 1);
