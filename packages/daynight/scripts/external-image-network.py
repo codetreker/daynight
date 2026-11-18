@@ -79,21 +79,36 @@ def source_urls(values):
     return values
 
 
+def inventory_address(value, source):
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError as error:
+        raise ValueError(f"Invalid IP address in {source}: {value!r}") from error
+
+
+def inventory_network(value, source):
+    try:
+        return ipaddress.ip_network(value, strict=False)
+    except ValueError as error:
+        raise ValueError(f"Invalid IP network in {source}: {value!r}") from error
+
+
 def protected_cidrs(addresses, routes):
     result = {ipaddress.ip_network(v) for v in PLATFORM + ["198.18.0.0/29"] + [ip + "/32" for ip in DNS]}
     # Interface networks include the host, Docker bridges and every owned service.
-    for interface in addresses:
-        for address in interface.get("addr_info", []):
+    for interface_index, interface in enumerate(addresses):
+        for address_index, address in enumerate(interface.get("addr_info", [])):
             if address.get("family") in ("inet", "inet6"):
-                result.add(ipaddress.ip_network(f"{address['local']}/{address['prefixlen']}", strict=False))
-    for route in routes:
+                source = f"ip address[{interface_index}].addr_info[{address_index}] local/prefixlen"
+                result.add(inventory_network(f"{address['local']}/{address['prefixlen']}", source))
+    for route_index, route in enumerate(routes):
         destination = route.get("dst", "default")
         if destination != "default":
-            network = ipaddress.ip_network(destination, strict=False)
+            network = inventory_network(destination, f"ip route[{route_index}].dst")
             if network.prefixlen:
                 result.add(network)
         if route.get("gateway"):
-            gateway = ipaddress.ip_address(route["gateway"])
+            gateway = inventory_address(route["gateway"], f"ip route[{route_index}].gateway")
             result.add(ipaddress.ip_network(str(gateway) + ("/32" if gateway.version == 4 else "/128")))
     return [str(v) for family in (4, 6) for v in
             ipaddress.collapse_addresses(n for n in result if n.version == family)]
@@ -102,11 +117,11 @@ def protected_cidrs(addresses, routes):
 def protected_domains(hosts, cidrs):
     networks = [ipaddress.ip_network(cidr) for cidr in cidrs]
     domains = set()
-    for line in hosts.splitlines():
+    for line_number, line in enumerate(hosts.splitlines(), 1):
         fields = line.split("#", 1)[0].split()
         if len(fields) < 2:
             continue
-        address = ipaddress.ip_address(fields[0])
+        address = inventory_address(fields[0], f"/etc/hosts line {line_number} address")
         if not any(address in network for network in networks):
             continue
         for value in fields[1:]:

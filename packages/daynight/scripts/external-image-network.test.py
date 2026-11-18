@@ -64,6 +64,21 @@ class AdmissionTests(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 network.source_urls(values)
 
+    def test_inventory_errors_identify_the_field_and_value(self):
+        cases = [
+            (lambda: network.protected_cidrs([], [{"gateway": "runner.example"}]),
+             r"ip route\[0\]\.gateway: 'runner.example'"),
+            (lambda: network.protected_cidrs([], [{"dst": "invalid"}]),
+             r"ip route\[0\]\.dst: 'invalid'"),
+            (lambda: network.protected_cidrs([{"addr_info": [{"family": "inet", "local": "bad", "prefixlen": 24}]}], []),
+             r"ip address\[0\]\.addr_info\[0\] local/prefixlen: 'bad/24'"),
+            (lambda: network.protected_domains("runner.example alias\n", []),
+             r"/etc/hosts line 1 address: 'runner.example'"),
+        ]
+        for operation, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(ValueError, diagnostic):
+                operation()
+
     def test_cleanup_keeps_network_when_process_exit_is_unconfirmed(self):
         calls = []
         def fake_command(*args, **kwargs):
