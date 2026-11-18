@@ -2185,6 +2185,13 @@ controlled DAO facts, an isolated gateway, real proxy and sockets. Root retains
 the production `New` and configured callback assembly proof. Prepare the pinned
 auth fixture as described in [validation](#validate).
 
+Request credential selection, response principal headers, and authenticated
+profile cache tests use the real HTTP adapter over controlled identity results.
+Actual credential issuance, expiry, revocation, and persisted profile reads
+remain covered by the PostgreSQL tests. The
+[Auth request and profile cache decision](../../.agents/notes/implemented/testing/2026-11-18-auth-request-cache-fixtures.md)
+records the proof boundary.
+
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
 WebSocket traffic share one actual application and Engine. Runtime tests group
