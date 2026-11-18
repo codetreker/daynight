@@ -270,6 +270,8 @@ Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web �
 
 原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库仅保存 operation 身份、类型、正文哈希、操作者、执行约束和无正文的回执摘要；完整命令、原生结果和错误详情由 Controller 本地保存。服务端只在当前在线连接的有界内存中暂存命令。accepted 表示 relay 暂收，不保证持久排队；网页保留草稿，直到原生明确受理或确认。尚未送达 Controller 的正文在服务重启后不可从哈希重建，原操作按实际证据拒绝、过期或保持 unknown。已 offered 但尚未 dispatch 的操作如果因状态或权限变化失去授权，服务端持久化 rejected 并返回 receipt_ack，只拒绝该操作，保留当前连接。Poll 在 accepted 阶段或 operation_begin 在 offered 阶段明确拒绝派发时，回执摘要保留服务端生成的固定 `permission_or_state_changed` code 与固定 message，作为未跨越原生派发边界的证明；重建服务后的查询仍返回该证明。Controller 上报及重连对账的任意错误详情继续不落库，即使上报码相同也不能生成这项证明。终态重复回执返回既有持久结果，不能覆盖证明或为历史 `rejected/error:null` 补造证明；缺少证明的历史拒绝不能据此自动重发。Controller 记录拒绝并拒绝对应 authorization 等待，不调用原生；迟到回执与重连对账仍按同 operation 身份收敛。已 dispatching 的不确定结果、内部错误或失效 Controller fence 不走这个拒绝捷径。重连以最多 100 条一批对账，最后一批带 final；整个对账完成后还需同步当前本机状态，才能启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
 
+Controller 的 relay 定时发送绑定到本次观察的 socket 和 fence，发送前后均确认仍为当前 OPEN 连接；关闭中、已关闭或已替换时停止本次发送并由关闭与重连流程恢复。当前连接上的发送、凭据和 journal 故障仍报告；WebSocket error 和无效帧仍按原路径报告。相关取舍见[断线分类决策](../../.agents/notes/implemented/bug-fix/2026-11-18-controller-relay-disconnect.md)。
+
 ### 启动观察的独立上报
 
 Controller journal 的可选 `startup` 保存 typed state/reasonCode。Provider 边界将 NativeRpc、Copilot SDK 的远端 RPC 拒绝及 Claude SDK 的结构化 initialize 拒绝规范化为明确拒绝；SDK 本地产生的写失败、连接关闭与超时仍保持 unknown，不能只凭 Error 类型或错误文本推断失败。运行时只有在 Provider 打开、进程证明及初始化错误检查完成后才记 ready。Copilot 启动失败时使用 SDK 公开 forceStop 先释放传输，不再向失败连接发送 session.disconnect 或 runtime.shutdown；自有进程仍执行原有终止与退出确认，正常关闭保留 graceful 流程。初始化后的清理失败只增加本机诊断，不覆盖原始启动分类，也不构成停止证明；已完成启动后的失联不重写启动历史。旧 journal 缺字段时保持 unknown，不从 native ID 或 activity 推断结果。
