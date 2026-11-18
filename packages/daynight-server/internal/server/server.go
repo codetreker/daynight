@@ -24,6 +24,7 @@ import (
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taghttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/tag"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
+	usagehttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/usage"
 	webhookhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
@@ -55,6 +56,9 @@ type Handler interface {
 func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handler, error) {
 	if app.PreviewSSOError != nil {
 		return nil, app.PreviewSSOError
+	}
+	if app.UsageError != nil {
+		return nil, app.UsageError
 	}
 	if app.Identity.PreviewSSO() == nil {
 		return nil, errors.New("preview SSO is unavailable")
@@ -130,6 +134,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
 	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, app.TaskObservations, auth, logger)
+	usagehttp.RegisterRoutes(mux, app.Usage, auth, logger)
 	taskhttp.PersonalTaskRoutes(mux, app.TaskObservations.PersonalTasks, auth, logger)
 	sessionhttp.RegisterInspectionRoutes(mux, app.TaskInspection, auth, logger)
 	sessionhttp.RegisterHistoryRoutes(mux, app.TaskHistory, auth, logger)

@@ -78,6 +78,42 @@ fixed delivery destinations and 32-byte signing secrets are stored as plaintext
 bytes. HMAC request signatures, current authorization, HTTPS and safe logging
 remain enforced; database and backup readers can read retained credentials.
 
+## Token usage
+
+The [usage requirements](../../docs/spec/task-token-usage.md) and
+[backend design](../../docs/design/task-token-usage.md) define the independent
+`daynight.usage.v1` reporting and query API. One `usage_records` table holds
+execution coverage and native measurements. Usage writes do not update Tasks
+or alter Session acknowledgements. Task, standalone Test, Chain and Goal reads
+preserve exact decimal strings, unknown values and incomplete coverage.
+
+Writes default to disabled. Qualification is an explicit per-profile/provider
+version decision, not a consequence of enabling writes or researching native
+fields. Copilot and Claude expose only their evidenced partial measurement
+planes; Codex remains unsupported. Live Provider collection and UI consumption
+are separate from this backend.
+`profiles[].qualifiedVersions` advertises exact provider versions and their
+capabilities; the baseline capability and unlisted versions remain unverified.
+
+`DAYNIGHT_USAGE_CURSOR_KEY` supplies a stable 32-byte signing key as canonical
+unpadded base64url. If absent, the service derives a purpose-separated key from
+the configured S2S shared key. All replicas must share the same effective key;
+replacement invalidates existing cursors. Without either key, usage routes
+remain unmounted, and explicitly enabling writes fails startup. Invalid
+explicit usage configuration also fails startup without exposing secrets.
+
+Performance qualification is separate from ordinary CI and requires an isolated
+PostgreSQL database, as do the normal backend checks:
+
+```bash
+source scripts/validation-env.sh
+GOFLAGS="$unit_go_flags" go test -count=1 -tags=usageperformance \
+  -run '^TestUsagePerformance$' -timeout=15m -v ./internal/core/store/postgres/usage
+```
+
+The qualification records query plans and warm-five/measure-thirty P95 for
+100-Task batch summaries and 100-row pages in a 10,000-measurement Task.
+
 ## Contracts
 
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
@@ -860,6 +896,9 @@ diagnostics and cause categories.
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
 | `DAYNIGHT_S2S_SHARED_KEY` | Server-only S2S issuer key; empty disables issuance, otherwise 32–256 visible ASCII bytes | Empty (disabled) |
 | `DAYNIGHT_S2S_ALLOWED_ORIGIN` | One canonical exact application browser origin for user REST CORS | Empty (disabled) |
+| `DAYNIGHT_USAGE_WRITE_ENABLED` | Permit usage registrations, grant changes and batches; exactly `true` or `false` | `false` |
+| `DAYNIGHT_USAGE_QUALIFIED_PROFILES` | Comma-separated unique supported `profileId@providerVersion` qualification pairs | Empty (unverified) |
+| `DAYNIGHT_USAGE_CURSOR_KEY` | Stable 32-byte usage cursor key, canonical unpadded base64url; absent derives from the configured S2S shared key | Unset |
 | `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
 | `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
 | `DAYNIGHT_MCP_RESERVED_FREE_BYTES` | Nonnegative decimal bytes kept available for ordinary storage when reserving transfer capacity | `1073741824` (1 GiB) |

@@ -1,4 +1,4 @@
--- Schema snapshot version: 80
+-- Schema snapshot version: 81
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -2128,3 +2128,74 @@ SELECT pg_catalog.setval('"project_grant_versions"', 1, false);
 SELECT pg_catalog.setval('"team_member_versions"', 1, false);
 
 SELECT pg_catalog.setval('"webhook_delivery_queue_order_seq"', 1, false);
+
+CREATE TABLE usage_records (
+ id uuid PRIMARY KEY,
+ record_kind text NOT NULL,
+ scope text NOT NULL,
+ project_id uuid,
+ task_id uuid,
+ test_execution_id uuid,
+ session_id uuid NOT NULL,
+ claim_id uuid,
+ execution_generation bigint NOT NULL,
+ worker_id uuid,
+ native_authority_user_id uuid NOT NULL,
+ provider text NOT NULL,
+ native_session_id text NOT NULL,
+ state_id uuid,
+ anchor_state_id uuid,
+ registration_id uuid,
+ source_key text,
+ native_turn_id text,
+ native_call_id text,
+ model text,
+ profile_id text NOT NULL,
+ provider_version text NOT NULL,
+ revision_authority text,
+ source_revision bigint,
+ finality text,
+ disposition text,
+ aggregation_role text,
+ included_in_source_key text,
+ input_tokens numeric(38,0),
+ output_tokens numeric(38,0),
+ cache_read_tokens numeric(38,0),
+ cache_write_tokens numeric(38,0),
+ reasoning_tokens numeric(38,0),
+ total_tokens numeric(38,0),
+ provider_total_tokens numeric(38,0),
+ native_metrics jsonb,
+ capability jsonb,
+ collection_state text,
+ reason_codes jsonb,
+ state_sequence bigint,
+ grant_hash bytea,
+ grant_parent_credential_id uuid,
+ grant_expires_at timestamptz,
+ grant_revoked_at timestamptz,
+ sealed_at timestamptz,
+ native_started_at timestamptz,
+ native_ended_at timestamptz,
+ observed_at timestamptz NOT NULL,
+ created_at timestamptz NOT NULL,
+ updated_at timestamptz NOT NULL,
+ row_version bigint NOT NULL,
+ body_hash bytea NOT NULL
+);
+
+CREATE UNIQUE INDEX usage_state_generation ON usage_records(session_id,execution_generation) WHERE record_kind='execution_state';
+
+CREATE UNIQUE INDEX usage_native_anchor ON usage_records(native_authority_user_id,provider,native_session_id) WHERE record_kind='execution_state' AND anchor_state_id IS NULL;
+
+CREATE UNIQUE INDEX usage_native_measurement ON usage_records(native_authority_user_id,provider,native_session_id,source_key) WHERE record_kind='measurement';
+
+CREATE INDEX usage_task_detail ON usage_records(project_id,task_id,created_at,id);
+
+CREATE INDEX usage_session_detail ON usage_records(session_id,created_at,id);
+
+CREATE INDEX usage_state_measurements ON usage_records(state_id,id) WHERE record_kind='measurement';
+
+CREATE INDEX usage_known_session ON usage_records(session_id) WHERE record_kind='measurement' AND disposition='active' AND aggregation_role='counted' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cache_read_tokens IS NOT NULL OR cache_write_tokens IS NOT NULL OR reasoning_tokens IS NOT NULL OR total_tokens IS NOT NULL);
+
+CREATE INDEX usage_gap_session ON usage_records(session_id,aggregation_role) WHERE record_kind='measurement' AND disposition='active' AND aggregation_role IN ('included','unattributed');

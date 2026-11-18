@@ -132,6 +132,15 @@ type httpTestStore struct {
 
 var _ store.Transactions = (*httpTestStore)(nil)
 
+func (s *httpTestStore) ReadUsage(context.Context, func(store.UsageScope) error) error {
+	unexpectedHTTPCall(s.t, "ReadUsage")
+	return nil
+}
+func (s *httpTestStore) WriteUsage(context.Context, func(store.UsageScope) error) (store.Completion, error) {
+	unexpectedHTTPCall(s.t, "WriteUsage")
+	return store.Completion{}, nil
+}
+
 func (s *httpTestStore) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
 	if s.ReadSnapshotCall == nil {
 		unexpectedHTTPCall(s.t, "ReadSnapshot")

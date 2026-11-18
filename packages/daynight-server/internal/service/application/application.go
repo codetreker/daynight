@@ -29,6 +29,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/tag"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	usageapp "github.com/codetreker/daynight/packages/daynight-server/internal/service/usage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -85,6 +86,7 @@ type TaskStepsOperations interface {
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
+	Usage            *usageapp.Service
 	CredentialUsage  *credentialusage.Recorder
 	Identity         IdentityOperations
 	OAuth            *oauth.Authenticator

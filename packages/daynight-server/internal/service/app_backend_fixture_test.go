@@ -558,6 +558,13 @@ type unexpectedAppTransactions struct{ backend *appBackend }
 
 var _ store.Transactions = unexpectedAppTransactions{}
 
+func (s unexpectedAppTransactions) ReadUsage(context.Context, func(store.UsageScope) error) error {
+	return s.backend.unexpected("ReadUsage")
+}
+func (s unexpectedAppTransactions) WriteUsage(context.Context, func(store.UsageScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteUsage")
+}
+
 func (s unexpectedAppTransactions) CreateTeam(context.Context, string, func(store.TeamCreationDAO) error) (store.Completion, error) {
 	failure := s.backend.unexpected("CreateTeam")
 	var value0 store.Completion
