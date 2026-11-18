@@ -1,8 +1,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { TaskDetailNotice } from './TaskDetailNotice';
 
-export const TaskDetailActions = ({ popout, canDelete, onDelete }: {
+export const TaskDetailActions = ({ popout, copyUrl, canDelete, onDelete }: {
   readonly popout?: string;
+  readonly copyUrl?: string;
   readonly canDelete: boolean;
   readonly onDelete?: () => void;
 }) => {
@@ -14,6 +16,25 @@ export const TaskDetailActions = ({ popout, canDelete, onDelete }: {
   const menu = useRef<HTMLDivElement>(null);
   const initial = useRef<'first' | 'last'>('first');
   const menuId = useId();
+  const [copyResult, setCopyResult] = useState<{ generation: number; state: 'pending' | 'copied' | 'failed' } | null>(null);
+  const copyIdentity = useRef({ url: copyUrl, generation: 0, pending: false });
+  if (copyIdentity.current.url !== copyUrl) copyIdentity.current = { url: copyUrl, generation: copyIdentity.current.generation + 1, pending: false };
+  useLayoutEffect(() => () => { copyIdentity.current.generation++; }, []);
+  const copyState = copyResult?.generation === copyIdentity.current.generation ? copyResult.state : null;
+  const copy = async () => {
+    if (copyUrl === undefined || copyIdentity.current.pending) return;
+    copyIdentity.current.pending = true;
+    const generation = ++copyIdentity.current.generation;
+    setCopyResult({ generation, state: 'pending' });
+    try {
+      await navigator.clipboard.writeText(copyUrl);
+      if (generation === copyIdentity.current.generation) setCopyResult({ generation, state: 'copied' });
+    } catch {
+      if (generation === copyIdentity.current.generation) setCopyResult({ generation, state: 'failed' });
+    } finally {
+      if (generation === copyIdentity.current.generation) copyIdentity.current.pending = false;
+    }
+  };
   const close = (restoreFocus: boolean) => {
     setOpen(false);
     if (restoreFocus) trigger.current!.focus();
@@ -73,9 +94,16 @@ export const TaskDetailActions = ({ popout, canDelete, onDelete }: {
       {popout !== undefined && <a className="task-detail-action-item task-detail-popout" role="menuitem" tabIndex={-1} href={popout} target="_blank" rel="noopener noreferrer" onClick={() => close(true)} onAuxClick={() => close(true)}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg><span>{m.openInNewTab}</span>
       </a>}
+      {copyUrl !== undefined && <button className="task-detail-action-item" type="button" role="menuitem" tabIndex={-1} disabled={copyState === 'pending'} onClick={() => { void copy(); close(true); }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M15 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4" /></svg><span>{m.copyLink}</span>
+      </button>}
       {onDelete !== undefined && <button className="task-detail-action-item task-detail-delete" type="button" role="menuitem" tabIndex={-1} disabled={!canDelete} onClick={() => { close(true); onDelete(); }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" /></svg><span>{messages.inspection.deletion.action}</span>
       </button>}
     </div>}
+    <TaskDetailNotice active={copyState === 'copied' || copyState === 'failed'} event={copyResult} tone={copyState === 'failed' ? 'error' : 'success'}>
+      {copyState === 'copied' && <span role="status">{m.linkCopied}</span>}
+      {copyState === 'failed' && <span role="alert">{m.copyLinkFailed}</span>}
+    </TaskDetailNotice>
   </div>;
 };

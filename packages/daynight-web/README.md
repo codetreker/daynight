@@ -2327,6 +2327,12 @@ current tab and selected attachment. The source dialog remains open with its loc
 state. A preview's neighboring Open in new tab action enters the same complete
 task details at that file, even while preview content is loading.
 
+The menu also copies an absolute Overview URL for the loaded, readable Task,
+including a Task opened inside a Goal. The page and fullscreen use the same
+action. Copy feedback is scoped to the current reading identity; rejection can
+be retried without changing navigation or drafts. The link still requires the
+normal authentication and access checks.
+
 `TaskDetailSurface` shares the full content and existing actions between dialog
 and page: description, status, relationships, PRs, metadata, five-state setting,
 automatic-execution permission, execution platform, assignee and attachment management.

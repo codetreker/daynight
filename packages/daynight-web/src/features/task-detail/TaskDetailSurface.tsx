@@ -134,6 +134,10 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   if (readingScope.current !== null && readingScope.current !== readingIdentity) readingScope.current = null;
   if (detail !== null) readingScope.current = readingIdentity;
   if (error instanceof ApiError && (error.code === 'not_found' || error.code === 'task_deleted')) readingScope.current = null;
+  const copyAccess = useRef({ identity: readingIdentity, retired: false });
+  if (copyAccess.current.identity !== readingIdentity) copyAccess.current = { identity: readingIdentity, retired: false };
+  if (isThreadScopeLoss(error) || isThreadScopeLoss(task.mutation.reconciliationError)) copyAccess.current.retired = true;
+  else if (error === null && task.mutation.reconciliationError === null && detail !== null && status === 'ready' && !task.refreshing && !task.requiresFreshRead) copyAccess.current.retired = false;
   const worker = detail === null ? undefined : readWorkerClaim(detail.properties);
   const sessionRecords = useTaskSessionRecords(projectId, taskId, detail !== null && (worker === undefined || direct && selection.tab === 'attachments'), direct, worker === undefined);
   const hasSession = useRef(false);
@@ -252,7 +256,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
             <button className="button task-detail-fullscreen-toggle" type="button" ref={fullscreenRef} aria-label={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} title={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} aria-pressed={fullscreen.active} onClick={() => changeFullscreen(!fullscreen.active)}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.active ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg>
             </button>
-            {(modal || detail !== null) && <TaskDetailActions key={scope} {...(modal ? { popout } : {})} canDelete={task.canDisplayDelete} {...(detail === null ? {} : { onDelete: () => requestConfirmation({ kind: 'delete', detail, removeDepends: true }) })} />}
+            {(modal || detail !== null) && <TaskDetailActions key={readingIdentity} {...(modal ? { popout } : {})} {...(detail !== null && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && !copyAccess.current.retired && readingScope.current === readingIdentity ? { copyUrl: new URL(taskDetailUrl(projectId, taskId, { tab: 'overview', path: null }), window.location.origin).href } : {})} canDelete={task.canDisplayDelete} {...(detail === null ? {} : { onDelete: () => requestConfirmation({ kind: 'delete', detail, removeDepends: true }) })} />}
             {modal ? <button className="button task-detail-close" type="button" ref={closeRef} aria-label={m.close} onClick={requestClose}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
             </button> : null}
