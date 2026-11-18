@@ -4,8 +4,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -40,6 +43,58 @@ func assertOrdinaryPage(t *testing.T, page map[string]any, field string) {
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	t.Run("MCP manuals without Projects", func(t *testing.T) {
+		// Read every published document over both supported protocols without a
+		// Project parameter, comparing the response to the candidate source.
+		projects := requestJSON[api.ProjectPage](t, f, http.MethodGet, "/api/v1/projects", nil, http.StatusOK)
+		if len(projects.Items) != 0 || projects.NextCursor != nil {
+			t.Fatalf("expected no Projects: %+v", projects)
+		}
+		manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "write-safety", "materials", "steps", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-messages", "worker-operations", "overview"}
+		for _, version := range []string{"2025-11-25", "2026-07-28"} {
+			client := sdk.NewClient(&sdk.Implementation{Name: "daynight-manual-integration", Version: "1"}, nil)
+			session, err := client.Connect(f.context, &sdk.StreamableClientTransport{Endpoint: f.origin + "/mcp", HTTPClient: f.client, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: version})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if session.InitializeResult().ProtocolVersion != version || !strings.Contains(session.InitializeResult().Instructions, "daynight://manuals/overview.md") {
+				t.Fatalf("%s handshake: %+v", version, session.InitializeResult())
+			}
+			t.Cleanup(func() { _ = session.Close() })
+			overviewBody, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "mcp", "manuals", "overview.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			direct, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: "daynight://manuals/overview.md"})
+			if err != nil || direct == nil || len(direct.Contents) != 1 || direct.Contents[0].Text != string(overviewBody) {
+				t.Fatalf("%s direct overview: %+v, %v", version, direct, err)
+			}
+			listing, err := session.ListResources(f.context, nil)
+			if err != nil || listing == nil || len(listing.Resources) != len(manualNames) || listing.NextCursor != "" {
+				t.Fatalf("%s catalog: %+v, %v", version, listing, err)
+			}
+			resources := make(map[string]*sdk.Resource, len(listing.Resources))
+			for _, resource := range listing.Resources {
+				resources[resource.URI] = resource
+			}
+			for _, name := range manualNames {
+				uri := "daynight://manuals/" + name + ".md"
+				resource := resources[uri]
+				body, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "mcp", "manuals", name+".md"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: uri})
+				if err != nil || resource == nil || resource.Name != name || resource.MIMEType != "text/markdown" || resource.Size != int64(len(body)) || read == nil || len(read.Contents) != 1 || read.Contents[0].URI != uri || read.Contents[0].MIMEType != "text/markdown" || read.Contents[0].Text != string(body) {
+					t.Fatalf("%s %s: metadata=%+v read=%+v error=%v", version, name, resource, read, err)
+				}
+				t.Logf("%s %s bytes=%d sha256=%x", version, name, len(body), sha256.Sum256(body))
+			}
+			if err := session.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
 	t.Run("explicit preview SSO", func(t *testing.T) { serverAPIPreviewSSONormalFlow(t, f) })
 	t.Run("public application authorization", func(t *testing.T) { serverAPIPublicApplicationNormalFlow(t, f) })
 	t.Run("application work materials", func(t *testing.T) { serverAPIApplicationMaterialNormalFlow(t, f) })
@@ -96,13 +151,37 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = session.Close() })
+		const overviewURI = "daynight://manuals/overview.md"
+		instructions := session.InitializeResult().Instructions
+		_, quoted, ok := strings.Cut(instructions, "`")
+		uriFromHandshake, _, closed := strings.Cut(quoted, "`")
+		if !ok || !closed || uriFromHandshake != overviewURI || !strings.Contains(instructions, "resources/read") {
+			t.Fatalf("handshake instructions = %q", instructions)
+		}
+		overview, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: uriFromHandshake})
+		if err != nil || overview == nil || len(overview.Contents) != 1 || overview.Contents[0].URI != overviewURI || overview.Contents[0].MIMEType != "text/markdown" || !strings.Contains(overview.Contents[0].Text, "daynight://manuals/concepts.md") || !strings.Contains(overview.Contents[0].Text, "project_resolve") {
+			t.Fatalf("overview = %+v, error=%v", overview, err)
+		}
+		tools, err := session.ListTools(f.context, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundTools := map[string]bool{"project_resolve": false, "task_show": false}
+		for _, tool := range tools.Tools {
+			if _, ok := foundTools[tool.Name]; ok && tool.InputSchema != nil {
+				foundTools[tool.Name] = true
+			}
+		}
+		if !foundTools["project_resolve"] || !foundTools["task_show"] {
+			t.Fatalf("tool definitions missing: %+v", foundTools)
+		}
 		listing, err := session.ListResources(f.context, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		const (
 			uri                 = "daynight://manuals/concepts.md"
-			expectedManualCount = 12
+			expectedManualCount = 14
 		)
 		var manual *sdk.Resource
 		for _, resource := range listing.Resources {

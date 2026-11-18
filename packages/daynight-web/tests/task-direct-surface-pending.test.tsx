@@ -47,6 +47,44 @@ function resources(url: string) {
   if (url.includes('/task-graph')) return resourceResponse(graph, TEST_VIEWER_ID);
   return resourceResponse(task, TEST_VIEWER_ID);
 }
+it('removes copy admission and ignores a pending result after a forbidden detail refresh', async () => {
+  const clipboard = deferred<void>();
+  const write = vi.fn().mockReturnValue(clipboard.promise);
+  const testNavigator = Object.create(navigator) as Navigator;
+  Object.defineProperty(testNavigator, 'clipboard', { value: { writeText: write } });
+  vi.stubGlobal('navigator', testNavigator);
+  const retry = deferred<Response>();
+  let detailReads = 0;
+  const fetcher = vi.fn((url: string) => {
+    if (url.endsWith(`/tasks/${taskId}`)) {
+      detailReads++;
+      if (detailReads === 2) return Promise.resolve(denied());
+      if (detailReads === 3) return retry.promise;
+    }
+    return Promise.resolve(resources(url));
+  });
+  mount(fetcher);
+  await screen.findByRole('heading', { name: 'Parent' });
+  const trigger = screen.getByRole('button', { name: 'More task actions' });
+  fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+  await waitFor(() => expect(detailReads).toBeGreaterThan(1));
+  await waitFor(() => expect(sessions.snapshot(projectId, taskId).error).not.toBeNull());
+  fireEvent.click(trigger);
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => clipboard.resolve());
+  expect(screen.queryByText('Link copied')).toBeNull();
+  fireEvent.click(trigger);
+  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+  await waitFor(() => expect(detailReads).toBe(3));
+  fireEvent.click(trigger);
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => retry.resolve(denied()));
+  await waitFor(() => expect(sessions.snapshot(projectId, taskId).error).not.toBeNull());
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+  await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Copy link' })).toBeEnabled());
+});
 it('aborts a delayed relationship read during a parent write and retries after a 403', async () => {
   const graphRead = deferred<Response>(); const write = deferred<Response>(); let graphs = 0; let writes = 0;
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
@@ -102,6 +140,34 @@ it('keeps Session available while a confirmed Step write reconciles, but suspend
   expect(screen.getByTestId('session-current')).toHaveTextContent('false');
   await act(async () => retry.resolve(resourceResponse({ ...task, version: 2n }, TEST_VIEWER_ID)));
   await waitFor(() => expect(screen.getByTestId('session-current')).toHaveTextContent('true'));
+  unsubscribe();
+});
+it('retires copy after a forbidden reconciliation until a fresh read succeeds', async () => {
+  const clipboard = deferred<void>(); const parent = deferred<Response>(); const retry = deferred<Response>(); let reads = 0;
+  const testNavigator = Object.create(navigator) as Navigator;
+  Object.defineProperty(testNavigator, 'clipboard', { value: { writeText: vi.fn().mockReturnValue(clipboard.promise) } });
+  vi.stubGlobal('navigator', testNavigator);
+  const fetcher = vi.fn((url: string, init?: RequestInit) => {
+    if (init?.method === 'PUT') return Promise.reject(new Error('connection lost'));
+    if (url.endsWith(`/tasks/${taskId}`)) return ++reads === 1 ? Promise.resolve(resources(url)) : reads === 2 ? parent.promise : retry.promise;
+    return Promise.resolve(resources(url));
+  });
+  mount(fetcher); await screen.findByRole('heading', { name: 'Parent' });
+  const trigger = screen.getByRole('button', { name: 'More task actions' });
+  fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
+  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
+  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n));
+  await waitFor(() => expect(reads).toBe(2));
+  await act(async () => parent.resolve(denied()));
+  await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation.reconciliationError).not.toBeNull());
+  fireEvent.click(trigger); expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => clipboard.resolve()); expect(screen.queryByText('Link copied')).toBeNull();
+  fireEvent.click(trigger); act(() => sessions.reconcile(projectId, taskId));
+  await waitFor(() => expect(reads).toBe(3)); fireEvent.click(trigger);
+  expect(screen.queryByRole('menuitem', { name: 'Copy link' })).toBeNull();
+  await act(async () => retry.resolve(resources(`/tasks/${taskId}`)));
+  await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Copy link' })).toBeEnabled());
   unsubscribe();
 });
 it('keeps Session available after a lost Step receipt while reconciliation is pending', async () => {

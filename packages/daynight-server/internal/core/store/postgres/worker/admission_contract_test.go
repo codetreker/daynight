@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
@@ -203,6 +204,7 @@ func TestWorkerAdmissionDAOCanonicalOwnerSerializesAndReadsCommittedCount(t *tes
 		t.Fatalf("unwritten contender changed its row: %s %v", after, err)
 	}
 	persisted := testutil.ReadWorkerSnapshot(t, database, owner, id, got.admission.ObservedAt)
+	written.Alias = model.WorkerAlias{Version: 1}
 	if !reflect.DeepEqual(persisted, written) {
 		t.Fatalf("committed Worker changed on readback: got=%+v want=%+v", persisted, written)
 	}

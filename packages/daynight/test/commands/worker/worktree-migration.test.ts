@@ -1,9 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { ResourceOwner, WorktreeBinding } from "../../../src/commands/worker/types.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
@@ -41,7 +41,16 @@ vi.mock("node:fs/promises", async importOriginal => {
   } };
 });
 
+const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worktree-migration");
+type RefFormat = "files" | "reftable";
+let seedRoot: string | undefined;
+const seeds = new Map<RefFormat, string>();
 const roots: string[] = [];
+beforeAll(() => {
+  mkdirSync(scratch, { recursive: true });
+  seedRoot = mkdtempSync(path.join(scratch, "seeds-"));
+});
+afterAll(() => { if (seedRoot !== undefined) rmSync(seedRoot, { recursive: true, force: true }); });
 afterEach(() => { fault.syncDirectory = ""; fault.afterRemoval = ""; fault.afterPresent = ""; fault.temporaryPrefix = ""; fault.unlink = ""; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const env = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")));
 const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, env: env(), encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).replace(/\r?\n$/, "");
@@ -54,15 +63,22 @@ const webTask = (value: ResourceOwner, binding: WorktreeBinding): WebTask => ({
   recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null,
   webExecution: null, nativeExecution: null, createdAt: 1, updatedAt: 1,
 });
-const fixture = (refFormat: "files" | "reftable" = "files") => {
-  const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worktree-migration");
-  mkdirSync(scratch, { recursive: true });
-  const root = mkdtempSync(path.join(scratch, "case-")); roots.push(root);
-  const repositoryPath = path.join(root, "repo"); mkdirSync(repositoryPath);
-  git(repositoryPath, ["init", "--initial-branch=main", ...(refFormat === "reftable" ? ["--ref-format=reftable"] : [])]);
+const seed = (refFormat: RefFormat): string => {
+  const existing = seeds.get(refFormat);
+  if (existing !== undefined) return existing;
+  const repositoryPath = mkdtempSync(path.join(seedRoot!, `${refFormat}-`));
+  git(repositoryPath, ["init", "--template=", "--initial-branch=main", `--ref-format=${refFormat}`]);
   git(repositoryPath, ["config", "user.name", "Fixture"]); git(repositoryPath, ["config", "user.email", "fixture@example.com"]);
   writeFileSync(path.join(repositoryPath, "tracked.txt"), "original\n");
   git(repositoryPath, ["add", "tracked.txt"]); git(repositoryPath, ["commit", "-m", "fixture"]);
+  seeds.set(refFormat, repositoryPath);
+  return repositoryPath;
+};
+const fixture = (refFormat: RefFormat = "files") => {
+  const source = seed(refFormat);
+  const root = mkdtempSync(path.join(scratch, "case-")); roots.push(root);
+  const repositoryPath = path.join(root, "repo");
+  cpSync(source, repositoryPath, { recursive: true, force: false, errorOnExist: true });
   const commonDirectory = git(repositoryPath, ["rev-parse", "--absolute-git-dir"]);
   const namespace = path.join(repositoryPath, ".worktrees", "daynight"); mkdirSync(namespace, { recursive: true });
   const directory = path.join(commonDirectory, "daynight", "worktrees");
@@ -129,6 +145,23 @@ const historicalFixture = () => {
 };
 
 describe("legacy worktree migration", { timeout: 30_000 }, () => {
+  it.each(["files", "reftable"] as const)("keeps %s seed and sibling state independent of a case copy", refFormat => {
+    const first = fixture(refFormat), sibling = fixture(refFormat), source = seed(refFormat);
+    const head = git(source, ["rev-parse", "HEAD"]);
+    const originalObject = git(source, ["cat-file", "-p", head]);
+    const objectPath = path.join(first.commonDirectory, "objects", head.slice(0, 2), head.slice(2));
+    writeFileSync(path.join(first.repositoryPath, "tracked.txt"), "private case bytes\n");
+    git(first.repositoryPath, ["update-ref", "refs/heads/private-case", head]);
+    chmodSync(objectPath, 0o644);
+    writeFileSync(objectPath, "private corrupted object\n");
+    expect(() => git(first.repositoryPath, ["cat-file", "-p", head])).toThrow();
+    for (const repositoryPath of [source, sibling.repositoryPath]) {
+      expect(readFileSync(path.join(repositoryPath, "tracked.txt"), "utf8")).toBe("original\n");
+      expect(git(repositoryPath, ["for-each-ref", "--format=%(refname)", "refs/heads/private-case"])).toBe("");
+      expect(git(repositoryPath, ["cat-file", "-p", head])).toBe(originalObject);
+    }
+  });
+
   it("recovers a real process interruption before format rename", async () => {
     const f = fixture(), value = owner(), original = f.add(value);
     const moduleRoot = path.resolve(import.meta.dirname, "../../../dist");

@@ -2,6 +2,8 @@
 
 Status: implemented
 
+The Herdr launch mechanism described here is superseded by [daemon removal](../simplification/2026-11-18-remove-herdr-daemon.md); its rationale remains historical.
+
 ## Problem
 
 Native preflight resolves Provider commands with the Worker's environment.

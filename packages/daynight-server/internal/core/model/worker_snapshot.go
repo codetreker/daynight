@@ -114,6 +114,7 @@ type WorkerTaskObservation struct {
 }
 
 type WorkerSnapshot struct {
+	Alias          WorkerAlias
 	UserID         string
 	WorkerID       string
 	CreatedAt      time.Time

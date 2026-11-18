@@ -15,6 +15,12 @@ cancelling reads. Task graph errors do not block PR browsing. The
 states, unknown counts, identity admission and retained-page behavior. The list
 selects one primary synchronization notice while retaining independent diagnostics.
 
+The Worker detail header edits an account-owned [display alias](../../docs/design/worker-alias.md).
+List and detail titles prefer that alias while preserving the original machine
+name and complete Worker ID. Alias saves use an independent observed version;
+conflicts and unknown results require an explicit read before another save.
+Old services remain readable without alias editing.
+
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -2326,6 +2332,12 @@ title-bar More task actions menu has a real Open in new tab anchor with
 current tab and selected attachment. The source dialog remains open with its local
 state. A preview's neighboring Open in new tab action enters the same complete
 task details at that file, even while preview content is loading.
+
+The menu also copies an absolute Overview URL for the loaded, readable Task,
+including a Task opened inside a Goal. The page and fullscreen use the same
+action. Copy feedback is scoped to the current reading identity; rejection can
+be retried without changing navigation or drafts. The link still requires the
+normal authentication and access checks.
 
 `TaskDetailSurface` shares the full content and existing actions between dialog
 and page: description, status, relationships, PRs, metadata, five-state setting,

@@ -20,7 +20,7 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 | TP10 | 数据迁移保留既有 PR 字符串、顺序及重复项，保留执行归属与任务元数据；旧空 PR 数组保留，旧 worker:null 转为缺失。 |
 | TP11 | 写入入口拒绝非法输入并返回 400 invalid_input；读取保存的规范属性不重复结构、字段或容量校验。自然解码、查询和事务错误沿原错误链传播，不返回局部成功或丢弃属性。 |
 | TP12 | 网页保持只读 PR 展示和原有视觉；通用读取保留缺失与空值，PR 展示本身可把缺失和空列表显示为同一空态。 |
-| TP13 | paused 为可写布尔值，允许在执行中设置与移除；true 按 Worker 运行模式抑制自动输入，false 或缺席适用原有策略，读取不注入默认键。 |
+| TP13 | paused 为可写布尔值，允许在执行中设置与移除；true 抑制 Worker 的自动输入，false 或缺席适用原有策略，读取不注入默认键。 |
 
 ## 属性对象与值
 
@@ -47,7 +47,7 @@ sessionStartup 存在时必须是绑定当前执行身份的合法启动报告�
 
 paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
 
-paused:true 抑制 Herdr 周期 continuation ping；macOS Herdr 还在首次、待递交及恢复后的自动输入与 cleanup 提示的最终边界检查暂停。Linux/Windows legacy 的首次及待递交 assignment、恢复和 cleanup 不使用周期门禁。标记不停止已运行的 agent，不改变任务领取资格、Task/worker phase、观察、人工交互或原运行停止。解除暂停后，原生观察未改变也能重新适用正常输入条件；人工控制与显式交还仍遵守各自的协议。Web backend 当前没有周期 continuation ping。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。
+paused:true 抑制 Web Worker 的首次 assignment、恢复 assignment 和后续周期 ping 的自动递交；原生派发前重新检查暂停与原执行归属。标记不停止已运行的 agent，不改变任务领取资格、Task 状态、人工交互或原运行停止。解除暂停后按当前输入资格恢复自动递交，未知结果仍按原操作身份核对。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。旧 Herdr claim 和资源由用户处理，不由 Worker 恢复或自动输入。
 
 ## 属性 HTTP 资源
 
@@ -137,7 +137,7 @@ create/update 不提供 PR 专用选项。创建后的属性通过通用设置�
 
 迁移包含软删除任务，保留所有已有 pullRequests 值，包括无法区分来源的空数组；非 null worker 保存归属，worker:null 转为缺失。迁移冻结旧格式验证和规范化语义，不通过运行时 fallback 读取旧列。表创建、数据转换、旧列删除及 migration ledger 原子提交，任务版本、业务时间和 Session 身份不变。
 
-客户端通用属性解析及 Web 缓存同时升级。模型切换通过 schema 1→2 清理旧必填/null 详情；完整属性同步通过 schema 2→3 或直接 1→3 重建摘要、详情和项目水位并轮换 user fence。旧摘要不能把缺少 properties 解释为 {}。snapshot/delta 按任务整体版本替换完整属性，缺失键传播删除，同版本属性差异拒绝，旧响应不复活删除键；普通属性变化不轮换 epoch。图绘制投影去掉属性，详情保持 live GET 的权限准入规则。完整行为由[任务缓存需求](daynight-task-sync.md)拥有。
+客户端解析完整的通用属性对象。历史属性模型切换通过 Web 缓存 schema 1→2 清理旧必填或 `null` 详情；后续完整属性同步通过 schema 2→3 或直接 1→3 重建摘要、详情和项目水位并轮换 user fence。旧摘要不能把缺少 `properties` 解释为 `{}`。snapshot/delta 按任务整体版本替换完整属性，缺失键传播删除，同版本属性差异拒绝，旧响应不复活删除键；普通属性变化不轮换 epoch。图绘制投影去掉属性，详情保持 live GET 的权限准入规则。完整行为由[任务缓存需求](daynight-task-sync.md)拥有。
 
 ## 错误与验收
 

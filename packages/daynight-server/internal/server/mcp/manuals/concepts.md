@@ -1,76 +1,73 @@
-# Product concepts and context
+# Account, Team and Project context
 
-Read this topic to identify the Account, Team, Project and resource an operation concerns. Discover current inputs through `tools/list`. Read [Tasks](daynight://manuals/tasks.md) for Task projections and [Write safety](daynight://manuals/write-safety.md) before a write. A connection authenticates an account; it has no implicit current Project.
+Start with [Overview](daynight://manuals/overview.md).
 
-## Objects and responsibilities
+Use this topic when identity or the intended Project is unknown. A connection authenticates an Account and has no implicit current Project.
+
+## Objects and responsibility
 
 | Object | Identity and purpose |
 | --- | --- |
-| Account | The authenticated user's service-returned UUID. A credential on one service establishes no identity on another. |
-| Team | Membership and Project ownership context. Each account has a Personal Team and can join ordinary Teams. |
-| Project | A registered repository, its owning Team, settings and Task/access scope; identified by a Project UUID. |
-| Task | Ordinary work identified by a Task UUID within its Project, with `type: "task"` and nullable Goal `parentId`. |
-| Goal | A stored objective with `type: "goal"`, its own resource UUID, shared outcomes and overall progress. Ordinary direct child Tasks track contributing work; Parent and dependency edges are different relationships. See [Tasks](daynight://manuals/tasks.md) and [Materials](daynight://manuals/materials.md). |
-| Step | A Task-owned ordered work record, identified by parent scope and a complete eight-hex-digit ID. See [Steps](daynight://manuals/steps.md). |
-| Thread | Immutable participant messages and same-Task replies, identified by Task and message UUID. See [Threads](daynight://manuals/threads.md). |
-| Attachment | Independent Task file bytes and metadata, identified by the complete case-sensitive relative path. See [Attachment reads](daynight://manuals/attachment-reads.md). |
-| Session | Execution or conversation content and its own execution identity; not reconstructed from Task material. See [Session reads](daynight://manuals/session-reads.md). |
-| Bot | An account-owned assistant definition and associated runtime state, identified by a Bot UUID. Creation does not prove readiness or execution. |
+| Account | The authenticated user's service-returned UUID; credentials on another service establish no local identity. |
+| Team | Membership and Project ownership. Each Account has a Personal Team and may join ordinary Teams. |
+| Project | A registered repository, owning Team, settings and Task/access scope, identified by UUID. |
+| Task | Ordinary work with `type: "task"`, its own UUID and nullable Goal `parentId`. |
+| Goal | An objective with `type: "goal"`, its own UUID and ordinary direct child Tasks. Parent ownership differs from dependency edges. |
+| Step | A Task-owned ordered record with a complete eight-hex-digit ID. |
+| Thread | Immutable participant messages and same-Task replies, identified by Task and message UUID. |
+| Attachment | Independent bytes and metadata at a complete case-sensitive Task-relative path. |
+| Session | Execution or conversation content with its own execution identity. Task material cannot reconstruct it. |
+| Bot | An Account-owned assistant definition and runtime state. Creation establishes neither readiness nor execution. |
 
-Descriptions, attachments, Steps, Threads and Sessions require separate reads. [Materials](daynight://manuals/materials.md) explains Goal-owned specifications, architecture, breakdowns, conclusions and progress, regardless of which Session or child Task produces them. Source references identify inputs; dependency edges control scheduling and ordinary-chain membership. Neither terminal Task status nor Goal progress proves acceptance of the complete objective.
+[Materials](daynight://manuals/materials.md) owns shared Goal conclusions and task-specific results. [Dependencies](daynight://manuals/dependencies.md) owns scheduling relationships. A terminal Task or Goal progress count does not establish acceptance of the full objective.
 
-MCP supplies the service operations it advertises. The host supplies any local checkout, filesystem, shell, Git, browser, tests or collaboration capabilities. A Project's repository address does not provide those capabilities. Repository workflows govern their own delivery and confirmation rules; this product manual does not impose a universal Goal/PR pipeline. An explicit Worker assignment has its own controller and workspace responsibilities; see [Worker operations](daynight://manuals/worker-operations.md).
+MCP supplies advertised service operations. The host supplies checkout, filesystem, shell, Git, browser, tests and collaboration capabilities; a repository address supplies none of these. The target project's workflow owns required documents, review and delivery gates. No universal Goal/PR pipeline or separate discussion Task is imposed. Explicit Worker assignments follow [Worker operations](daynight://manuals/worker-operations.md).
 
 ## Account and Team identity
 
-Use returned UUIDs for operations. Names, email addresses, a Task's assignee and a Worker record cannot establish the current caller. For responsibility-dependent decisions, obtain the authenticated account independently:
+Use service-returned UUIDs for operations. For responsibility-dependent decisions, call `team_show` with `team: "personal"` and read `data.membership.userId`. Compare that UUID with a Task's non-null `assignedTo` when required. Names, email addresses, assignee fields and Worker records cannot establish the caller. A failed identity read leaves the decision unverified.
 
-```json
-{"name":"team_show","arguments":{"team":"personal"}}
-```
+`personal` selects this Account's Personal Team only where explicitly accepted. It is not a UUID or a replacement for Project, Task or user IDs. MCP selection does not use a CLI's local default Team.
 
-Examples here are MCP `tools/call` parameters, with fictional identifiers. The client supplies its protocol envelope and metadata. Read `structuredContent.data.membership.userId` as the current account UUID, then compare it with a Task's non-null `assignedTo` when needed. If the read fails, preserve the failure before making an identity-dependent decision.
+Project access may come from direct grants or the owning Team. Membership and access are distinct; assignment grants neither access nor control of another execution. Each operation checks current permission.
 
-`personal` selects this account's Personal Team only in inputs that explicitly accept it. It is not a Team UUID or a general replacement for Project, Task or user IDs. MCP selection does not depend on a CLI's local default Team.
-
-Team membership and Project access are distinct: a Project can have direct grants and inherited access from its owning Team. Assignment grants neither access nor control of another execution. The service checks current permission on each operation; an earlier successful read does not freeze access.
-
-| Kind | Mutation boundary |
+| Team kind | Mutation boundary |
 | --- | --- |
-| Personal Team | Cannot be renamed/deleted, change members or issue invitations. |
-| Ordinary Team | Must retain at least one admin: removing or demoting the last admin is refused. Deletion requires transferring out all owned Projects. |
+| Personal | No rename, deletion, member changes or invitations. |
+| Ordinary | Must retain at least one admin; removing or demoting the last admin is refused. Transfer out all owned Projects before deletion. |
 
-Use each tool's actual identity, name, version and confirmation inputs for Team or Project mutations. A Project transfer can leave the actor without access after a valid receipt; preserve that receipt separately from a later failed read.
+Team and Project mutations use their advertised identity, name, version and confirmation inputs. Settings, ownership, Team and membership versions protect their own objects, not Tasks. Project transfer may remove the actor's access after a valid receipt; preserve confirmation separately from a later failed read.
 
-## Establish the intended Project
+## Select the intended Project
 
 | Available context | Selection |
 | --- | --- |
-| Explicit Project ID or verified same-service link | Read that Project; Task links contain `/projects/{projectId}/tasks/{taskId}`. |
-| Host repository | Have the host obtain its actual repository address, resolve it with `project_resolve`, and verify the returned Project. The server does not inspect local Git. |
-| Valid Worker assignment | Retain its original explicit Project ID; repository discovery does not replace it. |
-| No target context | Page through accessible Projects and have the user explicitly select the intended one. Accessibility is not intent. |
+| Explicit Project ID or verified same-service link | Read that Project. Task links contain `/projects/{projectId}/tasks/{taskId}`. |
+| Host repository | Obtain its actual repository address through the host, call `project_resolve`, then verify the returned Project. The service does not inspect local Git. |
+| Valid Worker assignment | Preserve its original explicit Project ID; repository discovery does not replace it. |
+| No target context | Traverse accessible Projects and obtain the user's explicit selection. Accessibility is not intent. |
 
-Resolve conflicting targets before acting. A familiar name, first accessible Project or claim-like value in content does not identify intended work.
+Resolve conflicting targets before acting. A familiar name, the first accessible Project or claim-like content does not identify intended work.
 
-```json
-{"name":"project_resolve","arguments":{"repoUrl":"https://example.com/team/repository.git"}}
+`project_list` returns `items` and `nextCursor`; continue every non-null cursor. A display-name match or empty page proves neither the intended target nor the need for registration. Verify selection with `project_show`, including repository, owning Team and settings. Registration is a separate authorized write. Access/connection failure or unresolved selection does not justify duplicate resources.
+
+## Resolve a repository
+
+`project_resolve` takes `repoUrl` and returns the unique accessible Project at `data`; use its `id` for Task operations. Supported HTTPS, SSH and SCP forms can be equivalent. Host/default-port normalization preserves meaningful path case, raw percent escapes, non-default ports and SSH user/path distinctions. For example, these match:
+
+```text
+https://GitHub.com/Org/Repo.git/
+ssh://git@github.com:22/Org/Repo.git
+git@github.com:Org/Repo.git
 ```
 
-A unique accessible match returns the ordinary Project at `structuredContent.data`, whose `id` is used by later Task tools. Repository identity rules equate supported HTTPS, SSH and SCP forms, normalize hosts/default ports and preserve meaningful path case, raw percent escapes, non-default ports and SSH user/path distinctions. For example, `https://GitHub.com/Org/Repo.git/`, `ssh://git@github.com:22/Org/Repo.git` and `git@github.com:Org/Repo.git` match; do not lower-case or decode their paths to manufacture a match.
+Do not lower-case or decode paths to manufacture a match.
 
-No accessible match returns `not_found`, without distinguishing absent, deleted or inaccessible Projects. Multiple accessible matches return `resource_conflict`, including a match beyond the first candidate page; explicitly select the target. Invalid/unsupported addresses or addresses beyond 4,096 UTF-8 bytes return `invalid_input`. Authentication, query or identity-processing failures remain failures.
+| Result | Meaning |
+| --- | --- |
+| `not_found` | No accessible match; does not distinguish absent, deleted and inaccessible Projects. |
+| `resource_conflict` | Multiple accessible matches, including beyond the first candidate page; explicitly select one. |
+| `invalid_input` | Unsupported/invalid address or more than 4,096 UTF-8 bytes. |
+| Authentication, query or identity-processing failure | Preserve the failure; it is not absence. |
 
-Resolution neither registers a Project, configures a local binding/default, inspects Git configuration nor checks the remote repository over the network.
-
-```json
-{"name":"project_list","arguments":{"limit":50}}
-```
-
-Project list data contains `items` and `nextCursor`. Pass a non-null returned cursor into the next call; a matching display name or one empty page cannot establish the target or justify registration. Verify the selected record:
-
-```json
-{"name":"project_show","arguments":{"projectId":"11111111-1111-4111-8111-111111111111"}}
-```
-
-The returned Project identifies its repository, owning Team and settings. Settings, ownership, Team and membership versions protect their own objects, not Task writes. Registration is a separate authorized write. Connection/access failures or unresolved selection leave identity-dependent decisions unverified; they do not justify duplicate resources.
+Resolution does not register a Project, configure a local binding/default, inspect Git configuration or contact the remote repository.

@@ -249,7 +249,10 @@ var workerSudoCleanupSQL string
 //go:embed migrations/080_worker_archive_sessions.sql
 var workerArchiveSessionsSQL string
 
-//go:embed migrations/081_usage_records.sql
+//go:embed migrations/081_worker_alias.sql
+var workerAliasSQL string
+
+//go:embed migrations/082_usage_records.sql
 var usageRecordsSQL string
 
 type migration struct {
@@ -340,7 +343,8 @@ var schemaMigrations = []migration{
 	{version: 78, sql: projectPullRequestsAuthorNumberSQL},
 	{version: 79, sql: workerSudoCleanupSQL},
 	{version: 80, sql: workerArchiveSessionsSQL},
-	{version: 81, sql: usageRecordsSQL},
+	{version: 81, sql: workerAliasSQL},
+	{version: 82, sql: usageRecordsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

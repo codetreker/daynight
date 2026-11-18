@@ -13,6 +13,7 @@ working directory is specified.
 - [Web development](#web-development)
 - [Public Markdown image integration](#public-markdown-image-integration)
 - [Product E2E](#product-e2e)
+- [Component delivery and activation](#component-delivery-and-activation)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
 - [CI selection](#ci-selection)
@@ -135,7 +136,13 @@ owns the mechanism's alternatives and limits.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
-and the total length.
+and the total length. The Task help and invalid-argument matrix uses separate
+guarded processes for its two import policies. Each invocation gets a fresh
+context from the compiled CLI. Representative cases still run the executable
+from a cold process; tests of HTTP, Git, files and process lifetime continue to
+run the executable. The
+[Task grammar fixture decision](../.agents/notes/implemented/testing/2026-11-18-task-cli-grammar-batches.md)
+owns the test boundary.
 
 API deadline fixtures control both deadline timers and the `node:perf_hooks`
 monotonic clock when setup or pagination must complete before expiry. The
@@ -184,6 +191,12 @@ trigger reporting before the periodic interval, so elapsed time is measured
 from that request's observed start. The
 [reporter deadline decision](../.agents/notes/implemented/testing/2026-11-10-worker-reconciliation-deadline.md)
 records the trigger, single-flight and cancellation checks.
+Worker startup integration holds the identity retry until the real instance
+lock and cache fences have been observed. The project-preparation case advances
+the configuration clock at the recorded deadline, while observing persistence
+and inventory with real asynchronous work. The
+[startup retry fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-startup-retry-clocks.md)
+owns both timing checks.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
@@ -516,10 +529,20 @@ SQLite databases, clones and worktrees remain separate for every case. Sparse
 suites prepare their shared source graph before copying; scenario observations
 and mutations remain private. Source snapshots are prepared through batched
 native Git imports, while real clone/fetch/worktree operations remain the test
-subjects. Worker worktree cases separately copy file-owned starting repositories
-for the files and reftable backends. The concurrent fetched-commit case keeps
-both real preparations within its fetch barriers and uses a case-local 30-second
-watchdog for native Git execution. Its commit, shared-ref and private-ref cleanup
+subjects. Worker worktree cases copy private starting repositories from
+file-owned files and reftable seeds. Legacy Worktree migration uses its own
+seeds with no linked checkout or migration state. Each case still creates its
+native registrations, manifests and database evidence in the private copy.
+The [migration fixture decision](../.agents/notes/implemented/testing/2026-11-18-worktree-migration-seeds.md)
+owns this boundary. Partial resource scans that need existing
+registrations create them with native Git and publish their manifests in the
+private repository. They exercise real inventory, inspection, and cleanup
+without setting up a remote. The
+[scan fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-worktree-scan-fixtures.md)
+explains the split from preparation and remote coverage. The concurrent
+fetched-commit case keeps both real preparations within its fetch barriers and
+uses a case-local 30-second watchdog for native Git execution. Its commit,
+shared-ref and private-ref cleanup
 assertions remain in that workflow; discovery-only cases retain their separate
 preparation hooks and default behavior budget. The
 [concurrent fetch budget decision](../.agents/notes/implemented/testing/2026-11-09-worker-concurrent-fetch-budget.md)
@@ -999,6 +1022,37 @@ receipts and resource cleanup. CI reserves a separate always-run recovery step
 before uploading only result and log directories; it does not upload private
 credentials, database data or copied artifacts. Preparation can fetch dependencies; the running
 system does not require an external database, auth deployment or GitHub account.
+
+## Component delivery and activation
+
+Plan PR boundaries separately from runtime activation. Before grouping changes
+in one PR because behavior must switch together, identify the smallest set of
+effects that must take effect together and the invariant they protect. Test the
+proposed PR boundary against a concrete intermediate state: if a complete
+supporting capability with its own meaningful verification merges first, what
+would fail when that revision is built, started or run before the switch? If
+that state is safe, review and merge the capability separately. Keep the final
+switch focused on the changes that actually need to take effect together.
+
+Check what the intermediate revision actually runs, including startup and data
+changes. A registered database migration may execute at server startup even
+when no new route is mounted. Preserve any required coordination of data
+migrations, running processes and traffic; separate source PRs do not remove
+those constraints. Avoid adding flags or temporary adapters solely to split a PR.
+
+Plan service deployment, artifact publication, and client adoption separately.
+A published CLI does not upgrade installed clients or restart Workers, and a
+server deployment does not refresh open Web tabs. Identify the version and
+capability combinations covered by the applicable support policy, and preserve
+their required behavior through each rollout step. If a change would break a
+supported combination, establish and verify a compatible path or confirm a
+support change before exposing the new behavior.
+
+[Product E2E](#product-e2e) verifies the Server, CLI and Web built from one
+source revision. That evidence covers the tested combination. Verify required
+mixed-version combinations separately in a controlled environment. Code
+acceptance does not depend on production deployment or actual client adoption
+unless those operations are explicitly part of the deliverable.
 
 ## Local stress validation
 

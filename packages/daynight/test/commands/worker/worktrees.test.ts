@@ -11,7 +11,7 @@ import { RepositoryGitCleanupPendingError, startOwnedRepositoryGit, type GitSett
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
-import type { ResourceOwner, WorkerProject } from "../../../src/commands/worker/types.js";
+import type { ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
 // by a real descendant. Other Git calls still use the actual executable.
@@ -126,17 +126,21 @@ const seed = (refFormat: RefFormat): Promise<string> => {
   if (existing !== undefined) return existing;
   const preparation = prepareSeed(refFormat); seeds.set(refFormat, preparation); return preparation;
 };
-const fixture = async (refFormat: RefFormat = "files") => {
+const repositoryFixture = async (refFormat: RefFormat) => {
   const source = await seed(refFormat);
   const root = await mkdtemp(path.join(scratch, "Git 用户 ")); directories.push(root);
   const repository = path.join(root, "repository");
   cpSync(source, repository, { recursive: true, force: false, errorOnExist: true });
-  const bare = path.join(root, "origin.git");
-  git(root, ["clone", "--bare", repository, bare]);
-  git(repository, ["config", `url.${bare}.insteadOf`, remote]);
   const project: WorkerProject = { projectId: ids.projectId, repoUrl: remote, localPath: repository };
   const owner: ResourceOwner = { projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId };
-  return { root, repository, bare, project, owner };
+  return { root, repository, project, owner };
+};
+const fixture = async (refFormat: RefFormat = "files") => {
+  const f = await repositoryFixture(refFormat);
+  const bare = path.join(f.root, "origin.git");
+  git(f.root, ["clone", "--bare", f.repository, bare]);
+  git(f.repository, ["config", `url.${bare}.insteadOf`, remote]);
+  return { ...f, bare };
 };
 const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
 const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => path.normalize(field.slice(9)));
@@ -408,10 +412,26 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
 
   describe("partial resource scans", () => {
+    const scanFixture = async () => {
+      const f = await repositoryFixture("files");
+      const adapter = manager(f.root);
+      const { commonDirectory } = await adapter.prepareRepository(f.project, operation());
+      const addRegisteredWorktree = (owner: ResourceOwner): WorktreeBinding => {
+        // Inventory starts with a published registration. The prepare/fetch cases
+        // separately exercise how a new registration is created from an origin.
+        const branch = `daynight/${owner.taskId}`;
+        const worktreePath = path.join(f.repository, ".worktrees", "daynight", owner.worktreeId);
+        git(f.repository, ["-c", `core.hooksPath=${path.join(f.root, "fixture-hooks")}`, "worktree", "add", "-b", branch, "--", worktreePath, "HEAD"]);
+        createWorktreeManifestStore(commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
+        return { repositoryPath: f.repository, commonDirectory, worktreePath, branch };
+      };
+      return { f, adapter, addRegisteredWorktree };
+    };
+
     it.each(["file", "leaf", "component-case"])("fences case-ambiguous missing Git targets: %s", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
       const owner = { ...f.owner, taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", worktreeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
-      const binding = await adapter.prepareWorktree(f.project, owner, operation());
+      const binding = addRegisteredWorktree(owner);
       const admin = administrativeDirectory(binding.worktreePath), markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${owner.worktreeId}.json`), marker = await readFile(markerPath);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
@@ -436,8 +456,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["absolute", "relative", "missing-parent"])("retains raw traversal in manual registration pointers: %s", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       const manual = path.join(f.root, "manual");
       git(f.repository, ["worktree", "add", "--detach", manual, "HEAD"]);
@@ -474,8 +494,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["forward", "common", "reverse"])("keeps physical cross-repository %s pointers unknown", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const admin = administrativeDirectory(binding.worktreePath), foreign = path.join(f.root, "foreign");
       git(f.root, ["clone", "--no-hardlinks", f.repository, foreign]);
       const foreignLeaf = path.join(foreign, ".worktrees", "daynight", f.owner.worktreeId);
@@ -506,8 +526,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["present", "missing-leaf"])("accepts provable relative Git metadata with parent traversal: %s", async state => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const admin = administrativeDirectory(binding.worktreePath);
       // Git's registration reader strips a literal '/.git', including on Windows.
       const relative = (base: string, target: string) => path.relative(base, target).split(path.sep).join("/");
@@ -526,8 +546,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["case-alias", "hardlink"])("reconciles file-object registration aliases: %s", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       const original = path.join(binding.worktreePath, ".git");
       const target = kind === "case-alias" ? path.join(binding.worktreePath, ".GIT") : path.join(f.root, "linked.git");
@@ -571,8 +591,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["duplicate", "duplicate-missing", "duplicate-final-symlink", "unresolved", "unrelated", "unrelated-missing"])("proves physical registration targets with a %s manual alias", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const markerPath = path.join(f.repository, ".git", "daynight", "worktrees", `${f.owner.worktreeId}.json`), marker = await readFile(markerPath);
       git(binding.worktreePath, ["checkout", "-b", "changed-branch"]);
       const manual = path.join(f.root, "manual");
@@ -609,10 +629,10 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     }, 20000);
 
     it("quarantines a known registration without losing or invalidating its healthy sibling", async () => {
-      const f = await fixture(), adapter = manager(f.root);
-      const broken = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const broken = addRegisteredWorktree(f.owner);
       const owner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
-      const healthy = await adapter.prepareWorktree(f.project, owner, operation());
+      const healthy = addRegisteredWorktree(owner);
       git(broken.worktreePath, ["checkout", "-b", "changed-branch"]);
       const result = await adapter.scanWorktrees(f.project, operation());
       expect(result.enumerationComplete).toBe(true);
@@ -626,11 +646,11 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["marker", "unknown-marker", "pointer", "duplicate", "unreadable", "commondir"])("isolates %s damage while preserving healthy observations", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const admin = administrativeDirectory(binding.worktreePath);
       const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
-      const sibling = await adapter.prepareWorktree(f.project, siblingOwner, operation());
+      const sibling = addRegisteredWorktree(siblingOwner);
       if (kind === "marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{");
       if (kind === "unknown-marker") await writeFile(path.join(admin, "locked"), "daynight-worker:{}");
       if (kind === "commondir") { await rm(path.join(admin, "commondir")); await mkdir(path.join(admin, "commondir")); }
@@ -654,8 +674,8 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["symlink", "file"])("keeps a registration replaced by a %s unknown without reading through it", async kind => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const admin = administrativeDirectory(binding.worktreePath), retained = path.join(f.root, "retained-admin");
       await rename(admin, retained);
       const marker = await readFile(path.join(retained, "gitdir"), "utf8");
@@ -669,10 +689,10 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it.each(["manual", "missing"])("keeps unreadable Git pointers unknown with a %s marker", async marker => {
-      const f = await fixture(), adapter = manager(f.root);
-      const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+      const { f, adapter, addRegisteredWorktree } = await scanFixture();
+      const binding = addRegisteredWorktree(f.owner);
       const siblingOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999", claimId: "88888888-8888-4888-8888-888888888888", worktreeId: "99999999-9999-4999-8999-999999999999" };
-      await adapter.prepareWorktree(f.project, siblingOwner, operation());
+      addRegisteredWorktree(siblingOwner);
       const admin = administrativeDirectory(binding.worktreePath), pointer = path.join(admin, "gitdir");
       if (marker === "manual") await writeFile(path.join(admin, "locked"), "human");
       else await rm(path.join(admin, "locked"), { force: true });
@@ -689,8 +709,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     });
 
     it("does not inventory ordinary unregistered paths or manual worktrees", async () => {
-      const f = await fixture(), adapter = manager(f.root);
-      await adapter.prepareRepository(f.project, operation());
+      const { f, adapter } = await scanFixture();
       await mkdir(path.join(f.repository, ".worktrees", "daynight", f.owner.taskId), { recursive: true });
       await writeFile(path.join(f.repository, ".worktrees", "daynight", f.owner.taskId, "keep"), "unowned");
       git(f.repository, ["worktree", "add", "--detach", path.join(f.root, "manual"), "HEAD"]);

@@ -567,13 +567,21 @@ configuration, browser authorization and connection verification. A normal HEAD
 returns the same headers without a body. Reading the manual does not authenticate
 or invoke business operations.
 
-Authenticated MCP clients use `resources/list` to discover twelve product manual
-Resources and `resources/read` to obtain a complete topic at its returned
-`daynight://manuals/<topic>.md` URI. The short server instructions route by
-operation. Steps, Thread, Session reads and messages, and attachment reads and
-writes have separate guides. Every write requires the common write-safety guide
-and its operation's conditions; related topics retain explicit reading prerequisites.
-The materials topic defines Goal-owned shared specifications, architecture,
+The handshake instructions introduce Daynight and direct clients to read
+`daynight://manuals/overview.md` with `resources/read` before using its tools;
+the URI can be read without first listing Resources. Authenticated MCP clients
+can also use `resources/list` to discover the overview and thirteen topic manuals,
+and `resources/read` to obtain each complete Markdown document. The overview
+routes by operation, distinguishes required and conditional topics, and explains
+result envelopes and schematic examples. Clients can reuse complete guidance
+while it remains applicable. Task reads and lifecycle writes have separate topics;
+dependency reads and replacement, and Session observations and history each share
+a complete topic. Dependency-only writes require dependencies and write-safety;
+creation with dependencies or mixed updates also require task-writes.
+Steps, Thread, Session messages, and attachment reads and writes have separate
+guides. Every write requires the common write-safety guide and its operation's
+conditions; related topics retain explicit reading prerequisites. The materials
+topic defines Goal-owned shared specifications, architecture,
 breakdowns, conclusions and overall progress, alongside each child Task's own
 results and evidence.
 Reading guidance does not select a Project or authorize work.
@@ -1816,6 +1824,23 @@ Private conversation data is checked at proposed durable writes. Store tests
 separately prove SQL mapping, duplicate queries, locks, transactions, persistence
 and deletion; Bot and Task service tests own cross-module orchestration.
 
+Session service archive admission and terminal read error tests run the real
+entry points with controlled transaction-scoped reads. They verify credential
+and Project authorization before archive metadata, and stop at the failing
+terminal query. Real PostgreSQL still establishes missing-row error mapping,
+connection reuse, and persisted terminal reads. The
+[Session archive read decision](../../.agents/notes/implemented/testing/2026-11-18-session-archive-read-fixtures.md)
+records the proof boundary. Session scope error and dispatch tests supply known
+credential, registration and location facts. They execute the real entry points
+and assert that a failed query stops subsequent work. The
+[Session scope failure decision](../../.agents/notes/implemented/testing/2026-11-18-session-scope-failure-tests.md)
+describes the controlled and physical proof owners. Bound Bot snapshot tests
+exercise the real deletion barrier with controlled lookup results. The
+cross-instance PostgreSQL test checks that an actual deletion prevents another
+instance from serving a snapshot. The
+[Session bound Bot decision](../../.agents/notes/implemented/testing/2026-11-18-session-bound-bot-read-tests.md)
+records the proof boundary.
+
 From this module, run the complete database-independent Session suite with:
 
 ```bash
@@ -1858,12 +1883,25 @@ PostgreSQL tests retain persisted grant updates, visibility after removal,
 concurrent writers, and rollback. The [Project grant actor decision](../../.agents/notes/implemented/testing/2026-11-18-project-grant-actor-tests.md)
 records the proof boundary.
 
+Project creation and member read tests use controlled principals and scopes
+to check exact request forwarding, creation results, and errors before or
+during a callback. Store tests retain real PAT authentication, creator grant
+insertion and rollback, and SQL filtering before pagination. The
+[Project member fixture decision](../../.agents/notes/implemented/testing/2026-11-18-project-member-creation-tests.md)
+records the proof boundary.
+
 Project transfer tests use controlled scopes for preflight, cancellation,
 missing targets and exhausted versions. They execute the real transfer rules,
 including confirmed same-team saves at the version limit. Real PostgreSQL
 tests retain cross-team transfer, persisted access changes and rollback.
 The [Project transfer boundary decision](../../.agents/notes/implemented/testing/2026-11-18-project-transfer-boundary-tests.md)
 records the proof boundary.
+
+Project deletion error tests use controlled read and completion outcomes to
+verify error propagation and receipt suppression. PostgreSQL tests retain
+actual deletion, lock-time authorization, and rollback after scoped failures.
+The [Project deletion completion decision](../../.agents/notes/implemented/testing/2026-11-18-project-deletion-completion-tests.md)
+records which scenarios require a physical database.
 
 Project settings cancellation tests run the Service transaction callback and Core
 rules over controlled DAO results. Callback errors and transaction completion
@@ -2055,7 +2093,13 @@ The explicit `integration` build tag keeps these flows outside ordinary unit
 test discovery. The runner selects `TestServerAPINormalFlows`,
 `TestServerAPISessionNormalFlow` and `TestServerAPICredentialUsageNormalFlow`;
 each test owns its real Server process, UniAuth gateway, login, PAT and isolated
-resources. Task groups run sequentially with separate projects: lifecycle,
+resources. The fixture holds its public loopback listener before starting the
+gateway and proxies it to the Server's ephemeral listener only after direct
+readiness succeeds. The public origin and gateway callback remain stable across
+Server restarts; the proxy withdraws the old backend before shutdown and keeps
+the listener until fixture cleanup. The
+[fixture decision](../../.agents/notes/implemented/testing/2026-11-18-api-integration-public-listener.md)
+records the trade-offs. Task groups run sequentially with separate projects: lifecycle,
 search pagination and dependency graph, property and Sync readback, Step
 operations, Thread replies, Attachment bytes, personal Worker prompt
 synchronization, and Worker claim/Agent discussion.
@@ -2190,6 +2234,20 @@ binding and SDK wire loss use real Authentication and Identity components with
 controlled DAO facts, an isolated gateway, real proxy and sockets. Root retains
 the production `New` and configured callback assembly proof. Prepare the pinned
 auth fixture as described in [validation](#validate).
+
+Request credential selection, response principal headers, and authenticated
+profile cache tests use the real HTTP adapter over controlled identity results.
+Actual credential issuance, expiry, revocation, and persisted profile reads
+remain covered by the PostgreSQL tests. The
+[Auth request and profile cache decision](../../.agents/notes/implemented/testing/2026-11-18-auth-request-cache-fixtures.md)
+records the proof boundary.
+
+PAT request and failure tests exercise the real HTTP adapter with controlled
+identity operations. They retain adapter input validation, delegated argument
+checks, error mappings and normalized time fields. The real credential and
+Store tests cover issuance, expiry, revocation and persisted metadata. The
+[PAT response decision](../../.agents/notes/implemented/testing/2026-11-18-pat-http-error-fixtures.md)
+records that split.
 
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
@@ -2812,6 +2870,31 @@ saved observations while applying current access and undeleted-task filtering
 to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
+
+### Owner-managed Worker aliases
+
+`GET` and `PUT /api/v1/me/workers/{workerId}/alias` return
+`{workerId,alias:{value,version}}`. PUT requires exactly
+`{value:string|null,expectedVersion:string}`; null clears the alias. Versions are
+positive decimal int64 strings, initially `"1"`. A stale version returns
+`409 version_conflict`, including an otherwise unchanged write. Only actual
+changes increment the independent alias version.
+
+Aliases trim Unicode White_Space at both ends, contain 1–80 Unicode scalar
+values, and reject invalid Unicode, Cc, Zl/Zp, bidi controls and U+FEFF. Empty
+strings do not clear aliases. Emoji ZWJ sequences remain intact. Alias access
+uses the authenticated owner and hides other accounts' Workers with 404. It
+remains available for existing offline or expired-report Workers, changes no
+report timestamps or configuration, and survives later reports using the same
+Worker ID.
+
+List and detail GET include `alias:{value,version}` only when requested with
+`Daynight-Worker-Alias: 1`, echoed on successful negotiated reads. Invalid or
+repeated header values are rejected. Unnegotiated reads retain their exact
+previous fields; old servers without the echo do not provide alias editing.
+Aliases are selected with the summary/detail rows inside the same owner-scoped
+snapshot, without per-Worker follow-up queries. The
+[alias design](../../docs/design/worker-alias.md) owns the complete mechanism.
 
 ## Worker current monitoring
 

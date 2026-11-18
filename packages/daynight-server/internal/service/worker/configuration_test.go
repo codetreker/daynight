@@ -20,6 +20,13 @@ type configurationCalls struct {
 	want, seen []string
 }
 
+func (*configurationDAO) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	panic("unexpected alias read")
+}
+func (*configurationDAO) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	panic("unexpected alias write")
+}
+
 func (c *configurationCalls) take(name string, ctx context.Context) {
 	c.t.Helper()
 	index := len(c.seen)

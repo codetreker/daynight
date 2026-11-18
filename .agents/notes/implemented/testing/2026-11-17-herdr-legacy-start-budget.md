@@ -2,9 +2,11 @@
 
 Status: implemented
 
+The dedicated Herdr runtime test described here was removed with the [daemon](../simplification/2026-11-18-remove-herdr-daemon.md); this decision remains historical.
+
 ## Problem
 
-The legacy endpoint lifecycle integration case uses real SQLite journals and a
+The legacy endpoint lifecycle integration case used real SQLite journals and a
 single three-second operation for start, initial input, and native Session
 confirmation. A [CI run](https://github.com/codetreker/daynight/actions/runs/43995615586/job/133746898809)
 exhausted that budget at confirmation. The recorded stack does not identify
@@ -13,7 +15,7 @@ The case verifies lifecycle behavior rather than a three-second latency limit.
 
 ## Decision
 
-The [case](../../../../packages/daynight/test/commands/worker/herdr-durable-integration.test.ts)
+The case
 uses a ten-second start operation and a fifteen-second outer Vitest timeout.
 Other operations retain the three-second fixture default, other cases retain
 their existing limits, and lifecycle and input assertions remain intact.

@@ -100,6 +100,7 @@ func (s *Workers) ReportSync(ctx context.Context, principal model.Principal, wor
 }
 
 type WorkerPage struct {
+	Aliases    []model.WorkerAlias
 	ObservedAt time.Time
 	Items      []workerprotocol.WorkerSummary
 	NextCursor *string
@@ -232,6 +233,7 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 		return WorkerPage{}, fmt.Errorf("list workers: %w", err)
 	}
 	for _, item := range records.Items {
+		result.Aliases = append(result.Aliases, item.Alias)
 		result.Items = append(result.Items, workerprotocol.WorkerSummary{WorkerID: item.WorkerID, Machine: workerprotocol.WorkerMachine{ID: item.Machine.ID, Name: item.Machine.Name}, Platform: string(item.Platform), LastReportedAt: item.LastReportedAt, TaskObservationState: string(item.TaskObservationState), TaskObservedAt: item.TaskObservedAt, ActiveTaskCount: item.ActiveTaskCount})
 	}
 	if records.HasMore {

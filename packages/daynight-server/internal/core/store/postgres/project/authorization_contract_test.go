@@ -295,6 +295,16 @@ func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing
 	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM team_members WHERE team_id=$1 AND user_id=$2`, teamB, person.UserID).Scan(&memberships); err != nil || memberships != 0 {
 		t.Fatalf("shared list altered membership: %d %v", memberships, err)
 	}
+	_, outsider, _ := testutil.AuthRecords(t, database)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		page, err := snapshot.ProjectDAO().ScopedProjects(ctx, outsider, ProjectScope{Kind: ProjectScopeAll}, Page{Limit: 1})
+		if err != nil || page.Items == nil || len(page.Items) != 0 || page.HasMore {
+			t.Fatalf("outsider's all-projects page: %#v %v", page, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	testutil.MustExec(t, database.Pool, `DROP TABLE team_members`)
 	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		_, err := snapshot.ProjectDAO().ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamA}, Page{Limit: 1})

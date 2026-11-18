@@ -246,7 +246,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	rows := func() []string {
 		t.Helper()
 		var result []string
-		if err := pool.QueryRow(ctx, `SELECT array_agg(((to_jsonb(w)-'archive_sessions') || jsonb_build_object('desired_configuration',desired_configuration-'preferPlatformSpecificTasks'))::text ORDER BY worker_id) FROM workers w`).Scan(&result); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT array_agg(((to_jsonb(w)-'archive_sessions'-'alias_value'-'alias_version') || jsonb_build_object('desired_configuration',desired_configuration-'preferPlatformSpecificTasks'))::text ORDER BY worker_id) FROM workers w`).Scan(&result); err != nil {
 			t.Fatal(err)
 		}
 		return result
@@ -257,6 +257,10 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	}
 	if !reflect.DeepEqual(before, rows()) {
 		t.Fatal("preference migration changed existing worker, configuration, or observation facts")
+	}
+	var aliasesInitialized bool
+	if err := pool.QueryRow(ctx, `SELECT bool_and(alias_value IS NULL AND alias_version=1) FROM workers`).Scan(&aliasesInitialized); err != nil || !aliasesInitialized {
+		t.Fatalf("historical workers did not acquire initial aliases: initialized=%v err=%v", aliasesInitialized, err)
 	}
 	var present bool
 	if err := pool.QueryRow(ctx, `SELECT desired_configuration->'preferPlatformSpecificTasks'='false'::jsonb FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID).Scan(&present); err != nil || !present {

@@ -9,10 +9,24 @@ import (
 
 const WorkerSnapshotProjection = `user_id::text, worker_id::text, created_at, last_seen_at, telemetry, task_snapshot`
 
+const WorkerSnapshotAliasProjection = WorkerSnapshotProjection + `, alias_value, alias_version`
+
 func ScanWorkerSnapshot(row pgx.Row) (model.WorkerSnapshot, error) {
+	return scanWorkerSnapshot(row, false)
+}
+
+func ScanAliasedWorkerSnapshot(row pgx.Row) (model.WorkerSnapshot, error) {
+	return scanWorkerSnapshot(row, true)
+}
+
+func scanWorkerSnapshot(row pgx.Row, alias bool) (model.WorkerSnapshot, error) {
 	var worker model.WorkerSnapshot
 	var telemetry, tasks []byte
-	if err := row.Scan(&worker.UserID, &worker.WorkerID, &worker.CreatedAt, &worker.LastReportedAt, &telemetry, &tasks); err != nil {
+	fields := []any{&worker.UserID, &worker.WorkerID, &worker.CreatedAt, &worker.LastReportedAt, &telemetry, &tasks}
+	if alias {
+		fields = append(fields, &worker.Alias.Value, &worker.Alias.Version)
+	}
+	if err := row.Scan(fields...); err != nil {
 		return model.WorkerSnapshot{}, err
 	}
 	if err := json.Unmarshal(telemetry, &worker.Telemetry); err != nil {

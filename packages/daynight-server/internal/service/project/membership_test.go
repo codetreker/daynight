@@ -3,7 +3,6 @@ package project
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -15,7 +14,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
@@ -83,53 +81,6 @@ func (f *membershipFixture) member(t *testing.T, p model.Principal, projectID st
 		t.Fatal(err)
 	}
 	return member
-}
-
-func TestPrivateProjectsAtomicCreationAndMemberFilteredPagination(t *testing.T) {
-	f := newMembershipFixture(t)
-	alice, bob := f.user(t), f.user(t)
-	ctx := context.Background()
-	a := f.project(t, alice, "A")
-	f.project(t, bob, "Hidden before B")
-	b := f.project(t, alice, "B")
-	f.project(t, bob, "Hidden after B")
-	c := f.project(t, alice, "C")
-	if m := f.member(t, alice, a.ID); m.Grant.Role != model.ProjectAdmin {
-		t.Fatalf("creator: %#v", m)
-	}
-	var names []string
-	request := model.PageRequest{Limit: 1}
-	for i := 0; i < 3; i++ {
-		page, err := f.projects.List(ctx, alice, request)
-		if err != nil || len(page.Items) != 1 {
-			t.Fatalf("page: %#v, %v", page, err)
-		}
-		names = append(names, page.Items[0].Name)
-		request.Cursor = page.NextCursor
-		if i < 2 && page.NextCursor == nil {
-			t.Fatal("filtered page lost continuation")
-		}
-		if i == 2 && page.NextCursor != nil {
-			t.Fatal("hidden projects leaked continuation")
-		}
-	}
-	if !reflect.DeepEqual(names, []string{a.Name, b.Name, c.Name}) {
-		t.Fatal(names)
-	}
-	stranger := f.user(t)
-	empty, err := f.projects.List(ctx, stranger, model.PageRequest{Limit: 1})
-	if err != nil || empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
-		t.Fatalf("empty access: %#v %v", empty, err)
-	}
-	if _, err := f.database.Pool.Exec(ctx, `CREATE FUNCTION reject_initial_admin() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected admin insertion failure'; END $$; CREATE TRIGGER reject_initial_admin BEFORE INSERT ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_initial_admin()`); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.projects.Create(ctx, alice, coreproject.CreateProject{ExpectedUserID: alice.UserID, Name: "Must roll back", RepoURL: "host:repo"})
-	requireIdentityOperationalError(t, err)
-	var residual int
-	if err := f.database.Pool.QueryRow(ctx, `SELECT count(*) FROM projects WHERE name='Must roll back'`).Scan(&residual); err != nil || residual != 0 {
-		t.Fatalf("partial private project: %d %v", residual, err)
-	}
 }
 
 func TestMembershipRoleAuthorizationAndObservedVersions(t *testing.T) {
@@ -463,52 +414,6 @@ func TestMembershipRejectsMissingPrincipalsAndInvalidInputs(t *testing.T) {
 		func() error { _, err := projects.List(ctx, p, model.PageRequest{Limit: 0}); return err },
 	} {
 		requireFault(t, call(), "invalid_input")
-	}
-}
-
-func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
-	f := newMembershipFixture(t)
-	admin := f.user(t)
-	p := f.project(t, admin, "PAT")
-	ctx := context.Background()
-	identity := identityservice.New(f.database, nil, "")
-	token, err := identity.CreatePAT(ctx, admin, identitycore.CreatePAT{Name: "Automation"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pat, err := identity.Authenticate(ctx, model.PATCredential, token.Secret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.memberships.List(ctx, pat, p.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.memberships.CreateInvitation(ctx, pat, p.ID, pat.UserID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.projects.Create(ctx, pat, coreproject.CreateProject{ExpectedUserID: pat.UserID, Name: "PAT project", RepoURL: "host:repo"}); err != nil {
-		t.Fatal(err)
-	}
-	canceled, cancel := context.WithCancel(ctx)
-	cancel()
-	_, err = f.memberships.List(canceled, admin, p.ID)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancellation hidden: %v", err)
-	}
-	invitation := f.invite(t, admin, p.ID)
-	f.database.Close()
-	calls := []func() error{
-		func() error { _, err := f.memberships.List(ctx, admin, p.ID); return err },
-		func() error { _, err := f.memberships.CreateInvitation(ctx, admin, p.ID, admin.UserID); return err },
-		func() error { _, err := f.memberships.InspectInvitation(ctx, admin, invitation.Secret); return err },
-		func() error {
-			_, err := f.projects.Create(ctx, admin, coreproject.CreateProject{ExpectedUserID: admin.UserID, Name: "Failure", RepoURL: "host:repo"})
-			return err
-		},
-		func() error { _, err := f.projects.List(ctx, admin, model.PageRequest{Limit: 1}); return err },
-	}
-	for _, call := range calls {
-		requireIdentityOperationalError(t, call())
 	}
 }
 

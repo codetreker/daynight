@@ -2,6 +2,8 @@
 
 Status: implemented
 
+The Herdr execution and recording write paths described here are superseded by [daemon removal](../simplification/2026-11-18-remove-herdr-daemon.md) and [terminal entry removal](../simplification/2026-11-18-remove-worker-terminal-entries.md); this decision remains historical.
+
 ## Problem
 
 A macOS Herdr preparation registers a daemon, shell, generation and recording

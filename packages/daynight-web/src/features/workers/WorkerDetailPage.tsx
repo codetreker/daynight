@@ -15,6 +15,8 @@ import { WorkerToolPathDetails } from './WorkerToolPathDetails';
 import { toolSoftwareEntries } from './tool-path-presentation';
 import { useWorkerPageAnchor } from './useWorkerPageAnchor';
 import { useWorkerMonitoring } from './useWorkerMonitoring';
+import type { WorkerAlias } from '../../api/worker-alias';
+import { WorkerAliasEditor } from './WorkerAliasEditor';
 import './workers.css';
 
 const sections = ['overview', 'configuration', 'prompt'] as const;
@@ -81,6 +83,9 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
   const { snapshot, serverMilliseconds } = state;
   if (snapshot !== null && serverMilliseconds === null) throw new Error('A Worker snapshot requires its server observation time.');
   const worker = snapshot?.worker;
+  const [savedAlias, setSavedAlias] = useState<{ workerId: string; userId: string; alias: WorkerAlias } | null>(null);
+  const alias = savedAlias?.workerId === workerId && savedAlias.userId === userId && worker?.alias !== undefined
+    && BigInt(savedAlias.alias.version) >= BigInt(worker.alias.version) ? savedAlias.alias : worker?.alias;
   const recent = worker !== undefined && isWorkerRecent(worker, serverMilliseconds!);
   const online = worker !== undefined && isWorkerOnline(worker, serverMilliseconds!);
   const unavailable = snapshot !== null && !recent;
@@ -112,9 +117,14 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
     <a className="worker-back-link" href="/workers" onClick={followWorkerLink}>← {m.back}</a>
     {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
     <div hidden={historyError} inert={historyError}>
-    {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div><h1 id="page-title" tabIndex={-1}>{worker.machine.name}</h1>
+    {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div><h1 id="page-title" tabIndex={-1}><bdi>{alias?.value ?? worker.machine.name}</bdi></h1>
         <div className="worker-description"><WorkerStatusBadge online={online} stale={state.stale} /><span>{platform.names[worker.platform]}</span><span>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> (<WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} />)</span></div>
-        <p className="worker-id">{m.workerId} · {worker.workerId}</p></div>{section === 'overview' && <div className="heading-actions"><WorkerRefresh refresh={refresh} refreshing={state.refreshing || monitoring.refreshing} readEnabled /></div>}</div>}
+        <p className="worker-machine-name">{m.alias.machineName}: <bdi>{worker.machine.name}</bdi></p>
+        <p className="worker-id">{m.workerId} · {worker.workerId}</p>
+        {alias !== undefined && <WorkerAliasEditor key={`${userId}/${workerId}`} workerId={workerId} resource={alias} readEnabled={readEnabled && active && !historyError} onSaved={incoming => {
+          setSavedAlias(old => old?.workerId === workerId && old.userId === userId && BigInt(old.alias.version) > BigInt(incoming.version) ? old : { workerId, userId, alias: incoming });
+          state.refresh();
+        }} />}</div>{section === 'overview' && <div className="heading-actions"><WorkerRefresh refresh={refresh} refreshing={state.refreshing || monitoring.refreshing} readEnabled /></div>}</div>}
     {(worker === undefined || unavailable) && section !== 'overview' && <div className="page-heading worker-detail-heading"><h1 id="page-title" tabIndex={-1}>{m.workerId} · {workerId}</h1></div>}
     <div className="worker-tabs" role="tablist" aria-label={m.configuration.sections}>{sections.map(value => <button key={value} type="button" role="tab" id={`${id}-tab-${value}`} data-worker-tab={value} aria-controls={`${id}-panel-${value}`} aria-selected={section === value} tabIndex={section === value ? 0 : -1} onClick={() => selectSection(value)} onKeyDown={onTabKeyDown}>{m.configuration[value]}</button>)}</div>
     <section className="worker-section" id={`${id}-panel-overview`} data-worker-panel="overview" role="tabpanel" aria-labelledby={`${id}-tab-overview`} hidden={section !== 'overview'} inert={section !== 'overview'}>

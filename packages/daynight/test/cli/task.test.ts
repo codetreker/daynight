@@ -12,6 +12,7 @@ import type { Project, Task, TaskAttachment, TaskGraph } from "../../src/api/typ
 import { actorId as observationActorId, observedFixtureResponse, withTaskObservation, withGraphObservations, workPage } from "../fixtures/task-observation.js";
 
 const executable = fileURLToPath(new URL("../../dist/main.js", import.meta.url));
+const grammarRunner = fileURLToPath(new URL("../fixtures/compiled-task-grammar.mjs", import.meta.url));
 const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
 const secondId = "b1b2c3d4-1111-4222-8333-123456789abd";
@@ -63,8 +64,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   const environment = { ...nativeEnvironment, HOME: home, USERPROFILE: home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(root, "git-global") };
   const servers: Server[] = [];
   const active = new Set<ReturnType<typeof spawn>>();
-  const start = (args: readonly string[], options: InvokeOptions = {}) => {
-    const child = spawn(process.execPath, ["--import", pathToFileURL(hook).href, executable, "task", ...args], {
+  const startProgram = (program: string, args: readonly string[], options: InvokeOptions = {}) => {
+    const child = spawn(process.execPath, ["--import", pathToFileURL(hook).href, program, ...args], {
       cwd: options.cwd ?? caller, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
       env: { ...environment, ...(options.git ? {} : { PATH: emptyPath, Path: emptyPath }), DAYNIGHT_TEST_BLOCK_IMPORTS: JSON.stringify(options.blocked ?? blockedExplicit) },
     });
@@ -85,7 +86,16 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     });
     return { child, result };
   };
+  const start = (args: readonly string[], options?: InvokeOptions) => startProgram(executable, ["task", ...args], options);
   const invoke = (args: readonly string[], options?: InvokeOptions) => start(args, options).result;
+  const invokeGrammar = async (argumentSets: readonly (readonly string[])[], blocked: readonly string[]) => {
+    const batch = await startProgram(grammarRunner, [JSON.stringify(argumentSets)], { blocked }).result;
+    expect(batch.code, batch.stderr).toBe(0);
+    expect(batch.stderr).toBe("");
+    const results = JSON.parse(batch.stdout) as Pick<Result, "code" | "stdout" | "stderr">[];
+    expect(results).toHaveLength(argumentSets.length);
+    return results;
+  };
   const serve = async (handler: (request: CapturedRequest, response: ServerResponse) => void) => {
     const requests: CapturedRequest[] = [];
     const server = createServer((request, response) => {
@@ -127,7 +137,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     }
     await rm(root, { recursive: true, force: true });
   };
-  return { root, home, caller, invoke, start, serve, git, initializeRepository, close };
+  return { root, home, caller, invoke, invokeGrammar, start, serve, git, initializeRepository, close };
 };
 
 const explicit = ["--project", projectId];
@@ -399,9 +409,8 @@ describe("compiled task commands", () => {
     const f = await fixture();
     try {
       const helpBlocked = ["/api/", "/config/", "/repository/", "/commands/server/", "/commands/task/rendering.js", "better-sqlite3"];
-      for (const args of [[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"]), ["attachment"], ["attachment", "--help"], ...["put", "list", "read", "remove"].map((name) => ["attachment", name, "--help"])]) {
-        const result = await f.invoke(args, { blocked: helpBlocked });
-        expect(result.code, result.stderr).toBe(0);
+      const checkHelp = (args: readonly string[], result: Pick<Result, "code" | "stdout" | "stderr">) => {
+        expect(result.code, `${JSON.stringify(args)}: ${result.stderr}`).toBe(0);
         expect(result.stdout).toContain("Usage: daynight task");
         expect(result.stderr).toBe("");
         if (args[0] === "list") {
@@ -410,10 +419,21 @@ describe("compiled task commands", () => {
         } else if (["ready", "show", "graph"].includes(args[0]!)) {
           expect(result.stdout).toContain("Print the complete API resource data as JSON");
         }
-      }
+      };
+      for (const args of [[], ["attachment", "put", "--help"]]) checkHelp(args, await f.invoke(args, { blocked: helpBlocked }));
+      const helpArgs = [["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"]), ["attachment"], ["attachment", "--help"], ...["list", "read", "remove"].map((name) => ["attachment", name, "--help"])];
+      (await f.invokeGrammar(helpArgs, helpBlocked)).forEach((result, index) => checkHelp(helpArgs[index]!, result));
+
       const validationBlocked = ["/api/client.js", "/api/operation.js", "/config/", "/repository/", "/commands/server/", "/commands/task/rendering.js", "better-sqlite3"];
-      for (const args of [
-        ["create"], ["create", "--title", "\u0085"], ["update", taskId],
+      const checkInvalid = (args: readonly string[], result: Pick<Result, "code" | "stdout" | "stderr">) => {
+        expect(result.code, `${JSON.stringify(args)}: ${result.stderr}`).toBe(2);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).not.toContain("Unexpected module import");
+        expect(result.stderr).not.toContain("configuration file");
+      };
+      for (const args of [["create"], ["attachment", "put", taskId, "missing.txt", "--path", "../escape"]]) checkInvalid(args, await f.invoke(args, { blocked: validationBlocked }));
+      const invalidArgs = [
+        ["create", "--title", "\u0085"], ["update", taskId],
         ["create", "--title", "Title", "--external-depends-on", "invalid"], ["update", taskId, "--external-depends-on", "invalid"],
         ["update", taskId, "--depends-on", secondId, "--external-depends-on", secondId.toUpperCase()],
         ["create", "--title", "Title", "--external-depends-on", secondId, "--external-depends-on", secondId],
@@ -430,15 +450,9 @@ describe("compiled task commands", () => {
         ["ready", "--limit", "0"], ["ready", "--limit", "101"], ["ready", "--limit=1e1"], ["ready", "--limit=1.5"], ["ready", "--limit=+1"], ["ready", "--status", "todo"],
         ...["approve", "unapprove", "claim", "complete"].flatMap((action) => [[action], [action, "invalid"], [action, taskId, "--if-version=0"], [action, taskId, "--if-version=9223372036854775808"], [action, taskId, "--status=todo"]]),
         ["attachment", "list", "invalid"], ["attachment", "list", taskId, "--tree", "--json"],
-        ["attachment", "put", taskId, "missing.txt", "--path", "../escape"],
         ["attachment", "read", taskId, "/absolute"], ["attachment", "remove", taskId, "a//b"],
-      ]) {
-        const result = await f.invoke(args, { blocked: validationBlocked });
-        expect(result.code, result.stderr).toBe(2);
-        expect(result.stdout).toBe("");
-        expect(result.stderr).not.toContain("Unexpected module import");
-        expect(result.stderr).not.toContain("configuration file");
-      }
+      ];
+      (await f.invokeGrammar(invalidArgs, validationBlocked)).forEach((result, index) => checkInvalid(invalidArgs[index]!, result));
       await expect(readdir(f.home)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readdir(f.caller)).toEqual([]);
     } finally { await f.close(); }
