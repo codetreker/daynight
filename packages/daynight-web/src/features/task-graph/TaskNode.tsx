@@ -1,3 +1,4 @@
+import { TaskNodeUsageSummary } from '../usage/UsageSummaryView';
 import '../../styles/task-status-rows.css';
 import { TaskPausedBadge, useTaskPaused } from "../task-pause/TaskPause";
 import { memo, useCallback, useId, useLayoutEffect, useRef, type FocusEvent, type MouseEvent } from 'react';
@@ -43,6 +44,7 @@ const TaskNodeContent = memo(({ task, kind, ownerLabel, execution }: Pick<TaskNo
       <span className="task-node-meta-labels">{paused && <TaskPausedBadge compact />}<TaskAgentPermissionBadge allowAgents={task.allowAgents} compact /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} compact />{execution?.overdue && <TaskExecutionWarning />}</span>
     </span>
     <span className="task-node-title">{title}</span>
+    <TaskNodeUsageSummary taskId={task.id} />
     <span className="task-node-bottom">
       <span className={`graph-status graph-status-${task.status}`}><i aria-hidden="true" />{common.status[task.status]}</span>
       {execution !== null ? <TaskExecutionDuration execution={execution} /> : task.blockedBy.length > 0 && <span className="graph-blocked-badge">{m.blocked}</span>}

@@ -1,4 +1,4 @@
-# Token 用量后端
+# Token 用量
 
 ## 职责与不变量
 
@@ -142,6 +142,23 @@ revision 不使用 Task.version 或单个最大时间代替这些事实。
 Chain 用普通依赖双向连通分量，Goal 用 parent_id 的直接普通子 Task。
 先 distinct 当前成员，排除删除，再一次关联账本；不将 Task summary 与其链二次加总。
 聚合和成员分页使用相同快照/权限/集合 revision，超过 10,000 成员确定拒绝。
+
+## Web 读取与呈现
+
+Web 的用量 API 适配与 Task codec 分离，运行时校验精确数字字符串、响应身份和
+分页边界。查询复用当前账户的 principal admission；旧账户的延迟响应不能填充
+新账户的界面。所有计量数值保留字符串，仅在格式化时使用 BigInt，不能经过 Number。
+
+Task 摘要由独立的批量读取状态分发给卡片和 Detail。相同 Project 的待查询 Task
+合并为最多一百项的请求，用量的刷新不依赖 Task.version，也不写 Task summary cache。
+能力协商先于用量查询；能力接口的 404/501 显示不支持，其他读取故障显示可重试错误。
+用量自己的读取失败不能阻断任务详情和 Session。
+
+`features/usage/` 拥有摘要、执行与来源明细。Detail 用既有的保留面板与路由机制
+承载用量页签，Card 的入口直接定位该页签。明细分开读取 execution_state 和
+measurement，过滤后重启分页，延迟的旧过滤响应被取消。明细按页替换，服务端
+游标绑定 snapshotToken；reset_required/cursor_expired 保留已读页并要求从第一页
+重读，不能悄悄把两个集合拼接。摘要和分页各自显示观察时点。
 
 ## 兼容与回退
 

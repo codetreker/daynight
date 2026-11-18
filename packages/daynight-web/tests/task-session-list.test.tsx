@@ -13,6 +13,9 @@ import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 
+// Session indicators consume retained observations without invoking usage requests.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+
 const id = (n: number) => `10000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const projectId = id(100);
 const rootId = id(1);
