@@ -297,7 +297,7 @@ func testHistoryMetadataExpiresUsingFreshTransactionClock(t *testing.T, conn *pg
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	var expiry time.Time
-	if err := f.conn.QueryRow(ctx, `UPDATE webhook_deliveries SET state='failed',metadata_expires_at=clock_timestamp()+interval '1 second' WHERE id=$1 RETURNING metadata_expires_at`, f.delivery).Scan(&expiry); err != nil {
+	if err := f.conn.QueryRow(ctx, `UPDATE webhook_deliveries SET state='failed',metadata_expires_at=clock_timestamp()+interval '600 milliseconds' WHERE id=$1 RETURNING metadata_expires_at`, f.delivery).Scan(&expiry); err != nil {
 		t.Fatal(err)
 	}
 	read := func() ([]store.WebhookDelivery, error) {
@@ -312,20 +312,7 @@ func testHistoryMetadataExpiresUsingFreshTransactionClock(t *testing.T, conn *pg
 	if err != nil || len(first) != 1 || first[0].ID != f.delivery {
 		t.Fatalf("history before expiry: %+v %v", first, err)
 	}
-	for {
-		var expired bool
-		if err = f.conn.QueryRow(ctx, `SELECT clock_timestamp() >= $1`, expiry).Scan(&expired); err != nil {
-			t.Fatal(err)
-		}
-		if expired {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	waitForWebhookExpiry(t, ctx, f.conn, expiry)
 	rows, err := read()
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("expired metadata remained in fresh history snapshot: %+v %v", rows, err)
