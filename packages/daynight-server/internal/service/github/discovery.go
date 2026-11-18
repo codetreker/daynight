@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
@@ -48,9 +49,9 @@ func summaryPull(s remote.PullSummary) githubpr.PullRequest {
 func (r *run) discover(ctx context.Context, owner, name string) error {
 	byNumber := map[int64][]remote.PullSummary{}
 	order := []int64{}
-	pages := 0
+	progress := discoveryProgress{}
+	listStage := "list"
 	truncated, err := r.remote.ListAll(ctx, *r.connection.InstallationID, owner, name, func(page []remote.PullSummary) error {
-		pages++
 		for _, s := range page {
 			if s.RepositoryID != *r.connection.RepositoryID {
 				return errors.New("github pull request base repository mismatch")
@@ -60,12 +61,18 @@ func (r *run) discover(ctx context.Context, owner, name string) error {
 			}
 			byNumber[s.Number] = append(byNumber[s.Number], s)
 		}
-		return r.pollHint(ctx, owner, name)
+		progress.pages++
+		listStage = "hint"
+		if err := r.withDiscoveryProgress(progress).pollHint(ctx, owner, name); err != nil {
+			return err
+		}
+		listStage = "list"
+		return nil
 	})
 	if err != nil {
+		r.discoveryFailure(ctx, progress, listStage, 0, err)
 		return err
 	}
-	candidates, published := 0, 0
 	for _, n := range order {
 		summaries := byNumber[n]
 		eligible := false
@@ -74,6 +81,7 @@ func (r *run) discover(ctx context.Context, owner, name string) error {
 			p := summaryPull(s)
 			facts, e := r.publicationFacts(ctx, p)
 			if e != nil {
+				r.discoveryFailure(ctx, progress, "selection", n, e)
 				return e
 			}
 			if facts.Current != nil {
@@ -87,17 +95,19 @@ func (r *run) discover(ctx context.Context, owner, name string) error {
 		if known || !eligible {
 			continue
 		}
-		candidates++
-		o, e := r.checkedDetail(ctx, owner, name, n, summaries)
+		progress.candidates++
+		o, e := r.checkedDetailWithLog(ctx, owner, name, n, summaries, r.withDiscoveryProgress(progress).log)
 		if e != nil {
 			return e
 		}
 		count, e := r.publishCount(ctx, []githubpr.Observation{o}, &r.lease.Token)
+		progress.published += count
 		if e != nil {
+			r.discoveryFailure(ctx, progress, "publish", n, e)
 			return e
 		}
-		published += count
-		if e = r.pollHint(ctx, owner, name); e != nil {
+		if e = r.withDiscoveryProgress(progress).pollHint(ctx, owner, name); e != nil {
+			r.discoveryFailure(ctx, progress, "hint", 0, e)
 			return e
 		}
 	}
@@ -105,7 +115,7 @@ func (r *run) discover(ctx context.Context, owner, name string) error {
 	if truncated {
 		result = "truncated"
 	}
-	r.log.InfoContext(ctx, "github all-state discovery", "phase", "discovery", "result", result, "pages", pages, "candidates", candidates, "published", published)
+	r.withDiscoveryProgress(progress).log.InfoContext(ctx, "github all-state discovery", "phase", "discovery", "result", result)
 	return nil
 }
 
@@ -154,6 +164,21 @@ func sameDetail(a, b githubpr.Observation) bool {
 // conflict it confirms the current-detail endpoint twice; that endpoint's
 // current-fact contract does not detect identical stale upstream responses.
 func (r *run) checkedDetail(ctx context.Context, owner, name string, n int64, summaries []remote.PullSummary) (githubpr.Observation, error) {
+	return r.checkedDetailWithLog(ctx, owner, name, n, summaries, r.log)
+}
+
+func (r *run) checkedDetailWithLog(ctx context.Context, owner, name string, n int64, summaries []remote.PullSummary, logger *slog.Logger) (result githubpr.Observation, failure error) {
+	stage := "initial"
+	defer func() {
+		attrs := []any{"phase", "detail", "stage", stage, "number", n}
+		if failure != nil {
+			attrs = append(attrs, "result", "failed")
+			attrs = append(attrs, appErrorAttributes(failure)...)
+			logger.WarnContext(ctx, "github detail check", attrs...)
+			return
+		}
+		logger.InfoContext(ctx, "github detail check", append(attrs, "result", "success")...)
+	}()
 	read := func() (githubpr.Observation, error) {
 		o, err := r.remote.PullRequest(ctx, *r.connection.InstallationID, owner, name, n)
 		if err != nil {
@@ -195,6 +220,7 @@ func (r *run) checkedDetail(ctx context.Context, owner, name string, n int64, su
 		}
 	}
 	if retry {
+		stage = "recheck"
 		again, e := read()
 		if e != nil {
 			return again, e

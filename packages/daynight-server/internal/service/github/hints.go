@@ -84,7 +84,7 @@ func (r *run) hints(ctx context.Context) error {
 func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name string, pollID *string) error {
 	// Each hint retains its own context through fetch, publication and acknowledgement.
 	job := *r
-	job.log = r.log.With("hint_id", h.RequestID, "delivery_id", h.DeliveryID)
+	job.log = r.log.With("source", "hint", "hint_id", h.RequestID, "delivery_id", h.DeliveryID)
 	r = &job
 	defer func() { delete(r.confirmed, h.Number) }()
 	ctx = r.checkpointContext(ctx)
