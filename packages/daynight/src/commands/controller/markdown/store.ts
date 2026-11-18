@@ -23,7 +23,8 @@ const clock = (now: number): number => {
 };
 
 /** Metadata and request admission survive reconnects in the owning journal. */
-export const createMarkdownSourceStore = (db: Database.Database, transactions: Transactions) => {
+export const createMarkdownSourceStore = (db: Database.Database, transactions: Transactions, options: { maxBytes?: number } = {}) => {
+  if (options.maxBytes !== undefined && (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1)) throw new Error("Invalid Markdown metadata capacity.");
   const load = (key: string): unknown => {
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
     return row ? JSON.parse(row.value) as unknown : null;
@@ -31,6 +32,10 @@ export const createMarkdownSourceStore = (db: Database.Database, transactions: T
   const save = (key: string, value: unknown): void => {
     const encoded = JSON.stringify(value);
     if (encoded === undefined) throw new Error("Markdown metadata must be JSON serializable.");
+    if (options.maxBytes !== undefined) {
+      const current = db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM image_runtime_state WHERE key LIKE 'markdown:%' AND key<>?").get(key) as { bytes: number };
+      if (current.bytes + Buffer.byteLength(encoded) > options.maxBytes) throw new Error("Markdown metadata capacity exceeded; original source was not discarded.");
+    }
     db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, encoded);
   };
   const rateState = (): RateState => {

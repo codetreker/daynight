@@ -1,5 +1,5 @@
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { parseSessionResource, parseStoredSessionResource, type SessionResource } from "../../../session/protocol.js";
 import { syncDirectory, writeDurableJson } from "../../../platform/durable-json.js";
@@ -11,6 +11,9 @@ export type PendingResource = { resource: SessionResource; data: string | null }
 export type ControlledResourceLease = { readonly path: string; readonly resource: SessionResource; read(offset: string, limit: number): Buffer; close(): void };
 const MAX_RESOURCE_BYTES = 10 * 1024 * 1024;
 const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+// Archive validation can reopen the same files while an earlier immutable
+// reader still owns its FD. Retirement must observe both owners' leases.
+const activeLeases = new Map<string, number>();
 
 type PendingContentIndex = { entries: string[]; resources: string[] };
 const readIndex = (root: string): { source: Buffer; value: PendingContentIndex } | undefined => {
@@ -69,7 +72,7 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   const indexPath = join(root, "index.json");
   validatedIndex(root);
   const resources = new Map<string, PendingResource>();
-  const leases = new Map<string, number>();
+  const leaseKey = (id: string): string => `${resolve(root)}\0${id}`;
   let recoveryNeeded = false;
   const assertWritable = (): void => { if (recoveryNeeded) throw new Error("Pending resource deletion requires recovery before further writes."); };
   const pinsPath = join(root, "resource-pins.json");
@@ -212,19 +215,19 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     assertWritable();
     const resource = resources.get(id)?.resource;
     if (!resource || resource.status !== "available") throw new Error("Local session resource is unavailable.");
-    const fd = openBlob(resource); let closed = false; leases.set(id, (leases.get(id) ?? 0) + 1);
+    const fd = openBlob(resource), key = leaseKey(id); let closed = false; activeLeases.set(key, (activeLeases.get(key) ?? 0) + 1);
     return { path: blobPath(id), resource, read(offset, limit) {
       if (closed) throw new Error("Resource lease is closed.");
       if (!/^(0|[1-9][0-9]{0,18})$/.test(offset) || BigInt(offset) > BigInt(resource.byteLength!) || !Number.isSafeInteger(limit) || limit < 1 || limit > 524288) throw new Error("Invalid local resource chunk limit.");
       const size = Math.min(limit, Number(BigInt(resource.byteLength!) - BigInt(offset))), block = Buffer.alloc(size);
       if (size && readSync(fd, block, 0, size, Number(offset)) !== size) throw new Error("Corrupt pending resource content."); return block;
-    }, close() { if (!closed) { closeSync(fd); closed = true; leases.set(id, leases.get(id)! - 1); } } };
+    }, close() { if (!closed) { closeSync(fd); closed = true; const remaining = activeLeases.get(key)! - 1; if (remaining === 0) activeLeases.delete(key); else activeLeases.set(key, remaining); } } };
   };
   const pinResource = (id: string, reference: string): void => { assertWritable(); if (!resources.has(id) || !reference) throw new Error("Invalid resource reference."); pins[id] = [...new Set([...(pins[id] ?? []), reference])]; writeDurableJson(pinsPath, pins); };
   const unpinResource = (id: string, reference: string): void => { assertWritable(); pins[id] = (pins[id] ?? []).filter(value => value !== reference); writeDurableJson(pinsPath, pins); };
   const assertResourceReleasable = (id: string): void => {
     assertWritable();
-    if ((leases.get(id) ?? 0) > 0 || (pins[id]?.length ?? 0) > 0) throw new Error("Resource has an active lease or reference.");
+    if ((activeLeases.get(leaseKey(id)) ?? 0) > 0 || (pins[id]?.length ?? 0) > 0) throw new Error("Resource has an active lease or reference.");
   };
   const releaseResource = (id: string): void => {
     assertResourceReleasable(id);

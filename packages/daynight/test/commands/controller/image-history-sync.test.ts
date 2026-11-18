@@ -12,12 +12,12 @@ import { createControllerCaptureBridge } from "../../../src/commands/controller/
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), statfsSync: vi.fn(() => ({ bavail: 0n, bsize: 4096n })) }));
 const roots: string[] = [];
 afterEach(async () => { vi.mocked(statfsSync).mockClear(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-const fixture = async (count = 1, text = "durable history") => {
+const fixture = async (count = 1, text = "durable history", historyPolicy: "legacy" | "task_body" = "legacy") => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-history-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   await writeFile(ticket.credentialFile, JSON.stringify({ token: "controller-grant-only", expiresAt: new Date(Date.now() + 900000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
-  const file = path.join(home, "journal.sqlite"), journal = openControllerLifecycleStore(file, ticket, { contentOwnedLocally: true });
+  const file = path.join(home, "journal.sqlite"), journal = openControllerLifecycleStore(file, ticket, { contentOwnedLocally: true, historyPolicy });
   journal.recordRelayHistory("opaque-current-history");
   for (let i = 0; i < count; i++) journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
   journal.acknowledgeEvents(journal.getLastSourceSequence());
@@ -40,6 +40,67 @@ const receiver = (failOnce = false) => {
   };
   return { request, rows, calls };
 };
+
+const taskBodyResponse = async (server: ReturnType<typeof receiver>, input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+  expect(new Headers(init?.headers).get("Daynight-Task-Body-History-Version")).toBe("1");
+  const response = await server.request(input, init);
+  response.headers.set("Daynight-Task-Body-History-Version", "1");
+  return response;
+};
+
+test("Task body history excludes tool content and resources while acknowledging the entire source checkpoint", async () => {
+  const f = await fixture(1, "body answer", "task_body"), server = receiver();
+  const bodyResource = randomUUID(), toolResource = randomUUID();
+  try {
+    for (const resourceId of [bodyResource, toolResource]) f.journal.appendEvent({ kind: "resource", payload: { resourceId, revision: "1", status: "pending", name: "original.png", mediaType: null, byteLength: null, sha256: null, error: null, width: null, height: null, frameCount: null } });
+    f.journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "resource", resourceId: bodyResource, label: "body image" }] });
+    const toolId = randomUUID();
+    f.journal.projectTimeline({ entryId: toolId, revision: "1", kind: "tool_call", callId: "call-1", name: "shell", input: "private command", output: [{ type: "text", text: "tool-exclusive-marker" }, { type: "resource", resourceId: toolResource, label: "tool image" }], status: "completed", truncated: false });
+    expect(f.journal.prepareImageHistorySync()).toBeNull();
+    const sourceThrough = f.journal.getLastSourceSequence(); f.journal.acknowledgeEvents(sourceThrough);
+    await syncControllerImageHistory({ ...f, request: (input, init) => taskBodyResponse(server, input, init) });
+    const bytes = [...server.rows.values()][0]!.bytes.toString(), body = JSON.parse(bytes);
+    expect(body).toMatchObject({ contentPolicy: "task_body", sourceThrough });
+    expect(body.entries.map((entry: TimelineEntry) => entry.kind)).toEqual(["assistant_message", "assistant_message"]);
+    expect(body.resources.map((resource: { resourceId: string }) => resource.resourceId)).toEqual([bodyResource]);
+    expect(bytes).not.toContain("tool-exclusive-marker"); expect(bytes).not.toContain(toolResource);
+    expect(f.journal.hasImageHistoryCheckpoint(sourceThrough)).toBe(true);
+    expect(f.journal.getTimelineEntry(toolId)).toMatchObject({ kind: "tool_call" });
+  } finally { f.journal.close(); }
+});
+
+test("Task body synchronization refuses an unsupported service before any upload", async () => {
+  const f = await fixture(1, "body", "task_body"), server = receiver();
+  try {
+    const intent = f.journal.prepareImageHistorySync()!;
+    await expect(syncControllerImageHistory({ ...f, request: server.request })).rejects.toThrow("upgrade_required");
+    expect(server.calls.map(call => call.method)).toEqual(["GET"]); expect(server.rows.size).toBe(0);
+    expect(f.journal.prepareImageHistorySync()).toEqual(intent);
+  } finally { f.journal.close(); }
+});
+
+test("Task body frozen synchronization survives unknown results and journal reopen with its original identity", async () => {
+  const f = await fixture(1, "original body", "task_body"), server = receiver();
+  const intent = f.journal.prepareImageHistorySync()!, bytes = await readFile(intent.filename);
+  let committed = false;
+  const request: typeof fetch = async (input, init) => {
+    if (committed) throw new Error("status unavailable after unknown write");
+    const response = await taskBodyResponse(server, input, init);
+    if (init?.method === "PUT") { committed = true; throw new Error("lost committed response"); }
+    return response;
+  };
+  await expect(syncControllerImageHistory({ ...f, request })).rejects.toThrow("original status observation failed");
+  f.journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "later body" }] });
+  f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); f.journal.close();
+  const journal = openControllerLifecycleStore(f.file, f.ticket, { contentOwnedLocally: true });
+  try {
+    expect(journal.prepareImageHistorySync()).toEqual(intent);
+    await syncControllerImageHistory({ ...f, journal, request: (input, init) => taskBodyResponse(server, input, init) });
+    expect(new Set(server.calls.map(call => call.id))).toEqual(new Set([intent.syncId]));
+    expect([...server.rows.values()][0]!.bytes).toEqual(bytes);
+    expect(journal.prepareImageHistorySync()?.syncId).not.toBe(intent.syncId);
+  } finally { journal.close(); }
+});
 
 test("active history uses the original grant and exact SQL history without predicting disk growth", async () => {
   const text = "x".repeat(1048576), f = await fixture(2, text), server = receiver();

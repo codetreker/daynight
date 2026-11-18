@@ -5,12 +5,12 @@ import { chmodSync, closeSync, constants, fsyncSync, lstatSync, mkdirSync, openS
 import path from "node:path";
 import type { SessionContent } from "../content/session-content.js";
 import type { TimelineEntry } from "../../../session/protocol.js";
-import { parseImageError, type ImageError } from "../../../session/image-values.js";
+import { parseImageError, type ImageError, type ImageOccurrence } from "../../../session/image-values.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
 export type ImageHistorySyncIntent = { syncId: string; historyEpoch: string; sourceThrough: string; sha256: string; byteLength: string; filename: string };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions) => {
+export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions, policy?: { contentPolicy(): string; onlineImageOccurrences(): readonly ImageOccurrence[] }) => {
   const root = `${file}.history-sync`, key = "active_history_sync", checkpoint = "active_history_checkpoint", failureKey = "active_history_failure";
   const syncDirectory = () => { if (process.platform !== "win32") { const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } } };
   const intent = (): ImageHistorySyncIntent | null => {
@@ -43,7 +43,7 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
       if (!resource) throw new Error("Controller history references a missing resource descriptor.");
       return resource;
     });
-    const body = { historyEpoch, sourceThrough: source.through, entries, resources }, bytes = Buffer.from(JSON.stringify(body));
+    const body = { ...(policy?.contentPolicy() === "task_body" ? { contentPolicy: "task_body", onlineImageOccurrences: policy.onlineImageOccurrences() } : {}), historyEpoch, sourceThrough: source.through, entries, resources }, bytes = Buffer.from(JSON.stringify(body));
     if (bytes.length > SESSION_ARCHIVE_HISTORY_MAX_BYTES) throw new Error("Controller image history exceeds its synchronization budget.");
     const syncId = randomUUID(), filename = path.join(root, `${syncId}.json`), next: ImageHistorySyncIntent = { syncId, filename, historyEpoch, sourceThrough: source.through, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") };
     writeDurableJson(filename, body);

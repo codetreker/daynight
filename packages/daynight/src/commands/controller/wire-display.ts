@@ -1,5 +1,5 @@
 import type { TimelineEntry } from "../../session/protocol.js";
-import type { SourceTimelineEntry } from "../../session/controller-protocol.js";
+import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 
 // Go's JSON encoder preserves HTML text on this transport, but still escapes
 // these two Unicode separators in typed strings. Budget for that representation
@@ -13,6 +13,12 @@ const maxDisplayEntryBytes = 1_400_000;
 export function sessionDisplayEntry(entry: TimelineEntry): TimelineEntry;
 export function sessionDisplayEntry(entry: SourceTimelineEntry): SourceTimelineEntry;
 export function sessionDisplayEntry(entry: SourceTimelineEntry): SourceTimelineEntry {
-  if (entry.kind === "interaction" || sessionWireBytes(entry) <= maxDisplayEntryBytes) return entry;
+  if (entry.kind === "interaction") return entry;
+  if (sessionWireBytes(entry) <= maxDisplayEntryBytes) {
+    // Stored originals can exceed an individual wire field's budget even when
+    // the whole entry fits the frame. Only the display copy uses wire limits.
+    try { parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: entry }); return entry; }
+    catch { /* The owning store validates the original before this projection. */ }
+  }
   return { entryId: entry.entryId, ...(entry.entrySeq === undefined ? {} : { entrySeq: entry.entrySeq }), revision: entry.revision, kind: "error", code: "display_budget_exceeded", message: "This entry exceeds the web display size limit. Its complete projected content is retained in the controller's local session journal." };
 }

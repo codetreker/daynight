@@ -50,12 +50,12 @@ const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunch
     expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
   } finally { confirm.mockRestore(); }
 };
-const fixture = async ({ finalizeStop = true, failedMarkdown = false }: { finalizeStop?: boolean; failedMarkdown?: boolean } = {}) => {
+const fixture = async ({ finalizeStop = true, failedMarkdown = false, historyPolicy = "legacy" }: { finalizeStop?: boolean; failedMarkdown?: boolean; historyPolicy?: "legacy" | "task_body" } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const journalPath = path.join(home, "journal.sqlite");
-  const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
+  const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true, historyPolicy });
   const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "durable answer" }] };
   if (failedMarkdown) {
     const projector = createMarkdownImageProjector();
@@ -75,6 +75,65 @@ const migrate = (db: Database.Database): void => {
   } finally { permit.release(); }
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
+
+test.each([false, true])("Task body archive excludes tool resources and retires online content with retryable cleanup (lease: %s)", async holdLease => {
+  const f = await fixture({ finalizeStop: false, historyPolicy: "task_body" });
+  const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const resources = ["body-image", "tool-exclusive-image"].map(name => {
+    const bytes = Buffer.from(name);
+    const resource = { resourceId: randomUUID(), name: `${name}.png`, status: "available" as const, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
+    store.saveResource(resource, bytes); return resource;
+  });
+  const bodyResource = resources[0]!, toolResource = resources[1]!, toolId = randomUUID();
+  store.projectTimeline({ ...f.entry, content: [{ type: "resource", resourceId: bodyResource.resourceId, label: "body image" }] });
+  store.projectTimeline({ entryId: toolId, revision: "1", kind: "tool_call", callId: "call-1", name: "shell", input: "private command", output: [{ type: "text", text: "tool-exclusive-marker" }, { type: "resource", resourceId: toolResource.resourceId, label: "tool image" }], status: "completed", truncated: false });
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
+  const files = resourceFiles.openResourceFiles(f.journalPath, f.ticket.sessionId);
+  const lease = holdLease ? files.acquireResource(toolResource.resourceId) : null;
+  const bodies: string[] = [], methods: string[] = [];
+  const receiver = archiveTestReceiver({ bodies, sourceThrough });
+  const request: typeof fetch = async (input, init) => {
+    methods.push(init?.method ?? "GET");
+    expect(new Headers(init?.headers).get("Daynight-Task-Body-History-Version")).toBe("1");
+    const response = await receiver.request(input, init); response.headers.set("Daynight-Task-Body-History-Version", "1"); return response;
+  };
+  const options = { ...f, serverToken: "test", request }, receiptPath = `${f.journalPath}.archive-receipt-1.json`;
+  try {
+    if (lease) {
+      const failure = await uploadStoppedControllerArchive(options).then(() => null, (error: unknown) => error);
+      expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Resource has an active lease or reference." })]));
+      expect(JSON.parse(await readFile(receiptPath, "utf8"))).toMatchObject({ state: "ready", schemaVersion: 3 });
+      expect(files.resources.has(toolResource.resourceId)).toBe(true);
+      lease.close(); methods.length = 0;
+    }
+    const receipt = await uploadStoppedControllerArchive(options);
+    expect(receipt).toMatchObject({ state: "ready", schemaVersion: 3 });
+    if (holdLease) expect(methods).toEqual(["GET"]);
+    expect(bodies).toHaveLength(1);
+    const manifest = JSON.parse(bodies[0]!);
+    expect(manifest).toMatchObject({ schemaVersion: 3, contentPolicy: "task_body" });
+    expect(manifest.resources.map((item: { resource: { resourceId: string } }) => item.resource.resourceId)).toEqual([bodyResource.resourceId]);
+    expect(receiver.entries(bodies[0]!)).toEqual([expect.objectContaining({ entryId: f.entry.entryId, kind: "assistant_message" })]);
+    for (const bytes of receiver.files.values()) expect(bytes.toString()).not.toContain("tool-exclusive");
+    const db = new Database(f.journalPath, { readonly: true });
+    try {
+      expect(db.prepare("SELECT COUNT(*) AS count FROM online_entries").get()).toEqual({ count: 0 });
+      expect(db.prepare("SELECT last_sequence=last_acknowledged AS acknowledged FROM execution").get()).toEqual({ acknowledged: 1 });
+    } finally { db.close(); }
+    const retained = resourceFiles.openResourceFiles(f.journalPath, f.ticket.sessionId);
+    expect(retained.resources.has(bodyResource.resourceId)).toBe(true); expect(retained.resources.has(toolResource.resourceId)).toBe(false);
+    expect(JSON.parse(await readFile(receiptPath, "utf8"))).toEqual(receipt);
+  } finally { lease?.close(); }
+});
+
+test("Task body archive refuses unsupported service before source-tail or content writes", async () => {
+  const f = await fixture({ historyPolicy: "task_body" }), methods: string[] = [];
+  const request: typeof fetch = async (_input, init) => { methods.push(init?.method ?? "GET"); return Response.json({ archive: emptyStatus }); };
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("upgrade_required");
+  expect(methods).toEqual(["GET"]);
+  await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("classifies complete nontruncated Markdown failure before archive IO and preserves its original source", async () => {
   const f = await fixture({ failedMarkdown: true });
   const before = await readFile(f.journalPath);
@@ -376,7 +435,7 @@ test("legacy completed SQL history migrates atomically and is readable after wor
   const original = content.timeline.get(f.entry.entryId)!;
   const db = new Database(f.journalPath); readers.push(db);
   for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*' OR name GLOB 'usage_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
-  db.exec("DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE online_entries; DROP TABLE online_totals; ALTER TABLE execution DROP COLUMN history_content_policy; DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
   migrate(db);
@@ -393,7 +452,7 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   const f = await fixture(); const db = new Database(f.journalPath); readers.push(db); const content = pending(f.journalPath, f.ticket.sessionId);
   const original = content.timeline.get(f.entry.entryId)!;
   for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*' OR name GLOB 'usage_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
-  db.exec("DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE online_entries; DROP TABLE online_totals; ALTER TABLE execution DROP COLUMN history_content_policy; DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   const originalExec=Database.prototype.exec;const fail=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this:Database.Database,sql:string){if(this===db&&sql.includes("CREATE TABLE content_index"))throw new Error("Injected content schema failure");return originalExec.call(this,sql)});
   let migrationError: unknown;

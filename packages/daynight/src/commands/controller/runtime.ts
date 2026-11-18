@@ -125,7 +125,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   const controllerProcess = await captureControllerProcessProof(ticket.launchId);
   if (bootstrapSignal.aborted) return;
   let journal: ReturnType<typeof openControllerLifecycleStore>;
-  try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true }); }
+  try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true, ...(ticket.claimId !== undefined ? { historyPolicy: "task_body" } : {}) }); }
   catch (error) { diagnostic(error); journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
   journalClosed = false; mediaClosed = false;
   own(() => { journal.close(); journalClosed = true; });

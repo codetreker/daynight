@@ -2,19 +2,21 @@
 
 ## 范围与所有者
 
-Controller journal 的唯一编号序列为 `001`–`014`，当前格式为 v14。标准化 timeline 的唯一权威是原 `journal.sqlite` 的当前行；普通发布、分页、inspection、同步、归档和资源引用判断均消费同一个 SQL 正文所有者。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务及编号数据转换。
+Controller journal 的唯一编号序列为 `001`–`015`，当前格式为 v15。标准化 timeline 的权威是原 `journal.sqlite` 的当前行。`execution.history_content_policy` 持久区分 `legacy` 与 `task_body`；正文策略把消息与在线详情分别保存，在线读取合并两者，同步及归档只消费正文。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务及编号数据转换。
 
 | 模块 | 责任 |
 |---|---|
-| `content/timeline-store.ts` | 当前正文、序号、分页、完整同步遍历与当前统计 |
+| `content/timeline-store.ts` | 正文与在线详情各自的当前行、分页、遍历、统计与容量准入 |
 | `content/resource-files.ts` | 原路径下的资源 descriptor、blob、pin、lease 与文件预算 |
-| `content/session-content.ts` | SQL 正文与资源组合；释放前核对正文与原生输入图片引用 |
+| `content/session-content.ts` | 持久策略、合并在线读取、资源引用保护与归档确认后的在线内容退休 |
 | `content/migration.ts` | 按已提交来源执行必要文件映射与 canonical 010 的原子导入 |
 | `content/maintenance.ts` | 旧读者屏障、正文退休、压缩与普通准入复核 |
 | `storage-preparation.ts` | 原 permit 下的纯格式升级、stopped-maintenance 与 writer 角色准备 |
 | `storage-metrics.ts` | 真实 SQLite 文件占用观测与压缩核对 |
 
 `sqlite/journal/010-timeline-content.sql` 是正文表、统计表、cleanup 标记与旧索引删除的唯一完整 DDL。`loadSqliteSequence` 从同一 canonical 目录发现全部步骤；journal 格式拥有者据此生成完整 schema snapshots、验证版本并执行转换。构建按原 SQL 目录复制到相同的 dist 相对路径，没有暂存副本、隔离格式工厂或运行时版本选择开关。已发布 `009-message-origins.sql` 及其来源关系保持原样。
+
+`015-online-content.sql` 新建 `online_entries`、`online_totals`，并给 execution 增加默认 `legacy` 的策略列。升级不搬移或过滤已有条目。runtime 仅在首次创建 claim 绑定的 Task execution 时选择 `task_body`；重新打开和恢复沿用已持久策略，不根据新配置重解释旧数据。普通 Test 与 Bot execution 保持兼容策略，不能从二者共用的 `testExecutionId` 推断 Bot 策略。
 
 ## 当前行与事务
 
@@ -26,17 +28,19 @@ Controller journal 的唯一编号序列为 `001`–`014`，当前格式为 v14�
 
 保存入口接受显式 `TimelineContentPolicy`：`task_body` 仅保留 `user_message` 与 `assistant_message`，`bot_detail` 和兼容默认 `legacy` 保留全部合法类型。结果为 `{contentPolicy,status}`，其中 `status` 为 `saved`、`unchanged` 或 `excluded`。这些是当前事务内的结果；调用者的外层事务仍可能回滚。被排除条目仍须满足存量条目结构及身份校验，但不进行正文 JSON 序列化、hash 或新增正文容量准入，也不写正文、统计或编号。已有同 ID 保留行不能用被排除条目覆盖，否则拒绝写入，保留原证据。此入口不迁移或清除旧历史，不通过消息文本判断工具内容。
 
-生命周期的 `saveTimelineHistory(entry, policy)` 在原 journal 写事务内调用该入口，要求调用者已分配稳定的 `entryId`、`entrySeq` 和 `revision`；它不追加 outbox、不推进 source 序号或 ACK，也不修改 `operations` 中的待确认操作。不能从筛选后的历史推导在线工具的身份或修订。现有 `projectTimeline` 经同一入口明确选择 `legacy`，因为在线重连、待审批读取、工具图片位置与资源闭包仍依赖完整 timeline。`testExecutionId` 同时用于 Bot 和普通 Test Session，不足以推断 Bot 策略。
+生命周期的 `saveTimelineHistory(entry, policy)` 在原 journal 写事务内调用该入口，要求调用者已分配稳定的 `entryId`、`entrySeq` 和 `revision`；它不追加 outbox、不推进 source 序号或 ACK，也不修改 `operations` 中的待确认操作。持久 `task_body` execution 拒绝改用另一保存策略。
 
-此模块接口不声明生产方支持 `taskBodyHistoryVersion=1`。启用正文策略须同时完成独立在线状态、重连、审批、源水位、工具资源生命周期及版本化同步和归档适配；此前不能把旧全量来源标记为 `contentPolicy=task_body`。该激活边界与成本见[保存策略决策](../../.agents/notes/implemented/architecture/2026-11-18-timeline-history-policy.md)。
+普通 `projectTimeline` 从 `onlineTimeline` 读取旧条目并分配序号、修订。`task_body` 下该组合把用户与助手消息写入 `timeline_entries`，其余合法条目写入 `online_entries`；`legacy` 下仍使用原全量正文表。两表之间的 ID、entrySeq 必须唯一，既有条目不能改变 kind；全局下一序号取两表各自下一序号的较大值。重新打开时检查表内统计、内容校验和跨表所有权冲突，错误不会自动修复。
+
+在线详情独立限制为 512 MiB 和 100000 个当前条目；正文仍为 128 MiB 和 100000 条。两者各自按完整 JSON 包络、当前行长度和逗号计费，替换只计当前版本。超额拒绝本次事务，不通过截断工具原文或驱逐待审批条目腾出容量。正文策略下 Markdown source store 使用独立的 512 MiB 限额，不能把这个限额解释成整个 journal 或媒体文件的物理空间上限。激活取舍见[Controller 正文历史决策](../../.agents/notes/implemented/architecture/2026-11-19-controller-task-body-history.md)。
 
 存量正文和资源读取复用协议的结构校验，但不套用新增输入的容量限制；普通发布仍执行完整新增写入准入。每次读取验证 JSON、id、kind、序号、revision、长度与 hash。重新打开时核对实际 COUNT/SUM 与统计；损坏暴露为错误，不重建或覆盖统计。`iterate(visitor)` 在调用者的同步读事务内耗尽 SQLite statement，不返回活跃 iterator，也不允许跨 await 保留快照。
 
 普通发布在原 immediate 写事务中规范化输入、采用已提交的 user/daynight 来源、比较当前内容、分配或保留 entrySeq、递增 revision、保存正文和 totals，并追加原 outbox；相同内容保持 no-op。Markdown projection state、原生图片接收证据、原图槽/出现位置/关联及不可变 publication receipt 与正文同事务提交。迟到回执、`patchNativeImagePart` 和 Markdown rebase 都重新读取当前行；原 operation/native 身份、unknown quarantine 与不重放原生输入的规则保持。
 
-页面、资源描述、pending interactions 与 inspection coverage 在同一短同步读事务中取得。coverage 通过 `iterate(visitor)` 检查全部历史的既有截断、投影错误和资源缺口，不建立正文 Map。完整条目使用现有 `canonicalHistoryJSON`、SHA-256、UTF-8 边界和 32 KiB 分块；每次请求重读当前行，revision/hash/长度改变返回 `content_changed`，不使用 SQL substr 切公开字节。
+页面、资源描述、pending interactions 与 inspection coverage 在同一短同步读事务中取得。在线页面、条目块、重连快照和待审批读取使用合并的 `onlineTimeline`；两表按全局 entrySeq 排序，分页保持原 before/after/tail 语义。coverage 通过 `iterate(visitor)` 检查全部在线内容的既有截断、投影错误和资源缺口，不建立正文 Map。完整条目使用现有 `canonicalHistoryJSON`、SHA-256、UTF-8 边界和 32 KiB 分块；每次请求重读当前行，revision/hash/长度改变返回 `content_changed`，不使用 SQL substr 切公开字节。
 
-资源仍由原文件拥有者管理。`openSessionContent` 的组合层在同一同步读快照中检查当前正文和 `native_input_publication_images`，再允许资源拥有者检查 lease/pin 并释放。媒体导入后的清理也使用这一受保护的资源接口。`metadataBytes()` 查询当前 SQL totals 并加 descriptor 字节，只表示逻辑元数据，不代替实际 DB/WAL/SHM 物理计量。
+资源仍由原文件拥有者管理。`openSessionContent` 的组合层在同一同步读快照中检查合并在线内容和 `native_input_publication_images`，并要求资源拥有者的 lease/pin 检查通过才允许释放。媒体导入后的清理也使用这一受保护的资源接口。`metadataBytes()` 查询两表合并的当前 SQL totals 并加 descriptor 字节，只表示逻辑元数据，不代替实际 DB/WAL/SHM 物理计量。
 
 ## 旧格式导入
 
@@ -52,7 +56,7 @@ v10 在删除旧索引前捕获已提交指针，读取对应文件，仅从正�
 
 原 `ControllerStoragePermit` 贯穿本机格式转换和维护。编号步骤及历史文件导出、导入复用真实 SQL 和文件发布操作，不申请预算、估算峰值或按普通条数、字节与剩余空间规则拒绝存量数据。纯 `upgradeControllerJournal` 只返回实际版本和 cleanup 标记，不读取业务 snapshot，也不执行维护空间检查或普通准入；实际 SQL 和文件错误仍然传播。停止观察可先完成纯升级，再按原身份读取状态。
 
-Controller 不设本地媒体或元数据累计额度，不查询卷剩余空间，也不估算未来写入或 VACUUM 峰值。准备、写入、冻结副本和维护由真实文件系统与 SQLite 操作决定结果；维护持原 permit 执行，重入保留实际已提交阶段。单条内容和协议限制仍生效。
+Controller 不设覆盖全部本地媒体或元数据的累计额度，不查询卷剩余空间，也不估算未来写入或 VACUUM 峰值。正文、在线详情与 Markdown source 的各自逻辑限额仍在普通写入时生效。准备、冻结副本和维护由真实文件系统与 SQLite 操作决定结果；维护持原 permit 执行，重入保留实际已提交阶段。单条内容和协议限制仍生效。
 
 停止维护要求原 ticket、generation、instance、持久 stopped/nativeStopped 证据及无活跃 writer。顺序为：
 
@@ -73,13 +77,25 @@ VACUUM 在原连接同步执行；执行期间将 `SQLITE_TMPDIR`、`TMPDIR`、`
 
 ## 同步、归档与连接关闭
 
-活动同步在原短同步 SQL 事务内取得 epoch、source 截止点、有序完整条目和资源描述，物化同一同步文件并持久提交原 intent 后结束事务，再等待网络。重试保留 syncId 和冻结字节；同步文件是传输材料，不是第二份会话权威。
+正文策略的 relay 在 WebSocket 握手请求中发送 `Daynight-Task-Body-History-Version: 1`，并核对 upgrade 响应同值；不支持时在发送 hello 前关闭连接并报告 `upgrade_required`，不回退到全量历史。活动同步和停止归档的 HTTP 请求也声明并逐次检查此能力。兼容 execution 不发送正文策略声明。
 
-停止归档在精确原 stopped 身份下物化完整 timeline、descriptor 和引用。schema3 manifest/timeline、资源 hash、路径及 source-tail/旧 ready receipt 对账继续沿原格式。`assertFrozen()` 新开短只读连接，核对原身份、当前 SQL 正文和 source 截止点；后续本机写阶段重新取得 permit 和角色准入。
+活动同步只在原 source 序列已全部 ACK、无 projection gap 且 history epoch 已知时准备。它在原短同步 SQL 事务内取得 epoch、完整 source 截止点、有序正文条目和正文引用资源，物化同步文件并持久提交原 intent 后结束事务，再等待网络。正文策略额外携带 `contentPolicy=task_body` 与最多 4096 个累积的 `onlineImageOccurrences`，供在线工具图片捕获校验，不携带工具文本；工具修订移除图片也保留原位置至最终结算。重试保留 syncId 和冻结字节；同步文件是传输材料，不是第二份会话权威。source 水位覆盖所有事件，不能用筛选后的正文序号替代。
+
+停止归档在精确原 stopped 身份下物化正文 timeline、descriptor 和引用；兼容 execution 保留全量内容。正文最终 history 的在线位置集合为空，schema3 manifest 显式携带 `contentPolicy=task_body`，物理文件布局不变。资源 hash、路径及 source-tail/旧 ready receipt 对账继续沿原规则。`assertFrozen()` 新开短只读连接，核对原身份、当前 SQL 正文和 source 截止点；后续本机写阶段重新取得 permit 和角色准入。wire 字段与旧读者兼容由[历史读取设计](task-session-history.md#归档与权限生命周期)拥有。
 
 原资源拥有者在冻结 SQL 快照内逐项验证 available blob；冻结对象复制 descriptor，只保留物化条目与 `Pick<ResourceFiles, "acquireResource">` 文件读取能力。每次传输一个资源时才取得 lease，通过同一 FD 比较原冻结 descriptor、完整长度及 SHA-256，然后持有该 FD 完成本资源的 status、重试和块读取，在 finally 关闭。`acquireResource` 和 lease 的 `read`/`close` 不访问 SQL；这种后续文件取得不代表新的 SQL 快照，原 pin/生命周期及新连接的 `assertFrozen()` 仍保护冻结来源。
 
 冻结对象不能保留完整可变资源组合。SQL 连接关闭后不得调用 `timeline.*`、`metadataBytes()`，也不得调用组合覆写的 `releaseResource`/`assertResourceReleasable`，这些操作均依赖当前 SQL 与引用保护。文件写入和 pin 变更不属于可跨网络等待的读取 facade。
+
+## 归档确认后的在线内容退休
+
+只有正文策略执行本地在线退休。上传方先验证服务端 `ready`、schema3、manifest SHA-256、字节数和 completeness，重新核对冻结来源，再耐久保存原 generation 的 archive receipt。已有 receipt 的重入先读取服务端现状并核对同一表示，不能仅凭本地文件存在删除在线内容。
+
+退休持原 stopped storage permit 并重新核对 execution 身份；要求 `nativeStopped=true`、`lifecycle=stopped`、`owner_pid=null` 和 `last_sequence=last_acknowledged`。清理函数还核对 Session、generation 及本地 receipt 的 ready/schema3/摘要/长度字段。正文图片与 `native_input_publication_images` 引用形成保留集合，其余资源必须先通过文件 lease/pin 准入。
+
+在线条目、online totals、非正文图片位置以及所属 Markdown projection/source/context 在同一个 immediate 事务中清理，临时启用 `secure_delete` 并在 finally 恢复原值。随后通过受保护资源接口逐项删除独占资源；共享正文和原生输入图片保持可读。有 freelist 时执行 VACUUM，再执行 `wal_checkpoint(TRUNCATE)`；busy 明确报错，不能声称物理退休完成。
+
+SQL 与资源文件删除不是一个原子事务。资源删除或压缩失败保留已提交阶段、journal 和剩余文件；重入从剩余资源重新枚举，不因在线行已清空而跳过失败资源。确认的 archive receipt 不因本地清理失败而变为未提交；清理成功也不提供服务端七天期限或本机原生恢复材料淘汰能力。
 
 ## 可观察结果与验证
 

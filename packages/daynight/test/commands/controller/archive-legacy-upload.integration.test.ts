@@ -174,9 +174,11 @@ test("invalid legacy schema is rejected before exporting and can retry after rep
 
 test.each(["active", "unknown"] as const)("archive migration rejects an %s writer before changing schema or exporting files", async owner => {
   const f = await fixture(2), bodies: string[] = [];
+  const request = vi.fn(receiver(bodies));
   inspect(f.journalPath, db => db.prepare("UPDATE execution SET owner_pid=?").run(process.pid));
   if (owner === "unknown") vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Owner status unavailable"), { code: "EPERM" }); });
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "upgrade-blocked", outcome: "rolled-back", connectionClosed: true });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ kind: "upgrade-blocked", outcome: "not-started", connectionClosed: true });
+  expect(request).not.toHaveBeenCalled();
   inspect(f.journalPath, db => {
     expect(db.pragma("user_version", { simple: true })).toBe(2);
     expect(db.prepare("SELECT owner_pid,snapshot FROM execution").get()).toEqual({ owner_pid: process.pid, snapshot: JSON.stringify(f.snapshot) });

@@ -11,12 +11,12 @@ import type { ImageDecoder } from "./media/image-decoder.js";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { canonicalSessionIntent, parseImageOccurrence, parseNativeImageSource, parseInputObservation, type ImageOccurrence, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type InputObservation, parseProviderImageCapabilities, canonicalImageJson, type ProviderImageCapabilities } from "../../session/image-values.js";
-import type { SessionCommand, TimelineEntry } from "../../session/protocol.js";
+import { parseStoredTimelineEntry, type SessionCommand, type TimelineEntry } from "../../session/protocol.js";
 import { parseStartupObservation, type StartupObservation } from "../../session/startup.js";
 import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
-import { openSessionContent, type SessionContent } from "./content/session-content.js";
+import { openSessionContent, type SessionContent, type SessionHistoryContentPolicy } from "./content/session-content.js";
 import type { TimelineContentPolicy } from "./content/timeline-store.js";
 import { assertNoOrphanTimelineSource } from "./content/migration.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteDatabaseIsMissing, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
@@ -71,12 +71,14 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
 /** The store owns a supplied connection; file also identifies its Session-bound resource files. */
-type ControllerLifecycleOptions = { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ProcessProof };
+type ControllerLifecycleOptions = { maxOutboxBytes?: number; maxOnlineBytes?: number; historyPolicy?: SessionHistoryContentPolicy; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ProcessProof };
 const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: ControllerLifecycleOptions, permit: ControllerStoragePermit) => {
   assertControllerStoragePermit(permit, file);
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
+  if (options.historyPolicy !== undefined && options.historyPolicy !== "legacy" && options.historyPolicy !== "task_body") throw new Error("Invalid Controller history policy.");
+  if (options.historyPolicy === "task_body" && (ticket.claimId === undefined || !options.contentOwnedLocally)) throw new Error("Task body history requires a locally owned Task Session.");
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: options.controllerProcess ?? null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null, startup: { state: "starting", reasonCode: "initializing" } };
   let sessionContent!: SessionContent;
   let db!: Database.Database;
@@ -122,6 +124,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (existing === undefined) {
         assertNoOrphanTimelineSource(file);
         db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
+        db.prepare("UPDATE execution SET history_content_policy=? WHERE id=1").run(options.historyPolicy ?? "legacy");
       } else {
         if (existing.owner_pid !== null) {
           try { process.kill(existing.owner_pid, 0); throw new Error("The original controller journal writer is still running."); }
@@ -146,12 +149,12 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
         db.prepare("UPDATE execution SET owner_pid=? WHERE id=1").run(process.pid);
       }
       if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
-      sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite });
+      sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite }, options.maxOnlineBytes === undefined ? {} : { maxOnlineBytes: options.maxOnlineBytes });
       if (existing === undefined && (sessionContent.timeline.totals().entryCount !== 0 || sessionContent.resourceFiles.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
     });
     initializationOutcome = "committed";
   const outbox = openControllerOutbox(db, { assertWrite: () => { assertOutboxWrites(); assertTimelineWrite(); } });
-  const markdownStore = createMarkdownSourceStore(db, { read, write: atomic });
+  const markdownStore = createMarkdownSourceStore(db, { read, write: atomic }, sessionContent.contentPolicy === "task_body" ? { maxBytes: 512 * 1024 * 1024 } : {});
   const usage = openUsageStore(db, { read, write: atomic });
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
@@ -206,24 +209,29 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   };
   // Identity and online publication belong to the caller. Excluded history must
   // not allocate source sequences or acknowledge operations on its behalf.
-  const saveTimelineHistory = (entry: TimelineEntry, policy: TimelineContentPolicy) => atomic(() => sessionContent.timeline.save(preserveTimelineAssociations(entry), policy));
+  const saveTimelineHistory = (entry: TimelineEntry, policy: TimelineContentPolicy) => atomic(() => {
+    if (sessionContent.contentPolicy === "task_body" && policy !== "task_body") throw new Error("Task history cannot adopt a different content policy.");
+    return sessionContent.timeline.save(preserveTimelineAssociations(entry), policy);
+  });
   const projectTimeline = (input: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
     const entry = preserveTimelineAssociations(input);
     const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
     void ignored; void ignoredSequence;
     const contentHash = controllerPayloadHash(content);
-    const previous = sessionContent.timeline.get(entry.entryId);
+    const previous = sessionContent.onlineTimeline.get(entry.entryId);
     const previousContent = previous ? (({ revision, entrySeq, ...value }) => { void revision; void entrySeq; return value; })(previous) : null;
     if (previousContent !== null && controllerPayloadHash(previousContent) === contentHash) return null;
     const revision = String(previous === undefined ? 1n : BigInt(previous.revision) + 1n);
-    const entrySeq = previous?.entrySeq ?? sessionContent.timeline.nextSequence();
+    const entrySeq = previous?.entrySeq ?? sessionContent.onlineTimeline.nextSequence();
     const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
-    parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
     const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
-    // The existing relay rebuilds tools and approvals from this complete source.
-    // Body-only activation requires its independent online state first.
-    saveTimelineHistory(durableEntry, "legacy");
-    return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
+    parseStoredTimelineEntry(durableEntry);
+    const display = options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload;
+    parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: display });
+    // Online details and source replay commit together; ACK never removes the
+    // original content needed by a reconnect or an outstanding approval.
+    sessionContent.onlineTimeline.save(durableEntry);
+    return appendEvent({ kind: "timeline_upsert", payload: display });
   });
   const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
     const operation = getOperation(operationId);
@@ -241,7 +249,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }
     const existing = db.prepare("SELECT operation_id,origin FROM input_message_origins WHERE entry_id=?").get(entryId) as { operation_id: string; origin: string } | undefined;
     if (existing && (existing.operation_id !== operationId || existing.origin !== origin)) throw new Error("Native message origin conflicts with its original input.");
-    const current = sessionContent.timeline.get(entryId);
+    const current = sessionContent.onlineTimeline.get(entryId);
     if (current && current.kind !== "user_message") throw new Error("Native input cannot replace another timeline kind.");
     if (!existing) {
       db.prepare("INSERT INTO input_message_origins VALUES(?,?,?)").run(entryId, operationId, origin);
@@ -250,17 +258,18 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     return entryId;
   });
   const publishTimelineSnapshot = (entry: TimelineEntry): ControllerOutboxEvent => atomic(() => {
-    const current = sessionContent.timeline.get(entry.entryId);
+    const current = sessionContent.onlineTimeline.get(entry.entryId);
     if (!current || controllerPayloadHash(current) !== controllerPayloadHash(entry)) throw new Error("Timeline publication requires its current committed content.");
     const { entrySeq, ...content } = entry;
     const payload = options.contentOwnedLocally ? { ...content, entrySeq } : content;
-    parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
-    return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
+    const display = options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload;
+    parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: display });
+    return appendEvent({ kind: "timeline_upsert", payload: display });
   });
   const registerImageOccurrence = (input: ImageOccurrence, native: NativeImageSource | null): { occurrence: ImageOccurrence; sourceSequence: string; acknowledged: boolean } => atomic(() => {
     const occurrence = parseImageOccurrence(input), nativeSource = native === null ? null : parseNativeImageSource(native);
     if (nativeSource && (nativeSource.provider !== ticket.provider || nativeSource.nativeSessionId !== getSnapshot().nativeSessionId)) throw new Error("Image occurrence belongs to another native session.");
-    const entry = sessionContent.timeline.get(occurrence.entryId);
+    const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
     if (!entry || occurrence.container === "tool_output" && (entry.kind !== "tool_call" || entry.callId !== occurrence.callId) || occurrence.container === "reasoning" && entry.kind !== "reasoning" || occurrence.container === "content" && !["user_message", "assistant_message"].includes(entry.kind)) throw new Error("Image occurrence has no durable original position.");
     const value = JSON.stringify(occurrence), source = nativeSource === null ? null : JSON.stringify(nativeSource);
     const previous = db.prepare("SELECT occurrence,native_source,source_sequence,acknowledged FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string; native_source: string | null; source_sequence: string; acknowledged: number } | undefined;
@@ -274,6 +283,19 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     db.prepare("INSERT INTO image_occurrences VALUES(?,?,?,?,?)").run(occurrence.imageId, value, source, sequence, acknowledged ? 1 : 0);
     return { occurrence, sourceSequence: sequence, acknowledged };
   });
+  const getOnlineImageOccurrences = (): ImageOccurrence[] => read(() => {
+    if (sessionContent.contentPolicy !== "task_body") return [];
+    const result: ImageOccurrence[] = [];
+    for (const row of db.prepare("SELECT occurrence FROM image_occurrences ORDER BY image_id").iterate() as Iterable<{ occurrence: string }>) {
+      const occurrence = parseImageOccurrence(JSON.parse(row.occurrence));
+      if (occurrence.container === "content") continue;
+      // Capture attempts can still refer to a previously published position
+      // after its tool entry changes. Its original identity lasts until archival.
+      result.push(occurrence);
+      if (result.length > 4096) throw new Error("Online image occurrence budget exceeded.");
+    }
+    return result;
+  });
   return {
     usage,
     markdownStore,
@@ -284,7 +306,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }),
     ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence }),
     ...createNativeImageState(db, { read, write: atomic }),
-    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }),
+    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, { contentPolicy: () => sessionContent.contentPolicy, onlineImageOccurrences: getOnlineImageOccurrences }),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
@@ -293,12 +315,12 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       const occurrence = parseImageOccurrence(input);
       const row = db.prepare("SELECT occurrence FROM image_occurrences WHERE image_id=?").get(occurrence.imageId) as { occurrence: string } | undefined;
       if (!row || canonicalImageJson(JSON.parse(row.occurrence)) !== canonicalImageJson(occurrence) || part.imageId !== occurrence.imageId) throw new Error("Native image patch has no original committed occurrence.");
-      const entry = sessionContent.timeline.get(occurrence.entryId);
+      const entry = sessionContent.onlineTimeline.get(occurrence.entryId);
       const parts = entry?.kind === "user_message" || entry?.kind === "assistant_message" ? entry.content : entry?.kind === "tool_call" ? entry.output : null;
       if (!entry || !parts || occurrence.container !== (entry.kind === "tool_call" ? "tool_output" : "content") || occurrence.callId !== (entry.kind === "tool_call" ? entry.callId : null) || parts.filter(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId).length !== 1) throw new Error("Native image patch lost its original message position.");
       const updated = parts.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value);
       projectTimeline(entry.kind === "tool_call" ? { ...entry, output: updated } : { ...entry, content: updated } as SourceTimelineEntry);
-      return sessionContent.timeline.get(entry.entryId)!;
+      return sessionContent.onlineTimeline.get(entry.entryId)!;
     }),
     providerImageCapabilities: (value: Omit<ProviderImageCapabilities, "revision">): ProviderImageCapabilities => atomic(() => {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;
@@ -364,8 +386,10 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }),
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
-    hasTimelineEntry: (entryId: string): boolean => read(() => sessionContent.timeline.has(entryId)),
-    getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => sessionContent.timeline.get(entryId)),
+    getHistoryContentPolicy: (): SessionHistoryContentPolicy => sessionContent.contentPolicy,
+    getOnlineImageOccurrences,
+    hasTimelineEntry: (entryId: string): boolean => read(() => sessionContent.onlineTimeline.has(entryId)),
+    getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => sessionContent.onlineTimeline.get(entryId)),
     projectTimeline,
     saveTimelineHistory,
     associateInputMessage,

@@ -15,7 +15,7 @@ const sequence = (value: string): bigint => {
 type ContentTransactions = { read: <T>(action: () => T) => T; write: <T>(action: () => T) => T };
 
 export const createLocalSessionContent = (store: SessionContent, sessionId: string, transactions: ContentTransactions) => {
-  const inspection = createInspectionContent(store, sessionId);
+  const inspection = createInspectionContent({ ...store, timeline: store.onlineTimeline }, sessionId);
   const resources = store.resourceFiles;
   const resourcesFor = (items: readonly TimelineEntry[]): SessionResource[] => {
     const ids = sessionArchiveReferences(items, false).resources;
@@ -39,7 +39,7 @@ export const createLocalSessionContent = (store: SessionContent, sessionId: stri
         } catch { throw new Error("Invalid local timeline cursor."); }
       }
       const ascending = query.direction === "after";
-      const selected = store.timeline.page({ direction: query.direction, pivot, limit: query.limit });
+      const selected = store.onlineTimeline.page({ direction: query.direction, pivot, limit: query.limit });
       const rows = ascending ? selected : selected.toReversed();
       const items: TimelineEntry[] = [];
       // Leave room for the envelope and resource descriptors in the WS frame.
@@ -56,13 +56,13 @@ export const createLocalSessionContent = (store: SessionContent, sessionId: stri
       if (!ascending) items.reverse();
       const first = items[0]?.entrySeq, last = items.at(-1)?.entrySeq;
       const cursor = (seq: string | undefined): string | null => seq === undefined ? null : Buffer.from(JSON.stringify([sessionId, query.historyEpoch, seq])).toString("base64url");
-      const hasBefore = first !== undefined && store.timeline.hasBefore(first);
-      const hasAfter = last !== undefined && store.timeline.hasAfter(last);
+      const hasBefore = first !== undefined && store.onlineTimeline.hasBefore(first);
+      const hasAfter = last !== undefined && store.onlineTimeline.hasAfter(last);
       return { kind: "timeline", historyEpoch: query.historyEpoch, items, resources: resourcesFor(items), beforeCursor: cursor(first), afterCursor: cursor(last), hasMoreBefore: hasBefore, hasMoreAfter: hasAfter };
     },
     pendingInteractions(): TimelineEntry[] {
       const rows: TimelineEntry[] = [];
-      store.timeline.iterate(entry => {
+      store.onlineTimeline.iterate(entry => {
         if (entry.kind === "interaction" && entry.interaction.state === "pending") rows.push(entry);
         if (rows.length > 100) throw new Error("Too many pending native interactions to synchronize safely.");
       });

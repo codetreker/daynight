@@ -12,7 +12,9 @@
 
 ## Controller 原文与来源屏障
 
-`PendingContent` 保存的原始条目和 journal 是 live 原文来源。`inspect_page` 与 `entry_chunk` 使用独立读取投影，不经过 `sessionDisplayEntry`。现有 `sourceThrough` 顺序屏障保证返回内容与确认事件边界相符，响应仍绑定完整 Controller fence 和 history epoch。
+`PendingContent` 保存的原始条目和 journal 是 live 原文来源。新建 claim 绑定的 Task execution 使用持久 `task_body` 策略，正文与在线工具分别存入 journal，两者合并提供 live 原文；旧 execution 的 `legacy` 策略不随格式升级改变。同步与归档只读正文投影，在线重连和待审批读取仍使用完整合并来源。表、预算及本地退休条件由[SQLite 内容设计](session-sqlite-content.md)拥有。
+
+`inspect_page` 与 `entry_chunk` 使用独立读取投影，不经过 `sessionDisplayEntry`。现有 `sourceThrough` 顺序屏障保证返回内容与确认事件边界相符，响应仍绑定完整 Controller fence 和 history epoch。正文 Controller 核对 WebSocket upgrade 和同步 HTTP 响应的正文历史能力，服务不支持时明确拒绝，不降级重解释已持久策略。
 
 Controller 每次连接发送 `X-Daynight-Content-Read-Version: 1`。服务端只把本次握手值绑定到成功 Connect 创建的 live connection；缺少声明为版本 0，不继承持久注册或旧连接。版本 0 只收到旧 timeline 请求；短条目可读取，显示预算占位返回 `upgrade_required`。重连的能力变化不修改 Web timeline 合同。
 
