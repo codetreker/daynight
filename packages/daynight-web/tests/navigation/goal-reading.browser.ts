@@ -3413,3 +3413,71 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await expect(dialog.getByRole('tab', { name: locale === 'en' ? 'Attachments' : '附件', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(dialog.locator('.attachment-file-selected')).toContainText('notes.txt');
 });
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal link copies from each reading surface at ${width}px in ${locale}`, async ({ page, context }) => {
+  await page.setViewportSize({ width, height: 800 });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const fixture = await install(page, locale);
+  fixture.setGoalTitle('Long Goal 标题 '.repeat(12));
+  const zh = locale === 'zh-CN';
+  const target = () => `${new URL(page.url()).origin}/projects/${projectId}/tasks/${goalId}`;
+  const surface = page.locator('.goal-detail-surface');
+  const more = () => surface.getByRole('button', { name: zh ? '更多 Goal 操作' : 'More Goal actions' });
+  const copy = () => surface.getByRole('menuitem', { name: zh ? '复制链接' : 'Copy link' });
+  const check = async (tab: string) => {
+    await surface.getByRole('tab', { name: tab, exact: true }).click();
+    await more().focus(); await page.keyboard.press('ArrowDown');
+    await expect(copy()).toBeFocused();
+    await page.keyboard.press('End'); await page.keyboard.press('Home'); await page.keyboard.press('ArrowUp');
+    await expect(copy()).toBeFocused();
+    await page.keyboard.press('Escape'); await expect(more()).toBeFocused();
+    await expect(surface).toBeVisible();
+    await more().click(); await copy().click();
+    await expect(more()).toBeFocused();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target());
+    await expect(surface.getByRole('tab', { name: tab, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(surface.locator('.task-detail-notifications').getByRole('status')).toHaveText(zh ? '已复制链接' : 'Link copied');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  };
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
+  await check(zh ? '附件' : 'Attachments');
+  await surface.getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
+  await surface.getByRole('tab', { name: zh ? '讨论' : 'Discussion', exact: true }).click();
+  const draft = surface.locator('.thread-composer textarea');
+  await draft.fill('Retained Goal draft');
+  await check(zh ? '讨论' : 'Discussion');
+  await expect(draft).toHaveValue('Retained Goal draft');
+  await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=discussion`);
+  await check(zh ? '讨论' : 'Discussion');
+  await page.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) }); });
+  await more().click(); await copy().click();
+  await expect(surface.locator('.task-detail-notifications').getByRole('alert')).toHaveText(zh ? '无法复制链接，请重试。' : 'Could not copy the link. Try again.');
+  await page.evaluate(() => { delete (navigator.clipboard as unknown as { writeText?: unknown }).writeText; });
+  await more().click(); await copy().click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target());
+  const recipient = await context.newPage();
+  await install(recipient, locale);
+  await recipient.goto(target());
+  await expect(recipient.locator('.goal-detail-surface').getByRole('tab', { name: zh ? '描述' : 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await recipient.close();
+  expect(fixture.edits()).toEqual([]); expect(fixture.statusWrites()).toEqual([]);
+});
+
+
+test('touch copies an empty terminal Goal', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4209', viewport: { width: 320, height: 800 }, hasTouch: true });
+  try {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    const page = await context.newPage();
+    const fixture = await install(page); fixture.emptyGoal(); fixture.setGoalStatusFixture('done', false);
+    await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+    const surface = page.locator('.goal-detail-surface');
+    await surface.getByRole('button', { name: 'More Goal actions' }).tap();
+    await surface.getByRole('menuitem', { name: 'Copy link' }).tap();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`http://127.0.0.1:4209/projects/${projectId}/tasks/${goalId}`);
+    await expect(surface.locator('.task-detail-notifications').getByRole('status')).toHaveText('Link copied');
+  } finally { await context.close(); }
+});

@@ -1,5 +1,6 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { ApiError } from '../src/api/client';
 import { GoalDetailSurface } from '../src/features/goal-detail/GoalDetailSurface';
 import type { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
 import { detailFixture } from './helpers/taskDetail';
@@ -19,9 +20,9 @@ let root: HTMLDivElement;
 beforeEach(() => { root = document.createElement('div'); root.id = 'root'; document.body.append(root); select.mockClear(); });
 afterEach(() => root.remove());
 
-const surface = (description: string, presentation: 'dialog' | 'page' = 'dialog', resourceUnavailable = false, detailError: unknown = null, historyGeneration = 1) => {
+const surface = (description: string, presentation: 'dialog' | 'page' = 'dialog', resourceUnavailable = false, detailError: unknown = null, historyGeneration = 1, reconciliationError: unknown = null, requiresFreshRead = false) => {
   const detail = detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', description });
-  const task = { detail, mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null }, historyGeneration,
+  const task = { detail, mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError }, historyGeneration, status: 'ready', refreshing: false, requiresFreshRead,
     canEditGoal: false, canDisplayStatus: false, canSetStatus: false, canDisplayAssignee: false, canSetAssignedTo: false,
     canDisplayDelete: false, canDelete: false, canSetTags: true, setTags: noop, reconcile: noop, assignmentUncertain: false } as unknown as ReturnType<typeof useTaskDetail>;
   return <GoalDetailSurface projectId={projectId} taskId={goalId} detail={detail} resourceState={task} snapshot={null} presentation={presentation}
@@ -81,4 +82,50 @@ it('does not carry a Goal tag draft into a new history generation', () => {
   expect(screen.queryByRole('textbox', { name: 'Tag draft' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
   expect(screen.getByRole('textbox', { name: 'Tag draft' })).toHaveValue('');
+});
+
+
+it('copies the readable Goal default URL and retires pending feedback on access loss or a new generation', async () => {
+  const pending = Promise.withResolvers<void>();
+  const write = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText: write } });
+  const view = renderWithLocale(surface(''), { locale: 'en', taskCache: true, container: root });
+  const trigger = screen.getByRole('button', { name: 'More Goal actions' });
+  expect(screen.getByRole('button', { name: /^Edit$/ })).toBeDisabled();
+  fireEvent.click(screen.getByRole('tab', { name: 'Attachments' }));
+  fireEvent.click(trigger);
+  expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  expect(write).toHaveBeenCalledExactlyOnceWith(`${window.location.origin}/projects/${projectId}/tasks/${goalId}`);
+  expect(trigger).toHaveFocus();
+  view.rerender(surface('', 'dialog', false, new Error('Temporary refresh failure')));
+  expect(screen.getByRole('button', { name: 'More Goal actions' })).toBe(trigger);
+  view.rerender(surface('', 'dialog', true));
+  expect(screen.queryByRole('button', { name: 'More Goal actions' })).toBeNull();
+  view.rerender(surface('', 'dialog', false, null, 2));
+  await act(async () => pending.resolve());
+  expect(screen.queryByText('Link copied')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'More Goal actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  expect(await screen.findByText('Link copied')).toBeVisible();
+  vi.unstubAllGlobals();
+});
+
+
+it('retires the copy action after reconciliation confirms lost access until a fresh read', async () => {
+  const pending = Promise.withResolvers<void>();
+  vi.stubGlobal('navigator', { clipboard: { writeText: vi.fn().mockReturnValue(pending.promise) } });
+  const view = renderWithLocale(surface('Goal'), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: 'More Goal actions' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
+  const denied = new ApiError('server', 403, 'forbidden', 'request');
+  view.rerender(surface('Goal', 'dialog', false, null, 1, denied, true));
+  expect(screen.queryByRole('button', { name: 'More Goal actions' })).toBeNull();
+  view.rerender(surface('Goal', 'dialog', false, null, 1, null, true));
+  expect(screen.queryByRole('button', { name: 'More Goal actions' })).toBeNull();
+  await act(async () => pending.resolve());
+  expect(screen.queryByText('Link copied')).toBeNull();
+  view.rerender(surface('Goal'));
+  expect(screen.getByRole('button', { name: 'More Goal actions' })).toBeVisible();
+  vi.unstubAllGlobals();
 });
