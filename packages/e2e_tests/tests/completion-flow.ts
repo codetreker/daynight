@@ -59,7 +59,7 @@ export const verifyCompletionFlow = async (page: Page, projectId: string, standa
   await goalCard.locator(`#project-goal-detail-${goalId}`).click();
   const dialog = page.getByRole("dialog", { name: "Completion Goal", exact: true });
   await expect(dialog.locator(`.goal-detail-meta time[datetime="${firstGoal.completedAt}"]`)).toBeVisible();
-  await expect(dialog.getByRole("tab")).toHaveText(["Description", "Attachments", "Discussion"]);
+  await expect(dialog.getByRole("tab")).toHaveText(["Description", "Attachments", "Discussion", "Usage"]);
   await expect(dialog.locator("[data-goal-task-id]")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Close task details" }).click();
   await expect(childRow.locator("time.completion-time-label")).toHaveAttribute("datetime", child.completedAt!);
