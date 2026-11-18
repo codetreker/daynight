@@ -2,56 +2,17 @@ package session
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"reflect"
 	"testing"
 
-	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
-	"github.com/google/uuid"
 )
 
 var errSessionDAO = errors.New("injected Session storage failure")
-
-type failureWriter struct {
-	store.SessionWriter
-	point string
-}
-
-func (w failureWriter) WriteSession(ctx context.Context, run func(store.SessionScope) error) (store.Completion, error) {
-	return w.SessionWriter.WriteSession(ctx, func(scope store.SessionScope) error { return run(failureScope{SessionScope: scope, point: w.point}) })
-}
-
-type failureScope struct {
-	store.SessionScope
-	point string
-}
-
-func (s failureScope) BotDAO() store.BotWriteDAO {
-	return failureBot{BotWriteDAO: s.SessionScope.BotDAO(), point: s.point}
-}
-
-type failureBot struct {
-	store.BotWriteDAO
-	point string
-}
-
-func (d failureBot) Bot(ctx context.Context, id string) (model.Bot, error) {
-	if d.point == "bot" {
-		return model.Bot{}, errSessionDAO
-	}
-	if d.point == "bot_missing" {
-		return model.Bot{}, model.ErrNotFound
-	}
-	return d.BotWriteDAO.Bot(ctx, id)
-}
 
 func TestServiceTerminalStorageFailures(t *testing.T) {
 	actor := model.Principal{Kind: model.PATCredential, UserID: "10000000-0000-4000-8000-000000000001", CredentialID: "20000000-0000-4000-8000-000000000001"}
@@ -100,41 +61,120 @@ func TestServiceTerminalStorageFailures(t *testing.T) {
 	}
 }
 
+type boundBotFailureDAO struct {
+	store.SessionDAO
+	store.BotWriteDAO
+	t         *testing.T
+	ctx       context.Context
+	sessionID string
+	bot       model.Bot
+	cause     error
+	pending   []string
+}
+
+func (s *boundBotFailureDAO) take(ctx context.Context, call string) {
+	s.t.Helper()
+	if ctx != s.ctx || len(s.pending) == 0 || s.pending[0] != call {
+		s.t.Fatalf("unexpected bound Bot call %s: same context=%v pending=%v", call, ctx == s.ctx, s.pending)
+	}
+	s.pending = s.pending[1:]
+}
+
+type boundBotFailureScope struct{ dao *boundBotFailureDAO }
+
+func (s boundBotFailureScope) SessionDAO() store.SessionDAO {
+	s.dao.take(s.dao.ctx, "SessionDAO")
+	return s.dao
+}
+
+func (s *boundBotFailureDAO) SessionBotID(ctx context.Context, id string) (*string, error) {
+	s.take(ctx, "SessionBotID")
+	if id != s.sessionID {
+		s.t.Fatalf("Session binding ID=%q, want %q", id, s.sessionID)
+	}
+	botID := s.bot.ID
+	return &botID, nil
+}
+
+func (s boundBotFailureScope) BotDAO() store.BotWriteDAO {
+	s.dao.take(s.dao.ctx, "BotDAO")
+	return s.dao
+}
+
+func (s *boundBotFailureDAO) Bot(ctx context.Context, id string) (model.Bot, error) {
+	s.take(ctx, "Bot")
+	if id != s.bot.ID {
+		s.t.Fatalf("bound Bot ID=%q, want %q", id, s.bot.ID)
+	}
+	if s.cause != nil {
+		return model.Bot{}, s.cause
+	}
+	return s.bot, nil
+}
+
+func (s *boundBotFailureDAO) LockSession(_ context.Context, id string) (store.SessionRecord, error) {
+	s.t.Fatalf("failed bound Bot lookup reached Session lock: %q", id)
+	return store.SessionRecord{}, nil
+}
+
 func TestServiceBoundBotLoadEnforcesDeletionAndStorageFailures(t *testing.T) {
-	f := newServiceFixture(t)
-	ctx := context.Background()
-	worker := f.registration.WorkerID
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now(),'{}','{}')`, f.owner.UserID, worker); err != nil {
-		t.Fatal(err)
+	actor := model.Principal{Kind: model.PATCredential, UserID: "10000000-0000-4000-8000-000000000001", CredentialID: "20000000-0000-4000-8000-000000000001"}
+	sessionID := "50000000-0000-4000-8000-000000000001"
+	executionID := "50000000-0000-4000-8000-000000000002"
+	const workerID = "80000000-0000-4000-8000-000000000001"
+	bot := model.Bot{
+		ID: "60000000-0000-4000-8000-000000000001", OwnerUserID: actor.UserID, WorkerID: workerID,
+		Name: "Assistant", Version: 3, SessionID: &sessionID, TestExecutionID: &executionID,
+		ResolvedConfiguration: model.BotConfiguration{WorkerID: workerID, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}},
 	}
-	config := model.BotConfiguration{WorkerID: worker, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}}
-	bot, err := botservice.New(f.db).Create(ctx, f.owner, botcore.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: config})
-	if err != nil {
-		t.Fatal(err)
+	deleted := bot
+	deleted.Version++
+	deleted.Deletion = &model.BotDeletion{
+		DeletionID: "70000000-0000-4000-8000-000000000001", RequestedVersion: bot.Version,
+		WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"},
 	}
-	digest := sha256.Sum256([]byte("Use Daynight CLI."))
-	input := core.BotRegistration{BotVersion: bot.Version, Configuration: config, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}}
-	bound, err := f.service.RegisterBot(ctx, f.owner, worker, bot.ID, input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, point := range []string{"bot", "bot_missing"} {
-		t.Run(point, func(t *testing.T) {
-			s := New(failureWriter{SessionWriter: f.db, point: point}, f.service.engine)
-			_, err := s.TestSnapshot(ctx, f.owner, bound.Session.SessionID)
-			if point == "bot" {
-				if !errors.Is(err, errSessionDAO) {
-					t.Fatalf("failure not returned: %v", err)
+	for _, test := range []struct {
+		name  string
+		bot   model.Bot
+		cause error
+		code  string
+	}{
+		{name: "bot", bot: bot, cause: errSessionDAO},
+		{name: "bot_missing", bot: bot, cause: model.ErrNotFound, code: "not_found"},
+		{name: "bot_deleted", bot: deleted, code: "resource_conflict"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			dao := &boundBotFailureDAO{
+				t: t, ctx: ctx, sessionID: sessionID, bot: test.bot, cause: test.cause,
+				pending: []string{"SessionDAO", "SessionBotID", "BotDAO", "Bot"},
+			}
+			checkError := func(err error) {
+				t.Helper()
+				if test.code != "" {
+					requireServiceError(t, err, test.code)
+				} else if !errors.Is(err, errSessionDAO) {
+					t.Fatalf("bound Bot storage failure lost its cause: %v", err)
 				}
-			} else {
-				requireServiceError(t, err, "not_found")
+			}
+			writes := 0
+			writer := archiveCompletionOrderWriter(func(actual context.Context, run func(store.SessionScope) error) (store.Completion, error) {
+				writes++
+				if actual != ctx || writes != 1 {
+					t.Fatalf("unexpected Bot Session transaction: same context=%v writes=%d", actual == ctx, writes)
+				}
+				err := run(boundBotFailureScope{dao: dao})
+				checkError(err)
+				outcome := store.TransactionNotCommitted
+				return store.Completion{Outcome: outcome}, &store.TransactionError{Phase: "operation", Outcome: outcome, Cause: err}
+			})
+			engine := core.NewEngine(nil)
+			t.Cleanup(func() { stopHistoryEngine(t, engine) })
+			result, err := New(writer, engine).TestSnapshot(ctx, actor, sessionID)
+			checkError(rejectPublishedSessionResult(t, result, err))
+			if writes != 1 || len(dao.pending) != 0 {
+				t.Fatalf("bound Bot read writes=%d, want 1; pending calls=%v", writes, dao.pending)
 			}
 		})
 	}
-	deletion := botservice.NewDeletions(f.db, nil, f.service.engine)
-	if _, err = deletion.DeleteBot(ctx, f.owner, bot.ID, store.DeleteBot{Version: bound.Bot.Version, DeletionID: uuid.NewString()}); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.service.TestSnapshot(ctx, f.owner, bound.Session.SessionID)
-	requireServiceError(t, err, "resource_conflict")
 }

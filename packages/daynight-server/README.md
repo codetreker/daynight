@@ -1790,7 +1790,12 @@ records the proof boundary. Session scope error and dispatch tests supply known
 credential, registration and location facts. They execute the real entry points
 and assert that a failed query stops subsequent work. The
 [Session scope failure decision](../../.agents/notes/implemented/testing/2026-11-18-session-scope-failure-tests.md)
-describes the controlled and physical proof owners.
+describes the controlled and physical proof owners. Bound Bot snapshot tests
+exercise the real deletion barrier with controlled lookup results. The
+cross-instance PostgreSQL test checks that an actual deletion prevents another
+instance from serving a snapshot. The
+[Session bound Bot decision](../../.agents/notes/implemented/testing/2026-11-18-session-bound-bot-read-tests.md)
+records the proof boundary.
 
 From this module, run the complete database-independent Session suite with:
 
