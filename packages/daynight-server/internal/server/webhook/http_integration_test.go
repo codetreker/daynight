@@ -60,6 +60,13 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	return &httpFixture{ctx: ctx, db: db, server: server}
 }
 
+func (f *httpFixture) forCase(t *testing.T) *httpFixture {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	return &httpFixture{ctx: ctx, db: f.db, server: f.server}
+}
+
 func (f *httpFixture) actor(t *testing.T) httpActor {
 	t.Helper()
 	id, session, token := uuid.NewString(), uuid.NewString(), secret.Random("dnst_")
@@ -134,10 +141,20 @@ func createFields(actor httpActor, name, url string) map[string]any {
 	return m
 }
 
+func TestHTTPConfigurationLifecycle(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	t.Run("owner_crud_and_authorization", func(t *testing.T) {
+		testHTTPPostgresOwnerCRUDAndAuthorization(t, fixture.forCase(t))
+	})
+	t.Run("configuration_byte_boundaries", func(t *testing.T) {
+		testHTTPConfigurationByteBoundaries(t, fixture.forCase(t))
+	})
+}
+
 // A01 exercises actual cookie authentication, HTTP parsing/response, service and
 // isolated PostgreSQL for both owner kinds and current Team membership.
-func TestHTTPPostgresOwnerCRUDAndAuthorization(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPPostgresOwnerCRUDAndAuthorization(t *testing.T, f *httpFixture) {
+	t.Helper()
 	admin, member, outsider := f.actor(t), f.actor(t), f.actor(t)
 	team := uuid.NewString()
 	if _, err := f.db.Pool.Exec(f.ctx, `INSERT INTO teams (id,name) VALUES ($1,'shared')`, team); err != nil {
@@ -321,8 +338,8 @@ func TestHTTPPostgresOwnerCRUDAndAuthorization(t *testing.T) {
 
 // The request, Unicode name and URL limits are independent byte boundaries.
 // This sends the exact serialized body through the authenticated production mux.
-func TestHTTPConfigurationByteBoundaries(t *testing.T) {
-	f := newHTTPFixture(t)
+func testHTTPConfigurationByteBoundaries(t *testing.T, f *httpFixture) {
+	t.Helper()
 	actor := f.actor(t)
 	base := "/api/v1/me/webhooks"
 	prefix := "https://example.test/"
