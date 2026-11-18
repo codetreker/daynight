@@ -16,6 +16,8 @@ An authenticated delivery enters the Project write transaction, which locks the 
 
 **Trust the signature snapshot for admission.** Configuration, connection and authorization can change while a delivery waits; checking those facts under the shared lock preserves their commit order.
 
+**Use the HTTP request ID as the queue token.** An HTTP identifier can be reused and need not be a UUID. A separate generated UUID preserves the queue's acknowledgement fence, while logging both identifiers retains correlation.
+
 ## Consequences
 
-Projects can record connectivity independently while unavailable or disabled PR synchronization does not enqueue work. Confirmed hints retain the existing runner's authorization and retry behavior. The independently callable receipt operation does not expose a production HTTP endpoint; the transport must authenticate the original bytes and honor its request deadline.
+Projects can record connectivity independently while unavailable or disabled PR synchronization does not enqueue work. Confirmed hints retain the existing runner's authorization and retry behavior. The independent HTTP adapter authenticates original bytes outside the transaction and honors the request deadline; it is not mounted on the production route. Its receipt log links the HTTP request ID to the distinct queue UUID used to fence acknowledgements.

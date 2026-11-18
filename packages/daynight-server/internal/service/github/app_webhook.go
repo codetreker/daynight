@@ -45,19 +45,24 @@ func (r *AppWebhookReceiver) AuthenticateAppWebhook(ctx context.Context, appID s
 	if err != nil {
 		return AppWebhookIdentity{}, err
 	}
-	if !strings.HasPrefix(signature, "sha256=") || len(signature) != len("sha256=")+sha256.Size*2 {
-		return AppWebhookIdentity{}, ErrAppWebhookUnauthenticated
-	}
-	value, err := hex.DecodeString(signature[len("sha256="):])
-	if err != nil {
-		return AppWebhookIdentity{}, ErrAppWebhookUnauthenticated
-	}
-	mac := hmac.New(sha256.New, snapshot.Secret)
-	_, _ = mac.Write(body)
-	if !hmac.Equal(value, mac.Sum(nil)) {
+	if !VerifyWebhookSignature(snapshot.Secret, body, signature) {
 		return AppWebhookIdentity{}, ErrAppWebhookUnauthenticated
 	}
 	return AppWebhookIdentity{AppID: appID, CredentialVersion: snapshot.CredentialVersion}, nil
+}
+
+// VerifyWebhookSignature authenticates the original delivery bytes using GitHub's SHA-256 signature.
+func VerifyWebhookSignature(secret, body []byte, signature string) bool {
+	if !strings.HasPrefix(signature, "sha256=") || len(signature) != len("sha256=")+sha256.Size*2 {
+		return false
+	}
+	value, err := hex.DecodeString(signature[len("sha256="):])
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(body)
+	return hmac.Equal(value, mac.Sum(nil))
 }
 
 // ReceiveAppWebhook writes once and acknowledges only a confirmed commit.

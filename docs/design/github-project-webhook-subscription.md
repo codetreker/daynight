@@ -12,7 +12,7 @@
 
 独立收件操作接受绑定项目、配置版本和仓库身份的验签快照，拒绝与目标项目不一致的快照；在 Project 写事务锁活项目和连接后重新检查配置及当前绑定、App 和 grant。配置停用或版本变化时拒绝旧快照；投递仓库或活动绑定仓库不匹配时不写入。有效 `ping`、同步关闭或 App 无法入队时的有效 PR 只更新当前配置的收件时间。连接、同步及授权均有效的 PR 同时更新订阅收件时间、原 PR Webhook 收件状态和 revision，并按项目及 PR 编号合并现有提示。数据库时间在取得连接锁后读取，避免收件时间回退。
 
-提示包含当前连接 generation、新 request ID、delivery ID 和到期时间；现有执行器按 request ID 确认，不能以旧确认删除较新的提示。收件和提示共用事务，只有确认提交才返回收件结果，未知提交不表示回滚。收件业务能力尚未挂载生产路由；签名验证和 HTTP 响应由接收入口负责。
+提示包含当前连接 generation、新 request ID、delivery ID 和到期时间；现有执行器按 request ID 确认，不能以旧确认删除较新的提示。队列 request ID 是独立生成的 UUID；收件日志同时记录 HTTP request ID 和队列 request ID，以关联请求和后续执行。收件和提示共用事务，只有确认提交才返回收件结果，未知提交不表示回滚。
 
 ## HTTP 合同
 
@@ -21,6 +21,8 @@
 `PATCH /api/v1/projects/{projectId}/github/webhook` 接受 `expectedUserId`、`version`、`enabled` 及可选的 `repositoryId`、`secret`，返回相同安全对象。`version` 必须存在，首次为 null，此后为规范的正 int64 十进制字符串；`repositoryId` 如提供则同样为规范的正 int64 十进制字符串。`enabled` 必须为布尔值，未知或重复字段以及无效 Unicode 会被拒绝。首次绑定及换库要求当前仓库 ID 和 secret；secret 是 1 至 4096 字节的有效 UTF-8。项目成员可读取安全状态，只有有效 Project 管理员可写。响应和日志不包含 secret。
 
 旧 GET 保持既有响应；生产路由接线由后续能力负责。项目连接和权限机制见[项目连接](github-app-project-connection.md)。
+
+独立接收 adapter 提供 `POST /api/v1/github/projects/{projectId}/webhook`，读取项目窄凭据快照，以原始正文验证 `X-Hub-Signature-256`，再解析 `ping` 和 `pull_request` 并调用该项目的收件操作。正文上限为 25 MiB，请求预算为 8 秒。确认收件返回 202，已验签但无关或仓库不匹配返回 204；未配置或停用返回 404，签名失败返回 401，相关事件正文无效返回 400，超限返回 413，状态变化、期限到期或提交失败及未知返回 503。签名、secret 和正文不进入日志。生产路由尚未挂载接收入口。
 
 ## 项目设置界面
 
