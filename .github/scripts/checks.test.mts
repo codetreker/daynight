@@ -12,6 +12,30 @@ const gate = jobs.get("checks")!;
 const required = gate.match(/^    needs: \[([^\]]+)\]$/m)![1]!.split(", ");
 const command = gate.match(/^        run: (.+)$/m)![1]!;
 
+test("workflow concurrency isolates each main run and supersedes only the same PR", () => {
+  const mainRef = "refs/heads/main";
+  const groupExpression = "${{ github.workflow }}-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}-{1}', github.sha, github.run_id) || '' }}";
+  const policies = [workflow, shellBrowserWorkflow].map((source) => {
+    const name = source.match(/^name: (.+)$/m)![1]!;
+    const group = source.match(/^  group: (.+)$/m)![1]!;
+    assert.equal(group, groupExpression);
+    assert.match(source, /^  cancel-in-progress: \$\{\{ github.ref != 'refs\/heads\/main' \}\}$/m);
+    return name;
+  });
+  // The asserted expression renders the main-only suffix using the full SHA and run ID.
+  const group = (name: string, ref: string, sha: string, runId: number) =>
+    `${name}-${ref}${ref === mainRef ? `-${sha}-${runId}` : ""}`;
+  const shas = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
+  for (const name of policies) {
+    const mainRuns = shas.map((sha, i) => group(name, mainRef, sha, i + 1));
+    assert.equal(new Set(mainRuns).size, 3);
+    assert.notEqual(group(name, mainRef, shas[0]!, 1), group(name, mainRef, shas[0]!, 4));
+    assert.equal(group(name, "refs/pull/42/merge", shas[0]!, 1), group(name, "refs/pull/42/merge", shas[1]!, 2));
+    assert.notEqual(group(name, "refs/pull/42/merge", shas[0]!, 1), group(name, "refs/pull/43/merge", shas[0]!, 1));
+  }
+  assert.notEqual(group(policies[0]!, mainRef, shas[0]!, 1), group(policies[1]!, mainRef, shas[0]!, 1));
+});
+
 test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
