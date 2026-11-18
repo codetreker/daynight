@@ -100,12 +100,17 @@ func TestTaskBodyOnlineOccurrenceRequiresCurrentActiveCheckpoint(t *testing.T) {
 type onlineImageRetirementDAO struct {
 	store.SessionDAO
 	store.SessionResourceDAO
-	capture store.SessionCaptureRecord
-	upload  store.SessionUploadRecord
-	count   int
-	failure error
-	removed []store.SessionResourceReference
-	saved   []store.SessionUploadRecord
+	capture       store.SessionCaptureRecord
+	upload        store.SessionUploadRecord
+	count         int
+	failure       error
+	removeFailure error
+	countFailure  error
+	uploadFailure error
+	saveFailure   error
+	uploadReads   int
+	removed       []store.SessionResourceReference
+	saved         []store.SessionUploadRecord
 }
 
 func (d *onlineImageRetirementDAO) SessionCaptureByImage(context.Context, string, string) (store.SessionCaptureRecord, error) {
@@ -113,17 +118,18 @@ func (d *onlineImageRetirementDAO) SessionCaptureByImage(context.Context, string
 }
 func (d *onlineImageRetirementDAO) RemoveSessionResourceReference(_ context.Context, ref store.SessionResourceReference) error {
 	d.removed = append(d.removed, ref)
-	return nil
+	return d.removeFailure
 }
 func (d *onlineImageRetirementDAO) SessionResourceReferenceCount(context.Context, string, string) (int, error) {
-	return d.count, nil
+	return d.count, d.countFailure
 }
 func (d *onlineImageRetirementDAO) SessionUpload(context.Context, string, string) (store.SessionUploadRecord, error) {
-	return d.upload, nil
+	d.uploadReads++
+	return d.upload, d.uploadFailure
 }
 func (d *onlineImageRetirementDAO) SaveSessionUpload(_ context.Context, value store.SessionUploadRecord) error {
 	d.saved = append(d.saved, value)
-	return nil
+	return d.saveFailure
 }
 
 func TestTaskBodyRetiresOnlyUnsharedCommittedImageReferences(t *testing.T) {
@@ -171,6 +177,154 @@ func TestTaskBodyRetirementWaitsForCapturesAndPreservesBodyPin(t *testing.T) {
 			}
 			if len(d.removed) != 0 || len(d.saved) != 0 {
 				t.Fatal(d.removed, d.saved)
+			}
+		})
+	}
+}
+
+func TestTaskBodyRetirementRejectsConflictingEvidenceAndPropagatesFailures(t *testing.T) {
+	for _, scenario := range []string{"occurrence", "missing-resource", "remove", "count", "upload", "wrong-blob", "pending-upload", "released", "save"} {
+		t.Run(scenario, func(t *testing.T) {
+			id, resource := uuid.NewString(), uuid.NewString()
+			callID := "tool"
+			position := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "tool_output", CallID: &callID, SourceKey: "original"}
+			d := &onlineImageRetirementDAO{capture: store.SessionCaptureRecord{Request: sp.ImageCaptureRequest{Occurrence: position}, Receipt: sp.ImageCaptureReceipt{State: "committed", ResourceID: &resource, AttemptID: uuid.NewString()}}, upload: store.SessionUploadRecord{BlobID: resource, Receipt: sp.ImageUploadReceipt{State: "complete"}}}
+			failure := errors.New("retirement storage failed")
+			wantRemoved, wantReads, wantSaved := 1, 1, 0
+			storageFailure := false
+			switch scenario {
+			case "occurrence":
+				d.capture.Request.Occurrence.SourceKey = "changed"
+				wantRemoved, wantReads = 0, 0
+			case "missing-resource":
+				d.capture.Receipt.ResourceID = nil
+				wantRemoved, wantReads = 0, 0
+			case "remove":
+				d.removeFailure, storageFailure, wantReads = failure, true, 0
+			case "count":
+				d.countFailure, storageFailure, wantReads = failure, true, 0
+			case "upload":
+				d.uploadFailure, storageFailure = failure, true
+			case "wrong-blob":
+				d.upload.BlobID = uuid.NewString()
+			case "pending-upload":
+				d.upload.Receipt.State = "receiving"
+			case "released":
+				d.upload.Receipt.State = "released"
+			case "save":
+				d.saveFailure, storageFailure, wantSaved = failure, true, 1
+			}
+			r := &record{Snapshot: sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: id}}}}
+			err := (&Execution{}).retireOnlineImageReferences(t.Context(), &operationTx{dao: d}, r, []sp.ImageOccurrence{position}, nil)
+			if scenario == "released" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if storageFailure {
+				if !errors.Is(err, failure) {
+					t.Fatal(err)
+				}
+			} else {
+				var f *model.Fault
+				if !errors.As(err, &f) || f.Code != "archive_conflict" {
+					t.Fatal(err)
+				}
+			}
+			if len(d.removed) != wantRemoved || d.uploadReads != wantReads || len(d.saved) != wantSaved {
+				t.Fatal(d.removed, d.uploadReads, d.saved)
+			}
+			if len(d.removed) != 0 && d.removed[0] != (store.SessionResourceReference{SessionID: id, ResourceID: resource, Kind: "message", ReferenceID: position.ImageID}) {
+				t.Fatal(d.removed)
+			}
+			if len(d.saved) != 0 && (d.saved[0].Receipt.State != "released" || d.saved[0].Receipt.Resource != nil || d.saved[0].Receipt.Error != nil) {
+				t.Fatal(d.saved)
+			}
+		})
+	}
+}
+
+func TestTaskBodyLedgerRequiresExactClosureAndDistinctImageOwnership(t *testing.T) {
+	for _, scenario := range []string{"epoch", "source", "missing-descriptor", "wrong-descriptor", "duplicate-image", "online-image-collision", "distinct-online-image"} {
+		t.Run(scenario, func(t *testing.T) {
+			imageID, resourceID := uuid.NewString(), uuid.NewString()
+			entry := taskBodyEntry(t, "3")
+			entry.Data["content"] = encode([]any{map[string]any{"type": "image", "imageId": imageID, "resourceId": resourceID}})
+			h := sp.ArchiveHistoryContent{ContentPolicy: "task_body", HistoryEpoch: "epoch", SourceThrough: "7", Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{{ResourceID: resourceID}}}
+			switch scenario {
+			case "epoch":
+				h.HistoryEpoch = "other"
+			case "source":
+				h.SourceThrough = "6"
+			case "missing-descriptor":
+				h.Resources = nil
+			case "wrong-descriptor":
+				h.Resources[0].ResourceID = uuid.NewString()
+			case "duplicate-image":
+				h.Entries = append(h.Entries, entry)
+			case "online-image-collision", "distinct-online-image":
+				if scenario == "distinct-online-image" {
+					imageID = uuid.NewString()
+				}
+				h.OnlineImageOccurrences = []sp.ImageOccurrence{{ImageID: imageID, EntryID: uuid.NewString(), Container: "reasoning", SourceKey: "source"}}
+			}
+			ledger, err := makeArchiveLedger(h, "epoch", 7)
+			if scenario == "distinct-online-image" {
+				if err != nil || len(ledger.Occurrences) != 1 || len(ledger.OnlineImageOccurrences) != 1 || ledger.Resources[0].ResourceID != resourceID {
+					t.Fatal(ledger, err)
+				}
+			} else {
+				var f *model.Fault
+				if !errors.As(err, &f) || f.Code != "archive_conflict" {
+					t.Fatal(ledger, err)
+				}
+			}
+		})
+	}
+}
+
+func TestTaskBodyActiveHistoryPreservesOnlineImageAuthority(t *testing.T) {
+	for _, scenario := range []string{"retained", "removed", "changed", "policy"} {
+		t.Run(scenario, func(t *testing.T) {
+			op, d, r, writer := activeHistoryFixture(t)
+			r.Snapshot.ClaimID, r.Snapshot.TestExecutionID = uuid.NewString(), ""
+			writer.Fence = r.Snapshot.ControllerFence
+			r.Live = newLive(r.Snapshot)
+			op.execution.archiveRun = func(ctx context.Context, principal model.Principal, _, _, id string, _ bool, work func(*Access) error) error {
+				if principal != op.principal || id != op.id {
+					t.Fatal("wrong history scope")
+				}
+				return work(&Access{tx: &operationTx{dao: d}, record: r, task: task{Status: "in_progress", Worker: &model.WorkerClaim{ClaimID: r.Snapshot.ClaimID, State: model.WorkerActive, AgentControlMode: model.AgentControlModeWeb}}})
+			}
+			callID := "tool"
+			position := sp.ImageOccurrence{ImageID: uuid.NewString(), EntryID: uuid.NewString(), Container: "tool_output", CallID: &callID, SourceKey: "original"}
+			h := sp.ArchiveHistoryContent{ContentPolicy: "task_body", HistoryEpoch: r.Snapshot.HistoryEpoch, SourceThrough: decimal(r.SourceSeq), Entries: []sp.TimelineEntry{taskBodyEntry(t, "3")}, Resources: []sp.Resource{}, OnlineImageOccurrences: []sp.ImageOccurrence{position}}
+			put := func(h sp.ArchiveHistoryContent) error {
+				body := encode(h)
+				_, err := op.PutHistoryLedger(t.Context(), writer, uuid.NewString(), 0, int64(len(body)), archiveDigest(body), archiveDigest(body), body)
+				return err
+			}
+			if err := put(h); err != nil {
+				t.Fatal(err)
+			}
+			before := append([]byte(nil), d.bundle.Ledger...)
+			r.SourceSeq++
+			h.SourceThrough = decimal(r.SourceSeq)
+			switch scenario {
+			case "removed":
+				h.OnlineImageOccurrences = nil
+			case "changed":
+				h.OnlineImageOccurrences[0].SourceKey = "changed"
+			case "policy":
+				h.ContentPolicy = ""
+			}
+			err := put(h)
+			if scenario == "retained" {
+				var ledger archiveLedger
+				if err != nil || json.Unmarshal(d.bundle.Ledger, &ledger) != nil || ledger.SourceThrough != "8" || len(ledger.OnlineImageOccurrences) != 1 {
+					t.Fatal(ledger, err)
+				}
+			} else if err == nil || !jsonEqual(before, d.bundle.Ledger) {
+				t.Fatal("rejected checkpoint replaced image authority", err)
 			}
 		})
 	}
