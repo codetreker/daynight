@@ -2,6 +2,14 @@
 
 [需求](../spec/bot-session-view.md)定义助手阅读、输入、稳定切换及清理结果；[共享 Session 设计](task-session-protocol.md)拥有 renderer、reducer、操作回执与阅读 hook。[管理页设计](bot-management-web.md)拥有列表、创建、统一标题的页面组合及详情布局。助手呈现通过可选插槽消费共享控件，不建立第二套聊天状态或 Provider 操作。
 
+## 版本化近期窗口
+
+[近期历史窗口合同](../spec/bot-session-view.md#近期历史窗口合同)定义 `botHistoryWindowVersion=1`。以下共享呈现、绑定和持久快照机制描述既有实现；窗口协议须由服务端、Controller 和客户端协商后接入，不将现有完整历史悄然改为可淘汰缓存。Controller 的 500 条／16 MiB、首屏 50 条是未测量初值，浏览器继续使用自身更小的驻留、快照和序列化预算。
+
+窗口接入由真实历史客户端核验 Session fence、`historyEpoch`、`windowRevision` 和保留边界，再将同 ID 修订合并进当前行。已接纳的 `retainedFromSeq` 同时约束真实行、只读预览和资源引用；低水位之前的行不能由迟到修订或持久快照重新补回。过旧游标的 `reset_required` 触发近期页重建，不能伪造完整空历史或无限查找已淘汰书签。当前窗口之外的原文与裁剪预览必须区分，不向已淘汰字节提供下载或完整正文引用。
+
+浏览器 codec 在既有 UTF-16 序列化上限之外计量窗口预览的 UTF-8 字节，保留正文、工具预览及摘要的省略事实。客户端的窗口淘汰不得清理操作、审批、同步证据或 Provider 恢复资料。服务端资源回收等待最后引用和在途读者释放；浏览器预览仍只保存描述符。新设备遇到离线 Worker 时只显示获准的机器定位和缓存不可用，不从服务端同步检查点推断离线正文可读。
+
 ## 呈现接口与责任
 
 [`session-presentation-slots.ts`](../../packages/daynight-web/src/features/task-agent-session/session-presentation-slots.ts)定义 `SessionPresentationSlots`，由 `SessionView.presentation` 接收。全部 render 回调返回 `ReactNode`，字段为 readonly。
@@ -33,7 +41,7 @@
 
 ## 阅读样式与空对话
 
-[`bot-session.css`](../../packages/daynight-web/src/features/bots/bot-session.css)将共享内容覆盖限定在 `.bot-session-pane .session-presentation-assistant`；欢迎组件使用独立 `bot-conversation-*` 类。阅读列和输入内容上限为 760px。正文 16px、行高 1.8，用户气泡按内容收缩、靠右且不超过列宽的 85%，助手正文直接使用共享安全 Markdown。同一 `.session-presentation-assistant` 元素提供 `container: bot-reading native-select-region / inline-size`，保留阅读样式的容器名称并供公共选择控件查询。`bot-reading` 实际容器宽度不超过 600px 时，正文为 15px、阅读区左右留白 18px。代码、表格沿用共享局部滚动，普通工具输出保持原文，长链接、资源名称及错误在列内换行；任务链接不产生额外业务查询。
+[`bot-session.css`](../../packages/daynight-web/src/features/bots/bot-session.css)将共享内容覆盖限定在 `.bot-session-pane .session-presentation-assistant`；欢迎组件使用独立 `bot-conversation-*` 类。阅读列和输入内容上限为 760px。正文 16px、行高 1.8，用户气泡按内容收缩、靠右且不超过列宽的 85%，助手正文直接使用共享安全 Markdown。同一 `.session-presentation-assistant` 元素提供 `container: bot-reading native-select-region / inline-size`，保留阅读样式的容器名称并供公共选择控件查询。`bot-reading` 实际容器宽度不超过 600px 时，正文为 15px、阅读区左右留白 18px。代码、表格沿用共享局部滚动，既有完整工具条目保持原文，版本化窗口条目按其省略事实显示预览；长链接、资源名称及错误在列内换行；任务链接不产生额外业务查询。
 
 输入对齐使用共享 `useSessionColumnLayout`，测量 Timeline 内容相对 Composer 内边框的左右距离，写入 `--session-column-left/right`，包括真实滚动条占位。ResizeObserver 在下一帧更新；隐藏 pane 的零宽测量被忽略，恢复可见后继续测量。单独设置相同 max-width 不足以保证对齐。Bot 阅读区使用零 flex basis 为输入和菜单让出高度；高度与横向测量均不改变阅读身份或触发另一个分页机制。
 
