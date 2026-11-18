@@ -27,6 +27,8 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 import { statesForSummaries } from './helpers/taskSync';
 import { listProjectTags, resolveProjectTags } from '../src/api/task-tags';
 import { ApiError } from '../src/api/client';
+import { installGraphMeasurements } from './graph-measurements';
+import { ProjectListGraphHost } from '../src/features/task-graph/ProjectListGraphHost';
 
 vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
 beforeEach(() => {
@@ -63,6 +65,41 @@ const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it.each(['en', 'zh-CN'] as const)('opens an empty Goal from its graph header through the graph reading action in %s', locale => {
+    installGraphMeasurements();
+    const value = snapshot([empty]);
+    const openGraphTask = vi.fn(), openTask = vi.fn(), close = vi.fn();
+    const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    const view = createLocaleRender(locale, { taskCache: true })(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+      <GoalList projectId={projectId} index={value.index} summaries={value.summaries} goals={[empty]} total={1} workerMachines={value.workerMachines}
+        onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={openGraphTask} onOpenListTask={noop} onOpenListChain={noop}
+        openGraphTarget={{ kind: 'goal', goalId: empty.id }} onCloseChain={close} onOpenTask={openTask} graphError={new Error('Refresh failed')} />
+    </TaskExecutionClockProvider></TaskPauseProvider>, { container: root });
+    try {
+      const dialog = screen.getByRole('dialog');
+      const details = within(dialog).getByRole('button', { name: locale === 'en' ? 'Goal details' : 'Goal 详情' });
+      expect(details).toHaveAttribute('type', 'button');
+      expect(details).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(details.closest('header')).toBeInTheDocument();
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(locale === 'en' ? 'Refresh failed' : '刷新失败');
+      fireEvent.click(details);
+      expect(openGraphTask).toHaveBeenLastCalledWith(empty.id, details);
+      fireEvent.click(dialog.querySelector<HTMLButtonElement>('.graph-fullscreen-toggle')!);
+      expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
+      fireEvent.click(details);
+      expect(openGraphTask).toHaveBeenCalledTimes(2);
+      expect(openTask).not.toHaveBeenCalled(); expect(close).not.toHaveBeenCalled();
+      view.rerender(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+        <ProjectListGraphHost projectId={projectId} index={value.index} summaries={value.summaries} target={{ kind: 'goal', goalId: empty.id }}
+          onOpenTask={openTask} onOpenChain={noop} onClose={close} onRestoreFocus={noop} />
+      </TaskExecutionClockProvider></TaskPauseProvider>);
+      const chainViewDetails = within(screen.getByRole('dialog')).getByRole('button', { name: locale === 'en' ? 'Goal details' : 'Goal 详情' });
+      fireEvent.click(chainViewDetails);
+      expect(openTask).toHaveBeenCalledWith(empty.id, chainViewDetails);
+      expect(close).not.toHaveBeenCalled();
+    } finally { view.unmount(); root.remove(); }
+  });
+
   it.each(['en', 'zh-CN'] as const)('copies each readable Goal ID with localized feedback in %s without toggling or opening it', async locale => {
     let reject!: (error: Error) => void;
     const write = vi.fn().mockReturnValueOnce(new Promise<void>((_resolve, fail) => { reject = fail; })).mockResolvedValue(undefined);

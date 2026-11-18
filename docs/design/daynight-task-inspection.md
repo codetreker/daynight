@@ -39,6 +39,8 @@ ProjectPage 持有当前图资源的 `projectGraphWitness`、详情资源和列�
 
 专属布局按全部真实边的弱连通组件分组，以最长前置深度分层，层内网格换行，并按画布比例将组件矩形装箱；关联组件局部规划真实路线后连同节点平移，避免跨组件重新路由。空图不计算 bounds，异常输入和布局失败显式显示并可重试。首次等待已挂载画布报告非零尺寸，以完整几何计算 0.8–1 的可读视口；放不下的轴从左或顶部留 32 物理像素开始。工具栏和画布控件共用受控全图动作，按当前尺寸重新布局并完整适应，最小缩放允许完整 fit。布局请求由节点角色、边端点、分类和方向决定；真实拓扑变化重新计算几何，但同一 Goal 的 framing 身份不随布局请求变化，因此后台更新不重置视口；相同数据、状态变化、详情、全屏和被动 resize 保留几何与视口。首次挂载、Goal 身份变化或显式方向／适应操作决定 framing；零节点不执行 fit，也不重置已应用 framing 的状态。
 
+`GoalGraphDialog` 页头使用独立右侧操作列，将关闭按钮置顶、次要样式的“Goal 详情 / Goal details”按钮放在右下方及工具栏上方。普通与全屏共享该结构；标题列可收缩换行，操作列保留完整控件及焦点空间。详情按钮声明 `type="button"` 和 `aria-haspopup="dialog"`，文案取 `workspace.goals.details`，调用 `onOpenTask(goalId, event.currentTarget)`。`ProjectListGraphHost` 沿列表 Goal 回调或任务链宿主的既有回调进入 `ProjectPage` 图内读取路径，保留 `projectGraphWitness`，由 `TypedDetail` 读取实际 Goal 并打开既有详情；实际按钮成为回焦目标。该入口不依赖成员数或图同步成功，且不挂载到普通链或嵌入式图；权限、失败、草稿保护、历史与 Escape 继续由现有读取及 overlay owner 承担。
+
 `GoalGraphDialog` 使用共享弹窗外壳及项目已有 Clock/Pause provider，图内显示后台同步错误和重试，同时保留有效内容。项目图 target 由显示摘要中的资源类型决定：Goal 可以为空或在筛选/分页之外，Task witness 仍解析为多成员普通链。history 只保存 UUID；Goal 卡片打开详情时保留同一个图和 witness。内容历史退休时，`useProjectHistory` 在同一次渲染仅为同一用户、项目、scope 与已提交当前条目的已显示 Goal 保留分区、类别和 witness，清除详情及其子层；布局 effect 将该选择绑定当前代际。独立撤权计数确保 accessRevoked 与 historyChanged 同批或先后发生时都不能沿用旧选择；主体冲突、scope 失效或项目切换同样不保留。历史条目继续退休，已准入的关闭、切页和前进后退立即生效，不因快照到达自动打开或抢焦点。新当前快照确认 Goal 不存在时关闭图；成员数为零则同一弹窗及画布宿主保留，显示空态。最后一次显示的投影仅用于持续呈现，不能授权旧详情、读取或写入；准入机制由[任务同步设计](daynight-task-sync.md#6-投影时钟与详情)拥有。入口和来源焦点的所有权见 [Web 设计](daynight-web.md#项目详情-projectsprojectid)，范围及阅读要求见 [Goal 需求](../spec/daynight-goals.md#goal-整体依赖图)，共享卡片动作的取舍见[Goal 图检查决策](../../.agents/notes/implemented/feature/2026-11-15-goal-graph-inspection.md)。
 
 ## 完整依赖与可见交互
