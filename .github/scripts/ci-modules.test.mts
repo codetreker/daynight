@@ -56,7 +56,7 @@ for (const [path, expected] of [
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true, api: true, e2e: true }],
   ["packages/daynight-server/cmd/daynight-server/main.go", { ...none, server: true, api: true, e2e: true }],
   ["packages/daynight-server/api/v1/model.go", { ...none, server: true, api: true, e2e: true }],
-  ["packages/daynight-server/internal/core/store/postgres/migrations/001.sql", { ...none, server: true, api: true, e2e: true }],
+  ["packages/daynight-server/internal/core/store/postgres/schema/migrations/001_projects.sql", { ...none, server: true, api: true, e2e: true }],
   ["packages/daynight-server/go.mod", { ...none, server: true, api: true, e2e: true }],
   ["packages/daynight-server/go.sum", { ...none, server: true, api: true, e2e: true }],
   ["packages/daynight-server/internal/server/tasks_test.go", { ...none, server: true, api: true }],
