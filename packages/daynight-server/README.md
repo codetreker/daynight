@@ -1819,6 +1819,13 @@ PostgreSQL tests retain persisted grant updates, visibility after removal,
 concurrent writers, and rollback. The [Project grant actor decision](../../.agents/notes/implemented/testing/2026-11-18-project-grant-actor-tests.md)
 records the proof boundary.
 
+Project transfer tests use controlled scopes for preflight, cancellation,
+missing targets and exhausted versions. They execute the real transfer rules,
+including confirmed same-team saves at the version limit. Real PostgreSQL
+tests retain cross-team transfer, persisted access changes and rollback.
+The [Project transfer boundary decision](../../.agents/notes/implemented/testing/2026-11-18-project-transfer-boundary-tests.md)
+records the proof boundary.
+
 Project settings cancellation tests run the Service transaction callback and Core
 rules over controlled DAO results. Callback errors and transaction completion
 are supplied independently so a failed completion can suppress a result or
