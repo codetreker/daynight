@@ -33,6 +33,7 @@ import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket }
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
 import { confirmControllerProcessesStopped, type ProcessProof } from "./process-proof.js";
 import type { ControllerJobLease } from "./windows-job.js";
+import { verifyWindowsRebootProof, type WindowsRebootProof } from "./reboot-proof.js";
 export type ControllerSnapshot = SessionBinding & {
   executionId: string; sessionId: string; executionGeneration: string; controllerInstanceId: string;
   lifecycle: "starting" | "ready" | "working" | "stopping" | "stopped" | "paused" | "failed";
@@ -579,7 +580,7 @@ export const readProvenWindowsStoppedControllerGeneration = (file: string, ticke
 };
 
 /** Only an independent worker may commit complete process-tree stop after the writer exits. */
-export type ControllerStopOptions = { permit?: ControllerStoragePermit; signal?: AbortSignal; deadline?: number; jobLease?: ControllerJobLease };
+export type ControllerStopOptions = { permit?: ControllerStoragePermit; signal?: AbortSignal; deadline?: number; jobLease?: ControllerJobLease; rebootProof?: WindowsRebootProof };
 const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTicket, options: ControllerStopOptions, permit: ControllerStoragePermit): Promise<ControllerSnapshot> => {
   assertControllerStoragePermit(permit, file);
   const { deadline, jobLease: lease } = options;
@@ -618,8 +619,12 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
     try { validateWindowsControllerStopProof(observed, ticket, observedRow!.ticketHash); remaining(); return observed; }
     catch (error) { return failedAtDeadline(error, "not-started", true); }
   }
-  if (process.platform === "win32" && lease === undefined) throw new Error("Windows Job stop proof and original Job lease are unavailable; complete process-tree stop is unconfirmed.");
-  if (!await (lease === undefined ? confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline) : confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline, lease))) throw new Error("The original controller or its descendants are still running.");
+  if (process.platform === "win32" && options.rebootProof !== undefined) {
+    await verifyWindowsRebootProof(options.rebootProof, ticketHash, controllerPayloadHash(observed), deadline ?? Date.now() + 15_000);
+  } else {
+    if (process.platform === "win32" && lease === undefined) throw new Error("Windows Job stop proof and original Job lease are unavailable; complete process-tree stop is unconfirmed.");
+    if (!await (lease === undefined ? confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline) : confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline, lease))) throw new Error("The original controller or its descendants are still running.");
+  }
   let db: Database.Database;
   try { db = new Database(file, { fileMustExist: true, ...(deadline === undefined ? {} : { timeout: remaining() }) }); }
   catch (error) { return failedAtDeadline(error, "not-started", true); }

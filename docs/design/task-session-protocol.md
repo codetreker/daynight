@@ -112,7 +112,7 @@ Journal 的编号迁移由本库唯一 canonical 001–014 SQL 序列持有，�
 
 `storage-preparation.ts` 同步关闭自身连接，按角色执行实际身份、迁移与资源准备，不返回依赖连接的 store 或 iterator。`upgrade-only` 保留原 snapshot 和停止证据，只要求旧 writer 已停止，不生成 stopped；`stopped-maintenance` 要求原 ticket 与已停止当前代精确匹配；`writer` 接受原空库中的第一代或原执行精确已停止前驱的新代 ticket，但不提交新 generation。独立 Test 从外部原生会话恢复可在新 execution 的第一代携带 resume identity，其 native lease 仍由原入口验证。Controller 不设本地累计媒体或元数据额度，也不按卷剩余空间或未来写入峰值准入。仅明确 checkpoint busy 可转成等待；格式、身份、I/O、未知提交及未知进程状态继续抛错。
 
-Task、Bot 和独立 Test 的恢复顺序为确认原进程停止、以原 permit 写停止记录、完成停止维护，再分配下一代。首次 spawn 前以冻结 ticket 完成 writer preflight 并关闭句柄、释放锁；子进程争用或等待容量时继续同一 launch ticket，有界退避不重发初始输入、不消耗恢复次数，超过原观察窗口仍监督同一子进程。停止记录在事务外核验完整原进程边界，最终短 immediate 事务比较原 snapshot、ticket_hash 和 owner_pid 未变后提交 stopped；重复确认保留 stoppedAt。Windows 沿用原 Job lease 和已提交 stop proof，清理 deadline 贯穿锁、准备、进程查询和停止写入，提交后的 close/release 失败保留实际 SqliteOutcome。
+Task、Bot 和独立 Test 的恢复顺序为确认原进程停止、以原 permit 写停止记录、完成停止维护，再分配下一代。首次 spawn 前以冻结 ticket 完成 writer preflight 并关闭句柄、释放锁；子进程争用或等待容量时继续同一 launch ticket，有界退避不重发初始输入、不消耗恢复次数，超过原观察窗口仍监督同一子进程。停止记录在事务外核验完整原进程边界，最终短 immediate 事务比较原 snapshot、ticket_hash 和 owner_pid 未变后提交 stopped；重复确认保留 stoppedAt。Windows 通常沿用原 Job lease 和已提交 stop proof；缺少 lease 的 Task 只可通过[显式跨重启检查点](#windows-跨重启停止证明)建立另一条完整停止边界。清理 deadline 贯穿锁、准备、进程查询和停止写入，提交后的 close/release 失败保留实际 SqliteOutcome。
 
 Controller 在所有副作用构造之前取得 permit 并准备 writer；自身进程证明与新 generation 在同一 journal 事务提交，之后才启动认证 IPC、relay 和 native Provider。Markdown/capture 回调依赖在 relay 连接前完成构造，全部构造与运行使用同一收尾作用域；任一阶段失败都停止已经创建的 timer、relay、Provider、server、媒体与 journal，保留原错及清理错误，最后释放 permit。close 清除 owner_pid 也受格式检查和原 permit 保护。归档和 stopped source-tail 的本机快照、batch、ACK 与 checkpoint 分别取得 permit，传输前释放；返回后重新核对原 stopped 身份、冻结正文和 source cutoff。编号迁移与停止结算不执行累计容量准入，恢复下一代前必须完成普通 stopped-maintenance。既有 unknown/receipt 对账保持原语义。
 
@@ -522,7 +522,17 @@ read、invalid、write issue 只在打开的菜单内按当前语言映射说明
 
 Controller 用 `cleanupInteractionIds` 标识清理阶段实际产生的交互。服务端冻结时保存 Timeline 序号边界，拒绝将冻结前的 pending 交互重新标为 cleanup；只有边界后且属于当前白名单的交互响应可以提交。浏览器按相同白名单启用控件，服务端在接受、Poll 投递和 operation_begin 时分别重验，避免排队期间权限变化绕过限制。
 
-Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 持有创建句柄直至进程退出，观察者核验原进程身份与成员关系后持有同一 Job 句柄，贯穿终止、成员清空与完整停止确认。主动 Job 终止前，先打开并固定全部已知原 Controller/native 实例的进程句柄，核对出生时间和仍运行实例的完整身份；终止后在原绝对 deadline 内等待这些原句柄 signaled，并确认同一 Job 成员清单为空。原 PID 已不存在或已是不同出生实例时不操作替代进程；退出码变化、ESRCH 与空清单不能代替已固定原句柄的完成状态。缺失名称或无法取得可信句柄保持未知，不能推断空 Job。完整停止经同一 journal CAS 写入版本化 `windowsJobStopProof`，绑定原 ticket 和 stopped 快照；之后恢复与归档可验证该持久结果，旧记录缺少证明时保持阻塞。摘要保护一致性，不认证本机恶意写入者。每次操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。未确认的权限、查询、终止和释放失败均保留错误；任一等待到期、身份冲突或未知状态均不能提交完整停止结果。全部已取得进程句柄逐一释放，主要操作与关闭同时失败时保留原错误链。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
+Controller 自身只能报告 stopping。worker 独立检查对应进程停止后才写入 stopped/nativeStopped，并据此清理 worktree 或创建下一代恢复 ticket。POSIX 检查 Controller 进程组及已记录原生进程身份；主动脱离进程组的后台服务仍须由任务 cleanup 停止，此证明不覆盖任意逃逸 daemon。Windows 使用不允许 breakaway 的 Job Object；Controller 持有创建句柄直至进程退出，观察者核验原进程身份与成员关系后持有同一 Job 句柄，贯穿终止、成员清空与完整停止确认。主动 Job 终止前，先打开并固定全部已知原 Controller/native 实例的进程句柄，核对出生时间和仍运行实例的完整身份；终止后在原绝对 deadline 内等待这些原句柄 signaled，并确认同一 Job 成员清单为空。原 PID 已不存在或已是不同出生实例时不操作替代进程；退出码变化、ESRCH 与空清单不能代替已固定原句柄的完成状态。缺失名称或无法取得可信句柄保持未知，不能推断空 Job；最后一个句柄关闭后，名字可以消失而成员仍存活。完整停止经同一 journal CAS 写入版本化 `windowsJobStopProof`，绑定原 ticket 和 stopped 快照；之后恢复与归档可验证该持久结果，旧记录缺少证明时保持阻塞，或进入下面的显式跨重启路径。摘要保护一致性，不认证本机恶意写入者。每次普通停止操作保留 15 秒预算，在 native 调用之间及句柄释放后检查；已开始的 kernel 调用必须等待返回，不能由 JavaScript timer 抢占。未确认的权限、查询、终止和释放失败均保留错误；任一等待到期、身份冲突或未知状态均不能提交完整停止结果。全部已取得进程句柄逐一释放，主要操作与关闭同时失败时保留原错误链。句柄生命周期与验证边界由[原生 Job API 决策](../../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)说明；跨平台支持声明仍以对应平台真实验收为准。
+
+### Windows 跨重启停止证明
+
+`worker reboot-recovery <task-id> --project <project-id> --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id>` 为当前 owner 的原 active Windows Web Task 提供两阶段人工入口。它不重启系统、启动 Controller、重放输入、释放 claim 或删除资源。命令先核对服务 origin、账号、当前 claim、Worker 配置、本地执行、原生 Session、冻结 ticket 与 cwd；实际写入前重读这些来源。原 `shutdown` 收尾允许取得停止证明但保留原 intent，使 Worker 在正常关闭后也能继续结算；terminal 收尾不进入该恢复入口。暂停和恢复预算仍由普通 Worker 流程拥有，停止确认不授予额外恢复许可。
+
+重启前加 `--prepare`。命令必须取得原 execution 的存储 permit，原 journal 必须有精确的 Job 名称、原生 Session 和 confirmed 首次输入。私有 `reboot-recovery-<launchId>.json` 保存版本 1、原 ticket 与 snapshot 的 SHA-256、Windows 安装 `MachineGuid` 的 SHA-256，以及 `NtQuerySystemInformation(SystemBootEnvironmentInformation)` 的内核 boot GUID；不保存凭据或输入正文，不改 journal 或槽位。已有检查点只允许完全一致的幂等准备，不能用准备操作覆盖冲突或已经跨启动的证据。
+
+用户完整重启 Windows 后，用同一命令省略 `--prepare`。同一安装且 boot GUID 不同才建立进程树停止边界；不比较墙钟、PID 缺席或 Job 名称缺席。同 boot、缺失或非法检查点、安装不符、未知查询或原 ticket/snapshot 改变均明确拒绝。验证结果以进程内不可伪造的令牌交给停止写入者；写入者再次核对当前安装、boot 与原摘要，再复用原 snapshot、ticket_hash、owner_pid 的 CAS 提交。确认结果沿用 `windowsJobStopProof` 版本 1，其含义为完整原 Windows 执行已停止，不要求下游重建丢失的 Job 句柄。检查点保留，不把未知初始输入转换为可重放状态。
+
+检查点与 journal 使用相同的本机可信写入者边界，不抵御恶意改写、整套 Windows 安装与状态克隆或系统快照回滚。MachineGuid 绑定安装，不是硬件认证。支持能力或注册表读取失败保持未知；实现不回落到启动时间字符串。原 permit 贯穿异步查询和提交，连接关闭不明时保留 permit；提交后关闭或释放失败保留实际 SqliteOutcome。机制取舍见[跨重启恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-19-windows-reboot-recovery.md)。
 
 ## 升级与安全失败
 

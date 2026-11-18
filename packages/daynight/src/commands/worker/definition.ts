@@ -67,6 +67,12 @@ export const workerDefinition: CommandDefinition = {
     options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],
     details: "Select the original completed claim, Session and retained worktree. The command verifies the stopped Controller and takes its storage lock; the Worker may remain running. It reanalyses saved complete Markdown inputs and authorizes local image reads only inside the original verified worktree. Missing, changed or forbidden sources retain the original failure and report the next action. It never starts an Agent, replays user input or changes Task status. Successful repair follows the existing archive protocol; the Worker owns later cleanup.",
   }, {
+    name: "reboot-recovery",
+    description: "Prepare or verify reboot evidence for an original Windows Web execution",
+    arguments: task,
+    options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, { names: ["--prepare"], description: "Checkpoint the original execution before a full Windows restart" }, help],
+    details: "Use --prepare before restarting Windows to bind the original ticket and journal to this Windows installation and kernel boot. After a full restart, run the same command without --prepare to confirm the old process tree stopped. The Worker may remain running; a live Controller's storage lock blocks recovery. Same-boot restarts, signing out, missing checkpoints, changed executions and unknown boot identity never prove stop. This command never restarts Windows, starts an Agent, replays input, releases a claim or deletes a worktree. Original owner authorization and confirmed initial input are required.",
+  }, {
     name: "retry",
     description: "Attempt recovery once for an active original claim",
     arguments: task,
