@@ -73,7 +73,7 @@ func (p *personalProjectCreationPlan) CreationPersonalTeam(ctx context.Context, 
 	return store.PersonalTeamFacts{ID: projectProjectionTeam, MemberCount: 1, OwnerAdminCount: 1}, nil
 }
 
-func (p *personalProjectCreationPlan) InsertProject(ctx context.Context, id, name, address, teamID string) (model.Project, model.ProjectAccess, error) {
+func (p *personalProjectCreationPlan) InsertProject(ctx context.Context, id, name, address, identity, teamID string) (model.Project, model.ProjectAccess, error) {
 	p.take(ctx, "InsertProject")
 	parsed, err := uuid.Parse(id)
 	if err != nil || parsed.Version() != 4 || parsed.String() != id {
@@ -191,4 +191,8 @@ func TestPrivateProjectsAtomicCreationAndMemberFilteredPagination(t *testing.T) 
 	if !errors.Is(err, initialGrant) || !errors.Is(err, initialGrant.Cause) || creation.proposed.ID == "" {
 		t.Fatalf("Project creation did not reach the initial grant failure: %v", err)
 	}
+}
+
+func (p *personalProjectCreationPlan) RepositoryOccupied(ctx context.Context, team, identity string) (bool,error) {
+ if ctx != p.ctx || team != projectProjectionTeam || identity == "" { p.t.Fatal("unexpected repository occupancy") }; return false,nil
 }

@@ -236,3 +236,20 @@ func TestAppProjectDeletionRefusalsAndCompletion(t *testing.T) {
 		})
 	}
 }
+
+func (d appLifecycleTransferDAO) RepositoryIdentity(context.Context) (*string, error) {
+	identity := "scp://host:repo"
+	return &identity, nil
+}
+func (d appLifecycleTransferDAO) RepositoryOccupied(context.Context, string, string) (bool, error) {
+	return d.f.mode == "repository conflict", nil
+}
+
+func TestAppProjectRepositoryConflictPrecedesIntegrationEffects(t *testing.T) {
+	s, f := newAppLifecycleTest(t, "repository conflict")
+	_, err := s.Transfer(t.Context(), f.principal, f.project.ID, core.TransferInput{Ownership: f.project.Ownership, TargetTeam: core.TeamVersion{ID: "ef000000-0000-4000-8000-000000000002", Version: 1}, ExpectedUserID: f.principal.UserID})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "project_repository_conflict" || len(f.retirementCalls) != 0 {
+		t.Fatalf("conflict performed integration effects: %v %v", err, f.retirementCalls)
+	}
+}

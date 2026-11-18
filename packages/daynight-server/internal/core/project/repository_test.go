@@ -16,6 +16,9 @@ func TestRepositoryAddressSyntax(t *testing.T) {
 		"https://-host/repo", "https://host-/repo", "https://a..b/repo", "https://" + strings.Repeat("a", 64) + "/repo", "https://" + strings.Repeat("a.", 128) + "a/repo", "ssh://git@host!name/repo", "git@服务:repo",
 	}
 	for _, address := range valid {
+		if _, err := RepositoryIdentity(address); err != nil {
+			t.Errorf("valid REST address cannot be identified %q: %v", address, err)
+		}
 		if err := validateRepoURL(address); err != nil {
 			t.Errorf("accept %q: %v", address, err)
 		}

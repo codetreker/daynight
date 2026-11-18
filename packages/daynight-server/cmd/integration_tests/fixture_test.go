@@ -540,8 +540,13 @@ func requestJSON[T any](t *testing.T, f *fixture, method, path string, input any
 
 func createProject(t *testing.T, f *fixture, name string) api.Project {
 	t.Helper()
-	project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: name, RepoURL: "https://github.com/example/integration", ExpectedUserID: f.userID}, http.StatusCreated)
-	if project.ID == "" || project.Name != name {
+	return createProjectAtRepository(t, f, name, "https://github.com/example/integration-"+rand.Text())
+}
+
+func createProjectAtRepository(t *testing.T, f *fixture, name, repository string) api.Project {
+	t.Helper()
+	project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: name, RepoURL: repository, ExpectedUserID: f.userID}, http.StatusCreated)
+	if project.ID == "" || project.Name != name || project.RepoURL != repository {
 		t.Fatalf("created project identity/content differs: %+v", project)
 	}
 	return project

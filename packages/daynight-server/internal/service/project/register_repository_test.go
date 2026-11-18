@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
 func TestRegisterRepository(t *testing.T) {
@@ -64,7 +65,10 @@ func TestRegisterRepository(t *testing.T) {
 		t.Fatalf("IPv6 reuse: %#v %v %v", ipReused, didCreate, err)
 	}
 	input.RepoURL = "ssh://git@github.com:22/Org/Repo.git"
-	if _, err := projects.Create(ctx, principal, input); err != nil {
+	otherTeam := newTestTeam(t, teamservice.NewTeams(database), principal, "Another visible repository owner")
+	duplicate := input
+	duplicate.TeamID = &otherTeam.ID
+	if _, err := projects.Create(ctx, principal, duplicate); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {

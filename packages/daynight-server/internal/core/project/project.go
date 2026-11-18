@@ -111,7 +111,14 @@ func Create(ctx context.Context, dao store.ProjectCreationDAO, userID, id string
 			}
 		}
 	}
-	return dao.InsertProject(ctx, id, input.Name, input.RepoURL, teamID)
+	identity, err := RepositoryIdentity(input.RepoURL)
+	if err != nil {
+		return model.Project{}, model.ProjectAccess{}, err
+	}
+	if err := requireRepositoryAvailable(ctx, dao, teamID, identity); err != nil {
+		return model.Project{}, model.ProjectAccess{}, err
+	}
+	return dao.InsertProject(ctx, id, input.Name, input.RepoURL, identity, teamID)
 }
 
 // ProjectWriteError maps a missing locked Project only after a confirmed rollback.

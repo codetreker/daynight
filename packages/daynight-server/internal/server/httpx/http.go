@@ -286,7 +286,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusNotFound
 		case "media_outcome_unknown", "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			status = http.StatusServiceUnavailable
-		case "github_repository_mismatch":
+		case "github_repository_mismatch", "project_repository_conflict", "project_repository_identity_unavailable":
 			status = http.StatusConflict
 		case "worker_task_tag_filter_unsupported", "archive_conflict", "archive_incomplete", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "configuration_not_initialized", "search_changed", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost":
 			status = http.StatusConflict
