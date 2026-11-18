@@ -255,6 +255,9 @@ var workerAliasSQL string
 //go:embed migrations/082_worker_task_tag_filter.sql
 var workerTaskTagFilterSQL string
 
+//go:embed migrations/083_project_github_webhook.sql
+var projectGitHubWebhookSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -345,6 +348,7 @@ var schemaMigrations = []migration{
 	{version: 80, sql: workerArchiveSessionsSQL},
 	{version: 81, sql: workerAliasSQL},
 	{version: 82, sql: workerTaskTagFilterSQL},
+	{version: 83, sql: projectGitHubWebhookSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
