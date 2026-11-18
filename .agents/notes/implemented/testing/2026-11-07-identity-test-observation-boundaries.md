@@ -51,6 +51,8 @@ The [state-wait decision](2026-11-07-steps-session-state-waits.md) owns the reus
 cadence, and the [workspace identity decision](../bug-fix/2026-11-05-stable-workspace-during-identity-checks.md)
 owns the unchanged presentation and admission policy. The [Web validation guide](../../../../packages/daynight-web/README.md#development)
 owns the commands and coverage gate.
+The separate [pending-status budget decision](2026-11-18-pending-status-test-budget.md)
+records the outer workload budget for the P/Q/P authenticated application case.
 
 ## Alternatives
 

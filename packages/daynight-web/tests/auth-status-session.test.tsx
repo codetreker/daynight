@@ -126,7 +126,7 @@ describe('authenticated status ownership', () => {
     await act(async () => { mutation.resolve(updated); });
     await within(dialog).findByRole('button', { name: 'In progress' });
     expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeVisible();
-  });
+  }, 15_000);
 
   it('retains the old account and suppresses a late status result after identity change', async () => {
     const mutation = deferred<TaskDetail>(); const original = initial();

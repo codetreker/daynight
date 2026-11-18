@@ -2603,6 +2603,12 @@ owner and retain visibility, identity, ordering and duplicate-control checks.
 The [identity observation decision](../../.agents/notes/implemented/testing/2026-11-07-identity-test-observation-boundaries.md)
 records these boundaries and their limits.
 
+The authenticated pending-status P/Q/P navigation case has a 15-second outer
+test budget for its complete multi-stage workload. Its individual readiness
+waits retain their existing bounds; the outer budget is not a product request
+or status-publication deadline. The [pending-status budget decision](../../.agents/notes/implemented/testing/2026-11-18-pending-status-test-budget.md)
+records the measured workload and alternatives.
+
 Project-settings route-retention and management tests use the same state waiter
 for request dispatch, mocked callbacks and abort signals. Responses, cache
 admission and presentation retain independent checks; a dispatch count does not
