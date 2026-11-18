@@ -6,7 +6,7 @@ import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { runRepositoryGit } from "../../../src/repository/git.js";
+import { RepositoryGitError, runRepositoryGit } from "../../../src/repository/git.js";
 import { RepositoryGitCleanupPendingError, startOwnedRepositoryGit, type GitSettlement, type OwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
@@ -210,6 +210,50 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     }
     expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+  });
+
+  it("distinguishes a bare repository from a non-bare Git administrative directory", async () => {
+    const f = await fixture(), adapter = manager(f.root);
+    await expect(adapter.prepareRepository({ ...f.project, localPath: f.bare }, operation())).rejects.toThrow("must have a primary worktree");
+    const error = await adapter.prepareRepository({ ...f.project, localPath: path.join(f.repository, ".git") }, operation()).catch(reason => reason);
+    expect(error).toBeInstanceOf(RepositoryGitError);
+    expect(error).toMatchObject({ exitCode: 128 });
+    expect(error.message).not.toContain("must have a primary worktree");
+  });
+
+  it("checks the native root and origin before observing a separate Git directory", async () => {
+    const f = await repositoryFixture("files");
+    const root = path.join(f.root, "checkout");
+    const common = path.join(f.root, "git-metadata"), nested = path.join(root, "nested");
+    await rename(f.repository, root);
+    git(root, ["init", "--separate-git-dir", common]);
+    await mkdir(nested);
+    const queries: string[][] = [];
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      queries.push(args.slice(4));
+      return runRepositoryGit(cwd, args, op, options);
+    } });
+    const project = { ...f.project, localPath: root };
+    const rootQuery = ["rev-parse", "--is-bare-repository", "--show-toplevel"];
+    const originQuery = ["config", "--get-all", "remote.origin.url"];
+    await expect(adapter.prepareRepository({ ...project, localPath: nested }, operation())).rejects.toThrow("must identify its worktree root");
+    expect(queries.splice(0)).toEqual([rootQuery]);
+    await expect(adapter.prepareRepository({ ...project, repoUrl: "https://example.com/other.git" }, operation())).rejects.toThrow("origin does not match");
+    expect(queries.splice(0)).toEqual([rootQuery, originQuery]);
+    const result = await adapter.prepareRepository(project, operation());
+    expect(result).toMatchObject({ root, commonDirectory: await realpath(common) });
+    expect(queries.slice(0, 3)).toEqual([rootQuery, originQuery, ["rev-parse", "--path-format=absolute", "--git-common-dir"]]);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects line breaks in a Git-resolved root instead of truncating the path", async () => {
+    const f = await repositoryFixture("files"), adapter = manager(f.root);
+    const parent = path.join(f.root, "real\nparent"), alias = path.join(f.root, "alias");
+    await mkdir(parent);
+    await rename(f.repository, path.join(parent, "repo"));
+    await symlink(parent, alias);
+    const root = path.join(alias, "repo");
+    expect(git(root, ["rev-parse", "--show-toplevel"])).toContain("\n");
+    await expect(adapter.prepareRepository({ ...f.project, localPath: root }, operation())).rejects.toThrow("Git root must be an absolute path without line breaks or NUL");
   });
 
   it("finds an owned worktree after a lost binding without creating or resetting one", async () => {
