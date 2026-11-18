@@ -1303,8 +1303,10 @@ gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
-Workflow concurrency cancels an older PR run for the same ref; main pushes queue
-without cancelling an active run. Documentation-only PRs run routing tests and
+Workflow concurrency cancels an older PR run for the same ref. Each main run
+has its own group by workflow, ref, full commit SHA and run ID, so later runs
+do not replace or cancel it; runner availability still controls job scheduling.
+Documentation-only PRs run routing tests and
 the gate. Every main push selects all modules, API integration and product E2E.
 npm publication performs its own CLI validation at the frozen release commit.
 
