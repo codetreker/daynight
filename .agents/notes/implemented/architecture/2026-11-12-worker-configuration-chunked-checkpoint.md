@@ -22,11 +22,11 @@ upgrade explicitly to validated schema 5 under the
 [fact separation decision](2026-11-12-worker-configuration-fact-separation.md),
 then to schema 6 under the [unknown configuration decision](2026-11-17-worker-unknown-configuration-preservation.md).
 The [Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md)
-converts deployed formats to schema 9.
-Historical business validation remains strict. Raw desired and remote observation
-documents are ordinary strings within the current schema 9; arbitrary unknown
-numbers and
-keys remain inside those strings without broadening the outer cache guard. The
+introduced schema 9; the later [mode adoption decision](2026-11-18-worker-web-mode-adoption.md)
+establishes the current schema 10. Deployed schemas 1–9 retain their frozen
+validation before conversion. Raw desired and remote observation documents are
+ordinary strings within schema 10; arbitrary unknown numbers and keys remain
+inside those strings without broadening the outer cache guard. The
 [storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
 owns the serialized readiness, retry and shutdown barrier using these same
 repeatable chunks and atomic replacement. The [Worker design](../../../../docs/design/daynight-worker.md) owns

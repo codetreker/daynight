@@ -68,7 +68,7 @@ const readSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<str
 export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths, pathApi: PathApi = path): WorkerLocalConfiguration => validateSource(() => {
   const worker = workerMapping(sourceMapping(source, paths));
   const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "web";
-  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
+  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be web; remove it or set it to web in the local configuration.");
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
