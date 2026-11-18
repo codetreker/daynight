@@ -188,7 +188,7 @@ export const createWebArchiveMaintenance = (options: {
         if (result.pending === 0) usageComplete.add(execution.executionId);
       } catch (error) {
         if (signal.aborted) return;
-        if (!(error instanceof WebRecordingDiscardedError)) emit({ kind: "usage-upload-retry", task, component: "usage", message: "Stopped session usage remains local for a later bounded upload attempt.", error });
+        if (!(error instanceof WebRecordingDiscardedError)) emit({ kind: "usage-upload-retry", identity: task, component: "usage", message: "Stopped session usage remains local for a later bounded upload attempt.", error });
       }
       // Usage is independent of archive success and shares its bounded maintenance slot.
       break;

@@ -121,7 +121,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     if (!stale.length) return true;
     const keys = stale.map(result => result.sourceKey).filter((key): key is string => key !== null);
     // sources requires at least one key even when only the state revision is read.
-    const suffix = `?${new URLSearchParams((keys.length ? keys : ["usage-state-probe-v1"]).map(key => ["key", key]))}`;
+    const suffix = `?${new URLSearchParams((keys.length ? keys : ["usage-state-probe-v1"]).map((key): [string, string] => ["key", key]))}`;
     const observed = await request(`/api/usage/v1/states/${state.stateId}/sources${suffix}`, state.grant!.token);
     if (!observed.response.ok) return false;
     const sources = Array.isArray(observed.value.items) ? observed.value.items.map(object) : [];
