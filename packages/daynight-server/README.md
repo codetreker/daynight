@@ -1882,6 +1882,16 @@ query, locking, snapshot, commit and rollback observations. The
 [Task validation decision](../../.agents/notes/implemented/testing/2026-11-06-task-request-candidate-isolation.md)
 records the read-before-validation distinction.
 
+### MCP download tests
+
+Pre-copy admission and existing transfer tests run the real download and
+transfer lifecycle code with controlled transaction-scoped records. They verify
+exact binding, expiry, retry after a failed precheck, and no content copy for
+a reused transfer. Real file and PostgreSQL tests retain snapshot copying,
+slot contention, revocation, and restart behavior. The
+[MCP download admission decision](../../.agents/notes/implemented/testing/2026-11-18-mcpdownload-admission-fixtures.md)
+records the proof boundary.
+
 ### Attachment service and store tests
 
 The complete `internal/service/attachment` suite"

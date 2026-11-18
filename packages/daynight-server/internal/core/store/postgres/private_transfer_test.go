@@ -151,6 +151,49 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+
+	t.Run("expired download readback", func(t *testing.T) {
+		record := transferRecord(uuid.NewString(), now.Add(-2*time.Hour))
+		record.Direction = "download"
+		record.State = "readable"
+		record.ExpiresAt = now.Add(time.Hour)
+		completion, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			_, created, err := d.Insert(ctx, record)
+			if err == nil && !created {
+				t.Fatal("download fixture already existed")
+			}
+			return err
+		})
+		if err != nil || completion.Outcome != store.TransactionCommitted {
+			t.Fatalf("seed download: completion=%+v error=%v", completion, err)
+		}
+
+		expired := now.Add(-time.Second)
+		updated, err := db.Pool.Exec(ctx, `UPDATE private_transfers SET expires_at=$2 WHERE id=$1`, record.ID, expired)
+		if err != nil || updated.RowsAffected() != 1 {
+			t.Fatalf("expire persisted download: rows=%d error=%v", updated.RowsAffected(), err)
+		}
+
+		completion, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			got, err := d.Get(ctx, record.ID)
+			if err != nil {
+				return err
+			}
+			if got.ID != record.ID || got.UserID != record.UserID || got.AuthorityKind != record.AuthorityKind || got.AuthorityID != record.AuthorityID ||
+				got.ProjectID != record.ProjectID || got.TaskID != record.TaskID || got.Path != record.Path {
+				t.Fatalf("expired download lost its actor or resource binding: %+v", got)
+			}
+			if got.Direction != "download" || got.State != "readable" ||
+				!got.ExpiresAt.Equal(expired) || !got.ExpiresAt.Before(now) ||
+				!got.HardExpiresAt.Equal(record.HardExpiresAt) || !got.HardExpiresAt.After(now) {
+				t.Fatalf("expired download state or expiry changed: %+v", got)
+			}
+			return nil
+		})
+		if err != nil || completion.Outcome != store.TransactionCommitted {
+			t.Fatalf("read expired download: completion=%+v error=%v", completion, err)
+		}
+	})
 }
 
 func TestPrivateTransferConcurrentCapacity(t *testing.T) {
