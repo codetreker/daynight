@@ -67,7 +67,9 @@ Existing producers that mean confirmed work must explicitly choose todo. Generic
 new tasks remain visible as unfinished suggestions while staying outside the
 automatic ready queue. The creation default does not change existing task rows.
 
-Adding a state requires coordinated service, MCP, CLI and Web readers. Graph
-summary includes a distinct proposed count; treating every residual state as
-cancelled would corrupt progress. Task Step states remain independent and do not
-acquire proposed.
+The service, MCP, CLI and Web readers of the five-state contract must agree on
+the meaning of proposed. The [component delivery decision](../process/2026-11-18-component-delivery-and-activation.md)
+governs how to stage those changes and verify supported version combinations.
+Graph summary includes a distinct proposed count; treating every residual state
+as cancelled would corrupt progress. Task Step states remain independent and do
+not acquire proposed.

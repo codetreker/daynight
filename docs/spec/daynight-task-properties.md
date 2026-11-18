@@ -137,7 +137,7 @@ create/update 不提供 PR 专用选项。创建后的属性通过通用设置�
 
 迁移包含软删除任务，保留所有已有 pullRequests 值，包括无法区分来源的空数组；非 null worker 保存归属，worker:null 转为缺失。迁移冻结旧格式验证和规范化语义，不通过运行时 fallback 读取旧列。表创建、数据转换、旧列删除及 migration ledger 原子提交，任务版本、业务时间和 Session 身份不变。
 
-客户端通用属性解析及 Web 缓存同时升级。模型切换通过 schema 1→2 清理旧必填/null 详情；完整属性同步通过 schema 2→3 或直接 1→3 重建摘要、详情和项目水位并轮换 user fence。旧摘要不能把缺少 properties 解释为 {}。snapshot/delta 按任务整体版本替换完整属性，缺失键传播删除，同版本属性差异拒绝，旧响应不复活删除键；普通属性变化不轮换 epoch。图绘制投影去掉属性，详情保持 live GET 的权限准入规则。完整行为由[任务缓存需求](daynight-task-sync.md)拥有。
+客户端解析完整的通用属性对象。历史属性模型切换通过 Web 缓存 schema 1→2 清理旧必填或 `null` 详情；后续完整属性同步通过 schema 2→3 或直接 1→3 重建摘要、详情和项目水位并轮换 user fence。旧摘要不能把缺少 `properties` 解释为 `{}`。snapshot/delta 按任务整体版本替换完整属性，缺失键传播删除，同版本属性差异拒绝，旧响应不复活删除键；普通属性变化不轮换 epoch。图绘制投影去掉属性，详情保持 live GET 的权限准入规则。完整行为由[任务缓存需求](daynight-task-sync.md)拥有。
 
 ## 错误与验收
 

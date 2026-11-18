@@ -74,9 +74,12 @@ rather than inferring readiness from visible nodes; the [dependency-state
 decision](../architecture/2026-11-11-task-sync-dependency-states.md) records
 that projection and its ordering limit.
 
-The additional required nullable time field needs coordinated protocol readers
-and explicit persistent-cache migration. Distinct predicates prevent a broad
-replacement of done checks from weakening start, completion or reopen rules.
+Readers of the cancellation contract must understand the required nullable
+time field, and persistent caches need explicit migration. The
+[component delivery decision](../process/2026-11-18-component-delivery-and-activation.md)
+separates that reader requirement from PR and rollout timing. Distinct
+predicates prevent a broad replacement of done checks from weakening start,
+completion or reopen rules.
 
 Irreversibility must cover all restoration paths. In particular, historical execution cannot authorize withdrawal back to todo; a database constraint error is
 not a substitute for an explicit domain refusal. Existing cleanup may remain
