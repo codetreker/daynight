@@ -232,6 +232,34 @@ describe("project dashboard", () => {
     } finally { first.unmount(); scope.dispose(); }
   });
 
+  it('admits only the latest Goal URL when a cached background precedes a delayed snapshot', async () => {
+    const items = [A, B].map(id => ({ id, title: `Cached Goal ${id}`, status: 'todo' as const, dependsOn: [] }));
+    const original = graph(items);
+    const goals = { ...original, tasks: original.tasks.map(task => ({ ...task, type: 'goal' as const })) };
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(goals).mockReturnValueOnce(pending.promise);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+    try {
+      await waitForGraph();
+      first.unmount();
+      browserNavigation().dispose();
+      history.replaceState(null, '', `/projects/${projectId}?tab=tasks&goalGraph=${A}`);
+      const second = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
+      try {
+        await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+        expect(await screen.findByText(`Cached Goal ${A}`)).toBeVisible();
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        act(() => browserNavigation().navigate(`/projects/${projectId}?tab=tasks&goalGraph=${B}`));
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${B}`);
+        await act(async () => pending.resolve(goals));
+        expect(await screen.findByTestId(`goal-graph-${B}`)).toBeVisible();
+        expect(screen.queryByTestId(`goal-graph-${A}`)).toBeNull();
+        expect(location.search).toBe(`?tab=tasks&goalGraph=${B}`);
+      } finally { second.unmount(); }
+    } finally { first.unmount(); scope.dispose(); }
+  });
+
   it('does not use a Goal cached in another project to admit the current project URL', async () => {
     history.replaceState(null, '', `/projects/${otherProject}`);
     const foreign = goalGraph();
