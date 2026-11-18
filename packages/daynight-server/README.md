@@ -2467,6 +2467,31 @@ The real HTTP creation tests retain successful creation, replay, lost responses
 and refusal after deleting the PAT from PostgreSQL.
 [Bot defaults HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-defaults-http-test-owners.md)
 
+### Bot runtime HTTP tests
+
+The runtime preflight and deletion receipt matrices use production Bot runtime
+routes, Session HTTP parsing and PAT middleware. The ReportBot and
+CompleteBotDeletion callbacks verify context, principal, Worker and Bot IDs
+and exact typed inputs. Strict parser, query, method and credential refusals
+leave operations unused. Supplied results verify failure and cleanup
+projections, including absence of a Session binding or private deleted
+definition.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^Test(BotRuntimeHTTPPreflightFailureAndStrictInputs|BotDeletionHTTPStrictReceiptAndAdmission)$' \
+  ./internal/server/bot
+```
+
+The real registration and deletion tests each reuse their schema for a separate
+unbound Bot. Fresh detail reads verify the failed startup after stale and
+replayed reports and the completed state after an unbound deletion receipt.
+The existing registration, bound cleanup and Controller wire cases retain their
+real fixtures.
+[Bot runtime HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-runtime-http-test-owners.md)
+
 ### MCP protocol tests
 
 `internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,
