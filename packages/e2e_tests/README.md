@@ -96,6 +96,14 @@ provider. An ordinary Team administrator searches for that account in the Web,
 adds its exact UUID and verifies the persisted member role through the CLI and a
 Web reload.
 
+A third account signs in through the same provider. A project invitation and
+role edit establish the second account as an independent project administrator
+outside the owner Team. That administrator directly adds the third account,
+whose real login verifies project access; the owner Team roster remains unchanged.
+Separate projects exercise direct addition by an inherited Team administrator
+and a Personal project administrator. Each addition verifies the resulting
+project grant through the real service.
+
 The same authenticated journey launches the compiled CLI's public Test Session
 Controller with an environment-owned Codex stdio peer. The peer replaces only
 the upstream native agent: the production adapter, source authority checks,
