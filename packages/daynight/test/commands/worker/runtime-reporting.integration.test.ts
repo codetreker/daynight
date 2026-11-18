@@ -80,6 +80,14 @@ vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebEx
 vi.mock("../../../src/commands/worker/backends/web.js", async original => ({ ...await original<object>(), createWebExecutionBackend: mocks.webBackend }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
+// Archive scheduling fixtures do not own independent usage replay or its journal access.
+vi.mock("../../../src/commands/worker/web-archive-backfill.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/worker/web-archive-backfill.js")>();
+  return { ...actual, createWebArchiveMaintenance: (options: Parameters<typeof actual.createWebArchiveMaintenance>[0]) => {
+    const { usage: _usage, ...archiveOptions } = options;
+    return actual.createWebArchiveMaintenance(archiveOptions);
+  } };
+});
 vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }) }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;

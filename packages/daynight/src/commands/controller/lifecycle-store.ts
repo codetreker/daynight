@@ -1,4 +1,5 @@
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
+import { openUsageStore } from "./usage/store.js";
 import { createNativeInputPublication } from "./media/native-publication.js";
 import { createImageCaptureSource } from "./media/capture-source.js";
 import { createMarkdownSourceStore } from "./markdown/store.js";
@@ -150,6 +151,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     initializationOutcome = "committed";
   const outbox = openControllerOutbox(db, { assertWrite: () => { assertOutboxWrites(); assertTimelineWrite(); } });
   const markdownStore = createMarkdownSourceStore(db, { read, write: atomic });
+  const usage = openUsageStore(db, { read, write: atomic });
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
   const writeOperation = (operation: ControllerOperation): ControllerOperation => { db.prepare("INSERT INTO operations(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value,acknowledged=0").run(operation.operationId, JSON.stringify(operation)); return operation; };
@@ -262,6 +264,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     return { occurrence, sourceSequence: sequence, acknowledged };
   });
   return {
+    usage,
     markdownStore,
     publishMarkdownProjection: (state: MarkdownProjectionState, entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
       if (state.entryId !== entry.entryId || state.input.entryId !== entry.entryId || state.input.kind !== entry.kind) throw new Error("Markdown publication changed its entry identity.");

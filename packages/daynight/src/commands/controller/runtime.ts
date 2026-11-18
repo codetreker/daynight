@@ -31,6 +31,8 @@ import { openControllerLifecycleStore, type ControllerOperation } from "./lifecy
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
 import { createControllerRelay } from "./relay.js";
+import { createUsageRuntime } from "./usage/runtime.js";
+import { loadServerConfiguration } from "../../config/server.js";
 import { providerDisplayEntry } from "./provider-display.js";
 import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } from "./recovery.js";
 import { NativeRpcError } from "./providers/native-rpc.js";
@@ -206,6 +208,14 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   let relay!: ReturnType<typeof createControllerRelay>;
+  const usage = ticket.provider === "copilot" ? createUsageRuntime({
+    serverOrigin: ticket.serverOrigin, store: journal.usage, generation: ticket.executionGeneration,
+    identity: { sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId },
+    connection: () => { const fence = relay?.currentFence(), nativeSessionId = journal.getSnapshot().nativeSessionId; return fence && nativeSessionId ? { connectionEpoch: fence.connectionEpoch, nativeSessionId } : null; },
+    readParentToken: async () => { const config = await loadServerConfiguration(resolveConfigurationPaths(options.homeDirectory)); if (config.serverUrl !== ticket.serverOrigin || !config.serverToken) throw new Error("Original usage parent credential is unavailable."); return config.serverToken; },
+    onDiagnostic: diagnostic,
+  }) : null;
+  own(async () => { await usage?.close(); });
   function stopForAccountingFailure(error: unknown): void {
     accountingFailure ??= error;
     journal.disableOutboxWrites();
@@ -389,6 +399,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       try { journal.patchSnapshot({ lifecycle: "stopping" }); } catch (error) { fail(error); }
       await stopMarkdownCaptures();
       await closeProvider();
+      await usage?.close();
       await stopMarkdownTimeline();
       journal.patchSnapshot({ activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
       if (projectionFailure && accountingFailure === undefined) {
@@ -654,6 +665,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const toolLaunch = await readLaunchToolSelection(options.homeDirectory, ticket);
     if (stopping) return;
     const nativeOptions: ProviderOptions = {
+      ...(usage ? { usageRuntime: usage } : {}),
       ...(toolLaunch ? { toolLaunch, toolRuntimeRoot: path.join(paths.stateDirectory, "worker", "tool-runtimes") } : {}),
       ...(ticket.instructions === undefined ? {} : { instructions: ticket.instructions }),
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),

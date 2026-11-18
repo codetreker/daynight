@@ -12,18 +12,21 @@ import type { openWebExecutionStore } from "./backends/web-store.js";
 import type { WebBackendOptions } from "./backends/web.js";
 import type { LocalTask } from "./backends/web-types.js";
 import type { ArchiveBackfillIdentity, CleanupScheduleRecord } from "./types.js";
-import { deleteWebRecording, WebRecordingDiscardedError, withWebRecordingSource } from "./web-recording-source.js";
+import { deleteWebRecording, WebRecordingDiscardedError, withWebRecordingSource, withWebUsageSource } from "./web-recording-source.js";
 
 export const createWebArchiveMaintenance = (options: {
   homeDirectory: string; serverUrl: string; workerId: string; userId: string; signal: AbortSignal;
   store: ReturnType<typeof openWorkerStore>; webStore: ReturnType<typeof openWebExecutionStore>;
   archive: NonNullable<WebBackendOptions["archive"]>; probeArchive: NonNullable<WebBackendOptions["probeArchive"]>;
+  usage?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<{ pending: number }>;
   archiveSessions?: () => boolean | null;
   removeRecording?: typeof deleteWebRecording;
   emit: (event: WorkerEvent) => void; monitoring?: ReturnType<typeof createMonitoringObserver>;
 }) => {
   const { store, webStore, serverUrl, archive, probeArchive, emit, monitoring } = options;
   const backfilled = new Set<string>();
+  const usageComplete = new Set<string>(), usageRetryAt = new Map<string, number>();
+  let lastUsageAttempt: string | null = null;
   const archiveRetryAt = new Map<string, number>();
   const archiveRepairs = new Map<string, ArchiveRepairCode>();
   const archiveFailures = new Map<string, string>();
@@ -169,6 +172,28 @@ export const createWebArchiveMaintenance = (options: {
   let closed = false;
   let shutdownFailure: unknown;
   let shutdownFailed = false;
+  const backfillUsage = async (signal: AbortSignal): Promise<void> => {
+    if (!options.usage) return;
+    const tasks = webStore.listCompletedTasks();
+    const previous = tasks.findIndex(task => task.webExecution?.executionId === lastUsageAttempt);
+    for (let offset = 1; offset <= tasks.length; offset++) {
+      if (signal.aborted) return;
+      const task = tasks[(previous + offset) % tasks.length]!, execution = task.webExecution;
+      if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || task.workerId !== options.workerId || task.userId !== options.userId || usageComplete.has(execution.executionId) || (usageRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
+      lastUsageAttempt = execution.executionId;
+      usageRetryAt.set(execution.executionId, Date.now() + 60_000);
+      try {
+        const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
+        const result = await withWebUsageSource(options.homeDirectory, task, () => webStore.getTask(task), () => options.usage!(task, journalPath, signal), signal);
+        if (result.pending === 0) usageComplete.add(execution.executionId);
+      } catch (error) {
+        if (signal.aborted) return;
+        if (!(error instanceof WebRecordingDiscardedError)) emit({ kind: "usage-upload-retry", identity: task, component: "usage", message: "Stopped session usage remains local for a later bounded upload attempt.", error });
+      }
+      // Usage is independent of archive success and shares its bounded maintenance slot.
+      break;
+    }
+  };
   const discardShutdownFailures: unknown[] = [];
   let failureId: string | undefined;
   const startDiscard = (selected: LocalTask, isSettled: (task: LocalTask) => boolean, inputSignal: AbortSignal, expectedUserId = options.userId): Promise<{ ok: true } | { error: unknown }> => {
@@ -234,6 +259,7 @@ export const createWebArchiveMaintenance = (options: {
         // Cleanup can become pending after the polling round requested maintenance.
         if (signal.aborted || shouldYield()) return;
         await backfillArchives(signal);
+        if (options.usage && !signal.aborted && !shouldYield()) await backfillUsage(signal);
         if (failureId !== undefined) { try { monitoring?.recover(failureId); } catch { /* Monitoring cannot change archival. */ } failureId = undefined; }
       }).catch(error => {
         if (isWorkerCancellation(error, signal)) return;

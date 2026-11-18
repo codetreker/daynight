@@ -22,6 +22,7 @@ import { CopilotImageInputs } from "./copilot-image-input.js";
 import { CopilotImages } from "./copilot-images.js";
 import { observeCopilotBridgeRoute, sendCopilotBridgeImages } from "./copilot-bridge.js";
 import type { CopilotRouteObservation } from "./copilot-route-observation.js";
+import { copilotUsageProviderVersion } from "./copilot-usage.js";
 
 // Resolve the SDK's own RPC constructor; its local transport errors also use ResponseError.
 const { ResponseError, ErrorCodes } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as {
@@ -40,6 +41,11 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   let verified = false, closed = false, stopped = false, disconnected = false, dispatching = false, startupFailed = false, controlsBusy = false;
   let imageProfile: CopilotImageProfile | null = null;
   let routeObservation: CopilotRouteObservation | null = null, profileSdkVersion: unknown, profileNativeVersion: unknown;
+  let usageProviderVersion: string | null = null;
+  const usageGap = (reason: string): void => {
+    try { options.usageRuntime?.gap(reason); }
+    catch { try { options.onDiagnostic?.("Copilot usage gap could not be persisted."); } catch { /* Usage cannot stop the native task. */ } }
+  };
   let routeEpoch = 0;
   let routeRefreshRequested = false, recoveringImages = false;
   const invalidateRoute = () => { routeEpoch++; routeObservation = null; imageProfile = null; };
@@ -57,6 +63,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   const lost = new Promise<never>((_, reject) => { rejectLost = reject; }); void lost.catch(() => {});
   const disconnect = (error: Error) => {
     if (closed || disconnected) return;
+    usageGap("native_recovery_gap");
     invalidateRoute();
     disconnected = true; runtime?.authority?.invalidate(); controls?.close(); if (heartbeat) clearInterval(heartbeat);
     rejectLost(error); interactions.dispose(error);
@@ -114,6 +121,13 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     else if (event.type === "session.shutdown") disconnect(new Error("Native Copilot session closed; operation results are unknown."));
   };
   const onEvent = (event: SessionEvent) => {
+    // Ephemeral usage must reach its independent durable ingress before history
+    // buffering or timeline deduplication can discard the native event.
+    if (event.type === "assistant.usage" && options.usageRuntime && !closed && !disconnected) {
+      if (!usageProviderVersion) usageGap("profile_unverified");
+      else try { options.usageRuntime.observe({ nativeSessionId: nativeId, providerVersion: usageProviderVersion, event }); }
+      catch (error) { usageGap(error instanceof Error && error.message === "native_integer_unrepresentable" ? "native_integer_unrepresentable" : "collector_failed"); }
+    }
     if (["session.model_change", "session.mode_changed", "session.shutdown", "session.error"].includes(event.type)) invalidateRoute();
     if (["session.model_change", "session.mode_changed"].includes(event.type)) { routeRefreshRequested = true; queueMicrotask(recoverImageProfile); }
     runtime?.authority?.observe(event);
@@ -263,6 +277,19 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       const discovery = await call(client.rpc.skills.getDiscoveryPaths({ projectPaths: [cwd] }), "Copilot skill discovery");
       skillDirectories = discovery.paths.map(entry => entry.path);
     } catch (error) { skillDiscoveryError = error instanceof Error ? error.message : "Copilot skill discovery is unavailable."; }
+    if (options.usageRuntime) {
+      // Resolve before opening the subscription: native events can arrive while
+      // createSession/resumeSession is still pending.
+      try {
+        const status = await call(client.getStatus(), "Copilot usage version profile");
+        const sdk = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@github/copilot-sdk")), "utf8")) as { version?: unknown };
+        usageProviderVersion = copilotUsageProviderVersion(sdk.version, status.version);
+      } catch { usageProviderVersion = null; }
+      if (!usageProviderVersion) usageGap("profile_unverified");
+      // SDK bridge delivery and ephemeral history have an unavoidable pre-ingress
+      // window. A successful local write cannot prove that window was complete.
+      usageGap("native_recovery_gap");
+    }
     const config: SessionConfig = { ...(skillDirectories ? { skillDirectories } : {}), sessionId: nativeId, workingDirectory: cwd, streaming: true, includeSubAgentStreamingEvents: true,
       ...(options.instructions !== undefined ? { systemMessage: { mode: "append" as const, content: options.instructions } } : {}),
       ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && args.effort ? { reasoningEffort: args.effort as NonNullable<SessionConfig["reasoningEffort"]> } : {}),
@@ -286,6 +313,10 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     await runtime.authority?.install(nativeId);
     await preparePermissionHistory();
     verified = true; state();
+    if (usageProviderVersion) {
+      try { options.usageRuntime?.ready?.({ nativeSessionId: nativeId, providerVersion: usageProviderVersion }); }
+      catch { usageGap("collector_failed"); }
+    }
     for (const match of imageInputs.restoreAccepted()) images.accepted(match);
     const last = await readHistory();
     const { processing } = await call(native.rpc.metadata.isProcessing(), "Copilot foreground activity");

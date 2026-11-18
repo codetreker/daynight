@@ -374,8 +374,8 @@ test("a lost SQL row cannot become a ready empty archive", async () => {
 test("legacy completed SQL history migrates atomically and is readable after worktree deletion", async () => {
   const f = await fixture(); const content = pending(f.journalPath, f.ticket.sessionId);
   const original = content.timeline.get(f.entry.entryId)!;
-  const db = new Database(f.journalPath);
-  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
+  const db = new Database(f.journalPath); readers.push(db);
+  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*' OR name GLOB 'usage_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
   db.exec("DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
@@ -390,9 +390,9 @@ test("legacy completed SQL history migrates atomically and is readable after wor
   expect(pending(f.journalPath, f.ticket.sessionId).timeline.get(original.entryId)).toEqual(original);
 });
 test("failed legacy migration retains SQL originals and safely resumes an already written file", async () => {
-  const f = await fixture(); const db = new Database(f.journalPath); const content = pending(f.journalPath, f.ticket.sessionId);
+  const f = await fixture(); const db = new Database(f.journalPath); readers.push(db); const content = pending(f.journalPath, f.ticket.sessionId);
   const original = content.timeline.get(f.entry.entryId)!;
-  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
+  for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*' OR name GLOB 'usage_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
   db.exec("DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   const originalExec=Database.prototype.exec;const fail=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this:Database.Database,sql:string){if(this===db&&sql.includes("CREATE TABLE content_index"))throw new Error("Injected content schema failure");return originalExec.call(this,sql)});
