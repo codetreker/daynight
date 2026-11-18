@@ -22,7 +22,7 @@ Project 权限、连接状态、计数及列表或详情可在同一只读 Repea
 
 候选查询有界返回已连接、同步开启且到期的 Project，实际领取、续持、观测发布和完成均在 App-aware 工作事务内执行。各操作核对活 Project、App、凭据版本、原 grant、owner Team 与 ownership version；领取另校验连接、同步开关及已有期限，续持和发布另校验原 token、generation 与数据库时间。数据库只保存调用方指定的状态和时间，不决定重试或同步成功。完整轮询以 `seen_poll_id` 标记观测，并有界查询未见的 active 编号；缺席本身不会改变 PR 状态。
 
-Webhook 提示事务按活 App、当前授权及连接身份锁定并重新检查候选，不反向取得 Project 锁。关闭期间不积累提示或推进接收时间。项目连接、执行与清退的锁顺序和权限分别由[项目连接](github-app-project-connection.md)、[执行](github-app-execution.md)和[资源清退](github-app-resource-retirement.md)拥有。事务失败回滚全部操作，提交结果未知仍按未知处理。
+Webhook 提示事务按活 App、当前授权及连接身份锁定并重新检查候选，不反向取得 Project 锁。关闭期间不积累提示或推进接收时间。PR 提示更新 PR Webhook 收件事实；安装访问提示保留 `not_before`，只改变访问提示及复查计划，不推进 PR 收件时间。访问复查的重试同时持久化访问期限和共享限流期限，候选与领取分别检查限流。项目连接、执行与清退的锁顺序和权限分别由[项目连接](github-app-project-connection.md)、[执行](github-app-execution.md)和[资源清退](github-app-resource-retirement.md)拥有。事务失败回滚全部操作，提交结果未知仍按未知处理。
 
 ## 迁移
 
@@ -31,3 +31,5 @@ Webhook 提示事务按活 App、当前授权及连接身份锁定并重新检�
 迁移 `076_github_apps.sql` 为独立 App、管理员、邀请和 Team 授权准备存储，并增加连接授权字段；它删除同步意愿依赖连接的 CHECK，但不修改既有连接、领取、同步意愿或 PR。迁移 `077_github_app_cutover.sql` 将旧连接转换为未连接状态，清除活动 App、installation、授权、领取、提示和日程，推进 version、generation 和 revision，保留同步意愿、仓库与 PR。溢出使数据和迁移账本一起回滚；缺失行不补建。应用 077 前须停止并 drain 所有旧副本，不得混跑；二进制回滚须恢复匹配的数据库备份。独立资源的存储与证明见 [独立 GitHub App 登记](github-app-registration.md)。
 
 迁移 `078_project_pull_requests_author_number.sql` 仅建立作者部分索引，不改写保存数据。索引与迁移账本在同一事务中提交，失败时一起回滚。迁移后不直接运行不认识该账本的旧二进制；向前修复，或使用保留当前迁移集合的回退构建。
+
+迁移 `085_github_webhook_status.sql` 一次性清空曾被安装复查与 PR 共用的六个诊断字段：`last_webhook_received_at`、`last_webhook_attempt_at`、`last_webhook_success_at`、`webhook_error_code`、`webhook_error_message`、`webhook_error_at`。只更新任一字段非空的行，推进 revision 并更新时间。历史数据没有状态来源，无法可靠保留其中真正属于 PR 的诊断；新的 PR 投递和处理会重建它们。连接版本、generation、PR、队列、领取及其未来期限、访问 hint、轮询日程与 `not_before` 原样保留。revision 溢出或 SQL 失败使该迁移的数据和账本一起回滚，先前已提交的迁移保持有效；已登记的规范化不会在重启时重做。部署前必须排空旧写入者，详见[运行时部署](github-connection-runtime.md)。
