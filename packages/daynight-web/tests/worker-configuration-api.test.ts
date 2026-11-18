@@ -12,6 +12,13 @@ const observed = (items: readonly WorkerConfigurationOutcome[]): WorkerConfigura
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker configuration wire format', () => {
+  it('reads historical desired and applied numbers outside current write ranges unchanged', () => {
+    const value = { ...configurationValue(), maxConcurrent: 65, pollIntervalMs: 100_000, recoveryLimit: 11 };
+    const resource = { ...observed([outcome({ kind: 'maxConcurrent' }, 65), outcome({ kind: 'pollIntervalMs' }, 100_000), outcome({ kind: 'recoveryLimit' }, 11)]), desired: configurationResource('1', value).desired };
+    const parsed = parseWorkerConfiguration(resource);
+    expect(parsed.desired!.value).toEqual(value);
+    expect(parsed.observation!.items.map(item => item.appliedValue)).toEqual([65, 100_000, 11]);
+  });
   it('retains all kinds, removed project results and recovered failure diagnostics', () => {
     const failure = { code: 'permission_denied' as const, category: 'repository' as const, phase: 'stop' as const, occurredAt: WORKER_TIME };
     const resource = observed([
@@ -150,6 +157,15 @@ describe('principal-admitted configuration API', () => {
       expect(onRejected).toHaveBeenCalledOnce(); expect(onRejected).toHaveBeenCalledWith(expect.objectContaining({ status, code }));
       expect(controller.signal.aborted).toBe(true);
     } finally { resume(); }
+  });
+  it('retains the validation explanation and request identity without retrying a refused save', async () => {
+    const message = 'pollIntervalMs: 100000 value exceeds maximum 60000';
+    const fetch = vi.fn().mockResolvedValue(configurationResponse({ error: { code: 'invalid_input', message, requestId: 'range-request' } }, 400));
+    vi.stubGlobal('fetch', fetch);
+    const onRejected = vi.fn();
+    await expect(saveWorkerConfiguration(workerId(1), '1', configurationValue(), new AbortController().signal, { ...admission(), onRejected })).rejects.toMatchObject({ kind: 'server', status: 400, code: 'invalid_input', serverMessage: message, requestId: 'range-request' });
+    expect(onRejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ serverMessage: message, requestId: 'range-request' }));
+    expect(fetch).toHaveBeenCalledOnce();
   });
   it.each(['confirmed', 'rejected'] as const)('reports a validated %s before synchronous shared network cancellation', async outcome => {
     const saved = configurationResource('2', configurationValue());
