@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -138,10 +139,10 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 }
 
 func TestWorkerSnapshotServiceRefusalsAndStorageFailures(t *testing.T) {
-	_, database, _, principal := testsupport.ProjectService(t)
-	workers := NewWorkers(database)
-	ctx := context.Background()
-	id := uuid.NewString()
+	ctx := t.Context()
+	principal := workerRefusalPrincipal()
+	id := refusalWorkerID
+	workers := NewWorkers(forbiddenWorkerStore{t: t})
 	_, err := workers.Report(ctx, model.Principal{}, id, serviceWorkerReport())
 	requireFault(t, err, "unauthenticated")
 	_, err = workers.List(ctx, model.Principal{}, model.PageRequest{Limit: 1})
@@ -156,19 +157,33 @@ func TestWorkerSnapshotServiceRefusalsAndStorageFailures(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 	_, err = workers.Get(ctx, principal, "invalid")
 	requireFault(t, err, "invalid_input")
-	_, err = workers.Get(ctx, principal, id)
+
+	missing := &missingWorkerCompletion{t: t, ctx: ctx, principal: principal, worker: id,
+		observed: time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)}
+	detail, err := NewWorkers(missing).Get(ctx, principal, id)
 	requireFault(t, err, "not_found")
-	database.Close()
-	for _, invoke := range []func() error{
-		func() error { _, err := workers.Report(ctx, principal, id, serviceWorkerReport()); return err },
-		func() error { _, err := workers.List(ctx, principal, model.PageRequest{Limit: 1}); return err },
-		func() error { _, err := workers.Get(ctx, principal, id); return err },
-	} {
+	if !errors.Is(err, model.ErrNotFound) || !reflect.DeepEqual(detail, WorkerDetailResult{}) ||
+		!slices.Equal(missing.calls, []string{"snapshot", "clock", "workerDAO", "worker", "completion"}) {
+		t.Fatalf("confirmed missing Worker result: %+v, calls=%v, error=%v", detail, missing.calls, err)
+	}
+
+	database, cause := closedWorkerTestStore(t)
+	workers = NewWorkers(database)
+	check := func(operation, phase string, result, zero any, err error) {
+		t.Helper()
 		var stored *store.Error
-		if err := invoke(); !errors.As(err, &stored) || errors.Unwrap(err) == nil {
-			t.Fatalf("storage failure was hidden: %v", err)
+		if !reflect.DeepEqual(result, zero) || !errors.As(err, &stored) || errors.Unwrap(err) != stored ||
+			stored.Phase != phase || !stored.DatabaseFailure || stored.MissingRow || stored.SQLState != "" ||
+			!errors.Is(err, cause) || !strings.HasPrefix(err.Error(), operation+": ") {
+			t.Fatalf("%s storage failure was hidden: result=%+v error=%v store=%+v", operation, result, err, stored)
 		}
 	}
+	report, err := workers.Report(ctx, principal, id, serviceWorkerReport())
+	check("report worker", "begin worker snapshot", report, WorkerReportResult{}, err)
+	page, err := workers.List(ctx, principal, model.PageRequest{Limit: 1})
+	check("list workers", "begin snapshot", page, WorkerPage{}, err)
+	detail, err = workers.Get(ctx, principal, id)
+	check("get worker", "begin snapshot", detail, WorkerDetailResult{}, err)
 }
 
 func cloudWorkerConfiguration(projectID string) model.WorkerConfiguration {

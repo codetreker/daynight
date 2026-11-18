@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -82,30 +83,53 @@ func TestReadOnlyAuthorityUsesLiveOwnerCredentialsAndObservation(t *testing.T) {
 }
 
 type uncertainReadOnlyStore struct {
-	readOnlyStore
+	forbiddenWorkerStore
+	caller  model.Principal
 	outcome store.TransactionOutcome
 	failure error
+	writes  int
 }
 
-func (s uncertainReadOnlyStore) WriteIdentity(context.Context, func(store.IdentityScope) error) (store.Completion, error) {
+func (s *uncertainReadOnlyStore) WriteIdentity(ctx context.Context, _ func(store.IdentityScope) error) (store.Completion, error) {
+	s.writes++
+	if s.writes != 1 || ctx.Err() != nil || ctx.Value(readOnlyContextPrincipal{}) != s.caller {
+		s.t.Fatalf("unexpected identity transaction: writes=%d context error=%v", s.writes, ctx.Err())
+	}
 	return store.Completion{Outcome: s.outcome}, s.failure
 }
+
 func TestReadOnlyAuthorityRequiresConfirmedDatabaseObservation(t *testing.T) {
-	_, db, _, p := testsupport.ProjectService(t)
-	for _, outcome := range []store.TransactionOutcome{store.TransactionUnknown, store.TransactionNotCommitted} {
-		b := NewReadOnly(uncertainReadOnlyStore{readOnlyStore: db, outcome: outcome}, rejectReadOnlyOAuth)
-		_, err := b.Request(context.Background(), p, uuid.NewString(), readOnlyRequest())
-		b.Close()
-		if ro.ErrorCode(err) != "service_unavailable" {
-			t.Fatal("unconfirmed authority admitted", err)
-		}
-	}
+	principal := workerRefusalPrincipal()
 	failure := errors.New("identity database unavailable")
-	b := NewReadOnly(uncertainReadOnlyStore{readOnlyStore: db, failure: failure}, rejectReadOnlyOAuth)
-	defer b.Close()
-	_, err := b.Request(context.Background(), p, uuid.NewString(), readOnlyRequest())
-	if !errors.Is(err, failure) {
-		t.Fatal("database failure hidden", err)
+	for _, c := range []struct {
+		name    string
+		outcome store.TransactionOutcome
+		failure error
+	}{
+		{name: "unknown", outcome: store.TransactionUnknown},
+		{name: "not committed", outcome: store.TransactionNotCommitted},
+		{name: "database error", failure: failure},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.WithValue(t.Context(), readOnlyContextPrincipal{}, principal)
+			db := &uncertainReadOnlyStore{forbiddenWorkerStore: forbiddenWorkerStore{t: t}, caller: principal, outcome: c.outcome, failure: c.failure}
+			broker := NewReadOnly(db, func(context.Context, model.Principal) error {
+				t.Fatal("Session authority entered OAuth recheck")
+				return nil
+			})
+			defer broker.Close()
+			result, err := broker.Request(ctx, principal, refusalWorkerID, readOnlyRequest())
+			if db.writes != 1 || !reflect.DeepEqual(result, ro.Message{}) {
+				t.Fatalf("unconfirmed authority produced %d identity writes and result %+v", db.writes, result)
+			}
+			if c.failure != nil {
+				if !errors.Is(err, c.failure) {
+					t.Fatal("database failure hidden", err)
+				}
+			} else if ro.ErrorCode(err) != "service_unavailable" {
+				t.Fatal("unconfirmed authority admitted", err)
+			}
+		})
 	}
 }
 

@@ -1447,6 +1447,24 @@ and persisted readback. Other Worker suites use the fixtures required by their
 own proof. The [admission test decision](../../.agents/notes/implemented/testing/2026-11-09-worker-admission-test-owners.md)
 records these proof owners.
 
+### Worker service refusal tests
+
+The read-only authority test supplies independent identity transaction outcomes
+to the real Broker. The snapshot refusal test checks validation before storage,
+missing Worker handling after snapshot completion, and driver errors from an
+actual closed pgxpool. The pool is closed before any connection is opened.
+Live credential, observation, pagination and rollback tests use PostgreSQL.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^Test(ReadOnlyAuthorityRequiresConfirmedDatabaseObservation|WorkerSnapshotServiceRefusalsAndStorageFailures)$' \
+  ./internal/service/worker
+```
+
+[Worker service refusal decision](../../.agents/notes/implemented/testing/2026-11-18-worker-service-refusal-fixtures.md)
+
 ### Worker HTTP tests
 
 `internal/server/worker` owns the Worker route input, telemetry, privacy and
