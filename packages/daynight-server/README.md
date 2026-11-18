@@ -1435,6 +1435,30 @@ and [Configuration capacity decision](../../.agents/notes/implemented/testing/20
 record their protocol, rule and projection proof owners. Other root HTTP tests
 retain their own environment requirements.
 
+### Worker route lifecycle tests
+
+`TestWorkerRoutesLifecycleAndInvalidRequests` registers production Worker routes
+with Session cookie and Origin authentication. Strict Report, Get, List,
+Configuration and PutConfiguration callbacks verify the decoded arguments and
+call counts. Invalid queries, payloads, protocol headers and methods stop before
+any Worker operation. Independent response facts exercise the legacy report
+receipt, inventory availability, assistant-host and runtime configuration
+projections, default pagination and configuration revision responses.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestWorkerRoutesLifecycleAndInvalidRequests$' ./internal/server/worker
+```
+
+Core tests check that report validation and snapshot construction preserve the
+local runtime model and its omission. The PostgreSQL snapshot contract reads
+back the stored model and verifies that a subsequent report omitting runtime
+configuration clears it. Core and service tests exercise bootstrap, update and
+stale-revision decisions.
+[Worker route lifecycle decision](../../.agents/notes/implemented/testing/2026-11-18-worker-route-lifecycle-test-owners.md)
+
 ### Worker assistant-host HTTP tests
 
 The first assistant-host reporting test registers Worker routes, real credential
