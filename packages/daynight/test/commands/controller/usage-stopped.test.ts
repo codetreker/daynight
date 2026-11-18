@@ -19,15 +19,15 @@ import { openWorkerStore } from "../../../src/commands/worker/store.js";
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
-const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void) => {
+const fixture = async (prepare?: (journal: ReturnType<typeof openControllerLifecycleStore>) => void, provider: "copilot" | "codex" = "copilot") => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/usage-stopped-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
-  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "copilot", cwd: home, nativeHome: path.join(home, ".copilot"), configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider, cwd: home, nativeHome: path.join(home, ".copilot"), configuration: { agent: provider, agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const directory = controllerExecutionDirectory(home, ticket.executionId); await mkdir(directory, { recursive: true });
   const journalPath = path.join(directory, "journal.sqlite"), journal = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
-  const state = journal.usage.ensureState("1", randomUUID(), "1.0.11/1.0.105");
+  const state = journal.usage.ensureState("1", randomUUID(), provider === "copilot" ? "1.0.11/1.0.105" : "0.169.0", provider);
   journal.usage.saveGrant(state.stateId, { token: "g".repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, "1");
-  journal.usage.enqueueMeasurement(state.stateId, { sourceKey: `copilot-event-v1:${randomUUID()}`, profileId: capability.profileId, revisionAuthority: "immutable", sourceRevision: "1", finality: "final", disposition: "active", aggregationRole: "counted", includedInSourceKey: null, nativeTurnId: null, nativeCallId: null, model: "model", metrics: { inputTokens: null, outputTokens: "17", cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: null, providerTotalTokens: null }, nativeMetrics: { outputTokens: "17" }, reasonCodes: [], observedAt: new Date().toISOString() });
+  if (provider === "copilot") journal.usage.enqueueMeasurement(state.stateId, { sourceKey: `copilot-event-v1:${randomUUID()}`, profileId: capability.profileId, revisionAuthority: "immutable", sourceRevision: "1", finality: "final", disposition: "active", aggregationRole: "counted", includedInSourceKey: null, nativeTurnId: null, nativeCallId: null, model: "model", metrics: { inputTokens: null, outputTokens: "17", cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: null, providerTotalTokens: null }, nativeMetrics: { outputTokens: "17" }, reasonCodes: [], observedAt: new Date().toISOString() });
   journal.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "original content" }] });
   prepare?.(journal);
   journal.patchSnapshot({ lifecycle: "stopped", nativeSessionId: state.nativeSessionId, nativeStopped: true, stoppedAt: new Date().toISOString() }); journal.close();
@@ -125,4 +125,21 @@ test.each(["explicit", "automatic"] as const)("retains ACKed local conflict evid
   const db = new Database(f.journalPath, { readonly: true });
   try { expect(JSON.parse((db.prepare("SELECT value FROM usage_meta WHERE key='source_conflict'").get() as { value: string }).value)).toMatchObject({ acceptedHash: expect.any(String), rejectedHash: expect.any(String) }); }
   finally { db.close(); }
+});
+
+test("stopped Codex capability stays unsupported instead of becoming a failed collector", async () => {
+  const f = await fixture(undefined, "codex"), events: Record<string, unknown>[] = [];
+  const cap = { ...capability, profileId: "codex-snapshot-unaccountable-v1", qualification: "unsupported", measurementPlane: "none", revisionAuthority: "none", recovery: "unsupported", completion: "unsupported" };
+  const request: typeof fetch = async (input, init) => {
+    if (new URL(String(input)).pathname.endsWith("capabilities")) return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: cap.profileId, provider: "codex", capability: cap, qualifiedVersions: [] }] });
+    const body = JSON.parse(String(init?.body)) as { batchId: string; events: Record<string, unknown>[] }; events.push(...body.events);
+    const db = new Database(f.journalPath, { readonly: true });
+    try {
+      const rows = db.prepare("SELECT event_id,body_hash FROM usage_outbox").all() as { event_id: string; body_hash: string }[];
+      return Response.json({ protocol: "daynight.usage.v1", batchId: body.batchId, results: body.events.map(event => ({ eventId: event.eventId, sourceKey: null, sourceRevision: null, stateSequence: event.stateSequence, finality: null, outcome: "inserted", rowId: randomUUID(), rowVersion: "1", bodyHash: rows.find(row => row.event_id === event.eventId)!.body_hash })) });
+    } finally { db.close(); }
+  };
+  expect(await replayStoppedControllerUsage({ journalPath: f.journalPath, ticket: f.ticket, serverToken: "parent-token", request })).toEqual({ pending: 0 });
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({ kind: "execution_state", collectionState: "unsupported", reasonCodes: ["provider_unsupported"], seal: true });
 });

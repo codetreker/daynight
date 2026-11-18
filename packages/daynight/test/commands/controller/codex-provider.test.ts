@@ -405,3 +405,12 @@ test.each(["inProgress", "completed"])("Codex historical Markdown waits for the 
   try { expect(projected).toContainEqual({ entry: expect.objectContaining({ kind: "assistant_message", content: [{ type: "text", text: "![image](local)" }] }), metadata: { complete: status === "completed", format: "markdown", truncated: false } }); }
   finally { await provider.close(); }
 });
+
+test.each([null, "native-thread"])("Codex registers connected usage capability for the original thread (resume=%s)", async resumeNativeSessionId => {
+  const ready = vi.fn(), observe = vi.fn(), gap = vi.fn();
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId,
+    env: { ...process.env, CODEX_TEST_INITIALIZED: JSON.stringify({ userAgent: "daynight/0.169.0 (Windows 11; x86_64)" }) },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {}, usageRuntime: { ready, observe, gap } });
+  try { expect(ready).toHaveBeenCalledExactlyOnceWith({ nativeSessionId: "native-thread", providerVersion: "0.169.0" }); expect(observe).not.toHaveBeenCalled(); expect(gap).not.toHaveBeenCalled(); }
+  finally { await provider.close(); }
+});

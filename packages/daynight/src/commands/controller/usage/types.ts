@@ -17,7 +17,7 @@ export type UsageAck = {
   finality: string | null;
 };
 export type UsageStore = {
-  ensureState(generation: string, nativeSessionId: string, providerVersion: string): UsageState;
+  ensureState(generation: string, nativeSessionId: string, providerVersion: string, provider?: string): UsageState;
   states(): UsageState[];
   getState(stateId: string): UsageState;
   nearCapacity(): boolean;
