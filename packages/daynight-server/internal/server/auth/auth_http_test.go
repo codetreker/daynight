@@ -99,53 +99,77 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 }
 
 func TestIdentityHTTPOriginAndBearerPrecedence(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "origin-user")
+	h := newStrictAuthHTTP(t)
+	actor, _ := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
 	cookies := []*http.Cookie{cookie}
+	authenticated := expectAuthentication(actor, cookie.Value)
 	for _, origin := range []string{"", "null", "https://foreign.test", "http://127.0.0.1:8787/", "http://localhost:8787"} {
-		testsupport.AssertProjectError(t, h.Request("POST", "/mutation", "", cookies, nil, origin), 403, "forbidden")
+		response := h.request("POST", "/mutation", "", cookies, nil, origin, authenticated)
+		testsupport.AssertProjectError(t, response, http.StatusForbidden, "forbidden")
+		if response.Header().Get("Daynight-User-ID") != "" {
+			t.Fatalf("rejected Origin %q exposed a principal", origin)
+		}
 	}
-	for _, authorization := range [][]string{{""}, {"Basic abc"}, {"Bearer invalid"}, {"Bearer a", "Bearer b"}, {"Bearer a b"}, {"Bearer " + cookie.Value}} {
-		testsupport.AssertProjectError(t, h.Request("GET", "/api/v1/me", "", cookies, authorization, ""), 401, "unauthenticated")
+	for _, test := range []struct {
+		authorization []string
+		pending       []authRequestCall
+	}{
+		{authorization: []string{""}},
+		{authorization: []string{"Basic abc"}},
+		{authorization: []string{"Bearer invalid"}, pending: []authRequestCall{expectRejectedCredential(model.PATCredential, "invalid")}},
+		{authorization: []string{"Bearer a", "Bearer b"}},
+		{authorization: []string{"Bearer a b"}},
+		{authorization: []string{"Bearer " + cookie.Value}, pending: []authRequestCall{expectRejectedCredential(model.PATCredential, cookie.Value)}},
+	} {
+		response := h.request("GET", "/api/v1/me", "", cookies, test.authorization, "", test.pending...)
+		testsupport.AssertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+		if response.Header().Get("Daynight-User-ID") != "" {
+			t.Fatal("rejected Authorization exposed a principal")
+		}
 	}
-	testsupport.AssertProjectError(t, h.Request("GET", "/api/v1/me", "", nil, nil, ""), 401, "unauthenticated")
-	testsupport.AssertProjectError(t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{cookie, cookie}, nil, ""), 401, "unauthenticated")
-	r := httptest.NewRequest("POST", "/mutation", nil)
-	r.AddCookie(cookie)
-	r.Header["Origin"] = []string{h.Origin, h.Origin}
-	response := httptest.NewRecorder()
-	h.Handler.ServeHTTP(response, r)
-	if response.Code != 403 {
-		t.Fatalf("duplicate origin accepted: %d", response.Code)
-	}
-	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE sessions SET created_at=now()-interval '8 days',expires_at=now()-interval '1 second'`); err != nil {
-		t.Fatal(err)
-	}
-	testsupport.AssertProjectError(t, h.Request("GET", "/api/v1/me", "", cookies, nil, ""), 401, "unauthenticated")
+	testsupport.AssertProjectError(t, h.request("GET", "/api/v1/me", "", nil, nil, ""), http.StatusUnauthorized, "unauthenticated")
+	testsupport.AssertProjectError(t, h.request("GET", "/api/v1/me", "", []*http.Cookie{cookie, cookie}, nil, ""), http.StatusUnauthorized, "unauthenticated")
+	request := httptest.NewRequest("POST", "/mutation", nil)
+	request.AddCookie(cookie)
+	request.Header["Origin"] = []string{authRequestOrigin, authRequestOrigin}
+	testsupport.AssertProjectError(t, h.serve(request, authenticated), http.StatusForbidden, "forbidden")
+	expired := h.request("GET", "/api/v1/me", "", cookies, nil, "",
+		expectRejectedCredential(model.SessionCredential, cookie.Value))
+	testsupport.AssertProjectError(t, expired, http.StatusUnauthorized, "unauthenticated")
 }
 
 func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
-	h := authTestHarness(t)
-	aliceCookie := h.Login(t, "principal-alice")
-	aliceCookies := []*http.Cookie{aliceCookie}
-	aliceResponse := h.Request("GET", "/api/v1/me", "", aliceCookies, nil, "")
+	h := newStrictAuthHTTP(t)
+	aliceActor, aliceProfile := authRequestAccount(1)
+	bobActor, bobProfile := authRequestAccount(2)
+	aliceCookie, bobCookie := h.cookie(authAliceCookie), h.cookie(authBobCookie)
+	aliceCookies, bobCookies := []*http.Cookie{aliceCookie}, []*http.Cookie{bobCookie}
+	aliceSession := expectAuthentication(aliceActor, aliceCookie.Value)
+	bobSession := expectAuthentication(bobActor, bobCookie.Value)
+	aliceResponse := h.request("GET", "/api/v1/me", "", aliceCookies, nil, "", aliceSession, expectUser(aliceActor, aliceProfile))
 	alice := testsupport.DecodeResponse[api.User](t, aliceResponse, http.StatusOK)
-	if aliceResponse.Header().Get("Daynight-User-ID") != alice.ID {
+	if alice.ID != aliceActor.UserID || aliceResponse.Header().Get("Daynight-User-ID") != alice.ID {
 		t.Fatal("session response does not identify its authenticated principal")
 	}
-
-	bobCookie := h.Login(t, "principal-bob")
-	bobCookies := []*http.Cookie{bobCookie}
-	bobResponse := h.Request("GET", "/api/v1/me", "", bobCookies, nil, "")
+	bobResponse := h.request("GET", "/api/v1/me", "", bobCookies, nil, "", bobSession, expectUser(bobActor, bobProfile))
 	bob := testsupport.DecodeResponse[api.User](t, bobResponse, http.StatusOK)
-	if bob.ID == alice.ID || bobResponse.Header().Get("Daynight-User-ID") != bob.ID {
+	if bob.ID != bobActor.UserID || bob.ID == alice.ID || bobResponse.Header().Get("Daynight-User-ID") != bob.ID {
 		t.Fatal("account replacement reused the previous response principal")
 	}
 
+	mintedFact := authRequestMintedPAT(aliceActor, "principal-test")
 	minted := testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t,
-		h.Request("POST", "/api/v1/me/tokens", `{"name":"principal-test","expiresAt":null}`, aliceCookies, nil, h.Origin), http.StatusCreated)
+		h.request("POST", "/api/v1/me/tokens", `{"name":"principal-test","expiresAt":null}`, aliceCookies, nil, authRequestOrigin,
+			aliceSession, authRequestCall{name: "CreatePAT", args: []any{aliceActor, identitycore.CreatePAT{Name: "principal-test"}}, result: mintedFact}),
+		http.StatusCreated)
+	if minted.ID != mintedFact.Credential.ID || minted.Token != mintedFact.Secret {
+		t.Fatal("mint response changed the PAT")
+	}
+	pat := model.Principal{Kind: model.PATCredential, UserID: alice.ID, CredentialID: minted.ID}
+	patAdmission := expectAuthentication(pat, minted.Token)
 	bearer := []string{"Bearer " + minted.Token}
-	patResponse := h.Request("GET", "/api/v1/me", "", bobCookies, bearer, "")
+	patResponse := h.request("GET", "/api/v1/me", "", bobCookies, bearer, "", patAdmission, expectUser(pat, aliceProfile))
 	if user := testsupport.DecodeResponse[api.User](t, patResponse, http.StatusOK); user.ID != alice.ID || patResponse.Header().Get("Daynight-User-ID") != alice.ID {
 		t.Fatal("response principal followed the cookie instead of the admitted bearer")
 	}
@@ -153,19 +177,21 @@ func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
 	spoofed := httptest.NewRequest("GET", "/api/v1/me", nil)
 	spoofed.AddCookie(aliceCookie)
 	spoofed.Header.Set("Daynight-User-ID", bob.ID)
-	spoofedResponse := httptest.NewRecorder()
-	h.Handler.ServeHTTP(spoofedResponse, spoofed)
+	spoofedResponse := h.serve(spoofed, aliceSession, expectUser(aliceActor, aliceProfile))
 	if user := testsupport.DecodeResponse[api.User](t, spoofedResponse, http.StatusOK); user.ID != alice.ID || spoofedResponse.Header().Get("Daynight-User-ID") != alice.ID {
 		t.Fatal("request-supplied principal was echoed into the response")
 	}
 
-	mutation := h.Request("POST", "/mutation", "", aliceCookies, nil, h.Origin)
-	if mutation.Code != http.StatusNoContent || mutation.Header().Get("Daynight-User-ID") != alice.ID {
+	mutation := h.request("POST", "/mutation", "", aliceCookies, nil, authRequestOrigin, aliceSession,
+		authRequestCall{name: "mutation", args: []any{aliceActor}})
+	if mutation.Code != http.StatusNoContent || mutation.Body.Len() != 0 || mutation.Header().Get("Daynight-User-ID") != alice.ID {
 		t.Fatal("successful empty mutation response lost its principal")
 	}
-	invalid := h.Request("POST", "/api/v1/me/tokens", `{}`, aliceCookies, nil, h.Origin)
+	invalid := h.request("POST", "/api/v1/me/tokens", `{}`, aliceCookies, nil, authRequestOrigin, aliceSession)
 	testsupport.AssertProjectError(t, invalid, http.StatusBadRequest, "invalid_input")
-	forbidden := h.Request("POST", "/api/v1/me/tokens", `{"name":"nested","expiresAt":null}`, bobCookies, bearer, h.Origin)
+	refusal := &model.Fault{Code: "forbidden", Message: "A main-site browser session is required for this operation."}
+	forbidden := h.request("POST", "/api/v1/me/tokens", `{"name":"nested","expiresAt":null}`, bobCookies, bearer, authRequestOrigin,
+		patAdmission, authRequestCall{name: "CreatePAT", args: []any{pat, identitycore.CreatePAT{Name: "nested"}}, err: refusal})
 	testsupport.AssertProjectError(t, forbidden, http.StatusForbidden, "forbidden")
 	for _, response := range []*httptest.ResponseRecorder{invalid, forbidden} {
 		if response.Header().Get("Daynight-User-ID") != alice.ID {
@@ -173,9 +199,9 @@ func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
 		}
 	}
 	for _, response := range []*httptest.ResponseRecorder{
-		h.Request("GET", "/api/v1/me", "", nil, nil, ""),
-		h.Request("GET", "/api/v1/me", "", bobCookies, []string{"Bearer invalid"}, ""),
-		h.Request("POST", "/mutation", "", aliceCookies, nil, "https://foreign.test"),
+		h.request("GET", "/api/v1/me", "", nil, nil, ""),
+		h.request("GET", "/api/v1/me", "", bobCookies, []string{"Bearer invalid"}, "", expectRejectedCredential(model.PATCredential, "invalid")),
+		h.request("POST", "/mutation", "", aliceCookies, nil, "https://foreign.test", aliceSession),
 	} {
 		if response.Header().Get("Daynight-User-ID") != "" {
 			t.Fatal("failed authentication exposed an unadmitted principal")
@@ -306,20 +332,17 @@ func TestIdentityHTTPInputAndOperationalFailures(t *testing.T) {
 }
 
 func TestIdentityHTTPUserDisappearsAfterCredentialAdmission(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "removed-user")
-	request := httptest.NewRequest("GET", "/api/v1/me", nil)
-	request.AddCookie(cookie)
-	principal, err := h.Auth.AuthenticateRequest(request)
-	if err != nil {
-		t.Fatal(err)
+	h := newStrictAuthHTTP(t)
+	actor, _ := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
+	response := h.request("GET", "/api/v1/me", "", []*http.Cookie{cookie}, nil, "",
+		expectAuthentication(actor, cookie.Value),
+		authRequestCall{name: "User", args: []any{actor}, err: model.Unauthenticated(model.ErrNotFound)},
+	)
+	testsupport.AssertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+	if response.Header().Get("Daynight-User-ID") != actor.UserID || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" {
+		t.Fatalf("missing admitted User returned incorrect headers: %v", response.Header())
 	}
-	if _, err := h.Database.Pool.Exec(context.Background(), "DELETE FROM users WHERE id=$1", principal.UserID); err != nil {
-		t.Fatal(err)
-	}
-	response := httptest.NewRecorder()
-	h.Auth.me(response, request, principal)
-	testsupport.DecodeResponse[api.ErrorResponse](t, response, 401)
 }
 
 func TestIdentityHTTPLoginReturnsToTestSessionDeepLink(t *testing.T) {
