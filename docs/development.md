@@ -159,6 +159,11 @@ its original duration and cancellation state, and expire it only after the
 relevant process or IPC barrier. The
 [update deadline decision](../.agents/notes/implemented/testing/2026-11-17-update-cleanup-test-deadlines.md)
 records the proof and its limits.
+The command-timeout scenarios separately release the configured command timer
+after a real fixture heartbeat. Their native cleanup deadlines and process
+observations remain live; the
+[command expiry fixture decision](../.agents/notes/implemented/testing/2026-11-18-updater-fixture-command-expiry.md)
+owns that boundary.
 
 The blocked-sink attachment fixture observes entry into its consumer before
 advancing to the request deadline, then checks the timeout, sink abort and
