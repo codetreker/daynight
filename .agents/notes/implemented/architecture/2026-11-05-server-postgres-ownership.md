@@ -32,7 +32,7 @@ its complete original transformation source and SQL from a dedicated leaf
 package; a separate registration file exposes the transform without changing
 the embedded bytes. The current snapshot and migration history share the `postgres/schema` entry
 point. Ordinary SQL is in `schema/migrations`; migration 026 retains its
-independent package and internal layout in `schema/migration026`.
+independent package and internal layout in `schema/migrations/026`.
 
 ## Alternatives
 

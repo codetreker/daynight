@@ -199,7 +199,7 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 	}
 	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres")
 	var wantVersions []int64
-	for _, directory := range []string{filepath.Join(migrationRoot, "schema", "migrations"), filepath.Join(migrationRoot, "schema", "migration026", "migrations")} {
+	for _, directory := range []string{filepath.Join(migrationRoot, "schema", "migrations"), filepath.Join(migrationRoot, "schema", "migrations", "026", "migrations")} {
 		entries, err := os.ReadDir(directory)
 		if err != nil {
 			t.Fatal(err)

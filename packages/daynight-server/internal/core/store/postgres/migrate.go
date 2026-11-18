@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migration026"
+	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
