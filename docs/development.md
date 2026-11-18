@@ -584,7 +584,11 @@ registrations create them with native Git and publish their manifests in the
 private repository. They exercise real inventory, inspection, and cleanup
 without setting up a remote. The
 [scan fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-worktree-scan-fixtures.md)
-explains the split from preparation and remote coverage. The concurrent
+explains the split from preparation and remote coverage. Terminal cleanup
+cases that start from a registered checkout use the same native registration
+and manifest fixture, with independent managers and original fault boundaries.
+The [cleanup fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-worktree-cleanup-fixtures.md)
+owns that boundary. The concurrent
 fetched-commit case keeps both real preparations within its fetch barriers and
 uses a case-local 30-second watchdog for native Git execution. Its commit,
 shared-ref and private-ref cleanup
