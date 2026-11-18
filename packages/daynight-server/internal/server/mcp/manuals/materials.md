@@ -1,84 +1,48 @@
-# Organizing task materials
+# Task and Goal materials
 
-Read this topic to organize independently understandable requirements, designs and results. Collection protocols are owned by [Steps](daynight://manuals/steps.md), [Threads](daynight://manuals/threads.md) and [Attachment reads](daynight://manuals/attachment-reads.md). Before replacing descriptions, uploading files or recording discussion, also read [Write safety](daynight://manuals/write-safety.md) and the operation-specific topic.
+Start with [Overview](daynight://manuals/overview.md).
 
-A Goal has its own description, Thread and attachments. A child Task has separate material; Parent ownership does not move or copy it. Use the actual resource ID when reading or writing either.
+Use this topic to define independently understandable work, maintain effective conclusions and record results. Collection and mutation mechanics belong to the relevant operation topics.
 
-## Goal outcomes and progress
+## Effective ownership
 
-A Goal owns the current effective shared specification, architecture, task breakdown, key decisions, stage outcomes, delivery results and whole-Goal acceptance conclusions. Its child Tasks track the work contributing to that objective and retain their own definitions, responsibility, status, results and evidence. Consumers reference the Goal's shared material by its actual resource ID and location.
-
-This ownership applies whether a conclusion is produced directly in a Session or through a child Task for discussion, research, design or breakdown. When a Goal-wide conclusion becomes effective, update the Goal's description or owning attachment and verify the saved content. A completed child or a conclusion left only in its material or Thread does not update the Goal. Preserve task-specific results and evidence with the producing Task and reference them from the Goal when needed; shared material has one effective owner.
-
-Keep the Goal's overall progress current when a stage result, scope or decision changes, a delivery is verified, or a significant blocker affects the objective. Record achieved outcomes, remaining scope and material blockers or limitations; keep command chronology and temporary execution context in Session. The service's `progress` counts direct child Tasks; it does not synchronize conclusions or establish delivery or acceptance. A child entering `in_progress` starts a `todo` Goal; other Goal status changes remain explicit.
-
-The target project's workflow determines required files, discussion Tasks, confirmation and delivery gates. Material ownership does not require a fixed Goal pipeline or a separate child Task for every discussion.
-
-## Give information an effective owner
-
-Keep Task and Goal descriptions brief: summarize the work, expected outcome and necessary scope, with references to detailed material. Put full requirements, solutions, detailed designs, implementation instructions, research reports and acceptance evidence in the owning attachments. Do not copy their full content into the description.
-
-A simple task fully explained in a few sentences needs no attachment. This writing guidance sets no fixed word or character limit. Keep necessary definitions and acceptance complete across the brief description and its actual readable material.
-
-For example:
-
-```markdown
-Make login failure messages actionable for credential errors and network failures. See [Task details](task.md) for requirements and acceptance.
-```
+A Goal independently owns its description, properties, Thread and attachments. Its ordinary children have separate material; Parent ownership neither copies nor moves it. Address the actual owning resource.
 
 | Information | Owner |
 | --- | --- |
-| Problem, required outcome, scope, constraints, inputs, deliverables and acceptance | Description plus its actual readable referenced material |
-| Full requirements, solutions, detailed designs, implementation instructions, research reports and acceptance evidence; images and prototypes | Owning Task or Goal attachment |
-| Durable participant questions, proposals and replies | Immutable Task Thread |
-| Ordered durable work objective, completion conditions, result and material references | Step, according to project rules |
-| Command schedules, tools, debugging chronology, temporary todos, worktrees, runtime logs, claim and waiting context | Session or actual runtime platform |
-| Execution/publishing/communication/deployment/merge authority | Actual user and project authorization context, not reconstructed from Task content |
+| Current shared specification, architecture, breakdown, key decisions, stage outcomes, delivery results and whole-Goal acceptance | Goal description or owning attachments |
+| Child definition, responsibility, status, outputs and evidence | Producing child Task; reference from the Goal when needed |
+| Brief problem, outcome, scope, constraints, inputs, deliverables and acceptance, with detailed references | Task/Goal description plus actual readable referenced material |
+| Full requirements, solutions, detailed designs, implementation instructions, research, acceptance evidence, images and prototypes | Owning Task/Goal attachments |
+| Durable participant questions, proposals and replies | Immutable Thread |
+| Ordered durable objective, completion conditions, result and material references | Step, according to project rules |
+| Commands, tools, debugging chronology, temporary todos, worktrees, runtime logs, claim and waiting context | Session or actual runtime platform |
+| Execution and delivery authority | Actual user/project authorization context, not reconstructed Task content |
 
-Classify by purpose: a migration plan can be a formal deliverable, while the Session's schedule for producing it is operating context. A Step can reference overall requirements/results rather than copy them. Thread preserves the discussion; the accepted decision also belongs in the effective requirement/design/result owner.
+Shared material has one effective owner regardless of which Session or child produces it. When a Goal-wide conclusion becomes effective, update and verify its Goal owner. A completed child or conclusion left only in its material/Thread does not synchronize the Goal. Preserve task-specific evidence with its producer.
 
-Descriptions and references must establish concrete work, responsible scope, necessary inputs and their read locations, actual outputs/exchanges, and observable acceptance including relevant boundary/failure behavior. These are information requirements, not mandatory headings or an empty template. Short work can be complete inline; larger work can cite owning files/Tasks. Unexplained links, previous-chat references and cycles of empty documents leave inputs missing.
+Update overall Goal progress when stage results, scope or decisions change, delivery is verified, or significant blockers arise. State achieved outcomes, remaining scope and material blockers/limitations. Service `progress` counts direct children; it neither synchronizes conclusions nor establishes delivery or acceptance. [Tasks](daynight://manuals/tasks.md) owns Goal lifecycle effects.
 
-A required implementation approach belongs in durable Task material for another executor. A Session's command-by-command schedule does not. Do not invent architecture, acceptance thresholds or future prerequisite outputs to disguise incomplete inputs. Follow selected project workflow requirements for specifications or reviews; the product imposes no universal separate spec file or Goal pipeline.
+## Define complete work concisely
 
-This compact hypothetical documentation definition demonstrates sufficient inputs; its retention policy is not Daynight behavior:
+Keep descriptions brief and link detailed attachments rather than duplicate their full content. A simple task completely explained in a few sentences needs no attachment. There is no fixed length or required heading template: description and readable sources together must establish concrete work, responsible scope, required inputs and their locations, actual outputs/exchanges, and observable acceptance including relevant boundary/failure behavior.
 
-```markdown
-# Explain report retention
+Unexplained links, previous-chat references and cycles of empty documents leave inputs missing. Required implementation approaches belong in durable material for another executor. Do not invent architecture, acceptance thresholds or future prerequisite outputs to fill gaps. The target project's workflow determines required documents and discussion/delivery gates; material ownership adds no universal pipeline.
 
-Outcome: Publish the policy, scope and one date example in this Task description.
-Confirmed input: Reports are retained for 14 calendar days, evaluated at 00:00 UTC.
-A report remains available through its fourteenth day. Saved personal downloads
-are outside this policy.
-Acceptance: State the UTC calendar-day rule; a report created on 1 January is
-retained through 14 January and leaves retention at the 15 January UTC boundary.
-This work documents supplied policy and changes no application behavior.
-```
+Classify by purpose: a migration plan may be a formal deliverable; the Session's command schedule for producing it is operating context. Steps can reference overall requirements/results. Threads preserve discussion; accepted conclusions also belong in the effective requirement/design/result owner.
 
-## Read and replace coherent material
+## Maintain coherent content
 
-Task definitions, Steps, Thread and attachments are independent reads. Full Task list omits descriptions, and Task show supplies no attachment inventory/bytes or complete Step/Thread collections. Use [Tasks](daynight://manuals/tasks.md) for projections, then read actually required files rather than only their names/timestamps.
+Read complete current owner content and required sources, using [Task projections](daynight://manuals/tasks.md) and separate material reads. For an effective change, rewrite a coherent whole preserving requirements, references, examples and essential rationale, then verify the saved content. Preserve immutable Thread history and point readers to the effective owner. A correction left only in Thread while the requirement remains contradictory is incomplete. Recording a conclusion grants no execution authority.
 
-```json
-{"name":"task_show","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"22222222-2222-4222-8222-222222222222","view":"full"}}
-```
+`description` replaces the whole field; [Tasks](daynight://manuals/tasks.md) defines its versioned mutation. Preserve Markdown newlines, code and valid links. Descriptions retain their raw string; Web renders CommonMark/GFM and displays raw HTML as text.
 
-After deciding from the complete content and exact version, supplied `description` replaces the entire field. Construct a coherent result preserving every effective requirement/reference; omit unrelated metadata. For example, after observing version `"12"`:
+## References, inputs and results
 
-```json
-{"name":"task_update","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"22222222-2222-4222-8222-222222222222","ifVersion":"12","description":"# Report retention\n\nReports are retained for 14 calendar days, evaluated at 00:00 UTC. A report created on 1 January is retained through 14 January and leaves retention at the 15 January UTC boundary.\n\nPersonal downloads are outside this policy. This documentation work changes no application behavior.\n","returnView":"full"}}
-```
+A consumer identifies a source's Project/Task, description section or exact attachment path, and purpose. Use an actual immutable repository revision when a particular version matters. Private local paths are not durable evidence for another reader. Preserve supporting resource layouts and [attachment link bases](daynight://manuals/attachment-reads.md); invent neither paths nor cross-Task relative URL schemes.
 
-The example uses fictional IDs and supplied hypothetical policy. Actual work follows its confirmed inputs. Preserve Markdown newlines, code and valid links; descriptions retain their raw string, while Web renders CommonMark/GFM and displays raw HTML as text. Verify the structured result and full content as needed. Conflicts require a new read/decision; lost responses can follow committed edits and do not justify automatic replay.
+Read real sources before declaring them sufficient. A promised upload, terminal prerequisite, unchanged Task version, inventory or timestamp establishes neither presence nor applicability/content. Attachments change independently. Resolve substantive source conflicts within authorized scope; copied shared designs create competing owners.
 
-When a discussion conclusion becomes effective, identify its requirement/design/result owner, read current content and sources, rewrite it coherently with its examples/references and essential rationale, submit through its version/file contract, and verify. Preserve immutable Thread history; a precise pointer can locate the effective material. Adding a calendar-day correction only to Thread while the requirement still says 24-hour periods leaves the definition contradictory. Recording the conclusion does not authorize executing it.
+References identify inputs; [dependencies](daynight://manuals/dependencies.md) govern scheduling and chain membership. Neither implies the other. A cancelled prerequisite can satisfy scheduling without delivering input.
 
-## Preserve readable sources and independent results
-
-A shared source has one effective owner. A consumer identifies its Project/Task, description section or exact attachment path, and purpose. Repository sources need an actual immutable revision when a particular version matters. A private local path is not durable evidence for another reader. [Attachment reads](daynight://manuals/attachment-reads.md) owns case-sensitive paths and link bases; retain file/resource layouts and do not invent attachment paths or cross-Task relative URL schemes.
-
-Read real sources before claiming sufficiency. A promised upload, terminal prerequisite, unchanged Task version, inventory or timestamp does not prove material presence/applicability/content. Attachments can change independently. Resolve substantive source conflicts within the actual allowed scope; copying every shared design into every consumer creates competing owners.
-
-Citations and execution dependencies serve different purposes: a reference identifies information, while an edge controls scheduling and chain membership. Neither implies the other; [Dependencies](daynight://manuals/dependencies.md) owns relationships. A cancelled prerequisite may satisfy scheduling while delivering no input.
-
-Write only real producer/consumer contracts: necessary fields/types, requiredness, format/revision, errors, units and null semantics. When no exchange exists, do not invent one. Formal results identify what exists, where to read it, actual observations and limitations. Status alone proves neither outputs nor acceptance. Keep detailed results and acceptance evidence in owning attachments; a brief description can summarize and reference them. Follow the applicable project's requirements; execution chronology remains in Session.
+Specify only real producer/consumer exchanges: necessary fields/types, requiredness, format/revision, errors, units and null semantics. Invent no exchange when none exists. Results identify what exists, its read location, actual observations and limitations. Status alone establishes neither outputs nor acceptance. Keep detailed results/evidence in owning attachments and summarize/link them from descriptions.

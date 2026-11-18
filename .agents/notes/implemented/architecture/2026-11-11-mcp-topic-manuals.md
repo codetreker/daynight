@@ -22,6 +22,8 @@ has one detailed owner; operation guides retain their specific versions, identit
 pagination, integrity and recovery rules.
 Material organization keeps information ownership and sufficiency separate from
 Step, Thread and transfer protocols.
+The [shared guidance decision](2026-11-18-mcp-shared-guidance.md) further
+concentrates result and example conventions and clarifies reading prerequisites.
 
 The fixed `productManualManifest` owns production paths, public metadata and
 strict content sizes. Loading and registration use that inventory; tests assert

@@ -187,7 +187,7 @@ func TestProductManualProtocol(t *testing.T) {
 					found[resource.URI] = resource
 				}
 				overviewResource := found[manualOverviewURI]
-				if overviewResource == nil || overviewResource.Name != "overview" || overviewResource.Title != "Daynight MCP overview" || overviewResource.Description != "Find the right Daynight guide, establish Project context, and read the guidance required for each operation." || overviewResource.MIMEType != "text/markdown" || overviewResource.Size != int64(len(overview)) {
+				if overviewResource == nil || overviewResource.Name != "overview" || overviewResource.Title != "Daynight MCP overview" || overviewResource.Description != "Find operation guides, shared conventions and required reading sets." || overviewResource.MIMEType != "text/markdown" || overviewResource.Size != int64(len(overview)) {
 					t.Fatalf("overview metadata = %+v", overviewResource)
 				}
 				for _, expected := range productManualManifest {

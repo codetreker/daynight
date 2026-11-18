@@ -1,22 +1,34 @@
 # Daynight MCP overview
 
-Use `tools/list` for current tool definitions and `resources/list` to discover the product manual catalog. Read complete topics with `resources/read` and their absolute URIs. Reuse already-read guidance only while it remains applicable to the current operation.
+Read this overview before using Daynight tools. Use `tools/list` for current input contracts, `resources/list` for the manual catalog, and `resources/read` for complete topics at their absolute URIs. Read the required topics in full; reuse already-read guidance while it still applies. Rediscover and reread current guidance after a server update. A topic link marked conditional is needed when that condition applies, not for every operation.
 
-| Purpose | Manual Resources |
+## Choose the reading set
+
+| Operation | Required topic; conditional additions |
 | --- | --- |
-| Establish Account/Team/Project context; resolve a repository | [concepts](daynight://manuals/concepts.md) |
-| Create and organize Tasks/Goals; query projections, readiness, lifecycle or properties | [tasks](daynight://manuals/tasks.md) |
-| Interpret graphs; create or replace dependencies | [dependencies](daynight://manuals/dependencies.md); [tasks](daynight://manuals/tasks.md) for creation rules |
-| Interpret versions, authorization and write outcomes | [write-safety](daynight://manuals/write-safety.md) |
-| Organize Goal outcomes/progress, requirements, accepted conclusions, references and results | [materials](daynight://manuals/materials.md) |
-| Read or maintain ordered Steps | [steps](daynight://manuals/steps.md) |
-| Read or post durable discussion | [threads](daynight://manuals/threads.md) |
-| Read attachment metadata or complete bytes | [attachment-reads](daynight://manuals/attachment-reads.md) |
-| Upload or remove attachments | [attachment-writes](daynight://manuals/attachment-writes.md); [attachment-reads](daynight://manuals/attachment-reads.md) if path rules are unknown |
-| Observe activity/grouped work; locate Sessions; read history | [session-reads](daynight://manuals/session-reads.md) |
-| Send to an exact Session; query or recover its original operation | [session-messages](daynight://manuals/session-messages.md); [session-reads](daynight://manuals/session-reads.md) if target identity is unknown |
-| Hand off work or complete an explicit owned Worker claim | [worker-operations](daynight://manuals/worker-operations.md) |
+| Establish Account, Team or Project context; resolve a repository | [Concepts](daynight://manuals/concepts.md) |
+| Inspect Tasks/Goals, list ready work or read properties | [Tasks](daynight://manuals/tasks.md) |
+| Create Tasks/Goals or change fields, status or properties | [Tasks](daynight://manuals/tasks.md); [Materials](daynight://manuals/materials.md) when defining or replacing formal material; [Dependencies](daynight://manuals/dependencies.md) when setting relationships |
+| Read a dependency graph | [Dependencies](daynight://manuals/dependencies.md) |
+| Replace or reduce dependency relationships | [Dependencies](daynight://manuals/dependencies.md) |
+| Organize requirements, designs, shared sources or results | [Materials](daynight://manuals/materials.md) |
+| Read or maintain Steps | [Steps](daynight://manuals/steps.md) |
+| Read or post participant discussion | [Threads](daynight://manuals/threads.md) |
+| Read attachment metadata/bytes or resolve paths | [Attachment reads](daynight://manuals/attachment-reads.md) |
+| Publish or remove attachments | [Attachment writes](daynight://manuals/attachment-writes.md); Attachment reads for unknown path rules or reading back bytes |
+| Observe ongoing work, locate or inspect Sessions | [Session reads](daynight://manuals/session-reads.md) |
+| Read Session history or complete entries | [Session reads](daynight://manuals/session-reads.md) |
+| Send to an exact Session or query its original operation | [Session messages](daynight://manuals/session-messages.md); Session reads when target identity, state or admission must be established |
+| Hand off work or complete an explicitly owned Worker claim | [Worker operations](daynight://manuals/worker-operations.md) |
 
-A connection has no implicit current Project. Establish the intended target from an explicit ID or link, a verified Worker assignment, or host repository context; resolve a known repository address with `project_resolve`. Without target context, list Projects for explicit user selection. Task and Step summaries can omit full definitions; read full content when needed and attachments separately. Full Task lists still omit descriptions.
+Every write also requires [Write safety](daynight://manuals/write-safety.md) and its operation-specific prerequisites. Topics state any further necessary reads. For an input-dependent decision, read the actual complete material, not only its inventory or a preview. Task/Step summaries omit definitions; even full Task lists omit descriptions. Attachments, Steps, Thread and Session content are separate reads.
 
-Before every write, read [write-safety](daynight://manuals/write-safety.md) and the current operation's topic. Documentation reads, status, assignment, readiness and automatic execution permission do not supply missing execution or delivery authorization or establish a Worker assignment. Apply the current user's scope and target project's rules. Preserve decision versions exactly; reassess conflicts and inspect completion facts before deciding on another submission.
+## Shared conventions
+
+A connection has no implicit current Project. Establish the target from an explicit ID/link, a verified runtime assignment or the host repository; resolve a known repository with `project_resolve`. Without target context, list Projects for explicit user selection. Concepts owns identity and ambiguity rules.
+
+Business results are in `structuredContent.data`; success metadata is in `structuredContent.meta`. Tool execution errors have `isError: true` and `structuredContent.error`. In these guides, `data`, `meta` and `error` refer to those paths. A protocol failure may lack that envelope. The short `Completed.` text is not the business result. Input declarations do not describe every result field, default, limit or behavioral condition; the operation topic supplies those facts.
+
+Examples using symbols such as P (Project), T (Task), A/B/X (related Tasks) or S (Session) are schematic, not executable JSON. Substitute actual observed IDs, exact versions and required scope when making calls. Complete JSON examples, where present, also use fictional identities.
+
+Reading guidance, Task status, responsibility, readiness and automatic permission do not establish execution/delivery authority or a Worker assignment. Apply current user authorization and project rules. Preserve exact decision versions; reread and reassess conflicts, and interpret completion facts before any new submission. Write safety owns these rules; each operation owns its particular identity and recovery procedure.

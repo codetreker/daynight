@@ -329,13 +329,16 @@ UTF-8 正文、大小及 instructions 与正文中的绝对内部 URI 引用，�
 SDK 原生 Resources 提供目录和每篇手册的完整原文。独立 instructions 同时供两版协议使用，
 只介绍产品并提供总览的直接读取 URI，无需先查询目录。
 
-总览按操作选择主题并说明跨操作的基本规则。公共 write-safety 拥有精确版本、授权和写完成规则；各资源拥有其分页、
-身份、完整性、失败和恢复的具体条件。Session 读取与发送、Steps、Thread 和附件读取与写入
-各自可独立取得，不需要从混合长文截取章节。正式材料的用途与充分性由 materials 拥有。
+总览按操作选择必读和条件性增读的主题，集中解释结果信封和示意符号；仍适用的已读正文可复用。
+公共 write-safety 拥有授权、精确版本、冲突及写入完成分类；各资源拥有其分页、身份、完整性、
+失败和恢复的具体条件。Task 的读取和生命周期、依赖的读取和替换、Session 的观察和历史分别
+由各自完整专题提供。Session 发送、Steps、Thread 和附件读取与写入各有独立专题。
+正式材料的归属、用途与充分性由 materials 拥有。
 内部链接直接指向当前目录的 `daynight://manuals/...` URI，不在运行时聚合文稿或转换链接。
 客户端在服务更新后重新发现目录；移除的混合主题 URI 沿用未知 URI 的协议错误。
 [主题决策](../../.agents/notes/implemented/architecture/2026-11-11-mcp-topic-manuals.md)记录划分理由，
-[总览决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-overview-entry.md)记录握手入口的取舍。
+[总览决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-overview-entry.md)记录握手入口的取舍，
+[共享规则决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-shared-guidance.md)记录集中约定的理由。
 
 静态 Resources capability 不承诺订阅或变更通知。每次读取创建独立结果，并在构造前非阻塞取得
 共享 Control 名额，直到 handler 与 HTTP 交付均结束才释放。饱和返回顶层协议内部错误；该限制
