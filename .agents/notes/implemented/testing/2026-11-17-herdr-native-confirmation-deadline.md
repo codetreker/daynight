@@ -2,6 +2,8 @@
 
 Status: implemented
 
+The dedicated Herdr runtime tests described here were removed with the [daemon](../simplification/2026-11-18-remove-herdr-daemon.md); this decision remains historical.
+
 ## Problem
 
 Native Session confirmation tests must first establish that their original input

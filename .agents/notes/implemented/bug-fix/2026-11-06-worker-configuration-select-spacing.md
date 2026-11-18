@@ -18,11 +18,11 @@ select types common geometry without changing other field consumers.
 
 The [shared native select decision](../architecture/2026-11-14-shared-native-select.md)
 owns the reusable replacement. Worker configuration now uses its `form`/`fill`
-variant, including the later control-mode field; the local wrapper and arrow
-rules have no remaining ownership. The configuration editor retains its values,
-inheritance, draft and save behavior. In particular, the real control-mode select
-ref and layout effect preserve no selection with exactly the `herdr` and `web`
-options. The [configuration editor decision](../../archived/architecture/2026-11-04-web-worker-configuration-editor.md)
+variant; the local wrapper and arrow rules have no remaining ownership. The
+configuration editor retains its values, inheritance, draft and save behavior.
+The later control-mode select and its nullable draft were removed under the
+[two-tool protocol decision](../architecture/2026-11-17-worker-two-tool-protocol.md).
+The [configuration editor decision](../../archived/architecture/2026-11-04-web-worker-configuration-editor.md)
 records the original configuration and draft rationale.
 
 ## Alternatives

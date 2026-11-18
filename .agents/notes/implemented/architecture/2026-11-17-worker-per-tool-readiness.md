@@ -12,8 +12,10 @@ installation the user did not adopt.
 ## Decision
 
 The selection manager receives each validated choice or null with its actual
-source and revision. Web native qualification requires its provider's tool;
-Herdr qualification also requires Herdr. An unadopted required choice cannot
+source and revision. Web native qualification requires its provider's tool.
+The original Herdr qualification also required Herdr; that execution path is
+retired by the [Web-only native model](../simplification/2026-11-18-web-only-native-tool-model.md).
+An unadopted required choice cannot
 be prepared or selected. Unchanged choices retain their in-flight inspection
 when other choices or the target revision change; a changed choice revokes its
 own admission. Frozen recipes retain their separate verification and cleanup
@@ -22,8 +24,9 @@ responsibilities.
 The existing telemetry format requires a non-null target. An unadopted tool's
 last real target retains its original source and revision and is reported as
 configuration unavailable when the wire permits it. Otherwise its entry is
-omitted. Other observations retain their real choices and evidence. Network
-bootstrap and telemetry contracts remain unchanged. This refines the
+omitted. Other observations retain their real choices and evidence. The
+[two-tool protocol](2026-11-17-worker-two-tool-protocol.md) limits current
+network bootstrap and telemetry to the retained Web tools. This refines the
 [cloud configuration decision](2026-11-11-worker-tool-path-configuration.md).
 
 ## Alternatives

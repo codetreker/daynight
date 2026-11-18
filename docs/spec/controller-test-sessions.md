@@ -6,7 +6,7 @@
 
 命令可携带首条 prompt 和该 Provider 已支持的创建参数。参数沿用原生命名；不支持的参数必须明确拒绝，不能静默忽略或宣称完整原生 TUI 参数兼容。没有 prompt 时等待网页输入，有 prompt 时先完成唯一首次输入的受理与同步；不以启动成功或 native idle 冒充输入已受理。
 
-worker 使用的 `--launch-id` 路径继续服务原 Task 执行。独立入口与内部 ticket 参数互斥。Test Session 不属于新的 `agentControlMode`，不改动 `herdr`/`web` 的任务执行选择。工作目录由用户持有，结束测试不得删除它或自动删除用户文件。
+worker 使用的 `--launch-id` 路径继续服务原 Task 执行。独立入口与内部 ticket 参数互斥。Test Session 不改变 Task 的 Web 执行或旧 Herdr claim 的只读历史语义。工作目录由用户持有，结束测试不得删除它或自动删除用户文件。
 
 ## 继续原生上下文
 

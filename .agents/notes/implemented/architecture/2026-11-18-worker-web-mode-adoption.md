@@ -12,26 +12,27 @@ need to gain the missing obligation without losing unrelated application facts.
 
 ## Decision
 
-Schema 10 restores the existing `agentControlMode` ledger item for applicable
-Web targets. The configuration manager applies it through the scalar commit
-owner, records its actual source, and publishes execution eligibility only after
-persistence. Adoption needs no Herdr tool, selected Project or Task execution.
-The existing report projection, capability filter and receipt fences carry the
-result without a new wire format or server-generated success.
+Schema 10 originally restored the `agentControlMode` ledger item for applicable
+Web targets. The configuration manager applied it through the scalar commit
+owner, recorded its actual source, and published execution eligibility only after
+persistence. Adoption needed no Herdr tool, selected Project or Task execution.
+The report projection, capability filter and receipt fences carried the result
+without a new wire format or server-generated success.
 
 Schemas 1–9 retain their frozen validation. In particular, schema 9 rejects mode
-items. Migration creates only a pending mode obligation, without an actual value
-or source; an unchanged schema 9 target therefore recovers automatically. Other
-records and responsibilities retain their existing migration rules. Schema 10
-preserves real mode facts across restart, while the first authoritative read
-requires adoption again before granting execution eligibility. Unsupported,
-unadopted and unknown targets remain raw authority and close admission.
+items. The original migration created only a pending mode obligation, without an
+actual value or source. Other records and responsibilities retain their existing
+migration rules. The [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md)
+replaces public mode adoption: ordinary current target transitions do not create
+mode items and Workers do not publish mode observations. Schema 10 remains the current storage format,
+and the frozen reader still validates historical mode facts. Unsupported or
+unknown targets remain raw authority and close admission.
 
-Known target changes and authority resets require a new adoption confirmation.
-An equal higher revision retains the application anchor and actual provenance;
-the report envelope identifies the current desired revision. The website checks
-that envelope before accepting a mode result, while allowing an older item
-revision for an unchanged applied value.
+The original implementation required a new adoption confirmation for known
+target changes and authority resets. An equal higher revision retained the
+application anchor and actual provenance; the report envelope identified the
+current desired revision. The website checked that envelope before accepting a
+mode result, while allowing an older item revision for an unchanged value.
 
 This partially supersedes the omission of mode items in the
 [Web checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md).
@@ -55,8 +56,8 @@ create the missing obligation without changing user-owned configuration.
 
 ## Consequences
 
-The mode field and overall configuration can converge from real Worker evidence.
-The checkpoint format advances without changing the CLI release version or
-reintroducing Herdr execution. Migration itself proves no adoption, and failed
-or cancelled persistence cannot publish a new successful result. The website
-continues to distinguish missing, stale and unapplied observations from success.
+The original mode field converged from real Worker evidence without reintroducing
+Herdr execution. Migration itself proved no adoption, and failed or cancelled
+persistence could not publish a successful result. The current two-tool protocol
+removes the public mode field rather than claiming adoption; actual tool and
+configuration observations still distinguish missing or unapplied facts from success.

@@ -147,9 +147,8 @@ input form. Native popup cancellation keeps current values and drafts intact.
 
 Worker configuration fields use the form/fill variant; the personal prompt
 preview uses filter/content. Their caller-owned drafts, inheritance and save
-timing remain separate from presentation. Control-mode adoption retains a real
-select ref with exactly the `herdr` and `web` options. Its nullable draft keeps
-no selection through the caller-owned layout effect.
+timing remain separate from presentation. The former control-mode select and
+nullable draft were removed by the [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md).
 
 The source guard makes direct native creation and internal skin forks fail normal
 quality checks, and static wrapper tokens let CSS analysis connect caller layout
