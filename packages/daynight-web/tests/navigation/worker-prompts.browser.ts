@@ -20,7 +20,7 @@ const install = async (page: Page) => {
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/me/workers') return send(workerPage());
-    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
+    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail(), { 'Daynight-Worker-Tool-Paths': '2' });
     if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     if (path === `/api/v1/me/workers/${target}/prompt`) {
       if (request.method() === 'GET') await wait();
@@ -98,9 +98,9 @@ for (const width of [1280, 390]) test(`${width}px preserves focus, selection and
 for (const width of [1280, 390]) test(`${width}px Worker tabs expose selection and keyboard order`, async ({ page }) => {
   await page.setViewportSize({ width, height: 900 });
   const state = await install(page); await page.goto(`/workers/${target}`);
-  const overview = page.locator('[data-worker-tab="overview"]:visible'), configuration = page.locator('[data-worker-tab="configuration"]:visible'), prompt = page.locator('[data-worker-tab="prompt"]:visible');
+  const overview = page.locator('[data-worker-tab="overview"]:visible'), system = page.locator('[data-worker-tab="system"]:visible'), configuration = page.locator('[data-worker-tab="configuration"]:visible'), prompt = page.locator('[data-worker-tab="prompt"]:visible');
   await expect(overview).toHaveAttribute('aria-selected', 'true');
-  for (const [tab, panel] of [[overview, 'overview'], [configuration, 'configuration'], [prompt, 'prompt']] as const) {
+  for (const [tab, panel] of [[overview, 'overview'], [system, 'system'], [configuration, 'configuration'], [prompt, 'prompt']] as const) {
     const panelElement = page.locator(`.worker-page:visible [data-worker-panel="${panel}"]`);
     const tabId = await tab.getAttribute('id'), panelId = await panelElement.getAttribute('id');
     expect(tabId).toBeTruthy(); expect(panelId).toBeTruthy();
@@ -112,10 +112,12 @@ for (const width of [1280, 390]) test(`${width}px Worker tabs expose selection a
   await expect(page.locator('.worker-page:visible [data-worker-panel="prompt"]')).toBeVisible();
   await expect(page.locator('.worker-page:visible [data-worker-panel="overview"]')).toHaveAttribute('inert', '');
   await page.keyboard.press('ArrowRight'); await expect(overview).toBeFocused();
+  await page.keyboard.press('ArrowRight'); await expect(system).toBeFocused();
   await page.keyboard.press('ArrowRight'); await expect(configuration).toBeFocused();
   await page.keyboard.press('End'); await expect(prompt).toBeFocused();
   await page.keyboard.press('Home'); await expect(overview).toBeFocused();
   await expect(overview).toHaveAttribute('tabindex', '0');
+  await expect(system).toHaveAttribute('tabindex', '-1');
   await expect(configuration).toHaveAttribute('tabindex', '-1');
   await expect(prompt).toHaveAttribute('tabindex', '-1');
   expect(state.writes).toEqual([]);

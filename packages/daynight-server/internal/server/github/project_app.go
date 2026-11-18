@@ -25,13 +25,31 @@ type ProjectAppOperations interface {
 }
 
 type projectAppHandler struct {
-	operations ProjectAppOperations
-	logger     *slog.Logger
+	operations    ProjectAppOperations
+	logger        *slog.Logger
+	webhookReader ProjectWebhookReader
+	webhookWriter ProjectWebhookWriter
+	webhookOrigin string
 }
 
 // RegisterProjectAppRoutes installs the App-aware project connection adapter.
 func RegisterProjectAppRoutes(mux *http.ServeMux, ops ProjectAppOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &projectAppHandler{operations: ops, logger: logger}
+	h.register(mux, auth)
+}
+
+// RegisterProjectAppRoutesWithWebhook enables the project webhook management
+// contract. Production assembly can adopt it together with the receiver.
+func RegisterProjectAppRoutesWithWebhook(mux *http.ServeMux, ops ProjectAppOperations, reader ProjectWebhookReader, writer ProjectWebhookWriter, auth RouteAuthentication, origin string, logger *slog.Logger) {
+	h := &projectAppHandler{operations: ops, logger: logger, webhookReader: reader, webhookWriter: writer, webhookOrigin: origin}
+	h.register(mux, auth)
+	base := "/api/v1/projects/{projectId}/github/webhook"
+	mux.HandleFunc("PATCH "+base, auth.Require(h.updateProjectWebhook))
+	mux.HandleFunc(base, auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH")))
+}
+
+func (h *projectAppHandler) register(mux *http.ServeMux, auth RouteAuthentication) {
+	logger := h.logger
 	base := "/api/v1/projects/{projectId}/github"
 	mux.HandleFunc("GET "+base, auth.Require(h.status))
 	mux.HandleFunc("GET "+base+"/installation", auth.Require(h.discover))
@@ -126,6 +144,18 @@ func (h *projectAppHandler) status(w http.ResponseWriter, r *http.Request, p mod
 	h.run(w, r, p, "status", false, core.OperationTimeout, func(work *http.Request, id string, log *projectAppLog) (any, error) {
 		if _, err := query(work); err != nil {
 			return nil, err
+		}
+		if h.webhookReader != nil {
+			value, hook, err := h.webhookReader.GetWithProjectWebhook(work.Context(), p, id)
+			if err != nil {
+				return nil, err
+			}
+			log.status(value)
+			base, err := projectAppResponse(value, false)
+			if err != nil {
+				return nil, err
+			}
+			return projectAppWebhookStatus{GitHubProjectAppStatus: base, ProjectWebhook: h.webhookResponse(id, hook)}, nil
 		}
 		value, err := h.operations.Get(work.Context(), p, id)
 		if err != nil {

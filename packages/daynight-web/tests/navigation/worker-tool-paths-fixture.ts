@@ -41,7 +41,7 @@ export const installTools = async (page: Page, options: { service?: boolean; wor
     writes: [] as { revision: string; value: WorkerConfigurationValue }[], events: [] as string[],
     configurationGate: null as ReturnType<typeof deferredRead> | null,
     workerGate: null as ReturnType<typeof deferredRead> | null,
-    mode: 'success' as 'success' | 'conflict' | 'unknown', unknownReads: false,
+    mode: 'success' as 'success' | 'conflict' | 'unknown', unknownReads: false, workerFail: false,
     configurationReads: 0, workerReads: 0,
   };
   const personal = { id: workerId(90), kind: 'personal', name: null };
@@ -59,6 +59,7 @@ export const installTools = async (page: Page, options: { service?: boolean; wor
     if (path === `/api/v1/me/workers/${targetWorker}`) {
       state.workerReads++;
       if (state.workerGate !== null) { state.workerGate.started(); await state.workerGate.promise; }
+      if (state.workerFail) return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'worker-fixture' } }, 503);
       const detail = structuredClone(state.detail);
       if (!service) delete (detail.worker.telemetry as { toolPaths?: unknown }).toolPaths;
       return send(detail, 200, service ? { 'Daynight-Worker-Tool-Paths': '2' } : {});

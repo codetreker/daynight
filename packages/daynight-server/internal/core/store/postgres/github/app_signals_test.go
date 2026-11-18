@@ -22,18 +22,23 @@ type appSignalFixture struct {
 func newAppSignalFixture(t *testing.T) appSignalFixture {
 	t.Helper()
 	db, _ := dbFixture(t)
+	return seedAppSignalFixture(t, db, 10)
+}
+
+func seedAppSignalFixture(t *testing.T, db *postgres.Store, appID int64) appSignalFixture {
+	t.Helper()
 	f := appSignalFixture{db, uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	ctx := t.Context()
 	for _, q := range []struct {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,10,'app','remote','slug','key','secret')`, []any{f.app}},
+		{`INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,$2,'app','remote','slug','key','secret')`, []any{f.app, appID}},
 		{`INSERT INTO teams(id,name) VALUES($1,'team')`, []any{f.team}},
 		{`INSERT INTO github_app_team_grants(id,app_resource_id,team_id) VALUES($1,$2,$3)`, []any{f.grant, f.app, f.team}},
 		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'project','repo')`, []any{f.project}},
 		{`INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, []any{f.project, f.team}},
-		{`INSERT INTO project_github(project_id,app_resource_id,team_grant_id,app_id,credential_version,installation_id,repository_id,enabled,sync_enabled,generation) VALUES($1,$2,$3,10,1,20,30,true,true,4)`, []any{f.project, f.app, f.grant}},
+		{`INSERT INTO project_github(project_id,app_resource_id,team_grant_id,app_id,credential_version,installation_id,repository_id,enabled,sync_enabled,generation) VALUES($1,$2,$3,$4,1,20,30,true,true,4)`, []any{f.project, f.app, f.grant, appID}},
 	} {
 		if _, err := db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)
@@ -78,7 +83,8 @@ func TestAppWebhookSnapshot(t *testing.T) {
 	}
 }
 func TestAppSignalCurrentBindingAndMerge(t *testing.T) {
-	for _, tc := range []struct {
+	db, _ := dbFixture(t)
+	for index, tc := range []struct {
 		name, mutation string
 		want           int64
 	}{
@@ -87,12 +93,12 @@ func TestAppSignalCurrentBindingAndMerge(t *testing.T) {
 		{"deleted", `UPDATE projects SET deleted_at=now() WHERE id=$1`, 0},
 		{"disabled", `UPDATE project_github SET sync_enabled=false WHERE project_id=$1`, 0},
 		{"old credential", `UPDATE project_github SET credential_version=2 WHERE project_id=$1`, 0},
-		{"other app id", `UPDATE project_github SET app_id=11 WHERE project_id=$1`, 0},
+		{"other app id", `UPDATE project_github SET app_id=app_id+1 WHERE project_id=$1`, 0},
 		{"other installation", `UPDATE project_github SET installation_id=21 WHERE project_id=$1`, 0},
 		{"other repository", `UPDATE project_github SET repository_id=31 WHERE project_id=$1`, 0},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAppSignalFixture(t)
+		if !t.Run(tc.name, func(t *testing.T) {
+			f := seedAppSignalFixture(t, db, 10+2*int64(index))
 			ctx := t.Context()
 			target := f.project
 			if tc.name == "revoked" {
@@ -123,7 +129,9 @@ func TestAppSignalCurrentBindingAndMerge(t *testing.T) {
 			if int64(count) != tc.want || (tc.want == 1 && (*request != second.RequestID || *delivery != "later" || *generation != 4)) {
 				t.Fatalf("pending: %d %v %v %v", count, request, delivery, generation)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 func TestAppSignalAccessAndRollback(t *testing.T) {

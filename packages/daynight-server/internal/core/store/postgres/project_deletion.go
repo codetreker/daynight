@@ -82,8 +82,19 @@ func (d *projectDeletion) MarkDeleted(ctx context.Context) (bool, error) {
 		if err := github.InvalidateProject(ctx, d.tx, d.projectID); err != nil {
 			return false, err
 		}
+		if err := d.clearProjectWebhook(ctx); err != nil {
+			return false, err
+		}
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+func (d *projectDeletion) clearProjectWebhook(ctx context.Context) error {
+	_, err := d.tx.Exec(ctx, `UPDATE project_github SET hook_repository_id=NULL,hook_version=NULL,hook_enabled=false,hook_secret=NULL,hook_last_received_at=NULL WHERE project_id=$1`, d.projectID)
+	if err != nil {
+		return pg.QueryError("clear deleted project webhook", err)
+	}
+	return nil
 }
 func (s *deletionSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
 	var observed time.Time

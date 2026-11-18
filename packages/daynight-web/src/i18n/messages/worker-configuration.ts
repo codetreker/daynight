@@ -21,6 +21,7 @@ export type WorkerConfigurationMessages = {
   };
   readonly taskTags: Readonly<Record<'title' | 'detail' | 'empty' | 'any' | 'all' | 'unsupportedService' | 'unsupportedWorker' | 'unconfirmed' | 'checking' | 'checkFailed' | 'different' | 'target' | 'match' | 'matchAny' | 'matchAll' | 'placeholder' | 'add' | 'clear' | 'invalid', string>> & { readonly remove: (name: string) => string };
   readonly overview: string;
+  readonly system: string;
   readonly configuration: string;
   readonly prompt: string;
   readonly sections: string;
