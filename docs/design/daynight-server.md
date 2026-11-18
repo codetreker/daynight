@@ -136,6 +136,8 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 `SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Tag、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影；它声明实际消费的 `ProjectOperations`、`MembershipOperations` 业务接口，以及 `RouteAuthentication` 和需要 Origin 的 `MembershipAuthentication` 认证能力，生产 service 与真实请求认证组件满足这些能力，HTTP 单元测试直接控制业务结果并实际执行协议机制。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task、Tag、Task 标签关联与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
 
+`ProjectWriteScope` 还提供绑定同一事务的 `WorkerClaimAdmissionDAO`，以窄读取保留 Worker 权威目标及其锁生命周期。[Worker 配置设计](daynight-worker-configuration.md#项目事务内的目标读取资源)拥有 Raw 投影、缺行准入锁、锁序和错误合同；该存储资源不独立提交。
+
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有
 客户端的 review 命令。`cmd/` 与 `internal/` 的职责遵循
 [Go 服务项目布局建议](https://go.dev/doc/modules/layout#server-project)。

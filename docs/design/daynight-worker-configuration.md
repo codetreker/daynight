@@ -45,6 +45,14 @@ PUT 也锁定这行，先校验目标版本。协议层只设置内部保留标�
 
 并发导入只建立一次初值。观测 CAS 失败不覆盖结果，也不使合法 telemetry 失败；目标 CAS 失败不改变目标。数据库操作、提交与回滚错误保留原链。
 
+## 项目事务内的目标读取资源
+
+`ProjectWriteScope.WorkerClaimAdmissionDAO()` 提供与当前项目写事务绑定的窄资源。`ClaimWorkerConfiguration(ctx,userID,workerID)` 只读取目标的 Raw、revision 与修改时间，返回 `*model.WorkerDesiredConfiguration`；不解析完整 typed 配置或应用观测，也不投影独立归档列。返回 nil 表示 Worker 尚不存在或目标尚未初始化，查询、锁等待、取消及数据库失败均保留错误，不解释为空目标。该资源只提供存储能力，任务领取规则由 `core/task` 的实际调用者拥有。
+
+已有 Worker 行通过 `SELECT ... FOR UPDATE` 锁定到项目事务提交或回滚，配置 PUT 和报告对该行的写入随之串行。缺行的首次查询没有取得行锁，因此先复用报告的 `worker-admission:<userID>` 账号事务锁，再以独立 READ COMMITTED 语句重读并锁定 Worker；仍缺行时保持账号锁到项目事务结束，阻止首次报告插入穿过读取边界。账号锁的 SQL 由同一 helper 提供，已有行路径不取得该锁，避免将正常跨项目读取串行到账号级。
+
+此资源的锁序为 Project → 调用者已持有的 Task → Worker；缺行时为 Project → Task → 账号准入锁 → Worker 重读。报告仍按账号准入锁 → Worker 写入，配置事务中的项目访问检查保持无项目行锁。读取资源不开启嵌套事务，也不独立提交；[决策记录](../../.agents/notes/implemented/architecture/2026-11-18-worker-claim-target-resource.md)保存窄读取和缺行互斥的取舍。
+
 ## 输入与输出边界
 
 带有效配置协议 1/2 的报告使用 9 MiB 正文预算，普通报告保持 1 MiB；HTTP 在选择额度前拒绝未知或重复协议头。配置报告预算只改变传输准入，不改变 DTO、能力协商、目标和观测存储限制或事务。服务端和入口须先支持 9 MiB，再升级 Worker；旧服务或入口的 413 仍是容量或版本不匹配，不能作为成功回执。

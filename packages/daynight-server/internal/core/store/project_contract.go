@@ -42,6 +42,7 @@ type ProjectWriteScope interface {
 	TaskTagDAO() TaskTagWriteDAO
 	TaskDAO() TaskWriteDAO
 	SessionDAO() ProjectSessionDAO
+	WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO
 }
 
 type ProjectWriteDAO interface {
