@@ -19,8 +19,8 @@ export type GraphMessages = {
   readonly claimMachine: (args: { name: string }) => string;
   readonly recordedMachine: (args: { name: string }) => string;
   readonly childTasks: (args: { count: number }) => string;
-  readonly goalDetails: string;
-  readonly goalDetailsLabel: (args: { title: string }) => string;
+  readonly representativeTaskDetails: string;
+  readonly representativeTaskDetailsLabel: (args: { title: string }) => string;
   readonly viewDependencies: string;
   readonly viewDependenciesLabel: (args: { title: string }) => string;
   readonly closeDialog: string;

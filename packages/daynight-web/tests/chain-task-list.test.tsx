@@ -85,6 +85,26 @@ describe('Goal task lists', () => {
     check('Goal, View dependencies', 'View dependencies');
   });
 
+  it('labels the ordinary representative task detail action in both languages', async () => {
+    const user = userEvent.setup();
+    const onOpenTask = vi.fn();
+    const representative = task('Ordinary representative', 'in_progress');
+    const index = indexOf([representative, task('Follower', 'todo', [representative.id])]);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={[representative.id]} allRepresentativeIds={[representative.id]}
+      openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />);
+    await user.click(document.getElementById(`task-root-${representative.id}`)!);
+    const button = screen.getByRole('button', { name: 'Ordinary representative，查看任务详情' });
+    expect(button).toHaveTextContent('查看任务详情');
+    expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+    await user.click(button);
+    expect(onOpenTask).toHaveBeenLastCalledWith(representative.id, button);
+    view.setLocale('en');
+    expect(button).toHaveAccessibleName('Ordinary representative, View task details');
+    expect(button).toHaveTextContent('View task details');
+    await user.click(button);
+    expect(onOpenTask).toHaveBeenLastCalledWith(representative.id, button);
+  });
+
   it('keeps cancelled chain members and terminal status while projecting completion', () => {
     const items = [task('Goal', 'done'), task('Done', 'done', ['Goal']), task('Cancelled', 'cancelled', ['Goal'])];
     const view = render(list(indexOf(items)));
@@ -298,7 +318,7 @@ describe('Goal task lists', () => {
     const child = screen.getByRole('link', { name: 'Implementation' });
     await user.click(child);
     expect(onOpenTask).toHaveBeenLastCalledWith('Implementation', child);
-    const goalDetails = screen.getByRole('button', { name: 'Goal，查看 Goal 详情' });
+    const goalDetails = screen.getByRole('button', { name: 'Goal，查看任务详情' });
     await user.click(goalDetails);
     expect(onOpenTask).toHaveBeenLastCalledWith('Goal', goalDetails);
     await user.click(graph);
@@ -338,7 +358,7 @@ describe('Goal task lists', () => {
     view.setLocale('en');
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: 'Goal, View dependencies' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Goal, View Goal details' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Goal, View task details' })).toBeVisible();
     expect(children()).toHaveTextContent('Tasks · 3');
     expect(within(children()).getAllByText('Done')).toHaveLength(1);
   });

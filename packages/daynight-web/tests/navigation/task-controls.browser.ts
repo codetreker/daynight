@@ -687,7 +687,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     await page.locator('#project-section-tab-tasks').click();
     await page.locator(`#task-root-${taskId}`).click();
-    await page.getByRole('button', { name: /Target task.*View Goal details|Target task.*查看 Goal 详情/ }).click();
+    await page.getByRole('button', { name: /Target task.*View task details|Target task.*查看任务详情/ }).click();
     const dialog = page.locator('.task-detail-dialog');
     const status = dialog.locator('.task-status-trigger');
     await status.click(); await dialog.getByRole('menuitemradio', { name: locale === 'en' ? 'Cancelled' : '已取消', exact: true }).click();
@@ -709,6 +709,41 @@ for (const locale of ['en', 'zh-CN'] as const) {
     await expect(page.locator(`[data-chain-id="${taskId}"] .root-progress-label`)).toContainText(locale === 'en' ? '0/1 completed' : '0/1 已完成');
     await expect(page.locator(`#chain-task-${taskId}-${previousId}`)).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`ordinary chain representative details retain focus and completion at 320px in ${locale}`, async ({ page }) => {
+    const writes = await install(page, false, true, false, false, false, undefined, { status: 'done', completedAt: time, ready: false });
+    await page.setViewportSize({ width: 320, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const disclosure = page.locator(`#task-root-${taskId}`);
+    await disclosure.click();
+    const name = locale === 'en' ? 'Target task, View task details' : 'Target task，查看任务详情';
+    const button = page.getByRole('button', { name, exact: true });
+    await expect(button).toContainText(locale === 'en' ? 'View task details' : '查看任务详情');
+    await expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+    const completion = button.locator('time');
+    await expect(completion).toHaveAttribute('datetime', time);
+    await button.focus();
+    await expect(page.getByRole('tooltip')).toBeVisible();
+    expect(await button.evaluate(element => {
+      const time = element.querySelector('time')!;
+      const range = document.createRange(); range.selectNodeContents(element.firstChild!);
+      const label = time.getBoundingClientRect();
+      return [...range.getClientRects()].every(text => text.right <= label.left || label.right <= text.left || text.bottom <= label.top || label.bottom <= text.top) && document.documentElement.scrollWidth <= innerWidth;
+    })).toBe(true);
+    if (locale === 'en') await page.keyboard.press('Enter'); else await button.click();
+    const dialog = page.locator('.task-detail-dialog');
+    await expect(dialog).toHaveAccessibleName('Target task');
+    await expect(dialog).toContainText(taskId);
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
+    await expect(button).toBeFocused();
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator(`#chain-task-${taskId}-${previousId}`)).toBeVisible();
+    expect(writes).toEqual([]);
   });
 }
 
