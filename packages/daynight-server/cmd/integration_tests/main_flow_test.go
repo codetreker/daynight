@@ -50,7 +50,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if len(projects.Items) != 0 || projects.NextCursor != nil {
 			t.Fatalf("expected no Projects: %+v", projects)
 		}
-		manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "dependency-writes", "write-safety", "materials", "steps", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-messages", "worker-operations", "overview"}
+		manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "dependency-writes", "write-safety", "materials", "steps", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-history", "session-messages", "worker-operations", "overview"}
 		for _, version := range []string{"2025-11-25", "2026-07-28"} {
 			client := sdk.NewClient(&sdk.Implementation{Name: "daynight-manual-integration", Version: "1"}, nil)
 			session, err := client.Connect(f.context, &sdk.StreamableClientTransport{Endpoint: f.origin + "/mcp", HTTPClient: f.client, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: version})

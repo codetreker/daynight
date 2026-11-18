@@ -14,7 +14,7 @@ Use this topic for definitions, projections, readiness, inventories and property
 | Ordinary chain and direct external prerequisites | `task_graph`; [Dependencies](daynight://manuals/dependencies.md) owns scope/projections |
 | Property definitions or complete values | `task_properties`, `mode: "schema"` or `"values"` |
 | Activity, grouped ongoing work and Session identity | [Session reads](daynight://manuals/session-reads.md) |
-| Session messages and complete entries | [Session reads](daynight://manuals/session-reads.md) |
+| Session messages and complete entries | [Session history](daynight://manuals/session-history.md) |
 | Separate material | [Steps](daynight://manuals/steps.md), [Threads](daynight://manuals/threads.md), [Attachment reads](daynight://manuals/attachment-reads.md) |
 
 Task reads default to `summary`: identity, type/parent, marked `titlePreview`/`titleTruncated`, status, exact decimal-string version, readiness, `blockedByCount`, assignment, platform and automatic-selection fields. Summaries omit full title/description, properties, dependency arrays and execution times. A preview is neither identity nor duplicate proof.
