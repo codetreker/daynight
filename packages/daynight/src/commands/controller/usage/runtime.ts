@@ -9,7 +9,16 @@ export const createUsageRuntime = (options: UsageUploaderOptions & { generation:
   const pendingReasons = new Set<string>(["native_recovery_gap", "input_cache_semantics_unknown"]);
   const reported = new Map<string, string>();
   const diagnose = () => options.onDiagnostic?.("Usage collection is incomplete; the native task continues.");
-  const safe = (action: () => void) => { try { action(); } catch (error) { diagnose(); const reason = error instanceof Error && ["native_integer_unrepresentable", "collector_failed"].includes(error.message) ? error.message : "local_storage_failed"; pendingReasons.add(reason); try { if (current) store.gap(current.stateId, reason); } catch { /* A failed disk cannot acknowledge an event. */ } };
+  const safe = (action: () => void) => {
+    try { action(); }
+    catch (error) {
+      diagnose();
+      const reason = error instanceof Error && ["native_integer_unrepresentable", "collector_failed"].includes(error.message) ? error.message : "local_storage_failed";
+      pendingReasons.add(reason);
+      try { if (current) store.gap(current.stateId, reason); }
+      catch { /* A failed disk cannot acknowledge an event. */ }
+    }
+  };
   const ready = (input: { nativeSessionId: string; providerVersion: string }) => safe(() => {
     if (current?.nativeSessionId !== input.nativeSessionId || current.providerVersion !== input.providerVersion) current = store.ensureState(options.generation, input.nativeSessionId, input.providerVersion);
     for (const reason of pendingReasons) store.gap(current.stateId, reason);
