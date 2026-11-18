@@ -15,7 +15,7 @@ export const useWorkerConfigurationNavigation = ({ workerId, configurationDirty,
   readonly promptDirty: boolean;
   readonly unavailable: boolean;
   readonly discard: () => void;
-  readonly section: 'overview' | Editor;
+  readonly section: 'overview' | 'system' | Editor;
   readonly onContinueEditing: (editor: Editor) => void;
 }) => {
   const identity = useTaskCacheScope(), navigation = browserNavigation();

@@ -48,12 +48,15 @@ const listed = (items: readonly WorkerSummary[] = [summary()]): ReturnType<typeo
 const shown = (worker: WorkerDetail = detail()): ReturnType<typeof useWorker> => ({ snapshot: { observedAt, worker }, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh });
 const showList = () => renderWithLocale(<WorkersPage readEnabled />, { locale: 'en' });
 const showDetail = () => renderWithLocale(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />, { locale: 'en' });
+const showSystem = () => fireEvent.click(screen.getByRole('tab', { name: 'System monitoring' }));
 const withTools = (entries: Parameters<typeof toolPathTelemetry>[0]) => {
   const worker = detail();
   return { ...worker, telemetry: { ...worker.telemetry, toolPaths: toolPathTelemetry(entries) } };
 };
 
 beforeEach(() => {
+  window.history.replaceState(null, '', `/workers/${id(1)}`);
+  window.dispatchEvent(new PopStateEvent('popstate'));
   refresh.mockReset(); listState = listed(); detailState = shown();
   monitoringState = { snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh, expired: false };
   vi.mocked(useWorkers).mockImplementation(() => listState);
@@ -68,7 +71,7 @@ describe('Worker software summary', () => {
 
   it('shows only native Web observations and never substitutes legacy versions', () => {
     detailState = shown(withTools([toolPathObservation(), empty('copilot', 'web')]));
-    showDetail();
+    showDetail(); showSystem();
     expect(lines('codex')).toEqual(['1.2.3']);
     expect(row('copilot')).toHaveTextContent('Not checked');
     expect(document.querySelector('[data-tool="herdr"]')).toBeNull();
@@ -80,7 +83,7 @@ describe('Worker software summary', () => {
   it.each(['checking', 'pending', 'error'] as const)('shows %s beside the actual version in both languages', state => {
     const failure = state === 'error' ? { code: 'not_found' as const, occurredAt: report } : null;
     detailState = shown(withTools([toolPathObservation('codex', 'web', { state, error: failure })]));
-    const view = showDetail();
+    const view = showDetail(); showSystem();
     const labels = { checking: ['Checking', '正在检查'], pending: ['Awaiting application', '等待应用'], error: ['Application failed', '应用失败'] }[state];
     expect(lines('codex')).toEqual([`1.2.3 ${labels[0]}`]);
     view.setLocale('zh-CN'); expect(lines('codex')).toEqual([`1.2.3 ${labels[1]}`]);
@@ -89,7 +92,7 @@ describe('Worker software summary', () => {
   it('retains uncertain native inventory without claiming an actual version', () => {
     const active = toolPathActual('codex', { version: 'active-only' });
     detailState = shown(withTools([{ ...empty('codex', 'web'), activeSelectionCount: null, activeSelectionsComplete: false, activeObservationError: 'inventory_unavailable', activeSelections: [{ actual: active, executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] }]));
-    showDetail(); expect(lines('codex')).toEqual(['Not checked']);
+    showDetail(); showSystem(); expect(lines('codex')).toEqual(['Not checked']);
     fireEvent.click(within(row('codex') as HTMLElement).getByText('View actual paths'));
     expect(row('codex')).toHaveTextContent('active-only'); expect(row('codex')).toHaveTextContent('inventory');
   });
@@ -191,6 +194,69 @@ describe('Worker list presentation', () => {
 });
 
 describe('Worker detail presentation', () => {
+  it.each(['loading', 'error'] as const)('shows initial system %s and retries the machine read', status => {
+    detailState = { ...shown(), snapshot: null, serverMilliseconds: null, status, error: status === 'error' ? new ApiError('network') : null };
+    const monitorRefresh = vi.fn(); monitoringState = { ...monitoringState, refresh: monitorRefresh };
+    showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).getByText(status === 'loading' ? 'Loading Worker' : 'Worker details could not be loaded')).toBeVisible();
+    expect(within(system).queryByRole('meter')).toBeNull();
+    if (status === 'error') {
+      fireEvent.click(within(system).getByRole('button', { name: 'Retry' }));
+      expect(refresh).toHaveBeenCalledOnce(); expect(monitorRefresh).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['expired', 'unavailable'] as const)('shows system %s without old machine data and retries', scenario => {
+    detailState = scenario === 'expired' ? { ...shown(), serverMilliseconds: Date.parse(report) + 72 * 3600_000 + 1 }
+      : { ...shown(), snapshot: null, serverMilliseconds: null, status: 'unavailable' };
+    showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).getByText('Worker unavailable')).toBeVisible();
+    expect(within(system).queryByRole('meter')).toBeNull();
+    expect(within(system).queryByText('/srv/workspaces/runtime')).toBeNull();
+    fireEvent.click(within(system).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the offline system snapshot visible with its last report notice', () => {
+    detailState = shown({ ...detail(), lastReportedAt: new Date(now - 3600_000).toISOString() });
+    showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).getByRole('status')).toHaveTextContent('last reported snapshot');
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '34.25');
+    expect(within(system).getByText('/srv/workspaces/runtime')).toBeVisible();
+  });
+
+  it('retains the system snapshot and failure notice during retries until success', () => {
+    const monitorRefresh = vi.fn(); monitoringState = { ...monitoringState, refresh: monitorRefresh };
+    detailState = { ...shown(), stale: true, error: new ApiError('network') };
+    const view = showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    const cpu = within(system).getByRole('meter', { name: 'CPU usage' });
+    const alert = within(system).getByRole('alert');
+    expect(alert).toHaveTextContent('last confirmed observation');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(refresh).toHaveBeenCalledOnce(); expect(monitorRefresh).not.toHaveBeenCalled();
+    detailState = { ...detailState, refreshing: true };
+    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
+    expect(within(system).getByRole('alert')).toBe(alert);
+    expect(within(alert).getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toBe(cpu);
+    detailState = shown(); view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
+    expect(within(system).queryByRole('alert')).toBeNull();
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toBe(cpu);
+  });
+
+  it('isolates runtime observation failure from a healthy system snapshot', () => {
+    monitoringState = { ...monitoringState, status: 'ready', snapshot: monitoringDetail, serverMilliseconds: now, stale: true, error: new ApiError('network') };
+    showDetail();
+    expect(screen.getByRole('alert')).toHaveTextContent('Runtime monitoring could not be updated');
+    showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).queryByRole('alert')).toBeNull();
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '34.25');
+  });
+
   it.each(['current', 'offline', 'failed Worker refresh'] as const)('places one monitoring time after notices and before the first business panel with %s data', scenario => {
     monitoringState = { ...monitoringState, snapshot: monitoringDetail, status: 'ready', serverMilliseconds: now };
     if (scenario === 'offline') detailState = shown({ ...detail(), lastReportedAt: new Date(now - 3600_000).toISOString() });
@@ -268,9 +334,10 @@ describe('Worker detail presentation', () => {
     const panel = overview.querySelector('.worker-task-heading-label')!.closest('section')!;
     expect(overview.querySelectorAll('.worker-task-heading-label')).toHaveLength(1);
     expect(panel).toHaveAttribute('data-worker-reading');
-    for (const selector of ['.monitoring-empty', '.worker-sample-time', '.worker-metric-grid', '.worker-detail-columns']) {
+    for (const selector of ['.monitoring-empty']) {
       expect(panel.compareDocumentPosition(overview.querySelector(selector)!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+    for (const selector of ['.worker-sample-time', '.worker-metric-grid', '.worker-detail-columns']) expect(overview.querySelector(selector)).toBeNull();
     expect(overview.querySelector('[data-worker-reading]')).toBe(panel);
     if (scenario === 'offline' || scenario === 'failed refresh') {
       const notice = overview.querySelector(scenario === 'offline' ? '.worker-snapshot-notice' : '.worker-sync-notice')!;
@@ -279,7 +346,7 @@ describe('Worker detail presentation', () => {
   });
 
   it('retains data and focus through repeated quiet rechecks while keeping last-confirmed labels', () => {
-    const view = showDetail(), task = screen.getByRole('link', { name: 'Build reliable workers' }), cpu = screen.getByRole('meter', { name: 'CPU usage' });
+    const view = showDetail(), task = screen.getByRole('link', { name: 'Build reliable workers' });
     const caption = screen.getByText('State at the last observation'), currentHeading = screen.getByRole('heading', { name: 'Tasks in progress 1' });
     expect(caption).toHaveAttribute('aria-hidden', 'true'); expect(currentHeading).not.toHaveAccessibleName(/State at the last observation/);
     task.focus();
@@ -289,7 +356,7 @@ describe('Worker detail presentation', () => {
       expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect(screen.queryByRole('alert')).toBeNull();
       expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(screen.getByRole('heading', { name: /Task snapshot/ })).toBeInTheDocument();
       expect(screen.getByText('State at the last observation')).toBe(caption); expect(caption).toHaveAttribute('aria-hidden', 'false');
-      expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu); expect(cpu).toHaveAttribute('aria-valuenow', '34.25'); expect(task).toHaveFocus();
+      expect(task).toHaveFocus();
       detailState = shown(); view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
       expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect(screen.getByText('online')).toBeInTheDocument(); expect(task).toHaveFocus();
       expect(screen.getByRole('heading', { name: 'Tasks in progress 1' })).toBe(currentHeading); expect(caption).toHaveAttribute('aria-hidden', 'true');
@@ -314,20 +381,23 @@ describe('Worker detail presentation', () => {
   it.each(['loading', 'error'] as const)('shows a detail-specific initial %s without a retained machine', status => {
     detailState = { ...shown(), snapshot: null, serverMilliseconds: null, status, error: status === 'error' ? new ApiError('network') : null };
     showDetail(); expect(screen.queryByText('worker-1')).toBeNull();
-    expect(screen.getByText(status === 'loading' ? 'Loading Worker' : 'Worker details could not be loaded')).toBeInTheDocument();
+    expect(within(screen.getByRole('tabpanel', { name: 'Runtime monitoring' })).getByText(status === 'loading' ? 'Loading Worker' : 'Worker details could not be loaded')).toBeInTheDocument();
     if (status === 'error') { fireEvent.click(screen.getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce(); }
   });
 
   it('shows real resource scope, native versions, source times and current task anchors', () => {
     showDetail(); expect(screen.getByRole('heading', { name: 'worker-1' })).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Build reliable workers' }); expect(link).toHaveAttribute('href', taskDetailUrl(id(2), id(3), { tab: 'overview', path: null }));
+    expect(screen.getByText('Claude Code')).toBeInTheDocument(); expect(screen.getByText('Verifying')).toBeInTheDocument(); expect(screen.getByText('In progress')).toBeInTheDocument();
+    expect(screen.queryByRole('meter')).toBeNull(); showSystem();
+    expect(screen.queryByRole('link', { name: 'Build reliable workers' })).toBeNull();
     expect(screen.getByText('/srv/workspaces/runtime')).toBeInTheDocument(); expect(screen.getAllByText(/32 logical processors/)).toHaveLength(2);
     expect(screen.getByText('#1 SMP PREEMPT')).toBeInTheDocument(); expect(screen.getByText('x86_64')).toBeInTheDocument(); expect(screen.queryByText('0.9.9-private')).toBeNull(); expect(screen.getByText('Not installed')).toBeInTheDocument();
     expect(screen.getAllByRole('meter')).toHaveLength(3); expect(screen.getByRole('meter', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '34.25');
     expect(screen.getByRole('meter', { name: 'Working directory filesystem' })).toHaveClass('high');
-    const link = screen.getByRole('link', { name: 'Build reliable workers' }); expect(link).toHaveAttribute('href', taskDetailUrl(id(2), id(3), { tab: 'overview', path: null }));
-    expect(screen.getByText('Claude Code')).toBeInTheDocument(); expect(screen.getByText('Verifying')).toBeInTheDocument(); expect(screen.getByText('In progress')).toBeInTheDocument();
     expect(document.querySelectorAll(`time[datetime="${report}"]`).length).toBeGreaterThan(5); expect(screen.getByText(/Resource sample/)).toBeInTheDocument();
-    fireEvent.click(link, { ctrlKey: true }); expect(window.location.pathname).toBe('/projects');
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' }));
+    fireEvent.click(link, { ctrlKey: true }); expect(window.location.pathname).toBe(`/workers/${id(1)}`);
     fireEvent.click(link); expect(window.location.pathname).toBe(`/projects/${id(2)}/tasks/${id(3)}`);
   });
 
@@ -350,29 +420,30 @@ describe('Worker detail presentation', () => {
       cpu: { state: 'error', checkedAt: report, code: 'invalid_sample' }, memory: { state: 'error', checkedAt: report, code: 'permission_denied' }, disk: { state: 'error', checkedAt: report, code: 'timeout' }, os: { state: 'error', checkedAt: report, code: 'io_error' },
       versions: { ...worker.telemetry.versions, codex: { state: 'error', checkedAt: report, code: 'command_failed' } },
     } });
-    showDetail(); expect(screen.getByText('Not installed')).toBeInTheDocument(); expect(screen.getByText('Detection failed')).toBeInTheDocument(); expect(screen.getAllByText('Collection failed')).toHaveLength(6); expect(screen.queryByRole('meter')).toBeNull();
+    showDetail(); showSystem(); expect(screen.getByText('Not installed')).toBeInTheDocument(); expect(screen.getByText('Detection failed')).toBeInTheDocument(); expect(screen.getAllByText('Collection failed')).toHaveLength(6); expect(screen.queryByRole('meter')).toBeNull();
     expect(screen.getByText('The version command failed.')).toBeInTheDocument(); expect(screen.queryByText(/logical processors/)).toBeNull();
   });
 
   it('renders actual zero capacities without dividing by zero or manufacturing a utilization percentage', () => {
     const worker = detail(); detailState = shown({ ...worker, telemetry: { ...worker.telemetry, cpu: { ...worker.telemetry.cpu, value: { ...worker.telemetry.cpu.value, logicalProcessors: 1 } }, memory: { state: 'ok', checkedAt: report, value: { usedBytes: 0, totalBytes: 0 } }, disk: { state: 'ok', checkedAt: report, value: { availableBytes: 0, totalBytes: 0 } } } });
-    showDetail(); expect(screen.getAllByText(/1 logical processor/)).toHaveLength(2); expect(screen.getAllByRole('meter')).toHaveLength(1); expect(screen.getByText('0 B total memory')).toBeInTheDocument(); expect(screen.getByText('0 B total capacity')).toBeInTheDocument(); expect(document.body).not.toHaveTextContent('NaN'); expect(document.body).not.toHaveTextContent('Infinity');
+    showDetail(); showSystem(); expect(screen.getAllByText(/1 logical processor/)).toHaveLength(2); expect(screen.getAllByRole('meter')).toHaveLength(1); expect(screen.getByText('0 B total memory')).toBeInTheDocument(); expect(screen.getByText('0 B total capacity')).toBeInTheDocument(); expect(document.body).not.toHaveTextContent('NaN'); expect(document.body).not.toHaveTextContent('Infinity');
   });
 
   it('removes expired or unavailable details and offers a retry and real return link', () => {
     detailState = { ...shown(), serverMilliseconds: Date.parse(report) + 72 * 3600_000 };
     const view = showDetail(); expect(screen.getByRole('heading', { name: 'worker-1' })).toBeInTheDocument();
     detailState = { ...detailState, serverMilliseconds: Date.parse(report) + 72 * 3600_000 + 1 };
-    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />); expect(screen.queryByText('/srv/workspaces/runtime')).toBeNull(); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />); expect(screen.queryByText('/srv/workspaces/runtime')).toBeNull(); expect(within(screen.getByRole('tabpanel', { name: 'Runtime monitoring' })).getByText('Worker unavailable')).toBeInTheDocument();
     detailState = { ...detailState, snapshot: null, serverMilliseconds: null, status: 'unavailable' };
-    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />); expect(within(screen.getByRole('tabpanel', { name: 'Runtime monitoring' })).getByText('Worker unavailable')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('link', { name: '← Back to my Workers' })); expect(window.location.pathname).toBe('/workers');
   });
 
   it('translates software, task status and phase while preserving user content and task focus', () => {
     const view = showDetail(); const task = screen.getByRole('link', { name: 'Build reliable workers' }); task.focus(); view.setLocale('zh-CN');
-    expect(screen.getByRole('heading', { name: '软件版本' })).toBeInTheDocument(); expect(screen.getByText('未安装')).toBeInTheDocument(); expect(screen.getByText('验证中')).toBeInTheDocument(); expect(screen.getByText('进行中')).toBeInTheDocument(); expect(task).toHaveFocus(); expect(screen.getByText('Claude Code')).toBeInTheDocument();
+    expect(screen.getByText('验证中')).toBeInTheDocument(); expect(screen.getByText('进行中')).toBeInTheDocument(); expect(task).toHaveFocus(); expect(screen.getByText('Claude Code')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '系统监控' })); expect(screen.getByRole('heading', { name: '软件版本' })).toBeInTheDocument(); expect(screen.getByText('未安装')).toBeInTheDocument();
     expect(screen.getByText('在线')).toBeInTheDocument(); expect(refresh).not.toHaveBeenCalled();
   });
 });

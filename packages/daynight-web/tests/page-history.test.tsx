@@ -523,6 +523,7 @@ describe('Worker reading history', () => {
   const otherWorker = '00000000-0000-4000-8000-000000000012';
   const path = `/workers/${worker}`;
   it('validates the current Worker selection and isolates identity and resource', () => {
+    expect(readWorkerHistory(workerHistory(user, worker, 'system'), user, worker)).toBe('system');
     expect(readWorkerHistory(workerHistory(user, worker, 'configuration'), user, worker)).toBe('configuration');
     expect(readWorkerHistory(workerHistory(user, worker, 'prompt'), user, worker)).toBe('prompt');
     expect(readWorkerHistory(workerHistory(other, worker, 'configuration'), user, worker)).toBeNull();
@@ -544,17 +545,23 @@ describe('Worker reading history', () => {
     const { result, rerender } = renderHook(({ identity, active }) => useWorkerHistory(identity, worker, active), { initialProps: { identity: user, active: true } });
     expect(navigation.snapshot().view).toEqual(workerHistory(user, worker, 'overview'));
     const overview = history.state;
+    act(() => result.current.select('system'));
+    const system = history.state;
+    expect(result.current.section).toBe('system');
+    act(() => result.current.select('system'));
+    expect(history.length).toBe(length + 1);
     act(() => result.current.select('configuration'));
     const configuration = history.state;
     expect(result.current.section).toBe('configuration');
     act(() => result.current.select('configuration'));
-    expect(history.length).toBe(length + 1);
+    expect(history.length).toBe(length + 2);
     act(() => result.current.select('prompt'));
     const prompt = history.state;
     expect(result.current.section).toBe('prompt');
     act(() => result.current.select('prompt'));
-    expect(history.length).toBe(length + 2);
+    expect(history.length).toBe(length + 3);
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
+    arrival(system, path); expect(result.current.section).toBe('system');
     arrival(overview, path); expect(result.current.section).toBe('overview');
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
     arrival(prompt, path); expect(result.current.section).toBe('prompt');

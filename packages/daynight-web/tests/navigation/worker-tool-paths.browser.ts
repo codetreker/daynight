@@ -23,6 +23,7 @@ for (const width of [1440, 320]) for (const locale of ['zh-CN', 'en'] as const) 
     await page.setViewportSize({ width, height: 900 });
     const state = await installTools(page, { locale });
     await page.goto(`/workers/${targetWorker}`);
+    await page.locator('[data-worker-tab="system"]:visible').click();
     const shortcut = page.locator('.worker-tool-path-shortcut');
     await expect(shortcut).toHaveText(locale === 'zh-CN' ? '工具路径' : 'Tool paths');
     await shortcut.focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
@@ -53,6 +54,7 @@ for (const width of [1440, 320]) for (const locale of ['zh-CN', 'en'] as const) 
     await field(page).fill('/opt/unsaved/shortcut/codex');
     const originalInput = await field(page).elementHandle();
     await page.locator('[data-worker-tab="overview"]:visible').click();
+    await page.locator('[data-worker-tab="system"]:visible').click();
     await shortcut.click();
     await expect(summary).toBeFocused(); await expect(field(page)).toHaveValue('/opt/unsaved/shortcut/codex');
     expect(await field(page).evaluate((element, original) => element === original, originalInput)).toBe(true);
@@ -116,7 +118,7 @@ test('a Worker without tool telemetry disables path editing while preserving sav
 test('an older service requires an upgrade', async ({ page }) => {
   await installTools(page, { service: false });
   await page.goto(`/workers/${targetWorker}`);
-  await expect(page.getByText('升级服务后可查看 Worker 详情。')).toBeVisible();
+  await expect(page.locator('[data-worker-panel="overview"]').getByText('升级服务后可查看 Worker 详情。')).toBeVisible();
 });
 
 test('offline supported Workers accept desired edits but label observed paths as historical', async ({ page }) => {
@@ -151,6 +153,7 @@ for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details 
   const state = await installTools(page, { locale });
   state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('copilot', 'web')]));
   await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
   const software = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
   await software.locator('summary').filter({ hasText: locale === 'zh-CN' ? '查看实际路径' : 'View actual paths' }).click();
   const web = software.locator('[data-context="web"]');
@@ -166,7 +169,7 @@ for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details 
   await expect(page.locator('[data-worker-panel="prompt"]:visible')).toBeVisible(); await expect(field(page, 'copilot')).toBeHidden();
   await page.locator('[data-worker-tab="configuration"]:visible').click(); await expect(field(page, 'copilot')).toHaveValue('/opt/draft/copilot');
   expect(await field(page, 'copilot').evaluate(element => element === (window as unknown as { toolPromptDraftNode: Element }).toolPromptDraftNode)).toBe(true);
-  await page.locator('[data-worker-tab="overview"]:visible').click();
+  await page.locator('[data-worker-tab="system"]:visible').click();
   await expect(web).toContainText('/opt/daynight/runtime/copilot'); await expect(software).not.toContainText('/opt/draft/copilot');
 });
 
@@ -179,6 +182,7 @@ for (const width of [1440, 390, 320]) test(`software summary and full details su
     toolObservation('copilot', 'web'),
   ]));
   await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
   const codex = page.locator('.worker-software-tool-paths[data-tool="codex"]');
   const copilot = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
   await expect(codex.locator('.worker-tool-version')).toHaveText(['0.166.0']);
@@ -215,6 +219,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const state = await installTools(page, { locale });
     state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { actual }), toolObservation('copilot', 'web')]));
     await page.goto(`/workers/${targetWorker}`);
+    await page.locator('[data-worker-tab="system"]:visible').click();
     for (const tool of ['codex', 'copilot']) {
       const row = page.locator(`.worker-software-tool-paths[data-tool="${tool}"]`);
       const details = row.locator('.worker-tool-software-details');
@@ -253,6 +258,7 @@ test('software path copy failure leaves the full value selectable', async ({ pag
   await page.setViewportSize({ width: 320, height: 900 });
   await installTools(page);
   await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
   await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } }));
   const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
   await row.locator('.worker-tool-software-details > summary').click();
@@ -267,10 +273,30 @@ test('software path copy failure leaves the full value selectable', async ({ pag
   expect(selection).toBe('/opt/installed/bin/codex');
 });
 
+test('system reading position and expanded paths survive a failed background snapshot', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 600 });
+  const state = await installTools(page); await page.goto(`/workers/${targetWorker}`);
+  await page.locator('[data-worker-tab="system"]:visible').click();
+  const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
+  const details = row.locator('.worker-tool-software-details'); await details.locator(':scope > summary').click();
+  const path = row.locator('[data-selection-role="actual"] .worker-tool-path-value').first();
+  const focus = path.locator(':scope > summary'); await focus.click(); await focus.focus();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  const top = await focus.evaluate(element => element.getBoundingClientRect().top);
+  state.workerFail = true;
+  const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.status() === 503);
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
+  await response;
+  await expect(page.locator('[data-worker-panel="system"] [role="alert"]')).toBeVisible();
+  await expect(details).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', ''); await expect(focus).toBeFocused();
+  expect(Math.abs(await focus.evaluate(element => element.getBoundingClientRect().top) - top)).toBeLessThan(4);
+});
+
 for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'en' }] as const) {
   test(`${sample.width}px ${sample.locale} software geometry stays stable throughout visibility revalidation`, async ({ page }, info) => {
     await page.setViewportSize({ width: sample.width, height: 900 });
     const state = await installTools(page, { locale: sample.locale }); await page.goto(`/workers/${targetWorker}`);
+    await page.locator('[data-worker-tab="system"]:visible').click();
     const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
     const expanded = row.locator('.worker-tool-software-details'); await expanded.locator(':scope > summary').click();
     const path = row.locator('[data-context="web"] [data-selection-role="actual"] .worker-tool-path-value').first();
@@ -286,8 +312,7 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     });
     const measure = () => row.evaluate(element => {
       const software = element.closest('.worker-panel')!.getBoundingClientRect();
-      const tasks = document.querySelector('.worker-task-heading-label')!.getBoundingClientRect();
-      return { softwareHeight: software.height, tasksDocumentY: tasks.top + scrollY, scrollY };
+      return { softwareHeight: software.height, softwareDocumentY: software.top + scrollY, scrollY };
     });
     const before = await measure(), gate = deferredRead(); state.workerGate = gate;
     const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.request().method() === 'GET');
@@ -300,7 +325,7 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
       })).toBe(true);
       const current = await measure();
       expect(current.softwareHeight).toBeCloseTo(before.softwareHeight, 4);
-      expect(current.tasksDocumentY).toBeCloseTo(before.tasksDocumentY, 4);
+      expect(current.softwareDocumentY).toBeCloseTo(before.softwareDocumentY, 4);
       expect(current.scrollY).toBeCloseTo(before.scrollY, 4);
     };
     await page.evaluate(() => {
@@ -316,7 +341,7 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect.poll(async () => {
       const value = await measure();
-      return { softwareHeight: value.softwareHeight, tasksDocumentY: value.tasksDocumentY, scrollY: value.scrollY };
+      return { softwareHeight: value.softwareHeight, softwareDocumentY: value.softwareDocumentY, scrollY: value.scrollY };
     }).toEqual(before);
     await check();
   });
