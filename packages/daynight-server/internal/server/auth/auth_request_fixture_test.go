@@ -88,6 +88,18 @@ func newStrictAuthHTTPWithSettings(t *testing.T, settings authconfig.AuthSetting
 		revokePAT: func(ctx context.Context, principal model.Principal, tokenID string) error {
 			return h.take(ctx, "RevokePAT", principal, tokenID).err
 		},
+		startDevice: func(ctx context.Context, clientID, source string) (identitycore.DeviceStart, error) {
+			return authRequestResult[identitycore.DeviceStart](h.take(ctx, "StartDevice", clientID, source))
+		},
+		inspectDevice: func(ctx context.Context, principal model.Principal, userCode string) (identitycore.DeviceInspection, error) {
+			return authRequestResult[identitycore.DeviceInspection](h.take(ctx, "InspectDevice", principal, userCode))
+		},
+		decideDevice: func(ctx context.Context, principal model.Principal, userCode, decision, expectedUserID string) error {
+			return h.take(ctx, "DecideDevice", principal, userCode, decision, expectedUserID).err
+		},
+		redeemDevice: func(ctx context.Context, clientID, grantType, code, deviceName string) (identitycore.MintedPAT, error) {
+			return authRequestResult[identitycore.MintedPAT](h.take(ctx, "RedeemDevice", clientID, grantType, code, deviceName))
+		},
 	}
 	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
 	var err error

@@ -2217,6 +2217,12 @@ login state and capacity at the database lock. The
 [login route fixture decision](../../.agents/notes/implemented/testing/2026-11-18-login-route-fixtures.md)
 records the proof boundary.
 
+Device authorization form and Origin tests use controlled identity operations
+with the real HTTP adapter. Approval, redemption, expiry, quota and account
+switch tests retain the physical credential and request lifecycles. The
+[device form decision](../../.agents/notes/implemented/testing/2026-11-18-device-form-fixtures.md)
+records the proof boundary.
+
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
 WebSocket traffic share one actual application and Engine. Runtime tests group
