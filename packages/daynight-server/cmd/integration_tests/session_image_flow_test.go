@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,9 +24,37 @@ import (
 	"github.com/google/uuid"
 )
 
-func sessionImageHTTP(t *testing.T, f *fixture, method, path, contentType string, data []byte, headers map[string]string, status int) []byte {
+type imageControllerRun struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	result chan error
+	done   chan struct{}
+}
+
+func (run *imageControllerRun) check(t *testing.T) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(f.context, method, f.origin+path, bytes.NewReader(data))
+	if run == nil || run.result == nil {
+		return
+	}
+	select {
+	case err := <-run.result:
+		run.result = nil
+		if err != nil {
+			t.Fatalf("Controller image exchange: %v", err)
+		}
+	default:
+	}
+}
+
+func sessionImageHTTP(t *testing.T, f *fixture, method, path, contentType string, data []byte, headers map[string]string, status int, runs ...*imageControllerRun) []byte {
+	t.Helper()
+	ctx := f.context
+	var run *imageControllerRun
+	if len(runs) != 0 {
+		run = runs[0]
+		ctx = run.ctx
+	}
+	req, err := http.NewRequestWithContext(ctx, method, f.origin+path, bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,14 +76,17 @@ func sessionImageHTTP(t *testing.T, f *fixture, method, path, contentType string
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		run.check(t)
 		t.Fatal(err)
 	}
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	closeErr := resp.Body.Close()
 	if readErr != nil || closeErr != nil {
+		run.check(t)
 		t.Fatalf("read image response: %v %v", readErr, closeErr)
 	}
 	if resp.StatusCode != status {
+		run.check(t)
 		t.Fatalf("%s %s: got %d want %d: %s\n%s", method, path, resp.StatusCode, status, body, f.process.logs.String())
 	}
 	return body
@@ -71,18 +103,49 @@ func imageWire(t *testing.T, v any) []byte {
 
 func imageDigest(b []byte) string { digest := sha256.Sum256(b); return hex.EncodeToString(digest[:]) }
 
-func sessionImageController(ctx context.Context, connection *websocket.Conn, fence sp.ControllerFence, spec sp.ImageUploadSpec, original []byte) error {
+type handledImageRequest struct {
+	request  sp.ImageMediaMessage
+	response []byte
+}
+
+type imageControllerHistory map[string]handledImageRequest
+
+func (seen imageControllerHistory) replay(ctx context.Context, connection *websocket.Conn, data []byte, fence sp.ControllerFence) error {
+	request, err := sp.DecodeImageMedia(data)
+	if err != nil || request.Type != "image_request" || request.Protocol != sp.Protocol || request.ControllerFence != fence {
+		return fmt.Errorf("invalid Controller retransmission: %s", data)
+	}
+	previous, ok := seen[request.RequestID]
+	if !ok || request.Action != previous.request.Action || request.ControllerFence != previous.request.ControllerFence || !bytes.Equal(request.Body, previous.request.Body) {
+		return fmt.Errorf("Controller request identity changed or unexpected: %s", data)
+	}
+	return connection.Write(ctx, websocket.MessageText, previous.response)
+}
+
+func sessionImageController(ctx context.Context, connection *websocket.Conn, fence sp.ControllerFence, spec sp.ImageUploadSpec, original []byte, seen imageControllerHistory) error {
 	validated := &sp.ValidatedImage{MediaType: spec.MediaType, ByteLength: spec.ByteLength, SHA256: spec.SHA256, Width: 3, Height: 2, FrameCount: 1}
-	for _, expected := range []string{"prepare", "write", "complete", "release"} {
+	expectedActions := []string{"prepare", "write", "complete", "release"}
+	for stage := 0; stage < len(expectedActions); {
+		expected := expectedActions[stage]
 		kind, data, err := connection.Read(ctx)
 		if err != nil {
 			return err
 		}
-		var request struct {
-			Type, Action, RequestID string
-			Body                    json.RawMessage
+		request, decodeErr := sp.DecodeImageMedia(data)
+		if kind != websocket.MessageText || decodeErr != nil || request.Type != "image_request" || request.Protocol != sp.Protocol || request.ControllerFence != fence {
+			return fmt.Errorf("unexpected Controller request for %s: %s", expected, data)
 		}
-		if kind != websocket.MessageText || json.Unmarshal(data, &request) != nil || request.Type != "image_request" || request.Action != expected {
+		if _, ok := seen[request.RequestID]; ok {
+			if err := seen.replay(ctx, connection, data, fence); err != nil {
+				return err
+			}
+			continue
+		}
+		identityAction := expected
+		if expected == "write" {
+			identityAction = "write/0"
+		}
+		if request.Action != expected || request.RequestID != uuid.NewSHA1(uuid.MustParse(spec.UploadID), []byte(identityAction)).String() {
 			return fmt.Errorf("unexpected Controller request for %s: %s", expected, data)
 		}
 		if expected == "prepare" {
@@ -106,9 +169,10 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 			}
 		} else {
 			var release struct {
-				UploadID string `json:"uploadId"`
+				UploadID string              `json:"uploadId"`
+				Spec     *sp.ImageUploadSpec `json:"spec"`
 			}
-			if json.Unmarshal(request.Body, &release) != nil || release.UploadID != spec.UploadID {
+			if json.Unmarshal(request.Body, &release) != nil || release.UploadID != spec.UploadID || (release.Spec != nil && !reflect.DeepEqual(*release.Spec, spec)) {
 				return fmt.Errorf("Controller release identity differs: %s", request.Body)
 			}
 		}
@@ -131,19 +195,48 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 		if err != nil {
 			return err
 		}
+		seen[request.RequestID] = handledImageRequest{request: request, response: response}
 		if err := connection.Write(ctx, websocket.MessageText, response); err != nil {
 			return err
 		}
+		stage++
 	}
 	return nil
 }
 
-func sessionCapturedOriginal(t *testing.T, f *fixture, controller *websocket.Conn, fence sp.ControllerFence, capture sp.ImageCaptureRequest, validated sp.ValidatedImage, original []byte) sp.Resource {
+func sessionImageRead(t *testing.T, ctx context.Context, controller *websocket.Conn, fence sp.ControllerFence, seen imageControllerHistory, allowCapture bool) map[string]json.RawMessage {
+	t.Helper()
+	for {
+		kind, data, err := controller.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frame map[string]json.RawMessage
+		if kind != websocket.MessageText || json.Unmarshal(data, &frame) != nil {
+			t.Fatalf("invalid Controller frame: %s", data)
+		}
+		var typ, action string
+		_ = json.Unmarshal(frame["type"], &typ)
+		_ = json.Unmarshal(frame["action"], &action)
+		var requestID string
+		_ = json.Unmarshal(frame["requestId"], &requestID)
+		_, alreadySeen := seen[requestID]
+		if typ != "image_request" || (allowCapture && action == "read_capture" && !alreadySeen) {
+			return frame
+		}
+		if err := seen.replay(ctx, controller, data, fence); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func sessionCapturedOriginal(t *testing.T, f *fixture, controller *websocket.Conn, fence sp.ControllerFence, capture sp.ImageCaptureRequest, validated sp.ValidatedImage, original []byte, seen imageControllerHistory) sp.Resource {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(f.context, 15*time.Second)
 	defer cancel()
 	for {
-		kind, raw, err := controller.Read(ctx)
+		fields := sessionImageRead(t, ctx, controller, fence, seen, true)
+		raw, err := json.Marshal(fields)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +246,7 @@ func sessionCapturedOriginal(t *testing.T, f *fixture, controller *websocket.Con
 			Result                  sp.ImageCaptureReceipt
 			Error                   *sp.ImageError
 		}
-		if kind != websocket.MessageText || json.Unmarshal(raw, &frame) != nil {
+		if json.Unmarshal(raw, &frame) != nil {
 			t.Fatalf("invalid capture frame: %s", raw)
 		}
 		if frame.Type == "image_request" && frame.Action == "read_capture" {
@@ -241,10 +334,32 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 		t.Fatalf("first chunk replay: %+v", replay)
 	}
 	controllerContext, cancelController := context.WithTimeout(f.context, 30*time.Second)
-	defer cancelController()
-	controllerResult := make(chan error, 1)
+	run := &imageControllerRun{ctx: controllerContext, cancel: cancelController, result: make(chan error, 1), done: make(chan struct{})}
+	seen := make(imageControllerHistory)
 	go func() {
-		controllerResult <- sessionImageController(controllerContext, controller, connected.ControllerFence, spec, original)
+		defer close(run.done)
+		err := sessionImageController(controllerContext, controller, connected.ControllerFence, spec, original, seen)
+		run.result <- err
+		if err != nil {
+			cancelController()
+		}
+	}()
+	defer func() {
+		if run.result != nil {
+			select {
+			case err := <-run.result:
+				if err != nil {
+					t.Errorf("Controller image exchange: %v", err)
+				}
+			default:
+				run.cancel()
+				if err := <-run.result; err != nil && !errors.Is(err, context.Canceled) {
+					t.Errorf("Controller image exchange: %v", err)
+				}
+			}
+		}
+		run.cancel()
+		<-run.done
 	}()
 	f.client.Timeout = 30 * time.Second
 	var refusal struct {
@@ -252,17 +367,19 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodPost, upload+"/complete", "application/json", imageWire(t, sp.ImageUploadComplete{SHA256: hash, ByteLength: size}), nil, http.StatusConflict), &refusal); err != nil {
+	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodPost, upload+"/complete", "application/json", imageWire(t, sp.ImageUploadComplete{SHA256: hash, ByteLength: size}), nil, http.StatusConflict, run), &refusal); err != nil {
 		t.Fatal(err)
 	}
 	if refusal.Error.Code != "component_unsupported" {
 		t.Fatalf("unqualified input was not refused: %+v", refusal)
 	}
 	var released sp.ImageUploadReceipt
-	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodDelete, upload, "", nil, nil, http.StatusOK), &released); err != nil {
+	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodDelete, upload, "", nil, nil, http.StatusOK, run), &released); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-controllerResult; err != nil {
+	controllerErr := <-run.result
+	run.result = nil
+	if err := controllerErr; err != nil {
 		t.Fatalf("Controller image exchange: %v", err)
 	}
 	if released.State != "released" || released.UploadID != spec.UploadID {
@@ -283,14 +400,16 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 		t.Fatalf("capture source projection is invalid: %v", err)
 	}
 	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: imageWire(t, entry)}}})
-	sessionFlowKind(t, sessionFlowRead(t, f, controller), "events_ack")
+	imageReadContext, finishImageRead := context.WithTimeout(f.context, 5*time.Second)
+	sessionFlowKind(t, sessionImageRead(t, imageReadContext, controller, connected.ControllerFence, seen, false), "events_ack")
+	finishImageRead()
 	checkpoint := imageWire(t, sp.ArchiveHistoryContent{HistoryEpoch: connected.HistoryEpoch, SourceThrough: "1", Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{}})
 	checkpointDigest := imageDigest(checkpoint)
 	sessionImageHTTP(t, f, http.MethodPut, base+"/image-history-ledger/"+uuid.NewString()+"?offset=0", "application/octet-stream", checkpoint, map[string]string{"Authorization": "Bearer " + grant.Token, "Daynight-Controller-Fence": string(imageWire(t, connected.ControllerFence)), "Daynight-File-Byte-Length": strconv.Itoa(len(checkpoint)), "Daynight-File-SHA256": checkpointDigest, "Daynight-Chunk-SHA256": checkpointDigest}, http.StatusOK)
 	capture := sp.ImageCaptureRequest{CaptureID: uuid.NewString(), AttemptID: uuid.NewString(), Occurrence: sp.ImageOccurrence{ImageID: imageID, EntryID: entry.EntryID, Container: "content", SourceKey: "original"}, Locator: sp.ImageLocator{Kind: "external", URL: "https://images.example/original.png"}}
 	validated := sp.ValidatedImage{MediaType: spec.MediaType, ByteLength: size, SHA256: hash, Width: 3, Height: 2, FrameCount: 1}
 	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "image_capture", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, RequestID: uuid.NewString(), Action: "submit", MediaBody: imageWire(t, sp.DirectCaptureSubmission{Request: capture, AttemptID: capture.AttemptID, Outcome: sp.DirectCaptureOutcome{Kind: "validated", Validated: &validated}})})
-	resource := sessionCapturedOriginal(t, f, controller, connected.ControllerFence, capture, validated, original)
+	resource := sessionCapturedOriginal(t, f, controller, connected.ControllerFence, capture, validated, original, seen)
 	resourcePath := base + "/resources/" + resource.ResourceID + "/content"
 	if actual := sessionImageHTTP(t, f, http.MethodGet, resourcePath, "", nil, nil, http.StatusOK); !bytes.Equal(actual, original) {
 		t.Fatal("captured resource bytes differ")
@@ -299,7 +418,9 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 	content := imageWire(t, []map[string]string{{"type": "resource", "resourceId": resource.ResourceID, "label": "original.png"}})
 	entry.Revision, entry.Data["content"] = "2", content
 	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "2", Kind: "timeline_upsert", Payload: imageWire(t, entry)}}})
-	sessionFlowKind(t, sessionFlowRead(t, f, controller), "events_ack")
+	imageReadContext, finishImageRead = context.WithTimeout(f.context, 5*time.Second)
+	sessionFlowKind(t, sessionImageRead(t, imageReadContext, controller, connected.ControllerFence, seen, false), "events_ack")
+	finishImageRead()
 	if err := controller.Close(websocket.StatusNormalClosure, "integration controller stopped"); err != nil {
 		t.Fatal(err)
 	}
