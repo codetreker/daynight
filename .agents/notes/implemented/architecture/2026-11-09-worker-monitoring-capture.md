@@ -21,9 +21,10 @@ replaces that producer reconciliation with direct reporting in new CLI Workers;
 existing running producers retain their original lifecycle until updated.
 
 Fixed failure summaries use concrete errors from trusted operation boundaries.
-Herdr failures with an explicit nonzero safe-integer exit status and repository
-Git failures with a positive safe-integer exit status share the command-failed
-category. Negative spawn errno values are not Git process exits; they retain
+Repository Git failures with a positive safe-integer exit status use the
+command-failed category. Herdr failures were classified there before the
+[daemon removal](../simplification/2026-11-18-remove-herdr-daemon.md).
+Negative spawn errno values are not Git process exits; they retain
 unknown alongside signal-only exits and unknown statuses. The classifier unwraps only the known cleanup
 wrapper and leaves arbitrary cause chains and aggregate errors uninterpreted.
 

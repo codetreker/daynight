@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
@@ -133,7 +134,11 @@ func TestWorkerHTTPRejectsHerdrMember(t *testing.T) {
 					body = map[string]any{"version": 1, "claimId": workerHTTPClaimID, "phase": "executing"}
 				}
 				body["herdr"] = value
-				assertProjectError(t, protocolRequest(h, method, workerHTTPPath(), jsonBody(t, body), "2"), http.StatusBadRequest, "invalid_input")
+				response := protocolRequest(h, method, workerHTTPPath(), jsonBody(t, body), "2")
+				assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+				if got := decodeResponse[api.ErrorResponse](t, response, http.StatusBadRequest).Error.Message; got != "Herdr is no longer supported. Upgrade your Daynight client." {
+					t.Fatalf("Herdr diagnostic = %q", got)
+				}
 				if h.Tasks.TotalCalls() != 0 {
 					t.Fatal("invalid member reached service")
 				}
@@ -148,7 +153,13 @@ func TestWorkerHTTPModeRequiresExplicitWeb(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
 			body := workerClaimBody(1)
 			body["agentControlMode"] = mode
-			assertProjectError(t, protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), "2"), http.StatusBadRequest, "invalid_input")
+			response := protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), "2")
+			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+			if mode == "herdr" {
+				if got := decodeResponse[api.ErrorResponse](t, response, http.StatusBadRequest).Error.Message; got != "Herdr is no longer supported. Upgrade your Daynight client." {
+					t.Fatalf("Herdr mode diagnostic = %q", got)
+				}
+			}
 			if h.Tasks.TotalCalls() != 0 {
 				t.Fatal("invalid mode reached service")
 			}
@@ -176,6 +187,46 @@ func TestWorkerHTTPModeRequiresExplicitWeb(t *testing.T) {
 			t.Fatal("omitted mode reached service")
 		}
 	})
+}
+
+func TestWorkerHTTPRetiredFieldKeepsStrictDecoding(t *testing.T) {
+	const unknown = "request body contains an unknown or read-only field"
+	const duplicate = "request body contains a duplicate field"
+	const invalid = "request body must be valid JSON"
+	const retired = "Herdr is no longer supported. Upgrade your Daynight client."
+	for _, tc := range []struct {
+		name, method, suffix, body, message string
+	}{
+		{"escaped retired key", http.MethodPatch, "", `{"her\u0064r":null}`, retired},
+		{"unknown first", http.MethodPatch, "", `{"other":null,"herdr":null}`, unknown},
+		{"duplicate first", http.MethodPatch, "", `{"version":1,"version":1,"herdr":null}`, duplicate},
+		{"invalid value first", http.MethodPatch, "", `{"version":,"herdr":null}`, invalid},
+		{"ordinary unknown", http.MethodPost, "", `{"other":null}`, unknown},
+		{"release remains unchanged", http.MethodPost, "/release", `{"herdr":null}`, unknown},
+		{"withdraw remains unchanged", http.MethodPost, "/withdraw", `{"herdr":null}`, unknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHTTPFixture(t, io.Discard)
+			response := protocolRequest(h, tc.method, workerHTTPPath()+tc.suffix, tc.body, "2")
+			assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+			if got := decodeResponse[api.ErrorResponse](t, response, http.StatusBadRequest).Error.Message; got != tc.message {
+				t.Fatalf("message = %q, want %q", got, tc.message)
+			}
+			if h.Tasks.TotalCalls() != 0 {
+				t.Fatal("invalid request reached service")
+			}
+		})
+	}
+	// An unrelated invalid mode retains the existing message and must not imply
+	// that the request used the retired Herdr mode.
+	h := newHTTPFixture(t, io.Discard)
+	body := workerClaimBody(1)
+	body["agentControlMode"] = "other"
+	response := protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), "2")
+	got := decodeResponse[api.ErrorResponse](t, response, http.StatusBadRequest).Error.Message
+	if got != "agentControlMode must be web." || strings.Contains(got, "Herdr") || h.Tasks.TotalCalls() != 0 {
+		t.Fatalf("unrelated mode: message=%q calls=%d", got, h.Tasks.TotalCalls())
+	}
 }
 
 func TestWorkerHTTPCopilotWebClaim(t *testing.T) {

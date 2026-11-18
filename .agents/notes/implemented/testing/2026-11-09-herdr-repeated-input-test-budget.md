@@ -2,9 +2,11 @@
 
 Status: implemented
 
+The dedicated Herdr runtime tests described here were removed with the [daemon](../simplification/2026-11-18-remove-herdr-daemon.md); this decision remains historical.
+
 ## Problem
 
-The [durable Herdr integration test](../../../../packages/daynight/test/commands/worker/herdr-durable-integration.test.ts)
+The former durable Herdr integration test
 for repeated known-menu refusals checks eleven rejected inputs and two successful
 inputs in sequence. It retains real SQLite lifecycle and input journals using
 WAL and synchronous=FULL. Its default five-second test deadline covers the whole

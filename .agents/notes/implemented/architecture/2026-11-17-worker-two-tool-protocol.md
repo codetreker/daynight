@@ -25,6 +25,10 @@ the mode item. The Worker does not report a mode bootstrap or observation.
 This partially supersedes the [negotiated configuration decision](2026-11-11-worker-tool-path-configuration.md)
 and the [Web editing decision](../feature/2026-11-12-worker-tool-path-web.md).
 It also replaces the configuration behavior in the [cloud mode decision](2026-11-10-worker-cloud-control-mode.md).
+It replaces the public mode confirmation in the [Web mode adoption decision](2026-11-18-worker-web-mode-adoption.md)
+and the transitional wire described by the [Web checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md).
+The [per-tool readiness decision](2026-11-17-worker-per-tool-readiness.md) retains
+the independent choice and proof rules for the remaining tools.
 
 ## Alternatives
 

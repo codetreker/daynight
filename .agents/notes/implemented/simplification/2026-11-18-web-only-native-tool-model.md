@@ -11,6 +11,8 @@ claims and uploaded recordings must retain their original meaning.
 
 ## Decision
 
+The former Herdr qualification in the [per-tool readiness decision](../architecture/2026-11-17-worker-per-tool-readiness.md) is retired; independent Web provider tool readiness remains.
+
 Native verification and configuration use Web provider arguments only. Active
 platform tool selection contains Codex and Copilot in the Web context. The
 Worker leaves old Herdr SQLite rows untouched and does not admit them for

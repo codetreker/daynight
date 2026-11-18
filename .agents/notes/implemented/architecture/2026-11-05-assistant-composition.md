@@ -16,10 +16,9 @@ and the Worker's responsibility for stopping every owned execution.
 The foreground Worker composes the existing Bot inventory, process, Session API
 and deletion manager beside the Task coordinator. Bot discovery does not wait
 for repository preparation or consume task slots. Current effective native
-configuration supplies hosting observations and new execution defaults. It is
-resolved under the Worker's own control mode before the assistant collector
-checks Web argument compatibility. Valid Herdr arguments that Web cannot accept
-make that assistant provider unavailable without breaking ordinary Task reports.
+configuration supplies hosting observations and new execution defaults. The
+assistant collector checks Web argument compatibility. Unsupported configuration
+is reported without converting it to a different target.
 Existing Bot configuration and role text remain frozen. Shutdown joins management
 work and all execution stop attempts before stores close and the instance lock
 releases.
@@ -59,7 +58,7 @@ default selection; older Workers remain explicitly unsupported.
 
 Assistants share the existing foreground Worker and normal CLI authorization.
 Closing browser views does not stop them, but an offline machine cannot execute.
-Task, Herdr and standalone Test paths retain their own lifecycle; no automatic
+Task, Bot and standalone Test paths retain their own lifecycle; no automatic
 Test conversion or revival of discontinued Conversations occurs.
 
 Deletion covers Daynight-managed conversation and private execution data, leaving

@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 
@@ -47,7 +50,12 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 		httpx.WriteError(w, request, logger, "worker_claim", phase, httpx.InvalidInput("worker claim operations do not accept query parameters"))
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, allowed...)
+	var fields map[string]json.RawMessage
+	if phase == "claim" || phase == "update" {
+		fields, err = decodeWorkerClaimObject(w, request, allowed)
+	} else {
+		fields, err = httpx.DecodeObject(w, request, allowed...)
+	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_claim", phase, err)
 		return
@@ -79,6 +87,24 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	logger.InfoContext(request.Context(), "worker claim operation applied", "type", "resource", "component", "worker_claim", "phase", phase,
 		"request_id", httpx.RequestID(request.Context()))
 	writeTaskMutation(w, request, logger, "worker_claim", http.StatusOK, "", task)
+}
+
+const retiredHerdrMessage = "Herdr is no longer supported. Upgrade your Daynight client."
+
+func decodeWorkerClaimObject(w http.ResponseWriter, request *http.Request, allowed []string) (map[string]json.RawMessage, error) {
+	body, err := httpx.ReadJSONBodyLimit(w, request, httpx.MaxJSONBody, transport.JSONBodyReadTimeout)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := jsonobject.Decode(body, "request body", allowed...)
+	if err != nil {
+		var unknown *jsonobject.UnknownFieldError
+		if errors.As(err, &unknown) && unknown.Field == "herdr" {
+			return nil, httpx.InvalidInput(retiredHerdrMessage)
+		}
+		return nil, httpx.InvalidInput(err.Error())
+	}
+	return fields, nil
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -134,6 +160,9 @@ func workerAgentControlModeInput(fields map[string]json.RawMessage) (model.Worke
 		return "", err
 	}
 	if mode != string(model.AgentControlModeWeb) {
+		if mode == string(model.AgentControlModeHerdr) {
+			return "", httpx.InvalidInput(retiredHerdrMessage)
+		}
 		return "", httpx.InvalidInput("agentControlMode must be web.")
 	}
 	return model.WorkerAgentControlMode(mode), nil
