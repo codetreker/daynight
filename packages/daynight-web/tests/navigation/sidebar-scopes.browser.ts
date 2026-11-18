@@ -242,6 +242,8 @@ for (const width of [320, 390, 768, 1360]) {
       const beforeSelection = await layout();
       await tasks.click();
       await expect(page).toHaveURL(/\/my-tasks$/);
+      await expect(breadcrumb).toContainText(chinese ? '我的' : 'My');
+      await expect(breadcrumb).toContainText(chinese ? '进行中的任务' : 'In-progress tasks');
       await expect(tasks).toHaveAttribute('aria-current', 'page');
       await expectIconState(tasks, 'rgb(240, 241, 255)');
       if (width <= 740) {
