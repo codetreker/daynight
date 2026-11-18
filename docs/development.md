@@ -553,6 +553,11 @@ the tested journal connection uses a short busy wait after checking its
 production default. The
 [image receipt contention decision](../.agents/notes/implemented/testing/2026-11-18-image-receipt-busy-budget.md)
 owns the write-failure and recovery proof.
+Controller startup ownership contention keeps the real default SQLite busy
+wait. The fixture holds only the subsequent retry so IPC cancellation reaches
+the waiting Controller before a second synchronous acquisition. The
+[Controller storage contention decision](../.agents/notes/implemented/testing/2026-11-18-controller-storage-contention-cancel.md)
+owns the cancellation boundary.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
