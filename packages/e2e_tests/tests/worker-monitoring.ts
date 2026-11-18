@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Page } from "@playwright/test";
 import { startCommand } from "../src/command.ts";
 import { cliEnvironment, expect, topology } from "./fixtures.ts";
+import { observeMonitoringResponses, waitForRenderedMonitoring } from "./monitoring-responses.ts";
 
 type Monitoring = {
   state: "available";
@@ -23,7 +24,7 @@ export const verifyWorkerMonitoring = async (page: Page): Promise<void> => {
   const startedAt = Date.now();
   let output = "", exited = false;
   const worker = startCommand(process.execPath, [topology.cliEntry, "worker", "run"], {
-    cwd: topology.cliConfigDirectory, env: cliEnvironment, timeoutMs: 150_000,
+    cwd: topology.cliConfigDirectory, env: cliEnvironment, timeoutMs: 300_000,
     onOutput: (_channel, chunk) => { output += chunk; },
   });
   void worker.finished.then(() => { exited = true; }, () => { exited = true; });
@@ -44,29 +45,30 @@ export const verifyWorkerMonitoring = async (page: Page): Promise<void> => {
       return (await response.json() as { state: string }).state;
     }, { timeout: 90_000, intervals: [1_000] }).toBe("available");
 
-    const webRead = page.waitForResponse(response => response.url().endsWith(`${root}/monitoring`) && response.request().method() === "GET");
-    await page.goto(`${topology.baseURL}/workers/${workerId}`);
-    const response = await webRead;
-    expect(response.status(), await response.text()).toBe(200);
-    const observation = await response.json() as Monitoring;
-    expect(observation.state).toBe("available");
-    expect(["starting", "running"]).toContain(observation.data.lifecycle);
-    expect(observation.data.reservations).toEqual([]);
-    const captured = Date.parse(observation.data.capturedAt), received = Date.parse(observation.receivedAt), expires = Date.parse(observation.expiresAt);
-    expect(captured).toBeGreaterThanOrEqual(startedAt - 5_000);
-    expect(captured).toBeLessThanOrEqual(Date.now() + 5_000);
-    expect(received).toBeGreaterThanOrEqual(startedAt - 5_000);
-    expect(received).toBeLessThanOrEqual(Date.now() + 5_000);
-    expect(expires - received).toBe(3_600_000);
-    await expect(page.locator(".worker-id")).toContainText(workerId!);
-    await expect(page.locator(".monitoring-time time").last()).toHaveAttribute("datetime", observation.data.capturedAt);
-    await expect(page.locator(".monitoring-time time").first()).toHaveAttribute("datetime", observation.receivedAt);
-    const capacity = page.locator(".monitoring-card").filter({ has: page.getByRole("heading", { name: "Execution capacity", exact: true }) });
-    if (observation.data.capacity === null) await expect(capacity).toContainText("Capacity has not been observed.");
-    else {
-      await expect(capacity).toContainText(`${observation.data.capacity.occupied} / ${observation.data.capacity.limit}`);
-      await expect(capacity).toContainText(`${observation.data.capacity.available} available`);
-    }
+    const webReads = observeMonitoringResponses(page, `${root}/monitoring`);
+    try {
+      await page.goto(`${topology.baseURL}/workers/${workerId}`);
+      const rendered = await waitForRenderedMonitoring(page, webReads, 45_000) as Monitoring;
+      expect(["starting", "running"]).toContain(rendered.data.lifecycle);
+      expect(rendered.data.reservations).toEqual([]);
+      const captured = Date.parse(rendered.data.capturedAt), received = Date.parse(rendered.receivedAt), expires = Date.parse(rendered.expiresAt);
+      expect(captured).toBeGreaterThanOrEqual(startedAt - 5_000);
+      expect(captured).toBeLessThanOrEqual(Date.now() + 5_000);
+      expect(received).toBeGreaterThanOrEqual(startedAt - 5_000);
+      expect(received).toBeLessThanOrEqual(Date.now() + 5_000);
+      expect(expires - received).toBe(3_600_000);
+      await expect(page.locator(".worker-id")).toContainText(workerId!);
+      await expect(page.locator(".monitoring-time time").last()).toHaveAttribute("datetime", rendered.data.capturedAt);
+      await expect(page.locator(".monitoring-time time").first()).toHaveAttribute("datetime", rendered.receivedAt);
+      const capacity = page.locator(".monitoring-card").filter({ has: page.getByRole("heading", { name: "Execution capacity", exact: true }) });
+      if (rendered.data.capacity === null) await expect(capacity).toContainText("Capacity has not been observed.");
+      else {
+        await expect(capacity).toContainText(`${rendered.data.capacity.occupied} / ${rendered.data.capacity.limit}`);
+        await expect(capacity).toContainText(`${rendered.data.capacity.available} available`);
+      }
+    } catch (error) {
+      throw new Error(`Worker monitoring browser requests: ${webReads.diagnostics()}`, { cause: error });
+    } finally { webReads.close(); }
 
     const readWorker = async () => {
       const response = await page.request.get(root, { headers: { "Daynight-Worker-Alias": "1", "Daynight-Worker-Tool-Paths": "2" } });

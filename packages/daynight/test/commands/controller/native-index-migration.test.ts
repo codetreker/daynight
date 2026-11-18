@@ -34,7 +34,7 @@ test.each([
   for (let i = 0; i < 2; i++) {
     const reopened = new Database(file, { readonly: true });
     try {
-      expect(reopened.pragma("user_version", { simple: true })).toBe(13);
+      expect(reopened.pragma("user_version", { simple: true })).toBe(14);
       const row = reopened.prepare("SELECT value FROM image_runtime_state WHERE key='native_index_reservation'").get() as { value: string } | undefined;
       if (expected === null) expect(row).toBeUndefined();
       else if (typeof expected === "string") expect(row?.value).toBe(expected);
