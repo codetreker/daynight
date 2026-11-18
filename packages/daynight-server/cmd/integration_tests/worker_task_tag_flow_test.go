@@ -73,10 +73,11 @@ func serverAPIWorkerTaskTagAdmissionFlow(t *testing.T, f *fixture) {
 	}
 
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(`["any",["backend"]]`)))
+	claimHeaders := http.Header{"Daynight-Worker-Protocol": {"2"}}
 	claim := func(task api.Task, claimID string) map[string]any {
 		return map[string]any{"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Tag admission"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString(), "taskTagFilterKey": digest}
 	}
-	refused := requestJSON[api.ErrorResponse](t, f, http.MethodPost, taskPath(unmatched)+"/worker-claim", claim(unmatched, uuid.NewString()), http.StatusConflict)
+	refused := requestJSON[api.ErrorResponse](t, f, http.MethodPost, taskPath(unmatched)+"/worker-claim", claim(unmatched, uuid.NewString()), http.StatusConflict, claimHeaders)
 	if refused.Error.Code != "claim_conflict" {
 		t.Fatalf("unmatched claim error differs: %+v", refused)
 	}
@@ -85,7 +86,7 @@ func serverAPIWorkerTaskTagAdmissionFlow(t *testing.T, f *fixture) {
 		t.Fatalf("refused claim changed task: %+v", stillTodo)
 	}
 	claimID := uuid.NewString()
-	claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(matching)+"/worker-claim", claim(matching, claimID), http.StatusOK)
+	claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(matching)+"/worker-claim", claim(matching, claimID), http.StatusOK, claimHeaders)
 	readClaim := requestJSON[api.Task](t, f, http.MethodGet, taskPath(matching), nil, http.StatusOK)
 	if claimed.ID != matching.ID || claimed.Status != "in_progress" || workerClaim(t, claimed).ClaimID != claimID || workerClaim(t, claimed).WorkerID != workerID || workerClaim(t, readClaim).ClaimID != claimID || readClaim.Version != claimed.Version {
 		t.Fatalf("matching claim differs: receipt=%+v read=%+v", claimed, readClaim)
