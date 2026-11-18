@@ -138,6 +138,13 @@ verify PostgreSQL SQLSTATE `42P01`, and the native preference matrix still
 rolls back to its savepoint before reading defaults. The tested version gates
 and preference results do not depend on the absolute Bot creation sequence.
 
+The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
+share one Store per parent and give each case independent account, Project,
+Task, credential, claim and Session identities. The registration refusal
+matrix owns its own schema so the all-table empty check still detects any
+escaped registration write. Rotation and aggregate cases retain their real
+committed operations and scoped results. A failed case stops reuse.
+
 The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
 and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
 matrices each use one Store. Cases keep distinct App, grant, and Project

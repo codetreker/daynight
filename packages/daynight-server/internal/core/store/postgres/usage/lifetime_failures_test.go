@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/usage"
 	app "github.com/codetreker/daynight/packages/daynight-server/internal/service/usage"
@@ -13,7 +14,8 @@ import (
 )
 
 func TestUsageRegistrationRejectsUnavailableOriginalExecution(t *testing.T) {
-	for _, tc := range []struct {
+	database := testutil.OpenStore(t, postgres.Open)
+	for index, tc := range []struct {
 		name   string
 		change func(*testing.T, *workflowFixture)
 		code   string
@@ -35,8 +37,8 @@ func TestUsageRegistrationRejectsUnavailableOriginalExecution(t *testing.T) {
 			testutil.PutTaskProperty(t, f.db.Pool, f.task, "blocked", []byte("true"))
 		}, "permission_revoked"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := workflow(t)
+		if !t.Run(tc.name, func(t *testing.T) {
+			f := workflowInStore(t, database, 400+index)
 			tc.change(t, f)
 			_, err := f.service.Register(t.Context(), f.actor, f.registration)
 			requireCode(t, err, tc.code)
@@ -44,14 +46,17 @@ func TestUsageRegistrationRejectsUnavailableOriginalExecution(t *testing.T) {
 			if err = f.db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM usage_records`).Scan(&count); err != nil || count != 0 {
 				t.Fatal("failed registration persisted usage", count, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
 func TestUsageRotationRefusesExpiredSealedAndInactiveExecutions(t *testing.T) {
-	for _, state := range []string{"expired", "sealed", "revoked", "completed claim", "stale controller", "wrong session"} {
-		t.Run(state, func(t *testing.T) {
-			f := workflow(t)
+	database := testutil.OpenStore(t, postgres.Open)
+	for index, state := range []string{"expired", "sealed", "revoked", "completed claim", "stale controller", "wrong session"} {
+		if !t.Run(state, func(t *testing.T) {
+			f := workflowInStore(t, database, 400+index)
 			ctx := t.Context()
 			reg, err := f.service.Register(ctx, f.actor, f.registration)
 			if err != nil {
@@ -80,7 +85,9 @@ func TestUsageRotationRefusesExpiredSealedAndInactiveExecutions(t *testing.T) {
 			}
 			_, err = f.service.Rotate(ctx, f.actor, reg.State.ID, input)
 			requireCode(t, err, want)
-		})
+		}) {
+			return
+		}
 	}
 }
 
@@ -175,9 +182,10 @@ func TestUsageDetailCursorTraversesStableSnapshotAndRejectsChangedFilter(t *test
 }
 
 func TestUsageAggregateReflectsUnsupportedAndUnverifiedExecutions(t *testing.T) {
-	for _, provider := range []string{"unverified", "codex"} {
-		t.Run(provider, func(t *testing.T) {
-			f := workflow(t)
+	database := testutil.OpenStore(t, postgres.Open)
+	for index, provider := range []string{"unverified", "codex"} {
+		if !t.Run(provider, func(t *testing.T) {
+			f := workflowInStore(t, database, 400+index)
 			ctx := t.Context()
 			service, err := app.New(f.db, app.Options{WriteEnabled: true, CursorKey: []byte(strings.Repeat("k", 32))})
 			if err != nil {
@@ -198,7 +206,9 @@ func TestUsageAggregateReflectsUnsupportedAndUnverifiedExecutions(t *testing.T) 
 			if err != nil || group.Summary.Completeness != want || group.Members.Total != "1" || group.Summary.Metrics["outputTokens"].Known != nil {
 				t.Fatal(group, err)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
