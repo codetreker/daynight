@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -299,7 +300,9 @@ func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing
 		_, err := snapshot.ProjectDAO().ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamA}, Page{Limit: 1})
 		return err
 	})
-	if err == nil || errors.Is(err, model.ErrNotFound) {
-		t.Fatalf("database failure mistaken for missing membership: %v", err)
+	var operational *Error
+	var cause *pgconn.PgError
+	if !errors.As(err, &operational) || !errors.As(err, &cause) || cause.Code != "42P01" || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing Team membership relation lost its database cause: %v", err)
 	}
 }

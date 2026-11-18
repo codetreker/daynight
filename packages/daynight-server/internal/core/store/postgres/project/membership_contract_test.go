@@ -64,6 +64,10 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("nonmember found: %v", err)
 		}
+		access, err = snapshot.ProjectDAO().ProjectAccess(ctx, admin, testutil.QueryID(999))
+		if !errors.Is(err, model.ErrNotFound) || !errors.Is(err, pgx.ErrNoRows) || !reflect.DeepEqual(access, model.ProjectAccess{}) {
+			t.Fatalf("absent Project access returned actor data or lost its cause: %+v %v", access, err)
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
