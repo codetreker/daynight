@@ -81,10 +81,7 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	if err != nil {
 		return TaskPage{}, err
 	}
-	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{
-		TagFilter: request.TagFilter, PageRequest: request.PageRequest, Type: request.Type, Parent: request.Parent, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready,
-		AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, WorkerID: request.WorkerID,
-	})
+	selection, err := prepareListSelection(projectID, principal.UserID, request)
 	if err != nil {
 		return TaskPage{}, err
 	}
@@ -98,6 +95,12 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 			return err
 		}
 		var err error
+		if request.CandidateWorkerID != nil {
+			selection, err = candidateListSelection(ctx, snapshot, principal, projectID, request)
+			if err != nil {
+				return err
+			}
+		}
 		reader := snapshot.TaskDAO()
 		if len(selection.Query.TagFilter.TagIDs) != 0 {
 			if err := taskcore.RequireTagFilter(ctx, snapshot.TagDAO(), projectID, selection.Query.TagFilter); err != nil {

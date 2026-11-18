@@ -21,7 +21,7 @@ func TestScopedProjectsPagesUseOneRepeatableSnapshot(t *testing.T) {
 	projects := make([]model.Project, 5)
 	for i := range projects {
 		var err error
-		projects[i], err = testutil.CreatePrivateProject(ctx, database, owner, testutil.QueryID(i+1), "Project", "https://example.com/owner/repo")
+		projects[i], err = testutil.CreatePrivateProject(ctx, database, owner, testutil.QueryID(i+1), "Project", fmt.Sprintf("https://example.com/owner/repo-%d", i))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -575,8 +575,9 @@ create/update 的 --required-platform 设置枚举，update --clear-required-pla
 
 Git、完整分页、身份比较和后续 POST 共用同一 `Operation`；每步完成后检查取消和
 剩余期限，预检失败不能进入创建。身份比较失败保留具体错误，也不能变成零匹配。
-完整扫描不是服务端事务，扫描完成与 POST 之间仍可能有并发创建；服务的重复
-repo 许可、API、schema 和事务政策保持原样。原子唯一性需要独立的服务契约决策。
+完整扫描不是服务端事务，扫描完成与 POST 之间仍可能有并发创建。服务在共享创建和转移事务
+中强制同 Team 的活跃仓库身份唯一，并用 `project_repository_conflict` 拒绝竞争失败的写入；
+CLI 保持既有 409 错误处理，不自动重放。该服务约束不改变本地完整可见范围的复用流程。
 
 更新参数先转换为字段存在性明确的 patch：空描述写 `""`，未出现描述选项不写 key。
 compileDependencies 只在关系选项出现时加载 UUID 校验；普通 N 与外部 E 均正规化、去重并排序，

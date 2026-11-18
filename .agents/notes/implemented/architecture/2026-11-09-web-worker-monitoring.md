@@ -45,7 +45,9 @@ runtime information as healthy.
 
 Monitoring storage failures do not hide host telemetry or imply a Worker is idle.
 The list is limited to the fields in the batch summary; richer diagnostics require
-opening detail. The [card presentation decision](../simplification/2026-11-11-worker-card-monitoring-summary.md)
+opening detail. The [capacity responsibility decision](../simplification/2026-11-18-worker-capacity-responsibilities.md)
+removes the independent responsibility section while retaining the capacity
+breakdown and actionable diagnostics. The [card presentation decision](../simplification/2026-11-11-worker-card-monitoring-summary.md)
 removes admission reasons and monitoring times from list cards. Current permission
 checks and client withdrawal prevent a retained
 page from restoring inaccessible associations, but the observation remains a

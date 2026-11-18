@@ -198,7 +198,7 @@ func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing
 	ctx := context.Background()
 	projects := []model.Project{first}
 	for i := 1; i < 6; i++ {
-		project, err := testutil.CreatePrivateProject(ctx, database, owner, uuid.NewString(), "Project", "https://example.com/project")
+		project, err := testutil.CreatePrivateProject(ctx, database, owner, uuid.NewString(), "Project", fmt.Sprintf("https://example.com/project-%d", i))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -69,12 +69,23 @@ Project 包含以下字段：
 | `settings` | 必填对象；`version` 为初始 `1` 的正 int64，`executionWarningMinutes` 为初始 `60` 的正 int32 分钟数 |
 | `createdAt`、`updatedAt` | UTC 时间，HTTP 使用 RFC 3339 格式 |
 
-一个 project 关联一个 repo，多个 project 可以关联同一 repo。支持 HTTPS URL、
+一个 Project 关联一个 repo。同一普通或 Personal Team 对同一仓库身份最多拥有一个活跃 Project；
+不同 Team 可以分别拥有该仓库的 Project。软删除和成功转出释放原 Team 的占用，历史数据继续保留。
+仓库身份沿用 HTTPS、SSH URL 和 SCP 的现有等价规则，保留路径大小写，不访问远端推断别名。支持 HTTPS URL、
 SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；地址登记不验证实际访问权限。
 名称必须是无 NUL 的有效 UTF-8 文本，最多 256 个 Unicode code points 且最多 1024 个
 UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
-但不得包含密码；查询参数和 fragment 不属于仓库地址。无效或超限输入返回 `400 invalid_input`，
-不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
+但不得包含密码；查询参数和 fragment 不属于仓库地址。无效、超限或无法计算仓库身份的新输入返回
+`400 invalid_input`，不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
+服务保留地址原文，持久化内部仓库身份；创建和实际归属转移共享 Team 范围的强制检查。
+目标 Team 已有活跃同仓库项目时，HTTP 返回 `409 project_repository_conflict`，MCP 使用既有
+错误信封返回同名代码。拒绝不依赖冲突项目的可见性，不透露其 ID、名称、地址、成员或其他私有详情，
+也不留下新 Project、授权、归属变化或集成副作用。请求及成功回执格式保持不变。
+
+升级在开放业务流量前检查全部存量：同 Team 活跃等价仓库或重复的无法解析原文使迁移失败，
+报告 Team 与 Project ID 并回滚；不得自行合并、删除或转移。单个无法解析的历史地址保留原文与
+NULL 身份，并输出不含地址或凭据的诊断。它仍可读取、删除和向当前 Team 提交无变化转移；
+实际转入其他 Team 返回 `409 project_repository_identity_unavailable`。已知身份的其他仓库操作保持可用。
 
 MCP 握手的 `result.instructions` 简短介绍 Daynight，并指示客户端在使用工具前通过
 `resources/read` 直接读取 `daynight://manuals/overview.md`，无需先查询目录。认证客户端也可通过
@@ -98,7 +109,9 @@ admission 时还需 session-reads；发送恢复保留原 operation。精确目�
 MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调用者可见项目。唯一匹配返回普通 Project，
 其 ID 位于 `data.id`；零匹配返回 `not_found`，多个匹配返回 `resource_conflict`，非法或超限地址返回
 `invalid_input`。读取及快照完成故障不得伪装成无匹配。该操作不创建项目、改变默认绑定或访问宿主及远端仓库；
-后续操作仍检查当前权限。
+后续操作仍检查当前权限。MCP `project_create` 的既有可见项目查找也继续按完整可见范围
+复用唯一匹配，可能在创建事务之前返回其他 Team 的 Project；真正创建时仍受上述 Team 唯一性约束。
+跨 Team 的可见匹配可使独立仓库发现继续报告歧义。
 
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
@@ -343,6 +356,8 @@ Project 列表默认返回当前主体全部可访问项目；单值 `teamId` �
 Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 普通列表及 ready 支持 `tagIds`、`tagMatch` 和 `untagged`。GET 的 `tagIds` 为逗号分隔 UUID 集合，规范化后去重排序；`tagMatch` 为 `all`（默认）或 `any`，分别要求全部或任一关联。`untagged=true` 只匹配无关联条目，不能与非空 ID 集合组合；省略 ID 且不选择无标签时不增加标签条件。全部标签必须在当前 Project 存在；不存在、跨项目或已删除 ID 返回 `400 invalid_tag_filter`。资格与选页在同一读取快照完成，标签条件与现有条件 AND 组合，在排序、分页和 ready 候选限制前执行。Task 与 Goal 只按自身关联匹配，Parent 条件保持。cursor 绑定规范化集合、模式与无标签选择的摘要，改变条件后不能续页；ID 顺序或重复不改变范围。既有 query、request-target 和 cursor 大小限制继续适用，不增加标签数量配额。
+
+自动候选列表可在 `automaticCandidate=true` 时提供 `candidateWorkerId`，不得与清单 `workerId` 同用。服务按认证账号读取该 Worker 的当前目标，在授权读取快照中按任务自身标签名称筛选，再排序和分页。空或未初始化目标不限制标签；非空目标按 any/all 匹配，缺失名称仍参与 all。不存在或不可见的 Worker 返回 404，读取或目标解析失败不视为空结果。游标绑定 Worker、账号和规范化筛选语义，筛选改变后须从首页重新读取。
 
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
 Task 列表 cursor 使用版本3，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为

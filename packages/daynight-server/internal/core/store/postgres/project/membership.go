@@ -68,8 +68,8 @@ func (tx *creator) CreationTeamMember(ctx context.Context, teamID string) (bool,
 	return err == nil, pg.AuthQueryError("read creation Team membership", err)
 }
 
-func (tx *creator) InsertProject(ctx context.Context, id, name, repoURL, teamID string) (model.Project, model.ProjectAccess, error) {
-	if _, err := tx.tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)`, id, name, repoURL); err != nil {
+func (tx *creator) InsertProject(ctx context.Context, id, name, repoURL, identity, teamID string) (model.Project, model.ProjectAccess, error) {
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url,repository_identity) VALUES ($1,$2,$3,$4)`, id, name, repoURL, identity); err != nil {
 		return model.Project{}, model.ProjectAccess{}, pg.QueryError("insert project", err)
 	}
 	if _, err := tx.tx.Exec(ctx, `INSERT INTO project_ownership (project_id,team_id) VALUES ($1,$2)`, id, teamID); err != nil {

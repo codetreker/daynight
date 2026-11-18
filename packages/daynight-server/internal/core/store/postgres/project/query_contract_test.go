@@ -3,6 +3,7 @@ package project_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -213,7 +214,7 @@ func TestProjectContinuationRecoversAfterRelationRestored(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	for _, n := range []int{1, 2} {
-		if _, err := testutil.CreatePrivateProject(ctx, database, owner, testutil.QueryID(n), "Project", "host:repo"); err != nil {
+		if _, err := testutil.CreatePrivateProject(ctx, database, owner, testutil.QueryID(n), "Project", fmt.Sprintf("host:repo-%d", n)); err != nil {
 			t.Fatal(err)
 		}
 	}
