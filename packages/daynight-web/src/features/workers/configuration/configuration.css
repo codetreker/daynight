@@ -135,3 +135,5 @@
 }
 
 .task-tag-filter, .task-tag-target { min-width: 0; overflow-wrap: anywhere; }
+.task-tag-names { display: inline-flex; flex-wrap: wrap; gap: 4px; max-width: 100%; vertical-align: middle; }
+.task-tag-name { border: 1px solid #d5dce5; border-radius: 4px; padding: 1px 5px; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; }

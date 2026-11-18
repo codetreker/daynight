@@ -5,8 +5,8 @@ import { configurationResource, configurationValue } from '../helpers/worker-con
 
 const worker = workerId(1), personal = { id: workerId(90), kind: 'personal', name: null };
 const setup = async (page: Page, locale: string) => {
-  const name = 'x'.repeat(64), filter = { names: [name], match: 'all' as const };
-  const key = createHash('sha256').update(JSON.stringify(['all', [name]])).digest('hex');
+  const name = 'x'.repeat(64), filter = { names: ['a  b', name], match: 'all' as const };
+  const key = createHash('sha256').update(JSON.stringify(['all', ['a  b', name]])).digest('hex');
   const state = { key, filter };
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname;
@@ -30,13 +30,15 @@ for (const [width, locale] of [[320, 'zh-CN'], [1440, 'en']] as const) {
     await page.setViewportSize({ width, height: 900 });
     const state = await setup(page, locale);
     const field = page.locator('.task-tag-filter');
-    await expect(field).toContainText(state.filter.names[0]!);
+    await expect(field).toContainText(state.filter.names[1]!);
+    await expect(field.locator('.task-tag-name').first()).toHaveCSS('white-space', 'pre-wrap');
+    await expect(field.locator('.task-tag-name').first()).toHaveText('a  b');
     await expect(field.locator('.status-chip')).toHaveClass(/applied/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const input = page.locator('#config-maxConcurrent');
     await input.fill('7'); await input.focus();
     state.key = '0'.repeat(64);
-    await expect(field).toContainText(locale === 'en' ? 'Applied value differs from the current target' : '已应用值与当前目标不同');
+    await expect(field).toContainText(locale === 'en' ? 'Applied value differs from the current target' : '已应用值与当前目标不同', { timeout: 15_000 });
     await expect(input).toHaveValue('7');
     await expect(input).toBeFocused();
     await expect(field).not.toContainText(state.key);

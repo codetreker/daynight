@@ -66,3 +66,10 @@ it('keeps the Worker failure visible while digest checking fails', async () => {
     expect(taskTagApplicationState(running, { state: 'error' })).toBe('error');
   }
 });
+
+it('renders names containing commas as separate values', async () => {
+  const { renderWithLocale } = await import('./helpers/renderWithLocale');
+  const { TaskTagFilterValue } = await import('../src/features/workers/configuration/TaskTagFilterValue');
+  const { container } = renderWithLocale(<TaskTagFilterValue filter={{ names: ['alpha, beta', 'gamma'], match: 'any' }} />, { locale: 'en' });
+  expect([...container.querySelectorAll('.task-tag-name')].map(element => element.textContent)).toEqual(['alpha, beta', 'gamma']);
+});

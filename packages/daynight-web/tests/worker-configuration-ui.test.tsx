@@ -677,7 +677,7 @@ describe('task tag filter presentation', () => {
     });
     mount(); await flush();
     const field = document.querySelector<HTMLElement>('.task-tag-filter')!;
-    expect(field).toHaveTextContent('Any: backend, urgent');
+    expect(field).toHaveTextContent('Any: backendurgent');
     expect(field).toHaveTextContent('Worker support is not confirmed');
     expect(field).toHaveTextContent('Checking');
     expect(document.querySelector('.configuration-summary .status-chip')).not.toHaveTextContent('Applied');
@@ -687,7 +687,7 @@ describe('task tag filter presentation', () => {
     expect(editor).toHaveValue('4');
     await act(async () => hash.resolve(Uint8Array.from(digest.match(/../g)!, part => parseInt(part, 16)).buffer));
     await flush();
-    expect(field).toHaveTextContent('Actual: Any: backend, urgent');
+    expect(field).toHaveTextContent('Actual: Any: backendurgent');
     expect(field).not.toHaveTextContent(digest);
     expect(editor).toHaveFocus();
     resource = observed('3', { ...value, taskTagFilter: { names: ['frontend'], match: 'all' } }, [...globals(value, '3'), item({ kind: 'taskTagFilter' }, digest, '3')], '3');

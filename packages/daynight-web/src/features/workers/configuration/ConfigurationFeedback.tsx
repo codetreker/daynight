@@ -2,6 +2,7 @@ import type { WorkerConfigurationKey, WorkerConfigurationOutcome, WorkerConfigur
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { WorkerTimestamp } from '../presentation';
 import type { WorkerTaskTagFilter } from '../../../api/worker-task-tag-filter';
+import { TaskTagFilterValue } from './TaskTagFilterValue';
 import type { TaskTagDigest } from './useTaskTagFilterObservation';
 
 export const configurationOutcome = (resource: WorkerConfigurationResource, kind: WorkerConfigurationKey['kind'], projectId?: string): WorkerConfigurationOutcome | undefined =>
@@ -63,8 +64,7 @@ export const ConfigurationTaskTagFeedback = ({ resource, filter, digest }: { rea
   const { messages: { workers: { configuration: m } } } = useI18n();
   const item = configurationOutcome(resource, 'taskTagFilter');
   const state = item === undefined ? 'pending' : item.state !== 'applied' ? item.state : digest.state === 'ready' ? configurationOutcomeState(resource, item, digest.digest) : 'pending';
-  const target = filter.names.length === 0 ? m.taskTags.empty : `${m.taskTags[filter.match]}: ${filter.names.join(', ')}`;
-  const actual = item?.appliedValue == null ? m.unavailableValue : digest.state !== 'ready' ? m.unavailableValue : item.appliedValue === digest.digest ? target : m.taskTags.different;
+  const actual = item?.appliedValue == null ? m.unavailableValue : digest.state !== 'ready' ? m.unavailableValue : item.appliedValue === digest.digest ? <TaskTagFilterValue filter={filter} /> : m.taskTags.different;
   return <div className="application-feedback" aria-live="polite">
     <span className={`status-chip ${state}`}>{item === undefined ? m.taskTags.unconfirmed : m.state[state]}</span>
     {digest.state !== 'ready' && <span className={digest.state === 'error' ? 'field-error' : ''}>{digest.state === 'checking' ? m.taskTags.checking : m.taskTags.checkFailed}</span>}
