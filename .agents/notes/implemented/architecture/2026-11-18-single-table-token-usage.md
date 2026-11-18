@@ -59,6 +59,15 @@ partial output, Claude exposes partial root-message input, and Codex cumulative
 snapshots do not enter the counted plane. Current Chain and Goal membership
 provides views over the same ledger, not another accounting store.
 
+Controller journal format 014 keeps usage source identities, grants and pending
+events separate from timeline acknowledgements. Copilot's live immutable event
+plane enters this journal before history buffering; only the exact advertised
+SDK/runtime qualification permits measurement uploads. A bounded HTTP uploader
+checks complete per-event receipts before deletion. Stopped Worker maintenance
+uses the original journal and retained grant without reopening native execution,
+and runs independently of history archiving. Pending or quarantined measurements
+retain their sole journal even when recording discard was requested.
+
 ## Alternatives
 
 **Measurements without execution coverage.** This cannot distinguish a complete
@@ -120,6 +129,11 @@ Losing the only token after an execution ends can leave an explicit data gap.
 This is not a permanent import credential or a billing ledger. Broader native
 profiles require new evidence and cannot reinterpret an already counted source
 under another profile.
+Copilot ephemeral events lost before durable ingress cannot be reconstructed;
+this plane remains partial even after its queue drains. Separate local tables
+require a journal migration, and old CLI builds cannot read the new format.
+Pending conflict or expired-grant evidence can retain a journal until an explicit
+retention policy resolves it; archive completion alone cannot justify deleting it.
 
 Grant hash records have a strict versioned encoding. Malformed stored values
 fail explicitly rather than weakening original-identity verification. Clients

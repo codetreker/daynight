@@ -1,4 +1,4 @@
-# Token 用量后端
+# Token 用量
 
 ## 职责与不变量
 
@@ -143,6 +143,44 @@ Chain 用普通依赖双向连通分量，Goal 用 parent_id 的直接普通子 
 先 distinct 当前成员，排除删除，再一次关联账本；不将 Task summary 与其链二次加总。
 聚合和成员分页使用相同快照/权限/集合 revision，超过 10,000 成员确定拒绝。
 
+## Controller 采集与上传
+
+Copilot SDK `1.0.11` 的实时 `assistant.usage` 在历史恢复缓冲之前进入独立用量入口。
+Provider 先公布原生 Session 和 `SDK/runtime` 精确版本；事件映射仅保留 UUID、
+模型、时间及指标白名单。`sourceKey=copilot-event-v1:<event.id>`，immutable 修订为
+`"1"`，finality 为 final。output 和可选 reasoning 保留原值，input/cache/total
+保持 null；原生输入和缓存值仅保存在 nativeMetrics，不与规范指标重复加总。
+不使用 session/model 累计值、上下文占用或其他 Provider 的历史填补该平面。
+
+Controller journal 格式 014 包含独立的 `usage_sources`、`usage_outbox` 和
+`usage_meta`。原生来源、正文 hash、originating state、注册身份、状态序列、grant
+与待发正文都由原 journal 的写事务保存。旧 outbox 的清理和 cumulative ACK 不访问
+这些表。恢复重用原 event/source 身份；已确认来源仍保留去重记录。
+待发容量为 16 MiB、20,000 项，来源上限 100,000；measurement 不占用预留的
+4 KiB 状态空间，达到九成容量产生固定诊断。容量或存储失败只记录计量缺口，
+不使原生任务失败；未成功持久化的事件不能宣称已经接收。
+
+上传器使用独立 HTTP 请求，能力和注册使用原服务的 PAT，batch 只用该 state 的
+usage grant。只有 `qualifiedVersions` 精确匹配时才发送 measurement；未验证版本
+保留本地计量，只上报 unavailable/profile_unverified 状态。未发送 measurement
+不能阻挡这种状态事件。每次 flight 固定准确 eventId/hash 集合，完整核验每项回执
+后才能原子删除；未知、缺项或异文回执不清队列。stale state 额外核对服务器来源
+状态。明确来源冲突隔离具体 poison event，保留证据并上报 partial，其余来源继续。
+
+单请求期限十五秒，网络/5xx 指数退避一至六十秒并带 jitter；429 遵循有界
+Retry-After。401/403/410 停止对应上传，不能换凭据绕过撤权。Controller 停止时
+drain 最多五秒；Worker 在原 Controller 已确认停止后，按原 ticket/hash、Session、
+claim、代次和 Worker 身份重新核验 journal，以原 grant 有界补传。SQLite 操作各自
+取得 stopped-storage permit，网络期间不持数据库连接或事务，不启动原生进程。
+补传独立于历史归档开关及归档成功状态。仍有待发或隔离计量时保留唯一 journal，
+不能通过删除历史录制一起丢弃它。
+
+Copilot ephemeral 通知在 SDK/helper 到 durable ingress 之前仍可能丢失，原生历史
+不能重放这一窗口。因此该平面始终记录 native_recovery_gap，结束只能 partial，
+不把 assistant.idle 或 Task done 当作完整计量凭据。未知整数不能变成已知零；
+不安全 JS number 记录 native_integer_unrepresentable。停止后的未 seal state
+按已确认停止证据补 missing_final，而不是推断 complete。
+
 ## 兼容与回退
 
 写入开关默认关闭；只读能力与旧 Task/Session 协议独立。未知/未资格验证的
@@ -152,6 +190,7 @@ Provider 不准入 counted，Copilot/Claude 只提供已证明的部分平面，
 迁移与 schema snapshot 同步维护，既有历史迁移不可改写。
 回退构建必须仍认识新迁移；`appliedMigrations` 的已知前缀检查会拒绝任意旧二进制。
 不得删迁移账本、checksum 或数据来伪造可回退状态。
+Controller journal 同样保留格式 014；回退 CLI 必须认识该格式，即使关闭用量功能。
 
 ## 验证职责
 

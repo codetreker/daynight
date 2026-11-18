@@ -43,6 +43,11 @@ export type NativeImageRuntime = {
   acquireIndexLease(owner?: ProcessProof): { release(): void };
 };
 export type ProviderOptions = {
+  usageRuntime?: {
+    ready?(input: { nativeSessionId: string; providerVersion: string }): void;
+    observe(input: { nativeSessionId: string; providerVersion: string; event: unknown }): void;
+    gap(reason: string): void;
+  };
   toolLaunch?: import("../../../platform/tool-executables.js").ResolvedToolLaunch;
   toolRuntimeRoot?: string;
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
