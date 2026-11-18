@@ -75,6 +75,10 @@ func TestNormalizeCurrentFact(t *testing.T) {
 		t.Fatalf("same second head: %+v %v", got, err)
 	}
 	o.State = "closed"
+	if _, err = Normalize(o, "project", 3, now, &seen); err == nil {
+		t.Fatal("closed without close time")
+	}
+	o.ClosedAt = &now
 	got, err = Normalize(o, "project", 3, now, &seen)
 	if err != nil || got.State != "closed" || got.SeenPollID != nil {
 		t.Fatalf("closed: %+v %v", got, err)

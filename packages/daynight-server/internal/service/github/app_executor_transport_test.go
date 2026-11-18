@@ -82,7 +82,7 @@ func TestAppExecutorProductionProviderPollsWithRequestFences(t *testing.T) {
 	if acquisitions != 1 || work.Err() != nil {
 		t.Fatalf("acquisitions=%d work error=%v", acquisitions, work.Err())
 	}
-	if requests.Load() != 4 || f.renews < int(requests.Load()) {
+	if requests.Load() != 5 || f.renews < int(requests.Load()) {
 		t.Fatalf("requests=%d renewals=%d", requests.Load(), f.renews)
 	}
 	if len(f.publications) != 1 || f.publications[0][0].Number != 5 || f.publications[0][0].SeenPollID == nil || *f.publications[0][0].SeenPollID != f.lease.Token {

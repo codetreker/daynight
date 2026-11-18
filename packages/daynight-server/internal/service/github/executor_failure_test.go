@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
@@ -183,15 +182,7 @@ func TestExecutorClosedUnknownHintDoesNotCreateHistory(t *testing.T) {
 	f.workKind = "webhook"
 	f.connection.NextPollAt = nil
 	f.hints = []store.GitHubPendingPR{{Number: 5, Generation: 7, RequestID: "request"}}
-	f.db.snapshot = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-		dao := executorReadDAO{pull: func(_ context.Context, id string, number int64) (githubpr.PullRequest, error) {
-			if id != testProject || number != 5 {
-				t.Fatal("wrong lookup")
-			}
-			return githubpr.PullRequest{}, model.ErrNotFound
-		}}
-		return work(executorSnapshotScope{dao: dao})
-	}
+	f.facts = func(int64, *time.Time) store.GitHubPublicationFacts { return store.GitHubPublicationFacts{} }
 	// This ack belongs to an intentionally unpublished historical PR.
 	write := f.db.write
 	var acks int

@@ -236,6 +236,12 @@ func (w *writer) SaveRuntime(ctx context.Context, l store.GitHubLease, r store.G
 // InvalidateProject is invoked under the Project deletion lock. Historical PRs
 // are retained; a later signal cannot revive an already disabled connection.
 func InvalidateProject(ctx context.Context, tx pgx.Tx, projectID string) error {
+	if _, err := tx.Exec(ctx, `SELECT project_id FROM project_github WHERE project_id=$1 FOR UPDATE`, projectID); err != nil {
+		return pg.QueryError("lock deleted project github connection", err)
+	}
+	if err := closeConnectionCoverage(ctx, tx, projectID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `UPDATE project_github SET enabled=false,sync_enabled=false,claim_token=NULL,claim_until=NULL,claim_kind=NULL,next_poll_at=NULL,next_access_check_at=NULL,access_hint_id=NULL,access_delivery_id=NULL,updated_at=clock_timestamp() WHERE project_id=$1`, projectID); err != nil {
 		return pg.QueryError("invalidate deleted project github work", err)
 	}

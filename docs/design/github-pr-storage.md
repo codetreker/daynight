@@ -10,6 +10,12 @@ GitHub 连接和 PR 观测是 Project 的独立资源，不改变 Project 设置
 
 `project_pull_requests` 以 Project ID 和 PR number 唯一标识记录。作者、head 仓库及其 ref 可以缺失；不能用 base 仓库或其他身份补齐。description 保留原始 Markdown，空字符串和 null 不合并。GitHub 时间与本地观测时间分别保存。列表摘要不读取 description，详情读取完整正文。
 
+## 首次发布覆盖期间
+
+`project_github_coverage` 按 Project、稳定仓库 ID 和开始时间保存覆盖期间。时间为 UTC 整秒，左闭右开；同一 Project 与仓库最多有一个开放期间。开启同步时开启期间，停用、主动断开或清除同步意愿时关闭；暂时失去访问、限流、重启及凭据变化不关闭。切换在配置或连接锁后取得数据库时间，同秒多次切换以该秒最后状态为准：删除空期间，重新启用时合并该秒刚结束的期间。关闭后的旧领取仍由 generation 和 token 栅栏立即拒绝。
+
+首次发布未知 open 可以直接满足资格，未知终态的 `merged_at` 或 `closed_at` 必须落在保留期间内；已保存记录继续按既有规则更新。发布事务重新核对当前授权、仓库、领取及覆盖事实，提示发布与原 request ID 确认同事务。GitHub 网络读取在事务外完成。
+
 ## 读取与一致性
 
 Project 权限、连接状态、计数及列表或详情可在同一只读 Repeatable Read snapshot 中读取。列表按 number 降序，以固定上界及锚点进行有界 keyset 分页；向前查询恢复降序。作者 ID、状态和标题或编号条件在分页前组合；缺失作者只属于无作者条件的读取。标题搜索按字面匹配，编号搜索使用十进制文本；用户输入不作为 SQL 结构。一次聚合读取目标作者范围的状态计数和包含缺失作者的全项目总数；状态计数不随搜索或状态条件缩小，完整组合总数不受分页锚点或上界限制。计数和页面共享 snapshot，跨请求分页不冻结后续观测。
@@ -31,3 +37,5 @@ Webhook 提示事务按活 App、当前授权及连接身份锁定并重新检�
 迁移 `076_github_apps.sql` 为独立 App、管理员、邀请和 Team 授权准备存储，并增加连接授权字段；它删除同步意愿依赖连接的 CHECK，但不修改既有连接、领取、同步意愿或 PR。迁移 `077_github_app_cutover.sql` 将旧连接转换为未连接状态，清除活动 App、installation、授权、领取、提示和日程，推进 version、generation 和 revision，保留同步意愿、仓库与 PR。溢出使数据和迁移账本一起回滚；缺失行不补建。应用 077 前须停止并 drain 所有旧副本，不得混跑；二进制回滚须恢复匹配的数据库备份。独立资源的存储与证明见 [独立 GitHub App 登记](github-app-registration.md)。
 
 迁移 `078_project_pull_requests_author_number.sql` 仅建立作者部分索引，不改写保存数据。索引与迁移账本在同一事务中提交，失败时一起回滚。迁移后不直接运行不认识该账本的旧二进制；向前修复，或使用保留当前迁移集合的回退构建。
+
+迁移 `087_github_coverage.sql` 在单个 UTC 整秒为已有同步意愿且保留仓库的连接开启覆盖期，保留 PR、提示、历史、授权退避和 generation。可用连接安排近期轮询并清除旧完整轮询 generation，公开变化推进 revision。升级前停止并排空旧服务副本，迁移完成后启动新服务；回退须使用匹配数据库备份。

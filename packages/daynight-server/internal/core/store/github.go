@@ -100,6 +100,9 @@ type GitHubWorkDAO interface {
 	// and any deadline that does not extend the existing lease.
 	Renew(context.Context, GitHubLease, time.Time) (bool, error)
 	ValidLease(context.Context, GitHubLease) (bool, error)
+	// PublicationFacts reads the saved record and the latest coverage period
+	// beginning no later than terminalAt while holding the current lease lock.
+	PublicationFacts(context.Context, GitHubLease, int64, int64, *time.Time) (GitHubPublicationFacts, bool, error)
 	Publish(context.Context, GitHubLease, []githubpr.PullRequest) (bool, error)
 	PublishRepository(context.Context, GitHubLease, GitHubRepositoryObservation) (bool, error)
 	UnseenActive(context.Context, GitHubLease, string, int64, int) ([]int64, bool, error)
@@ -112,6 +115,16 @@ type GitHubWorkDAO interface {
 	ReschedulePending(context.Context, GitHubLease, int64, string, time.Time) (bool, error)
 	AckAccessHint(context.Context, GitHubLease, string) (bool, error)
 	SaveRuntime(context.Context, GitHubLease, GitHubRuntimeWrite) (bool, error)
+}
+
+type GitHubCoveragePeriod struct {
+	StartedAt time.Time
+	EndedAt   *time.Time
+}
+
+type GitHubPublicationFacts struct {
+	Current *githubpr.PullRequest
+	Period  *GitHubCoveragePeriod
 }
 
 // GitHubLease identifies the original work. Every mutation checks this identity

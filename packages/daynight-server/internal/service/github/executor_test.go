@@ -31,6 +31,7 @@ type pollFixture struct {
 	unknownRenewAt int
 	unknownThis    bool
 	lost           bool
+	facts          func(int64, *time.Time) store.GitHubPublicationFacts
 	workKind       string
 	hints          []store.GitHubPendingPR
 	ackMatched     bool
@@ -91,6 +92,16 @@ func newPollFixture(t *testing.T) *pollFixture {
 			}
 			f.until = until
 			return true, nil
+		}
+		d.facts = func(_ context.Context, l store.GitHubLease, repositoryID, number int64, at *time.Time) (store.GitHubPublicationFacts, bool, error) {
+			checkLease(l)
+			if !locked || repositoryID != 30 {
+				t.Fatal("publication facts outside connection lock or wrong repository")
+			}
+			if f.facts != nil {
+				return f.facts(number, at), !f.lost, nil
+			}
+			return store.GitHubPublicationFacts{Current: &githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: number, State: "open"}}}, !f.lost, nil
 		}
 		d.repository = func(_ context.Context, l store.GitHubLease, o store.GitHubRepositoryObservation) (bool, error) {
 			checkLease(l)
@@ -174,7 +185,11 @@ func newPollFixture(t *testing.T) *pollFixture {
 }
 
 func observation(n int64, state string, now time.Time) githubpr.Observation {
-	return githubpr.Observation{Number: n, GitHubID: 1000 + n, URL: fmt.Sprintf("https://github.com/owner/repo/pull/%d", n), Title: fmt.Sprintf("PR %d", n), State: state, BaseRepositoryID: 30, BaseRef: "main", HeadSHA: "sha", CreatedAt: now, UpdatedAt: now}
+	o := githubpr.Observation{Number: n, GitHubID: 1000 + n, URL: fmt.Sprintf("https://github.com/owner/repo/pull/%d", n), Title: fmt.Sprintf("PR %d", n), State: state, BaseRepositoryID: 30, BaseRef: "main", HeadSHA: "sha", CreatedAt: now, UpdatedAt: now}
+	if state == "closed" {
+		o.ClosedAt = &now
+	}
+	return o
 }
 
 // A claimed run is supplied directly so these tests exercise the production
