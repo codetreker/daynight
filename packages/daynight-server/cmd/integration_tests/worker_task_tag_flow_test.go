@@ -81,13 +81,13 @@ func serverAPIWorkerTaskTagAdmissionFlow(t *testing.T, f *fixture) {
 	if refused.Error.Code != "claim_conflict" {
 		t.Fatalf("unmatched claim error differs: %+v", refused)
 	}
-	stillTodo := requestJSON[api.Task](t, f, http.MethodGet, taskPath(unmatched), nil, http.StatusOK)
+	stillTodo := requestJSON[api.Task](t, f, http.MethodGet, taskPath(unmatched), nil, http.StatusOK, claimHeaders)
 	if stillTodo.ID != unmatched.ID || stillTodo.Version != unmatched.Version || stillTodo.Status != "todo" || stillTodo.Properties["worker"] != nil {
 		t.Fatalf("refused claim changed task: %+v", stillTodo)
 	}
 	claimID := uuid.NewString()
 	claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(matching)+"/worker-claim", claim(matching, claimID), http.StatusOK, claimHeaders)
-	readClaim := requestJSON[api.Task](t, f, http.MethodGet, taskPath(matching), nil, http.StatusOK)
+	readClaim := requestJSON[api.Task](t, f, http.MethodGet, taskPath(matching), nil, http.StatusOK, claimHeaders)
 	if claimed.ID != matching.ID || claimed.Status != "in_progress" || workerClaim(t, claimed).ClaimID != claimID || workerClaim(t, claimed).WorkerID != workerID || workerClaim(t, readClaim).ClaimID != claimID || readClaim.Version != claimed.Version {
 		t.Fatalf("matching claim differs: receipt=%+v read=%+v", claimed, readClaim)
 	}
