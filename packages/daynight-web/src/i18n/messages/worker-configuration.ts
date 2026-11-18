@@ -19,6 +19,7 @@ export type WorkerConfigurationMessages = {
     readonly activeError: Readonly<Record<'legacy_tool_identity_missing' | 'cleanup_unknown' | 'inventory_unavailable', string>>;
     readonly error: Readonly<Record<'not_found' | 'permission_denied' | 'not_executable' | 'invalid_path' | 'unsupported_launcher' | 'unrecognized_output' | 'incompatible_runtime' | 'probe_timeout' | 'cleanup_unknown' | 'tool_identity_changed' | 'legacy_tool_identity_missing' | 'io_error' | 'unavailable', string>>;
   };
+  readonly taskTags: Readonly<Record<'title' | 'detail' | 'empty' | 'any' | 'all' | 'unsupportedService' | 'unsupportedWorker' | 'unconfirmed' | 'checking' | 'checkFailed' | 'different', string>>;
   readonly overview: string;
   readonly system: string;
   readonly configuration: string;
@@ -132,7 +133,7 @@ export type WorkerConfigurationMessages = {
   readonly localSettingsDetail: string;
   readonly localSettingsItems: readonly string[];
   readonly state: Readonly<Record<'pending' | 'applying' | 'applied' | 'error' | 'unsaved', string>>;
-  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'archiveSessions' | 'enableSudoCleanup' | 'agentControlMode' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
+  readonly kind: Readonly<Record<'maxConcurrent' | 'pollIntervalMs' | 'recoveryLimit' | 'preferPlatformSpecificTasks' | 'archiveSessions' | 'enableSudoCleanup' | 'taskTagFilter' | 'agentControlMode' | 'native' | 'projectNative' | 'projectPreparation' | 'projectRemoval', string>>;
   readonly codes: Readonly<Record<'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'invalid_configuration' | 'io_error' | 'unavailable', string>>;
   readonly phases: Readonly<Record<'validate' | 'prepare' | 'apply' | 'stop' | 'persist', string>>;
 };

@@ -69,15 +69,18 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
     if (next === null) return;
     event.preventDefault(); selectSection(next); event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-worker-tab="${next}"]`)?.focus();
   };
+  const header = (trigger: ReactNode) => worker !== undefined && <>
+    <div className="worker-title-row"><h1 id="page-title" tabIndex={-1}><bdi>{alias?.value ?? worker.machine.name}</bdi></h1>{trigger}</div>
+    <div className="worker-description"><WorkerStatusBadge online={online} stale={state.stale} /><span>{platform.names[worker.platform]}</span><span>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> (<WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} />)</span></div>
+    <p className="worker-machine-name">{m.alias.machineName}: <bdi>{worker.machine.name}</bdi></p>
+    <p className="worker-id">{m.workerId} · {worker.workerId}</p>
+  </>;
   return <div className="worker-page" ref={page}>
     <a className="worker-back-link" href="/workers" onClick={followWorkerLink}>← {m.back}</a>
     {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
     <div hidden={historyError} inert={historyError}>
-    {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div><h1 id="page-title" tabIndex={-1}><bdi>{alias?.value ?? worker.machine.name}</bdi></h1>
-        <div className="worker-description"><WorkerStatusBadge online={online} stale={state.stale} /><span>{platform.names[worker.platform]}</span><span>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> (<WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} />)</span></div>
-        <p className="worker-machine-name">{m.alias.machineName}: <bdi>{worker.machine.name}</bdi></p>
-        <p className="worker-id">{m.workerId} · {worker.workerId}</p>
-        {alias !== undefined && <WorkerAliasEditor key={`${userId}/${workerId}`} workerId={workerId} resource={alias} readEnabled={readEnabled && active && !historyError} onSaved={incoming => {
+    {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div>
+        {alias === undefined ? header(null) : <WorkerAliasEditor key={`${userId}/${workerId}`} workerId={workerId} resource={alias} header={header} readEnabled={readEnabled && active && !historyError} onSaved={incoming => {
           setSavedAlias(old => old?.workerId === workerId && old.userId === userId && BigInt(old.alias.version) > BigInt(incoming.version) ? old : { workerId, userId, alias: incoming });
           state.refresh();
         }} />}</div>{(section === 'overview' || section === 'system') && <div className="heading-actions"><WorkerRefresh refresh={section === 'system' ? state.refresh : refresh} refreshing={section === 'system' ? state.refreshing : state.refreshing || monitoring.refreshing} readEnabled={readEnabled} /></div>}</div>}

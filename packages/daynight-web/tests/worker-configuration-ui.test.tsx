@@ -659,3 +659,43 @@ describe('Worker detail configuration integration', () => {
     expect(input()).toHaveValue('8'); expect(input('Startup arguments')).toHaveValue('[]');
   });
 });
+
+describe('task tag filter presentation', () => {
+  it('distinguishes unconfirmed, matching and stale application while preserving the saved source on unrelated edits', async () => {
+    const digest = 'd6b8862fae28deb5524520e92b0c2252f54a3d6607ea333c47c6ba91b99816f2';
+    const filter = { names: ['backend', 'urgent'], match: 'any' as const, future: { exact: 'preserved' } };
+    const value = { ...configurationValue(), taskTagFilter: filter };
+    let resource = observed('1', value, globals(value));
+    const writes: string[] = [];
+    const hash = Promise.withResolvers<ArrayBuffer>();
+    vi.stubGlobal('crypto', { subtle: { digest: (_algorithm: string, bytes: Uint8Array) => new TextDecoder().decode(bytes).includes('frontend') ? Promise.resolve(new Uint8Array(32).fill(2).buffer) : hash.promise } });
+    install((_url, init) => {
+      if (init.method === 'PUT') {
+        writes.push(String(init.body));
+        const body = JSON.parse(String(init.body)) as { value: WorkerConfigurationValue };
+        resource = observed('2', body.value, [...globals(body.value, '2'), item({ kind: 'taskTagFilter' }, digest, '2')], '2');
+      }
+      return configurationResponse(resource);
+    });
+    mount(); await flush();
+    const field = document.querySelector<HTMLElement>('.task-tag-filter')!;
+    expect(field).toHaveTextContent('Any: backendurgent');
+    expect(field).toHaveTextContent('Worker support is not confirmed');
+    expect(field).toHaveTextContent('Checking');
+    expect(document.querySelector('.configuration-summary .status-chip')).not.toHaveTextContent('Applied');
+    const editor = input(); fireEvent.change(editor, { target: { value: '4' } }); editor.focus();
+    save(); await flush();
+    expect(JSON.parse(writes[0]!).value.taskTagFilter).toEqual(filter);
+    expect(editor).toHaveValue('4');
+    await act(async () => hash.resolve(Uint8Array.from(digest.match(/../g)!, part => parseInt(part, 16)).buffer));
+    await flush();
+    expect(field).toHaveTextContent('Actual: Any: backendurgent');
+    expect(field).not.toHaveTextContent(digest);
+    expect(editor).toHaveFocus();
+    resource = observed('3', { ...value, taskTagFilter: { names: ['frontend'], match: 'all' } }, [...globals(value, '3'), item({ kind: 'taskTagFilter' }, digest, '3')], '3');
+    await advance(); await flush();
+    expect(field).toHaveTextContent('Applied value differs from the current target');
+    expect(field).not.toHaveTextContent(digest);
+    expect(document.querySelector('.configuration-summary .status-chip')).not.toHaveTextContent('Applied');
+  });
+});

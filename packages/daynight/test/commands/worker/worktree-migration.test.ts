@@ -53,7 +53,10 @@ beforeAll(() => {
 afterAll(() => { if (seedRoot !== undefined) rmSync(seedRoot, { recursive: true, force: true }); });
 afterEach(() => { fault.syncDirectory = ""; fault.afterRemoval = ""; fault.afterPresent = ""; fault.temporaryPrefix = ""; fault.unlink = ""; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const env = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")));
-const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, env: env(), encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).replace(/\r?\n$/, "");
+const git = (cwd: string, args: string[]): string => {
+  if ([...seeds.values()].some(source => cwd === source || cwd.startsWith(`${source}${path.sep}`))) throw new Error("Git cannot run in a completed seed");
+  return execFileSync("git", args, { cwd, env: env(), encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).replace(/\r?\n$/, "");
+};
 const owner = (): ResourceOwner => ({ projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() });
 const webTask = (value: ResourceOwner, binding: WorktreeBinding): WebTask => ({
   ...value, serverOrigin: "https://daynight.example", workerId: value.projectId, userId: value.claimId, status: "active",
@@ -68,6 +71,10 @@ const seed = (refFormat: RefFormat): string => {
   if (existing !== undefined) return existing;
   const repositoryPath = mkdtempSync(path.join(seedRoot!, `${refFormat}-`));
   git(repositoryPath, ["init", "--template=", "--initial-branch=main", `--ref-format=${refFormat}`]);
+  git(repositoryPath, ["config", "--local", "maintenance.auto", "false"]);
+  git(repositoryPath, ["config", "--local", "gc.auto", "0"]);
+  if (git(repositoryPath, ["config", "--local", "--get", "maintenance.auto"]) !== "false" ||
+      git(repositoryPath, ["config", "--local", "--get", "gc.auto"]) !== "0") throw new Error("Seed auto maintenance is not disabled");
   git(repositoryPath, ["config", "user.name", "Fixture"]); git(repositoryPath, ["config", "user.email", "fixture@example.com"]);
   writeFileSync(path.join(repositoryPath, "tracked.txt"), "original\n");
   git(repositoryPath, ["add", "tracked.txt"]); git(repositoryPath, ["commit", "-m", "fixture"]);
@@ -112,6 +119,20 @@ const snapshotRows = (file: string, table: string): unknown[] => {
   const db = new Database(file, { readonly: true });
   try { return db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(); } finally { db.close(); }
 };
+const snapshotSeed = (root: string): string[] => {
+  const entries: string[] = [];
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const file = path.join(directory, entry.name), relative = path.relative(root, file);
+      if (entry.name.endsWith(".lock")) throw new Error(`Seed contains a Git lock: ${relative}`);
+      if (entry.isDirectory()) { entries.push(`${relative}/`); visit(file); }
+      else if (entry.isFile()) entries.push(`${relative}: ${createHash("sha256").update(readFileSync(file)).digest("hex")}`);
+      else throw new Error(`Unexpected seed entry: ${relative}`);
+    }
+  };
+  visit(root);
+  return entries;
+};
 const historicalFixture = () => {
   const f = fixture(), old = owner(), next = { ...old, claimId: randomUUID(), worktreeId: randomUUID() }, original = f.add(old);
   const workerFile = path.join(f.root, "worker.sqlite"), webFile = path.join(f.root, "web.sqlite");
@@ -146,20 +167,24 @@ const historicalFixture = () => {
 
 describe("legacy worktree migration", { timeout: 30_000 }, () => {
   it.each(["files", "reftable"] as const)("keeps %s seed and sibling state independent of a case copy", refFormat => {
-    const first = fixture(refFormat), sibling = fixture(refFormat), source = seed(refFormat);
-    const head = git(source, ["rev-parse", "HEAD"]);
-    const originalObject = git(source, ["cat-file", "-p", head]);
+    const source = seed(refFormat), before = snapshotSeed(source);
+    const first = fixture(refFormat), sibling = fixture(refFormat);
+    expect(snapshotSeed(source)).toEqual(before);
+    expect(() => git(source, ["status"])).toThrow("Git cannot run in a completed seed");
+    expect(git(first.repositoryPath, ["config", "--local", "--get", "maintenance.auto"])).toBe("false");
+    expect(git(first.repositoryPath, ["config", "--local", "--get", "gc.auto"])).toBe("0");
+    const head = git(sibling.repositoryPath, ["rev-parse", "HEAD"]);
+    const originalObject = git(sibling.repositoryPath, ["cat-file", "-p", head]);
     const objectPath = path.join(first.commonDirectory, "objects", head.slice(0, 2), head.slice(2));
     writeFileSync(path.join(first.repositoryPath, "tracked.txt"), "private case bytes\n");
     git(first.repositoryPath, ["update-ref", "refs/heads/private-case", head]);
     chmodSync(objectPath, 0o644);
     writeFileSync(objectPath, "private corrupted object\n");
     expect(() => git(first.repositoryPath, ["cat-file", "-p", head])).toThrow();
-    for (const repositoryPath of [source, sibling.repositoryPath]) {
-      expect(readFileSync(path.join(repositoryPath, "tracked.txt"), "utf8")).toBe("original\n");
-      expect(git(repositoryPath, ["for-each-ref", "--format=%(refname)", "refs/heads/private-case"])).toBe("");
-      expect(git(repositoryPath, ["cat-file", "-p", head])).toBe(originalObject);
-    }
+    expect(snapshotSeed(source)).toEqual(before);
+    expect(readFileSync(path.join(sibling.repositoryPath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(git(sibling.repositoryPath, ["for-each-ref", "--format=%(refname)", "refs/heads/private-case"])).toBe("");
+    expect(git(sibling.repositoryPath, ["cat-file", "-p", head])).toBe(originalObject);
   });
 
   it("recovers a real process interruption before format rename", async () => {

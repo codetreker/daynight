@@ -16,6 +16,10 @@ version in server storage. Telemetry updates preserve both fields. List and deta
 use aliases only for presentation and retain machine names and complete Worker IDs.
 An explicit alias endpoint manages observed-version updates and null clearing.
 Negotiated list/detail fields preserve exact responses for existing clients.
+The detail title and alias trigger share a wrapping row before metadata. The
+editor supplies its trigger through a header render callback while retaining one
+draft and both focus references; the form remains separate below metadata. This
+keeps placement in the page without splitting editor lifecycle ownership.
 The [design](../../../../docs/design/worker-alias.md) owns validation, HTTP
 negotiation, concurrency and editor recovery behavior.
 
@@ -41,5 +45,7 @@ Names survive reports and restarts without changing claim or scheduling semantic
 Independent versions detect concurrent edits; unknown results require observation,
 not automatic retry. Duplicate aliases remain valid and distinguishable by ID.
 The schema and negotiated protocol introduce maintenance cost, and older services
-remain readable without alias editing. Alias propagation into task histories,
+remain readable without alias editing. The header callback couples the detail
+layout to the editor composition, and the moved trigger owns explicit hidden,
+focus and touch-size styling. Alias propagation into task histories,
 batch renaming and scheduling labels are outside this display-only capability.
