@@ -744,6 +744,14 @@ Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team
 grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/archived/architecture/2026-11-04-project-grant-management.md)
 拥有存在性条件、有限回执与外部加入范围的取舍。
 
+项目直接添加使用单独的 Read Committed 写作用域：先锁 Project，再共享锁当前 ownership 与
+owner Team，最后锁真实凭据；等待后以新语句重查有效 Project admin 和目标访问。目标账号使用
+`FOR KEY SHARE` 验证；已有访问不写入，否则创建固定 member grant 并在同一事务刷新该项目与用户的
+webhook eligibility。单项目、单用户查询复用名册投影，返回实际来源；提交前再次检查凭据有效期。
+Team 共享锁与成员写入的排他根协调，即使成员行尚不存在也能区分 Team 先加入与直加先完成。
+缺失活跃项目的 ownership 或 Team 是完整性错误；仅确认提交才发送回执。具体取舍见
+[项目直加决策](../../.agents/notes/implemented/feature/2026-11-18-existing-project-members.md)。
+
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
 接受按项目→邀请顺序加锁，验证状态后检查真实 direct grant。已有 grant 保持原角色且
 不消费；只有继承权限时插入 direct member 并消费。新 grant 与消费原子提交，两个
@@ -802,6 +810,25 @@ core 规范化查询、校验专用 cursor 并以最后交付的 UUID 生成续�
 
 [候选搜索决策](../../.agents/notes/implemented/feature/2026-11-17-team-member-candidates.md)记录范围、分页和索引取舍；公开合同由[鉴权需求](../spec/daynight-auth.md#team-生命周期)拥有。
 
+### 项目管理员候选搜索
+
+`server/project` 复用候选请求的严格解码，调用 `service/project.Memberships`。
+service 在同一个 `ReadSnapshot` 内通过 CredentialDAO 重验真实凭据，再由 `core/project`
+读取当前项目有效访问并要求 admin，最后读取中立的账号候选 DAO。普通 Team 继承、独立授权和
+Personal 项目采用相同有效角色规则；空查询完成凭据与项目准入后直接返回空页。任何读取或
+快照完成、清理错误均抑制候选结果，保留错误链且不报告未知写入。
+
+Team 和 Project 共享账号候选查询与 nullable 资料模型，SQL 不承载管理员准入。
+PostgreSQL 复用 `users.id` 主键、UUID seek 与排序，以 `translate`/`strpos` 执行 ASCII
+忽略大小写的字面子串匹配并读取 `limit+1`。不新增索引；低命中率仍可能扫描大量账号，
+返回条数不代表扫描量上限。分页使用各自的新快照。Project 的独立游标绑定项目、用户、
+凭据类别与 ID、规范化查询摘要、页大小和位置；Team 保留原游标格式与消费者，跨类型拒绝。
+HTTP 沿现有身份、来源和 OAuth 准入，响应 no-store，日志仅保留安全错误码和资源关联信息。
+
+[项目候选搜索决策](../../.agents/notes/implemented/feature/2026-11-18-project-member-candidates.md)
+记录共享查询和独立权限、游标的取舍；[公开合同](../spec/daynight-auth.md#项目管理员候选搜索)
+拥有输入、返回形状与拒绝语义。
+
 ### Team 邀请
 
 Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。接受按 Team →
@@ -853,6 +880,7 @@ HTTP 认证逐请求读取当前会话/PAT 或固定 API OAuth family 并产生 
 | POST .../projects/{id}/transfer-preview、POST .../transfer | owner Team admin；最小目标预览及按 ownership/目标版本确认转移。 |
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |
+| POST .../projects/{id}/member-candidates/search | 有效 Project admin 搜索既有账号资料；每页在同一只读快照重验凭据与项目权限。 |
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
 | PUT/DELETE .../projects/{id}/grants/{userId} | 有效 admin；PUT 的 version 为 null 或正版本，DELETE 为正版本，均携带 expectedUserId；新建目标须已有项目准入。成功返回有限回执与可空 actorAccess。 |
 | PATCH/DELETE .../members/{userId} | admin；携带真实 grant version 与必填 expectedUserId，PATCH 另含存储 role；成功分别返回 ProjectGrant / 204。 |
@@ -862,7 +890,7 @@ HTTP 认证逐请求读取当前会话/PAT 或固定 API OAuth family 并产生 
 | POST /api/v1/team-invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；accept 另携带 expectedUserId。 |
 
 unauthenticated/forbidden/invitation_unavailable 保留原 envelope/requestId。
-Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；项目转移、授权新增/修改/移除及
+Team 管理和项目候选搜索的 expectedUserId guard 在领域查询或事务之前执行；项目转移、授权新增/修改/移除及
 邀请创建、撤销、接受的 guard 在领域事务及相应 Team 或 Project 行锁之前执行。错主体返回 409 identity_mismatch；
 认证与独立请求日志不属于领域 SQL。
 该 fault 同时进入 HTTP 409 映射和日志已知类型集合，避免误变为 internal_error。

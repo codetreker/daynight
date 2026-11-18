@@ -9,6 +9,7 @@ import { verifyWorkerPatrol } from "./worker-patrol.ts";
 import { verifyPreviewFlow } from "./preview-flow.ts";
 import { verifyWorkerMonitoring } from "./worker-monitoring.ts";
 import { verifyTeamMemberFlow } from "./team-member-flow.ts";
+import { verifyProjectMemberFlow } from "./project-member-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
@@ -51,6 +52,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(cliToken).toMatchObject({ name: expect.stringMatching(/^Daynight CLI/), lastUsedAt: null });
 
   await verifyTeamMemberFlow(page);
+  await verifyProjectMemberFlow(page);
   await verifyWorkerMonitoring(page);
 
   const name = `Product E2E ${randomUUID()}`;

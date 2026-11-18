@@ -25,6 +25,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	usageapp "github.com/codetreker/daynight/packages/daynight-server/internal/service/usage"
@@ -55,6 +56,7 @@ type App struct {
 	OAuthError           error
 	PreviewSSOError      error
 	DirectMembers        *team.DirectMembers
+	ProjectDirectMembers *projectservice.DirectMembers
 	APIIssuer            *oauthservice.UserAPIIssuer
 	ImageValidationError error
 	UsageError           error
@@ -110,6 +112,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	app.Usage, app.UsageError = usageapp.FromEnvironment(database, c.S2S.SharedKey)
 	app.closeLock <- struct{}{}
 	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")
+	app.ProjectDirectMembers = projectservice.NewDirectMembers(database, c.Server.PublicOrigin+"/api/v1")
 	app.drainLock <- struct{}{}
 	decoder, err := configuredImageDecoder(c.ImageDecoder, coresession.NewImageDecoder)
 	app.ImageValidationError = err

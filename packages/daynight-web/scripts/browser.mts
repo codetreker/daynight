@@ -45,6 +45,7 @@ export const browserConfigs = [
   'landing-header-playwright.config.ts',
   'setup-guide-playwright.config.ts',
   'native-select-playwright.config.ts',
+  'bar-chart-playwright.config.ts',
   'create-project-mobile-playwright.config.ts',
   'task-view-continuity-playwright.config.ts',
   'project-platform-filter-playwright.config.ts',

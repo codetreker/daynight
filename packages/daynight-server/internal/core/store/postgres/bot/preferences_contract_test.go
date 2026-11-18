@@ -27,6 +27,14 @@ func TestBotDefaultsReadKeepsOwnerScopeAndStableFullWorkerInventory(t *testing.T
 		putWorkerSnapshot(t, database, workerSnapshotFixture(owner.ID, id, stamp))
 	}
 	putWorkerSnapshot(t, database, workerSnapshotFixture(other.ID, queryID(4), stamp))
+	usableID := queryID(2)
+	hostAt := stamp.Truncate(time.Microsecond)
+	hostJSON := `{"protocolVersion":1,"observedAt":"` + hostAt.Format(time.RFC3339Nano) + `","defaultCwd":"/workspace","defaultProvider":"copilot","providers":[
+		{"provider":"codex","available":true,"reason":null,"model":null,"args":[]},
+		{"provider":"claude","available":false,"reason":"not_found","model":null,"args":[]},
+		{"provider":"copilot","available":true,"reason":null,"model":"gpt-5","args":["--effort","high"]}]}`
+	mustQueryExec(t, database, `UPDATE workers SET telemetry=jsonb_set(telemetry,'{assistantHost}',$3::jsonb)
+		WHERE user_id=$1 AND worker_id=$2`, owner.ID, usableID, hostJSON)
 	result := readBotDefaults(t, database, owner.ID)
 	if result.ObservedAt.IsZero() || len(result.Workers) != 3 || result.PreferredWorkerID != nil || len(result.WorkerPreferences) != 0 {
 		t.Fatalf("initial defaults: %+v", result)
@@ -35,6 +43,22 @@ func TestBotDefaultsReadKeepsOwnerScopeAndStableFullWorkerInventory(t *testing.T
 		if worker.WorkerID != queryID(index+1) || worker.UserID != owner.ID {
 			t.Fatalf("unstable or cross-owner worker: %+v", result.Workers)
 		}
+	}
+	modelID, missingReason := "gpt-5", "not_found"
+	wantTelemetry := workerSnapshotFixture(owner.ID, usableID, stamp).Telemetry
+	wantTelemetry.AssistantHost = &model.WorkerAssistantHost{
+		ProtocolVersion: 1, ObservedAt: hostAt, DefaultCwd: "/workspace", DefaultProvider: model.AgentCopilot,
+		Providers: []model.WorkerAssistantProvider{
+			{Provider: model.AgentCodex, Available: true, Args: []string{}},
+			{Provider: model.AgentClaude, Reason: &missingReason, Args: []string{}},
+			{Provider: model.AgentCopilot, Available: true, Model: &modelID, Args: []string{"--effort", "high"}},
+		},
+	}
+	if got := result.Workers[1].Telemetry; !reflect.DeepEqual(got, wantTelemetry) {
+		t.Fatalf("Bot defaults Reader lost stored assistant host telemetry: got %+v want %+v", got.AssistantHost, wantTelemetry.AssistantHost)
+	}
+	if result.Workers[0].Telemetry.AssistantHost != nil {
+		t.Fatal("Bot defaults Reader replaced legacy Worker telemetry")
 	}
 	if err := writeBotTest(database, context.Background(), func(tx BotWriteDAO) error {
 		input, err := tx.BotDefaults(context.Background(), owner.ID)
@@ -48,6 +72,21 @@ func TestBotDefaultsReadKeepsOwnerScopeAndStableFullWorkerInventory(t *testing.T
 	missing := readBotDefaults(t, database, uuid.NewString())
 	if missing.Workers == nil || missing.WorkerPreferences == nil || len(missing.Workers) != 0 {
 		t.Fatalf("missing owner defaults: %+v", missing)
+	}
+
+	var heartbeat time.Time
+	if err := database.Pool.QueryRow(t.Context(), `UPDATE workers SET last_seen_at=statement_timestamp()
+		WHERE user_id=$1 AND worker_id=$2 RETURNING last_seen_at`, owner.ID, result.Workers[0].WorkerID).Scan(&heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	fresh := readBotDefaults(t, database, owner.ID)
+	wantWorkers := append([]model.WorkerSnapshot(nil), result.Workers...)
+	wantWorkers[0].LastReportedAt = heartbeat.UTC()
+	if !reflect.DeepEqual(fresh.Workers, wantWorkers) {
+		t.Fatalf("fresh Bot defaults changed more than the reported heartbeat: got %+v want %+v", fresh.Workers, wantWorkers)
+	}
+	if age := fresh.ObservedAt.Sub(heartbeat); age < 0 || age >= 120*time.Second {
+		t.Fatalf("fresh Bot defaults heartbeat is outside its observation window: heartbeat=%s observed=%s", heartbeat, fresh.ObservedAt)
 	}
 }
 

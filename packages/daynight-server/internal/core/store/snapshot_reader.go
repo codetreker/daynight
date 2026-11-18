@@ -13,6 +13,7 @@ type SnapshotReader interface {
 
 type SnapshotScope interface {
 	CredentialDAO() CredentialReader
+	UserCandidateDAO() UserCandidateReader
 	TeamDAO() TeamReader
 	ProjectDAO() ProjectReader
 	TagDAO() TagReader

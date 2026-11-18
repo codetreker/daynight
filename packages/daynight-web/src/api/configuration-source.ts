@@ -1,5 +1,6 @@
 import { jsonContainerSources, jsonObjectSources } from './json-source';
 import type { WorkerConfigurationResource, WorkerConfigurationValue } from './worker-configuration';
+import { parseWorkerTaskTagFilter, taskTagFilterSemantics } from './worker-task-tag-filter';
 
 export type ConfigurationDocument = { readonly source: string; readonly known: WorkerConfigurationResource };
 export type ConfigurationBaseline = { readonly revision: string; readonly valueSource: string; readonly known: WorkerConfigurationValue };
@@ -118,6 +119,13 @@ export const mergeConfigurationDraft = (baseline: ConfigurationBaseline, known: 
   const root = sourceObject(baseline.valueSource);
   for (const key of ['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'agentControlMode', 'archiveSessions', 'enableSudoCleanup'] as const) setKnown(root, key, known[key]);
   root.set('native', mergeMembers(root.get('native')!, known.native, ['agent', 'model', 'args']));
+  if (known.taskTagFilter !== undefined) {
+    const source = root.get('taskTagFilter');
+    if (source === undefined) root.set('taskTagFilter', JSON.stringify(known.taskTagFilter));
+    else if (taskTagFilterSemantics(parseWorkerTaskTagFilter(JSON.parse(source))) !== taskTagFilterSemantics(known.taskTagFilter)) {
+      root.set('taskTagFilter', mergeMembers(source, known.taskTagFilter, ['names', 'match']));
+    }
+  }
   const projects = new Map(jsonContainerSources(root.get('projects')!).map(source => [projectId(source), source]));
   root.set('projects', arraySource(known.projects.map(project => {
     const old = projects.get(project.projectId.toLowerCase());
@@ -182,7 +190,7 @@ const equivalent = (left: string, right: string, projects = false, projectEntity
   if (/^-?\d/.test(left) && /^-?\d/.test(right)) return numberTuple(left) === numberTuple(right);
   return JSON.parse(left) === JSON.parse(right);
 };
-export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly controlMode?: boolean; readonly toolPaths?: boolean; readonly archiveSessions?: boolean }): boolean => {
+export const configurationValueSourcesEqual = (left: string, right: string, options?: { readonly controlMode?: boolean; readonly toolPaths?: boolean; readonly archiveSessions?: boolean; readonly semanticTagFilter?: boolean }): boolean => {
   validateConfigurationSource(left); validateConfigurationSource(right);
   if (options !== undefined) {
     const project = (source: string): string => {
@@ -194,7 +202,19 @@ export const configurationValueSourcesEqual = (left: string, right: string, opti
     };
     left = project(left); right = project(right);
   }
-  return equivalent(left, right, true);
+  if (options?.semanticTagFilter !== true) return equivalent(left, right, true);
+  const a = sourceObject(left), b = sourceObject(right);
+  const aFilter = a.get('taskTagFilter'), bFilter = b.get('taskTagFilter');
+  if (aFilter !== undefined && bFilter !== undefined) {
+    try {
+      if (taskTagFilterSemantics(parseWorkerTaskTagFilter(JSON.parse(aFilter))) !== taskTagFilterSemantics(parseWorkerTaskTagFilter(JSON.parse(bFilter)))) return false;
+      const aFields = sourceObject(aFilter), bFields = sourceObject(bFilter);
+      aFields.delete('names'); aFields.delete('match'); bFields.delete('names'); bFields.delete('match');
+      if (!equivalent(objectSource(aFields), objectSource(bFields))) return false;
+      a.delete('taskTagFilter'); b.delete('taskTagFilter');
+    } catch { return false; }
+  }
+  return equivalent(objectSource(a), objectSource(b), true);
 };
 export const withoutArchiveSessions = (source: string): string => {
   const fields = sourceObject(source);

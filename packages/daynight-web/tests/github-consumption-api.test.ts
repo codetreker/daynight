@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
-import { connectProjectGitHub, disconnectProjectGitHub, discoverProjectGitHubInstallation, getProjectGitHubStatus, listTeamGitHubApps, saveProjectGitHubSettings, updateProjectGitHubSync } from "../src/api/github-consumption";
+import { connectProjectGitHub, disconnectProjectGitHub, discoverProjectGitHubInstallation, getProjectGitHubStatus, listTeamGitHubApps, saveProjectGitHubSettings, updateProjectGitHubSync, updateProjectWebhook } from "../src/api/github-consumption";
 import { wireResponse } from "./helpers/wireJson";
 
 const project = "00000000-0000-4000-8000-000000000001", user = "00000000-0000-4000-8000-000000000002", team = "00000000-0000-4000-8000-000000000003", appId = "00000000-0000-4000-8000-000000000004", grantId = "00000000-0000-4000-8000-000000000005";
@@ -96,5 +96,31 @@ describe("GitHub consumption API", () => {
     const pending = discoverProjectGitHubInstallation(project, selected, signal(), access), rejected = expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
     await vi.advanceTimersByTimeAsync(60_000); expect(fetcher).not.toHaveBeenCalled();
     resume(); await vi.advanceTimersByTimeAsync(50_000); await rejected; expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("reads optional subscription status and sends independently versioned writes without exposing the secret", async () => {
+    const hook = { version: null, enabled: false, repositoryId: null, lastReceivedAt: null, webhookUrl: `https://daynight.example/api/v1/github/projects/${project}/webhook`, state: 'unconfigured' };
+    const configured = { ...hook, version: '1', enabled: true, repositoryId: next, state: 'waiting' };
+    const fetcher = vi.fn().mockResolvedValueOnce(wire(status())).mockResolvedValueOnce(wire(status({ projectWebhook: hook }))).mockResolvedValueOnce(wire(configured));
+    vi.stubGlobal('fetch', fetcher); const access = admission();
+    expect((await getProjectGitHubStatus(project, signal(), access)).projectWebhook).toBeNull();
+    expect((await getProjectGitHubStatus(project, signal(), access)).projectWebhook).toEqual(hook);
+    expect(await updateProjectWebhook(project, { version: null, enabled: true, repositoryId: next, secret: 'exact secret' }, signal(), access)).toEqual(configured);
+    expect(fetcher.mock.calls[2]![0]).toBe(`/api/v1/projects/${project}/github/webhook`);
+    expect(JSON.parse(fetcher.mock.calls[2]![1].body)).toEqual({ expectedUserId: user, version: null, enabled: true, repositoryId: next, secret: 'exact secret' });
+    expect(access.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+
+  it("rejects malformed or inconsistent subscription status and write receipts", async () => {
+    const hook = { version: '1', enabled: true, repositoryId: '42', lastReceivedAt: null, webhookUrl: `https://daynight.example/api/v1/github/projects/${project}/webhook`, state: 'waiting' };
+    const fetcher = vi.fn().mockResolvedValueOnce(wire(status({ projectWebhook: { ...hook, webhookUrl: 'https://other.example/secret' } }))).mockResolvedValueOnce(wire(status({ projectWebhook: { ...hook, state: 'received' } }))).mockResolvedValueOnce(wire({ ...hook, version: '3' }));
+    vi.stubGlobal('fetch', fetcher); const access = admission();
+    await expect(getProjectGitHubStatus(project, signal(), access)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(getProjectGitHubStatus(project, signal(), access)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(updateProjectWebhook(project, { version: '1', enabled: true }, signal(), access)).rejects.toMatchObject({ kind: 'protocol' });
+    expect(access.onWriteConfirmed).not.toHaveBeenCalled();
+    expect(() => updateProjectWebhook(project, { version: '1', enabled: true, secret: '' }, signal(), access)).toThrow();
+    expect(() => updateProjectWebhook(project, { version: '1', enabled: true, secret: 'x'.repeat(4097) }, signal(), access)).toThrow();
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 });

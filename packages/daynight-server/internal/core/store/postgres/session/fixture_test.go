@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -173,7 +172,7 @@ type sessionStoreSeed struct {
 
 type sessionStoreSuite struct {
 	database  *postgres.Store
-	truncate  string
+	tables    testutil.FixtureTableReset
 	sequences []sessionStoreSequence
 	seeds     []sessionStoreSeed
 	used      bool
@@ -200,7 +199,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names, qualified []string
+	var names []string
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
@@ -208,7 +207,6 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 			t.Fatal(err)
 		}
 		names = append(names, name)
-		qualified = append(qualified, pgx.Identifier{schema, name}.Sanitize())
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -304,7 +302,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	if !slices.Equal(names, mutableTables) {
 		t.Fatalf("shared Session fixture mutable tables changed: %v", names)
 	}
-	suite.truncate = "TRUNCATE " + strings.Join(qualified, ",") + " RESTART IDENTITY"
+	suite.tables = testutil.NewFixtureTableReset(schema, names)
 	rows, err = suite.database.Pool.Query(ctx, `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind='S' ORDER BY c.relname`, schema)
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +365,7 @@ func (suite *sessionStoreSuite) reset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rollbackSessionTestTransaction(t, tx)
-	if _, err := tx.Exec(ctx, suite.truncate); err != nil {
+	if err := suite.tables.Truncate(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
 	// setval also restores the standalone sequences and is not transactional.

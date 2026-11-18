@@ -113,6 +113,14 @@ another case uses the fixture. Invalid migration-history cases restore the
 complete original ledger, including checksums and `applied_at`, and compare it
 before the next fault. A failed case stops subsequent fixture reuse.
 
+The [Team Invitation fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/team_invitations_test.go)
+uses independent Teams, actors and tokens in one Store. Transactional table
+drops still produce a missing-table error and restore the original relation
+and invitation before reuse. The consume fault removes and verifies its
+trigger and function before retrying the same token. Waiter cases observe the
+other transaction's backend, drain the waiter, and verify persisted results
+and connection reuse before moving on. Any failed case stops reuse.
+
 The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
 and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
 matrices each use one Store. Cases keep distinct App, grant, and Project
@@ -164,12 +172,23 @@ valid value before reuse. Successful migration cases retain independent fixtures
 including called/uncalled sequence semantics and the 105-row property transform
 that crosses its 100-row page boundary.
 
-Expiry probes whose SQL samples database time observe real locks before crossing
-a short future database-time expiry. The grant test arms expiry after its lock
-receipt, preserving rejection of a stale time sampled before the lock. Private
-Transfer retains the locked, cached token expiry. Deadline probes retain
-connection preparation and actual query observation. The large search fixture
-keeps its complete description but constructs its expected snippet independently.
+Expiry probes whose SQL samples database time retain actual row lock barriers
+and short test deadlines. The grant test arms expiry after its lock receipt,
+preserving rejection of a stale time sampled before the lock. Private Transfer
+retains the locked, cached token expiry. Deadline probes retain connection
+preparation and actual query observation. The large search fixture keeps its
+complete description but constructs its expected snippet independently.
+
+The [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go)
+and [Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go)
+expiry cases acquire the row holder and prepare the other connections before
+setting the credential expiry from the PostgreSQL clock. The observer verifies
+the intended lock and a still-valid credential before waiting with
+`pg_sleep_until`. It confirms expiry through the database clock before the
+holder commits. The Direct Member case also observes a queued revocation and
+commits a compatible Session credential read before expiry. The test-local
+window has to accommodate these observations under the configured root
+concurrency.
 
 [Session/PAT deletion storage proofs](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go)
 use a stable stored expiry and explicit caller times on either side of it. The

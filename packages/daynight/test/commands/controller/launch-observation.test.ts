@@ -217,17 +217,11 @@ it("interrupts an in-flight IPC observation with the original cancellation reaso
 
 it("classifies a changed birth without stopping the real live process at that PID", async () => {
   const f = await fixture();
-  f.child.kill("SIGKILL"); await once(f.child, "close");
-  // POSIX ps rounds process start times to whole seconds and may use a clock
-  // offset from Date.now(); separate the real births by more than two seconds.
-  await new Promise(resolve => setTimeout(resolve, 2200));
-  const replacement = spawn(process.execPath, ["-e", 'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], { stdio: ["ignore", "pipe", "ignore"] }); children.push(replacement);
-  await once(replacement.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
-  const current = await captureProcessProof(replacement.pid!);
-  expect(current.startedAt).not.toBe(f.proof.startedAt);
-  // Keep the original birth proof but use the live process's PID to model PID
-  // reuse without waiting for the OS to recycle a particular PID.
-  const original = { ...f.proof, pid: current.pid };
+  const current = f.proof;
+  // Model PID reuse by changing only the birth evidence in its native format.
+  const startedAt = process.platform === "win32" ? "2000-01-01T00:00:00.0000000Z" : "Sat Jan 1 00:00:00 2000";
+  expect(current.startedAt).not.toBe(startedAt);
+  const original = { ...current, startedAt };
   const observation = await reconcileSubmittedControllerLaunch({ journalFile: f.journalFile, ticket: f.ticket, spawnProof: original, signal: new AbortController().signal });
   expect(observation).toEqual({ kind: "pre-writer-exited", process: original, journal: "missing" });
   await expect(stopControllerBootstrap(original, Date.now() + 15_000)).rejects.toBeInstanceOf(ControllerBootstrapReplacedError);

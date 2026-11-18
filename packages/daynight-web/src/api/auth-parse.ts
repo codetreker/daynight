@@ -72,25 +72,27 @@ export const parseMembers = (value: unknown, projectId: string, actorUserId?: st
   const page = record(value);
   if (Object.keys(page).some((key) => key !== "items" && key !== "actorAccess")) return malformed();
   const actorAccess = parseProjectAccess(page.actorAccess, projectId, actorUserId);
-  const items = unique(array(page.items, (value): ProjectParticipant => {
-    const data = record(value);
-    if (Object.keys(data).some((key) => !["userId", "profile", "effectiveRole", "directGrant", "inheritedFrom"].includes(key))) return malformed();
-    const userId = id(data.userId), profile = record(data.profile);
-    if (Object.keys(profile).some((key) => !["name", "email", "avatarUrl"].includes(key))) return malformed();
-    let inheritedFrom: ProjectParticipant["inheritedFrom"] = null;
-    if (data.inheritedFrom !== null) {
-      const inherited = record(data.inheritedFrom);
-      if (Object.keys(inherited).some((key) => key !== "team" && key !== "role")) return malformed();
-      inheritedFrom = { team: parseTeamRef(inherited.team), role: parseRole(inherited.role) };
-      if (inheritedFrom.team.id !== actorAccess.ownership.teamId || inheritedFrom.team.kind !== actorAccess.ownerTeam.kind || inheritedFrom.team.name !== actorAccess.ownerTeam.name) return malformed();
-    }
-    const directGrant = data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId);
-    const effectiveRole = parseRole(data.effectiveRole);
-    if (!matchesEffectiveRole(effectiveRole, inheritedFrom?.role ?? null, directGrant?.role ?? null)) return malformed();
-    return { userId, profile: { name: nullable(profile.name, string), email: nullable(profile.email, string), avatarUrl: nullable(profile.avatarUrl, string) },
-      effectiveRole, directGrant, inheritedFrom };
-  }), (item) => item.userId);
+  const items = unique(array(page.items, (value) => parseParticipant(value, projectId, actorAccess)), (item) => item.userId);
   return { items, actorAccess };
+};
+
+export const parseParticipant = (value: unknown, projectId: string, actorAccess: ProjectAccess): ProjectParticipant => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !["userId", "profile", "effectiveRole", "directGrant", "inheritedFrom"].includes(key))) return malformed();
+  const userId = id(data.userId), profile = record(data.profile);
+  if (Object.keys(profile).some((key) => !["name", "email", "avatarUrl"].includes(key))) return malformed();
+  let inheritedFrom: ProjectParticipant["inheritedFrom"] = null;
+  if (data.inheritedFrom !== null) {
+    const inherited = record(data.inheritedFrom);
+    if (Object.keys(inherited).some((key) => key !== "team" && key !== "role")) return malformed();
+    inheritedFrom = { team: parseTeamRef(inherited.team), role: parseRole(inherited.role) };
+    if (inheritedFrom.team.id !== actorAccess.ownership.teamId || inheritedFrom.team.kind !== actorAccess.ownerTeam.kind || inheritedFrom.team.name !== actorAccess.ownerTeam.name) return malformed();
+  }
+  const directGrant = data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId);
+  const effectiveRole = parseRole(data.effectiveRole);
+  if (!matchesEffectiveRole(effectiveRole, inheritedFrom?.role ?? null, directGrant?.role ?? null)) return malformed();
+  return { userId, profile: { name: nullable(profile.name, string), email: nullable(profile.email, string), avatarUrl: nullable(profile.avatarUrl, string) },
+    effectiveRole, directGrant, inheritedFrom };
 };
 
 export const parseInvitation = (value: unknown, projectId?: string, created = false): ProjectInvitation => {
@@ -154,7 +156,7 @@ export const parseRevokeTeamInvitationResult = (value: unknown, teamId: string, 
   return result;
 };
 
-const sameGrant = (a: ProjectGrant | null, b: ProjectGrant | null): boolean =>
+export const sameGrant = (a: ProjectGrant | null, b: ProjectGrant | null): boolean =>
   a === null || b === null ? a === b : a.projectId === b.projectId && a.userId === b.userId && a.role === b.role && a.version === b.version && a.createdAt === b.createdAt && a.updatedAt === b.updatedAt;
 
 export const decodeInvitationJson = async (response: Response): Promise<unknown> => {

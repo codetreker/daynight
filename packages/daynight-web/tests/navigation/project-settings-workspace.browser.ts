@@ -147,3 +147,66 @@ test('labels each region and keeps long project names readable on a phone', asyn
   await expect(section(page, 'Members & invitations')).toBeFocused();
   await expect(page.getByRole('region', { name: 'Members & invitations' })).toBeVisible();
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`project member search supports loading, retry and keyboard at ${width}px (${locale})`, async ({ page }) => {
+    const writes = await install(page);
+    const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const requests: unknown[] = [];
+    await page.route(`**/api/v1/projects/${projectId}/member-candidates/search`, async route => {
+      requests.push(route.request().postDataJSON());
+      if (requests.length === 1) {
+        started.resolve(); await finish.promise;
+        return route.fulfill({ status: 503, contentType: 'application/json', headers: { 'Daynight-User-ID': actorId }, body: JSON.stringify({ error: { code: 'unavailable', message: 'unavailable' } }) });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Daynight-User-ID': actorId }, body: JSON.stringify({ actorRole: 'admin', nextCursor: null, items: [
+        { userId: actorId, profile: { name: 'Alice', email: 'alice@example.test', avatarUrl: null } },
+        { userId: '00000000-0000-4000-8000-000000000002', profile: { name: 'Bob', email: 'bob@example.test', avatarUrl: null } },
+      ] }) });
+    });
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto(`${base}?tab=members`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const chinese = locale === 'zh-CN';
+    const input = page.getByRole('searchbox', { name: chinese ? '搜索并添加成员' : 'Search and add members' });
+    await input.fill('Alice');
+    const popup = page.getByRole('dialog', { name: chinese ? '搜索用户并添加到项目' : 'Search users and add to project' });
+    try {
+      await started.promise;
+      await expect(popup.getByRole('status')).toContainText(chinese ? '正在搜索' : 'Searching');
+    } finally { finish.resolve(); }
+    await expect(popup.getByRole('alert')).toContainText(chinese ? '暂时无法搜索用户' : 'Unable to search users');
+    await popup.getByRole('button', { name: chinese ? '重试' : 'Retry' }).click();
+    const joined = popup.getByRole('button', { name: new RegExp(`${chinese ? '已加入' : 'Joined'}.*${actorId}`) });
+    await expect(joined).toHaveAttribute('aria-disabled', 'true');
+    await expect(popup.getByRole('button', { name: new RegExp(`${chinese ? '添加' : 'Add'}.*00000000-0000-4000-8000-000000000002`) })).toBeVisible();
+    expect(requests).toEqual([{ expectedUserId: actorId, query: 'alice', limit: 20 }, { expectedUserId: actorId, query: 'alice', limit: 20 }]);
+    const bounds = await popup.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await input.focus(); await input.press('ArrowDown'); await expect(popup.locator('summary').first()).toBeFocused();
+    await joined.focus(); await joined.press('Enter'); await expect(joined).toHaveAttribute('aria-disabled', 'true');
+    expect(writes).toEqual([]);
+    await joined.press('Escape'); await expect(input).toBeFocused(); await expect(popup).toHaveCount(0);
+    await input.fill('Alice ');
+    await expect(popup).toBeVisible();
+    await page.getByRole('navigation', { name: chinese ? '项目设置分组' : 'Project settings sections' }).getByRole('link', { name: chinese ? '执行与提醒' : 'Execution & alerts' }).click();
+    await expect(popup).toBeHidden();
+  });
+}
+
+test('project members without administrator access do not see search', async ({ page }) => {
+  await install(page);
+  const memberGrant = { ...access.directGrant, role: 'member' };
+  const memberAccess = { ...access, effectiveRole: 'member', teamRole: null, directGrant: memberGrant, canTransfer: false };
+  await page.route(`**/api/v1/projects/${projectId}/{access,members}`, async route => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path.endsWith('/access') ? memberAccess : { actorAccess: memberAccess, items: [{ userId: actorId, profile: { name: 'Alice', email: null, avatarUrl: null }, effectiveRole: 'member', inheritedFrom: null, directGrant: memberGrant }] };
+    await route.fulfill({ status: 200, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
+  });
+  await page.goto(`${base}?tab=members`);
+  await expect(page.getByRole('heading', { name: 'Project members' })).toBeVisible();
+  await expect(page.getByText('Project administrators manage members and invitations.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('searchbox', { name: 'Search and add members' })).toHaveCount(0);
+});

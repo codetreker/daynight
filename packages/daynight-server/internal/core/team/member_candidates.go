@@ -30,7 +30,7 @@ type CandidateSearch struct {
 }
 
 type CandidatePage struct {
-	Items      []model.TeamMemberCandidate
+	Items      []model.UserCandidate
 	NextCursor *string
 }
 
@@ -126,7 +126,7 @@ func canonicalNonzeroID(id string) bool {
 }
 
 // SearchMemberCandidates reauthorizes each page in the caller's snapshot.
-func SearchMemberCandidates(ctx context.Context, dao store.TeamReader, p model.Principal, id string, search CandidateSearch) (CandidatePage, error) {
+func SearchMemberCandidates(ctx context.Context, dao store.TeamReader, candidates store.UserCandidateReader, p model.Principal, id string, search CandidateSearch) (CandidatePage, error) {
 	t, err := Get(ctx, dao, p, id)
 	if err != nil {
 		return CandidatePage{}, err
@@ -134,17 +134,17 @@ func SearchMemberCandidates(ctx context.Context, dao store.TeamReader, p model.P
 	if err := authorizeOrdinaryAdmin(t); err != nil {
 		return CandidatePage{}, err
 	}
-	result := CandidatePage{Items: []model.TeamMemberCandidate{}}
+	result := CandidatePage{Items: []model.UserCandidate{}}
 	if search.query == "" {
 		return result, nil
 	}
-	page, err := dao.MemberCandidates(ctx, store.TeamMemberCandidateQuery{Query: search.query, AfterID: search.afterID, Limit: search.limit})
+	page, err := candidates.MemberCandidates(ctx, store.UserCandidateQuery{Query: search.query, AfterID: search.afterID, Limit: search.limit})
 	if err != nil {
 		return CandidatePage{}, err
 	}
 	result.Items = page.Items
 	if result.Items == nil {
-		result.Items = []model.TeamMemberCandidate{}
+		result.Items = []model.UserCandidate{}
 	}
 	if page.HasMore {
 		if len(page.Items) == 0 {

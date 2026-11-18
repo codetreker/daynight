@@ -1,8 +1,6 @@
 package team
 
 import (
-	"bytes"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 
@@ -10,47 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
-
-func candidateSearchInput(w http.ResponseWriter, r *http.Request) (coreteam.CandidateSearchInput, error) {
-	if _, err := httpx.QueryValues(r); err != nil {
-		return coreteam.CandidateSearchInput{}, err
-	}
-	if r.URL.RawQuery != "" || r.URL.ForceQuery {
-		return coreteam.CandidateSearchInput{}, httpx.InvalidInput("query parameters are not accepted")
-	}
-	fields, err := httpx.DecodeObject(w, r, "expectedUserId", "query", "limit", "cursor")
-	if err != nil {
-		return coreteam.CandidateSearchInput{}, err
-	}
-	for _, key := range []string{"expectedUserId", "query", "cursor"} {
-		if raw, ok := fields[key]; ok && !jsonunicode.Valid(raw) {
-			return coreteam.CandidateSearchInput{}, httpx.InvalidInput(key + " must contain valid Unicode")
-		}
-	}
-	expected, err := httpx.RequiredString(fields, "expectedUserId")
-	if err != nil {
-		return coreteam.CandidateSearchInput{}, err
-	}
-	query, err := httpx.RequiredString(fields, "query")
-	if err != nil {
-		return coreteam.CandidateSearchInput{}, err
-	}
-	cursor, err := httpx.OptionalString(fields, "cursor")
-	if err != nil {
-		return coreteam.CandidateSearchInput{}, err
-	}
-	var limit *int
-	if raw, ok := fields["limit"]; ok {
-		var value int
-		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &value) != nil {
-			return coreteam.CandidateSearchInput{}, httpx.InvalidInput("limit must be an integer")
-		}
-		limit = &value
-	}
-	return coreteam.CandidateSearchInput{ExpectedUserID: expected, Query: query, Limit: limit, Cursor: cursor}, nil
-}
 
 func (h *teamHandler) searchMemberCandidates(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -59,12 +17,12 @@ func (h *teamHandler) searchMemberCandidates(w http.ResponseWriter, r *http.Requ
 	if canonical, err := model.CanonicalID(id); err == nil && canonical == id {
 		logger = logger.With("team_id", id)
 	}
-	input, err := candidateSearchInput(w, r)
+	input, err := httpx.DecodeCandidateSearch(w, r)
 	if err != nil {
 		writeCandidateSearchError(w, r, logger, err)
 		return
 	}
-	result, err := h.teams.SearchMemberCandidates(r.Context(), p, id, input)
+	result, err := h.teams.SearchMemberCandidates(r.Context(), p, id, coreteam.CandidateSearchInput{ExpectedUserID: input.ExpectedUserID, Query: input.Query, Limit: input.Limit, Cursor: input.Cursor})
 	if err != nil {
 		writeCandidateSearchError(w, r, logger, err)
 		return

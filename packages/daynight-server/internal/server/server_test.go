@@ -103,6 +103,7 @@ type httpTestStore struct {
 	WriteIdentityCall              func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error)
 	WritePreviewSSOCall            func(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error)
 	WriteProjectCall               func(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error)
+	WriteProjectDirectMemberCall   func(ctx context.Context, id string, fn func(store.ProjectDirectMemberScope) error) (store.Completion, error)
 	WriteGitHubProjectTransferCall func(context.Context, string, func(store.GitHubProjectTransferScope) error) (store.Completion, error)
 	WriteGitHubProjectDeletionCall func(context.Context, string, func(store.GitHubProjectDeletionScope) error) (store.Completion, error)
 	WriteGitHubTeamDeletionCall    func(context.Context, string, func(store.GitHubTeamDeletionScope) error) (store.Completion, error)
@@ -167,6 +168,13 @@ func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(sto
 		unexpectedHTTPCall(s.t, "WriteProject")
 	}
 	return s.WriteProjectCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteProjectDirectMember(ctx context.Context, id string, fn func(store.ProjectDirectMemberScope) error) (store.Completion, error) {
+	if s.WriteProjectDirectMemberCall == nil {
+		unexpectedHTTPCall(s.t, "WriteProjectDirectMember")
+	}
+	return s.WriteProjectDirectMemberCall(ctx, id, fn)
 }
 
 func (s *httpTestStore) WriteGitHubProjectTransfer(ctx context.Context, id string, fn func(store.GitHubProjectTransferScope) error) (store.Completion, error) {
@@ -573,9 +581,16 @@ type httpTestSnapshot struct {
 	Bots           store.BotReader
 	Attachments    store.AttachmentReader
 	ObservedAtCall func(context.Context) (time.Time, error)
+	UserCandidates store.UserCandidateReader
 }
 
 func newHTTPTestSnapshot(t *testing.T) *httpTestSnapshot { return &httpTestSnapshot{t: t} }
+func (s *httpTestSnapshot) UserCandidateDAO() store.UserCandidateReader {
+	if s.UserCandidates == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.UserCandidateDAO")
+	}
+	return s.UserCandidates
+}
 func (s *httpTestSnapshot) CredentialDAO() store.CredentialReader {
 	if s.Credentials == nil {
 		unexpectedHTTPCall(s.t, "SnapshotScope.CredentialDAO")

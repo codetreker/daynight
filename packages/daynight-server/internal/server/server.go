@@ -117,6 +117,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	auth.BindPreviewLogin(preview.StartAfterLogin)
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
+	projecthttp.RegisterDirectMemberRoute(mux, app.ProjectDirectMembers, auth, logger)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	taghttp.RegisterRoutes(mux, app.Tags, auth, logger)
 	githubhttp.RegisterPullRequestRoutes(mux, app.GitHubRead, auth, logger)

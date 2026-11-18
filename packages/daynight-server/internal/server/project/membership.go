@@ -26,6 +26,8 @@ func NewMembershipRoutes(memberships MembershipOperations, auth MembershipAuthen
 }
 
 func (h *MembershipRoutes) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/member-candidates/search", h.auth.Require(h.searchMemberCandidates))
+	mux.HandleFunc("/api/v1/projects/{projectId}/member-candidates/search", h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "POST")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/members", h.auth.Require(h.listMembers))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/members/{userId}", h.auth.Require(h.setRole))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/members/{userId}", h.auth.Require(h.removeMember))
@@ -38,7 +40,7 @@ func (h *MembershipRoutes) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/invitations/accept", h.auth.Require(h.acceptInvitation))
 	for path, methods := range map[string]string{
 		"/api/v1/projects/{projectId}/members":                "GET, HEAD",
-		"/api/v1/projects/{projectId}/members/{userId}":       "PATCH, DELETE",
+		"/api/v1/projects/{projectId}/members/{userId}":       "POST, PATCH, DELETE",
 		"/api/v1/projects/{projectId}/grants/{userId}":        "PUT, DELETE",
 		"/api/v1/projects/{projectId}/invitations":            "GET, HEAD, POST",
 		"/api/v1/projects/{projectId}/invitations/{inviteId}": "DELETE",

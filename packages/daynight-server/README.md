@@ -988,6 +988,27 @@ intent to off, so those Projects must explicitly enable it after reconnecting.
 Remove the old `github` configuration section and `DAYNIGHT_GITHUB_*` variables
 and dispose of their deployment secrets; the server no longer reads them.
 
+Before applying migration 085, stop incoming traffic and fully drain all older
+server replicas and background writers. Its one-time normalization clears the
+six mixed PR Webhook diagnostic fields and advances affected revisions; it
+preserves connection versions, generations, PRs, pending hints, claims and their
+expiry, access hints, polling schedules and `not_before`. Revision overflow or
+SQL failure rolls back that migration and its ledger entry together. Earlier
+committed migrations remain applied. Restarting after success does not clear
+new PR diagnostics again. Older writers must not resume and recreate mixed
+diagnostics.
+
+This preparation build continues receiving App pull request deliveries while
+installation access rechecks maintain independent access state and rate-limit
+schedules. Project webhook reception remains disabled. Retain the preparation
+artifact, commit and complete ordered migration/checksum list for a later
+activation build. A same-database rollback requires identical complete ledgers
+and draining the active build first; otherwise restore a verified matching
+database backup and account for writes after that backup. The
+[runtime design](../../docs/design/github-connection-runtime.md) and
+[storage design](../../docs/design/github-pr-storage.md) describe the retained
+state and the diagnostic ownership.
+
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
 bytes (0x21–0x7e), without whitespace or a required prefix. Invalid values stop
@@ -1473,6 +1494,30 @@ The [Report capacity decision](../../.agents/notes/implemented/testing/2026-11-0
 and [Configuration capacity decision](../../.agents/notes/implemented/testing/2026-11-09-worker-configuration-capacity-test-owners.md)
 record their protocol, rule and projection proof owners. Other root HTTP tests
 retain their own environment requirements.
+
+### Worker route lifecycle tests
+
+`TestWorkerRoutesLifecycleAndInvalidRequests` registers production Worker routes
+with Session cookie and Origin authentication. Strict Report, Get, List,
+Configuration and PutConfiguration callbacks verify the decoded arguments and
+call counts. Invalid queries, payloads, protocol headers and methods stop before
+any Worker operation. Independent response facts exercise the legacy report
+receipt, inventory availability, assistant-host and runtime configuration
+projections, default pagination and configuration revision responses.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestWorkerRoutesLifecycleAndInvalidRequests$' ./internal/server/worker
+```
+
+Core tests check that report validation and snapshot construction preserve the
+local runtime model and its omission. The PostgreSQL snapshot contract reads
+back the stored model and verifies that a subsequent report omitting runtime
+configuration clears it. Core and service tests exercise bootstrap, update and
+stale-revision decisions.
+[Worker route lifecycle decision](../../.agents/notes/implemented/testing/2026-11-18-worker-route-lifecycle-test-owners.md)
 
 ### Worker assistant-host HTTP tests
 
@@ -2408,6 +2453,84 @@ record the proof allocation. Measurements include receiving Store, core and
 process work; supplied receipts and completion outcomes are not evidence of
 physical persistence.
 
+### Bot definition HTTP tests
+
+The three `TestBotsHTTP` definition cases register the production Bot routes,
+request logging and PAT middleware. Strict List, ListWorker, Get and DeleteBot
+callbacks check the credential, context, principal, identifiers, page arguments
+and exact deletion version. Route parsing and authentication refusals leave the
+callbacks unused. The responses exercise empty and paginated lists, pending
+deletion receipts, Worker inventory, decimal versions, UTC timestamps and
+definition redaction. List and detail facts are supplied independently for each
+request.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestBotsHTTP(EmptyList|ReadDeleteIntentAndWorkerInventory|StrictInputAndAuthentication)$' \
+  ./internal/server/bot
+```
+
+Core verifies cursor admission across the global and Worker lists. The service
+tests issue real cursors, forward their keysets to Core and reject a global
+cursor on the Worker list before opening a snapshot. Core passes the complete
+page to the DAO for both scopes. PostgreSQL tests verify continuation in both
+lists, along with deletion intent and cleanup visibility.
+[Bot definition HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-definition-http-test-owners.md)
+
+### Bot defaults HTTP tests
+
+Five defaults and creation refusal tests use the production Bot routes with
+PAT or Session cookie authentication and strict CreateResolved and DefaultsFor
+callbacks. The callbacks verify raw overrides, including the uppercase Worker
+ID, and the request principal and context. Parser, method, anonymous, revoked
+PAT and cookie Origin refusals leave both callbacks unused. Independent preview
+facts retain the empty Worker array, usable and unsupported candidate details,
+provider defaults, explicit offline choice and UTC observation time.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^Test(BotDefaultsHTTP(StrictCreateAndDefaultsInputs|ReadableEmptyDefaults|CandidatesAndExplicitOfflineChoice|BrowserCreationRequiresOrigin)|BotCreationHTTPSelectionRefusals)$' \
+  ./internal/server/bot
+```
+
+Service tests forward database observations to the real resolver. Core
+verifies selection with online legacy and usable Workers, explicit offline
+selection, foreign Worker refusal and overflow with 101 usable Workers.
+PostgreSQL tests verify owner scope, heartbeat age, decoded provider data and
+the bounded creation candidate query.
+The real HTTP creation tests retain successful creation, replay, lost responses
+and refusal after deleting the PAT from PostgreSQL.
+[Bot defaults HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-defaults-http-test-owners.md)
+
+### Bot runtime HTTP tests
+
+The runtime preflight and deletion receipt matrices use production Bot runtime
+routes, Session HTTP parsing and PAT middleware. The ReportBot and
+CompleteBotDeletion callbacks verify context, principal, Worker and Bot IDs
+and exact typed inputs. Strict parser, query, method and credential refusals
+leave operations unused. Supplied results verify failure and cleanup
+projections, including absence of a Session binding or private deleted
+definition.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^Test(BotRuntimeHTTPPreflightFailureAndStrictInputs|BotDeletionHTTPStrictReceiptAndAdmission)$' \
+  ./internal/server/bot
+```
+
+The real registration and deletion tests each reuse their schema for a separate
+unbound Bot. Fresh detail reads verify the failed startup after stale and
+replayed reports and the completed state after an unbound deletion receipt.
+The existing registration, bound cleanup and Controller wire cases retain their
+real fixtures.
+[Bot runtime HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-runtime-http-test-owners.md)
+
 ### MCP protocol tests
 
 `internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,
@@ -3272,6 +3395,20 @@ error code and duration; names and credentials are excluded. The
 | `GET` | `/api/v1/projects` | `200`, project page |
 | `GET` | `/api/v1/projects/{projectId}` | `200`, project |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | `200`, full project with saved settings |
+| `POST` | `/api/v1/projects/{projectId}/member-candidates/search` | `200`, registered account candidate page for effective admins |
+
+Candidate search accepts exactly required `expectedUserId,query` and optional
+`limit,cursor`. Inherited, independently granted and Personal Project admins use
+the same effective-role check; members and nonparticipants cannot read the
+directory. A read snapshot revalidates the credential and Project authority before
+the shared account query. Empty searches still authorize. Literal name/email
+matching, ASCII case folding and UUID seek pagination match Team search, while
+Project cursors bind their own resource, user, credential, normalized query and
+page size. Team cursor behavior remains unchanged. The no-store response contains
+`{items,nextCursor,actorRole:"admin"}`, with actual account IDs and nullable profile
+fields. Snapshot failures suppress results; queries, cursors and profiles stay
+out of diagnostics. The [authentication requirements](../../docs/spec/daynight-auth.md#项目管理员候选搜索)
+own exact limits and refusal behavior.
 
 Creation accepts `name`, `repoUrl`, required `expectedUserId` and optional
 `teamId`. The expected user must match the principal before domain SQL. The

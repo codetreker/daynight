@@ -118,6 +118,12 @@ test("local CONNECT and TLS complete OAuth, preserve state and return a verified
     const memberToken = (JSON.parse(member.body) as { access_token: string }).access_token;
     const memberProfile = await request(context.provider, context.certificate, "api.github.com", "/user", { token: memberToken });
     assert.deepEqual(JSON.parse(memberProfile.body), { id: 2, login: "e2e-member", email: "member@example.test", name: "E2E Member", avatar_url: null });
+    const collaborator = await exchange(context.provider, context.certificate, await authorize(context.provider, context.certificate, "collaborator"));
+    const collaboratorToken = (JSON.parse(collaborator.body) as { access_token: string }).access_token;
+    const collaboratorProfile = await request(context.provider, context.certificate, "api.github.com", "/user", { token: collaboratorToken });
+    assert.deepEqual(JSON.parse(collaboratorProfile.body), { id: 3, login: "e2e-collaborator", email: "collaborator@example.test", name: "E2E Collaborator", avatar_url: null });
+    const collaboratorEmails = await request(context.provider, context.certificate, "api.github.com", "/user/emails?per_page=100&page=1", { token: collaboratorToken });
+    assert.deepEqual(JSON.parse(collaboratorEmails.body), [{ email: "collaborator@example.test", primary: true, verified: true }]);
   } finally { await context.cleanup(); }
 });
 

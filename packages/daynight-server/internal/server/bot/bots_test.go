@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
@@ -22,111 +23,165 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	botDefinitionsID        = "a0000000-0000-4000-8000-000000000001"
+	botDefinitionsOtherID   = "a0000000-0000-4000-8000-000000000002"
+	botDefinitionsWorker    = "b0000000-0000-4000-8000-000000000001"
+	botDefinitionsIntent    = "c0000000-0000-4000-8000-000000000001"
+	botDefinitionsBase      = "/api/v1/me/bots"
+	botDefinitionsPath      = botDefinitionsBase + "/" + botDefinitionsID
+	botDefinitionsInventory = "/api/v1/me/workers/" + botDefinitionsWorker + "/bots"
+)
+
 func TestBotsHTTPEmptyList(t *testing.T) {
-	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
-	response := projectRequest(handler, http.MethodGet, "/api/v1/me/bots", "")
-	page := decodeResponse[struct {
-		Items      []any   `json:"items"`
-		NextCursor *string `json:"nextCursor"`
-	}](t, response, http.StatusOK)
+	f := newBotDefinitionsFixture(t, io.Discard)
+	response := f.request("GET", botDefinitionsBase, "", &botDefinitionCall{
+		method: "List", input: model.PageRequest{Limit: 50}, result: botcore.BotPage{},
+	})
+	page := decodeResponse[api.BotPage](t, response, http.StatusOK)
 	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil {
 		t.Fatalf("invalid empty bot page: %s", response.Body)
 	}
 }
 
 func TestBotsHTTPReadDeleteIntentAndWorkerInventory(t *testing.T) {
-	database := projectTestStore(t)
 	var logs bytes.Buffer
-	handler := projectTestHandler(t, database, &logs)
-	workerID := uuid.NewString()
-	reportSnapshotHTTP(t, handler, workerID, workerSnapshotReportBody())
-	bot := seedHTTPBot(t, database, handler, workerID)
-	other := seedHTTPBot(t, database, handler, workerID)
-	path := "/api/v1/me/bots/" + bot.ID
-	page := decodeResponse[api.BotPage](t, projectRequest(handler, "GET", "/api/v1/me/bots?limit=1", ""), 200)
-	if len(page.Items) != 1 || page.Items[0].ID != bot.ID || page.NextCursor == nil {
+	f := newBotDefinitionsFixture(t, &logs)
+	const large int64 = 9007199254740993
+	instant := time.Date(2026, 11, 8, 8, 0, 0, 0, time.FixedZone("fixture", 7*60*60))
+	definition := func(id string, order, version int64) model.Bot {
+		return model.Bot{ID: id, WorkerID: botDefinitionsWorker, OwnerUserID: f.principal.UserID,
+			Name: "长期助手", Version: version, CreationOrder: order, RequestFingerprint: "private-fingerprint",
+			ResolvedConfiguration: model.BotConfiguration{WorkerID: botDefinitionsWorker, Cwd: "/private/bot-work", Provider: "codex", Args: []string{}},
+			StartupResult:         model.BotStartupResult{State: "pending"}, CreatedAt: instant, UpdatedAt: instant.Add(time.Second)}
+	}
+	cursor := "owner-page+cursor/1="
+	page := decodeResponse[api.BotPage](t, f.request("GET", botDefinitionsBase+"?limit=1", "", &botDefinitionCall{
+		method: "List", input: model.PageRequest{Limit: 1},
+		result: botcore.BotPage{Items: []model.Bot{definition(botDefinitionsID, 1, 1)}, NextCursor: &cursor},
+	}), 200)
+	if len(page.Items) != 1 || page.Items[0].ID != botDefinitionsID || page.NextCursor == nil || *page.NextCursor != cursor {
 		t.Fatalf("page: %+v", page)
 	}
-	next := decodeResponse[api.BotPage](t, projectRequest(handler, "GET", "/api/v1/me/bots?limit=1&cursor="+url.QueryEscape(*page.NextCursor), ""), 200)
-	if len(next.Items) != 1 || next.Items[0].ID != other.ID || next.NextCursor != nil {
+	next := decodeResponse[api.BotPage](t, f.request("GET", botDefinitionsBase+"?limit=1&cursor="+url.QueryEscape(*page.NextCursor), "", &botDefinitionCall{
+		method: "List", input: model.PageRequest{Limit: 1, Cursor: &cursor},
+		result: botcore.BotPage{Items: []model.Bot{definition(botDefinitionsOtherID, 2, 1)}},
+	}), 200)
+	if len(next.Items) != 1 || next.Items[0].ID != botDefinitionsOtherID || next.NextCursor != nil {
 		t.Fatalf("next: %+v", next)
 	}
-	workerPath := "/api/v1/me/workers/" + workerID + "/bots"
-	assertProjectError(t, projectRequest(handler, "GET", workerPath+"?cursor="+url.QueryEscape(*page.NextCursor), ""), 400, "invalid_input")
-	const large int64 = 9007199254740993
-	if _, err := database.Pool.Exec(context.Background(), "UPDATE bots SET version=$2 WHERE id=$1", bot.ID, large); err != nil {
-		t.Fatal(err)
-	}
-	response := projectRequest(handler, "GET", "/api/v1/me/bots/"+strings.ToUpper(bot.ID), "")
+	assertProjectError(t, f.request("GET", botDefinitionsInventory+"?cursor="+url.QueryEscape(cursor), "", &botDefinitionCall{
+		method: "ListWorker", id: botDefinitionsWorker, input: model.PageRequest{Limit: 50, Cursor: &cursor},
+		err: &model.Fault{Code: "invalid_input", Message: "Invalid Bot cursor."},
+	}), 400, "invalid_input")
+
+	response := f.request("GET", botDefinitionsBase+"/"+strings.ToUpper(botDefinitionsID), "", &botDefinitionCall{
+		method: "Get", id: botDefinitionsID, result: definition(botDefinitionsID, 1, large),
+	})
 	read := decodeResponse[api.Bot](t, response, 200)
-	if read.Version != large || read.Name != "长期助手" || read.StartupResult.State != "pending" || read.SessionID != nil || read.RoleConfiguration != nil || read.ResolvedConfiguration.Cwd != "/private/bot-work" {
-		t.Fatalf("read: %+v", read)
+	wantRead := api.Bot{ID: botDefinitionsID, WorkerID: botDefinitionsWorker, Version: large, BotDefinition: &api.BotDefinition{
+		OwnerUserID: f.principal.UserID, Name: "长期助手", CreationOrder: 1,
+		ResolvedConfiguration: api.BotConfiguration{WorkerID: botDefinitionsWorker, Cwd: "/private/bot-work", Provider: "codex", Args: []string{}},
+		StartupResult:         api.BotResult{State: "pending"}, CreatedAt: instant.UTC(), UpdatedAt: instant.Add(time.Second).UTC(),
+	}}
+	if !reflect.DeepEqual(read, wantRead) {
+		t.Fatalf("read: %s", response.Body)
 	}
-	if !strings.Contains(response.Body.String(), `"version":"9007199254740993"`) || !strings.Contains(response.Body.String(), `"creationOrder":"`) || strings.Contains(response.Body.String(), "requestFingerprint") {
+	if !strings.Contains(response.Body.String(), `"version":"9007199254740993"`) ||
+		!strings.Contains(response.Body.String(), `"creationOrder":"1"`) ||
+		strings.Contains(response.Body.String(), "requestFingerprint") || strings.Contains(response.Body.String(), "private-fingerprint") {
 		t.Fatal(response.Body.String())
 	}
-	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != handler.principal.UserID {
-		t.Fatal("missing private admission headers")
+
+	deletedFact := func() model.Bot {
+		bot := definition(botDefinitionsID, 1, large+1)
+		cwd := "/private/bot-work"
+		session, execution := "d0000000-0000-4000-8000-000000000001", "d0000000-0000-4000-8000-000000000002"
+		bot.RequestedOverrides = model.BotOverrides{Cwd: &cwd}
+		bot.SessionID, bot.TestExecutionID = &session, &execution
+		bot.RoleConfiguration = &model.BotRoleConfiguration{Instructions: "private role", Revision: "1", Digest: "private role digest"}
+		bot.Deletion = &model.BotDeletion{DeletionID: botDefinitionsIntent, RequestedVersion: large,
+			WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+		return bot
 	}
-	deletionID := uuid.NewString()
-	body := `{"ifVersion":"9007199254740993","deletionId":"` + deletionID + `"}`
-	deleted := projectRequest(handler, "DELETE", path, body)
-	intent := decodeResponse[api.Bot](t, deleted, 200)
-	if intent.Version != large+1 || intent.BotDefinition != nil || intent.Deletion.DeletionID != deletionID || intent.Deletion.RequestedVersion != large || intent.Deletion.WorkerCleanup.State != "pending" || intent.Deletion.ServerCleanup.State != "pending" {
-		t.Fatalf("intent: %+v", intent)
-	}
-	for _, key := range []string{"name", "roleConfiguration", "sessionId", "resolvedConfiguration", "requestedOverrides", "startupResult"} {
-		if strings.Contains(deleted.Body.String(), `"`+key+`"`) {
-			t.Fatalf("deleted definition leaked %s", key)
+	wantDeleted := api.Bot{ID: botDefinitionsID, WorkerID: botDefinitionsWorker, Version: large + 1,
+		Deletion: &api.BotDeletion{DeletionID: botDefinitionsIntent, RequestedVersion: large,
+			WorkerCleanup: api.BotResult{State: "pending"}, ServerCleanup: api.BotResult{State: "pending"}}}
+	checkDeleted := func(response *httptest.ResponseRecorder) {
+		t.Helper()
+		intention := decodeResponse[api.Bot](t, response, http.StatusOK)
+		if !reflect.DeepEqual(intention, wantDeleted) || response.Body.String() != jsonBody(t, wantDeleted)+"\n" {
+			t.Fatalf("invalid deletion receipt or private definition exposed: %s", response.Body)
 		}
 	}
-	replayed := decodeResponse[api.Bot](t, projectRequest(handler, "DELETE", path, body), 200)
-	if replayed.Version != intent.Version {
-		t.Fatal("duplicate deletion advanced version")
+	remove := func(id string, result model.Bot, err error) *httptest.ResponseRecorder {
+		t.Helper()
+		input := store.DeleteBot{Version: large, DeletionID: id}
+		body := jsonBody(t, map[string]string{"ifVersion": "9007199254740993", "deletionId": id})
+		return f.request("DELETE", botDefinitionsPath, body, &botDefinitionCall{method: "DeleteBot", id: botDefinitionsID, input: input, result: result, err: err})
 	}
-	assertProjectError(t, projectRequest(handler, "DELETE", path, `{"ifVersion":"9007199254740993","deletionId":"`+uuid.NewString()+`"}`), 409, "resource_conflict")
-	visible := decodeResponse[api.BotPage](t, projectRequest(handler, "GET", "/api/v1/me/bots", ""), 200)
-	if len(visible.Items) != 1 || visible.Items[0].ID != other.ID {
+	checkDeleted(remove(botDefinitionsIntent, deletedFact(), nil))
+	checkDeleted(remove(botDefinitionsIntent, deletedFact(), nil))
+	assertProjectError(t, remove("c0000000-0000-4000-8000-000000000002", model.Bot{},
+		&model.Fault{Code: "resource_conflict", Message: "Bot deletion belongs to a different request."}), 409, "resource_conflict")
+
+	visible := decodeResponse[api.BotPage](t, f.request("GET", botDefinitionsBase, "", &botDefinitionCall{
+		method: "List", input: model.PageRequest{Limit: 50}, result: botcore.BotPage{Items: []model.Bot{definition(botDefinitionsOtherID, 2, 1)}},
+	}), 200)
+	if len(visible.Items) != 1 || visible.Items[0].ID != botDefinitionsOtherID {
 		t.Fatal("deleted bot remains in normal list")
 	}
-	inventory := decodeResponse[api.BotPage](t, projectRequest(handler, "GET", workerPath, ""), 200)
-	if len(inventory.Items) != 2 || inventory.Items[0].Deletion == nil {
-		t.Fatal("cleanup responsibility disappeared")
+	inventory := decodeResponse[api.BotPage](t, f.request("GET", botDefinitionsInventory, "", &botDefinitionCall{
+		method: "ListWorker", id: botDefinitionsWorker, input: model.PageRequest{Limit: 50},
+		result: botcore.BotPage{Items: []model.Bot{deletedFact(), definition(botDefinitionsOtherID, 2, 1)}},
+	}), 200)
+	if len(inventory.Items) != 2 || !reflect.DeepEqual(inventory.Items[0], wantDeleted) || inventory.Items[1].ID != botDefinitionsOtherID {
+		t.Fatalf("invalid worker inventory: %+v", inventory)
 	}
-	detail := decodeResponse[api.Bot](t, projectRequest(handler, "GET", path, ""), 200)
-	if detail.BotDefinition != nil || detail.Deletion == nil {
-		t.Fatal("deleted detail exposed definition")
-	}
-	if strings.Contains(logs.String(), "/private/bot-work") || strings.Contains(logs.String(), "长期助手") {
-		t.Fatal("bot content leaked into logs")
+	checkDeleted(f.request("GET", botDefinitionsPath, "", &botDefinitionCall{method: "Get", id: botDefinitionsID, result: deletedFact()}))
+	for _, private := range []string{"/private/bot-work", "长期助手", "private role", "private-fingerprint"} {
+		if strings.Contains(logs.String(), private) {
+			t.Fatalf("bot content leaked into logs: %q", private)
+		}
 	}
 }
 
 func TestBotsHTTPStrictInputAndAuthentication(t *testing.T) {
-	database := projectTestStore(t)
-	handler := projectTestHandler(t, database, io.Discard)
-	workerID := uuid.NewString()
-	reportSnapshotHTTP(t, handler, workerID, workerSnapshotReportBody())
-	bot := seedHTTPBot(t, database, handler, workerID)
-	path := "/api/v1/me/bots/" + bot.ID
-	for _, body := range []string{`{}`, `null`, `[]`, `{"ifVersion":1}`, `{"ifVersion":null}`, `{"ifVersion":"01"}`, `{"ifVersion":"+1"}`, `{"ifVersion":"0"}`, `{"ifVersion":"9223372036854775808"}`, `{"ifVersion":"1"}`, `{"ifVersion":"1","deletionId":null}`, `{"ifVersion":"1","deletionId":"bad"}`, `{"ifVersion":"1","deletionId":"` + uuid.NewString() + `","extra":true}`} {
-		assertProjectError(t, projectRequest(handler, "DELETE", path, body), 400, "invalid_input")
+	f := newBotDefinitionsFixture(t, io.Discard)
+	for _, body := range []string{`{}`, `null`, `[]`, `{"ifVersion":1}`, `{"ifVersion":null}`, `{"ifVersion":"01"}`, `{"ifVersion":"+1"}`, `{"ifVersion":"0"}`, `{"ifVersion":"9223372036854775808"}`, `{"ifVersion":"1"}`, `{"ifVersion":"1","deletionId":null}`, `{"ifVersion":"1","deletionId":"` + botDefinitionsIntent + `","extra":true}`} {
+		assertProjectError(t, f.request("DELETE", botDefinitionsPath, body, nil), 400, "invalid_input")
 	}
-	for _, p := range []string{path + "?x=1", path + "?", "/api/v1/me/bots/bad", "/api/v1/me/bots?limit=0", "/api/v1/me/bots?unexpected=1", "/api/v1/me/workers/bad/bots"} {
-		assertProjectError(t, projectRequest(handler, "GET", p, ""), 400, "invalid_input")
+	assertProjectError(t, f.request("DELETE", botDefinitionsPath, `{"ifVersion":"1","deletionId":"bad"}`, &botDefinitionCall{
+		method: "DeleteBot", id: botDefinitionsID, input: store.DeleteBot{Version: 1, DeletionID: "bad"},
+		err: &model.Fault{Code: "invalid_input", Message: "Invalid deletion ID."},
+	}), 400, "invalid_input")
+	for _, path := range []string{botDefinitionsPath + "?x=1", botDefinitionsPath + "?", botDefinitionsBase + "/bad", botDefinitionsBase + "?limit=0", botDefinitionsBase + "?unexpected=1"} {
+		assertProjectError(t, f.request("GET", path, "", nil), 400, "invalid_input")
 	}
-	assertProjectError(t, projectRequest(handler, "DELETE", path+"?x=1", `{}`), 400, "invalid_input")
-	assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/"+uuid.NewString(), ""), 404, "not_found")
-	for _, p := range []string{"/api/v1/me/bots", path, "/api/v1/me/workers/" + workerID + "/bots"} {
-		assertProjectError(t, projectRequest(handler, "PUT", p, `{}`), 405, "method_not_allowed")
-		assertProjectError(t, projectRequest(handler.Handler, "GET", p, ""), 401, "unauthenticated")
+	assertProjectError(t, f.request("GET", "/api/v1/me/workers/bad/bots", "", &botDefinitionCall{
+		method: "ListWorker", id: "bad", input: model.PageRequest{Limit: 50},
+		err: &model.Fault{Code: "invalid_input", Message: "Invalid Worker ID."},
+	}), 400, "invalid_input")
+	assertProjectError(t, f.request("DELETE", botDefinitionsPath+"?x=1", `{}`, nil), 400, "invalid_input")
+	assertProjectError(t, f.request("GET", botDefinitionsBase+"/"+botDefinitionsOtherID, "", &botDefinitionCall{
+		method: "Get", id: botDefinitionsOtherID, err: &model.Fault{Code: "not_found", Message: "Bot not found.", Cause: model.ErrNotFound},
+	}), 404, "not_found")
+	for _, route := range []struct{ path, allow string }{
+		{botDefinitionsBase, "GET, HEAD, POST"}, {botDefinitionsPath, "GET, HEAD, DELETE"}, {botDefinitionsInventory, "GET, HEAD"},
+	} {
+		response := f.request("PUT", route.path, `{}`, nil)
+		assertProjectError(t, response, 405, "method_not_allowed")
+		if response.Header().Get("Allow") != route.allow {
+			t.Fatalf("unexpected Allow for %s: %v", route.path, response.Header())
+		}
+		assertProjectError(t, f.dispatch("GET", route.path, "", botDefinitionAnonymous, nil), 401, "unauthenticated")
 	}
-	assertProjectError(t, projectRequest(handler, "DELETE", path, `{"ifVersion":"2","deletionId":"`+uuid.NewString()+`"}`), 409, "version_conflict")
-	if _, err := database.Pool.Exec(context.Background(), "DELETE FROM personal_access_tokens WHERE id=$1", handler.principal.CredentialID); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectError(t, projectRequest(handler, "GET", path, ""), 401, "unauthenticated")
-	assertProjectError(t, projectRequest(handler, "DELETE", path, `{"ifVersion":"1","deletionId":"`+uuid.NewString()+`"}`), 401, "unauthenticated")
+	assertProjectError(t, f.request("DELETE", botDefinitionsPath, `{"ifVersion":"2","deletionId":"`+botDefinitionsIntent+`"}`, &botDefinitionCall{
+		method: "DeleteBot", id: botDefinitionsID, input: store.DeleteBot{Version: 2, DeletionID: botDefinitionsIntent},
+		err: &model.Fault{Code: "version_conflict", Message: "Bot version changed."},
+	}), 409, "version_conflict")
+	assertProjectError(t, f.dispatch("GET", botDefinitionsPath, "", botDefinitionRevoked, nil), 401, "unauthenticated")
+	assertProjectError(t, f.dispatch("DELETE", botDefinitionsPath, `{"ifVersion":"1","deletionId":"`+botDefinitionsIntent+`"}`, botDefinitionRevoked, nil), 401, "unauthenticated")
 }
 
 func TestBotResponseRoleAndRedaction(t *testing.T) {

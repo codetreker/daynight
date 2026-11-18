@@ -184,6 +184,10 @@ func (s *listOperationScope) CredentialDAO() store.CredentialReader {
 	_ = s.fixture.unexpected("CredentialDAO")
 	return nil
 }
+func (s *listOperationScope) UserCandidateDAO() store.UserCandidateReader {
+	_ = s.fixture.unexpected("UserCandidateDAO")
+	return nil
+}
 func (s *listOperationScope) TeamDAO() store.TeamReader {
 	_ = s.fixture.unexpected("TeamDAO")
 	return nil

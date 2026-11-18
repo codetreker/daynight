@@ -6,6 +6,7 @@ type Transactions interface {
 	SnapshotReader
 	WebhookTransactions
 	ProjectWriter
+	ProjectDirectMemberWriter
 	ProjectCreationWriter
 	GitHubProjectLifecycleStore
 	GitHubTeamDeletionStore
