@@ -536,11 +536,14 @@ The handshake instructions introduce Daynight and direct clients to read
 the URI can be read without first listing Resources. Authenticated MCP clients
 can also use `resources/list` to discover the overview and twelve topic manuals,
 and `resources/read` to obtain each complete Markdown document. The overview
-routes by operation and explains shared context and authorization rules. Steps,
-Thread, Session reads and messages, and attachment reads and writes have separate
-guides. Every write requires the common write-safety guide
-and its operation's conditions; related topics retain explicit reading prerequisites.
-The materials topic defines Goal-owned shared specifications, architecture,
+routes by operation, distinguishes required and conditional topics, and explains
+result envelopes and schematic examples. Clients can reuse complete guidance
+while it remains applicable. Task reads and lifecycle, dependency reads and
+replacement, and Session observations and history each share a complete topic.
+Steps, Thread, Session messages, and attachment reads and writes have separate
+guides. Every write requires the common write-safety guide and its operation's
+conditions; related topics retain explicit reading prerequisites. The materials
+topic defines Goal-owned shared specifications, architecture,
 breakdowns, conclusions and overall progress, alongside each child Task's own
 results and evidence.
 Reading guidance does not select a Project or authorize work.
