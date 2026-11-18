@@ -30,7 +30,7 @@ const install = async (page: Page, locale: 'zh-CN' | 'en' = 'zh-CN') => {
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [project], nextCursor: null });
     if (path === '/api/v1/me/workers') return send(workerPage());
-    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
+    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail(), 200, { 'Daynight-Worker-Tool-Paths': '2' });
     if (path === `/api/v1/me/workers/${target}/configuration`) {
       const gate = state.gate;
       if (gate !== null && request.method() === gate.method) { state.gate = null; gate.notify(); await gate.wait; }
