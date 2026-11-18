@@ -34,11 +34,13 @@ const (
 	botDefinitionAdmitted botDefinitionAuthentication = iota
 	botDefinitionAnonymous
 	botDefinitionRevoked
+	botDefinitionOriginRefused
 )
 
 type botDefinitionsFixture struct {
 	t              *testing.T
 	principal      model.Principal
+	sessionCookie  string
 	handler        http.Handler
 	requestContext context.Context
 	authentication botDefinitionAuthentication
@@ -48,7 +50,14 @@ type botDefinitionsFixture struct {
 
 func newBotDefinitionsFixture(t *testing.T, logs io.Writer) *botDefinitionsFixture {
 	t.Helper()
-	f := &botDefinitionsFixture{t: t, principal: defaultHTTPPrincipal()}
+	return newBotDefinitionsFixtureForCredential(t, logs, model.PATCredential)
+}
+
+func newBotDefinitionsFixtureForCredential(t *testing.T, logs io.Writer, kind model.CredentialKind) *botDefinitionsFixture {
+	t.Helper()
+	principal := defaultHTTPPrincipal()
+	principal.Kind = kind
+	f := &botDefinitionsFixture{t: t, principal: principal}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	auth, err := authhttp.NewRequestAuthentication(func(ctx context.Context, kind model.CredentialKind, token string) (model.Principal, error) {
 		f.authCalls++
@@ -65,6 +74,7 @@ func newBotDefinitionsFixture(t *testing.T, logs io.Writer) *botDefinitionsFixtu
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.sessionCookie = auth.SessionCookieName()
 	mux := http.NewServeMux()
 	bothttp.RegisterRoutes(mux, f, f, &authhttp.Authentication{RequestAuthentication: auth}, logger)
 	f.handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -100,12 +110,16 @@ func (f *botDefinitionsFixture) unexpected(method string) error {
 	return fmt.Errorf("unconfigured Bot operation: %s", method)
 }
 
-func (f *botDefinitionsFixture) CreateResolved(context.Context, model.Principal, botcore.CreateBot) (model.Bot, error) {
-	return model.Bot{}, f.unexpected("CreateResolved")
+func (f *botDefinitionsFixture) CreateResolved(ctx context.Context, p model.Principal, input botcore.CreateBot) (model.Bot, error) {
+	return botDefinitionResult[model.Bot](f.invoke(ctx, p, "CreateResolved", "", input))
 }
 
 func (f *botDefinitionsFixture) Defaults(context.Context, model.Principal, *string) (botcore.BotDefaults, error) {
 	return botcore.BotDefaults{}, f.unexpected("Defaults")
+}
+
+func (f *botDefinitionsFixture) DefaultsFor(ctx context.Context, p model.Principal, overrides model.BotOverrides) (botcore.BotDefaults, error) {
+	return botDefinitionResult[botcore.BotDefaults](f.invoke(ctx, p, "DefaultsFor", "", overrides))
 }
 
 func (f *botDefinitionsFixture) List(ctx context.Context, p model.Principal, page model.PageRequest) (botcore.BotPage, error) {
@@ -131,14 +145,26 @@ func (f *botDefinitionsFixture) request(method, path, body string, want *botDefi
 
 func (f *botDefinitionsFixture) dispatch(method, path, body string, auth botDefinitionAuthentication, want *botDefinitionCall) *httptest.ResponseRecorder {
 	f.t.Helper()
+	return f.dispatchWithOrigin(method, path, body, "", auth, want)
+}
+
+func (f *botDefinitionsFixture) dispatchWithOrigin(method, path, body, origin string, auth botDefinitionAuthentication, want *botDefinitionCall) *httptest.ResponseRecorder {
+	f.t.Helper()
 	f.want, f.authentication, f.authCalls = want, auth, 0
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	r.Header.Set("X-Request-ID", "project-test")
 	wantAuthCalls := 0
 	if auth != botDefinitionAnonymous {
-		r.Header.Set("Authorization", "Bearer "+httpTestToken(f.principal.Kind))
+		if f.principal.Kind == model.SessionCredential {
+			r.AddCookie(&http.Cookie{Name: f.sessionCookie, Value: httpTestToken(f.principal.Kind)})
+		} else {
+			r.Header.Set("Authorization", "Bearer "+httpTestToken(f.principal.Kind))
+		}
 		wantAuthCalls = 1
+	}
+	if origin != "" {
+		r.Header.Set("Origin", origin)
 	}
 	w := httptest.NewRecorder()
 	f.handler.ServeHTTP(w, r)

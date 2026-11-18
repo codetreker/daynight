@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -87,6 +89,25 @@ func TestCreationSelectionOverflowAndFailures(t *testing.T) {
 				t.Fatalf("%+v %v", result, err)
 			}
 		})
+	}
+}
+
+func TestCreationSelectionRejectsAllUsableOverflowBeforeFullWorkerRead(t *testing.T) {
+	observedAt := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	candidates := make([]model.WorkerSnapshot, 101)
+	for i := range candidates {
+		id := fmt.Sprintf("10000000-0000-4000-8000-%012d", i+1)
+		candidates[i] = availableWorker(id, observedAt)
+	}
+	reader := &creationReader{input: model.BotDefaultsInput{ObservedAt: observedAt, Workers: candidates}}
+
+	input, result, err := CreationDefaults(t.Context(), reader, "owner", model.BotOverrides{})
+	assertFault(t, err, "active_worker_limit_exceeded")
+	if !reflect.DeepEqual(input, model.BotDefaultsInput{}) || !reflect.DeepEqual(result, BotDefaults{}) {
+		t.Fatalf("usable overflow returned selection data: %+v %+v", input, result)
+	}
+	if !slices.Equal(reader.calls, []string{"preferred", "candidates"}) {
+		t.Fatalf("usable overflow performed unexpected reads: %v", reader.calls)
 	}
 }
 
