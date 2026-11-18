@@ -59,9 +59,7 @@ export const receiveWorkerDesired = (json: string, options?: WorkerConfiguration
   // binary cannot decode is retained as raw authority, not a partial target.
   let known: WorkerCloudDesired | null;
   try {
-    if (members.has("agentControlMode") || enabled.toolPaths !== members.has("toolPaths") || Boolean(enabled.archiveSessions) !== members.has("archiveSessions")) return { json, revision, updatedAt, known: null };
-    const toolSource = members.get("toolPaths");
-    if (toolSource !== undefined && jsonObjectSources(toolSource).has("herdr")) return { json, revision, updatedAt, known: null };
+    if (enabled.toolPaths !== members.has("toolPaths") || Boolean(enabled.archiveSessions) !== members.has("archiveSessions")) return { json, revision, updatedAt, known: null };
     known = parseWorkerCloudDesired(knownJson(desiredProjection(json, { ...enabled, controlMode: false }, recognizeSudo)), false, { ...enabled, controlMode: false });
   }
   catch (error) { if (!(error instanceof ProtocolError || error instanceof SyntaxError)) throw error; known = null; }

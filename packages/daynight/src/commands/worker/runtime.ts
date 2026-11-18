@@ -572,10 +572,7 @@ export const runWorker = async (options: {
         }
       },
       onError: error => { failures.push(error); cancellation.controller.abort(error); },
-      onInvalidDesired: (revision, reason) => emit({ kind: "warning", message: reason === "unsupported_mode"
-        ? `Worker configuration revision ${revision} specifies the unsupported Herdr control mode; change it to Web before applying the configuration.`
-        : reason === "unsupported_legacy_fields" ? `Worker configuration revision ${revision} is missing toolPaths or contains an unsupported agentControlMode or toolPaths.herdr field; correct the target before applying it.`
-        : reason === "unsupported_configuration" ? `Worker configuration revision ${revision} contains unsupported values; adjust the target before applying it.`
+      onInvalidDesired: (revision, reason) => emit({ kind: "warning", message: reason === "unsupported_configuration" ? `Worker configuration revision ${revision} is missing required settings or contains unsupported current values; correct the target before applying it.`
           : `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
     if (resource !== undefined) {
