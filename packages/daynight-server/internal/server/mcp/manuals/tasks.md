@@ -2,7 +2,7 @@
 
 Start with [Overview](daynight://manuals/overview.md).
 
-Use this topic for definitions, projections, readiness, inventories and property reads. Task/Goal creation, metadata/status/property changes and deletion require [Task writes](daynight://manuals/task-writes.md) with [Write safety](daynight://manuals/write-safety.md). Dependency-only changes require [Dependencies](daynight://manuals/dependencies.md) and Write safety. Creating a Task with dependencies or changing other Task fields alongside dependencies requires both mutation topics.
+Use this topic for definitions, projections, readiness, inventories and property reads. Task/Goal creation, metadata/status/property changes and deletion require [Task writes](daynight://manuals/task-writes.md) with [Write safety](daynight://manuals/write-safety.md). Dependency-only changes require [Dependency writes](daynight://manuals/dependency-writes.md), Dependency graphs and Write safety. Creating a Task with dependencies or changing other Task fields alongside dependencies requires both mutation topics.
 
 ## Select the observation
 
@@ -14,7 +14,7 @@ Use this topic for definitions, projections, readiness, inventories and property
 | Ordinary chain and direct external prerequisites | `task_graph`; [Dependencies](daynight://manuals/dependencies.md) owns scope/projections |
 | Property definitions or complete values | `task_properties`, `mode: "schema"` or `"values"` |
 | Activity, grouped ongoing work and Session identity | [Session reads](daynight://manuals/session-reads.md) |
-| Session messages and complete entries | [Session reads](daynight://manuals/session-reads.md) |
+| Session messages and complete entries | [Session history](daynight://manuals/session-history.md) |
 | Separate material | [Steps](daynight://manuals/steps.md), [Threads](daynight://manuals/threads.md), [Attachment reads](daynight://manuals/attachment-reads.md) |
 
 Task reads default to `summary`: identity, type/parent, marked `titlePreview`/`titleTruncated`, status, exact decimal-string version, readiness, `blockedByCount`, assignment, platform and automatic-selection fields. Summaries omit full title/description, properties, dependency arrays and execution times. A preview is neither identity nor duplicate proof.
@@ -26,7 +26,7 @@ Task reads default to `summary`: identity, type/parent, marked `titlePreview`/`t
 | `task_list` | Complete list resources including title, properties, relationships and times, **without description** |
 | `task_graph` | Complete selected relationship scope; compact nodes still omit Task description, properties and version |
 
-Full time-bearing resources expose creation/update times and nullable `startedAt`, `completedAt`, `cancelledAt`. Returned `dependsOn` includes all prerequisites; `externalDependsOn` is its subset. Write inputs use a different partition described in [Dependencies](daynight://manuals/dependencies.md). Full and summary Task resources include `tags: [{id,name}]`, or `[]`.
+Full time-bearing resources expose creation/update times and nullable `startedAt`, `completedAt`, `cancelledAt`. Returned `dependsOn` includes all prerequisites; `externalDependsOn` is its subset. Write inputs use a different partition described in [Dependency writes](daynight://manuals/dependency-writes.md). Full and summary Task resources include `tags: [{id,name}]`, or `[]`.
 
 Full Task show does not supply attachment inventory/bytes or complete Step/Thread collections. Normal list/show and non-dependency-only graph add ephemeral Session observations; ready results, Task mutation receipts and dependency-only graphs do not. Task versions freeze neither Session state, attachment bytes nor separate observations. [Session reads](daynight://manuals/session-reads.md) owns freshness, partial observations and nullable send eligibility; observations grant no intervention authority.
 

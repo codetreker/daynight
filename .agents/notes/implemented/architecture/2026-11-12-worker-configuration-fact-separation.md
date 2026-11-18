@@ -26,9 +26,10 @@ schema 4 success with a lost revision is explicitly unknown. New current records
 do not take ownership of an older record's failure or rewrite its history.
 
 The [chunked checkpoint decision](2026-11-12-worker-configuration-chunked-checkpoint.md)
-keeps one path, strict incremental reads and atomic persistence. Schemas 1–4
-upgrade through their original structural rules; schema 9 is the current
-format, with the conversion described in the Web configuration decision.
+keeps one path, strict incremental reads and atomic persistence. Schemas 1–9
+upgrade through their frozen structural rules to schema 11, with conversion
+described by the Web checkpoint and
+[mode adoption](2026-11-18-worker-web-mode-adoption.md) decisions.
 The serialized manager freezes a result before persistence and publishes it only
 after the write succeeds. Runtime native proof belongs to the current process
 and record identity. A new target inherits matching proof from the same previous
@@ -96,7 +97,7 @@ outcomes and failures that still require confirmation.
 The schema migration and explicit source fields add local representation and
 validation cost. Lost schema 4 success provenance stays unknown. Retained facts
 require proportional memory and disk, and upgraded checkpoints require a CLI
-that understands schema 9. Confirmation and record retirement must consider both
+that understands schema 11. Confirmation and record retirement must consider both
 original resource ownership and the exact sent token.
 
 A large state is visible remotely as its latest batch; the server does not

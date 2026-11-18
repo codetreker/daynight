@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { taskTagFilterKey } from "../../../src/api/task-tag-filter.js";
 import { receiveWorkerDesired } from "../../../src/api/worker-configuration-source.js";
 import { parseWorkerCloudReport, projectWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItemKey, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
@@ -8,7 +9,7 @@ import { acceptConfigurationProjection, allConfigurationItems, configurationHasU
 const id = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const native: WorkerCloudNative = { agent: "codex", model: "original", args: [] };
 const desired = (revision = "1", projects: readonly string[] = []): WorkerCloudDesired => ({ revision, updatedAt: "2026-11-12T00:00:00Z", value: { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } }, maxConcurrent: Number(revision) + 1, pollIntervalMs: 1200, recoveryLimit: 3, preferPlatformSpecificTasks: false, native, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) } });
-const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 10, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0", pendingApplication: target === null }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
+const empty = (target: WorkerCloudDesired | null = desired()): WorkerConfigurationCache => ({ schemaVersion: 11, identity: { serverOrigin: "https://daynight.example", userId: id(9000), workerId: id(9001) }, authority: { generation: id(8000), desiredJson: target === null ? null : JSON.stringify(target), applicationRevision: target?.revision ?? null, observationRevision: "0", pendingApplication: target === null }, remoteObservation: null, nextFailureId: 100, projectionCursor: null, currentItems: [], retainedItems: [] });
 const received = (...args: Parameters<typeof desired>) => receiveWorkerDesired(JSON.stringify(desired(...args)));
 const tracked = (number: number, key: WorkerCloudItemKey, appliedValue: TrackedConfigurationItem["value"]["appliedValue"] = null): TrackedConfigurationItem => ({ recordId: id(number), origin: { generation: id(8000), targetRevision: "1", source: "application" }, value: { key, targetRevision: "1", appliedValue, state: appliedValue === null ? "pending" : "applied", error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, started: false, actualSource: appliedValue === null ? null : { kind: "observed", recordId: id(number), generation: id(8000), targetRevision: "1" }, blockedByRemovalId: null });
 const fault: WorkerCloudFailure = { code: "unavailable", category: "agent", phase: "validate", occurredAt: "2026-11-12T00:00:01Z" };
@@ -17,12 +18,32 @@ const options = { synchronized: true, localTools: { codex: { kind: "auto" as con
 const ids = () => { let value = 1000; return () => id(value++); };
 
 describe("Worker configuration fact transitions", () => {
+  it("publishes only a synchronized applied digest matching the current filter and preserves selected projects", () => {
+    const filter = { names: ["Backend", "urgent"], match: "all" as const };
+    const target = { ...desired("1", [id(70)]), value: { ...desired("1", [id(70)]).value, taskTagFilter: filter } };
+    const pending = transitionConfigurationDesired(empty(null), receiveWorkerDesired(JSON.stringify(target)), new Set(), ids());
+    const view = (cache: WorkerConfigurationCache, synchronized = true) => configurationSnapshot(cache, synchronized, new Map(), options.localTools, valueProof);
+    expect(configurationTarget(pending, { kind: "taskTagFilter" })).toBe(taskTagFilterKey(filter));
+    expect(view(pending).effective.taskTagFilterKey).toBeNull();
+    expect(view(pending).selectedProjects?.map(project => project.projectId)).toEqual([id(70)]);
+    const applied = { ...pending, currentItems: pending.currentItems.map(item => item.value.key.kind === "taskTagFilter" ? { ...item, value: { ...item.value, state: "applied" as const, appliedValue: taskTagFilterKey(filter) } } : item) };
+    expect(view(applied).effective.taskTagFilter).toEqual(filter);
+    expect(view(applied).effective.taskTagFilterKey).toBe(taskTagFilterKey(filter));
+    expect(view(applied, false).effective.taskTagFilterKey).toBeNull();
+    const next = transitionConfigurationDesired(applied, receiveWorkerDesired(JSON.stringify({ ...target, revision: "2", value: { ...target.value, taskTagFilter: { names: ["frontend"], match: "any" } } })), new Set(), ids());
+    expect(view(next).effective.taskTagFilterKey).toBeNull();
+    expect(findCurrentConfigurationItem(next, { kind: "taskTagFilter" })?.value).toMatchObject({ state: "pending", appliedValue: taskTagFilterKey(filter) });
+    const unsupported = transitionConfigurationDesired(applied, received("2", [id(70)]), new Set(), ids());
+    expect(view(unsupported).effective.taskTagFilterKey).toBeUndefined();
+    expect(findCurrentConfigurationItem(unsupported, { kind: "taskTagFilter" })).toBeUndefined();
+  });
+
   it("requires a synchronized supported target without reporting mode adoption", () => {
     const pending = transitionConfigurationDesired(empty(null), received(), new Set(), ids());
     expect(findCurrentConfigurationItem(pending, { kind: "agentControlMode" })).toBeUndefined();
     expect(configurationSnapshot(pending, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBe("web");
     expect(configurationSnapshot(pending, false, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
-    const unsupported = transitionConfigurationDesired(pending, receiveWorkerDesired(JSON.stringify({ ...desired("2"), value: { ...desired("2").value, agentControlMode: "herdr" } })), new Set(), ids());
+    const unsupported = transitionConfigurationDesired(pending, receiveWorkerDesired(JSON.stringify({ ...desired("2"), value: { ...desired("2").value, native: { ...native, agent: "future" } } })), new Set(), ids());
     expect(configurationSnapshot(unsupported, true, new Map(), options.localTools, valueProof).effective.agentControlMode).toBeNull();
   });
 
@@ -57,7 +78,7 @@ describe("Worker configuration fact transitions", () => {
     expect(acceptConfigurationProjection(updated, oldReport, new Set())).toBe(updated);
   });
 
-  it.each(["unsupported mode", "oversized target"] as const)("keeps existing work while %s is unreadable for application", scenario => {
+  it.each(["unsupported native agent", "oversized target"] as const)("keeps existing work while %s is unreadable for application", scenario => {
     const selected = id(70), removing = id(71), unrelated = id(72);
     const currentTarget = desired("1", [selected]);
     const preparation = tracked(1, { kind: "projectPreparation", projectId: selected }, true);
@@ -65,7 +86,7 @@ describe("Worker configuration fact transitions", () => {
     const stop = { ...tracked(3, { kind: "projectRemoval", projectId: removing }), started: true };
     const original = { ...empty(currentTarget), currentItems: [preparation, appliedNative, stop], projectionCursor: id(1) };
     const raw = desired("2", [unrelated]);
-    const invalid = { ...raw, value: { ...raw.value, ...(scenario === "unsupported mode" ? { agentControlMode: "herdr" as const } : { maxConcurrent: 65 }) } };
+    const invalid = { ...raw, value: { ...raw.value, ...(scenario === "unsupported native agent" ? { native: { ...native, agent: "future" } } : { maxConcurrent: 65 }) } };
     const nextId = ids();
     const next = transitionConfigurationDesired(original, receiveWorkerDesired(JSON.stringify(invalid)), new Set([stop.recordId]), nextId);
     expect(JSON.parse(next.authority.desiredJson!)).toEqual(invalid);
@@ -209,7 +230,7 @@ const valueProof = (_cache: WorkerConfigurationCache, value: WorkerCloudNative):
 describe("Worker configuration projection acceptance", () => {
   it("does not report mode or adopt tools for unsupported raw authority", () => {
     const base = desired();
-    for (const value of [{ ...base.value, agentControlMode: "herdr" }, { ...base.value, toolPaths: { ...base.value.toolPaths!, herdr: null } }, (({ toolPaths: _tools, ...rest }) => rest)(base.value)]) {
+    for (const value of [{ ...base.value, native: { ...native, agent: "future" } }, { ...base.value, toolPaths: { codex: { kind: "future" }, copilot: { kind: "auto" } } }, (({ toolPaths: _tools, ...rest }) => rest)(base.value)]) {
       const cache = empty({ ...base, value } as WorkerCloudDesired), raw = cache.authority.desiredJson;
       const report = projectConfigurationReport(cache, options).report;
       expect(report).not.toHaveProperty("controlModeBootstrap");

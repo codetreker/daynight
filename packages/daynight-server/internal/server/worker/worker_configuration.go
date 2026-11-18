@@ -5,6 +5,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
+	workerprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
@@ -30,7 +31,7 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 	writeWorkerCapabilities(w.Header(), capabilities)
 	var result model.WorkerConfigurationResource
 	if request.Method == http.MethodPut {
-		fields, decodeErr := httpx.DecodeObject(w, request, "revision", "value")
+		fields, decodeErr := httpx.DecodeObjectLimit(w, request, httpx.MaxJSONBody+workerprotocol.EmptyTaskTagFilterMemberBytes, "revision", "value")
 		if decodeErr != nil {
 			err = decodeErr
 		} else {

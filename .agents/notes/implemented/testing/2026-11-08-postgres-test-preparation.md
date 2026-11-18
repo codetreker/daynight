@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-The PostgreSQL root tests repeatedly establish management connections and build
+PostgreSQL Store tests repeatedly establish management connections and build
 complete schemas for fault matrices that only need independent operations against
 the same initial state. Historical migration-failure matrices replay the same
 known-good prefix before each independent failure. Snapshot comparison faults
@@ -77,10 +77,17 @@ controls outside the parallel group. Random schemas do not isolate production
 database-level advisory keys either, so selected transactions can still wait on
 identity or OAuth capacity locks.
 
-The membership error matrix reuses its initial records and commits reversible
-table renames. Each case restores the original relation OID before reuse and
-still requires a real missing-relation error. Assignee error tests reuse each
-fault schema for two read-only modes.
+The membership and
+[Identity error matrices](../../../../packages/daynight-server/internal/core/store/postgres/identity/failure_contract_test.go)
+reuse their initial records and commit reversible table renames. Each case
+requires PostgreSQL's missing-relation error and restores the original relation
+OID before reuse. Identity runs the production transaction for every operation
+and checks its error chain and uncommitted outcome. It resets the operational
+pool after each rename so prepared statements from fixture setup or a preceding
+case cannot still address the renamed relation. The missing-users case also
+checks Session authentication while the relation is still absent. A failed case
+stops further reuse. Assignee error tests reuse each fault schema for two
+read-only modes.
 
 The [first image-chunk inventory matrix](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_test.go)
 shares one parent-owned Store across its sequential cases. Each case retains its
@@ -105,6 +112,17 @@ is read back. Attempt sequences still require the second real row write;
 another case uses the fixture. Invalid migration-history cases restore the
 complete original ledger, including checksums and `applied_at`, and compare it
 before the next fault. A failed case stops subsequent fixture reuse.
+
+The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
+and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
+matrices each use one Store. Cases keep distinct App, grant, and Project
+identities with mutations restricted to their own rows. Signal tests hold the
+installation and repository identifiers constant across Apps and read committed
+pending rows by Project. Retirement cases finish their transaction before the
+next case. The trigger fault is observed as its PostgreSQL exception, the
+affected state is read back after rollback, and the trigger and function are
+removed and checked in the catalog before reuse. A failed case or transaction
+release stops the matrix.
 
 [Task write competition](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
 uses distinct Project and Task IDs inside each matrix's store. Actual lock

@@ -154,76 +154,11 @@ When context does not explain why a control is disabled, its reason may be
 presented on demand near the control. Hover explanations must also be available
 through keyboard focus.
 
-## Share copy button presentation
+## Shared Controls
 
-Use the shared copy button for icon-only and text copy actions. Its decorative
-16px overlapping-squares icon stays visible; the icon-only control is 26px
-square with a reserved 1px transparent border. The default background and border
-are transparent and there is no shadow. Enabled hover uses a white background
-and `#dce0e8` border without moving adjacent content. Keyboard `:focus-visible`
-uses a 3px `#344054` outline with a 2px offset, visible on both white and
-selected backgrounds. Disabled and `aria-disabled="true"` controls do not show
-the enabled hover treatment. Preserve touch reachability and existing disabled
-semantics, including focusable `aria-disabled` controls.
-
-The shared component owns the native button, icon and internal state styling;
-consumers supply localized accessible names and titles, actions, and external
-placement, width and spacing. Text actions retain visible text and success
-wording. Do not apply the generic `.button` skin or consumer overrides to the
-shared internal presentation. Clipboard writes, admission, pending guards,
-feedback and late-result isolation remain with each consuming feature.
-
-## Share native selection presentation
-
-Use [NativeSelect](design/native-select.md) for native single-line, list and
-multiple selection controls. The common component owns the native element,
-decorative arrow, text clearance, font, border, background, density, focus,
-disabled, invalid, pending and touch presentation. A page chooses the public
-variant and supplies options, values, labels, constraints, events and real refs.
-Custom selection menus can use `SelectTrigger` from `ui/selection-control` for
-a real button or a direct details summary. It shares density, touch parameters
-and a decorative arrow with NativeSelect; each menu retains its own semantics,
-selection, positioning and focus-restoration lifecycle. The shared parameter
-stylesheet owns common presentation tokens and custom trigger skin; native CSS
-continues to own native internal selectors.
-
-Consumer classes may set external width, margins and flex/grid placement through
-`wrapperClassName` or SelectTrigger's `layoutClassName`, using statically resolvable
-string tokens or literal combinations. They must not restyle the control, add a second arrow,
-restore native single-line appearance or override common touch sizing. The common
-component is the only production owner of native select declarations; native CSS is
-the only owner of native internal control and arrow presentation. Generic field and
-focus rules for input/textarea must not include select branches.
-
-The [ownership check](design/native-select.md#所有权检查) runs in the Web harness,
-ordinary Web tests and CI quality. It parses every production TS/TSX and CSS file,
-rejecting direct native creation and internal or wrapper skin overrides outside
-the common owner without a legacy exemption list. It does not infer arbitrary
-drawing intent. Keep complete option labels, shrink surrounding layouts when
-necessary and verify the actual rendered result in narrow rows and forms. The
-component imports its own CSS so public and authentication entries have the same
-appearance without requiring the workspace shell.
-
-Use the common compact, filter and form densities rather than per-page heights.
-Task toolbar Assignee, Status, Tag and Child task tag entries explicitly choose
-filter density, responsive touch sizing and task focus. At widths above 800px with
-a fine pointer they use 32px height and 11px text; at 800px or below, or with a
-coarse pointer, they use 44px height and 16px text with at least 44px hit width.
-Widths follow content and narrow toolbars wrap naturally, keeping labels and
-counts readable. Tag panel typography remains independent of trigger density.
-Opt into responsive or named-container touch sizing where the interface calls
-for it; ordinary compact controls do not enlarge automatically. Native
-`:disabled`, including fieldset inheritance, remains the source of disabled
-presentation. Invalid and pending borders do not remove keyboard focus cues.
-List controls keep their native size, scrolling and multi-selection without a
-dropdown arrow or single-line height.
-
-Enclosing Escape handlers own their existing close and focus-restoration rules.
-They must respect prevented events and IME input, and use the shared native popup
-predicate to preserve an open system selector's first Escape cancellation.
-Stopping propagation for that case must retain the native default action and
-keep the outer dialog or draft open. The common component does not intercept
-selection or keyboard events.
+- Use [NativeSelect](design/native-select.md) for native single-line, list and multiple selection controls.
+- Use [SelectTrigger](design/native-select.md#自定义菜单入口) for custom selection menu entries with shared presentation.
+- Use [CopyButton](design/daynight-web.md#复制控件的职责) for icon-only and text copy actions.
 
 ## Keep rendered interfaces stable during background checks
 

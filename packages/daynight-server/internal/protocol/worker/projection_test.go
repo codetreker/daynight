@@ -126,3 +126,28 @@ func TestWorkerWriteItemChecksCollectionsBeforeProjection(t *testing.T) {
 		t.Fatalf("project preflight: %v", err)
 	}
 }
+
+func TestConfigurationEmptyTagFilterBudget(t *testing.T) {
+	value := model.WorkerConfiguration{TaskTagFilter: &model.TagNameFilter{Names: []string{}, Match: "any"}}
+	var output bytes.Buffer
+	size, err := EncodeConfiguration(&output, value, math.MaxInt64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	without := value
+	without.TaskTagFilter = nil
+	oldSize, err := EncodeConfiguration(io.Discard, without, math.MaxInt64)
+	if err != nil || size-oldSize != EmptyTaskTagFilterMemberBytes {
+		t.Fatalf("old=%d new=%d overhead=%d err=%v", oldSize, size, EmptyTaskTagFilterMemberBytes, err)
+	}
+	if _, err := EncodeConfiguration(io.Discard, value, oldSize); err != nil {
+		t.Fatalf("canonical empty exceeds historical budget: %v", err)
+	}
+	if _, err := EncodeConfiguration(io.Discard, value, oldSize-1); err == nil {
+		t.Fatal("accepted historical budget overrun")
+	}
+	value.TaskTagFilter = &model.TagNameFilter{Names: []string{"backend"}, Match: "any"}
+	if _, err := EncodeConfiguration(io.Discard, value, oldSize); err == nil {
+		t.Fatal("exempted nonempty filter")
+	}
+}

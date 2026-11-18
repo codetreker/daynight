@@ -47,6 +47,11 @@ func (d *appProjectDeletion) MarkDeleted(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, pg.QueryError("mark App-aware project deleted", err)
 	}
+	if tag.RowsAffected() == 1 {
+		if err := d.clearProjectWebhook(ctx); err != nil {
+			return false, err
+		}
+	}
 	return tag.RowsAffected() == 1, nil
 }
 

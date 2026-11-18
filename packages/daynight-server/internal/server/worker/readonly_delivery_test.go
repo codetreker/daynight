@@ -76,7 +76,7 @@ func TestReadOnlyCallerRevocationPreservesSharedChannel(t *testing.T) {
 func TestReadOnlyHTTPPreservesBoundedDirectoryJSON(t *testing.T) {
 	for _, name := range []string{strings.Repeat("&", 310), strings.Repeat("<>&", 103), strings.Repeat("\u2028\u2029", 51)} {
 		t.Run(name[:3], func(t *testing.T) {
-			f := newReadOnlyFixture(t)
+			f := newReadOnlyTransportFixture(t)
 			c, _ := f.connect(t, f.worker, f.token)
 			// These are literal UTF-8 bytes, as emitted by JSON.stringify in the Worker.
 			entry := `{"name":"` + name + `","path":"/` + name + `"}`

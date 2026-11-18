@@ -16,7 +16,7 @@ and its real membership versions. The
 [settings sections decision](2026-11-10-team-settings-sections.md) owns its
 placement, shared navigation and retained section lifetime. Administrators can
 confirm role changes and removals, while members can confirm their own departure. Personal membership is fixed, and the last
-visible administrator is disabled; the server remains authoritative for
+visible administrator cannot be demoted or removed; the server remains authoritative for
 concurrent changes. Confirmed receipts produce a success notice independently
 of subsequent refresh and update actor context. A departure resets the Team
 selection and navigates to Personal only while its submitted confirmation and
@@ -31,6 +31,8 @@ preserved. Unknown writes stay unknown and offer a read without replay. The
 [Team membership decision](../../archived/architecture/2026-11-04-team-membership-management.md) records the rationale for the server's authorization and transactional rules.
 The [role alignment decision](../bug-fix/2026-11-05-team-member-role-alignment.md)
 owns roster layout and select spacing.
+The [last-admin leave hint decision](2026-11-18-last-admin-leave-hint.md) owns
+the focusable unavailable self-exit control and its on-demand explanation.
 
 ## Alternatives
 

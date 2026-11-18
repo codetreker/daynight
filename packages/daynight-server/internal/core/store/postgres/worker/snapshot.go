@@ -33,10 +33,17 @@ func (w *Writer) ObservedAt(ctx context.Context) (time.Time, error) {
 	return observed.UTC(), nil
 }
 
+func lockOwnerAdmission(ctx context.Context, tx pgx.Tx, userID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('worker-admission:' || $1::uuid::text, 0))`, userID); err != nil {
+		return pg.QueryError("lock worker admission", err)
+	}
+	return nil
+}
+
 func (w *Writer) AdmitWorker(ctx context.Context, userID, workerID string, window time.Duration) (store.WorkerAdmission, error) {
 	var result store.WorkerAdmission
-	if _, err := w.tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('worker-admission:' || $1::uuid::text, 0))`, userID); err != nil {
-		return result, pg.QueryError("lock worker admission", err)
+	if err := lockOwnerAdmission(ctx, w.tx, userID); err != nil {
+		return result, err
 	}
 	observed, err := w.ObservedAt(ctx)
 	if err != nil {

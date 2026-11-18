@@ -82,6 +82,10 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}
+	nameFilter, err := candidateTagNameFilter(query.CandidateTagFilter, &arguments)
+	if err != nil {
+		return store.TaskPage{}, pg.QueryError("list tasks", err)
+	}
 	candidateFilter := ""
 	if query.AutomaticCandidate {
 		candidateFilter = ` AND t.type = 'task' AND (t.parent_id IS NULL OR EXISTS (
@@ -96,7 +100,7 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
   AND ($6::boolean IS NULL OR t.allow_agents = $6)
   AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
   AND ($9::boolean IS NULL OR (t.required_platform IS NOT NULL) = $9)
-  `+assignmentCondition+resourceFilter+tagFilter+candidateFilter+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
+  `+assignmentCondition+resourceFilter+tagFilter+candidateFilter+nameFilter+` ORDER BY t.created_at, t.id LIMIT $8`, arguments...)
 	if err != nil {
 		return store.TaskPage{}, pg.QueryError("list tasks", err)
 	}

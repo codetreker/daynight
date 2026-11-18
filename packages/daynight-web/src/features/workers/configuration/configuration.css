@@ -3,7 +3,6 @@
 .worker-tabs button[aria-selected="true"] { border-color: var(--indigo); color: var(--indigo); font-weight: 600; }
 .worker-tabs button:focus-visible { outline: 3px solid #8c8cf0; outline-offset: -3px; border-radius: 4px; }
 .worker-section[hidden] { display: none; }
-.configuration-toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
 .configuration-layout { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 22px; align-items: start; }
 .configuration-main, .configuration-aside { min-width: 0; }
 .configuration-aside { position: sticky; top: 20px; }
@@ -133,3 +132,7 @@
   .config-save-bar .draft-summary { width: 100%; }
   .config-save-bar > .button { flex: 1; }
 }
+
+.task-tag-filter, .task-tag-target { min-width: 0; overflow-wrap: anywhere; }
+.task-tag-names { display: inline-flex; flex-wrap: wrap; gap: 4px; max-width: 100%; vertical-align: middle; }
+.task-tag-name { border: 1px solid #d5dce5; border-radius: 4px; padding: 1px 5px; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; }

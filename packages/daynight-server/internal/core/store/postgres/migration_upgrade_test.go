@@ -15,7 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration026"
+	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
@@ -252,7 +252,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 		return result
 	}
 	before := rows()
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, rows()) {
@@ -282,7 +282,7 @@ func TestWorkerPlatformPreferenceMigrationPreservesConfigurationAndObservation(t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, rows()) {

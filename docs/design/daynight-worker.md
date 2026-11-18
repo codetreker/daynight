@@ -70,7 +70,7 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
 
 ### 本地配置与首次候选
 
-本地启动读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort、完整 toolPaths 选择与原始 source；这些运行归属不在进程中热切换。取得原实例锁后确认认证账号，再访问该身份的缓存与云端配置。currentUser 的临时网络失败在锁下按 5、10、20、40、60 秒封顶退避；首次配置 GET 临时失败保留未读取状态，配置 manager 和 reporter 建立后由报告周期重试。认证、协议、格式及确定不兼容错误保持明确拒绝，未知不能变成 desired:null。已有目标时本地托管字段不参与权威选择。不支持的旧模式或第三工具目标不能授予配置应用资格；API 使用工具协议 2，配置读取确认当前账号与服务的回显。
+本地启动读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort、完整 toolPaths 选择与原始 source；这些运行归属不在进程中热切换。取得原实例锁后确认认证账号，再访问该身份的缓存与云端配置。currentUser 的临时网络失败在锁下按 5、10、20、40、60 秒封顶退避；首次配置 GET 临时失败保留未读取状态，配置 manager 和 reporter 建立后由报告周期重试。认证、协议、格式及确定不兼容错误保持明确拒绝，未知不能变成 desired:null。已有目标时本地托管字段不参与权威选择。云端旧模式及第三工具成员仅作为未知原文保留，应用资格由当前已知配置及实际工具与原生核验决定；API 使用工具协议 2，配置读取确认当前账号与服务的回显。
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、false、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，首次候选省略 mode 时为 web；显式本地 herdr 在候选准备时拒绝并提示调整；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
@@ -142,13 +142,14 @@ Worker instance lock 下的 `copilot-tool-materializer.ts` 在 `<workerDirectory
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
 
-configuration.json 使用 schemaVersion=10，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
+configuration.json 使用 schemaVersion=11，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
 
 | 模块 | 责任 |
 | --- | --- |
 | configuration-model.ts | 缓存、记录与捕获的完整类型、从原始目标派生的 known 视图及共用值规则 |
 | api/worker-configuration-source.ts | 配置专用源文本载体、已知路径投影、完整资源/回执解析与无损 JSON 语义比较 |
-| configuration-storage-{types,wire,source,decoder}.ts | 已部署 schema 1–10 的磁盘结构、来源和严格解码，不依赖活动网络 DTO 或解析器 |
+| configuration-storage-{types,wire,source}.ts | 冻结的 schema 1–10 历史类型、来源和严格验证 |
+| configuration-storage-decoder.ts、configuration-storage-current.ts | 历史格式入口与 schema 11 当前结构的分别解码；当前解码校验摘要类型和记录来源 |
 | configuration-cache.ts | 解码后的旧应用事实转换、冻结与编码 factory |
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
@@ -159,7 +160,7 @@ configuration.json 使用 schemaVersion=10，保持单个 JSON 对象、原路�
 
 authority 保存本机 generation UUID、完整 desiredJson、applicationRevision、observationRevision 与必需布尔值 pendingApplication；generation 不是服务端 epoch。pendingApplication 为 true 表示当前 raw 尚未形成可应用账本，包括未初始化和不支持目标；false 表示 Web 目标已完成账本协调，不证明各项外部副作用已成功。该标志随检查点原子保存并在重启时严格校验；后续 Web 目标即使与不支持目标之前的值相同，也需重新协调当前账本，不能把旧应用身份当作新目标成功。desiredJson 是唯一持久目标，known 从同一源文本按已知路径严格派生。合法 raw 目标中已知字段的类型或值若不受支持，保存完整原文和独立校验的 revision/时间，known 不可用且不授予应用资格；它与真正的 desired:null 独立，不能触发首次 bootstrap。applicationRevision 标识最近已知目标变化，可以小于最新 desired.revision；currentItems 的必需已知项对应这个锚点。工具目标 revision、native/tool preparation 的比较与证明、confirmProjectPrepared、延后准备确认和新增移除 origin 均消费该锚点；报告 envelope 使用最新 desiredRevision，item 保留原 targetRevision。remoteObservation 单独存储最后一次明确 GET 的 {observationRevision,json}，可落后 authority.observationRevision，服务回退或 null 重置也保留此前快照，独立按其原 base/版本验证；receipt 不将本机新报告伪装成已读取的远端事实。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，retainedItems 保存原工作、停止、未知结果、失败或必要实际值。recordId 全局唯一，origin 保留原 generation、targetRevision 与 application/schema4 来源且不可改写；actualSource 独立表达真实来源，复用值不修改旧历史。schema4/successRevision:null 保留历史未知版本；当前记录不含 nativeMode；历史模式来源保留原义，blockedByRemovalId 必须同项目且无环。
 
-存储 decoder 按已部署结构严格读取 schema 1–9，1–4 沿原结构转换至 schema 5；已验证旧 desired 转为 desiredJson，applicationRevision 取旧目标版本，remoteObservation 为 null。schema 9 冻结为不含模式账本项的 Web 布局，不能将 schema 10 的模式项塞入旧格式。转换为 schema 10 时，schemas 1–8 的 nativeMode 仅用于识别已证明属于 Web 的 native 历史，随后删除；非 Web 的 native 实际值、来源及相关失败失效，本进程仍须重验。schema 9 的 native 事实原样保留。历史模式确认不能证明当前进程采用；迁移不生成新的模式项，旧模式或第三工具目标保持原文并待明确纠正。转换保留 identity、原始 JSON、remoteObservation、hidden sources、sudo provenance、其他 recordId、origin、失败编号、started 移除及引用，更新 generation 并清空游标。旧格式此前未知的 enableSudoCleanup 或 archiveSessions 在有效目标可见且对应记录不存在时重新建立核验；有可复用的已确认实际值时保留其来源，否则生成 pending/null，不制造成功证据。版本 1 保留 preferPlatformSpecificTasks:false 的迁移；applying 沿原重启规则恢复。schema 10 重启严格校验历史账本；未同步可应用目标时不授予执行资格。格式、身份和损坏文件拒绝，历史结构超过当前业务容量不清空责任。迁移冻结并原子保存后才 ready，失败保留原文件和原错误。
+存储 decoder 按已部署结构严格读取 schema 1–10，1–4 沿原结构转换至 schema 5；已验证旧 desired 转为 desiredJson，applicationRevision 取旧目标版本，remoteObservation 为 null。schema 9 冻结为不含模式账本项的 Web 布局，不能将 schema 10 的模式项塞入旧格式。转换为 schema 11 时，schemas 1–8 的 nativeMode 仅用于识别已证明属于 Web 的 native 历史，随后删除；非 Web 的 native 实际值、来源及相关失败失效，本进程仍须重验。schema 9、10 的 native 事实原样保留。schema 10 的历史模式账本保留其原始事实；此前 opaque 的 taskTagFilter 在合法目标已协调时建立 pending/null 应用项，保持 pendingApplication、原始目标及 desiredRevision，不伪造历史应用。历史模式确认不能证明当前进程采用；迁移不生成新的模式项，旧模式或第三工具成员保留为未知原文，当前已知设置决定目标是否可应用。转换保留 identity、原始 JSON、remoteObservation、hidden sources、sudo provenance、其他 recordId、origin、失败编号、started 移除及引用，更新 generation 并清空游标。旧格式此前未知的 enableSudoCleanup 或 archiveSessions 在有效目标可见且对应记录不存在时重新建立核验；有可复用的已确认实际值时保留其来源，否则生成 pending/null，不制造成功证据。版本 1 保留 preferPlatformSpecificTasks:false 的迁移；applying 沿原重启规则恢复。schema 11 重启严格校验历史账本；未同步可应用目标时不授予执行资格。格式、身份和损坏文件拒绝，历史结构超过当前业务容量不清空责任。迁移冻结并原子保存后才 ready，失败保留原文件和原错误。
 
 读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；未知目标与远端观测位于普通 JSON 字符串内部，guard 不解释其中的任意数字或键。真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
 
@@ -169,9 +170,11 @@ authority 保存本机 generation UUID、完整 desiredJson、applicationRevisio
 
 已知目标变化建立新的当前核验身份，原工作和停止记录保留 origin。高版本原停止在服务端回退后继续拥有原操作；新目标仍排除项目时建立当前目标的停止核验，原 job 真正结束后通过同一适配器再观察资源。新目标重选项目时，准备等待原停止结束，不能提前 ready；原记录不直接作为较低目标的 observation，也不改写成该目标的历史成功。native 与准备 job 共享该项目实际停止槽，不能与尚未结束的停止重叠。启动后的真实本机项目映射仅在已认证且可用的目标下登记当前停止核验；ensureProjectRemoval 在串行提交时反馈该目标仍可用且项目已被选中或停止核验已登记，runtime 才记为已覆盖。未读取、null 或不支持目标不能完成这次覆盖；权威变为不可用时重置覆盖及其轮次身份，后续合法状态重新登记。每个覆盖轮次在等待 manager 前捕获该身份，等待后的进度与最终完成都必须仍属于同一轮次；旧结果即使在权威恢复后才返回，也不能完成新轮次或恢复旧进度。正常已同步 ACK 更新的配置 generation 不重置该轮次，避免持续报告阻断必要核验。缓存 applied 停止结果不能代替新 coordinator 的资源观察。没有原工作、待确认失败、停止或必要实际值的旧记录可收敛，不要求本机全部记录占用一次 wire 名额。
 
+taskTagFilter 的完整名称只保存在 authority.desiredJson。配置目标 getter 生成规范语义的 SHA-256，标量提交在原子保存该摘要应用项后才发布；只有已同步、应用项为 applied 且摘要等于当前目标时才投影完整有效筛选及领取摘要。服务缺少字段时有效值为 undefined；未同步、不可应用、未提交或摘要不匹配时为 null，只暂停新领取，不抹掉项目选择或原执行责任。报告固定保留这个有界摘要及原优先移除，其余项包括全局 native 继续轮转；名称集合不重复进入应用记录、观察或 claim。
+
 每次启动的 native 证明从空开始。全局与项目 native 优先验证当前目标；目标失败后可重新验证已证明属于 Web 的历史元组，不将历史恢复标为新目标成功。schema 1/2 没有历史模式证明，不能推断其实际值属于 Web。本次证明归属于接受结果的 recordId、native 元组和真实工具选择；新目标从实际提供复用值的当前或保留记录继承匹配证明，actualSource 保持原来源而不授予资格。证明随记录退休或相关选择/selectionKey 变化失效，无关 Provider 的健康证明保留。等待重验的当前项保持 pending，原记录、内容或工具选择不匹配的迟到结果不能授予新执行资格。
 
-native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。全局与项目 native 使用真实 Web 实现校验和准备，Provider 只等待实际需要的 Codex/Copilot 工具；Herdr 候选不参与配置准备，公开遥测只包含两个 Web 工具的真实观察。已同步且可应用的两工具目标为当前执行发布 Web 模式；旧模式或第三工具目标保持不可应用。runtime 的 Task coordinator 与 Bot 新执行仍需 Web 和经过验证的 native 配置；既有恢复和清理继续遵守原归属规则。模式项不再作为公开 observation 发送，历史应用及失败事实仍保留。取消和持久化失败不得发布未提交成功。异步配置应用最多 16 个 job，按稳定 recordId 轮转；退避项让出槽位，原停止保有该次有界尝试的槽位。普通标量转换不占异步 job 槽。旧结果在队列内再次检查原记录和目标。已开始的项目移除保留原工作，后续重选等待其结束；当前停止核验独立报告自己的目标版本，仅操作 Web 责任，不处理旧 Herdr 资源。runtime 只对确认完成仓库准备的绑定标记 ready；native 验证不能代替准备或停止证明。
+native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。全局与项目 native 使用真实 Web 实现校验和准备，Provider 只等待实际需要的 Codex/Copilot 工具；Herdr 候选不参与配置准备，公开遥测只包含两个 Web 工具的真实观察。已同步且可应用的两工具目标为当前执行发布 Web 模式；云端旧模式或第三工具成员不进入 known，也不阻止合法当前设置应用。runtime 的 Task coordinator 与 Bot 新执行仍需 Web 和经过验证的 native 配置；既有恢复和清理继续遵守原归属规则。模式项不再作为公开 observation 发送，历史应用及失败事实仍保留。取消和持久化失败不得发布未提交成功。异步配置应用最多 16 个 job，按稳定 recordId 轮转；退避项让出槽位，原停止保有该次有界尝试的槽位。普通标量转换不占异步 job 槽。旧结果在队列内再次检查原记录和目标。已开始的项目移除保留原工作，后续重选等待其结束；当前停止核验独立报告自己的目标版本，仅操作 Web 责任，不处理旧 Herdr 资源。runtime 只对确认完成仓库准备的绑定标记 ready；native 验证不能代替准备或停止证明。
 
 `configuration-exchange.ts` 统一 foreground reporter 与实际配置管理调用者：先等待持久化就绪，准备当前权威及候选，再收集新 telemetry、捕获并验证 generation，发送一次，最后由 manager 接收并保存回执。prepare 后和发送前的代次围栏丢弃过期样本，不把旧工具 targetRevision 带入新目标。正常同步轮次不新增 GET；启动、未知结果、400/协议失败或能力重发现先读取；null 期间每轮先读取，以便竞争目标优先。单飞、触发合并与有限 prompt 批次由[采集设计](daynight-worker-reporting.md#配置快照与回执)拥有。
 
@@ -290,6 +293,8 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 原 claim 在完整自有清单中缺席后，即使全局资源快照未发现它，本机未完成行也进入与已知资源相同的串行清理 job。清理目标由原 claim 身份及可选的真实 worktreeId 表示；Web journal 证明完整 owner 后沿用该身份。尚无 worktreeId 时不创建虚假 owner 或另建台账：先确认原模式没有剩余执行，再核对目标 Git 注册；没有完整 owner 时不推测目录。已识别的同 task 其他 claim 资源保持不变，旧 claim 的资源已消失便可结束旧索引。身份不完整的失败使用进程内退避，重启由保留的未完成索引行重新发现；完整 owner 才可持久保存 cleanup_schedules。
 
 新领取在远端写入前跳过仍有同 task 旧资源的候选，再直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending；确认名额和旧执行收尾后提交 active、准备资源。请求结果未知时记录 Warning，不创建资源、不重发原请求；后续完整清单找回实际授予。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
+
+coordinator 接受可选 `taskTagFilterKey`：缺失表示旧服务，null 表示应用证明不可用，只暂停新领取；有效摘要参与配置身份。有效摘要下每页候选查询附带 `candidateWorkerId`，claim 附带捕获的摘要。配置身份改变时停止发送旧轮次尚未发出的 claim，已经发送的 claim 由服务端原子准入和既有对账处理。筛选上下文中的游标失效或确定性 claim 冲突通过可选回调提示重新读取配置；这只是重新核对提示，不证明冲突原因。runWorker 从有效配置快照提供该摘要，并将失效提示接到 exchange.markNeedsRead() 与 reporter.trigger()，由原交换路径重新核对权威配置。runWorkerControl 同样投影有效值，只管理已有执行并保留原显式读取或单次同步，不新增报告循环或候选查询。
 
 远端 phase 和 nativeSessionId 是当前观察的展示投影；旧 Herdr 属性只保留历史读取。每次基于新读到的 task/claim 与精确版本更新，未知响应记录日志后重新读取；投影不决定本机资源动作，也不保存待提交摘要回执。
 

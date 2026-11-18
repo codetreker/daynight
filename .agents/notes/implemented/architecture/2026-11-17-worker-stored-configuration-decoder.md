@@ -15,7 +15,9 @@ three-tool fields, raw source projection, references and validation. It does not
 import active network configuration types or parsers. The outer cache owner
 converts newly recognized sudo and archive targets into application facts using
 the existing state transition, after validating the historical structure. The
-current schema 10 writer retains original source strings and converts the
+schema 11 current decoder validates digest-bearing records separately under the
+[tag application decision](2026-11-18-worker-tag-filter-application.md). The
+current writer retains original source strings and converts the
 historical ledger as described by the
 [Web mode adoption decision](2026-11-18-worker-web-mode-adoption.md).
 

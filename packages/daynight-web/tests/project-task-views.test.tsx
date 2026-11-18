@@ -1531,6 +1531,48 @@ describe('recent task browsing and pagination', () => {
     scope.dispose();
   });
 
+  it.each([false, true])('opens the current full chain through the witness Goal (cross-Goal: %s)', async (crossGoal) => {
+    const goal = canonicalTask(500), otherGoal = canonicalTask(501), first = canonicalTask(1), witness = canonicalTask(2);
+    const parent = crossGoal ? otherGoal : goal;
+    const tasks = [{ ...seed(goal), type: 'goal' as const }, ...(crossGoal ? [{ ...seed(otherGoal), type: 'goal' as const }] : []),
+      { ...seed(first), parentId: goal }, { ...seed(witness, 'todo', [first]), parentId: parent }];
+    history.replaceState(null, '', `/projects/${project}?tab=tasks&chain=${witness}`);
+    graphRequest.mockResolvedValue(snapshot(tasks));
+    render(<ProjectPage projectId={project} />, { container: root });
+    await screen.findByTestId('graph-node');
+    expect(document.getElementById(`task-graph-${first}`)).toBeVisible();
+    expect(location.search).toBe('?tab=tasks');
+    const reading = readProjectHistory(browserNavigation().snapshot().view, TEST_VIEWER_ID, project);
+    expect(reading?.detail?.id).toBe(parent);
+    expect(reading?.detail?.goalChildren?.graphRootId).toBe(first);
+  });
+
+  it('waits for a complete project index before consuming a chain query', async () => {
+    const source = canonicalTask(1), witness = canonicalTask(2);
+    const preview = mockNavigationSnapshot([], 0);
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(),
+      snapshot: { ...preview, observedAt: null, receivedAt: null, revision: 0, localTime: Date.now() }, status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot }));
+    history.replaceState(null, '', `/projects/${project}?tab=tasks&chain=${witness}`);
+    const view = render(<ProjectPage projectId={project} />, { container: root });
+    expect(location.search).toContain(`chain=${witness}`);
+    expect(screen.queryByTestId('graph-node')).toBeNull();
+    state = { ...state, snapshot: mockNavigationSnapshot([seed(source, 'done'), seed(witness, 'todo', [source])], 1) };
+    view.rerender(<ProjectPage projectId={project} />);
+    await screen.findByTestId('graph-node');
+    expect(location.search).toBe('?tab=tasks');
+  });
+
+  it('does not open a Goal id as a chain witness', async () => {
+    const goal = canonicalTask(500);
+    history.replaceState(null, '', `/projects/${project}?tab=tasks&chain=${goal}`);
+    graphRequest.mockResolvedValue(snapshot([{ ...seed(goal), type: 'goal' as const }]));
+    render(<ProjectPage projectId={project} />, { container: root });
+    expect(await screen.findByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+    expect(location.search).toBe('?tab=tasks');
+    expect(screen.queryByTestId('graph-node')).toBeNull();
+  });
+
   it.each(['removed', 'singleton'] as const)('closes an external graph whose actual task becomes %s on refresh without reopening it', async (kind) => {
     const source = canonicalTask(100), dependency = canonicalTask(2);
     const initial = [seed(canonicalTask(1), 'done'), seed(dependency, 'done', [canonicalTask(1)]),

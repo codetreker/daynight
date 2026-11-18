@@ -4,11 +4,13 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/tag"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/worker"
 
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
@@ -47,4 +49,12 @@ func (tx *ProjectTx) TaskTagDAO() TaskTagWriteDAO { return task.NewTagWriter(tx.
 func (tx *ProjectTx) TaskDAO() TaskWriteDAO       { return task.NewWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) SessionDAO() ProjectSessionDAO {
 	return session.NewProjectDAO(tx.tx, tx.projectID)
+}
+
+func (tx *ProjectTx) WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO {
+	return worker.NewClaimAdmission(tx.tx)
+}
+
+func (tx *ProjectTx) GitHubProjectWebhookDAO() GitHubProjectWebhookWriteDAO {
+	return github.NewProjectWebhookWriter(tx.tx, tx.projectID)
 }

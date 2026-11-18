@@ -20,6 +20,8 @@ type strictIdentity struct {
 	t             *testing.T
 	callback      func() string
 	validateLogin func(string, string) error
+	startLogin    func(context.Context, string, string, string) (identitycore.LoginStart, error)
+	completeLogin func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
 	authenticate  func(context.Context, model.CredentialKind, string) (model.Principal, error)
 	user          func(context.Context, model.Principal) (model.User, error)
 	patchUser     func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
@@ -27,6 +29,10 @@ type strictIdentity struct {
 	listPATs      func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
 	revokePAT     func(context.Context, model.Principal, string) error
 	updatePAT     func(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
+	startDevice   func(context.Context, string, string) (identitycore.DeviceStart, error)
+	inspectDevice func(context.Context, model.Principal, string) (identitycore.DeviceInspection, error)
+	decideDevice  func(context.Context, model.Principal, string, string, string) error
+	redeemDevice  func(context.Context, string, string, string, string) (identitycore.MintedPAT, error)
 }
 
 var _ identityOperations = (*strictIdentity)(nil)
@@ -56,11 +62,17 @@ func (m *strictIdentity) ValidateLogin(provider, returnPath string) error {
 	}
 	return m.validateLogin(provider, returnPath)
 }
-func (m *strictIdentity) StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error) {
-	return identitycore.LoginStart{}, m.unexpected("StartLogin")
+func (m *strictIdentity) StartLogin(ctx context.Context, provider, returnPath, browserScope string) (identitycore.LoginStart, error) {
+	if m.startLogin == nil {
+		return identitycore.LoginStart{}, m.unexpected("StartLogin")
+	}
+	return m.startLogin(ctx, provider, returnPath, browserScope)
 }
-func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error) {
-	return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
+func (m *strictIdentity) CompleteLogin(ctx context.Context, query url.Values, binding string) (identitycore.LoginCompletion, error) {
+	if m.completeLogin == nil {
+		return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
+	}
+	return m.completeLogin(ctx, query, binding)
 }
 func (m *strictIdentity) User(ctx context.Context, principal model.Principal) (model.User, error) {
 	if m.user == nil {
@@ -104,17 +116,29 @@ func (m *strictIdentity) UpdatePATExpiry(ctx context.Context, principal model.Pr
 func (m *strictIdentity) Providers(context.Context) ([]string, error) {
 	return nil, m.unexpected("Providers")
 }
-func (m *strictIdentity) StartDevice(context.Context, string, string) (identitycore.DeviceStart, error) {
-	return identitycore.DeviceStart{}, m.unexpected("StartDevice")
+func (m *strictIdentity) StartDevice(ctx context.Context, clientID, source string) (identitycore.DeviceStart, error) {
+	if m.startDevice == nil {
+		return identitycore.DeviceStart{}, m.unexpected("StartDevice")
+	}
+	return m.startDevice(ctx, clientID, source)
 }
-func (m *strictIdentity) InspectDevice(context.Context, model.Principal, string) (identitycore.DeviceInspection, error) {
-	return identitycore.DeviceInspection{}, m.unexpected("InspectDevice")
+func (m *strictIdentity) InspectDevice(ctx context.Context, principal model.Principal, userCode string) (identitycore.DeviceInspection, error) {
+	if m.inspectDevice == nil {
+		return identitycore.DeviceInspection{}, m.unexpected("InspectDevice")
+	}
+	return m.inspectDevice(ctx, principal, userCode)
 }
-func (m *strictIdentity) DecideDevice(context.Context, model.Principal, string, string, string) error {
-	return m.unexpected("DecideDevice")
+func (m *strictIdentity) DecideDevice(ctx context.Context, principal model.Principal, userCode, decision, expectedUserID string) error {
+	if m.decideDevice == nil {
+		return m.unexpected("DecideDevice")
+	}
+	return m.decideDevice(ctx, principal, userCode, decision, expectedUserID)
 }
-func (m *strictIdentity) RedeemDevice(context.Context, string, string, string, string) (identitycore.MintedPAT, error) {
-	return identitycore.MintedPAT{}, m.unexpected("RedeemDevice")
+func (m *strictIdentity) RedeemDevice(ctx context.Context, clientID, grantType, code, deviceName string) (identitycore.MintedPAT, error) {
+	if m.redeemDevice == nil {
+		return identitycore.MintedPAT{}, m.unexpected("RedeemDevice")
+	}
+	return m.redeemDevice(ctx, clientID, grantType, code, deviceName)
 }
 func (m *strictIdentity) LogoutDevice(context.Context, model.Principal) error {
 	return m.unexpected("LogoutDevice")

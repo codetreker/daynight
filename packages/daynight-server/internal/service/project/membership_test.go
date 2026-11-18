@@ -44,7 +44,7 @@ func (f *membershipFixture) user(t *testing.T) model.Principal {
 
 func (f *membershipFixture) project(t *testing.T, p model.Principal, name string) model.Project {
 	t.Helper()
-	project, err := f.projects.Create(context.Background(), p, coreproject.CreateProject{ExpectedUserID: p.UserID, Name: name, RepoURL: "https://example.com/team/repo.git"})
+	project, err := f.projects.Create(context.Background(), p, coreproject.CreateProject{ExpectedUserID: p.UserID, Name: name, RepoURL: "https://example.com/team/" + uuid.NewString() + ".git"})
 	if err != nil {
 		t.Fatal(err)
 	}

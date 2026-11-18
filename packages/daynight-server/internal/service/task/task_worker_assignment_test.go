@@ -36,6 +36,15 @@ type workerWriteMock struct {
 	ExpectedAccessCalls int
 	ExpectedTaskReads   int
 	Current             model.Task
+	Admission           *workerClaimAdmissionMock
+}
+
+type workerClaimAdmissionMock struct {
+	read func(context.Context, string, string) (*model.WorkerDesiredConfiguration, error)
+}
+
+func (m *workerClaimAdmissionMock) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+	return m.read(ctx, user, worker)
 }
 
 func workerMockWrite(t *testing.T, current model.Task, principal model.Principal) *workerWriteMock {
@@ -48,11 +57,18 @@ func workerMockWrite(t *testing.T, current model.Task, principal model.Principal
 	fixture.Session = &projectSessionMock{taskMockBase: base.withLabel("session")}
 	fixture.Capture = &workerCapturerMock{taskMockBase: base.withLabel("capture")}
 	fixture.CaptureDAO = &captureDAOMock{taskMockBase: base.withLabel("captureDAO")}
+	fixture.Admission = &workerClaimAdmissionMock{read: func(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+		if ctx != fixture.Context || user != principal.UserID || worker == "" {
+			t.Fatalf("claim admission identity changed: user=%s worker=%s", user, worker)
+		}
+		return nil, nil
+	}}
 	scope := &taskProjectScopeMock{taskMockBase: base.withLabel("scope"),
-		ProjectDAOFn: func() store.ProjectWriteDAO { return fixture.Project },
-		TaskDAOFn:    func() store.TaskWriteDAO { return fixture.Task },
-		SessionDAOFn: func() store.ProjectSessionDAO { return fixture.Session },
-		CaptureDAOFn: func() store.WebhookCaptureDAO { return fixture.CaptureDAO },
+		ProjectDAOFn:              func() store.ProjectWriteDAO { return fixture.Project },
+		TaskDAOFn:                 func() store.TaskWriteDAO { return fixture.Task },
+		SessionDAOFn:              func() store.ProjectSessionDAO { return fixture.Session },
+		CaptureDAOFn:              func() store.WebhookCaptureDAO { return fixture.CaptureDAO },
+		WorkerClaimAdmissionDAOFn: func() store.WorkerClaimAdmissionDAO { return fixture.Admission },
 	}
 	reads, writes := 0, 0
 	fixture.Project.ProjectAccessFn = func(ctx context.Context, actual model.Principal) (model.ProjectAccess, error) {

@@ -1,50 +1,96 @@
-# Worker assignments and handoff
+# Worker handoff and original-claim completion
 
-Read this topic when handing off selected work, interpreting an explicit Worker assignment or completing its original claim. Every write also requires [Write safety](daynight://manuals/write-safety.md). Read [Task writes](daynight://manuals/task-writes.md) when changing Task fields or ordinary status, including handoff updates; it owns general lifecycle and field changes. [Concepts](daynight://manuals/concepts.md) owns Account/Project identity.
+Read [Overview](daynight://manuals/overview.md) first.
 
-## Handoff is not execution
+Use this topic for handoff, explicit Worker assignments and original-claim
+completion. Every write also requires
+[Write safety](daynight://manuals/write-safety.md). Use
+[Concepts](daynight://manuals/concepts.md) to establish Account/Project identity,
+[Task reads](daynight://manuals/tasks.md) for complete definitions and
+[Task writes](daynight://manuals/task-writes.md) for ordinary lifecycle changes.
 
-For each explicitly selected Task, read full content and actually required inputs. Verify scope, acceptance/results, dependencies, status, platform, assignment, automatic permission and execution history. Future predecessor outputs cannot be treated as present. A well-defined blocked todo Task can be prepared before its prerequisites finish; eligibility remains blocked until scheduling permits acquisition.
+## Review a selected handoff
 
-Establish the current account independently with `team_show`, `team: "personal"`, and its returned `structuredContent.data.membership.userId`. Compare it with non-null assignedTo for responsibility review. Unknown/mismatching identity is a gap, not permission to reassign, grant access or create duplicate work. A Task record or display name cannot identify the caller.
+For each selected Task, read full content and actual required inputs. Verify
+scope, acceptance/results, dependencies, status, platform, assignment, automatic
+permission and execution history. Future predecessor outputs are not present
+inputs. A well-defined blocked todo Task can be prepared before prerequisites
+finish; acquisition remains blocked until scheduling permits it.
 
-| State | Handoff boundary |
+Independently establish the authenticated account through Concepts, then compare
+its UUID to non-null `assignedTo`. Unknown/mismatching responsibility is a gap;
+it does not authorize reassignment, access grants or duplicate work.
+
+| State | Handoff action |
 | --- | --- |
-| proposed | Review authorized content; permission alone cannot make proposed executable. Choosing todo requires an explicit caller decision. |
-| todo, permission false, inputs/responsibility sufficient | Authorized handoff may enable permission with its decision version. |
-| todo with unresolved inputs/responsibility | Report the gap; preserve assignment/permission. |
-| todo with permission true | Review current facts; same-value permission is not a review receipt. |
-| in_progress | Report current execution and locked actual permission changes; do not alter status to bypass them. Review neither pauses nor transfers execution. |
-| done/cancelled | Preserve the actual terminal result; handoff does not require reopening or permission changes. |
+| `proposed` | Review authorized content; enabling permission cannot make proposed work executable. Choosing todo requires an explicit caller decision. |
+| `todo`, permission false, inputs/responsibility sufficient | Authorized handoff may enable `allowAgents` at the decision version. |
+| `todo`, unresolved inputs/responsibility | Report the gap and preserve assignment/permission. |
+| `todo`, permission true | Review current facts; a same-value write is not a review receipt. |
+| `in_progress` | Report execution and locked permission changes; changing status to bypass them is invalid. Review neither pauses nor transfers execution. |
+| `done` / `cancelled` | Preserve the terminal result; handoff requires no reopening or permission change. |
 
-For a passing authorized todo review at version `"12"`:
+To enable approved handoff, `task_update` supplies `allowAgents: true`, the exact
+`ifVersion` and selected Project/Task IDs; omit unrelated fields. Inspect the
+result and current assignment/execution/material: a Worker may claim immediately.
+A later version, in-progress state or active history can be expected scheduling,
+not grounds to repeat permission writing. Problems can require authorized
+stopping/revocation/release by the management owner. Enabling permission neither
+recreates a released worktree nor resumes its original claim.
 
-```json
-{"name":"task_update","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"22222222-2222-4222-8222-222222222222","ifVersion":"12","allowAgents":true,"returnView":"full"}}
-```
+## Recognize and retain a real assignment
 
-Examples are `tools/call` parameters with fictional identities/versions. Omit unrelated fields. Inspect the result and current assignment/execution/material; a Worker may claim immediately. Later version/in_progress/active history can be expected scheduling, not a reason to repeat the permission write. Identified problems may require authorized stopping/revocation/release by the actual management owner. Enabling permission neither recreates a released worktree nor resumes its original claim.
+Worker-managed execution requires an explicit runtime assignment naming original
+Project, Task, claim, Worker, worktree and execution context. A generic MCP
+connection, worker property, `allowAgents` or claim-like UUID cannot establish
+it. Follow the original scope/contract, delivery authority, current user
+restrictions, pauses/revocations and project checks; the claim field grants no
+authority.
 
-## Ordinary work and explicit assignments
+Preserve and verify original claim/resources before writes. Stop affected work
+if the original active claim no longer matches or automatic permission is false
+under the managed contract. Do not enable yourself, acquire another claim or
+adopt another worktree. Release clears current ownership; the original Session
+and archive retain history. Later execution has ordinary eligibility checks and
+new identities.
 
-Ordinary execution explicitly directed by the user still requires sufficient inputs, satisfied prerequisites, actual host capabilities and authorized scope. It does not depend on automatic permission/platform filters. Reading predecessors/siblings/successors supplies inputs rather than authority to perform their work. Existing in_progress requires reconciling actual work and execution ownership; it is not a free assignment.
-
-Completion uses the selected outputs and acceptance endpoint. No universal PR/review/prototype/Goal-stage process is imposed by the MCP service. Ordinary completion sets done with its newly observed exact version and **no claimId**. A completed Step, finished discussion, approved PR or empty ready result does not complete a different scope. Missing required confirmation/acceptance preserves the actual state and operating context; completing one Task does not authorize starting its successor.
-
-Worker-managed execution is established by an explicit runtime assignment naming the original Project, Task, claim, Worker, worktree and execution context. A generic MCP connection, worker property, allowAgents or possession of a claim-like UUID does not establish it. The executor follows that original scope and contract, including existing delivery authority and current user restrictions, pauses/revocations and project checks. The claim field itself grants no authority.
-
-Preserve and verify original claim/resources before writes. If original active claim no longer matches, or automatic permission is false under the managed contract, stop affected work; do not enable yourself, acquire another claim or adopt another worktree. Release clears current ownership; the original Session and archive retain history. A later execution uses ordinary claim eligibility and new identities.
+Ordinary user-directed work follows Task writes and does not depend on automatic
+permission/platform filters. Existing `in_progress` still requires reconciling
+actual work and execution ownership. Without a valid Worker assignment,
+ordinary completion supplies no `claimId`.
 
 ## Complete the original owned claim
 
-`task_set_status` accepts explicit claimId only with status done. For a **real completion transition** with an active Worker, the service validates matching current claim and caller ownership. Use the claim explicitly supplied by the valid assignment:
+Verify the selected outputs and required acceptance before completing. Every
+direct prerequisite must be done/cancelled. Missing required acceptance preserves
+the actual state; claim ownership cannot establish delivery.
 
-```json
-{"name":"task_set_status","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","taskId":"22222222-2222-4222-8222-222222222222","ifVersion":"12","status":"done","claimId":"44444444-4444-4444-8444-444444444444","returnView":"full"}}
-```
+`task_set_status` accepts explicit `claimId` only with `status: done`. For a real
+completion transition with an active Worker, it validates the matching current
+claim and caller ownership. Supply the valid assignment's original claim,
+Project/Task IDs, exact decision `ifVersion` and desired status.
 
-A current-version same-status request can return confirmed/unchanged before rechecking claim ownership. It confirms the current Task state, **not** that an earlier unknown completion succeeded or that its original claim was authenticated. Version/input and compatible-Worker checks still apply. Do not switch between ordinary and claim-bound paths after rejection to bypass protection.
+A current-version same-status request can return confirmed/unchanged before
+claim ownership is rechecked. This establishes current Task state, not the
+success of an earlier unknown completion or authentication of its original
+claim. Version/input and compatible-Worker checks still apply. Do not switch
+between ordinary and claim-bound paths after rejection to bypass protection.
 
-Inspect the completion result and original retained execution. Unknown completion requires observing that original scope without automatic replay or manufacturing historical attribution from current state. Scheduling, controller ownership, release and cleanup remain with their actual owner.
+Inspect the completion and retained original execution. Recover uncertain
+completion by observing that scope without replay or attributing historical
+completion from current state. Scheduling, controller ownership, release and
+cleanup remain with their actual owner.
 
-MCP business tools advertise no general Worker registration, claim acquisition/release, local worktree creation or process control. Task cancellation/deletion/status and permission toggles are not stop signals. Goals cannot be claimed; completing or cancelling a Goal excludes its children from subsequent automatic claims while existing claims continue. Ordinary active Worker cancellation/deletion requires authorized release; Goal deletion can hide children while their executions stop later through existing cleanup. Session inspection/message capabilities are separately advertised in [Session reads](daynight://manuals/session-reads.md) and [Session messages](daynight://manuals/session-messages.md); they do not create a valid Worker assignment.
+## Control boundaries
+
+MCP business tools provide no general Worker registration, claim acquisition/
+release, worktree creation or process control. Task cancellation/deletion/status
+and permission toggles are not stop signals. Goals cannot be claimed; completing
+or cancelling one prevents new automatic child claims while existing claims
+continue. Ordinary cancellation/deletion of active Worker Tasks requires
+authorized release; Goal deletion can hide children while executions stop later
+through existing cleanup.
+
+[Session selection](daynight://manuals/session-reads.md) and
+[Session messages](daynight://manuals/session-messages.md) supply their advertised
+inspection/message operations; neither establishes a Worker assignment.

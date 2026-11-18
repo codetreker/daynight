@@ -329,6 +329,7 @@ describe('Worker pages in the authenticated workspace', () => {
     });
     render(<AuthenticatedApp />);
     const heading = await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'System monitoring' }));
     const cpu = screen.getByRole('meter', { name: 'CPU usage' });
     const refresh = screen.getByRole('button', { name: 'Refresh' }); refresh.focus();
     returnToWorkspace();

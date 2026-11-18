@@ -14,7 +14,7 @@ import './my-tasks.css';
 
 const messages = {
   en: {
-    eyebrow: 'MINE', title: 'In-progress tasks', subtitle: 'Tasks assigned to you across all your projects.', refresh: 'Refresh',
+    title: 'In-progress tasks', subtitle: 'Tasks assigned to you across all your projects.', refresh: 'Refresh',
     loading: 'Loading tasks…', empty: 'No in-progress tasks', emptyDetail: 'Tasks assigned to you will appear here when they are in progress.',
     failed: 'Tasks could not be updated.', retained: 'Showing the last available results.', incomplete: 'The task list is incomplete; counts cannot be confirmed.',
     retry: 'Retry', personal: 'Personal', sessionPartial: 'Some Session observations are unavailable.',
@@ -22,7 +22,7 @@ const messages = {
     total: (tasks: string, projects: string) => `Tasks: ${tasks} · Projects: ${projects}`,
   },
   'zh-CN': {
-    eyebrow: '我的', title: '进行中的任务', subtitle: '查看分配给你的所有项目中的任务。', refresh: '刷新',
+    title: '进行中的任务', subtitle: '查看分配给你的所有项目中的任务。', refresh: '刷新',
     loading: '正在加载任务…', empty: '没有进行中的任务', emptyDetail: '分配给你的任务进入进行中后会显示在这里。',
     failed: '无法更新任务。', retained: '显示上次可用的结果。', incomplete: '任务列表不完整，无法确认数量。',
     retry: '重试', personal: '个人空间', sessionPartial: '部分 Session 观测暂不可用。',
@@ -85,7 +85,7 @@ export const MyTasksPage = ({ readEnabled = true }: { readonly readEnabled?: boo
   const isAmbiguous = (item: PersonalTaskItem) => groups.some(group => group[0]!.project.id !== item.project.id && group[0]!.project.name === item.project.name && group[0]!.project.ownerTeam.kind === item.project.ownerTeam.kind && group[0]!.project.ownerTeam.name === item.project.ownerTeam.name);
   const complete = state.totalTaskCount !== null && state.totalProjectCount !== null;
   return <div className="my-tasks-page">
-    <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 ref={heading} tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle}</p>{complete && <p className="my-task-total">{m.total(format.number(state.totalTaskCount!), format.number(state.totalProjectCount!))}</p>}</div><button className="button" type="button" disabled={!readEnabled} onClick={state.refresh}>{m.refresh}</button></div>
+    <div className="page-heading"><div><h1 ref={heading} tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle}</p>{complete && <p className="my-task-total">{m.total(format.number(state.totalTaskCount!), format.number(state.totalProjectCount!))}</p>}</div><button className="button" type="button" disabled={!readEnabled} onClick={state.refresh}>{m.refresh}</button></div>
     {history.error && <div className="notice error" role="alert">{locale === 'zh-CN' ? '页面导航状态无效。' : 'Invalid page navigation state.'}</div>}
     {state.error !== null && <div className="notice error" role="alert"><p>{m.failed} {state.items.length > 0 && m.retained}</p><button className="button" type="button" disabled={!readEnabled} onClick={state.refresh}>{m.retry}</button></div>}
     {!complete && (state.items.length > 0 || !state.loading && state.error === null) && <div className="notice warning" role="status">{m.incomplete}</div>}

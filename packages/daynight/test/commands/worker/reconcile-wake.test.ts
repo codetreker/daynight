@@ -18,21 +18,39 @@ describe("reconcile wake", () => {
   });
 
   it("wakes an existing wait, then waits for a new request or poll", async () => {
-    vi.useFakeTimers();
+    const wake = createReconcileWake();
+    const controller = new AbortController();
+    const first = wake.waitAfter(wake.snapshot(), 1000, controller.signal);
+    wake.request();
+    await first;
+
+    const expiry = Promise.withResolvers<void>();
+    const timer = vi.mocked(timers.setTimeout);
+    const callsBefore = timer.mock.calls.length;
+    timer.mockImplementationOnce(async (milliseconds, value, options) => {
+      expect(milliseconds).toBe(1_000);
+      const signal = options?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      const abort = () => expiry.reject(signal!.reason);
+      signal!.throwIfAborted();
+      signal!.addEventListener("abort", abort, { once: true });
+      try { await expiry.promise; signal!.throwIfAborted(); return value; }
+      finally { signal!.removeEventListener("abort", abort); }
+    });
+    let settled = false;
+    const second = wake.waitAfter(wake.snapshot(), 1_000, controller.signal).then(() => { settled = true; });
     try {
-      const wake = createReconcileWake();
-      const signal = new AbortController().signal;
-      const first = wake.waitAfter(wake.snapshot(), 1000, signal);
-      wake.request();
-      await first;
-      let settled = false;
-      const second = wake.waitAfter(wake.snapshot(), 1000, signal).then(() => { settled = true; });
+      expect(timer).toHaveBeenCalledTimes(callsBefore + 1);
       await Promise.resolve();
       expect(settled).toBe(false);
-      await vi.advanceTimersByTimeAsync(1000);
+      expiry.resolve();
       await second;
       expect(settled).toBe(true);
-    } finally { vi.useRealTimers(); }
+    } finally {
+      controller.abort(); expiry.resolve();
+      await Promise.allSettled([second]);
+      timer.mockReset();
+    }
   });
 
   it("propagates cancellation even when a request is pending", async () => {

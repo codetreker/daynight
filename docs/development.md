@@ -159,6 +159,11 @@ its original duration and cancellation state, and expire it only after the
 relevant process or IPC barrier. The
 [update deadline decision](../.agents/notes/implemented/testing/2026-11-17-update-cleanup-test-deadlines.md)
 records the proof and its limits.
+The command-timeout scenarios separately release the configured command timer
+after a real fixture heartbeat. Their native cleanup deadlines and process
+observations remain live; the
+[command expiry fixture decision](../.agents/notes/implemented/testing/2026-11-18-updater-fixture-command-expiry.md)
+owns that boundary.
 
 The blocked-sink attachment fixture observes entry into its consumer before
 advancing to the request deadline, then checks the timeout, sink abort and
@@ -181,6 +186,18 @@ boundary. The strict compiled fixture retains unhandled-rejection, teardown-RPC
 and owned-process-exit checks. The
 [startup deadline decision](../.agents/notes/implemented/testing/2026-11-05-native-startup-test-deadlines.md)
 owns this timing boundary.
+The compiled Copilot bridge route-timeout fixture holds the observer's timer
+inside the helper. It releases the timer after the native endpoint request and
+a concurrent text acknowledgement. The SDK, transport, and process joins
+remain real; observer tests check the production deadline separately. The
+[bridge route clock decision](../.agents/notes/implemented/testing/2026-11-18-copilot-bridge-route-clock.md)
+owns this boundary.
+The compiled bridge route and read-authority fixtures that exercise ordinary
+shutdown acknowledge and exit. The retained-media scenario still acknowledges
+without exiting, proving the real signal fallback exactly once; a dedicated
+graceful shutdown scenario checks normal exit without a signal. The
+[bridge shutdown fixture decision](../.agents/notes/implemented/testing/2026-11-18-copilot-bridge-fixture-shutdown.md)
+owns these process lifetimes.
 Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
@@ -197,10 +214,24 @@ the configuration clock at the recorded deadline, while observing persistence
 and inventory with real asynchronous work. The
 [startup retry fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-startup-retry-clocks.md)
 owns both timing checks.
+Worker reconcile wake tests retain native wake and cancellation. The poll
+completion case controls one Promise delay and asserts its requested interval.
+The [reconcile wake timing decision](../.agents/notes/implemented/testing/2026-11-18-worker-reconcile-wake-test-clock.md)
+owns that boundary.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
+The Worker Git cancellation fixtures release the registered cleanup grace
+after the root has exited and a real descendant holds the original pipe. They
+still join the actual pipe close. The
+[Git cancellation clock decision](../.agents/notes/implemented/testing/2026-11-18-worker-git-cancel-grace-clock.md)
+owns the controlled timer and separate real-time coverage.
+The privileged Worktree cleanup fixture pauses the actual sudo child beside
+its case-owned release file. It observes cancellation and an excluded
+overlapping removal before allowing the child to proceed. The
+[sudo fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-sudo-fixture-handshake.md)
+owns the real-process handshake.
 Bot CLI probe fixtures retain the real guardian, descendants, process inventory,
 signals and joined cleanup. On POSIX, the test freezes the stop clock after the
 target process group receives TERM and advances it only after a real inventory
@@ -513,6 +544,11 @@ the same SQL owner in memory and file cases; capacity stress probes run separate
 from ordinary test selection. The
 [memory SQLite decision](../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)
 owns storage selection and connection ownership.
+The image release receipt fixture keeps a real competing SQLite writer. Only
+the tested journal connection uses a short busy wait after checking its
+production default. The
+[image receipt contention decision](../.agents/notes/implemented/testing/2026-11-18-image-receipt-busy-budget.md)
+owns the write-failure and recovery proof.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check

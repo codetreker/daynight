@@ -1,67 +1,25 @@
 import { useCallback, useId, useLayoutEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
-import type { WorkerExecutableProbe, WorkerProbe, WorkerTaskSnapshot } from '../../api/workers';
+import type { WorkerTaskSnapshot } from '../../api/workers';
 import type { WorkerAgent } from '../../api/types';
-import type { Tool, ToolPathTelemetry } from '../../api/worker-tool-paths';
 import { useWorkerHistory } from '../../app/use-page-history';
 import { taskDetailUrl } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { isWorkerOnline, isWorkerRecent } from './observation';
 import { useWorker } from './useWorker';
 import { WorkerStatusBadge } from './WorkerStatusBadge';
-import { followWorkerLink, formatWorkerBytes, WorkerReadNotice, WorkerReadState, WorkerRefresh, WorkerTimestamp } from './presentation';
+import { followWorkerLink, WorkerReadNotice, WorkerReadState, WorkerRefresh, WorkerTimestamp } from './presentation';
 import { WorkerEditingPanels } from './configuration/WorkerEditingPanels';
-import { WorkerMonitoring } from './WorkerMonitoring';
-import { WorkerToolPathDetails } from './WorkerToolPathDetails';
-import { toolSoftwareEntries } from './tool-path-presentation';
+import { WorkerMonitoring, WorkerMonitoringTime } from './WorkerMonitoring';
+import { WorkerSystemSnapshot } from './WorkerSystemSnapshot';
 import { useWorkerPageAnchor } from './useWorkerPageAnchor';
 import { useWorkerMonitoring } from './useWorkerMonitoring';
 import type { WorkerAlias } from '../../api/worker-alias';
 import { WorkerAliasEditor } from './WorkerAliasEditor';
 import './workers.css';
 
-const sections = ['overview', 'configuration', 'prompt'] as const;
+const sections = ['overview', 'system', 'configuration', 'prompt'] as const;
 
 const agentNames: Readonly<Record<WorkerAgent, string>> = { codex: 'Codex', claude: 'Claude Code', copilot: 'Copilot' };
-
-const ProbeFailure = ({ probe, software = false }: { readonly probe: Extract<WorkerProbe<unknown>, { state: 'error' }>; readonly software?: boolean }) => {
-  const { messages: { workers: m } } = useI18n();
-  return <><span className="worker-probe-error">{software ? m.detectionError : m.collectionError}</span><span className="worker-probe-reason">{m.probeCodes[probe.code]}</span></>;
-};
-
-const CheckedAt = ({ value }: { readonly value: string }) => {
-  const { messages: { workers: m } } = useI18n();
-  return <p className="worker-checked-at">{m.checkedAt}: <WorkerTimestamp value={value} /></p>;
-};
-
-const Meter = ({ value, label, high = false }: { readonly value: number; readonly label: string; readonly high?: boolean }) => <div className={`worker-meter${high ? ' high' : ''}`} role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value}><span style={{ width: `${value}%` }} /></div>;
-
-const MetricCard = ({ title, children, checkedAt }: { readonly title: string; readonly children: ReactNode; readonly checkedAt: string }) => <section className="worker-metric-card"><h2 className="worker-metric-label">{title}</h2>{children}<CheckedAt value={checkedAt} /></section>;
-
-const SoftwareRow = ({ name, probe }: { readonly name: string; readonly probe: WorkerExecutableProbe }) => {
-  const { messages: { workers: m } } = useI18n();
-  return <div className="worker-info-row"><dt>{name}</dt><dd>
-    {probe.state === 'ok' ? <span className="worker-software-version">{probe.value}</span> : probe.state === 'error' ? <ProbeFailure probe={probe} software /> : <span className="worker-software-unavailable">{m.notInstalled}</span>}
-    <CheckedAt value={probe.checkedAt} />
-  </dd></div>;
-};
-
-const ToolSoftwareRow = ({ tool, telemetry, online, probe }: { readonly tool: Exclude<Tool, 'herdr'>; readonly telemetry: ToolPathTelemetry | undefined; readonly online: boolean | null; readonly probe: WorkerExecutableProbe }) => {
-  const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
-  const name = agentNames[tool];
-  if (telemetry === undefined) return <SoftwareRow name={name} probe={probe} />;
-  const entries = toolSoftwareEntries(telemetry, tool);
-  return <div className="worker-info-row worker-software-tool-paths" data-tool={tool}><dt>{name}</dt><dd>
-    {entries.length === 0 ? <span className="worker-software-unavailable">{m.state.not_checked}</span> : entries.map(entry => <p className="worker-tool-version" key={entry.context}>
-      {entry.actual !== null && <span className="worker-software-version">{entry.actual.version}</span>}{(entry.actual === null || entry.state === 'checking' || entry.state === 'pending' || entry.state === 'error') && <>{entry.actual !== null && ' '}<span className={`worker-tool-state ${entry.state}`}>{m.state[entry.state]}</span></>}
-    </p>)}
-    <p className="worker-checked-at worker-tool-connection">
-      <span className={online === false ? undefined : 'concealed'} aria-hidden={online !== false}>{m.state.offline}</span>
-      <span className={online === null ? undefined : 'concealed'} aria-hidden={online !== null}>{m.state.unconfirmed}</span>
-    </p>
-  </dd><dd className="worker-tool-software-detail-cell">
-    <details className="worker-tool-software-details"><summary>{m.details}</summary><WorkerToolPathDetails tool={tool} telemetry={telemetry} online={online} /></details>
-  </dd></div>;
-};
 
 const TaskRows = ({ tasks }: { readonly tasks: readonly WorkerTaskSnapshot[] }) => {
   const { messages: { workers: m, common, inspection: { claim } } } = useI18n();
@@ -78,7 +36,6 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
   const refresh = () => { state.refresh(); monitoring.refresh(); };
   const monitoringAge = monitoring.snapshot?.state === 'available' && monitoring.serverMilliseconds !== null ? monitoring.serverMilliseconds - Date.parse(monitoring.snapshot.receivedAt) : null;
   const ageClass = monitoringAge === null ? 'unknown' : monitoringAge >= 3_600_000 ? 'expired' : monitoringAge >= 90_000 ? 'stale' : 'current';
-  const page = useWorkerPageAnchor(monitoring.snapshot, monitoring.error, state.snapshot, ageClass);
   const { messages: { workers: m, platform }, locale, format } = useI18n();
   const { snapshot, serverMilliseconds } = state;
   if (snapshot !== null && serverMilliseconds === null) throw new Error('A Worker snapshot requires its server observation time.');
@@ -90,13 +47,12 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
   const online = worker !== undefined && isWorkerOnline(worker, serverMilliseconds!);
   const unavailable = snapshot !== null && !recent;
   const taskSnapshot = !online || state.stale || worker?.taskObservationState === 'stale';
-  const bytes = (value: number) => formatWorkerBytes(value, locale);
-  const percent = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
   const { section, select: selectSection, error: historyError } = useWorkerHistory(userId, workerId, active);
+  const page = useWorkerPageAnchor(monitoring.snapshot, monitoring.error, state.snapshot, state.error, ageClass, online, recent, section);
   const [opened, setOpened] = useState<{ workerId: string; opened: boolean }>({ workerId, opened: false });
-  const configurationOpened = opened.workerId === workerId && opened.opened || section !== 'overview';
+  const configurationOpened = opened.workerId === workerId && opened.opened || (section === 'configuration' || section === 'prompt');
   useLayoutEffect(() => {
-    if (section !== 'overview' && !historyError) setOpened({ workerId, opened: true });
+    if ((section === 'configuration' || section === 'prompt') && !historyError) setOpened({ workerId, opened: true });
   }, [workerId, section, historyError]);
   const [toolPathsRequest, setToolPathsRequest] = useState<{ workerId: string; userId: string } | null>(null);
   const finishToolPathsRequest = useCallback(() => setToolPathsRequest(null), []);
@@ -109,28 +65,32 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
   };
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const index = sections.indexOf(section);
-    const next = event.key === 'Home' ? sections[0] : event.key === 'End' ? sections[2] : event.key === 'ArrowLeft' ? sections[(index + sections.length - 1) % sections.length]! : event.key === 'ArrowRight' ? sections[(index + 1) % sections.length]! : null;
+    const next = event.key === 'Home' ? sections[0] : event.key === 'End' ? sections[sections.length - 1]! : event.key === 'ArrowLeft' ? sections[(index + sections.length - 1) % sections.length]! : event.key === 'ArrowRight' ? sections[(index + 1) % sections.length]! : null;
     if (next === null) return;
     event.preventDefault(); selectSection(next); event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-worker-tab="${next}"]`)?.focus();
   };
+  const header = (trigger: ReactNode) => worker !== undefined && <>
+    <div className="worker-title-row"><h1 id="page-title" tabIndex={-1}><bdi>{alias?.value ?? worker.machine.name}</bdi></h1>{trigger}</div>
+    <div className="worker-description"><WorkerStatusBadge online={online} stale={state.stale} /><span>{platform.names[worker.platform]}</span><span>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> (<WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} />)</span></div>
+    <p className="worker-machine-name">{m.alias.machineName}: <bdi>{worker.machine.name}</bdi></p>
+    <p className="worker-id">{m.workerId} · {worker.workerId}</p>
+  </>;
   return <div className="worker-page" ref={page}>
     <a className="worker-back-link" href="/workers" onClick={followWorkerLink}>← {m.back}</a>
     {historyError && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
     <div hidden={historyError} inert={historyError}>
-    {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div><h1 id="page-title" tabIndex={-1}><bdi>{alias?.value ?? worker.machine.name}</bdi></h1>
-        <div className="worker-description"><WorkerStatusBadge online={online} stale={state.stale} /><span>{platform.names[worker.platform]}</span><span>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> (<WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} />)</span></div>
-        <p className="worker-machine-name">{m.alias.machineName}: <bdi>{worker.machine.name}</bdi></p>
-        <p className="worker-id">{m.workerId} · {worker.workerId}</p>
-        {alias !== undefined && <WorkerAliasEditor key={`${userId}/${workerId}`} workerId={workerId} resource={alias} readEnabled={readEnabled && active && !historyError} onSaved={incoming => {
+    {worker !== undefined && recent && <div className="page-heading worker-detail-heading"><div>
+        {alias === undefined ? header(null) : <WorkerAliasEditor key={`${userId}/${workerId}`} workerId={workerId} resource={alias} header={header} readEnabled={readEnabled && active && !historyError} onSaved={incoming => {
           setSavedAlias(old => old?.workerId === workerId && old.userId === userId && BigInt(old.alias.version) > BigInt(incoming.version) ? old : { workerId, userId, alias: incoming });
           state.refresh();
-        }} />}</div>{section === 'overview' && <div className="heading-actions"><WorkerRefresh refresh={refresh} refreshing={state.refreshing || monitoring.refreshing} readEnabled /></div>}</div>}
+        }} />}</div>{(section === 'overview' || section === 'system') && <div className="heading-actions"><WorkerRefresh refresh={section === 'system' ? state.refresh : refresh} refreshing={section === 'system' ? state.refreshing : state.refreshing || monitoring.refreshing} readEnabled={readEnabled} /></div>}</div>}
     {(worker === undefined || unavailable) && section !== 'overview' && <div className="page-heading worker-detail-heading"><h1 id="page-title" tabIndex={-1}>{m.workerId} · {workerId}</h1></div>}
     <div className="worker-tabs" role="tablist" aria-label={m.configuration.sections}>{sections.map(value => <button key={value} type="button" role="tab" id={`${id}-tab-${value}`} data-worker-tab={value} aria-controls={`${id}-panel-${value}`} aria-selected={section === value} tabIndex={section === value ? 0 : -1} onClick={() => selectSection(value)} onKeyDown={onTabKeyDown}>{m.configuration[value]}</button>)}</div>
     <section className="worker-section" id={`${id}-panel-overview`} data-worker-panel="overview" role="tabpanel" aria-labelledby={`${id}-tab-overview`} hidden={section !== 'overview'} inert={section !== 'overview'}>
     {worker === undefined || unavailable ? <WorkerReadState kind="detail" {...state} status={unavailable ? 'unavailable' : state.status} readEnabled /> : <>
       <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled />
       {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
+      <WorkerMonitoringTime state={monitoring} />
       <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
         {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
         <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>
@@ -140,33 +100,13 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
         </>}
       </section>
       <WorkerMonitoring state={monitoring} readEnabled />
-      <p className="worker-sample-time">{m.sampledAt}: <WorkerTimestamp value={worker.telemetry.sampledAt} /></p>
-      <div className="worker-metric-grid" data-worker-reading>
-        <MetricCard title={m.cpuUsage} checkedAt={worker.telemetry.cpu.checkedAt}>{worker.telemetry.cpu.state === 'error' ? <ProbeFailure probe={worker.telemetry.cpu} /> : <>
-          <p className="worker-metric-value">{percent(worker.telemetry.cpu.value.usagePercent)}<span className="worker-metric-unit">%</span></p><Meter value={worker.telemetry.cpu.value.usagePercent} label={m.cpuUsage} /><p className="worker-metric-detail">{worker.telemetry.cpu.value.model} · {m.logicalProcessors({ count: format.number(worker.telemetry.cpu.value.logicalProcessors) })}</p>
-        </>}</MetricCard>
-        <MetricCard title={m.memory} checkedAt={worker.telemetry.memory.checkedAt}>{worker.telemetry.memory.state === 'error' ? <ProbeFailure probe={worker.telemetry.memory} /> : <>
-          <p className="worker-metric-value">{bytes(worker.telemetry.memory.value.usedBytes)}<span className="worker-metric-unit">{m.usedCapacity({ total: bytes(worker.telemetry.memory.value.totalBytes) })}</span></p>
-          {worker.telemetry.memory.value.totalBytes > 0 && <Meter value={worker.telemetry.memory.value.usedBytes / worker.telemetry.memory.value.totalBytes * 100} label={m.memory} />}<p className="worker-metric-detail">{m.totalMemory({ total: bytes(worker.telemetry.memory.value.totalBytes) })}</p>
-        </>}</MetricCard>
-        <MetricCard title={m.disk} checkedAt={worker.telemetry.disk.checkedAt}>{worker.telemetry.disk.state === 'error' ? <ProbeFailure probe={worker.telemetry.disk} /> : <>
-          <p className="worker-metric-value">{bytes(worker.telemetry.disk.value.availableBytes)}<span className="worker-metric-unit">{m.availableCapacity({ total: bytes(worker.telemetry.disk.value.totalBytes) })}</span></p>
-          {worker.telemetry.disk.value.totalBytes > 0 && <Meter value={(worker.telemetry.disk.value.totalBytes - worker.telemetry.disk.value.availableBytes) / worker.telemetry.disk.value.totalBytes * 100} label={m.disk} high={worker.telemetry.disk.value.availableBytes / worker.telemetry.disk.value.totalBytes < .2} />}<p className="worker-metric-detail">{m.totalDisk({ total: bytes(worker.telemetry.disk.value.totalBytes) })}</p>
-        </>}</MetricCard>
-      </div>
-      <div className="worker-detail-columns" data-worker-reading>
-        <section className="worker-panel"><h2 className="worker-panel-heading">{m.environment}</h2><dl className="worker-info-list">
-          <div className="worker-info-row"><dt>{m.operatingSystem}</dt><dd>{worker.telemetry.os.state === 'error' ? <ProbeFailure probe={worker.telemetry.os} /> : <>{worker.telemetry.os.value.type}<br />{worker.telemetry.os.value.release}<br /><span className="worker-os-version">{worker.telemetry.os.value.version}</span></>}<CheckedAt value={worker.telemetry.os.checkedAt} /></dd></div>
-          <div className="worker-info-row"><dt>{m.architecture}</dt><dd>{worker.telemetry.os.state === 'error' ? <ProbeFailure probe={worker.telemetry.os} /> : worker.telemetry.os.value.arch}</dd></div>
-          <div className="worker-info-row"><dt>{m.cpu}</dt><dd>{worker.telemetry.cpu.state === 'error' ? <ProbeFailure probe={worker.telemetry.cpu} /> : <>{worker.telemetry.cpu.value.model}<br />{m.logicalProcessors({ count: format.number(worker.telemetry.cpu.value.logicalProcessors) })}</>}</dd></div>
-          <div className="worker-info-row"><dt>{m.workingDirectory}</dt><dd>{worker.telemetry.workingDirectory}</dd></div>
-        </dl></section>
-        <section className="worker-panel"><header className="worker-panel-heading"><h2>{m.software}</h2><button type="button" className="worker-tool-path-shortcut" onClick={openToolPaths}>{m.configuration.toolPaths.title}</button></header><dl className="worker-info-list">
-          <div className="worker-info-row"><dt>Daynight CLI</dt><dd className="worker-software-version">{worker.telemetry.versions.daynight}</dd></div>
-          {(['codex', 'copilot'] as const).map(tool => <ToolSoftwareRow key={tool} tool={tool} telemetry={worker.telemetry.toolPaths} online={state.stale ? null : online} probe={worker.telemetry.versions[tool]} />)}
-        </dl></section>
-      </div>
-      <p className="worker-detail-footnote">{m.footer}</p>
+    </>}
+    </section>
+    <section className="worker-section" id={`${id}-panel-system`} data-worker-panel="system" role="tabpanel" aria-labelledby={`${id}-tab-system`} hidden={section !== 'system'} inert={section !== 'system'}>
+    {worker === undefined || unavailable ? <WorkerReadState kind="detail" {...state} status={unavailable ? 'unavailable' : state.status} readEnabled={readEnabled} /> : <>
+      <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled={readEnabled} />
+      {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
+      <WorkerSystemSnapshot worker={worker} online={online} stale={state.stale} openToolPaths={openToolPaths} />
     </>}
     </section>
     {!configurationOpened && <><section id={`${id}-panel-configuration`} data-worker-panel="configuration" role="tabpanel" aria-labelledby={`${id}-tab-configuration`} hidden inert /><section id={`${id}-panel-prompt`} data-worker-panel="prompt" role="tabpanel" aria-labelledby={`${id}-tab-prompt`} hidden inert /></>}

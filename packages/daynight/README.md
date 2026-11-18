@@ -584,22 +584,25 @@ with `-`, use `daynight project create -- -name` or put an explicit repository
 option before the terminator: `daynight project create --repo <repo> -- -name`.
 The name is sent unchanged.
 
-Creation first scans every accessible project page and compares canonical repository
-identities. With one match it reports `Project already exists.` and the existing
-project, without resolving a Team, confirming or writing. Multiple matches fail
-with their IDs. With no match, `--team <uuid|personal>` selects the target; without
-it, the CLI uses the configured default for the current service and account, or
-Personal when no default is configured. An invalid or inaccessible default fails
-without falling back. The target must be accessible to the current user.
+Creation first selects `--team <uuid|personal>`, the configured default for the
+current service and account, or Personal when no default is configured. It scans
+every accessible project page and compares canonical repository identities only
+within that owner Team. One match returns `Project already exists.` and the existing
+project without confirmation or writing, even when access comes from a direct
+Project grant rather than Team membership. Multiple matches fail with their IDs.
+An invalid default fails without fallback. Unparseable historical repository
+addresses do not match; page and response failures stop creation.
 
-Creation requires confirmation: `--confirm` skips the interactive prompt, and a
+When no project matches, creation requires Team membership and confirmation:
+`--confirm` skips the interactive prompt, and a
 noninteractive invocation without it fails before writing. The CLI binds the
 request and response to the current user and submits the original name and
 repository address. The creator receives a direct admin grant. An unknown write is
 not automatically replayed. Lookup failures and exhausted command budgets stop
 before creation.
-This client preflight does not provide atomic uniqueness against concurrent
-creators, and the service continues to allow duplicate repository registrations.
+The service enforces same-Team repository uniqueness and reports a
+`project_repository_conflict` when a concurrent creation wins. The CLI does not
+replay that write.
 Project commands do not write repository bindings or ignore rules. Lists traverse
 all pages. Human output uses complete labeled project blocks with visible
 terminal-control escapes. JSON preserves resource fields and nanosecond timestamp
@@ -2375,7 +2378,7 @@ cycles add no configuration GET; startup, unknown results, 400/protocol failures
 and capability discovery read first. Reporting keeps its 30-second single-flight
 scheduler, merged triggers and finite prompt batches.
 
-The Worker stores configuration facts in one schema 9
+The Worker stores configuration facts in one schema 11
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
 observation revision and local generation. The required `pendingApplication` flag
@@ -2400,6 +2403,18 @@ fact. It is not executed or reported as the current target; the Worker compares
 it if that field becomes visible again at the same revision. Older schema 6
 checkpoints without this optional field remain readable and are upgraded.
 
+When the service provides `taskTagFilter`, the Worker validates the tag names and
+stores only the canonical SHA-256 application proof alongside its original raw
+target. It publishes the full effective filter and claim digest only after atomic
+persistence, synchronization and an exact target-digest match. Unavailable proof
+pauses new claims while retaining selected Projects and existing execution.
+Servers without the field keep the original admission behavior. Old checkpoints
+with an opaque filter gain a pending/null item, preserving their original pending
+application flag and application responsibilities. Reports always include the
+bounded filter item alongside removal priority, while other items, including
+global native configuration, continue rotating. No YAML field or bootstrap import
+is added. Deterministic stale hints request an authority reread through the normal
+configuration exchange; they do not prove the reason for a claim conflict.
 When the service provides `enableSudoCleanup`, the Worker validates and applies
 the boolean without adding it to an old service bootstrap. Automatic cleanup
 snapshots the committed applied value and its source revision at the start of
@@ -2416,25 +2431,34 @@ failures and necessary actual values. Each record has a stable `recordId` and
 immutable `origin`. Reused actual values keep their observed source; schema 4
 history with a lost successful revision remains explicitly unknown.
 
-Deployed schemas 1–8 are strictly decoded under their historical structures and
-converted to schema 9. Old targets become `desiredJson` and their revision becomes
-`applicationRevision`; older formats without a remote observation retain null.
-The conversion removes mode items and `nativeMode`. It retains a native value and
-its source only when the historical mode proves Web, and still requires validation
-in the current process. Other native values, sources and corresponding failures
-are invalidated. Original record IDs, origins, source JSON, sudo provenance,
-failure numbers, started removals and blockers remain; the generation changes and
-the report cursor resets. Previously unknown `enableSudoCleanup` or
-`archiveSessions` is reconciled as a target without manufacturing success.
-Migration publishes only after atomic
-save; failed saves retain the original file and error. Missing required fields,
-invalid scope and corrupt data remain failures. Genuine file I/O failures
-recover in the original storage scope. Reads and atomic writes process the outer
-cache in chunks using pinned `@discoveryjs/json-ext` and its cache-specific syntax
-guard; raw documents remain ordinary strings, so unknown values require no change
-to the outer numeric grammar. Aggregate file size is not limited by one JSON
-string; individual tokens and retained objects still consume their corresponding
-memory. Historical values remain readable without newer per-item limits.
+Deployed schemas 1–10 are strictly decoded under their frozen historical
+structures and converted to schema 11. Old targets become `desiredJson` and their
+revision becomes `applicationRevision`; older formats without a remote observation
+retain null. Schema 9 retains its original Web ledger without mode application
+items; current two-tool targets use schema 11 without redefining schema 9's
+interpretation. Schema 10 historical mode facts remain readable after conversion to schema 11.
+
+For schemas 1–8, conversion removes mode items and `nativeMode`. It retains a
+native value and its source only when the historical mode proves Web, and still
+requires validation in the current process. Other native values, sources and
+corresponding failures are invalidated. Schema 9 native facts retain their values
+and sources. Original record IDs, origins, source JSON, remote observations,
+hidden sources, sudo provenance, failure numbers, started removals and blockers
+remain; migration changes the generation and resets the report cursor. Previously
+unknown `enableSudoCleanup` or `archiveSessions` is reconciled as a target without
+manufacturing success. Old mode or third-tool targets retain their original raw
+source and require explicit correction before application; migration does not
+convert them into current targets or create a mode application obligation.
+
+Migration publishes only after atomic save; failed saves retain the original
+file and error. Missing required fields, invalid scope and corrupt data remain
+failures. Genuine file I/O failures recover in the original storage scope. Reads
+and atomic writes process the outer cache in chunks using pinned
+`@discoveryjs/json-ext` and its cache-specific syntax guard; raw documents remain
+ordinary strings, so unknown values require no change to the outer numeric
+grammar. Aggregate file size is not limited by one JSON string; individual tokens
+and retained objects still consume their corresponding memory. Historical values
+remain readable without newer per-item limits.
 
 Application-side tool targets, native proof and Project preparation confirmations
 use `applicationRevision`, which can precede the newest received revision.

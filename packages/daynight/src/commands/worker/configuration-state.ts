@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { taskTagFilterKey } from "../../api/task-tag-filter.js";
 import { stringifyApiJson } from "../../api/json.js";
 import { type ReceivedWorkerDesired, parseWorkerCloudItem, parseWorkerCloudValue } from "../../api/worker-configuration.js";
 import { configurationDesiredSourcesComparable, configurationSourceFragmentsEqual, desiredCapabilitySources, workerCapabilityKeys } from "../../api/worker-configuration-source.js";
@@ -44,6 +45,7 @@ export const configurationTarget = (cache: WorkerConfigurationCache, key: Worker
   if (cache.authority.pendingApplication) return null;
   const desired = applicableConfigurationDesired(configurationDesired(cache));
   if (desired === null) return null;
+  if (key.kind === "taskTagFilter") return desired.value.taskTagFilter === undefined ? null : taskTagFilterKey(desired.value.taskTagFilter);
   if (key.kind === "agentControlMode") return desired.value.agentControlMode === undefined ? null : desired.value.agentControlMode;
   if (key.kind === "archiveSessions") return desired.value.archiveSessions ?? null;
   if (key.kind === "enableSudoCleanup") return desired.value.enableSudoCleanup ?? null;
@@ -156,6 +158,7 @@ export const transitionConfigurationDesired = (
   for (const kind of ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native"] as const) add({ kind });
   if (desired.value.archiveSessions !== undefined) add({ kind: "archiveSessions" });
   if (desired.value.enableSudoCleanup !== undefined) add({ kind: "enableSudoCleanup" });
+  if (desired.value.taskTagFilter !== undefined) add({ kind: "taskTagFilter" });
   for (const project of desired.value.projects) {
     add({ kind: "projectPreparation", projectId: project.projectId }, !previousSelected.has(project.projectId));
     add({ kind: "projectNative", projectId: project.projectId });
@@ -204,11 +207,18 @@ export const configurationSnapshot = (
   const projects = selectedProjects !== null ? selectedProjects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
     ready: current.get(configurationKey({ kind: "projectPreparation", projectId: project.projectId }))?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !unfinishedRemovals.has(project.projectId) })) : [];
   const globalNative = native({ kind: "native" });
+  const filterItem = current.get(configurationKey({ kind: "taskTagFilter" }));
+  const filter = desired?.value.taskTagFilter;
+  const filterKey = filter === undefined ? undefined : taskTagFilterKey(filter);
+  const filterAvailable = synchronized && filterItem?.value.state === "applied" && filterItem.value.appliedValue === filterKey;
+  const filterUnsupported = synchronized && filter === undefined;
   return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, desiredRevision: configurationDesiredRevision(cache), selectedProjects, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null, retainedArchiveSessions,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: synchronized ? configurationToolTargets(cache, localTools) : null, effective: {
       agentControlMode: synchronized && desired !== null ? "web" : null,
       maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,
       archiveSessions: synchronized && desired !== null ? retainedArchiveSessions : null,
+      taskTagFilter: filterAvailable ? filter : filterUnsupported ? undefined : null,
+      taskTagFilterKey: filterAvailable ? filterKey : filterUnsupported ? undefined : null,
       native: globalNative, projects,
     } });
 };
@@ -226,7 +236,7 @@ const removalSeverity = (item: TrackedConfigurationItem): number => item.value.s
 
 export const projectConfigurationReport = (cache: WorkerConfigurationCache, options: ConfigurationProjectionOptions): ConfigurationProjection => {
   const desired = configurationDesired(cache);
-  const bootstrapSource = options.bootstrap === null ? null : (({ enableSudoCleanup: _sudo, ...rest }) => rest)(options.bootstrap);
+  const bootstrapSource = options.bootstrap === null ? null : (({ enableSudoCleanup: _sudo, taskTagFilter: _filter, ...rest }) => rest)(options.bootstrap);
   const bootstrap = cache.authority.desiredJson === null && bootstrapSource !== null ? parseWorkerCloudValue(bootstrapSource, true, configurationCapabilities(bootstrapSource)) : null;
   const cloudTools = options.synchronized && !cache.authority.pendingApplication && applicableConfigurationDesired(desired) !== null ? desired?.value.toolPaths : undefined;
   const toolPathsBootstrap = bootstrap?.toolPaths !== undefined ? parseToolPathsBootstrap(bootstrap.toolPaths)
@@ -264,7 +274,8 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
   }
   const priority = (item: TrackedConfigurationItem): number => removalPriorities.get(projectOf(item)!)!;
   const fixed = candidates.filter(candidate => pendingRemoval(candidate.item)).sort((first, second) => priority(second.item) - priority(first.item) || compareRecordIds(first.item, second.item))[0];
-  const rotating = candidates.filter(candidate => candidate !== fixed);
+  const filter = candidates.find(candidate => candidate.item.value.key.kind === "taskTagFilter");
+  const rotating = candidates.filter(candidate => candidate !== fixed && candidate !== filter);
   const after = cache.projectionCursor === null ? 0 : rotating.findIndex(candidate => candidate.item.recordId > cache.projectionCursor!);
   const start = after < 0 ? 0 : after;
   const ordered = [...rotating.slice(start), ...rotating.slice(0, start)];
@@ -275,10 +286,10 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
   let nextCursor = cache.projectionCursor;
   const add = (candidate: typeof candidates[number]): boolean => {
     const comma = selected.length === 0 ? 0 : 1;
-    const nextNonMode = nonModeCount + (candidate.item.value.key.kind === "agentControlMode" || candidate.item.value.key.kind === "archiveSessions" || candidate.item.value.key.kind === "enableSudoCleanup" ? 0 : 1);
+    const nextNonMode = nonModeCount + (candidate.item.value.key.kind === "agentControlMode" || candidate.item.value.key.kind === "archiveSessions" || candidate.item.value.key.kind === "enableSudoCleanup" || candidate.item.value.key.kind === "taskTagFilter" ? 0 : 1);
     const nextObservationBytes = observationBytes + storageBytes(candidate.encoded) + comma;
     let nextRequestBytes = requestBytes + Buffer.byteLength(candidate.encoded, "utf8") + comma;
-    if (selected.length >= (1025 + Number(configurationSupportsMode(desired)) + Number(desired!.value.archiveSessions !== undefined) + Number(desired!.value.enableSudoCleanup !== undefined)) || nextNonMode > 1025 || nextObservationBytes > 4 * 1_048_576) return false;
+    if (selected.length >= (1025 + Number(configurationSupportsMode(desired)) + Number(desired!.value.archiveSessions !== undefined) + Number(desired!.value.enableSudoCleanup !== undefined) + Number(desired!.value.taskTagFilter !== undefined)) || nextNonMode > 1025 || nextObservationBytes > 4 * 1_048_576) return false;
     if (nextRequestBytes > WORKER_CONFIGURATION_REPORT_BYTES && options.telemetry !== undefined) {
       const trial = { ...base, observation: { ...base.observation!, items: [...selected.map(current => current.value), candidate.value] } };
       nextRequestBytes = Buffer.byteLength(stringifyApiJson(prepareWorkerReport({ ...options.telemetry, configuration: trial }, WORKER_CONFIGURATION_REPORT_BYTES).value), "utf8");
@@ -288,6 +299,7 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
     return true;
   };
   if (fixed !== undefined && !add(fixed)) throw new RangeError("Worker configuration removal cannot fit in its observation budget.");
+  if (filter !== undefined && !add(filter)) throw new RangeError("Worker task tag filter cannot fit in its observation budget.");
   for (const candidate of ordered) {
     if (!add(candidate)) break;
     nextCursor = candidate.item.recordId;

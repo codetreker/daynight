@@ -204,10 +204,44 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
       return { available: element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), required: Math.max(...Array.from(element.options, (option) => context.measureText(option.text).width)) };
     });
     expect(textSpace.available).toBeGreaterThanOrEqual(textSpace.required);
-    if (width === 601 && locale === 'en') {
-      const caption = await page.locator('.team-member-caption').evaluate((element) => ({ height: element.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(element).lineHeight) }));
-      expect(caption.height).toBeGreaterThan(caption.lineHeight);
-    }
+    await expect(page.locator('.team-member-caption')).toHaveCount(0);
+    const leave = page.getByRole('button', { name: locale === 'en' ? 'Leave Team' : '退出 Team', exact: true });
+    const reason = locale === 'en' ? 'At least one admin must remain.' : '至少保留一名 Admin。';
+    await expect(leave).toHaveAttribute('aria-disabled', 'true');
+    await expect(leave).toHaveAccessibleDescription(reason);
+    const tip = page.getByRole('tooltip');
+    await expect(tip).toHaveCount(0);
+    const rowGeometry = () => page.locator('.team-member-row').evaluateAll(rows => rows.map(row => {
+      const rect = row.getBoundingClientRect(), role = row.querySelector('select')!.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, roleX: role.x, roleWidth: role.width };
+    }));
+    const before = await rowGeometry();
+    const checkTip = async () => {
+      await expect(tip).toBeVisible(); await expect(tip).toHaveText(reason);
+      const bounds = await tip.evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, viewportWidth: innerWidth, viewportHeight: innerHeight, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth };
+      });
+      expect(bounds.left).toBeGreaterThanOrEqual(8); expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth - 8);
+      expect(bounds.top).toBeGreaterThanOrEqual(8); expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight - 8);
+      expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+      expect(await rowGeometry()).toEqual(before);
+      await testInfo.attach('leave-tip-geometry', { body: JSON.stringify(bounds), contentType: 'application/json' });
+    };
+    await leave.hover(); await checkTip();
+    await page.screenshot({ path: testInfo.outputPath('leave-tip.png'), fullPage: true });
+    await page.mouse.move(0, 0); await expect(tip).toHaveCount(0);
+    await leave.focus(); await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
+    await expect(leave).toBeFocused(); await checkTip();
+    await leave.hover(); await page.mouse.move(0, 0); await checkTip();
+    await leave.hover(); await selects.nth(1).focus(); await checkTip();
+    await page.mouse.move(0, 0); await expect(tip).toHaveCount(0);
+    await leave.focus(); await checkTip();
+    await page.keyboard.press('Escape'); await expect(tip).toHaveCount(0); await expect(leave).toBeFocused();
+    await page.keyboard.press('Enter'); await page.keyboard.press('Space');
+    await leave.evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.getByRole('dialog')).toHaveCount(0); expect(api.writes).toHaveLength(0);
+    expect(await rowGeometry()).toEqual(before);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await selects.nth(1).focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
     await expect(selects.nth(1)).toBeFocused();
@@ -397,6 +431,8 @@ test('member leaves and returns to Personal, keeping direct grant and browser pr
   const api = await install(page, 'member'); await start(page);
   await expect(page.getByLabel('Team role: Bob')).toBeDisabled();
   await expect(page.locator('.team-member-row').filter({ hasText: 'Bob' }).getByRole('button', { name: 'Remove' })).toBeDisabled();
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leave Team' })).not.toHaveAttribute('aria-describedby');
   await expect.poll(() => selected(page)).toBe(teamId);
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog'); await expect(dialog).toContainText('Project grants remain');
@@ -409,10 +445,14 @@ test('member leaves and returns to Personal, keeping direct grant and browser pr
   await expect(page.getByText('Personal Team membership and role are fixed.')).toBeVisible();
   await expect(page.getByLabel('Team role: Alice')).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Leave Team' })).toBeDisabled();
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leave Team' })).not.toHaveAttribute('aria-describedby');
 });
 
 test('an admin can leave with another admin, but a concurrent last-admin change is refused', async ({ page }) => {
   const api = await install(page); await start(page);
+  await expect(page.getByRole('tooltip', { includeHidden: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leave Team' })).not.toHaveAttribute('aria-describedby');
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog');
   api.members.get(bob)!.role = 'member';

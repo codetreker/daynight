@@ -600,22 +600,24 @@ describe("worker runtime configuration reporting", () => {
     restart.signal.abort(); await restarted;
   });
 
-  it("retains Web settings and refuses an explicit Herdr target", async () => {
+  it("applies Web settings with retired cloud members and diagnoses an invalid current native target", async () => {
     const f = await fixture();
     await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "web", agentReasoningEffort: "high" } }));
-    target = { ...target, value: { ...target.value, native: { agent: "codex", model: "cloud-model", args: ["--effort", "medium"] }, projects: [] } };
+    const retiredTarget = { ...target, value: { ...target.value, agentControlMode: "herdr" as const, toolPaths: { ...target.value.toolPaths!, herdr: { kind: "auto" } }, native: { agent: "codex" as const, model: "cloud-model", args: ["--effort", "medium"] }, projects: [] } };
+    target = retiredTarget;
     const running = start(f);
     await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")).toBe(true));
     await vi.advanceTimersByTimeAsync(30_000);
     await eventually(() => expect(report.mock.calls.some(([, body]) => body.runtimeConfiguration?.native?.reasoningEffort.value === "high")).toBe(true));
     const web = update.mock.calls.find(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")![0];
     expect(web.globalConfiguration).toMatchObject({ args: ["--effort", "high"] });
-    target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "herdr", native: { ...target.value.native, args: [] } } };
+    target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "herdr", native: { ...target.value.native, model: " ", args: [] } } };
     const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
     await manager.receive(receivedDesired(target), "0");
     expect(manager.current().desired).toBeNull();
     expect(manager.current().effective.native).toBeNull();
     expect(manager.report().observation).toBeNull();
+    expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: "Worker configuration revision 2 is missing required settings or contains unsupported current values; correct the target before applying it." }));
     expect(update.mock.calls.every(([configuration]) => configuration.globalConfiguration === null || configuration.globalConfiguration.agentControlMode === "web")).toBe(true);
     f.signal.abort(); await running;
   });

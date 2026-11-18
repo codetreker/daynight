@@ -30,6 +30,14 @@ the existing history witness and project-scoped direction preference. The
 keeps the displayed Goal graph mounted through project epoch retirement while old
 resource qualifications and details retire.
 
+The Goal graph header also opens its own Goal through a secondary Goal details
+button below the close control. It passes the actual button and Goal ID through
+the existing graph reader, retaining the graph witness, overlay owner, browser
+history and focus return target. The same header is used in normal and fullscreen
+modes; a separate action column keeps both controls reachable beside a wrapping
+title. Empty Goals and retained graphs with refresh errors use the same action.
+Ordinary chains and embedded graphs keep their existing entrances.
+
 The [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
 own the user-visible contract and the [inspection design](../../../../docs/design/daynight-task-inspection.md#goal-整体图)
 owns projection, framing and reading ownership. The existing
@@ -50,6 +58,11 @@ omit valid members and conflate ownership with dependency connectivity.
 duplicate viewport, focus, Escape and overlay behavior and could diverge from
 ordinary graph reading.
 
+**Create a separate Goal reader or navigate away from the graph.** The existing
+typed reader already owns permission checks, drafts, layered Escape and history.
+Another reader would duplicate those rules, while leaving the graph would lose
+the retained reading and focus context.
+
 **Expand external prerequisites into their chains.** This would include work the
 Goal's members do not directly depend on and obscure the scope being examined.
 The existing chain graph remains available for navigating that context.
@@ -57,7 +70,9 @@ The existing chain graph remains available for navigating that context.
 ## Consequences
 
 Readers see the full Goal scope and direct external prerequisites without
-changing the background list. Complete DOM and layout costs grow with the full
+changing the background list. They can read the owning Goal directly and return
+to the same graph control without resetting graph state. The header reserves
+additional vertical space for its close and detail actions. Complete DOM and layout costs grow with the full
 projection; unlike a chain graph, this view does not progressively limit its
 initial node set. The initial viewport preserves readable scale, while explicit
 overview can fit the full bounds at a smaller zoom.

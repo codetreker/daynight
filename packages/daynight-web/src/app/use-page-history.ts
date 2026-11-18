@@ -164,7 +164,7 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
       } });
     }
   }, [onPage, error, selection, selected, location, navigation, userId, projectId, key, fence, generation, retired, readSelection, carry, mismatch, urlSection]);
-  const select = (next: ProjectReading, replace = false, onCommit?: () => void, consumeFragment = false) => {
+  const select = (next: ProjectReading, replace = false, onCommit?: () => void, consumeFragment: boolean | 'chain' = false) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (entryId !== null) fence.entries.set(entryId, generation); };
     const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
@@ -172,9 +172,10 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
       url.searchParams.set('tab', next.section);
       url.hash = '';
     }
+    if (next.section !== selection.section || consumeFragment === 'chain') url.searchParams.delete('chain');
     const view = projectHistory(userId, projectId, next);
     if (location.entryId === null && consumeFragment) nativeViews.current.set(view, { key, fence, generation });
-    navigation.setView(view, { to: url.pathname + url.search + url.hash, replace: replace || consumeFragment, preserveNative: consumeFragment, onCommit: () => { record(); onCommit?.(); } });
+    navigation.setView(view, { to: url.pathname + url.search + url.hash, replace: replace || Boolean(consumeFragment), preserveNative: Boolean(consumeFragment), onCommit: () => { record(); onCommit?.(); } });
   };
   return { selection, select, error };
 }

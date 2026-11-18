@@ -108,7 +108,7 @@ func decodeWorkerClaimObject(w http.ResponseWriter, request *http.Request, allow
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
-	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
+	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "taskTagFilterKey"}, claimWorkerInput, h.tasks.ClaimWorker)
 }
 
 func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -177,6 +177,13 @@ func claimWorkerInput(fields map[string]json.RawMessage) (taskcore.ClaimWorker, 
 	}
 	input.WorkerDescriptor, err = workerDescriptorInput(fields)
 	if err != nil {
+		return taskcore.ClaimWorker{}, err
+	}
+	input.TaskTagFilterKey, err = httpx.OptionalString(fields, "taskTagFilterKey")
+	if err != nil {
+		return taskcore.ClaimWorker{}, err
+	}
+	if err = taskcore.ValidateTaskTagFilterKey(input.TaskTagFilterKey); err != nil {
 		return taskcore.ClaimWorker{}, err
 	}
 	return input, nil

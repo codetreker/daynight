@@ -362,9 +362,9 @@ credential and prompt owners retain drafts and operation results across tab
 navigation; neither secrets nor drafts enter the URL or history state. Leaving the
 account still protects unsaved prompt edits, and continuing editing restores the
 prompt URL and focus. See the [tab URL decision](../../.agents/notes/implemented/feature/2026-11-17-account-tab-urls.md).
-Worker monitoring, configuration and prompts tabs also participate in Back and
-Forward, scoped to the current user and Worker; both editing owners retain their
-drafts and operation state.
+Worker runtime monitoring, system monitoring, configuration and prompts tabs
+also participate in Back and Forward, scoped to the current user and Worker;
+both editing owners retain their drafts and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -454,8 +454,13 @@ Members & invitations links. Native links preserve direct access, reload and bro
 history; the navigation wraps on narrow screens. General displays the saved name
 with its rename action, the selectable Team ID with an adjacent copy button for every
 viewer, and a separate deletion panel at the bottom. Its native disclosure starts closed and retains its state within the same Team settings instance across section, locale and background updates; operation errors remain visible outside it. Members & invitations contains
-the roster and its existing role, removal and self-departure actions, followed by
-admin-only invitation management. The
+the roster and its role, removal and self-departure actions, followed by
+admin-only invitation management. An ordinary Team's sole administrator sees the
+last-admin reason on hover or focus of their unavailable Leave Team button. The
+focusable button exposes its reason to assistive technology and has no departure
+handler. The viewport-contained overlay preserves roster geometry, stays open
+while hovered or focused, and closes on Escape or when both end. Other disabled
+states retain native disabled controls. The
 [settings sections decision](../../.agents/notes/implemented/feature/2026-11-10-team-settings-sections.md)
 records the grouping and lifetime choices.
 
@@ -547,13 +552,13 @@ unavailable for editing.
 ## My Workers
 
 The account-owned `/workers` list shows Workers that have reported within the
-last 72 hours. `/workers/{workerId}` presents Runtime monitoring, Configuration
-and Prompts as peer tabs, defaulting to Runtime monitoring. Arrow keys wrap
-between tabs and Home and End select the first and last; tab and panel
-accessibility associations and hidden-panel isolation remain intact. Runtime
-observations retain that window, while cloud configuration and the Worker prompt
-are independent resources. Configuration includes tool paths; Prompts contains
-the Worker prompt editor. Both routes support direct access, reloads and
+last 72 hours. `/workers/{workerId}` presents Runtime monitoring, System
+monitoring, Configuration and Prompts as peer tabs, defaulting to Runtime
+monitoring. Arrow keys wrap between tabs and Home and End select the first and
+last; tab and panel accessibility associations and hidden-panel isolation remain
+intact. Both monitoring tabs share the Worker snapshot and its window, while
+cloud configuration and the Worker prompt are independent resources.
+Configuration includes tool paths; Prompts contains the Worker prompt editor. Both routes support direct access, reloads and
 login return destinations. They mount inside the existing authenticated
 workspace and share its navigation, styles and language. Sidebar project loading
 or failure does not admit or block Worker reads. Worker ID participates in the
@@ -572,8 +577,9 @@ change that relative order.
 The list also reads current monitoring summaries in batches of at most 100 loaded
 Worker IDs. Cards show the scheduling phase and capacity, including the capacity
 stale indicator, without admission reasons or monitoring timestamps and age.
-Detail shows scheduling and admission, actual capacity, parallel
-activities, current failures and the latest recovery before host resources. Task
+Runtime monitoring shows scheduling and admission, actual capacity, parallel
+activities, current failures and the latest recovery. System monitoring separately
+shows host resources, environment and software. Task
 associations open the existing task detail; fixed diagnostic categories and real
 retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
 
@@ -589,10 +595,20 @@ Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
-The detail overview places the current task panel or retained task snapshot after read and offline notices, before runtime monitoring and host telemetry. Its DOM order matches the visual and keyboard order.
+Runtime monitoring places a single monitoring time line after Worker read and
+offline notices, before the current task panel or retained task snapshot. It
+preserves the received status, relative age and absolute capture time, using the
+same read state and expiry rule as the monitoring body. Loading, absent and
+expired observations hide the line; a failed refresh retains it while the
+retained observation remains displayable. The task panel remains the first
+business panel, followed by monitoring errors and retry, projection notices and
+runtime details. DOM order matches the visual and keyboard order, and the time
+line wraps naturally at narrow widths. System monitoring shares the same Worker
+snapshot and clock without another read on tab selection; its refresh reads only
+the snapshot and does not display runtime monitoring errors.
 
-Detail resource cards render actual OS type/release/version/architecture, CPU
-model/logical processor count/use, used/total memory and available/total capacity
+System monitoring resource cards render actual OS type/release/version/architecture,
+CPU model/logical processor count/use, used/total memory and available/total capacity
 of the startup working directory's filesystem. Capacity readings use localized
 IEC units while the API retains exact byte values. The directory is explicit; there
 is no inferred physical core count or fabricated device label. Zero capacity is
@@ -621,7 +637,7 @@ complete collection and exposes retry. Its last response supplies `observedAt`
 and the paired `performance.now()` receipt for a common server-time anchor.
 Online means less than 120 seconds since `lastReportedAt`; exactly 120 seconds
 is offline. Exactly 72 hours remains recent; later observations disappear, and
-an expired runtime overview becomes unavailable. This does not clear or block
+expired monitoring views become unavailable. This does not clear or block
 the Configuration tab. Browser wall-clock changes do not affect
 these rules.
 
@@ -728,8 +744,13 @@ admin. Background checks preserve the dialog and its paged selection; transfer
 waits for current authorization and verifies ownership again. The dialog accepts a Team selected from the paged
 membership list, a UUID, or a same-origin Team page URL. Preview displays the
 target and predicted access before confirmation. The request binds the observed
-ownership and target versions and the authenticated user; conflicts require a
-new preview and confirmation. Direct grants and invitations remain intact.
+ownership and target versions and the authenticated user; ownership or target
+version conflicts require a new preview and confirmation. Repository conflicts
+and an unrecognizable current repository address have dedicated English and
+Chinese errors in the existing dialog. Confirmed refusals retain the target,
+preview and request ID without closing the editor or navigating. Creation uses
+the same repository-conflict explanation while retaining its name, address and
+original Team. Direct grants and invitations remain intact.
 
 A validated receipt determines success. Retained access is installed in the
 Project access session; loss of access revokes the matching Task cache generation
@@ -1070,7 +1091,10 @@ Failures stay visible and retryable. Trusted same-user project 404 responses
 withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md) records the rationale for the versioning, HTTP cache and scan-cost trade-offs.
 
-The task toolbar orders Assignee, Status and Tag filter. The ordinary Goal view
+The ordinary task toolbar orders Assignee, Status, Platform and Tag filter. The
+platform selection is shared by standalone and chain views for the project visit;
+All tasks is unrestricted, Any platform matches only an unset requirement, and
+Linux, Windows and macOS match exactly. Goal and search omit this condition. The ordinary Goal view
 adds one Child task tag filter after them, applying the same condition to every
 Goal's direct-child rows. Child filtering is independent of each Goal's own tags
 and retains its selection through category changes, pagination and collapse.
@@ -1097,10 +1121,12 @@ write after matching the Tag and color versions. Conflicts preserve the draft;
 an unknown write is not resent and a later read cannot prove its outcome.
 
 Assignee supports All, Assigned to me, Unassigned and a person; status supports
-all five Task statuses. Project conditions must match the same task before
+all five Task statuses. Platform uses the synchronized requirement without extra
+requests. Project conditions must match the same task before
 pagination. Standalone rows match directly; a chain with any matching ordinary
 member retains its real representative and all ordinary children. Changing
-project filters resets the task lists to page one. Full-chain progress, readiness,
+assignee, status or tag filters resets the task lists to page one; changing
+platform resets only the two ordinary lists. Full-chain progress, readiness,
 dependencies, statistics and graph use the complete index. Child filtering also
 preserves Goal composition, in-progress and pause counts, and Session summaries.
 Overview positioning adjusts project filters that hide its target. Tag panels
@@ -1195,8 +1221,9 @@ Each Task current flight retains its slot until transport and admission waiting
 settle, including cancelled requests. Archive-ready final identity checks defer
 until visible and still verify the original execution and archive content.
 Completed current discovery rechecks tab, document and request identity after
-`scope.ready` and every subsequent wait. Herdr keeps its existing hidden-channel
-and lease-release policy; independent Test/Bot authority observation is unchanged.
+`scope.ready` and every subsequent wait. Historical Herdr discovery follows the
+same visibility and request-identity checks while reading the recording catalogue.
+Independent Test/Bot authority observation is unchanged.
 The [Task Session requirements](../../docs/spec/task-sessions.md#task-详情的完整-current-读取)
 and [current-read design](../../docs/design/task-session-protocol.md#task-current-的读取可见性)
 own these boundaries.
@@ -1214,36 +1241,33 @@ The [requirements](../../docs/spec/task-sessions.md#session-显示模式) own th
 display rules; the [Session design](../../docs/design/task-session-protocol.md#session-显示菜单与入口绑定)
 owns identity binding, menu behavior and preference integration.
 
-## Herdr Sessions and recordings
+## Task Sessions and historical recordings
 
-The task Session host keeps the native Web timeline and dispatches Herdr executions
-to a read-only terminal preview with explicit control acquisition. Current project
-access permits reading both modes, while only the persisted Session owner may
-send messages, answer requests, change settings, run commands, interrupt a turn
-or control the terminal. Other project administrators and members retain live
-content, history, resources, Display, Refresh and fullscreen with execution
-interactions disabled. Native clients bind the verified claim owner; terminal
-clients check the validated owner identity separately from lifecycle and transport.
-Their local gates supplement the server owner check.
-
-Hidden terminal views close their viewer channel and release the browser lease; Worker recording
-continues independently. Controls become available only after Worker confirmation.
-During hidden state or account-change waiting, the last confirmed screen, draft and
-same-control confirmation remain in place while input, receipt polling and lease
-renewal pause. A recovery read alone does not permit input: a fresh channel
-observation matching the current fence and control epoch is also required.
-Actual disconnections and errors remain visible.
-Unknown initial submission disposition and resuming automatic input require
-separate decisions. Unknown manual input is never automatically resent.
+The task Session host displays active Web executions through the native timeline.
+Current project access permits reading, while only the persisted Session owner
+may send messages, answer requests, change settings, run commands or interrupt a
+turn. Other project administrators and members retain live content, history,
+resources, Display, Refresh and fullscreen with execution interactions disabled.
+Native clients bind the verified claim owner, and their local gates supplement
+the server owner check.
 
 The main Session tab automatically follows the task's actual claim and lifecycle,
-without an execution-record selector or catalogue refresh row. Active claims keep
-their existing Web or Herdr reader; a claim waiting for registration never borrows
-an older Session. Completed claims resolve their original Session through a
-read-only current request and display fixed history without input or control
-operations. Task completion does not imply archive readiness: pending, failed and
-unavailable archives retain their status and recovery action. Opening, refreshing
-or reconnecting the page does not launch a native conversation or resend input.
+without an execution-record selector or catalogue refresh row. An active Web claim
+keeps its native reader; a claim waiting for registration never borrows an older
+Session. Completed Web claims resolve their original Session through a read-only
+current request and display fixed history without input or control operations.
+Historical Herdr claims, including claims still marked active, resolve only
+through recording history matched to the original claim and mode. Discovery
+continues through all catalogue pages, rejects repeated cursors, and shows an
+unavailable state when no matching record exists.
+
+Already uploaded Herdr recordings retain their original identity and access
+permissions and provide read-only terminal playback. Reading does not connect to
+Herdr or the old Worker, acquire a control lease, send input or resume recording.
+Existing Herdr tasks, processes and resources remain the user's responsibility.
+Task completion does not imply archive readiness: pending, failed and unavailable
+archives retain their status and recovery action. Opening, refreshing or
+reconnecting the page does not launch a native conversation or resend input.
 
 With no claim, the tab may show the latest actual Session as read-only history.
 Only a confirmed complete empty inventory hides the tab; initial reads and
@@ -1276,7 +1300,7 @@ Verified complete frames support direct seeking, stepping and playback; partial
 recordings remain labeled and playback stops at every gap until the reader
 explicitly continues. Archive reading establishes no control connection.
 The [Herdr Session Web design](../../docs/design/herdr-session-web.md) owns
-identity, verification, control and playback behavior.
+historical identity, archive verification and read-only playback behavior.
 
 ## Task discussions
 
@@ -1458,7 +1482,7 @@ internal state styles for both icon-only and text actions. Its CSS is imported
 by the component. Consumers provide localized labels, actions and external
 layout, while retaining clipboard writes, admission, pending and feedback
 lifecycles. `ValueCopyButton` serves Task and Goal rows and Task/Goal details; other
-features retain their own asynchronous flows. See the [UI principles](../../docs/ui-design.md#share-copy-button-presentation)
+features retain their own asynchronous flows. See the [Web design](../../docs/design/daynight-web.md#复制控件的职责)
 for geometry, focus and disabled presentation.
 
 ## Shared native selection
@@ -1471,7 +1495,7 @@ arrow and the stateless SelectTrigger for real button or summary hosts. Its CSS
 owns common tokens and custom trigger presentation. It
 supports native single-line, size-based list and multiple selection. The [component design](../../docs/design/native-select.md)
 owns its props, geometry, touch modes and popup-helper usage. The
-[UI principles](../../docs/ui-design.md#share-native-selection-presentation)
+[UI principles](../../docs/ui-design.md#shared-controls)
 own the reuse rules.
 
 Pages provide their options, value, labels, constraints, event handlers and real
@@ -1596,7 +1620,7 @@ exact newest-first order remains stable; the standalone aggregate follows
 matching-status chains.
 Pagination shows the current item range and filtered total with previous/next
 controls; one-page results have no pager. Each list retains its own page during
-the project visit. Changing either filter resets both task lists to page one; shrinking
+the project visit. Changing assignee, status, tag or platform resets both ordinary task lists to page one; shrinking
 results clamp the page immediately. These display slices do not truncate the
 cached graph, statistics, Goal progress or dependency context, and do not add
 requests or stored page preferences.
@@ -1697,7 +1721,7 @@ prerequisite context does not contribute to chain progress or status. The former
 shared-membership badge is removed: a task can recur as context while its actual
 component membership remains unique.
 
-Both categories share assignee and status filters and the current
+Both categories share assignee, status, platform and tag filters and the current
 task-list page position; category switching does not restore an older offset. Chain
 ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The

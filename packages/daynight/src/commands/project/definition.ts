@@ -9,7 +9,7 @@ export const projectDefinition: CommandDefinition = {
   commands: [
     {
       name: "create",
-      description: "Create a project unless its repository is already registered",
+      description: "Create a project unless its repository is already registered in the target Team",
       arguments: [{ name: "name", description: "Project name" }],
       allowOptionsTerminator: true,
       options: [
@@ -18,7 +18,7 @@ export const projectDefinition: CommandDefinition = {
         { names: ["--confirm"], description: "Confirm creation without prompting" },
         helpOption,
       ],
-      details: "Without --repo, use the current Git worktree's effective origin fetch address.\nAn explicit --repo works outside Git and overrides the current repository.\nRead all server projects and return an existing project with an equivalent repository address.\nMultiple matching projects require choosing an existing project by its ID.\nOnly a new project resolves --team, the configured default, or Personal and requires confirmation.\nNew creation submits the original name and repository address to the configured server.\nFor a name beginning with a dash, put options first and use -- before the name.",
+      details: "Without --repo, use the current Git worktree's effective origin fetch address.\nAn explicit --repo works outside Git and overrides the current repository.\nResolve --team, the configured default, or Personal, then read all accessible projects.\nReturn an equivalent repository owned by that Team; multiple matches are an error.\nOnly a new project requires Team membership and creation confirmation.\nNew creation submits the original name and repository address to the configured server.\nFor a name beginning with a dash, put options first and use -- before the name.",
     },
     {
       name: "delete",

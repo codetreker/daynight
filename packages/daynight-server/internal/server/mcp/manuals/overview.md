@@ -8,16 +8,16 @@ Read this overview before using Daynight tools. Use `tools/list` for current inp
 | --- | --- |
 | Establish Account, Team or Project context; resolve a repository | [Concepts](daynight://manuals/concepts.md) |
 | Inspect Tasks/Goals, list ready work or read properties | [Task reads](daynight://manuals/tasks.md) |
-| Create or delete Tasks/Goals, or change metadata, status or properties | [Task writes](daynight://manuals/task-writes.md); [Materials](daynight://manuals/materials.md) when defining or replacing formal material; [Dependencies](daynight://manuals/dependencies.md) when setting relationships |
+| Create or delete Tasks/Goals, or change metadata, status or properties | [Task writes](daynight://manuals/task-writes.md); [Materials](daynight://manuals/materials.md) when defining or replacing formal material; [Dependency writes](daynight://manuals/dependency-writes.md) when setting relationships |
 | Read a dependency graph | [Dependencies](daynight://manuals/dependencies.md) |
-| Replace or reduce dependency relationships | [Dependencies](daynight://manuals/dependencies.md) |
+| Replace or reduce dependency relationships | [Dependency writes](daynight://manuals/dependency-writes.md) |
 | Organize requirements, designs, shared sources or results | [Materials](daynight://manuals/materials.md) |
 | Read or maintain Steps | [Steps](daynight://manuals/steps.md) |
 | Read or post participant discussion | [Threads](daynight://manuals/threads.md) |
 | Read attachment metadata/bytes or resolve paths | [Attachment reads](daynight://manuals/attachment-reads.md) |
 | Publish or remove attachments | [Attachment writes](daynight://manuals/attachment-writes.md); Attachment reads for unknown path rules or reading back bytes |
 | Observe ongoing work, locate or inspect Sessions | [Session reads](daynight://manuals/session-reads.md) |
-| Read Session history or complete entries | [Session reads](daynight://manuals/session-reads.md) |
+| Read Session history or complete entries | [Session history](daynight://manuals/session-history.md) |
 | Send to an exact Session or query its original operation | [Session messages](daynight://manuals/session-messages.md); Session reads when target identity, state or admission must be established |
 | Hand off work or complete an explicitly owned Worker claim | [Worker operations](daynight://manuals/worker-operations.md) |
 

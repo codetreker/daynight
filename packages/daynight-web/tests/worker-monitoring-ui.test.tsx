@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { WorkerMonitoringDetail, WorkerMonitoringItem } from '../src/api/worker-monitoring';
 import { taskDetailUrl } from '../src/app/router';
-import { MonitoringCard, WorkerMonitoring } from '../src/features/workers/WorkerMonitoring';
+import { MonitoringCard, WorkerMonitoring, WorkerMonitoringTime } from '../src/features/workers/WorkerMonitoring';
 import type { WorkerReadState } from '../src/features/workers/useWorkerObservation';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
@@ -97,16 +97,21 @@ it.each([
 it('distinguishes loading, absent, read error, stale and expiry at their boundaries', () => {
   const refresh = vi.fn();
   const failed = { ...state(null, null), status: 'error' as const, error: new ApiError('network'), refresh };
-  const view = renderWithLocale(<WorkerMonitoring state={failed} readEnabled />, { locale: 'en' });
+  const content = (observation: Parameters<typeof WorkerMonitoring>[0]['state']) => <><WorkerMonitoringTime state={observation} /><WorkerMonitoring state={observation} readEnabled /></>;
+  const view = renderWithLocale(content(failed), { locale: 'en' });
   expect(screen.getByRole('alert')).toHaveTextContent('Runtime monitoring could not be updated'); expect(screen.queryByText('No recent runtime observation')).toBeNull();
+  expect(document.querySelector('.monitoring-time')).toBeNull();
   fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 89_999)} readEnabled />); expect(screen.queryByText(/Runtime observation is stale/)).toBeNull();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 90_000)} readEnabled />); expect(screen.getByText(/Runtime observation is stale/)).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 3_599_999)} readEnabled />); expect(screen.getByText('2 / 2')).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 3_600_000)} readEnabled />); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument(); expect(screen.queryByText('2 / 2')).toBeNull();
+  view.rerender(content(state(detail, time + 89_999))); expect(screen.queryByText(/Runtime observation is stale/)).toBeNull();
+  expect(document.querySelector('.monitoring-time')).toHaveTextContent('Received');
+  view.rerender(content(state(detail, time + 90_000))); expect(screen.getByText(/Runtime observation is stale/)).toBeInTheDocument();
+  view.rerender(content(state(detail, time + 3_599_999))); expect(screen.getByText('2 / 2')).toBeInTheDocument();
+  expect(document.querySelector('.monitoring-time')).toHaveTextContent('Captured');
+  view.rerender(content(state(detail, time + 3_600_000))); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument(); expect(screen.queryByText('2 / 2')).toBeNull();
+  expect(document.querySelector('.monitoring-time')).toBeNull();
   const absent: WorkerMonitoringDetail = { observedAt: receivedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' };
-  view.rerender(<WorkerMonitoring state={state(absent)} readEnabled />); expect(screen.getByText('No recent runtime observation')).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={{ ...state(absent), expired: true }} readEnabled />); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument();
+  view.rerender(content(state(absent))); expect(screen.getByText('No recent runtime observation')).toBeInTheDocument();
+  view.rerender(content({ ...state(absent), expired: true })); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument();
 });
 
 const summary: Extract<WorkerMonitoringItem, { state: 'available' }> = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: {
@@ -167,11 +172,30 @@ it('omits reason and timestamps for empty, partial, restricted and withdrawn adm
   view.rerender(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, admission: null } }} now={time} />); assertSummary();
 });
 
-it('marks capacity responsibility truncation even with a nonempty list', () => {
+it('retains the general truncation notice when reservations are nonempty', () => {
   const partial: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, capacity: { ...detail.data.capacity!, detailCoverage: 'partial' } } };
   renderWithLocale(<WorkerMonitoring state={state(partial)} readEnabled />, { locale: 'en' });
   expect(screen.getByText('Some details were omitted.')).toBeInTheDocument();
   expect(screen.getAllByRole('link', { name: 'Private task' }).length).toBeGreaterThan(0);
+  expect(screen.queryByRole('heading', { name: 'Capacity responsibilities' })).toBeNull();
+});
+
+it.each(['en', 'zh-CN'] as const)('omits reservation sections for empty, populated and restricted partial observations in %s', locale => {
+  const name = locale === 'en' ? 'Capacity responsibilities' : '容量责任';
+  const reservationOnly = { ...detail.data.reservations[0]!, association: { ...association, title: 'Reservation-only task' } };
+  const view = renderWithLocale(<WorkerMonitoring state={state({ ...detail, data: { ...detail.data, reservations: [reservationOnly] } })} readEnabled />, { locale });
+  const assertAbsent = () => {
+    expect(screen.queryByRole('heading', { name })).toBeNull();
+    expect(screen.queryByText('Reservation-only task')).toBeNull();
+    expect(view.container.querySelector('.monitoring-reservations')).toBeNull();
+  };
+  assertAbsent();
+  view.rerender(<WorkerMonitoring state={state({ ...detail, data: { ...detail.data, reservations: [] } })} readEnabled />);
+  assertAbsent();
+  view.rerender(<WorkerMonitoring state={state({ ...detail, permissionProjection: 'restricted', detailCoverage: 'partial', data: { ...detail.data, reservations: [reservationOnly] } })} readEnabled />);
+  assertAbsent();
+  expect(screen.getByText(locale === 'en' ? 'Some task details are not visible.' : '部分任务详情不可见。')).toBeInTheDocument();
+  expect(screen.getByText(locale === 'en' ? 'Some details were omitted.' : '部分详情已省略。')).toBeInTheDocument();
 });
 
 it.each([['completed', 'Completed', '已完成'], ['failed', 'Failed', '失败'], ['cancelled', 'Cancelled', '已取消'], [null, 'Not observed', '尚未观测']] as const)('shows the actual scheduler result %s in both languages', (outcome, english, chinese) => {

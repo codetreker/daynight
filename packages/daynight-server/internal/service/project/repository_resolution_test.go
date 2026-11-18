@@ -48,7 +48,7 @@ func (f *repositoryCreationPlan) CreationTeamMember(ctx context.Context, id stri
 	}
 	return true, nil
 }
-func (f *repositoryCreationPlan) InsertProject(ctx context.Context, id, name, address, team string) (model.Project, model.ProjectAccess, error) {
+func (f *repositoryCreationPlan) InsertProject(ctx context.Context, id, name, address, identity, team string) (model.Project, model.ProjectAccess, error) {
 	f.inserts++
 	if ctx != f.ctx || uuid.Validate(id) != nil || name != "Repository" || address != resolveAddress || team != resolveTeam {
 		f.t.Fatalf("unexpected creation: %s %s %s %s", id, name, address, team)
@@ -62,6 +62,20 @@ func resolveCandidate(id, address string) model.Project {
 }
 func resolveCall(page store.Page, result store.ProjectPage, err error) completionProjectReadCall {
 	return completionProjectReadCall{name: "scoped", args: []any{resolvePrincipal, store.ProjectScope{Kind: store.ProjectScopeAll}, page}, result: result, err: err}
+}
+func creationMatchCall(items []model.Project, err error) completionProjectReadCall {
+	return completionProjectReadCall{name: "creation matches", args: []any{resolvePrincipal, resolveTeam, "github.com/Org/Repo"}, result: items, err: err}
+}
+func (s *completionProjectReadPlan) FindVisibleRepositoryForCreation(ctx context.Context, principal model.Principal, teamID, identity string) ([]model.Project, error) {
+	call := s.take(ctx, "creation matches", principal, teamID, identity)
+	if call.result == nil {
+		return nil, call.err
+	}
+	items, ok := call.result.([]model.Project)
+	if !ok {
+		s.t.Fatal("creation match read requires explicit result facts")
+	}
+	return items, call.err
 }
 func resolveFault(t *testing.T, err error, code string) {
 	t.Helper()
@@ -223,7 +237,7 @@ func TestRegisterRepositorySnapshotAndCreationGuard(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
-			plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{resolveCall(store.Page{Limit: 100}, store.ProjectPage{Items: tc.items}, nil)})
+			plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{creationMatchCall(tc.items, nil)})
 			fixture := &repositoryCreationPlan{completionProjectReadPlan: plan}
 			got, created, err := NewProjects(fixture).RegisterRepository(ctx, resolvePrincipal, input, tc.confirm)
 			if tc.code != "" {
@@ -256,7 +270,7 @@ func TestRegisterRepositoryDoesNotCreateAfterSnapshotFailure(t *testing.T) {
 	failure := errors.New("snapshot completion failed")
 	for _, items := range [][]model.Project{nil, {existing}, {existing, existing}} {
 		ctx := t.Context()
-		plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{resolveCall(store.Page{Limit: 100}, store.ProjectPage{Items: items}, nil)})
+		plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{creationMatchCall(items, nil)})
 		plan.completion = failure
 		fixture := &repositoryCreationPlan{completionProjectReadPlan: plan}
 		got, created, err := NewProjects(fixture).RegisterRepository(ctx, resolvePrincipal, input, true)
@@ -264,4 +278,25 @@ func TestRegisterRepositoryDoesNotCreateAfterSnapshotFailure(t *testing.T) {
 			t.Fatalf("result=%+v created=%v error=%v writes=%d", got, created, err, fixture.writes)
 		}
 	}
+}
+
+func TestRegisterRepositoryDoesNotCreateAfterMatchQueryFailure(t *testing.T) {
+	team := resolveTeam
+	input := core.CreateProject{Name: "Repository", RepoURL: resolveAddress, TeamID: &team, ExpectedUserID: resolvePrincipal.UserID}
+	failure := errors.New("match query failed")
+	ctx := t.Context()
+	plan := newCompletionProjectReadPlan(t, ctx, []completionProjectReadCall{creationMatchCall(nil, failure)})
+	plan.callbackErr = failure
+	fixture := &repositoryCreationPlan{completionProjectReadPlan: plan}
+	got, created, err := NewProjects(fixture).RegisterRepository(ctx, resolvePrincipal, input, true)
+	if !errors.Is(err, failure) || !reflect.DeepEqual(got, model.Project{}) || created || fixture.writes != 0 {
+		t.Fatalf("result=%+v created=%v error=%v writes=%d", got, created, err, fixture.writes)
+	}
+}
+
+func (f *repositoryCreationPlan) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	if ctx != f.ctx || team != resolveTeam || identity != "github.com/Org/Repo" {
+		f.t.Fatal("unexpected repository occupancy")
+	}
+	return false, nil
 }

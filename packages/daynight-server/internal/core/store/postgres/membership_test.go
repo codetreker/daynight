@@ -31,7 +31,7 @@ func TestMembershipStorageFailureRollsBackProjectCreation(t *testing.T) {
 		CREATE TRIGGER reject_member BEFORE INSERT ON project_grants FOR EACH ROW EXECUTE FUNCTION reject_member()`)
 	id := uuid.NewString()
 	completion, err := s.WriteProjectCreation(ctx, admin.UserID, func(dao store.ProjectCreationDAO) error {
-		_, _, err := dao.InsertProject(ctx, id, "Rollback", "https://example.com/rollback", project.Ownership.TeamID)
+		_, _, err := dao.InsertProject(ctx, id, "Rollback", "https://example.com/rollback", "example.com/rollback", project.Ownership.TeamID)
 		return err
 	})
 	var databaseError *store.Error

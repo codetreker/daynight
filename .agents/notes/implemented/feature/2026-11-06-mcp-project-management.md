@@ -11,12 +11,9 @@ transfer preconditions.
 ## Decision
 
 The Project MCP tools use the shared authenticated entry and existing Project
-use cases. Repository registration compares normalized identities across the
-caller's visible Projects in a snapshot. A unique match is reused, multiple
-matches are refused, and a new Project requires explicit confirmation. The
-stored address remains unchanged. Transfer submits the observed source
+use cases. The later [Team-scoped reuse decision](../architecture/2026-11-18-mcp-team-repository-reuse.md) selects registration matches within the target Team. A unique match is reused, multiple matches are refused, and a new Project requires explicit confirmation. The stored address remains unchanged. Transfer submits the observed source
 ownership and destination Team versions and returns the actual receipt.
-Read-only repository resolution uses the same complete traversal and returns a
+Read-only repository resolution uses complete visible-project traversal and returns a
 Project only after its snapshot completes. It neither creates nor binds a Project;
 later operations recheck access.
 
@@ -35,9 +32,7 @@ Project services.
 
 ## Consequences
 
-Identification does not grant access or use a local Team default. Concurrent
-registrations can still create duplicate Projects; later discovery reports the
-ambiguity instead of selecting one. The identity rules must remain aligned with
-the CLI, including paths that cannot safely be treated as equivalent.
-The scan is linear in visible Projects, retaining one page and one match; an
-identity index would require coordinated identity versioning and migration.
+Identification does not grant access or use a local Team default. The later
+[Team uniqueness decision](../architecture/2026-11-18-team-project-repository-uniqueness.md)
+constrains actual creation and transfer within each owner Team; conflicting
+concurrent writes are refused. Cross-Team Projects can still make read-only discovery ambiguous. The identity rules remain aligned with the CLI, including paths that cannot safely be treated as equivalent. The resolution scan is linear in visible Projects, retaining one page and one match.

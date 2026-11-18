@@ -3188,6 +3188,7 @@ test.describe('Goal compact graph on touch screens', () => {
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal overview graph preserves reading and keyboard focus at ${width}px in ${locale}`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale); fixture.addGoalInspectionGraph();
+  const title = 'Long Goal 长标题 '.repeat(16).trim(); fixture.setGoalTitle(title);
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
@@ -3243,9 +3244,42 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await expect(dialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
   await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
   if (width === 1440 && locale === 'en') expect(await checkDependencyGeometry(page, topology, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+  const goalDetails = dialog.getByRole('button', { name: locale === 'en' ? 'Goal details' : 'Goal 详情', exact: true });
+  const readGoal = async (fullscreen: boolean) => {
+    await expect(goalDetails).toHaveAttribute('aria-haspopup', 'dialog');
+    await expectHit(goalDetails);
+    const layout = await dialog.evaluate(element => {
+      const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+      const header = box('.task-chain-header'), heading = box('.task-chain-heading'), close = box('.task-chain-close'), details = box('.goal-graph-header-actions .button'), toolbar = box('.graph-toolbar');
+      return { belowClose: details.top >= close.bottom, aboveToolbar: details.bottom <= toolbar.top, rightOfHeading: details.left >= heading.right,
+        insideHeader: details.left >= header.left && details.right <= header.right && details.top >= header.top && details.bottom <= header.bottom,
+        noOverflow: element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth };
+    });
+    expect(layout).toEqual({ belowClose: true, aboveToolbar: true, rightOfHeading: true, insideHeader: true, noOverflow: true });
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Zoom in' : '放大', exact: true }).click();
+    const transform = await viewport.getAttribute('style');
+    const nodePositions = await positions();
+    if (fullscreen) { await goalDetails.focus(); await page.keyboard.press('Enter'); } else await goalDetails.click();
+    const goalDetail = page.locator('.goal-detail-surface');
+    await expect(goalDetail).toBeVisible();
+    await expect(goalDetail.locator('.task-detail-title')).toHaveText(title);
+    await expect(goalDetail.getByRole('tab', { name: locale === 'en' ? 'Description' : '描述', exact: true })).toHaveAttribute('aria-selected', 'true');
+    if (fullscreen) await page.keyboard.press('Escape');
+    else await goalDetail.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
+    await expect(goalDetail).toHaveCount(0);
+    await expect(dialog).toBeVisible(); await expect(goalDetails).toBeFocused();
+    await expect(viewport).toHaveAttribute('style', transform!); expect(await positions()).toEqual(nodePositions);
+    await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
+    await expect(dialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+    expect(await dialog.evaluate(element => element.classList.contains('task-chain-dialog-fullscreen'))).toBe(fullscreen);
+    await expect(row.locator('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await page.screenshot({ path: info.outputPath(`goal-header-details-${width}-${locale}-${fullscreen ? 'fullscreen' : 'normal'}.png`) });
+  };
+  await readGoal(false);
   await dialog.locator('.graph-fullscreen-toggle').click();
   await expect(dialog.locator('.task-node')).toHaveCount(4);
   await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
+  await readGoal(true);
   await page.keyboard.press('Escape');
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
@@ -3254,6 +3288,39 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await opener.click();
   await expect(dialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
+  expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]);
+});
+
+test('Goal graph header details retain browser history and protect an unsaved Goal draft', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-graph-${goalId}`).click();
+  const graphDialog = page.locator(`#task-graph-${goalId}`);
+  const details = graphDialog.getByRole('button', { name: 'Goal details', exact: true });
+  await details.click();
+  const goalDetail = page.locator('.goal-detail-surface');
+  await expect(goalDetail).toBeVisible();
+  await page.goBack(); await expect(goalDetail).toHaveCount(0); await expect(details).toBeFocused();
+  await page.goForward(); await expect(goalDetail).toBeVisible();
+  await goalDetail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await expect(goalDetail).toHaveCount(0);
+  await expect(graphDialog.getByRole('button', { name: 'Close dependency graph', exact: true })).toBeFocused();
+  await details.click(); await expect(goalDetail).toBeVisible();
+  await goalDetail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = goalDetail.locator('.thread-composer textarea');
+  await draft.fill('Goal graph header reading draft');
+  await page.keyboard.press('Escape');
+  const confirm = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Goal graph header reading draft');
+  await goalDetail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await confirm.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(goalDetail).toHaveCount(0); await expect(details).toBeFocused();
+  await expect(graphDialog).toBeVisible();
+  expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]);
 });
 
 test('Empty Goal opens a graph without manufacturing nodes or a loading failure', async ({ page }) => {
@@ -3266,6 +3333,12 @@ test('Empty Goal opens a graph without manufacturing nodes or a loading failure'
   await expect(dialog).toContainText(/no tasks/i);
   await expect(dialog.locator('.task-node')).toHaveCount(0);
   await expect(dialog.locator('[role="alert"]')).toHaveCount(0);
+  const details = dialog.getByRole('button', { name: 'Goal details', exact: true });
+  await details.click();
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0); await expect(details).toBeFocused();
+  await expect(dialog.locator('.task-node')).toHaveCount(0);
 });
 
 
@@ -3296,6 +3369,13 @@ test('Goal graph preserves viewport on refresh and reports background failure wh
   const error = dialog.locator('[role="alert"]');
   await expect(error).toBeVisible();
   await expect(dialog.locator('.task-node')).toHaveCount(4);
+  const details = dialog.getByRole('button', { name: 'Goal details', exact: true });
+  await details.click();
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0); await expect(details).toBeFocused();
+  await expect(viewport).toHaveAttribute('style', transform!);
+  await expect(error).toBeVisible();
   await error.getByRole('button').click();
   await expect(error).toHaveCount(0);
   await expect(dialog.locator('.task-node')).toHaveCount(4);
@@ -3323,6 +3403,7 @@ test('Goal graph history and direction remain independent of other Goals and cha
   await restoreGoalGraph(page, sourceGoal);
   const chainDialog = page.locator('.task-chain-dialog');
   await expect(chainDialog.locator('[data-direction="horizontal"]')).toHaveAttribute('aria-checked', 'true');
+  await expect(chainDialog.getByRole('button', { name: 'Goal details', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await sourceGoal.getByRole('button', { name: 'Close task details' }).click();
   await firstOpener.click();
@@ -3480,4 +3561,21 @@ test('touch copies an empty terminal Goal', async ({ browser }) => {
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`http://127.0.0.1:4209/projects/${projectId}/tasks/${goalId}`);
     await expect(surface.locator('.task-detail-notifications').getByRole('status')).toHaveText('Link copied');
   } finally { await context.close(); }
+});
+
+test('shares the ordinary chain inside a Goal using its readable member', async ({ page, context }) => {
+  const state = await install(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  await restoreGoalGraph(page, page.locator('.goal-detail-surface'));
+  const graphDialog = page.locator('.task-chain-dialog');
+  await graphDialog.getByRole('button', { name: 'More task chain actions' }).click();
+  await graphDialog.getByRole('menuitem', { name: 'Copy link' }).click();
+  const target = `${new URL(page.url()).origin}/projects/${projectId}?tab=tasks&chain=${firstId}`;
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target);
+  await expect(graphDialog).toBeVisible();
+  await page.goto(target);
+  await expect(page.locator('.task-chain-dialog .react-flow__node')).toHaveCount(2);
+  await expect(page).toHaveURL(`${new URL(target).origin}/projects/${projectId}?tab=tasks`);
+  expect(state.statusWrites()).toEqual([]); expect(state.edits()).toEqual([]);
 });

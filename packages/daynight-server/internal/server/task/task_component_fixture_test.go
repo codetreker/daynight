@@ -220,10 +220,11 @@ func (mock *taskHTTPSnapshotScopeMock) ObservedAt(p0 context.Context) (time.Time
 
 type taskHTTPProjectScopeMock struct {
 	taskHTTPMockBase
-	CaptureDAOFn func() store.WebhookCaptureDAO
-	ProjectDAOFn func() store.ProjectWriteDAO
-	TaskDAOFn    func() store.TaskWriteDAO
-	SessionDAOFn func() store.ProjectSessionDAO
+	CaptureDAOFn              func() store.WebhookCaptureDAO
+	ProjectDAOFn              func() store.ProjectWriteDAO
+	TaskDAOFn                 func() store.TaskWriteDAO
+	SessionDAOFn              func() store.ProjectSessionDAO
+	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
 }
 
 func (mock *taskHTTPProjectScopeMock) EligibilityDAO() store.WebhookEligibilityDAO {
@@ -504,6 +505,11 @@ type taskHTTPProjectReaderMock struct {
 	taskHTTPMockBase
 	ProjectFn       func(context.Context, string) (model.Project, error)
 	ProjectAccessFn func(context.Context, model.Principal, string) (model.ProjectAccess, error)
+}
+
+func (mock *taskHTTPProjectReaderMock) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	mock.need("FindVisibleRepositoryForCreation", false)
+	panic("unreachable")
 }
 
 func (mock *taskHTTPProjectReaderMock) Project(p0 context.Context, p1 string) (model.Project, error) {
@@ -1117,4 +1123,26 @@ func (mock *taskHTTPProjectWriterMock) RotateTagCatalogEpoch(context.Context) er
 
 func (s *taskHTTPSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO {
 	panic("unexpected GitHubDAO access")
+}
+
+func (mock *taskHTTPProjectWriterMock) RepositoryIdentity(ctx context.Context) (*string, error) {
+	mock.need("RepositoryIdentity", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	mock.need("RepositoryOccupied", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", mock.WorkerClaimAdmissionDAOFn != nil)
+	return mock.WorkerClaimAdmissionDAOFn()
+}
+
+type taskHTTPClaimAdmission struct {
+	read func(context.Context, string, string) (*model.WorkerDesiredConfiguration, error)
+}
+
+func (m taskHTTPClaimAdmission) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
+	return m.read(ctx, user, worker)
 }

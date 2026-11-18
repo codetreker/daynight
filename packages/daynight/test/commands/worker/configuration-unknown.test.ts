@@ -114,7 +114,7 @@ describe("Worker future configuration persistence", () => {
     expect(second.manager.readCleanupPolicy()).toBeNull();
     expect(second.manager.current().retainedArchiveSessions).toBe(false);
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(10);
+    expect(migrated.schemaVersion).toBe(11);
     expect(migrated.authority.desiredJson).toBe(source.authority.desiredJson);
     expect(migrated.authority.pendingApplication).toBe(true);
     await second.manager.receive(receiveWorkerDesired(target.json.replace('"revision":"1"', '"revision":"2"')), "0"); await second.manager.settle();
@@ -131,7 +131,7 @@ describe("Worker future configuration persistence", () => {
     await writeFile(first.file, JSON.stringify(source));
     const second = await fixture({ file: first.file });
     const migrated = await second.read();
-    expect(migrated.schemaVersion).toBe(10);
+    expect(migrated.schemaVersion).toBe(11);
     expect(migrated.authority.applicationRevision).toBe("1");
     expect(migrated.authority.desiredJson).toBe(source.authority.desiredJson);
     expect(migrated.authority.pendingApplication).toBe(true);
@@ -315,9 +315,11 @@ describe("Worker future configuration persistence", () => {
     try {
       await first.manager.receive(desired("1"), "0"); await entered.promise;
       const before = await first.read(), sent = first.manager.report();
-      await first.manager.receive(desired("2", '{"new":-9.003e+999}'), "0");
+      const retired = receiveWorkerDesired(legacyDesired(desired("2", '{"new":-9.003e+999}').json));
+      await first.manager.receive(retired, "0");
       const after = await first.read();
       expect(after.authority.generation).toBe(before.authority.generation);
+      expect(after.authority.desiredJson).toBe(retired.json);
       expect(after.currentItems.map(({ recordId, origin, value }) => ({ recordId, origin, key: value.key, targetRevision: value.targetRevision }))).toEqual(before.currentItems.map(({ recordId, origin, value }) => ({ recordId, origin, key: value.key, targetRevision: value.targetRevision })));
       expect(first.manager.current()).toMatchObject({ applicationRevision: "1", desired: { revision: "2" }, toolTargets: { revision: "1" } });
       await first.manager.acknowledge(sent, receipt(desired("1"), "1", true));

@@ -53,14 +53,21 @@ and works outside Git. Verify with `project show`. For no/ambiguous matches,
 establish repository, service and intended Project; never guess IDs or register
 merely to make a query succeed.
 
-Authorized `project create` searches all accessible Projects using current origin
-or explicit `--repo` (also outside Git):
+Authorized `project create` selects explicit `--team <uuid|personal>`, then the
+service/account default, or Personal when no default exists. It searches all
+accessible Project pages for equivalent repositories owned by that Team, using
+current origin or explicit `--repo` (also outside Git):
 
 | Result | Behavior |
 | --- | --- |
-| Unique equivalent repository | Return existing Project without Team resolution or confirmation. |
-| Multiple matches | Select the intended Project ID. |
-| New Project | Use explicit `--team <uuid\|personal>`, else service/account default, else Personal. Invalid/inaccessible defaults fail. Confirm interactively or with `--confirm`; noninteractive creation requires it. |
+| Unique equivalent repository | Return the existing Project without confirmation or Team membership; a direct Project grant suffices. |
+| Multiple matches | Fail and report the matching IDs. |
+| New Project | Require target Team membership and confirm interactively or with `--confirm`; noninteractive creation requires it. |
+
+Unparseable historical addresses do not match. Page or response failures prevent
+creation. A known `project_repository_conflict` reports Team occupancy; an
+unknown write outcome is not automatically replayed. An invalid default fails
+without falling back, while explicit selection bypasses it.
 
 Retain the returned ID; read back the Project to verify repository and name.
 

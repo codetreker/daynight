@@ -126,10 +126,11 @@ relabeling it as the current target would falsify its original source.
 ## Consequences
 
 Canonical recovery adds local token and candidate lifecycle state, while keeping
-the service DTO and transaction. The current schema 9 source representation is
-owned by the unknown configuration and Web configuration decisions. Historical
-origins
-remain immutable, and process proof stays distinct from actual-value provenance.
+the service DTO and transaction. The current schema 11 source representation is
+owned by the unknown configuration, Web checkpoint and
+[mode adoption](2026-11-18-worker-web-mode-adoption.md) decisions. Schemas 1–9
+retain their historical interpretation. Historical origins remain immutable, and
+process proof stays distinct from actual-value provenance.
 A local candidate can re-establish configuration lost by the service, but cannot
 promise to reconstruct the missing cloud value. Temporary candidate failures
 close new admission until a valid target exists; original execution and resource

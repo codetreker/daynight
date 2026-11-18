@@ -3,12 +3,14 @@ package mcpdownload
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -147,21 +149,21 @@ func TestSnapshotRenewalRevocationCancelsCopy(t *testing.T) {
 	}
 }
 func TestFailedSourceDoesNotConsumeSlots(t *testing.T) {
-	f := newFixture(t)
-	in := f.input
-	in.Action = "open"
-	for i := 0; i < 5; i++ {
-		in.TransferID = uuid.NewString()
-		_, err := f.service.Read(t.Context(), f.actor, in)
-		if err == nil || errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("missing source %d: %v", i, err)
+	f := newAdmissionFixture(t)
+	in := f.openInput()
+	missing := &model.Fault{Code: "not_found", Message: "Attachment not found.", Cause: model.ErrNotFound}
+	for i := 1; i <= 5; i++ {
+		in.TransferID = fmt.Sprintf("50000000-0000-4000-8000-%012d", i)
+		f.expect(
+			missingAdmissionRecord(in.TransferID),
+			admissionStep{name: "source", source: in, cause: missing},
+			committedAdmissionScope(f.authorize(in)),
+			missingAdmissionRecord(in.TransferID),
+		)
+		result, err := f.service.Read(f.ctx, f.actor, in)
+		if result != nil || !errors.Is(err, missing) {
+			t.Fatalf("missing source %d: %#v %v", i, result, err)
 		}
-	}
-	f.put(t, []byte("works"))
-	in.TransferID = uuid.NewString()
-	r := f.read(t, in)
-	if r["state"] != "readable" {
-		t.Fatalf("slots not reclaimed: %#v", r)
 	}
 }
 

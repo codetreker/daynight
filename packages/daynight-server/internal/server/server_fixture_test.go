@@ -782,6 +782,11 @@ type taskHTTPProjectReaderMock struct {
 	TransferRoleFn        func(context.Context, string, string, string) (*model.ProjectRole, error)
 }
 
+func (mock *taskHTTPProjectReaderMock) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	mock.need("FindVisibleRepositoryForCreation", false)
+	panic("unreachable")
+}
+
 func (mock *taskHTTPProjectReaderMock) Project(p0 context.Context, p1 string) (model.Project, error) {
 	mock.need("Project", mock.ProjectFn != nil)
 	return mock.ProjectFn(p0, p1)
@@ -857,6 +862,8 @@ type taskHTTPProjectWriterMock struct {
 	CreateGrantFn           func(context.Context, string, model.ProjectRole) (model.ProjectGrant, error)
 	LockTransferOwnershipFn func(context.Context) (model.ProjectOwnership, error)
 	LockTransferTeamsFn     func(context.Context, string, string) (store.TransferTeam, store.TransferTeam, error)
+	RepositoryIdentityFn    func(context.Context) (*string, error)
+	RepositoryOccupiedFn    func(context.Context, string, string) (bool, error)
 	MoveOwnershipFn         func(context.Context, string) (model.ProjectOwnership, error)
 }
 
@@ -2815,4 +2822,18 @@ func (mock *taskHTTPProjectWriterMock) RotateTagCatalogEpoch(context.Context) er
 
 func (s *taskHTTPSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO {
 	panic("unexpected GitHubDAO access")
+}
+
+func (mock *taskHTTPProjectWriterMock) RepositoryIdentity(ctx context.Context) (*string, error) {
+	mock.need("RepositoryIdentity", mock.RepositoryIdentityFn != nil)
+	return mock.RepositoryIdentityFn(ctx)
+}
+func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	mock.need("RepositoryOccupied", mock.RepositoryOccupiedFn != nil)
+	return mock.RepositoryOccupiedFn(ctx, team, identity)
+}
+
+func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", false)
+	return nil
 }

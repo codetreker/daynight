@@ -191,7 +191,7 @@ describe("worker cloud-first startup", () => {
             expect(reporterOptions).toBeDefined();
             expect(stopProject).toHaveBeenCalledTimes(2);
             const saved = observed.current();
-            expect(saved.schemaVersion).toBe(10);
+            expect(saved.schemaVersion).toBe(11);
             expect(JSON.parse(saved.authority.desiredJson!)).toEqual(target);
             if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
             for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
@@ -242,7 +242,7 @@ describe("worker cloud-first startup", () => {
       queueMicrotask(() => { void (async () => {
         try {
           const installed = observed.current();
-          expect(installed.schemaVersion).toBe(10);
+          expect(installed.schemaVersion).toBe(11);
           expect(JSON.parse(installed.authority.desiredJson!)).toEqual(next);
           expect(installed.currentItems.length).toBeGreaterThanOrEqual(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,
@@ -563,9 +563,9 @@ describe("worker cloud-first startup", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
-  it("retains an unsupported raw mode without preparing or admitting the target", async () => {
+  it("retains an invalid current native target without preparing or admitting it", async () => {
     const f = await fixture(false, false), base = desired();
-    const target: WorkerCloudDesired = { ...base, value: { ...base.value, agentControlMode: "herdr" } };
+    const target: WorkerCloudDesired = { ...base, value: { ...base.value, native: { ...base.value.native, model: " " } } };
     mocks.remote().configuration.mockResolvedValue(resource(target)); mocks.remote.mockClear();
     let channel: ReporterOptions["configuration"];
     mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration; return reporter(); });
@@ -578,7 +578,7 @@ describe("worker cloud-first startup", () => {
       expect(mocks.coordinator).not.toHaveBeenCalled();
 
       expect(mocks.probe).not.toHaveBeenCalled();
-      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("unsupported agentControlMode") }));
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("missing required settings or contains unsupported current values") }));
     } finally { cancellation.abort(); await running; }
   });
 

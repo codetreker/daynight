@@ -557,6 +557,44 @@ understand the renamed grants or inherited authority. After a committed migratio
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
 
+### Team repository uniqueness upgrade
+
+Stop and drain all old service instances and direct Project writers before
+starting the candidate service. Keep and verify a restorable paired database/file
+backup. The migration advisory lock coordinates migrators, not old writers;
+mixed old/new writing can violate the new occupancy rule.
+
+Migration 083 adds `projects.repository_identity text COLLATE "C"`, backfills in
+bounded batches using the frozen `repositoryidentity/v1` transform, and checks
+active occupancy within each Team before committing its ledger entry. Its frozen
+Go source and SQL live under
+`internal/core/store/postgres/schema/migrations/083/`; the SQL retains its
+`migrations/083_project_repository_identity.sql` relative path within that leaf
+package. A separate `register.go` exposes SQL without changing frozen content.
+The checksum includes the identity source and `migration083` transform source,
+including its version-specific diagnostics. Changing those diagnostics changes
+the checksum; relocating unchanged files does not. The published Worker task-tag
+filter migration retains version 082 and its existing ledger checksum.
+Original addresses, business timestamps, versions, grants and history survive.
+Equivalent active identities or duplicate active unparseable raw addresses in
+one Team abort the migration with Team and Project IDs and roll back all changes
+from that migration. Correct the identified records through an authorized data
+decision before retrying. Do not merge, delete or reassign records automatically.
+An isolated unparseable address retains a NULL identity and its raw value;
+diagnostics contain `migration_version=83`, `project_id` and
+`error_kind=project_repository_identity_unavailable`, never the address or
+credentials. Known repositories remain usable.
+
+Do not admit traffic until startup and migration succeed. If the migration has
+not committed, inspect the actual schema and migration ledger before deciding
+whether to restore the stopped old service. An unknown commit acknowledgment
+requires observation, not an assumed rollback or blind replay. After migration
+commits and before writes resume, prefer a corrected candidate; restoring an
+old binary requires restoring and verifying the pre-upgrade backup first. Old
+binaries reject an unknown migration version. Once new writes have been
+admitted, use forward recovery to preserve them. Never remove migration-ledger
+rows to make an old binary start.
+
 ## MCP HTTP entry
 
 The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
@@ -570,13 +608,16 @@ or invoke business operations.
 The handshake instructions introduce Daynight and direct clients to read
 `daynight://manuals/overview.md` with `resources/read` before using its tools;
 the URI can be read without first listing Resources. Authenticated MCP clients
-can also use `resources/list` to discover the overview and thirteen topic manuals,
+can also use `resources/list` to discover the overview and fifteen topic manuals,
 and `resources/read` to obtain each complete Markdown document. The overview
 routes by operation, distinguishes required and conditional topics, and explains
 result envelopes and schematic examples. Clients can reuse complete guidance
 while it remains applicable. Task reads and lifecycle writes have separate topics;
-dependency reads and replacement, and Session observations and history each share
-a complete topic. Dependency-only writes require dependencies and write-safety;
+dependency graph reads and writes also have separate topics. Session observations,
+location and inspection use session-reads; history pages and complete entries for
+an exact Session and source use session-history. Sending requires session-reads
+when establishing identity or admission; recovery retains the original operation.
+Dependency-only writes require dependencies, dependency-writes and write-safety;
 creation with dependencies or mixed updates also require task-writes.
 Steps, Thread, Session messages, and attachment reads and writes have separate
 guides. Every write requires the common write-safety guide and its operation's
@@ -1227,6 +1268,19 @@ module validation. The final gate requires actual success for both selected Go
 jobs. Their separate [coverage partitions](#coverage) retain all production code
 and the same numerical thresholds.
 
+### Worker read-only transport tests
+
+The WebSocket and Broker tests use real HTTP routes, credential parsing and
+channels with controlled actor and Worker facts. They exercise deadlines,
+cancellation, fences, frames, capabilities and JSON delivery. The HTTP refusal
+tests send raw TCP requests, including incomplete bodies, to the same routes.
+A strict Broker substitute fails the test on any Worker operation. The
+PostgreSQL revocation and native acceptance cases use actual credentials and
+reports.
+
+The [read-only transport fixture decision](../../.agents/notes/implemented/testing/2026-11-18-worker-readonly-transport-fixtures.md)
+records the verification scope.
+
 ### Project HTTP tests
 
 `internal/server/project` tests use the real request-authentication parser and
@@ -1870,10 +1924,7 @@ query and driver errors. The [Project read error decision](../../.agents/notes/i
 records the split. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
 records the input and error-chain guarantees.
 
-Repository registration tests run the real matcher over controlled snapshot
-pages to verify continued scanning and refusal after ambiguity. PostgreSQL
-tests retain persisted creation and reuse, and exercise visibility and keyset
-rules. The [repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
+Repository registration tests check target Team and identity propagation, snapshot completion, ambiguity and creation guards. PostgreSQL tests verify persisted creation and reuse, visibility and the bounded lookup; independent resolution retains keyset traversal tests. The [repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
 describes the Service, Core, and Store test boundaries.
 
 Project membership tests verify actor preflight with a fail-on-access store.
@@ -1919,6 +1970,21 @@ state, proposed writes and transaction completion. Store tests retain real scope
 query, locking, snapshot, commit and rollback observations. The
 [Task validation decision](../../.agents/notes/implemented/testing/2026-11-06-task-request-candidate-isolation.md)
 records the read-before-validation distinction.
+
+### MCP download tests
+
+Pre-copy admission and existing transfer tests run the real download and
+transfer lifecycle code with controlled transaction-scoped records. They verify
+exact binding, expiry, retry after a failed precheck, and no content copy for
+a reused transfer. Real file and PostgreSQL tests retain snapshot copying,
+slot contention, revocation, and restart behavior. The
+[MCP download admission decision](../../.agents/notes/implemented/testing/2026-11-18-mcpdownload-admission-fixtures.md)
+records the proof boundary.
+
+Download read failure tests keep actual private files, permits and range reads
+with controlled transfer records. A failed source precheck cannot allocate a
+transfer or consume a slot. The [download failure decision](../../.agents/notes/implemented/testing/2026-11-18-mcpdownload-read-failure-fixtures.md)
+records the retained file and database witnesses.
 
 ### Attachment service and store tests
 
@@ -2249,6 +2315,19 @@ Store tests cover issuance, expiry, revocation and persisted metadata. The
 [PAT response decision](../../.agents/notes/implemented/testing/2026-11-18-pat-http-error-fixtures.md)
 records that split.
 
+Login HTTP tests use controlled admission and completion results for input
+limits, secure cookies, redirects and capacity responses. Real identity and
+Store tests retain return-path validation, one-time consumption, persisted
+login state and capacity at the database lock. The
+[login route fixture decision](../../.agents/notes/implemented/testing/2026-11-18-login-route-fixtures.md)
+records the proof boundary.
+
+Device authorization form and Origin tests use controlled identity operations
+with the real HTTP adapter. Approval, redemption, expiry, quota and account
+switch tests retain the physical credential and request lifecycles. The
+[device form decision](../../.agents/notes/implemented/testing/2026-11-18-device-form-fixtures.md)
+records the proof boundary.
+
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
 WebSocket traffic share one actual application and Engine. Runtime tests group
@@ -2431,7 +2510,12 @@ records the proof allocation and alternatives.
 ### Schema snapshot maintenance
 
 `internal/core/store/postgres/schema/current.sql` records the final PostgreSQL
-format produced by the complete embedded migration history. It includes the
+format produced by the complete embedded migration history in
+`internal/core/store/postgres/schema/migrations/`. Migrations with frozen Go
+transforms retain their independent packages and internal layouts in the
+`026/` and `083/` version directories under that same history root. Their
+registration files expose the original SQL and transformation checksums without
+rewriting frozen content. The snapshot includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
 Runtime startup uses the snapshot for an empty target namespace and retains
@@ -2784,6 +2868,15 @@ reads batch-filter those references by current project membership and
 undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
+
+`ProjectWriteScope.WorkerClaimAdmissionDAO()` exposes a narrow desired-target read
+bound to the enclosing Project transaction. It retains an existing Worker row lock
+until transaction completion. A missing row is reread under the report's shared
+account admission lock, preventing first-report insertion through the same boundary.
+Only Raw, revision and update time are projected; absent or uninitialized targets
+return nil, while query and cancellation errors remain errors. The
+[configuration design](../../docs/design/daynight-worker-configuration.md#项目事务内的目标读取资源)
+owns the resource's lock ordering and interpretation boundaries.
 
 The shared `model.Project` and `model.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
@@ -3201,8 +3294,21 @@ syntax, including SSH aliases and `@` inside repository paths. HTTPS userinfo,
 SSH passwords, controls, query and fragment are refused. Credential-like
 ambiguous SCP forms are rejected; use explicit SSH URL syntax when needed.
 Registration performs no network, Git, clone or CLI-configuration operations.
-Different projects can reference the same repository. UUID IDs are canonicalized
-to hyphenated lowercase; project repository metadata has no update/delete API.
+Each ordinary or Personal Team can own at most one active Project for a repository
+identity; different Teams can own Projects for the same repository. Identity uses
+the existing HTTPS/SSH/SCP equivalence rules and preserves path case. Creation
+persists the identity with the original address, ownership and creator grant in
+one transaction. Creation and actual transfer share the target Team lock and
+check active occupancy in a separate Read Committed query after authorization
+and version checks. `project_repository_conflict` returns HTTP 409 or the known
+MCP domain-error envelope without exposing the conflicting Project. Refusal
+precedes ownership and GitHub App integration effects. Soft deletion or transfer
+out releases occupancy. An actual transfer of a legacy NULL identity returns
+HTTP 409 `project_repository_identity_unavailable`; reads, deletion and an
+authorized/version-matched same-Team no-op remain available. Existing request and
+success shapes remain unchanged, and unknown writes must not be replayed.
+UUID IDs are canonicalized to hyphenated lowercase; repository metadata cannot
+be updated after creation.
 
 Every Project resource, including list items and the project embedded in task
 graphs, includes `settings: {version, executionWarningMinutes}`. Migration
@@ -3811,7 +3917,7 @@ empty project returns `items: []`, `nextCursor: null`.
 
 Task lists support `limit`, `cursor`, `type`, `parentId`, `status`, `ready`,
 `allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo`, UUID
-`workerId`, `tagIds`, `tagMatch` and `untagged`, once each. Type defaults to
+`workerId`, `candidateWorkerId`, `automaticCandidate`, `tagIds`, `tagMatch` and `untagged`, once each. Type defaults to
 `task` and can select `goal`; parentId
 accepts `none` or a canonical UUID and is omitted for all parents. Goal lists
 cannot select a nonempty parent. The ready, allowAgents and platformSpecific
@@ -3827,6 +3933,14 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
+
+`candidateWorkerId` requires `automaticCandidate=true` and cannot accompany
+inventory `workerId`. In the authorized read snapshot, the server reads that
+account's Worker target and applies its task tag names before pagination.
+An uninitialized target imposes no tag restriction; missing names remain part
+of an all filter. A missing Worker returns 404, and a failed read or invalid
+target is an error. The cursor binds the Worker, account and normalized filter
+semantics; a changed filter requires a new scan.
 
 List and ready selection accept comma-separated UUID `tagIds`,
 `tagMatch=all|any` (default all), and literal boolean `untagged`. IDs are

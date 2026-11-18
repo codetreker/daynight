@@ -50,7 +50,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if len(projects.Items) != 0 || projects.NextCursor != nil {
 			t.Fatalf("expected no Projects: %+v", projects)
 		}
-		manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "write-safety", "materials", "steps", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-messages", "worker-operations", "overview"}
+		manualNames := []string{"concepts", "tasks", "task-writes", "dependencies", "dependency-writes", "write-safety", "materials", "steps", "threads", "attachment-reads", "attachment-writes", "session-reads", "session-history", "session-messages", "worker-operations", "overview"}
 		for _, version := range []string{"2025-11-25", "2026-07-28"} {
 			client := sdk.NewClient(&sdk.Implementation{Name: "daynight-manual-integration", Version: "1"}, nil)
 			session, err := client.Connect(f.context, &sdk.StreamableClientTransport{Endpoint: f.origin + "/mcp", HTTPClient: f.client, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: version})
@@ -104,6 +104,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("worker monitoring mixed protocols", func(t *testing.T) { serverAPIWorkerMonitoringFlow(t, f) })
 	t.Run("assistant task collaboration", func(t *testing.T) { serverAPIAssistantTaskFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
+	t.Run("worker task tag admission", func(t *testing.T) { serverAPIWorkerTaskTagAdmissionFlow(t, f) })
 	t.Run("personal task inventory", func(t *testing.T) { serverAPIPersonalTaskNormalFlow(t, f) })
 	t.Run("GitHub reads", func(t *testing.T) { serverAPIGitHubReadNormalFlow(t, f) })
 	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })
@@ -181,7 +182,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 		}
 		const (
 			uri                 = "daynight://manuals/concepts.md"
-			expectedManualCount = 14
+			expectedManualCount = 16
 		)
 		var manual *sdk.Resource
 		for _, resource := range listing.Resources {

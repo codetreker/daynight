@@ -8,6 +8,31 @@ const future = '{"negative":-2,"fraction":1.25,"exponent":1e999999999999999999,"
 const expanded = desired.replace('"value":{', `"future":${future},"value":{"future":${future},`).replace('"agent":"codex"', `"agent":"codex","future":${future}`);
 
 describe("Worker configuration source documents", () => {
+  it("recognizes tag filter source without discarding unknown content or inventing an absent filter", () => {
+    const source = JSON.stringify({ revision: "1", updatedAt: time, value: { ...value, taskTagFilter: { names: [" urgent ", "Backend", "backend"], match: "all", future: true } } });
+    const received = receiveWorkerDesired(source);
+    expect(received.json).toBe(source);
+    expect(received.known!.value.taskTagFilter).toEqual({ names: ["Backend", "urgent"], match: "all" });
+    expect(receiveWorkerDesired(desired).known!.value).not.toHaveProperty("taskTagFilter");
+    expect(receiveWorkerDesired(source, undefined, true, false).known!.value).not.toHaveProperty("taskTagFilter");
+    for (const taskTagFilter of [null, [], {}, { names: [" "], match: "any" }, { names: ["backend"], match: null }]) {
+      const incompatible = JSON.stringify({ revision: "1", updatedAt: time, value: { ...value, taskTagFilter } });
+      expect(receiveWorkerDesired(incompatible)).toMatchObject({ json: incompatible, known: null });
+    }
+  });
+
+  it("validates received tag application digests without treating them as native objects", () => {
+    const item = { key: { kind: "taskTagFilter" }, targetRevision: "1", appliedValue: "a".repeat(64), state: "applied", error: null, lastFailure: null, nextAttemptAt: null };
+    const observation = { baseRevision: "0", desiredRevision: "1", reportedAt: time, items: [item] };
+    const json = JSON.stringify({ desired: JSON.parse(desired), observationRevision: "1", observation });
+    expect(parseReceivedWorkerConfigurationResource({ json }).observationJson).toBe(JSON.stringify(observation));
+    for (const appliedValue of ["A".repeat(64), { names: ["backend"], match: "any" }, 2, false]) {
+      const incompatible = JSON.stringify({ desired: JSON.parse(desired), observationRevision: "1", observation: { ...observation, items: [{ ...item, appliedValue }] } });
+      expect(() => parseReceivedWorkerConfigurationResource({ json: incompatible })).toThrow();
+    }
+    expect(() => validateWorkerRemoteObservation(JSON.stringify(observation), "1")).not.toThrow();
+  });
+
   it("retains complete desired source while deriving a strict nested known view", () => {
     expect(receiveWorkerDesired(expanded)).toEqual({ json: expanded, revision: "1", updatedAt: time, known: JSON.parse(desired) });
     const resource = `{"future":${future},"desired":${expanded},"observationRevision":"0","observation":null}`;
@@ -42,10 +67,10 @@ describe("Worker configuration source documents", () => {
     expect(receiveWorkerDesired(source.replace('"kind":"auto"', '"kind":"auto","path":"/bin/x"')).known).toBeNull();
     expect(receiveWorkerDesired(source, false).known).toBeNull();
     const mode = desired.replace('"value":{', '"value":{"agentControlMode":"web",');
-    expect(receiveWorkerDesired(mode).known).toBeNull();
+    expect(receiveWorkerDesired(mode).known).toEqual(JSON.parse(desired));
     expect(receiveWorkerDesired(mode, false).json).toBe(mode);
     const oldTools = source.replace('"copilot":null', '"copilot":null,"herdr":{"kind":"auto"}');
-    expect(receiveWorkerDesired(oldTools)).toMatchObject({ json: oldTools, known: null });
+    expect(receiveWorkerDesired(oldTools)).toEqual({ ...result, json: oldTools });
   });
   it("retains unsupported stored values while validating authority and observation envelopes", () => {
     const raw = expanded.replace('"maxConcurrent":2', '"maxConcurrent":"future-value"');
@@ -76,6 +101,9 @@ describe("Worker configuration source documents", () => {
     const invalid = desired.replace('"toolPaths":{"codex":{"kind":"auto"},"copilot":{"kind":"auto"}}', '"toolPaths":{"future":true}');
     expect(receiveWorkerDesired(missing).known).toBeNull();
     expect(receiveWorkerDesired(invalid).known).toBeNull();
+    expect(receiveWorkerDesired(desired.replace(',"copilot":{"kind":"auto"}', "")).known).toBeNull();
+    expect(receiveWorkerDesired(desired.replace('"codex":{"kind":"auto"},', "")).known).toBeNull();
+    expect(receiveWorkerDesired(desired.replace('"value":{', '"value":{"archiveSessions":true,'), { controlMode: false, toolPaths: true, archiveSessions: false }).known).toBeNull();
     expect(receiveWorkerDesired(missing).json).toBe(missing);
   });
   it("retains remote unknown observation kinds without importing them into a local report", () => {

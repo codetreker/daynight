@@ -47,6 +47,8 @@ func KnownFault(err error) (*model.Fault, bool) {
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
+		case "project_repository_conflict", "project_repository_identity_unavailable":
+			return fault, true
 		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict":
 			return fault, true
 		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
@@ -55,7 +57,7 @@ func KnownFault(err error) (*model.Fault, bool) {
 			return fault, true
 		case "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path":
 			return fault, true
-		case "resource_busy", "list_changed", "configuration_not_initialized", "invalid_search_expression", "search_changed", "search_timeout", "transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "resource_limit_exceeded", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost", "monitoring_unavailable", "monitoring_write_outcome_unknown":
+		case "worker_task_tag_filter_unsupported", "resource_busy", "list_changed", "configuration_not_initialized", "invalid_search_expression", "search_changed", "search_timeout", "transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "resource_limit_exceeded", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			return fault, true
 		case "invalid_image", "image_integrity", "image_decode_failed", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "media_outcome_unknown", "archive_conflict", "archive_incomplete":
 			return fault, true

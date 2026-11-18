@@ -345,6 +345,27 @@ describe('Project reading history', () => {
     } finally { scope.dispose(); }
   });
 
+  it('consumes a native chain query only after the draft decision and preserves unrelated state', () => {
+    history.replaceState(null, '', `${path}?tab=tasks&other=kept&chain=${root}#task=${root}`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => { history.pushState({ foreign: true }, '', `${path}?tab=tasks&other=kept&chain=${root}#task=${root}`); dispatchEvent(new PopStateEvent('popstate')); });
+      const length = history.length, discard = vi.fn(), commit = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      const next = { ...selection, detail: null };
+      act(() => result.current.select(next, false, commit, 'chain'));
+      expect(location.search).toContain(`chain=${root}`); expect(commit).not.toHaveBeenCalled();
+      act(() => navigation.confirm());
+      expect(location.search).toBe('?tab=tasks&other=kept'); expect(location.hash).toBe('');
+      expect(history.length).toBe(length); expect(history.state).toEqual({ foreign: true });
+      expect(navigation.snapshot()).toMatchObject({ entryId: null, view: projectHistory(user, project, next) });
+      expect(discard).toHaveBeenCalledOnce(); expect(commit).toHaveBeenCalledOnce();
+      release(); unmount();
+    } finally { scope.dispose(); }
+  });
+
   it.each(['history', 'access'] as const)('never revives a native fragment reading after %s retirement and rerender', kind => {
     history.replaceState(null, '', `${path}?tab=prs`);
     const navigation = browserNavigation();
@@ -502,6 +523,7 @@ describe('Worker reading history', () => {
   const otherWorker = '00000000-0000-4000-8000-000000000012';
   const path = `/workers/${worker}`;
   it('validates the current Worker selection and isolates identity and resource', () => {
+    expect(readWorkerHistory(workerHistory(user, worker, 'system'), user, worker)).toBe('system');
     expect(readWorkerHistory(workerHistory(user, worker, 'configuration'), user, worker)).toBe('configuration');
     expect(readWorkerHistory(workerHistory(user, worker, 'prompt'), user, worker)).toBe('prompt');
     expect(readWorkerHistory(workerHistory(other, worker, 'configuration'), user, worker)).toBeNull();
@@ -523,17 +545,23 @@ describe('Worker reading history', () => {
     const { result, rerender } = renderHook(({ identity, active }) => useWorkerHistory(identity, worker, active), { initialProps: { identity: user, active: true } });
     expect(navigation.snapshot().view).toEqual(workerHistory(user, worker, 'overview'));
     const overview = history.state;
+    act(() => result.current.select('system'));
+    const system = history.state;
+    expect(result.current.section).toBe('system');
+    act(() => result.current.select('system'));
+    expect(history.length).toBe(length + 1);
     act(() => result.current.select('configuration'));
     const configuration = history.state;
     expect(result.current.section).toBe('configuration');
     act(() => result.current.select('configuration'));
-    expect(history.length).toBe(length + 1);
+    expect(history.length).toBe(length + 2);
     act(() => result.current.select('prompt'));
     const prompt = history.state;
     expect(result.current.section).toBe('prompt');
     act(() => result.current.select('prompt'));
-    expect(history.length).toBe(length + 2);
+    expect(history.length).toBe(length + 3);
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
+    arrival(system, path); expect(result.current.section).toBe('system');
     arrival(overview, path); expect(result.current.section).toBe('overview');
     arrival(configuration, path); expect(result.current.section).toBe('configuration');
     arrival(prompt, path); expect(result.current.section).toBe('prompt');

@@ -26,7 +26,8 @@ type ProjectCreationDAO interface {
 	CreationPersonalTeam(context.Context, bool) (PersonalTeamFacts, error)
 	LockCreationTeam(context.Context, string) (ProjectCreationTeam, error)
 	CreationTeamMember(context.Context, string) (bool, error)
-	InsertProject(context.Context, string, string, string, string) (model.Project, model.ProjectAccess, error)
+	RepositoryOccupied(context.Context, string, string) (bool, error)
+	InsertProject(context.Context, string, string, string, string, string) (model.Project, model.ProjectAccess, error)
 }
 
 type ProjectCreationTeam struct {
@@ -42,6 +43,7 @@ type ProjectWriteScope interface {
 	TaskTagDAO() TaskTagWriteDAO
 	TaskDAO() TaskWriteDAO
 	SessionDAO() ProjectSessionDAO
+	WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO
 }
 
 type ProjectWriteDAO interface {
@@ -62,6 +64,8 @@ type ProjectWriteDAO interface {
 	CreateGrant(context.Context, string, model.ProjectRole) (model.ProjectGrant, error)
 	LockTransferOwnership(context.Context) (model.ProjectOwnership, error)
 	LockTransferTeams(context.Context, string, string) (TransferTeam, TransferTeam, error)
+	RepositoryIdentity(context.Context) (*string, error)
+	RepositoryOccupied(context.Context, string, string) (bool, error)
 	MoveOwnership(context.Context, string) (model.ProjectOwnership, error)
 }
 

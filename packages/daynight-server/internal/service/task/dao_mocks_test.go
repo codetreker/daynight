@@ -146,11 +146,12 @@ var _ store.SnapshotScope = (*taskSnapshotScopeMock)(nil)
 
 type taskProjectScopeMock struct {
 	taskMockBase
-	EligibilityDAOFn func() store.WebhookEligibilityDAO
-	CaptureDAOFn     func() store.WebhookCaptureDAO
-	ProjectDAOFn     func() store.ProjectWriteDAO
-	TaskDAOFn        func() store.TaskWriteDAO
-	SessionDAOFn     func() store.ProjectSessionDAO
+	EligibilityDAOFn          func() store.WebhookEligibilityDAO
+	CaptureDAOFn              func() store.WebhookCaptureDAO
+	ProjectDAOFn              func() store.ProjectWriteDAO
+	TaskDAOFn                 func() store.TaskWriteDAO
+	SessionDAOFn              func() store.ProjectSessionDAO
+	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
 }
 
 func (mock *taskProjectScopeMock) EligibilityDAO() store.WebhookEligibilityDAO {
@@ -488,6 +489,11 @@ type projectReaderMock struct {
 	TransferRoleFn        func(context.Context, string, string, string) (*model.ProjectRole, error)
 }
 
+func (mock *projectReaderMock) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	mock.need("FindVisibleRepositoryForCreation", false)
+	panic("unreachable")
+}
+
 func (mock *projectReaderMock) Project(p0 context.Context, p1 string) (model.Project, error) {
 	mock.need("Project", mock.ProjectFn != nil)
 	return mock.ProjectFn(p0, p1)
@@ -563,6 +569,8 @@ type projectWriterMock struct {
 	CreateGrantFn           func(context.Context, string, model.ProjectRole) (model.ProjectGrant, error)
 	LockTransferOwnershipFn func(context.Context) (model.ProjectOwnership, error)
 	LockTransferTeamsFn     func(context.Context, string, string) (store.TransferTeam, store.TransferTeam, error)
+	RepositoryIdentityFn    func(context.Context) (*string, error)
+	RepositoryOccupiedFn    func(context.Context, string, string) (bool, error)
 	MoveOwnershipFn         func(context.Context, string) (model.ProjectOwnership, error)
 }
 
@@ -936,3 +944,17 @@ func (mock *projectWriterMock) RotateTagCatalogEpoch(context.Context) error {
 }
 
 func (s *taskSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (mock *projectWriterMock) RepositoryIdentity(ctx context.Context) (*string, error) {
+	mock.need("RepositoryIdentity", mock.RepositoryIdentityFn != nil)
+	return mock.RepositoryIdentityFn(ctx)
+}
+func (mock *projectWriterMock) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	mock.need("RepositoryOccupied", mock.RepositoryOccupiedFn != nil)
+	return mock.RepositoryOccupiedFn(ctx, team, identity)
+}
+
+func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", mock.WorkerClaimAdmissionDAOFn != nil)
+	return mock.WorkerClaimAdmissionDAOFn()
+}

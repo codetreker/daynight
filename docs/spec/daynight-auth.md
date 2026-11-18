@@ -334,6 +334,11 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 而非 owner Team admin 返回 `403 forbidden`。同一 owner 仍核对权限和双方版本，返回
 `changed:false` 且不更新任何时间或版本；实际转移使 ownership version 加一，保留 Project
 身份及所有 grant 和邀请。版本耗尽时真实转移返回 `409 version_exhausted`。
+实际转移还检查目标普通或 Personal Team 的活跃仓库占用；同仓库已存在时返回
+`409 project_repository_conflict`，历史地址无可用仓库身份时返回
+`409 project_repository_identity_unavailable`。拒绝不改变 ownership、Project 版本与时间、
+grant、邀请、Task 或 GitHub App 集成，也不泄露目标冲突项目的详情。成功转出释放来源 Team
+的占用；已在当前 Team 的无变化请求仍按上述权限及版本检查返回，不受历史 NULL 身份影响。
 
 成功回执 `{projectId,changed,sourceTeam,ownerTeam,ownership,actorAccess}` 只在确认提交后
 返回；`actorAccess:null` 表示操作者成功转移后失权。无法确认提交返回
@@ -386,8 +391,10 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 原操作的成功回执。Team 关系与 Project grant 独立，撤销一种来源不能撤销另一种来源。
 
 创建 Project 接受原文 `name`、`repoUrl`、可选 `teamId` 和必填 `expectedUserId`。目标 Team 的
-当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。Project、真实 ownership 与
-creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
+当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。服务在目标 Team 范围内
+强制活跃仓库身份唯一，规则由[Project 需求](daynight-server.md#project)拥有。占用冲突返回
+`409 project_repository_conflict`，不创建 Project、ownership 或 grant；不同 Team 可分别创建。
+Project、内部仓库身份、真实 ownership 与 creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
 不可创建。客户端核对响应主体，不自动重放未知写入。成功返回 Project、ownership 和同一事务中
 新鲜的 access。CLI 未指定目标时使用当前身份的 Personal Team；Web 创建入口提交打开对话框时捕获的 Team。两者使用当前真实身份并保留有效名称与仓库地址原文。
 
@@ -473,7 +480,7 @@ access 成功而消失；普通权限刷新保持设置草稿和未知写入的�
 
 ## Web 交互与状态
 
-项目设置展示真实 owner Team，只有当前 owner Team admin 可以预览和确认转移；仅有 Project admin 不足以转出。目标可从已加入 Team 选择，或输入 UUID、同服务 Team 页面链接，无需目标成员资格。确认展示目标和转移后权限，独立授权与邀请保持。归属或目标版本冲突必须重新预览并确认；已派发操作的未知结果不能自动重发，后续 404 也不能证明成功。成功回执决定结果；仍有 access 时留在项目，失权时清除所属项目私有缓存，并按精确 source Team 访问结果选择原 Team 或 Personal。只有提交时的编辑器、草稿和导航上下文仍未改变，才关闭原对话框或自动导航；用户在请求期间返回、切换位置或开始新的编辑后，旧结果不得关闭新编辑器、清除新草稿或抢占导航。网络失败保留成功结果和可重试导航。已确认转移的缓存清理失败在对话框关闭或项目失权后仍可见并可重试；重复点击不得并发清理或重发转移。
+项目设置展示真实 owner Team，只有当前 owner Team admin 可以预览和确认转移；仅有 Project admin 不足以转出。目标可从已加入 Team 选择，或输入 UUID、同服务 Team 页面链接，无需目标成员资格。确认展示目标和转移后权限，独立授权与邀请保持。归属或目标版本冲突必须重新预览并确认。可信 HTTP 409 `project_repository_conflict` 在既有错误区域用中英文说明目标 Team 已有同一仓库的项目，`project_repository_identity_unavailable` 说明当前仓库地址无法识别，无法转移。两类拒绝保留输入、目标预览、打开的对话框和导航上下文，继续显示安全的 request ID；不显示成功或泄露冲突 Project 详情。其他错误沿用原分类与提示。已派发操作的未知结果不能自动重发，后续 404 也不能证明成功。成功回执决定结果；仍有 access 时留在项目，失权时清除所属项目私有缓存，并按精确 source Team 访问结果选择原 Team 或 Personal。只有提交时的编辑器、草稿和导航上下文仍未改变，才关闭原对话框或自动导航；用户在请求期间返回、切换位置或开始新的编辑后，旧结果不得关闭新编辑器、清除新草稿或抢占导航。网络失败保留成功结果和可重试导航。已确认转移的缓存清理失败在对话框关闭或项目失权后仍可见并可重试；重复点击不得并发清理或重发转移。
 
 项目设置的“成员与邀请”分组区分有效角色、Team 继承和单独授权。有效 Project admin 可为仅继承的现有
 participant 新增单独授权，或修改、移除真实 grant；操作前确认对象及权限变化。成功按

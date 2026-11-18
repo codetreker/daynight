@@ -38,7 +38,10 @@ const isolateGitEnvironment = (root: string) => {
   process.env.GIT_CONFIG_GLOBAL = path.join(root, "isolated-gitconfig");
 };
 const server = async (handler: (request: IncomingMessage, response: ServerResponse) => void): Promise<string> => {
-  const created = createServer(handler);
+  const created = createServer((request, response) => {
+    response.setHeader("Daynight-User-ID", userId);
+    handler(request, response);
+  });
   await new Promise<void>((resolve) => created.listen(0, "127.0.0.1", resolve));
   cleanups.push(() => new Promise<void>((resolve, reject) => {
     created.close((error) => error === undefined ? resolve() : reject(error));
@@ -217,12 +220,13 @@ describe("project command over HTTP", () => {
     const unrelated = { ...project, id: "22222222-2222-2222-2222-222222222222", repoUrl: "https://git.example/Other/Repo" };
     const url = await server((request, response) => {
       requests.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); respond(response, user); return; }
       const later = new URL(request.url!, "http://localhost").searchParams.has("cursor");
       respond(response, { items: later ? [project] : [unrelated], nextCursor: later ? null : "later" });
     });
     const { context, dependencies } = await fixture(url);
     await runProjectCommand(["create", "Another name", "--repo", "https://git.example/Org/Repo"], context, dependencies);
-    expect(requests).toEqual(["GET /api/v1/projects?limit=100", "GET /api/v1/projects?limit=100&cursor=later"]);
+    expect(requests).toEqual(["GET /api/v1/me", "GET /api/v1/projects?limit=100", "GET /api/v1/projects?limit=100&cursor=later"]);
     expect(context.stdout.mock.calls[0]![0]).toContain(`Project already exists.\nID: ${id}\nName: ${project.name}\n`);
     expect(context.workingDirectory).not.toHaveBeenCalled();
   });
@@ -232,30 +236,33 @@ describe("project command over HTTP", () => {
     const methods: string[] = [];
     const url = await server((request, response) => {
       methods.push(request.method!);
+      if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); respond(response, user); return; }
       const later = new URL(request.url!, "http://localhost").searchParams.has("cursor");
       respond(response, { items: later ? [second] : [project], nextCursor: later ? null : "later" });
     });
     const { context, dependencies } = await fixture(url);
     await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl], context, dependencies)).rejects.toThrow(`Multiple projects match this repository (${id}, ${second.id})`);
-    expect(methods).toEqual(["GET", "GET"]);
+    expect(methods).toEqual(["GET", "GET", "GET"]);
     expect(context.stdout).not.toHaveBeenCalled();
   });
 
-  it.each(["refusal", "json", "invalid-repository", "repeated-cursor", "disconnect", "deadline"])("does not create after a later project page fails: %s", async (failure) => {
+  it.each(["refusal", "json", "invalid-project", "changed-principal", "repeated-cursor", "disconnect", "deadline"])("does not create after a later project page fails: %s", async (failure) => {
     const methods: string[] = [];
     const url = await server((request, response) => {
       methods.push(request.method!);
+      if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); respond(response, user); return; }
       const later = new URL(request.url!, "http://localhost").searchParams.has("cursor");
       if (!later) { respond(response, { items: [project], nextCursor: "later" }); return; }
       if (failure === "refusal") respond(response, { error: { code: "internal", message: "Later page failed", requestId: "create-page-failure" } }, 500);
       else if (failure === "json") { response.writeHead(200, { "Content-Type": "application/json" }); response.end("{"); }
-      else if (failure === "invalid-repository") respond(response, { items: [{ ...project, id: "22222222-2222-2222-2222-222222222222", repoUrl: "invalid repository" }], nextCursor: null });
+      else if (failure === "invalid-project") respond(response, { items: [{ ...project, id: "22222222-2222-2222-2222-222222222222", ownership: null }], nextCursor: null });
+      else if (failure === "changed-principal") { response.setHeader("Daynight-User-ID", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"); respond(response, { items: [], nextCursor: null }); }
       else if (failure === "repeated-cursor") respond(response, { items: [], nextCursor: "later" });
       else if (failure === "disconnect") response.destroy();
     });
     const { context, dependencies, signals } = await fixture(url, failure === "deadline" ? { totalMs: 250 } : undefined);
     await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl], context, dependencies)).rejects.toBeInstanceOf(Error);
-    expect(methods).toEqual(["GET", "GET"]);
+    expect(methods).toEqual(["GET", "GET", "GET"]);
     expect(context.stdout).not.toHaveBeenCalled();
     expect(signals.listenerCount("SIGINT")).toBe(0);
   });
@@ -279,6 +286,42 @@ describe("project creation Team selection", () => {
   const selectedProject = { ...project, ownership: { teamId: ordinaryId, version: 1n } };
   const receipt = { ...creationReceipt(selectedProject, userId), access: { ...creationReceipt(selectedProject, userId).access, ownerTeam: { id: ordinaryId, kind: "ordinary", name: ordinaryTeam.name }, teamRole: "member", canTransfer: false } };
 
+  it.each(["default", "explicit"])("reuses only the selected Team's directly visible Project using %s selection without Team membership", async (selection) => {
+    const calls: string[] = [];
+    const url = await server((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); respond(response, user); return; }
+      if (request.url === "/api/v1/projects?limit=100") {
+        respond(response, { items: [project, { ...selectedProject, id: "22222222-2222-2222-2222-222222222222", repoUrl: "https://git.example/Org/Repo" }, { ...selectedProject, id: "33333333-3333-3333-3333-333333333333", repoUrl: "invalid repository" }], nextCursor: null });
+        return;
+      }
+      respond(response, { error: { code: "forbidden", message: "No Team membership", requestId: "team-forbidden" } }, 403);
+    });
+    const { context, dependencies } = await fixture(url);
+    if (selection === "default") await writeFile(path.join(context.homeDirectory(), ".daynight/config.yml"), `serverUrl: ${url}\nserverToken: fixture-token\nteamDefaults:\n  ${url}:\n    ${userId}: ${ordinaryId}\n`);
+    const args = ["create", "Existing", "--repo", project.repoUrl, ...(selection === "explicit" ? ["--team", ordinaryId.toUpperCase()] : [])];
+    await runProjectCommand(args, context, dependencies);
+    expect(context.stdout.mock.calls[0]![0]).toContain("ID: 22222222-2222-2222-2222-222222222222");
+    expect(calls).toEqual(["GET /api/v1/me", "GET /api/v1/projects?limit=100"]);
+  });
+
+  it("reports a confirmed concurrent Team repository conflict without replaying", async () => {
+    const calls: string[] = [];
+    const url = await server((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); respond(response, user); return; }
+      if (request.url === "/api/v1/projects?limit=100") { respond(response, { items: [], nextCursor: null }); return; }
+      response.setHeader("Daynight-User-ID", userId);
+      if (request.url === `/api/v1/teams/${user.personalTeam.id}`) { respond(response, personalTeam); return; }
+      request.resume(); request.on("end", () => respond(response, { error: { code: "project_repository_conflict", message: "The target Team already has a Project for this repository.", requestId: "create-conflict" } }, 409));
+    });
+    const { context, dependencies } = await fixture(url);
+    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies)).rejects.toMatchObject({ status: 409, code: "project_repository_conflict", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(calls.filter((call) => call.startsWith("POST"))).toHaveLength(1);
+    expect(context.stdout).not.toHaveBeenCalled();
+    expect(context.stdoutBytes).not.toHaveBeenCalled();
+  });
+
   it("uses the account default, preserves raw input and checks the creator's direct admin receipt", async () => {
     const calls: string[] = [];
     let body: unknown;
@@ -295,10 +338,10 @@ describe("project creation Team selection", () => {
     await writeFile(path.join(context.homeDirectory(), ".daynight/config.yml"), `serverUrl: ${url}\nserverToken: fixture-token\nteamDefaults:\n  ${url}:\n    ${userId}: ${ordinaryId}\n`);
     await runProjectCommand(["create", "  名称\n", "--repo", "git@git.example:Org/Raw.git", "--confirm"], context, dependencies);
     expect(body).toEqual({ name: "  名称\n", repoUrl: "git@git.example:Org/Raw.git", expectedUserId: userId, teamId: ordinaryId });
-    expect(calls).toEqual(["GET /api/v1/projects?limit=100", "GET /api/v1/me", `GET /api/v1/teams/${ordinaryId}`, "POST /api/v1/projects"]);
+    expect(calls).toEqual(["GET /api/v1/me", "GET /api/v1/projects?limit=100", `GET /api/v1/teams/${ordinaryId}`, "POST /api/v1/projects"]);
   });
 
-  it("ignores a malformed default for an existing match or explicit Personal selection", async () => {
+  it("rejects a malformed default before lookup and bypasses it for explicit Personal", async () => {
     let existing = true;
     const calls: string[] = [];
     const url = await server((request, response) => {
@@ -311,8 +354,10 @@ describe("project creation Team selection", () => {
     });
     const { context, dependencies } = await fixture(url);
     await writeFile(path.join(context.homeDirectory(), ".daynight/config.yml"), `serverUrl: ${url}\nserverToken: fixture-token\nteamDefaults:\n  ${url}:\n    ${userId}: invalid\n`);
-    await runProjectCommand(["create", "Existing", "--repo", project.repoUrl], context, dependencies);
-    expect(calls).toEqual(["GET /api/v1/projects?limit=100"]);
+    await expect(runProjectCommand(["create", "Existing", "--repo", project.repoUrl], context, dependencies)).rejects.toThrow("canonical UUID");
+    expect(calls).toEqual(["GET /api/v1/me"]);
+    await runProjectCommand(["create", "Existing", "--repo", project.repoUrl, "--team", "personal"], context, dependencies);
+    expect(calls).toEqual(["GET /api/v1/me", "GET /api/v1/me", "GET /api/v1/projects?limit=100"]);
     existing = false;
     await expect(runProjectCommand(["create", "New", "--repo", project.repoUrl, "--confirm"], context, dependencies)).rejects.toThrow("canonical UUID");
     await runProjectCommand(["create", "New", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies);

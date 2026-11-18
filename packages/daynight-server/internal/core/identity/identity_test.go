@@ -18,18 +18,19 @@ import (
 // are exercised through the module rather than reproduced by the fixture.
 type identityDAO struct {
 	store.IdentityDAO
-	failures      map[string]error
-	calls         []string
-	pending       model.LoginTransaction
-	user          model.User
-	principal     model.Principal
-	facts         store.PersonalTeamFacts
-	pat           model.PersonalAccessToken
-	pats          []model.PersonalAccessToken
-	device        model.DeviceAuthorization
-	attempts      int
-	admissionTime time.Time
-	rejection     string
+	failures        map[string]error
+	calls           []string
+	pending         model.LoginTransaction
+	user            model.User
+	principal       model.Principal
+	facts           store.PersonalTeamFacts
+	pat             model.PersonalAccessToken
+	pats            []model.PersonalAccessToken
+	device          model.DeviceAuthorization
+	attempts        int
+	admissionTime   time.Time
+	admissionLimits [2]int
+	rejection       string
 }
 
 func (d *identityDAO) hit(name string) error {
@@ -40,7 +41,8 @@ func (d *identityDAO) CleanupCredentials(context.Context, time.Time) error { ret
 func (d *identityDAO) CleanupLoginCredentials(context.Context, time.Time, time.Time) error {
 	return d.hit("cleanup")
 }
-func (d *identityDAO) AdmitLogin(_ context.Context, _ []byte, _, _ int) (time.Time, string, error) {
+func (d *identityDAO) AdmitLogin(_ context.Context, _ []byte, globalLimit, browserLimit int) (time.Time, string, error) {
+	d.admissionLimits = [2]int{globalLimit, browserLimit}
 	return d.admissionTime, d.rejection, d.hit("admit")
 }
 func (d *identityDAO) InsertLogin(_ context.Context, p model.LoginTransaction) error {
@@ -145,8 +147,12 @@ func TestLoginRulesAndPersistenceFailures(t *testing.T) {
 		t.Fatalf("cleanup failure: %v", err)
 	}
 	d.failures = nil
+	d.admissionLimits = [2]int{}
 	if _, err = m.CreateLogin(ctx, d, pending, now); err != nil || d.pending.ID != start.ID {
 		t.Fatalf("login persistence: %v", err)
+	}
+	if d.admissionLimits != ([2]int{10000, 5}) {
+		t.Fatalf("login admission limits: global=%d browser=%d, want global=10000 browser=5", d.admissionLimits[0], d.admissionLimits[1])
 	}
 	d.failures = map[string]error{"admit": failure}
 	d.calls = nil
@@ -235,16 +241,16 @@ func TestLoginRulesAndPersistenceFailures(t *testing.T) {
 
 func TestLoginReturnPathByteLimit(t *testing.T) {
 	m := NewIdentity("https://example.test/auth/callback")
-	for _, value := range []string{
-		"/" + strings.Repeat("a", MaxReturnPathBytes-1),
-		"/" + strings.Repeat("界", (MaxReturnPathBytes-1)/3),
-	} {
+	ascii := "/" + strings.Repeat("a", 4095)
+	multibyte := "/" + strings.Repeat("界", 1365)
+	for _, value := range []string{ascii, multibyte} {
 		if err := m.ValidateLogin("github", value); err != nil {
 			t.Fatalf("valid boundary rejected: %v", err)
 		}
 		checkFault(t, m.ValidateLogin("github", value+"a"), "invalid_input")
 	}
-	checkFault(t, m.ValidateLogin("github", "/"+strings.Repeat("a", MaxReturnPathBytes)+"%zz"), "invalid_input")
+	checkFault(t, m.ValidateLogin("github", multibyte+"界"), "invalid_input")
+	checkFault(t, m.ValidateLogin("github", ascii+"a%zz"), "invalid_input")
 }
 
 func TestPATLifecycleValidationAndFailures(t *testing.T) {

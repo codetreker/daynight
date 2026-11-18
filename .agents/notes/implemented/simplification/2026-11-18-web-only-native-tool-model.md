@@ -37,4 +37,6 @@ recording facts that remain readable independently of execution.
 
 Existing Herdr resources remain the user's responsibility. Web, Controller and
 Bot continue to use their existing process and tool ownership proofs. Old local
-or cloud Herdr configuration requires explicit correction; it is not converted.
+Herdr configuration requires explicit correction. Cloud retired members follow
+the [unknown-member reception decision](../bug-fix/2026-11-18-worker-retired-configuration-members.md);
+they are preserved without conversion and do not determine current execution.

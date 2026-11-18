@@ -11,6 +11,7 @@ import (
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	tagcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/tag"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
@@ -25,8 +26,52 @@ type WorkerDescriptor struct {
 }
 type ClaimWorker struct {
 	WorkerDescriptor
-	Version int64
+	Version          int64
+	TaskTagFilterKey *string
 }
+
+// ValidateTaskTagFilterKey validates the optional bounded proof supplied by a Worker.
+func ValidateTaskTagFilterKey(key *string) error {
+	if key == nil {
+		return nil
+	}
+	if len(*key) != 64 {
+		return invalidInput("taskTagFilterKey must be a lowercase SHA-256 digest.")
+	}
+	for _, c := range *key {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return invalidInput("taskTagFilterKey must be a lowercase SHA-256 digest.")
+		}
+	}
+	return nil
+}
+
+// ClaimTagAdmission compares the applied proof and the current Task's own tags.
+func ClaimTagAdmission(current model.Task, filter model.TagNameFilter, key *string) error {
+	digest, err := tagcore.NameFilterDigest(filter)
+	if err != nil {
+		return err
+	}
+	if key == nil && len(filter.Names) != 0 {
+		return &model.Fault{Code: "worker_task_tag_filter_unsupported", Message: "Worker must support the configured task tag filter."}
+	}
+	if key != nil && *key != digest {
+		return ClaimConflict()
+	}
+	names := make([]string, len(current.Tags))
+	for i, reference := range current.Tags {
+		names[i] = reference.Name
+	}
+	matched, err := tagcore.MatchNameFilter(filter, names)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return ClaimConflict()
+	}
+	return nil
+}
+
 type UpdateWorker struct {
 	Version         int64
 	ClaimID         string
