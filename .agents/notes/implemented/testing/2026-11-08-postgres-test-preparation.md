@@ -164,12 +164,23 @@ valid value before reuse. Successful migration cases retain independent fixtures
 including called/uncalled sequence semantics and the 105-row property transform
 that crosses its 100-row page boundary.
 
-Expiry probes whose SQL samples database time observe real locks before crossing
-a short future database-time expiry. The grant test arms expiry after its lock
-receipt, preserving rejection of a stale time sampled before the lock. Private
-Transfer retains the locked, cached token expiry. Deadline probes retain
-connection preparation and actual query observation. The large search fixture
-keeps its complete description but constructs its expected snippet independently.
+Expiry probes whose SQL samples database time retain actual row lock barriers
+and short test deadlines. The grant test arms expiry after its lock receipt,
+preserving rejection of a stale time sampled before the lock. Private Transfer
+retains the locked, cached token expiry. Deadline probes retain connection
+preparation and actual query observation. The large search fixture keeps its
+complete description but constructs its expected snippet independently.
+
+The [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go)
+and [Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go)
+expiry cases acquire the row holder and prepare the other connections before
+setting the credential expiry from the PostgreSQL clock. The observer verifies
+the intended lock and a still-valid credential before waiting with
+`pg_sleep_until`. It confirms expiry through the database clock before the
+holder commits. The Direct Member case also observes a queued revocation and
+commits a compatible Session credential read before expiry. The test-local
+window has to accommodate these observations under the configured root
+concurrency.
 
 [Session/PAT deletion storage proofs](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go)
 use a stable stored expiry and explicit caller times on either side of it. The
