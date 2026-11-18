@@ -45,6 +45,37 @@ it("does not rewrite matching repeated content and touches LRU only on an explic
   expect((await record())!.lastUsedAt).toBe(200);
 });
 
+it.each([
+  [{ paused: true }, true], [{ blocked: true }, true], [{ paused: true, blocked: true }, true],
+  [{ paused: false }, false], [{ blocked: false }, false], [{ paused: false, blocked: false }, false],
+])("validates and touches the stored representation without changing its size: %j", async (properties, paused) => {
+  const detail = body(1, { properties: { paused, future: { value: "汉字" } } });
+  const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  await saveDetail(scope, ticket, detail, signal());
+  const saved = (await record())!;
+  const stored = { ...saved.detail, properties: { ...properties, future: { value: "汉字" } } };
+  const original = { ...saved, detail: stored, byteSize: detailByteSize(stored) };
+  await (await inspect()).put("details", original);
+
+  vi.spyOn(Date, "now").mockReturnValue(200);
+  for (const time of [200, 300]) {
+    vi.mocked(Date.now).mockReturnValue(time);
+    expect(await readCachedDetail(scope, ticket, detail.id, signal())).toEqual(saved.detail);
+    expect(await record()).toEqual({ ...original, lastUsedAt: time });
+  }
+  await expect(saveDetail(scope, ticket, detail, signal())).resolves.toMatchObject({ kind: "matching", detail: saved.detail });
+  expect(await record()).toEqual({ ...original, lastUsedAt: 300 });
+});
+
+it("rejects a stored size calculated from normalized rather than original properties", async () => {
+  const detail = body(1, { properties: { paused: true } }); const scope = await seed([detail]);
+  const ticket = await scope.beginSync(projectId, signal()); await saveDetail(scope, ticket, detail, signal());
+  const saved = (await record())!;
+  await (await inspect()).put("details", { ...saved, detail: { ...saved.detail, properties: { paused: true, blocked: true } } });
+  await expect(readCachedDetail(scope, ticket, detail.id, signal())).rejects.toMatchObject({ category: "corrupt" });
+  expect(await record()).toBeUndefined();
+});
+
 it("rejects old/newer and contradictory same-version bodies without changing summaries or watermark", async () => {
   const detail = body(1, { version: 5n }); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
   expect(await saveDetail(scope, ticket, { ...detail, version: 4n }, signal())).toEqual({ kind: "older" });
