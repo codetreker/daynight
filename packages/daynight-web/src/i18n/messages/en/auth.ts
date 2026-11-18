@@ -110,6 +110,7 @@ export const auth: AuthMessages = {
     title: "Create private project", close: "Close create project",
     intro: "Only you and project members can access this project. You will become its administrator.",
     name: "Project name", repository: "Repository URL", repositoryHint: "Supports HTTPS, SSH URLs, and git@host:team/project.git addresses.",
+    repositoryConflict: "The target Team already has a project for this repository.",
     error: "The project could not be created. Check your input and try again.", unknown: "The creation result is unknown. Check your projects before starting a new creation; the list cannot confirm the original request.", checkProjects: "Check projects", observedProjects: "Current projects", checking: "Loading projects…", checkFailed: "Projects could not be loaded.", noProjects: "No projects found.", loadMore: "Load more projects", cancel: "Cancel", busy: "Creating…", submit: "Create project",
   },
   management: {
