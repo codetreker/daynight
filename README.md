@@ -417,7 +417,9 @@ Product E2E owns an independent Linux job that builds and runs the complete
 system with its own database and auth. Final `checks` reject failures and
 cancellations and explicitly require selected Go module, Go server startup &
 shutdown, API, Web quality and product E2E jobs to succeed. A newer PR run cancels
-its older run; main runs queue without cancelling an active run.
+its older run. Each main run has an independent concurrency group, including
+repeated runs of the same commit, so later runs do not replace or cancel it;
+runner availability still controls when jobs start.
 
 The independent [`shell and browser acceptance` workflow](.github/workflows/shell-browser.yml)
 runs real shell completion and the frontend assistant browser suite on every

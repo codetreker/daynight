@@ -6,6 +6,7 @@ import { createTaskCacheScope, TaskCacheProvider } from '../../src/features/task
 import { TeamGitHubApps } from '../../src/features/teams/TeamGitHubApps';
 import { LocaleProvider } from '../../src/i18n/LocaleProvider';
 import '../../src/styles/app.css';
+import '../../src/styles/auth.css';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const projectId = '00000000-0000-4000-8000-000000000101';

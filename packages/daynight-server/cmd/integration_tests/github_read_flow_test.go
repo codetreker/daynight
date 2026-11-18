@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -247,5 +248,56 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	detail := read(base + "/pull-requests/9007199254740993")
 	if detail["number"] != summary["number"] || detail["id"] != summary["id"] || detail["description"] != "正文\n**original**\n" {
 		t.Fatalf("detail differs from saved observation: %+v", detail)
+	}
+
+	// Change saved observations after the list assertions so the statistics read
+	// covers both sides of the window and a later login for the same author ID.
+	_, err = db.Exec(f.context, `UPDATE project_pull_requests SET
+		github_created_at = CASE number
+			WHEN 3 THEN '2025-12-31T23:00:00Z'::timestamptz
+			WHEN 2 THEN '2026-01-01T18:00:00Z'::timestamptz
+			WHEN 1 THEN '2026-01-02T00:00:00Z'::timestamptz
+			ELSE github_created_at END,
+		author_login = CASE WHEN number=4 THEN 'renamed' ELSE author_login END,
+		observed_at = CASE WHEN number=4 THEN '2026-01-04T00:00:00Z'::timestamptz ELSE observed_at END
+		WHERE project_id=$1`, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := createProject(t, f, "Other GitHub PR reads")
+	_, err = db.Exec(f.context, `INSERT INTO project_pull_requests
+		(project_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision)
+		SELECT $2,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision
+		FROM project_pull_requests WHERE project_id=$1 AND number=4`, project.ID, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []string{"First linked task", "Second linked task"} {
+		task := createTask(t, f, project, title, nil)
+		requestJSON[api.PropertyResource](t, f, http.MethodPut, taskPath(task)+"/properties/pullRequests", map[string]any{
+			"version": task.Version, "valueText": `[{"url":"https://github.com/owner/repository/pull/4","title":"Author closed PR"}]`,
+		}, http.StatusOK)
+	}
+	statisticsQuery := "?endDate=2026-01-01&window=29%401767225600000%2C-%401767312000000"
+	stats := read(base + "/pull-request-statistics" + statisticsQuery)
+	daily, ok := stats["daily"].([]any)
+	if stats["projectId"] != project.ID || stats["endDate"] != "2026-01-01" || stats["revision"] != "7" || stats["projectTotal"] != "5" || stats["availability"] != "ready" || stats["hasAuthors"] != true || stats["authorId"] != nil || stats["author"] != nil || stats["authorDaily"] != nil || !ok || len(daily) != 30 || daily[29] != "3" {
+		t.Fatalf("all-author statistics differ: %+v", stats)
+	}
+	for _, count := range daily[:29] {
+		if count != "0" {
+			t.Fatalf("unexpected daily count: %+v", daily)
+		}
+	}
+	selected := read(base + "/pull-request-statistics" + statisticsQuery + "&authorId=9007199254740997")
+	selectedAuthor, ok := selected["author"].(map[string]any)
+	selectedDaily, dailyOK := selected["authorDaily"].([]any)
+	if selected["projectTotal"] != "5" || selected["authorId"] != "9007199254740997" || !ok || selectedAuthor["id"] != "9007199254740997" || selectedAuthor["login"] != "renamed" || !dailyOK || len(selectedDaily) != 30 || selectedDaily[29] != "2" {
+		t.Fatalf("selected-author statistics differ: %+v", selected)
+	}
+	otherStats := read("/api/v1/projects/" + other.ID + "/pull-request-statistics" + statisticsQuery)
+	otherDaily, ok := otherStats["daily"].([]any)
+	if otherStats["projectId"] != other.ID || otherStats["projectTotal"] != "1" || !ok || len(otherDaily) != 30 || otherDaily[29] != "1" {
+		t.Fatalf("other project statistics differ: %+v", otherStats)
 	}
 }

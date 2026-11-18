@@ -93,14 +93,6 @@ func (r *run) access(ctx context.Context) error {
 		}
 		w := core.Runtime(conn)
 		core.AccessSuccess(&w, conn, now)
-		if r.connection.AccessHintID != nil {
-			pending, valid, e := d.HasPending(c, r.lease)
-			if e = require(valid, e); e != nil {
-				return e
-			}
-			core.WebhookAttempt(&w, now)
-			core.WebhookSuccess(&w, now, pending)
-		}
 		w.ReleaseClaim = true
 		ok, e := d.SaveRuntime(c, r.lease, w)
 		return require(ok, e)
@@ -153,18 +145,17 @@ func (r *run) recordAccessFailure(ctx context.Context, cause error, reason strin
 		}
 		w := core.Runtime(conn)
 		f := fail(cause)
-		eventAccess := r.kind == core.WorkAccess && r.connection.AccessHintID != nil
-		if r.kind == core.WorkWebhook || eventAccess {
+		switch r.kind {
+		case core.WorkWebhook:
 			core.WebhookAttempt(&w, now)
 			core.WebhookFailure(&w, now, f)
-		} else {
+		case core.WorkPoll:
 			core.PollFailure(&w, now, f)
 		}
 		if reason != "" {
 			core.AccessUnavailable(&w, conn, now, reason, permanent)
 		} else {
-			next := core.RetryAt(now, f)
-			w.NextAccessCheckAt = &next
+			core.AccessRetry(&w, now, f)
 		}
 		w.ReleaseClaim = true
 		ok, err := d.SaveRuntime(ctx, r.lease, w)

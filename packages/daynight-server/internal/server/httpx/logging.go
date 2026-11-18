@@ -150,7 +150,7 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 		// Search failures may contain query parameters or driver diagnostics.
 		diagnostic = "search operation failed"
 	}
-	if component == "personal_tasks" || (component == "github" && phase == "authors") {
+	if component == "personal_tasks" || (component == "github" && (phase == "authors" || phase == "statistics")) {
 		// Query and driver diagnostics may contain caller or stored content.
 		diagnostic = "read operation failed"
 	}

@@ -232,6 +232,10 @@ its case-owned release file. It observes cancellation and an excluded
 overlapping removal before allowing the child to proceed. The
 [sudo fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-sudo-fixture-handshake.md)
 owns the real-process handshake.
+The PID-reuse observation test replaces only the saved birth in a native
+proof. The live process and inspection stay real. The
+[stale birth fixture decision](../.agents/notes/implemented/testing/2026-11-18-controller-stale-birth-fixture.md)
+owns the identity proof.
 Bot CLI probe fixtures retain the real guardian, descendants, process inventory,
 signals and joined cleanup. On POSIX, the test freezes the stop clock after the
 target process group receives TERM and advances it only after a real inventory
@@ -1307,8 +1311,10 @@ gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
-Workflow concurrency cancels an older PR run for the same ref; main pushes queue
-without cancelling an active run. Documentation-only PRs run routing tests and
+Workflow concurrency cancels an older PR run for the same ref. Each main run
+has its own group by workflow, ref, full commit SHA and run ID, so later runs
+do not replace or cancel it; runner availability still controls job scheduling.
+Documentation-only PRs run routing tests and
 the gate. Every main push selects all modules, API integration and product E2E.
 npm publication performs its own CLI validation at the frozen release commit.
 
