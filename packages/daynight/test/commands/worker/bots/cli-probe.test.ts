@@ -9,7 +9,8 @@ import * as nativeJob from "../../../../src/commands/worker/bots/windows-job-lea
 import * as windowsJob from "../../../../src/commands/controller/windows-job.js";
 import * as processProof from "../../../../src/commands/controller/process-proof.js";
 import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "../../../../src/commands/worker/bots/cli-probe.js";
-import { captureProbeDeadline, withProbeGrace, type ExecHook } from "./cli-probe-clock.fixtures.js";
+import { captureSynchronousDeadline } from "../../../helpers/synchronous-deadline.js";
+import { withProbeGrace, type ExecHook } from "./cli-probe-clock.fixtures.js";
 
 const execHook = vi.hoisted((): ExecHook => ({ observe: undefined }));
 vi.mock("node:child_process", async (original) => {
@@ -135,7 +136,7 @@ describe("owned Bot CLI capability probes", () => {
 
   it("stops the complete scope after a command deadline", async () => {
     const f = await fixture("setInterval(() => {}, 1000);", undefined, 5_000, true);
-    const timer = captureProbeDeadline(() => f.scope.run(process.execPath, [f.file]));
+    const timer = captureSynchronousDeadline(() => f.scope.run(process.execPath, [f.file]));
     let pending = true;
     void timer.result.then(() => { pending = false; }, () => { pending = false; });
     try {
@@ -255,14 +256,14 @@ setInterval(() => {}, 1000);`;
 
 describe("probe deadline fixture delivery", () => {
   it("rejects early, repeated and cleared deliveries", async () => {
-    const timer = captureProbeDeadline(() => new Promise<void>(resolve => setTimeout(resolve, 5_000)));
+    const timer = captureSynchronousDeadline(() => new Promise<void>(resolve => setTimeout(resolve, 5_000)));
     try {
       await expect(timer.expire()).rejects.toThrow(/not eligible/);
       timer.markReady(); await timer.expire(); await timer.result;
       await expect(timer.expire()).rejects.toThrow(/not eligible/);
     } finally { timer.restore(); }
     let handle: NodeJS.Timeout | undefined;
-    const cleared = captureProbeDeadline(() => { handle = setTimeout(() => {}, 5_000); return Promise.resolve(); });
+    const cleared = captureSynchronousDeadline(() => { handle = setTimeout(() => {}, 5_000); return Promise.resolve(); });
     try {
       clearTimeout(handle); cleared.markReady();
       await expect(cleared.expire()).rejects.toThrow(/not eligible/);
@@ -277,7 +278,7 @@ describe("probe deadline fixture ownership", () => {
     const scheduleSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => schedule(callback, ms === 60_000 ? 20 : ms, ...args)) as typeof globalThis.setTimeout);
     const cancelSpy = vi.spyOn(globalThis, "clearTimeout");
     let first: NodeJS.Timeout | undefined, second: NodeJS.Timeout | undefined, calls = 0;
-    const timer = captureProbeDeadline(() => {
+    const timer = captureSynchronousDeadline(() => {
       first = setTimeout(() => { calls++; }, 5_000);
       second = setTimeout(() => { calls++; }, 5_000);
       return Promise.resolve();
