@@ -95,6 +95,14 @@ discarded with a recovery gap on replacement, interruption, result, disconnect
 or shutdown; a child stream cannot terminate its parent. Complete non-streamed
 wrappers require their own terminal stop_reason and no aborted/error marker.
 
+CLI 2.1.247 can replace a message's model during server refusal fallback without
+changing its native ID, while filtering the internal fallback block from public
+stream events. A root model_refusal_fallback notice or a fallback_message in
+delta usage.iterations therefore invalidates the initial model's attribution.
+Collection discards and suppresses that message through subsequent deltas, stop
+and complete wrappers, recording a recovery gap until a new message_start.
+Explicitly local or child-agent notices leave the unrelated root stream intact.
+
 ## Alternatives
 
 **Committing each completed Claude content block.** A completed text or tool
@@ -103,6 +111,12 @@ look sufficient for input accounting. Its null stop_reason and mutable native
 usage do not establish an immutable input fact. Waiting for the native message
 stop preserves the source identity and final corrections without inventing
 local revisions or summing pipeline results.
+
+**Attributing fallback usage to the message_start model.** Stable message ID
+does not imply a stable model: server fallback can update the native message
+in place. Guessing a split or trusting its initial model would assign input to
+the wrong model. Suppressing an ambiguous source preserves honest partial
+coverage and avoids an irreversible immutable attribution.
 
 **Measurements without execution coverage.** This cannot distinguish a complete
 empty execution from an unregistered or failed collector. A state row in the

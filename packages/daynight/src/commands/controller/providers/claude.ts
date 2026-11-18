@@ -96,13 +96,13 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     const m = record(raw), message = record(m.message), type = string(m.type);
     if (m.session_id !== undefined) verify(m.session_id);
     if (!history && !closed && !disconnected && (type === "system" || type === "assistant" || type === "stream_event")) usageReady();
-    if ((type === "assistant" || type === "stream_event") && options.usageRuntime && !closed && !disconnected) {
+    if ((type === "assistant" || type === "stream_event" || type === "system" && m.subtype === "model_refusal_fallback") && options.usageRuntime && !closed && !disconnected) {
       // History has no original SDK/backend provenance. The existing durable
       // usage ledger can replay its own facts without requalifying transcript rows.
       if (history) usageGap("native_recovery_gap");
       else if (!verified || !claudeUsageProfileSupported(native?.profile)) { usageCollector.discard(); usageGap("profile_unverified"); }
-      else if (m.parent_tool_use_id === undefined) usageGap("subagent_scope_unknown");
-      else if (m.parent_tool_use_id === null) {
+      else if (m.parent_tool_use_id === undefined && type !== "system") usageGap("subagent_scope_unknown");
+      else if (m.parent_tool_use_id === null || type === "system") {
         try { usageCollector.observe(m); }
         catch { usageGap("collector_failed"); }
       }

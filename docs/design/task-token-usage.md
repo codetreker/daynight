@@ -222,6 +222,15 @@ immutable 事实。子代理流不结束 root 缓冲；缺少 start、完成证�
 [SDK 0.3.247 类型](https://unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.247/sdk.d.ts)
 中的 SDKAssistantMessage 与 SDKPartialAssistantMessage 为准。
 
+CLI 2.1.247 的服务端 refusal fallback 能在相同 message.id 下更换 model，内部
+fallback block 不保证出现在公开 stream_event 中。root 的 system
+model_refusal_fallback 通知，或 message_delta.usage.iterations 中的
+fallback_message，均使当前模型归属失去证明。采集器丢弃缓冲并保留
+native_recovery_gap，直到新的 message_start 才恢复接收；旧消息后续的 delta、stop
+及完整 assistant 包装消息都不能绕过抑制重新入账。明确 scope=local 或带子代理
+parent_tool_use_id 的通知不清除无关 root 消息。不从 fallback 提示猜测或拆分 token
+到新旧模型，也不以本地修订改写 immutable 事实。
+
 只有原生 profile 到达后才固定当前代次身份；提前到达的消息记录缺口。
 backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒充 Anthropic 语义。
 现有历史读取不提供原 SDK/backend provenance，因此不使用当前版本重新资格化历史

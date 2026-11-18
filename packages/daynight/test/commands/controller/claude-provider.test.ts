@@ -724,3 +724,25 @@ test("Claude provider commits corrected input only after the root stream stops",
     expect(usageRuntime.observe).toHaveBeenCalledOnce();
   } finally { await provider.close(); }
 });
+
+test.each(["system", "iterations"])("Claude %s fallback cannot attribute old-message usage to its initial model", async signal => {
+  const fixture = nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
+  const usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
+  const stream = (event: unknown) => fixture.emit({ type: "stream_event", session_id: provider.nativeSessionId, parent_tool_use_id: null, event });
+  const message = { id: "msg_fallback", model: "claude-test", stop_reason: "end_turn", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } };
+  try {
+    stream({ type: "message_start", message });
+    if (signal === "system") fixture.emit({ type: "system", subtype: "model_refusal_fallback", session_id: provider.nativeSessionId, original_model: "claude-test", fallback_model: "other-model" });
+    else stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { iterations: [{ type: "fallback_message", model: "other-model" }] } });
+    stream({ type: "message_stop" });
+    fixture.emit({ type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message });
+    await vi.waitFor(() => expect(usageRuntime.gap).toHaveBeenCalledWith("native_recovery_gap"));
+    expect(usageRuntime.observe).not.toHaveBeenCalled();
+    stream({ type: "message_start", message: { ...message, id: "msg_after_fallback", model: "other-model" } });
+    stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: {} });
+    stream({ type: "message_stop" });
+    await vi.waitFor(() => expect(usageRuntime.observe).toHaveBeenCalledOnce());
+    expect(usageRuntime.observe.mock.calls[0]![0].event).toMatchObject({ message: { id: "msg_after_fallback", model: "other-model" } });
+  } finally { await provider.close(); }
+});

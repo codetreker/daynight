@@ -47,13 +47,23 @@ export const mapClaudeUsageEvent = (input: unknown) => {
 /** Raw root streams supply final input corrections after completed block wrappers. */
 export const createClaudeUsageCollector = (observe: (event: unknown) => void, gap: () => void) => {
   let pending: { id: string; model: string; usage: Record<string, unknown>; stopReason: string | null } | null = null;
+  let suppressed = false;
   const discard = () => { if (pending) { pending = null; gap(); } };
+  const suppress = () => { pending = null; suppressed = true; gap(); };
   return {
     discard,
     observe(input: unknown) {
       const wrapper = object(input);
+      // The CLI can change model within the same native message and omit its
+      // internal fallback block from the public stream. Its initial model then
+      // cannot attribute the final usage. Only a new start restores provenance.
+      if (wrapper.type === "system" && wrapper.subtype === "model_refusal_fallback") {
+        if (wrapper.scope !== "local" && (wrapper.parent_tool_use_id === undefined || wrapper.parent_tool_use_id === null)) suppress();
+        return;
+      }
       if (wrapper.parent_tool_use_id !== null) return;
       if (wrapper.type === "assistant") {
+        if (suppressed) return;
         if (wrapper.aborted === true || wrapper.error !== undefined && wrapper.error !== null || wrapper.isApiErrorMessage === true) { discard(); return; }
         // A non-streamed complete message already carries its own terminal proof.
         // Block wrappers have null stop_reason and cannot commit immutable usage.
@@ -66,14 +76,18 @@ export const createClaudeUsageCollector = (observe: (event: unknown) => void, ga
         discard();
         const message = object(event.message);
         if (!text(message.id, 232) || !text(message.model, 128)) { gap(); return; }
+        suppressed = false;
         const usage = object(message.usage);
         pending = { id: message.id, model: message.model, usage: { input_tokens: usage.input_tokens, cache_read_input_tokens: usage.cache_read_input_tokens, cache_creation_input_tokens: usage.cache_creation_input_tokens }, stopReason: null };
       } else if (event.type === "message_delta") {
-        if (!pending) { gap(); return; }
         const usage = object(event.usage), delta = object(event.delta);
+        if (Array.isArray(usage.iterations) && usage.iterations.some(item => object(item).type === "fallback_message")) { suppress(); return; }
+        if (suppressed) return;
+        if (!pending) { gap(); return; }
         for (const key of ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) if (usage[key] !== undefined && usage[key] !== null) pending.usage[key] = usage[key];
         pending.stopReason = text(delta.stop_reason, 128) ? delta.stop_reason : null;
       } else if (event.type === "message_stop") {
+        if (suppressed) return;
         const completed = pending; pending = null;
         if (!completed?.stopReason) { gap(); return; }
         observe({ type: "assistant", parent_tool_use_id: null, message: { id: completed.id, model: completed.model, usage: completed.usage, stop_reason: completed.stopReason } });

@@ -96,3 +96,33 @@ test("output-only terminal delta preserves observed inputs without inventing mis
   stream({ type: "message_stop" });
   expect(mapClaudeUsageEvent(facts[0])?.metrics).toMatchObject({ inputTokens: null, cacheReadTokens: "0", cacheWriteTokens: null, outputTokens: null });
 });
+
+test.each(["system", "iterations"])("%s fallback suppresses the ambiguous message through stop and complete wrappers", signal => {
+  const facts: unknown[] = [], gaps: string[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => gaps.push("gap"));
+  const stream = (event: unknown) => collector.observe({ type: "stream_event", parent_tool_use_id: null, event });
+  stream({ type: "message_start", message: event().message });
+  if (signal === "system") collector.observe({ type: "system", subtype: "model_refusal_fallback", original_model: "claude-test", fallback_model: "different-model" });
+  else stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { iterations: [{ type: "fallback_message", model: "different-model" }], input_tokens: 90 } });
+  stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 100 } });
+  stream({ type: "message_stop" });
+  collector.observe(event()); collector.discard(); collector.observe(event());
+  expect(facts).toEqual([]); expect(gaps).toHaveLength(1);
+  stream({ type: "message_start", message: { id: "missing-model" } });
+  collector.observe(event()); expect(facts).toEqual([]); expect(gaps).toHaveLength(2);
+  stream({ type: "message_start", message: { ...event().message, id: "msg_new" } });
+  stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 9 } });
+  stream({ type: "message_stop" });
+  expect(facts).toHaveLength(1); expect(mapClaudeUsageEvent(facts[0])?.sourceKey).toBe("claude-message-input-v1:msg_new");
+});
+
+test("a local fallback notice cannot discard an unrelated root stream", () => {
+  const facts: unknown[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => { throw new Error("Unexpected root gap"); });
+  const stream = (event: unknown) => collector.observe({ type: "stream_event", parent_tool_use_id: null, event });
+  stream({ type: "message_start", message: event().message });
+  collector.observe({ type: "system", subtype: "model_refusal_fallback", scope: "local" });
+  collector.observe({ type: "system", subtype: "model_refusal_fallback", parent_tool_use_id: "child" });
+  stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: {} }); stream({ type: "message_stop" });
+  expect(facts).toHaveLength(1);
+});
