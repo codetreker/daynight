@@ -167,11 +167,30 @@ it('omits reason and timestamps for empty, partial, restricted and withdrawn adm
   view.rerender(<MonitoringCard item={{ ...summary, summary: { ...summary.summary, admission: null } }} now={time} />); assertSummary();
 });
 
-it('marks capacity responsibility truncation even with a nonempty list', () => {
+it('retains the general truncation notice when reservations are nonempty', () => {
   const partial: WorkerMonitoringDetail = { ...detail, data: { ...detail.data, capacity: { ...detail.data.capacity!, detailCoverage: 'partial' } } };
   renderWithLocale(<WorkerMonitoring state={state(partial)} readEnabled />, { locale: 'en' });
   expect(screen.getByText('Some details were omitted.')).toBeInTheDocument();
   expect(screen.getAllByRole('link', { name: 'Private task' }).length).toBeGreaterThan(0);
+  expect(screen.queryByRole('heading', { name: 'Capacity responsibilities' })).toBeNull();
+});
+
+it.each(['en', 'zh-CN'] as const)('omits reservation sections for empty, populated and restricted partial observations in %s', locale => {
+  const name = locale === 'en' ? 'Capacity responsibilities' : '容量责任';
+  const reservationOnly = { ...detail.data.reservations[0]!, association: { ...association, title: 'Reservation-only task' } };
+  const view = renderWithLocale(<WorkerMonitoring state={state({ ...detail, data: { ...detail.data, reservations: [reservationOnly] } })} readEnabled />, { locale });
+  const assertAbsent = () => {
+    expect(screen.queryByRole('heading', { name })).toBeNull();
+    expect(screen.queryByText('Reservation-only task')).toBeNull();
+    expect(view.container.querySelector('.monitoring-reservations')).toBeNull();
+  };
+  assertAbsent();
+  view.rerender(<WorkerMonitoring state={state({ ...detail, data: { ...detail.data, reservations: [] } })} readEnabled />);
+  assertAbsent();
+  view.rerender(<WorkerMonitoring state={state({ ...detail, permissionProjection: 'restricted', detailCoverage: 'partial', data: { ...detail.data, reservations: [reservationOnly] } })} readEnabled />);
+  assertAbsent();
+  expect(screen.getByText(locale === 'en' ? 'Some task details are not visible.' : '部分任务详情不可见。')).toBeInTheDocument();
+  expect(screen.getByText(locale === 'en' ? 'Some details were omitted.' : '部分详情已省略。')).toBeInTheDocument();
 });
 
 it.each([['completed', 'Completed', '已完成'], ['failed', 'Failed', '失败'], ['cancelled', 'Cancelled', '已取消'], [null, 'Not observed', '尚未观测']] as const)('shows the actual scheduler result %s in both languages', (outcome, english, chinese) => {
