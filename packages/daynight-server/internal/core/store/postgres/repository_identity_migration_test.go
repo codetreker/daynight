@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	repositoryidentity "github.com/codetreker/daynight/packages/daynight-server/internal/core/repositoryidentity/v1"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration082"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -51,10 +52,8 @@ func TestRepositoryIdentityMigrationPreservesHistoricalFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	if err := migrate(t.Context(), pool, schemaMigrations); err != nil {
+	ctx := migration082.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
 	var after, identity, raw string
