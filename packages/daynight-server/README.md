@@ -1829,6 +1829,12 @@ tests retain cross-team transfer, persisted access changes and rollback.
 The [Project transfer boundary decision](../../.agents/notes/implemented/testing/2026-11-18-project-transfer-boundary-tests.md)
 records the proof boundary.
 
+Project deletion error tests use controlled read and completion outcomes to
+verify error propagation and receipt suppression. PostgreSQL tests retain
+actual deletion, lock-time authorization, and rollback after scoped failures.
+The [Project deletion completion decision](../../.agents/notes/implemented/testing/2026-11-18-project-deletion-completion-tests.md)
+records which scenarios require a physical database.
+
 Project settings cancellation tests run the Service transaction callback and Core
 rules over controlled DAO results. Callback errors and transaction completion
 are supplied independently so a failed completion can suppress a result or
