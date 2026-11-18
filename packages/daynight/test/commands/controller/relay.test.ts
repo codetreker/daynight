@@ -67,6 +67,37 @@ test("disconnect rejects an outstanding authorization and never treats begin as 
   socket.close(); await assertion; expect(relay.connected()).toBe(false);
 });
 
+test.each([2, 3])("a tick awaiting credentials stops when the socket enters state %i and reconnects", async readyState => {
+  const { relay, socket, emit, frame, callbacks, welcome } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  let release!: (value: string) => void;
+  const grant = await files.readFile.mock.results[0]!.value as string;
+  files.readFile.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  const oldFrames = socket.sent.length;
+  Object.assign(socket, { readyState });
+  release(grant);
+  await new Promise(resolve => setImmediate(resolve));
+  expect(socket.sent).toHaveLength(oldFrames);
+  expect(callbacks.onError).not.toHaveBeenCalled();
+  socket.close();
+  await vi.waitFor(() => expect(transport.sockets).toHaveLength(2), { timeout: 3000 });
+  const next = transport.sockets[1]! as typeof socket;
+  next.emit("message", Buffer.from(JSON.stringify({ ...welcome, connectionEpoch: "4" })));
+  expect(next.sent.find(message => message.type === "reconcile")).toMatchObject({ connectionEpoch: "4" });
+  next.emit("message", Buffer.from(JSON.stringify(frame("reconcile_result", { connectionEpoch: "4", operations: [] }))));
+  expect(relay.connected()).toBe(true);
+  expect(callbacks.onError).not.toHaveBeenCalled();
+});
+
+test("a send failure on the current open connection is reported", async () => {
+  const { socket, emit, frame, callbacks } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  const failure = new Error("transport send failed");
+  Object.assign(socket, { send: () => { throw failure; } });
+  await vi.waitFor(() => expect(callbacks.onError).toHaveBeenCalledWith(failure));
+});
+
 test("authorization retains effective image limits and the independent provider revision", async () => {
   const { relay, emit, frame } = await setup();
   emit(frame("reconcile_result", { operations: [] }));

@@ -108,7 +108,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
   };
   const clearConnection = () => { fence = null; synchronized = false; reconciled = false; syncPending = false; contentRequests.length = 0; for (const work of mediaRequests.values()) work.controller.abort(new Error("Image request connection changed.")); mediaRequests.clear();
     for (const request of captureRequests.values()) { clearTimeout(request.timer); request.reject(new Error("Image capture outcome is unknown after relay disconnect; query the original capture.")); } captureRequests.clear(); pendingBatch = null; callbacks.onConnection(false); for (const waiter of authorization.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("Relay disconnected before native dispatch authorization.")); } authorization.clear(); };
-  const send = (message: ControllerMessage) => { if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (sessionWireBytes(message) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); socket.send(text); };
+  const send = (message: ControllerMessage, target = socket) => { if (!target || target.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (sessionWireBytes(message) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); target.send(text); };
   const prefix = () => { if (!fence) throw new Error("Session relay is not synchronized."); return { protocol: SESSION_PROTOCOL, ...fence }; };
   const sendReconciliation = () => {
     const batch = reconciliation.shift() ?? [];
@@ -190,17 +190,26 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
   let polling = false;
   const tick = async () => {
     if (stopped || polling) return; polling = true;
+    let tickSocket: WebSocket | null = null, tickFence: ControllerFence | null = null;
+    const current = () => !stopped && tickSocket !== null && socket === tickSocket && tickSocket.readyState === WebSocket.OPEN && tickFence !== null && fence === tickFence;
+    const sendTick = (message: ControllerMessage): boolean => {
+      if (!current()) return false;
+      send(message, tickSocket);
+      return current();
+    };
     try {
       if (!socket) { if (Date.now() >= reconnectAt) await connect(); return; }
       if (!fence || !reconciled) return;
-      if (journal.getSourceFloor && BigInt(journal.getSourceFloor()) > BigInt(connectionFloor)) { socket.close(1000, "Local history synchronization required"); return; }
+      tickSocket = socket; tickFence = fence;
+      if (!current()) return;
+      if (journal.getSourceFloor && BigInt(journal.getSourceFloor()) > BigInt(connectionFloor)) { if (current()) tickSocket.close(1000, "Local history synchronization required"); return; }
       if (syncPending) return;
-      if (Date.now() - lastHeartbeat > 10_000) { const grant = await readControllerGrant(ticket); if (stopped || !socket || !fence || !reconciled) return; if (grant.token !== currentToken) { socket.close(1000, "Credential renewed"); return; } send({ ...prefix(), type: "heartbeat" }); lastHeartbeat = Date.now(); }
+      if (Date.now() - lastHeartbeat > 10_000) { const grant = await readControllerGrant(ticket); if (!current()) return; if (grant.token !== currentToken) { tickSocket.close(1000, "Credential renewed"); return; } if (!sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "heartbeat" })) return; lastHeartbeat = Date.now(); }
       if (pendingBatch) return;
       if (requiresLiveSync && !synchronized && !journal.pendingEvents(1).length) {
         const snapshot = journal.getSnapshot();
         const state = callbacks.readState?.() ?? { nativeSessionId: snapshot.nativeSessionId, initialInputState: snapshot.initialInputState, synchronized: true, activity: snapshot.activity, currentTurnId: snapshot.currentTurnId, capabilities: snapshot.capabilities, ...(snapshot.controls ? { controls: snapshot.controls } : {}), ...(snapshot.turnStartedAt !== undefined ? { turnStartedAt: snapshot.turnStartedAt } : {}) };
-        send({ ...prefix(), type: "sync_state", state: { ...state, synchronized: true }, pendingInteractions: journal.pendingInteractions() });
+        if (!sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "sync_state", state: { ...state, synchronized: true }, pendingInteractions: journal.pendingInteractions() })) return;
         syncPending = true; return;
       }
       const request = contentRequests[0];
@@ -222,7 +231,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       if (response && BigInt(journal.getLastAcknowledgedSequence()) >= BigInt(response.sourceThrough)) {
         // The response and its source barrier share WS ordering. Newer events
         // remain queued until after the server has captured this page's cursor.
-        send({ ...prefix(), type: "content_response", ...response }); contentRequests.shift(); return;
+        if (sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "content_response", ...response })) contentRequests.shift(); return;
       }
       journal.drainProjectionGap();
       const events: SourceEvent[] = []; let bytes = 1024;
@@ -237,8 +246,8 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         if (bytes + size > RELAY_LIMITS.maxFrameBytes) break;
         events.push(event); bytes += size;
       }
-      if (events.length) { const id = randomUUID(); pendingBatch = { id, through: events.at(-1)!.sourceSeq }; send({ ...prefix(), type: "events", batchId: id, sourceEpoch: ticket.executionId, events }); }
-    } catch (error) { callbacks.onError(error); socket?.close(); }
+      if (events.length) { const id = randomUUID(); if (sendTick({ protocol: SESSION_PROTOCOL, ...tickFence, type: "events", batchId: id, sourceEpoch: ticket.executionId, events })) pendingBatch = { id, through: events.at(-1)!.sourceSeq }; }
+    } catch (error) { if (!tickSocket || current()) { callbacks.onError(error); tickSocket?.close(); } }
     finally { polling = false; }
   };
   const timer = setInterval(() => { void tick(); }, 100);
