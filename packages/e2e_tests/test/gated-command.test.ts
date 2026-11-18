@@ -210,17 +210,30 @@ test("fixture claim binding is durable and refuses a different claim", async () 
 });
 
 test("recovery stops a separately owned fixture command after the real runner is killed", async () => {
-  const run = await create(), ownerModule = new URL("../src/fixture-owner.ts", import.meta.url).href;
-  const target = `import { startOwnedAuxiliary } from ${JSON.stringify(ownerModule)}; const c=await startOwnedAuxiliary({repository:${JSON.stringify(repository)},runDirectory:${JSON.stringify(run)},command:process.execPath,args:['-e','setInterval(()=>{},1000)'],options:{cwd:${JSON.stringify(run)},timeoutMs:30000,onOutput:()=>{}}}); await (await import('node:fs/promises')).writeFile(${JSON.stringify(path.join(run, "descendant"))},String(c.pid)); setInterval(()=>{},1000);`;
+  const run = await create(), ownerModule = new URL("../src/fixture-owner.ts", import.meta.url).href, marker = path.join(run, "descendant");
+  const payload = `require('fs').writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,ppid:process.ppid}));setInterval(()=>{},1000)`;
+  const target = `import { startOwnedAuxiliary } from ${JSON.stringify(ownerModule)}; await startOwnedAuxiliary({repository:${JSON.stringify(repository)},runDirectory:${JSON.stringify(run)},command:process.execPath,args:['-e',${JSON.stringify(payload)}],options:{cwd:${JSON.stringify(run)},timeoutMs:30000,onOutput:()=>{}}}); setInterval(()=>{},1000);`;
   const source = `import { initializeRunOwnership, startOwnedPlaywright } from ${JSON.stringify(ownerModule)}; await initializeRunOwnership(${JSON.stringify(repository)},${JSON.stringify(run)}); await startOwnedPlaywright({repository:${JSON.stringify(repository)},runDirectory:${JSON.stringify(run)},command:process.execPath,args:['--input-type=module','-e',${JSON.stringify(target)}],options:{cwd:${JSON.stringify(run)},timeoutMs:30000,onOutput:()=>{}}}); setInterval(()=>{},1000);`;
   const runner = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "ignore", "ignore"] });
   try {
-    await wait(async () => { try { return (await readFile(path.join(run, "descendant"), "utf8")) !== ""; } catch { return false; } });
-    const pid = Number(await readFile(path.join(run, "descendant"), "utf8"));
+    let payloadIdentity: { pid: number; ppid: number } | undefined;
+    await wait(async () => { try { payloadIdentity = JSON.parse(await readFile(marker, "utf8")); return Number.isInteger(payloadIdentity?.pid) && Number.isInteger(payloadIdentity?.ppid); } catch { return false; } });
+    assert.ok(payloadIdentity);
+    const owner = JSON.parse(await readFile(path.join(run, "results", "fixture-owner.json"), "utf8"));
+    assert.equal(owner.commands.length, 1);
+    const receipt = await readGateReceipt(run, owner.commands[0].id);
+    assert.equal(receipt.state, "released");
+    assert.ok(receipt.child);
+    assert.equal(receipt.child.pid, payloadIdentity.ppid);
+    const payloadProof = await captureProcessEvidence(payloadIdentity.pid);
     runner.kill("SIGKILL"); await once(runner, "exit");
     await assert.rejects(recoverRunOwnership({ repository, runDirectory: run, mode: "independent" }), /browser stop is unconfirmed/);
-    const { captureProcessEvidence } = await import("../src/process-evidence.ts");
-    await assert.rejects(captureProcessEvidence(pid));
+    assert.equal(await inspectProcessEvidence(receipt.child), "stopped");
+    assert.equal(await inspectProcessEvidence(payloadProof), "stopped");
+    const recovered = JSON.parse(await readFile(path.join(run, "results", "fixture-owner.json"), "utf8"));
+    assert.equal(recovered.commands[0].stopped, true);
+    assert.equal(recovered.browserUnconfirmed, true);
+    assert.equal(recovered.verified, false);
   } finally { if (runner.exitCode === null && runner.signalCode === null) runner.kill("SIGKILL"); await rm(run, { recursive: true, force: true }); }
 });
 

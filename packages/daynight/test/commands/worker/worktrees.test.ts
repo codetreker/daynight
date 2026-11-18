@@ -12,6 +12,7 @@ import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.j
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
+import { captureSynchronousDeadline } from "../../helpers/synchronous-deadline.js";
 
 // The selected mutation runs in a real subprocess with one inherited pipe held
 // by a real descendant. Other Git calls still use the actual executable.
@@ -1712,7 +1713,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       await vi.waitFor(async () => { expect(controlledGit.child).toBeDefined(); expect(await readFile(ready, "utf8")).toBe("ready"); }, { timeout: 12000, interval: 10 });
       const child = controlledGit.child!;
       await vi.waitFor(() => expect(child.exitCode !== null || child.signalCode !== null).toBe(true), { timeout: 12000, interval: 10 });
-      const cancellation = new Error(`cancel ${command}`); signal.abort(cancellation);
+      const cancellation = new Error(`cancel ${command}`);
+      const grace = captureSynchronousDeadline(() => signal.abort(cancellation));
+      try {
+        expect(grace.count).toBe(1);
+        expect(grace.requested).toBe(1_000);
+        grace.markReady();
+        await grace.expire();
+      } finally { grace.restore(); }
       const event = await Promise.race([observed.promise, result.then(error => { throw error ?? new Error("Mutation completed before reporting pending cleanup."); })]);
       expect(event).toMatchObject({ projectId: f.project.projectId, command: command === "add" ? "worktree-add" : command, error: { code: "repository_git_cleanup_pending" } });
       if (command !== "clone") expect(event.owner).toEqual(f.owner);

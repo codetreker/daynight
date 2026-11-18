@@ -76,6 +76,11 @@ run can verify that the recorded browser group stopped without relying on
 visible instead of turning process absence into a guessed successful cleanup.
 The product E2E guide owns the recovery procedure.
 
+The auxiliary recovery harness waits for the payload to publish its PID and
+parent PID before killing the runner. The parent must match the persisted gate
+child proof: the proved `gated-target` process launches the payload, so their
+PIDs differ. Recovery must stop both while retaining unconfirmed browser state.
+
 A failed build may release its lock only after its commands have all joined and
 the runner has persisted that stop boundary. Cancellation and unknown command
 outcomes retain the lock and evidence; a normal build error still fails the run.
@@ -119,6 +124,11 @@ the required evidence without retaining those materials.
 **Infer browser shutdown from Playwright exit or close.** Chromium is detached,
 and a close result alone does not establish that its original process group has
 stopped. Recovery needs the persisted identity and a confirmed stop.
+
+**Treat auxiliary launch return as payload readiness.** The gate has only sent
+authorization at that point; its child proof and the payload may not yet exist.
+Interrupting the runner then can exercise the missing-proof refusal instead of
+the intended recovery path.
 
 ## Consequences
 

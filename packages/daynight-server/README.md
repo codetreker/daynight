@@ -3865,7 +3865,7 @@ empty project returns `items: []`, `nextCursor: null`.
 
 Task lists support `limit`, `cursor`, `type`, `parentId`, `status`, `ready`,
 `allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo`, UUID
-`workerId`, `tagIds`, `tagMatch` and `untagged`, once each. Type defaults to
+`workerId`, `candidateWorkerId`, `automaticCandidate`, `tagIds`, `tagMatch` and `untagged`, once each. Type defaults to
 `task` and can select `goal`; parentId
 accepts `none` or a canonical UUID and is omitted for all parents. Goal lists
 cannot select a nonempty parent. The ready, allowAgents and platformSpecific
@@ -3881,6 +3881,14 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
+
+`candidateWorkerId` requires `automaticCandidate=true` and cannot accompany
+inventory `workerId`. In the authorized read snapshot, the server reads that
+account's Worker target and applies its task tag names before pagination.
+An uninitialized target imposes no tag restriction; missing names remain part
+of an all filter. A missing Worker returns 404, and a failed read or invalid
+target is an error. The cursor binds the Worker, account and normalized filter
+semantics; a changed filter requires a new scan.
 
 List and ready selection accept comma-separated UUID `tagIds`,
 `tagMatch=all|any` (default all), and literal boolean `untagged`. IDs are

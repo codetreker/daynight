@@ -11,17 +11,20 @@
 .worker-machine-name, .worker-card-id { color: #556176; font-size: 11px; margin-top: 6px; overflow-wrap: anywhere; }
 .worker-card-id { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .worker-detail-heading > div:first-child { min-width: 0; }
+.worker-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 9px; }
+.worker-title-row h1 { min-width: 0; max-width: 100%; margin: 0; }
+.worker-alias-trigger { flex: none; }
+.worker-alias-trigger[hidden] { display: none; }
 .worker-alias { margin-top: 12px; }
-.worker-alias > button[hidden] { display: none; }
 .worker-alias-form { display: grid; gap: 8px; max-width: 520px; min-width: 0; }
 .worker-alias-form label { font-size: 13px; font-weight: 600; color: #172132; }
 .worker-alias-form input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #8793a7; border-radius: 6px; font: inherit; color: #172132; background: #fff; }
 .worker-alias-form input[aria-invalid="true"] { border-color: #a3322b; }
-.worker-alias-form input:focus-visible, .worker-alias button:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
+.worker-alias-form input:focus-visible, .worker-alias button:focus-visible, .worker-alias-trigger:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
 .worker-alias-hint, .worker-alias-current { font-size: 12px; color: #556176; overflow-wrap: anywhere; }
 .worker-alias-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 800px), (pointer: coarse) {
-  .worker-alias button, .worker-alias input { min-height: 44px; font-size: 16px; }
+  .worker-alias button, .worker-alias input, .worker-alias-trigger { min-height: 44px; font-size: 16px; }
 }
 .worker-platform { font-size: 11px; color: var(--muted); margin: 7px 0 17px; }
 .worker-workload { font-size: 12px; color: #4f5c73; margin-bottom: 20px; overflow-wrap: anywhere; }

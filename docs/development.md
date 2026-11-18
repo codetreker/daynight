@@ -218,6 +218,11 @@ Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
+The Worker Git cancellation fixtures release the registered cleanup grace
+after the root has exited and a real descendant holds the original pipe. They
+still join the actual pipe close. The
+[Git cancellation clock decision](../.agents/notes/implemented/testing/2026-11-18-worker-git-cancel-grace-clock.md)
+owns the controlled timer and separate real-time coverage.
 Bot CLI probe fixtures retain the real guardian, descendants, process inventory,
 signals and joined cleanup. On POSIX, the test freezes the stop clock after the
 target process group receives TERM and advances it only after a real inventory
