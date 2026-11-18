@@ -1812,6 +1812,13 @@ tests retain persisted creation and reuse, and exercise visibility and keyset
 rules. The [repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
 describes the Service, Core, and Store test boundaries.
 
+Project membership tests verify actor preflight with a fail-on-access store.
+Controlled write scopes exercise authorization, direct grant mutation, actor
+access rereads, and eligibility refresh in the Service and Core code.
+PostgreSQL tests retain persisted grant updates, visibility after removal,
+concurrent writers, and rollback. The [Project grant actor decision](../../.agents/notes/implemented/testing/2026-11-18-project-grant-actor-tests.md)
+records the proof boundary.
+
 Project settings cancellation tests run the Service transaction callback and Core
 rules over controlled DAO results. Callback errors and transaction completion
 are supplied independently so a failed completion can suppress a result or
