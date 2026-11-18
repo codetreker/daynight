@@ -28,6 +28,7 @@ type WorkerQuery struct {
 
 type TaskQuery struct {
 	TagFilter          TagFilter
+	CandidateTagFilter *model.TagNameFilter
 	Type               model.TaskType
 	Parent             *string
 	AssignedTo         model.TaskAssignmentFilter
