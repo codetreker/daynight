@@ -24,11 +24,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func githubDelivery(t *testing.T, handler http.Handler, event, delivery, body string) int {
+func githubDelivery(t *testing.T, handler http.Handler, projectID, event, delivery, body string) int {
 	t.Helper()
 	mac := hmac.New(sha256.New, []byte("secret"))
 	_, _ = mac.Write([]byte(body))
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/github/apps/"+testWebhookAppID+"/webhook", bytes.NewBufferString(body))
+	path := "/api/v1/github/apps/" + testWebhookAppID + "/webhook"
+	if projectID != "" {
+		path = "/api/v1/github/projects/" + projectID + "/webhook"
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	req.Header.Set("X-GitHub-Event", event)
 	req.Header.Set("X-GitHub-Delivery", delivery)
@@ -46,6 +50,11 @@ func githubWebhookHandler(t *testing.T, db *Store) http.Handler {
 	}
 	mux := http.NewServeMux()
 	servergithub.RegisterAppWebhookRoute(mux, receiver, logger)
+	projectReceiver, err := servicegithub.NewProjectWebhookReceiver(db, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servergithub.RegisterProjectWebhookRoute(mux, db, projectReceiver, logger)
 	return mux
 }
 
@@ -72,18 +81,32 @@ func TestGitHubWebhookReceptionAndRecoveryWithStore(t *testing.T) {
 		b2Configure(t, db, id, 10, 20, 30)
 		configureWebhookApp(t, db, id)
 		mustQueryExec(t, db, `UPDATE project_github SET repository_full_name='owner/repo', next_poll_at=clock_timestamp()+interval '1 hour', next_access_check_at=clock_timestamp()+interval '1 hour' WHERE project_id=$1`, id)
+		mustQueryExec(t, db, `UPDATE project_github SET hook_version=1,hook_repository_id=30,hook_enabled=true,hook_secret='secret'::bytea WHERE project_id=$1`, id)
 	}
 	mustQueryExec(t, db, `UPDATE project_github SET enabled=false, sync_enabled=false WHERE project_id=$1`, disconnected.ID)
 	body := `{"installation":{"id":20},"repository":{"id":30},"number":7,"action":"closed"}`
 	h := githubWebhookHandler(t, db)
-	for _, delivery := range []string{"new", "new", "older"} {
-		if code := githubDelivery(t, h, "pull_request", delivery, body); code != http.StatusAccepted {
-			t.Fatalf("delivery: %d", code)
-		}
+	if code := githubDelivery(t, h, "", "pull_request", "app-pr", body); code != http.StatusNoContent {
+		t.Fatalf("App delivery: %d", code)
 	}
 	var count int
+	if err := db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_github_pending_prs`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("App delivery queued work: %d %v", count, err)
+	}
+	for _, id := range []string{a.ID, b.ID, disconnected.ID} {
+		for _, delivery := range []string{"new", "new", "older"} {
+			if code := githubDelivery(t, h, id, "pull_request", delivery, body); code != http.StatusAccepted {
+				t.Fatalf("project delivery: %d", code)
+			}
+		}
+		if id == a.ID {
+			if err := db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, b.ID).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("project delivery reached another project: %d %v", count, err)
+			}
+		}
+	}
 	if err := db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_github_pending_prs WHERE number=7`).Scan(&count); err != nil || count != 2 {
-		t.Fatalf("fanout pending: %d %v", count, err)
+		t.Fatalf("project pending: %d %v", count, err)
 	}
 	// Reconstruct the receiver and executor after reception; persisted work remains due.
 	h = githubWebhookHandler(t, db)
@@ -110,7 +133,7 @@ func TestGitHubWebhookReceptionAndRecoveryWithStore(t *testing.T) {
 	remote.page = []githubpr.Observation{fact}
 	remote.pulls[8] = executorFact(8, "open", "hint", "hint body", now)
 	pollHint := `{"installation":{"id":20},"repository":{"id":30},"number":8}`
-	if code := githubDelivery(t, h, "pull_request", "during-poll", pollHint); code != http.StatusAccepted {
+	if code := githubDelivery(t, h, a.ID, "pull_request", "during-poll", pollHint); code != http.StatusAccepted {
 		t.Fatalf("poll hint: %d", code)
 	}
 	logs.Reset()
@@ -123,7 +146,7 @@ func TestGitHubWebhookReceptionAndRecoveryWithStore(t *testing.T) {
 		t.Fatalf("poll repair: %s %v", head, err)
 	}
 	access := `{"installation":{"id":20},"repositories_removed":[]}`
-	if code := githubDelivery(t, h, "installation_repositories", "access", access); code != http.StatusAccepted {
+	if code := githubDelivery(t, h, "", "installation_repositories", "access", access); code != http.StatusAccepted {
 		t.Fatalf("access delivery: %d", code)
 	}
 	if err = db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_github WHERE access_hint_id IS NOT NULL AND last_webhook_received_at IS NOT NULL`).Scan(&count); err != nil || count != 2 {
@@ -151,6 +174,7 @@ func TestGitHubWebhookUnknownCommitIsNotAcknowledged(t *testing.T) {
 	project := queryProject(t, db, 1)
 	b2Configure(t, db, project.ID, 10, 20, 30)
 	configureWebhookApp(t, db, project.ID)
+	mustQueryExec(t, db, `UPDATE project_github SET hook_version=1,hook_repository_id=30,hook_enabled=true,hook_secret='secret'::bytea WHERE project_id=$1`, project.ID)
 	var armed, lost atomic.Bool
 	config := db.Pool.Config().Copy()
 	config.ConnConfig.TLSConfig, config.ConnConfig.Fallbacks = nil, nil
@@ -166,9 +190,17 @@ func TestGitHubWebhookUnknownCommitIsNotAcknowledged(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	h := githubWebhookHandler(t, &Store{Pool: pool})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	receiver, err := servicegithub.NewProjectWebhookReceiver(&Store{Pool: pool}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	// Inject commit loss only into the write transaction, not the read-only
+	// credential snapshot that precedes it.
+	servergithub.RegisterProjectWebhookRoute(mux, db, receiver, logger)
 	armed.Store(true)
-	code := githubDelivery(t, h, "pull_request", "unknown", `{"installation":{"id":20},"repository":{"id":30},"number":7}`)
+	code := githubDelivery(t, mux, project.ID, "pull_request", "unknown", `{"repository":{"id":30},"number":7}`)
 	if !lost.Load() || code != http.StatusServiceUnavailable {
 		t.Fatalf("lost=%t response=%d", lost.Load(), code)
 	}
@@ -184,6 +216,7 @@ func TestGitHubSignalDeadlineReleasesBlockedConnection(t *testing.T) {
 	project := queryProject(t, db, 1)
 	b2Configure(t, db, project.ID, 10, 20, 30)
 	configureWebhookApp(t, db, project.ID)
+	mustQueryExec(t, db, `UPDATE project_github SET hook_version=1,hook_repository_id=30,hook_enabled=true,hook_secret='secret'::bytea WHERE project_id=$1`, project.ID)
 	lock, err := db.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -200,14 +233,15 @@ func TestGitHubSignalDeadlineReleasesBlockedConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	receiver, err := servicegithub.NewAppWebhookReceiver(&Store{Pool: pool}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	receiver, err := servicegithub.NewProjectWebhookReceiver(&Store{Pool: pool}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() {
-		done <- receiver.ReceiveAppWebhook(ctx, servicegithub.AppWebhookIdentity{AppID: testWebhookAppID, CredentialVersion: 1}, coregithub.WebhookEvent{Kind: "pull_request", DeliveryID: "blocked", InstallationID: 20, RepositoryID: 30, Number: 7})
+		_, err := receiver.Receive(ctx, project.ID, coregithub.ProjectWebhookIdentity{ProjectID: project.ID, Version: 1, RepositoryID: 30}, coregithub.WebhookEvent{Kind: "pull_request", DeliveryID: "blocked", RepositoryID: 30, Number: 7})
+		done <- err
 	}()
-	waitForQueryLock(t, db, "SELECT c.project_id FROM project_github c")
+	waitForQueryLock(t, db, "SELECT hook_version,hook_repository_id,hook_enabled,hook_last_received_at")
 	select {
 	case err = <-done:
 		if err == nil {
