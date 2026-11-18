@@ -1464,7 +1464,7 @@ export const createApiClient = (options: {
       const pathname = resourcePath("projects", project, "tasks", task, "properties", name);
       return exchange({ operation: "task.remove-property", projectId: project, taskId: task }, pathname, "DELETE", { kind: "json", parse: (value) => {
         const result = parseTaskPropertyResource(value, project, task);
-        if ((result.version !== input.version && result.version !== input.version + 1n) || Object.hasOwn(result.properties, name)) throw new ProtocolError("Task does not confirm the requested property removal.");
+        if ((result.version !== input.version && result.version !== input.version + 1n) || Object.hasOwn(result.properties, name) || ((name === "blocked" || name === "paused") && (Object.hasOwn(result.properties, "blocked") || Object.hasOwn(result.properties, "paused")))) throw new ProtocolError("Task does not confirm the requested property removal.");
         return result;
       } }, [200], { kind: "json", value: { version: input.version } }, true);
     },

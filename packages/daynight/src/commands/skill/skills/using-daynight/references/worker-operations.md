@@ -184,7 +184,7 @@ daynight worker repair-markdown <task-id> --project <project-id> --claim-id <cla
 
 The command checks the signed-in owner, service, terminal Task, completed original
 claim, Session, Worker configuration, launch ticket and actual managed worktree.
-A paused Task, changed identity or unconfirmed original stop prevents repair.
+A blocked Task, changed identity or unconfirmed original stop prevents repair.
 It uses the stopped Controller storage permit and can run beside the Worker;
 it does not take over scheduling, start an Agent or replay user input.
 
@@ -208,12 +208,12 @@ of an earlier failure whose diagnostic details were not recorded.
 
 ## Pause and complete an assigned claim
 
-A worker-managed Task may expose `paused`; authorized changes use ordinary Task
+A worker-managed Task may expose `blocked`; authorized changes use ordinary Task
 property writes:
 
 ```bash
-daynight task set-property <task-id> paused true --project <project-id> --if-version <observed-version>
-daynight task set-property <task-id> paused false --project <project-id> --if-version <observed-version>
+daynight task set-property <task-id> blocked true --project <project-id> --if-version <observed-version>
+daynight task set-property <task-id> blocked false --project <project-id> --if-version <observed-version>
 ```
 
 Claim-bound completion needs the original explicitly supplied claim ID;

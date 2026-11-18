@@ -76,7 +76,7 @@ const fixture = async (withSourceTail = false) => {
     finally { confirm.mockRestore(); }
   }
   const claim = { claimId: target.claimId, state: "completed", userId, workerId, machine: { id: randomUUID(), name: "fixture" }, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", agent: "codex", agentControlMode: "web", worktreeId: target.worktreeId, phase: "completing", herdr: null, nativeSessionId: nativeSessionId as string | null, claimedAt: new Date().toISOString() };
-  const task = { status: "done", properties: { worker: claim, paused: false } };
+  const task = { status: "done", properties: { worker: claim, blocked: false } };
   const session = { fence: { claimId: target.claimId, executionGeneration: "1" }, session: { nativeSessionId: nativeSessionId as string, lifecycle: "archived" } };
   const api = { getTask: vi.fn(async () => task), getCurrentUser: vi.fn(async () => ({ id: userId })), inspectTaskSession: vi.fn(async () => session) };
   let output: KnownSessionOperationOutput | undefined;
@@ -102,7 +102,7 @@ test.each(["native", "claim", "paused", "platform", "manifest", "branch"])("refu
   const f = await fixture(), before = await readFile(f.journalPath);
   if (kind === "native") { f.task.properties.worker.nativeSessionId = randomUUID(); f.session.session.nativeSessionId = f.task.properties.worker.nativeSessionId; }
   if (kind === "claim") f.task.properties.worker.claimId = randomUUID();
-  if (kind === "paused") f.task.properties.paused = true;
+  if (kind === "paused") f.task.properties.blocked = true;
   if (kind === "platform") f.task.properties.worker.platform = process.platform === "win32" ? "linux" : "windows";
   if (kind === "manifest") await unlink(manifestPath(f.binding.commonDirectory, f.target.worktreeId));
   if (kind === "branch") await f.git(f.binding.worktreePath, ["checkout", "-b", "changed-branch"]);

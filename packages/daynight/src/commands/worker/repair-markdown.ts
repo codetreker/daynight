@@ -3,7 +3,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import type { CliContext } from "../../cli/context.js";
 import { runServerCommand } from "../server/runtime.js";
-import { readTaskPaused, readWorkerClaim } from "../../api/task-properties.js";
+import { readTaskBlocked, readWorkerClaim } from "../../api/task-properties.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { readConfigurationSource } from "../../config/files.js";
@@ -55,7 +55,7 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
       operation.check();
       const task = await api.getTask(target.projectId, target.taskId), claim = readWorkerClaim(task.properties);
       const user = await api.getCurrentUser();
-      if ((task.status !== "done" && task.status !== "cancelled") || readTaskPaused(task.properties) === true || claim?.state !== "completed" || claim.claimId !== target.claimId || claim.workerId !== local.workerId || claim.worktreeId !== target.worktreeId || claim.agentControlMode !== "web" || claim.userId !== user.id || ticket.userId !== user.id) throw new Error("The terminal task, original claim or repair permission changed; original resources were retained.");
+      if ((task.status !== "done" && task.status !== "cancelled") || readTaskBlocked(task.properties) === true || claim?.state !== "completed" || claim.claimId !== target.claimId || claim.workerId !== local.workerId || claim.worktreeId !== target.worktreeId || claim.agentControlMode !== "web" || claim.userId !== user.id || ticket.userId !== user.id) throw new Error("The terminal task, original claim or repair permission changed; original resources were retained.");
       const session = await api.inspectTaskSession(target.projectId, target.taskId, target.sessionId);
       if (session.fence.claimId !== target.claimId || session.fence.executionGeneration !== ticket.executionGeneration || !session.session.nativeSessionId || claim.nativeSessionId != null && session.session.nativeSessionId !== claim.nativeSessionId || !["archived", "stopped"].includes(session.session.lifecycle ?? "")) throw new Error("The selected Session does not confirm the original stopped execution.");
       const journal = new Database(journalPath, { readonly: true, fileMustExist: true, timeout: 1000 });

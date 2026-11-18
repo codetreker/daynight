@@ -10,7 +10,7 @@ const verifyTemplate = (prompt: string, session: string) => {
   const [body, json] = prompt.split("Assignment:\n\n");
   expect(json).toBeDefined();
   const restored = `${body!.replace(session, "{{Instructions for starting a new native conversation or resuming in the original native conversation and worktree}}")}Assignment:\n\n{{The complete Assignment JSON injected at runtime}}\n`;
-  expect(createHash("sha256").update(restored).digest("hex")).toBe("6c7078dbe5ec581ccbcdf35710eae697327eae2ec35b408deb602f389a119c82");
+  expect(createHash("sha256").update(restored).digest("hex")).toBe("da3d148d2f6b5a42995835b0d82fab405f39d4d50a81ff8c809f11d911368e28");
 };
 
 const uuid = (number: number) => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
@@ -86,7 +86,7 @@ describe("worker managed prompts", () => {
       "Pending approval does not prevent fixing CI",
       "Use bounded `sleep` or an available waiting tool",
       "blocker you cannot resolve autonomously",
-      "Set `paused=true` and read it back to confirm",
+      "Set `blocked=true` and read it back to confirm",
       "verify the original assignment, the blocker’s resolution, and current authorization",
       "use the original claim and exact observed version to set the task to `done`",
       "If any write is rejected or its result is unknown, observe the original execution",

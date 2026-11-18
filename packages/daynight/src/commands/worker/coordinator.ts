@@ -1,6 +1,6 @@
 import { ArchiveRepairRequiredError, type ArchiveRepairCode } from "../controller/archive-error.js";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
-import { readWorkerClaim, readSessionStartupReport, readTaskPaused } from "../../api/task-properties.js";
+import { readWorkerClaim, readSessionStartupReport, readTaskBlocked } from "../../api/task-properties.js";
 import { legacyBranchLatch } from "./backends/orchestration.js";
 import { WorktreePreconditionError } from "./worktrees.js";
 import { retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
@@ -578,7 +578,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (invalidated(task.projectId) || readWorkerClaim(task.properties)?.agentControlMode !== "web") continue;
       const owner = remoteOwner(task);
       observe(m => {
-        const identity = key(owner), paused = readTaskPaused(task.properties) === true;
+        const identity = key(owner), paused = readTaskBlocked(task.properties) === true;
         const wasPaused = pausedClaims.has(identity), activity = monitoringActivities.get(`false/${identity}`);
         if (paused) pausedClaims.add(identity); else pausedClaims.delete(identity);
         if (activity !== undefined && paused !== wasPaused) {
@@ -843,7 +843,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       || latest === null || latest.status !== "active" || (latest.cleanup !== null && !(allowShutdown && latest.cleanup.kind === "shutdown")) || latest.control !== null
       || latest.workerId !== original.workerId || latest.worktreeId !== original.worktreeId
       || (claim.nativeSessionId !== null && latest.resources.nativeSession !== null && claim.nativeSessionId !== latest.resources.nativeSession.sessionId)) return "claim_invalid";
-    return readTaskPaused(fresh.properties) ? "task_paused" : null;
+    return readTaskBlocked(fresh.properties) ? "task_paused" : null;
   };
   const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, explicitRetry = false, allowWorktreeRestore = true): Promise<WorkerInputWait | undefined> => {
     if (ending.has(key(task))) return;
@@ -1065,7 +1065,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           || !await sameWorktreeLocation(binding.commonDirectory, original.commonDirectory)) return;
         signal.throwIfAborted();
         const fresh = await options.remote.readTask(owner.projectId, owner.taskId, signal), currentClaim = readWorkerClaim(fresh.properties);
-        if (fresh.projectId !== owner.projectId || fresh.id !== owner.taskId || fresh.status !== "in_progress" || !fresh.allowAgents || readTaskPaused(fresh.properties)
+        if (fresh.projectId !== owner.projectId || fresh.id !== owner.taskId || fresh.status !== "in_progress" || !fresh.allowAgents || readTaskBlocked(fresh.properties)
           || currentClaim?.state !== "active" || currentClaim.agentControlMode !== "web" || currentClaim.claimId !== owner.claimId
           || currentClaim.workerId !== options.workerId || currentClaim.userId !== options.userId || currentClaim.worktreeId !== owner.worktreeId
           || currentClaim.agent !== task.agent || !compatibleWebSessions(task.sessionId, currentClaim.nativeSessionId, record.resources.nativeSession?.sessionId)

@@ -159,7 +159,7 @@ allowAgents 默认 false，只约束自动发现选择；普通明确指定的�
 复审失败时保持许可并报告，撤销/停止仍需明确授权。自动发现与连续调度归 worker，
 继续要求 allowAgents=true、ready 和真实平台；公开 skill 不提供候选选择循环。
 讨论等待确认时保持当前任务，不能换做后继。整个 Goal 仍须所有实际交付与原始验收完成。
-managed 按 [Worker 人工介入规则](../spec/daynight-worker.md) 在确需用户介入时读取完整 task、核验原 active claim，并用精确观察版本设置自身任务 paused=true，回读确认后报告问题、保存 Session 上下文并退出循环等待。任务保持 in_progress，用户自行选择介入方式。反馈后重新核验原 assignment、问题解决和当前授权，解除暂停并回读确认 false 或缺席后恢复；未解决时保留暂停。属性写入、冲突和未知结果遵守 write-safety，普通 CI/review 继续等待，不执行其他阶段。
+managed 按 [Worker 人工介入规则](../spec/daynight-worker.md) 在确需用户介入时读取完整 task、核验原 active claim，并用精确观察版本设置自身任务 blocked=true，回读确认后报告问题、保存 Session 上下文并退出循环等待。任务保持 in_progress，用户自行选择介入方式。反馈后重新核验原 assignment、问题解决和当前授权，解除暂停并回读确认 false 或缺席后恢复；未解决时保留暂停。属性写入、冲突和未知结果遵守 write-safety，普通 CI/review 继续等待，不执行其他阶段。
 
 ## 写入、恢复与并发
 
