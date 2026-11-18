@@ -73,6 +73,7 @@ describe("compiled project commands", () => {
         const input = body === "" ? null : JSON.parse(body) as { name: string; repoUrl: string };
         requests.push({ method: request.method!, cursor, body: input });
         response.setHeader("Content-Type", "application/json");
+        response.setHeader("Daynight-User-ID", userId);
         if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); response.end(stringifyApiJson(user)); return; }
         if (request.url === `/api/v1/teams/${user.personalTeam.id}`) { response.setHeader("Daynight-User-ID", userId); response.end(stringifyApiJson(personalTeam)); return; }
         if (input !== null) {
@@ -112,7 +113,7 @@ describe("compiled project commands", () => {
       expect(repeated.code, repeated.stderr).toBe(0);
       expect(repeated.stdout).toContain("Project already exists.");
       expect(repeated.stdout).toContain("Name: Original 名称");
-      expect(requests.slice(beforeRepeat).map(({ method, cursor }) => ({ method, cursor }))).toEqual([{ method: "GET", cursor: null }, { method: "GET", cursor: "later page" }]);
+      expect(requests.slice(beforeRepeat).map(({ method, cursor }) => ({ method, cursor }))).toEqual([{ method: "GET", cursor: null }, { method: "GET", cursor: null }, { method: "GET", cursor: "later page" }]);
       expect((await readdir(root)).sort()).toEqual([".git", "nested 中文"]);
       expect(await readdir(nested)).toEqual([]);
 
@@ -181,6 +182,7 @@ describe("compiled project commands", () => {
         const body = chunks.length === 0 ? null : JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
         requests.push({ method: request.method!, pathname: url.pathname, cursor: url.searchParams.get("cursor"), body });
         response.setHeader("Content-Type", "application/json");
+        response.setHeader("Daynight-User-ID", userId);
         if (request.method === "POST") {
           const input = body as { name: string; repoUrl: string };
           response.setHeader("Daynight-User-ID", userId);
