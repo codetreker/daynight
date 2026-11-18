@@ -522,6 +522,19 @@ test('Goal dialog retains statistics through a failed background graph refresh a
   await expect(total).toHaveText('3');
 });
 
+test('copies the child Task overview from a Goal', async ({ page, context }) => {
+  await install(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  await restoreGoalChild(page, singleId);
+  const child = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+  await expect(child.locator('.task-detail-title')).toHaveText('Standalone task');
+  await child.getByRole('button', { name: 'More task actions' }).click();
+  await child.getByRole('menuitem', { name: 'Copy link' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`${new URL(page.url()).origin}/projects/${projectId}/tasks/${singleId}`);
+  await expect(child.getByText('Link copied')).toBeVisible();
+});
+
 for (const presentation of ['dialog', 'page'] as const) test(`restored Goal timed graph stays usable in ${presentation} presentation`, async ({ page }, testInfo) => {
   const errors: Error[] = [];
   page.on('pageerror', error => errors.push(error));

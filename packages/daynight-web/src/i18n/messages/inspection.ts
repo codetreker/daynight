@@ -151,6 +151,9 @@ export type InspectionMessages = {
     readonly showNotice: string;
     readonly moreActions: string;
     readonly openInNewTab: string;
+    readonly copyLink: string;
+    readonly linkCopied: string;
+    readonly copyLinkFailed: string;
     readonly returnToProject: string;
     readonly enterFullscreen: string;
     readonly exitFullscreen: string;

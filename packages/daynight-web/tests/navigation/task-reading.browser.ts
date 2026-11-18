@@ -37,7 +37,7 @@ async function expectChainTimeLayout(header: Locator) {
   expect(layout).toEqual({ belowTitle: true, inMeta: true, alignedLeft: true, insideHeader: true, separate: true, noHorizontalOverflow: true });
 }
 
-async function install(page: Page, timing = false, completion = false, title = 'Reading task', variants?: readonly TaskDetail[], sessionObservations = false) {
+async function install(page: Page, timing = false, completion = false, title = 'Reading task', variants?: readonly TaskDetail[], sessionObservations = false, withAttachment = false) {
   const task = detailFixture(projectId, taskId, { title, description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}), ...(completion ? { status: 'done' as const, ready: false, completedAt: '2026-10-22T09:59:30Z' } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Successor', version: 5n, dependsOn: [taskId], blockedBy: completion ? [] : [taskId], ready: false, ...(completion ? { status: 'done' as const, completedAt: '2026-10-22T09:59:50Z' } : {}) });
   const standalone = detailFixture(projectId, standaloneId, { title: 'Running standalone task', version: 5n, status: completion ? 'done' : 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z', ...(completion ? { completedAt: '2026-10-22T09:59:40Z' } : {}) });
@@ -61,12 +61,92 @@ async function install(page: Page, timing = false, completion = false, title = '
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
       if (path === `${base}/thread/messages`) return send({ items: url.searchParams.has('afterId') ? [] : [message], hasMoreBefore: false, hasMoreAfter: false });
       if (path === `${base}/steps` && request.method() === 'GET') return send({ projectId, taskId: detail.id, version: detail.version, steps: [] });
-      if (path === `${base}/sessions` || path === `${base}/attachments`) return send({ items: [], nextCursor: null });
+      if (path === `${base}/attachments`) return send({ items: withAttachment ? [{ path: 'reading.txt', contentType: 'text/plain', sizeBytes: 4, createdAt: time, updatedAt: time }] : [], nextCursor: null });
+      if (path === `${base}/attachments/files/reading.txt`) return route.fulfill({ body: 'text', headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
+      if (path === `${base}/sessions`) return send({ items: [], nextCursor: null });
     }
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
   });
   return state;
 }
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`copy task overview from dialog, fullscreen and page at ${width}px in ${locale}`, async ({ page, context }) => {
+    const state = await install(page, false, true);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    await page.locator(`#task-chain-graph-${taskId}`).click();
+    await page.locator(`.react-flow__node[data-id="${taskId}"] .task-node-details`).click();
+    const dialog = page.locator('.task-detail-dialog');
+    const more = locale === 'en' ? 'More task actions' : '更多任务操作';
+    const copy = locale === 'en' ? 'Copy link' : '复制链接';
+    const copied = locale === 'en' ? 'Link copied' : '已复制链接';
+    const target = `${new URL(page.url()).origin}/projects/${projectId}/tasks/${taskId}`;
+    const check = async (surface: Locator) => {
+      const before = page.url(); const historyLength = await page.evaluate(() => history.length); const trigger = surface.getByRole('button', { name: more });
+      await trigger.press('ArrowDown');
+      const item = surface.getByRole('menuitem', { name: copy });
+      await expect(item).toBeVisible();
+      const enabled = surface.locator('[role="menuitem"]:not(:disabled)');
+      await page.keyboard.press('End'); await expect(enabled.last()).toBeFocused();
+      await page.keyboard.press('Home'); await expect(enabled.first()).toBeFocused();
+      await page.keyboard.press('ArrowDown'); await expect(enabled.nth(await enabled.count() > 1 ? 1 : 0)).toBeFocused();
+      await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+      await trigger.press('ArrowDown');
+      expect(await item.evaluate(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })).toBe(true);
+      await item.focus(); await page.keyboard.press('Enter');
+      await expect(trigger).toBeFocused(); await expect(surface.getByText(copied)).toBeVisible();
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target);
+      expect(page.url()).toBe(before);
+      expect(await page.evaluate(() => history.length)).toBe(historyLength);
+    };
+    const overview = dialog.locator('.task-detail-panel-overview');
+    await overview.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    const scroll = await overview.evaluate(element => element.scrollTop); expect(scroll).toBeGreaterThan(0);
+    await check(dialog); expect(await overview.evaluate(element => element.scrollTop)).toBe(scroll);
+    await dialog.getByRole('tab', { name: locale === 'en' ? 'Discussion' : '讨论', exact: true }).click();
+    const draft = dialog.locator('.thread-composer textarea'); await draft.fill('Retained draft');
+    await check(dialog); await expect(draft).toHaveValue('Retained draft');
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+    await check(dialog); await expect(draft).toHaveValue('Retained draft');
+    await page.goto(`${target}?tab=discussion`);
+    const surface = page.locator('.task-detail-page'); await check(surface);
+    await page.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) }); });
+    await surface.getByRole('button', { name: more }).click(); await surface.getByRole('menuitem', { name: copy }).click();
+    await expect(surface.getByRole('alert')).toContainText(locale === 'en' ? 'Could not copy the link. Try again.' : '无法复制链接，请重试。');
+    await page.evaluate(() => { delete (navigator.clipboard as unknown as { writeText?: unknown }).writeText; });
+    await check(surface);
+    await page.goto(await page.evaluate(() => navigator.clipboard.readText()));
+    await expect(page.locator('.task-detail-page .task-detail-title')).toHaveText('Reading task');
+    await expect(page.locator('.task-detail-page').getByRole('tab', { name: locale === 'en' ? 'Overview' : '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(state.writes).toEqual([]);
+  });
+}
+
+test('selected attachment keeps its new-tab target while copy uses overview', async ({ page, context }) => {
+  const state = await install(page, false, false, 'Reading task', undefined, false, true);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks' }).click();
+  await page.locator(`#standalone-task-${taskId}`).click();
+  const dialog = page.locator('.task-detail-dialog');
+  await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await dialog.getByRole('button', { name: /^reading\.txt/ }).click();
+  await dialog.getByRole('button', { name: 'More task actions' }).click();
+  const popout = dialog.getByRole('menuitem', { name: 'Open in new tab' });
+  await expect(popout).toHaveAttribute('href', `/projects/${projectId}/tasks/${taskId}/attachments/reading.txt`);
+  const [reader] = await Promise.all([context.waitForEvent('page'), popout.click()]);
+  await expect(reader).toHaveURL(new RegExp(`/attachments/reading\\.txt$`));
+  await dialog.getByRole('button', { name: 'More task actions' }).click();
+  await dialog.getByRole('menuitem', { name: 'Copy link' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`${new URL(page.url()).origin}/projects/${projectId}/tasks/${taskId}`);
+  expect(state.writes).toEqual([]); await reader.close();
+});
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
   test(`execution time advances during a held sync without moving the graph at ${width}px in ${locale}`, async ({ page }) => {
