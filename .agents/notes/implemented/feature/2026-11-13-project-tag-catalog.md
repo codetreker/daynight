@@ -33,7 +33,7 @@ matching the service's distinction between an absent query and an invalid empty
 parameter; nonempty searches retain their original value. Delete reads the current tag before confirmation;
 conflict and unknown outcomes keep the draft for explicit observation. A write
 interrupted after dispatch remains unknown when the user returns to the section.
-The Web creates and edits colors with presets or an RGB input. Editing pairs a
+The Web creates and edits colors with a shared palette of 32 presets or an RGB input. The original nine retain their order and values, including the default gray; 23 additional named colors expand direct selection in the catalog and Task/Goal picker. Editing pairs a
 fresh Tag read with a color resolve at the same exact version before binding a
 draft or showing current state after a conflict. A bounded retry and an explicit
 retry on mismatch avoid pairing an older color with a newer version. Name and

@@ -69,6 +69,9 @@ input+output，以及 profile 声明不相交的两类 cache 之和超过 input 
 
 实际 runtime/SDK 未通过精确组合资格验证时为 `profile_unverified`，研究过字段不等于
 生产环境已验证。Provider JS number 不安全时不得转成看似精确的字符串。
+Copilot Controller 使用 `1.0.11/<runtime-version>` 作为 providerVersion，实时事件在
+历史恢复缓冲前持久化；ephemeral 通知不能从历史恢复，始终保留 native_recovery_gap，
+不承诺收齐落盘前的事件。采集错误和用量网络故障不得中止原生任务。
 能力接口通过 `profiles[].qualifiedVersions:[{providerVersion,capability}]`
 公开精确的已验证版本；基准 capability 和未列版本不能因此自动升级。
 
@@ -95,6 +98,12 @@ token 丢失后只有仍具当前同代次 Controller 身份的调用者能以�
 claim 完成和 Task done 不自动撤销已登记 grant，也不 seal。seal 表示原生停止并完成采集
 drain；其后不再续期，但截止前仍可补报最终计量或有证据的修正。
 未登记且 claim 已结束的执行不能事后自建 grant。
+Controller 用量队列与 Session timeline 的 cumulative ACK 相互隔离。只有完整匹配
+本次 flight 的用量回执才能清理对应事件；断网或响应未知时保留原身份重发。
+原生停止后的补传使用原 journal 和有效 grant，不重新取得 claim、注册新执行或
+延长原授权窗口。Worker 的历史归档开关不关闭补传；唯一 journal 中存在待发或
+隔离计量或未解决的本地来源冲突时保留该 journal，显式删除和自动清理历史录制均不得
+丢弃它。已接受计量与 partial 状态的 ACK 不解决本地冲突，不清除其证据。
 
 每次写入重新核验 grant/hash/期限/撤销、原父凭据、账户、当前 membership、
 资源存在以及 Task allowAgents/pause。结束后补报仅能写原 anchor，不能改变新执行。

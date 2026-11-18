@@ -1,4 +1,5 @@
 import { createWebArchiveMaintenance } from "./web-archive-backfill.js";
+import { replayStoppedControllerUsage } from "../controller/usage/stopped.js";
 import { probeStoppedControllerArchive, uploadStoppedControllerArchive } from "../controller/archive-upload.js";
 import { readLaunchTicket, controllerExecutionDirectory } from "../controller/launch-ticket.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
@@ -229,7 +230,15 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive probe does not identify the original execution.");
       return probeStoppedControllerArchive({ journalPath, ticket, signal });
     };
-    const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, workerId, userId, signal, store, webStore, archive, probeArchive, emit, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { monitoring }) });
+    const usage = async (task: import("./backends/web-types.js").LocalTask, journalPath: string, signal: AbortSignal) => {
+      if (!task.webExecution) throw new Error("Original Controller execution is missing.");
+      const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
+      if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
+        || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
+        || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId || ticket.workerId !== workerId || ticket.userId !== userId) throw new Error("Usage replay does not identify the original execution.");
+      return replayStoppedControllerUsage({ journalPath, ticket, serverToken, signal });
+    };
+    const archiveMaintenance = createWebArchiveMaintenance({ homeDirectory: options.homeDirectory, serverUrl, workerId, userId, signal, store, webStore, archive, probeArchive, usage, emit, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { monitoring }) });
     const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, jobLeases, platform, now: Date.now, archive, probeArchive, onArchiveFailure: archiveMaintenance.recordFailure, ...(archiveSessions === undefined ? {} : { archiveSessions }), ...(monitoring === undefined ? {} : { onUnattributed: (identity: { projectId: string; taskId: string; claimId: string }, operationKey: string, value: boolean) => monitoring.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operationKey}`, value) }), ...(promptSource === undefined ? {} : { promptSource }), ...(preparePromptSource === undefined ? {} : { preparePromptSource }),
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
@@ -870,7 +879,7 @@ export const runWorker = async (options: {
             if (coordinator !== undefined) {
               const latest = view(manager.current());
               if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
-              if (manager.current().effective.archiveSessions === true && !archiveShouldYield()) web!.archiveMaintenance.request(() => manager.current().effective.archiveSessions !== true || archiveShouldYield());
+              if (!archiveShouldYield()) web!.archiveMaintenance.request(archiveShouldYield);
             }
           }
         } else observeMonitoring(m => { m.setAdmission("partial", [{ code: "configuration-incomplete", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]); m.staleCapacity(); });

@@ -11,7 +11,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
 | Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 18，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；16→17 增加 Markdown 投影修复分类，17→18 保留独立补归档身份和调度，并支持保存旧清理归档错误，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 13，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计12 capture state 转换和 13 native index lease 字段转换 |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 14，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计、12 capture state 转换和 13 native index lease 字段转换；14 新增独立用量队列、来源及元数据表 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
