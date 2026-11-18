@@ -564,9 +564,16 @@ type httpTestSnapshot struct {
 	Bots           store.BotReader
 	Attachments    store.AttachmentReader
 	ObservedAtCall func(context.Context) (time.Time, error)
+	UserCandidates store.UserCandidateReader
 }
 
 func newHTTPTestSnapshot(t *testing.T) *httpTestSnapshot { return &httpTestSnapshot{t: t} }
+func (s *httpTestSnapshot) UserCandidateDAO() store.UserCandidateReader {
+	if s.UserCandidates == nil {
+		unexpectedHTTPCall(s.t, "SnapshotScope.UserCandidateDAO")
+	}
+	return s.UserCandidates
+}
 func (s *httpTestSnapshot) CredentialDAO() store.CredentialReader {
 	if s.Credentials == nil {
 		unexpectedHTTPCall(s.t, "SnapshotScope.CredentialDAO")

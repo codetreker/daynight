@@ -166,11 +166,17 @@ func (base taskHTTPMockBase) need(method string, configured bool) {
 type taskHTTPSnapshotScopeMock struct {
 	AttachmentDAOFn func() store.AttachmentReader
 	taskHTTPMockBase
-	CredentialDAOFn func() store.CredentialReader
-	ProjectDAOFn    func() store.ProjectReader
-	TaskDAOFn       func() store.TaskReader
-	SessionDAOFn    func() store.SessionReader
-	ObservedAtFn    func(context.Context) (time.Time, error)
+	CredentialDAOFn    func() store.CredentialReader
+	ProjectDAOFn       func() store.ProjectReader
+	TaskDAOFn          func() store.TaskReader
+	SessionDAOFn       func() store.SessionReader
+	ObservedAtFn       func(context.Context) (time.Time, error)
+	UserCandidateDAOFn func() store.UserCandidateReader
+}
+
+func (mock *taskHTTPSnapshotScopeMock) UserCandidateDAO() store.UserCandidateReader {
+	mock.need("UserCandidateDAO", mock.UserCandidateDAOFn != nil)
+	return mock.UserCandidateDAOFn()
 }
 
 func (mock *taskHTTPSnapshotScopeMock) CredentialDAO() store.CredentialReader {

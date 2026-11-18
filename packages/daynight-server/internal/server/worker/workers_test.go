@@ -275,6 +275,10 @@ type workerHTTPReadScope struct {
 	ObservedAtCall func(context.Context) (time.Time, error)
 }
 
+func (s *workerHTTPReadScope) UserCandidateDAO() store.UserCandidateReader {
+	workerHTTPUnexpected(s.t, "UserCandidateDAO")
+	return nil
+}
 func (s *workerHTTPReadScope) CredentialDAO() store.CredentialReader {
 	workerHTTPUnexpected(s.t, "CredentialDAO")
 	return nil
