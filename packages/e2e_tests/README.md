@@ -78,7 +78,8 @@ device-issued PAT's initially empty and subsequently recorded usage in the
 production Web account list after a successful CLI request, CLI project
 and task creation, default proposed readback, explicit todo creation for confirmed
 reference work, project detail and attachment-tab Back/Forward, direct Web proposed-to-in_progress modification, CLI readback and
-completion, and Web reload. A second Task is claimed, registered, released and
+completion, and Web reload. An anonymous browser opens a CLI-created Goal's
+graph address through OAuth, then verifies reload and closing the graph. A second Task is claimed, registered, released and
 claimed again through the real service; CLI reads both Session identities and the
 Web shows the retained history without the old current claim. These API registrations
 do not start a Worker process. A registered Worker's monitoring read returns an

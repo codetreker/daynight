@@ -2,7 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'reac
 import { useBrowserLocation } from './browser-location';
 import { browserNavigation } from './navigation';
 import { emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
-import { parseAuthRoute, parseRoute } from './router';
+import { parseAuthRoute, parseGoalGraphUrl, parseRoute } from './router';
 import type { TaskCacheScope } from '../features/task-cache/project-cache';
 
 type ResourceFence = { generation: number; accessRetirements: number; readonly entries: Map<string, number>; readonly listeners: Set<() => void> };
@@ -123,6 +123,7 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
   if (retained.current.key !== key || retained.current.fence !== fence) retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection: empty(), entryId: null, onPage: false };
   const route = parseRoute(location.pathname, location.search);
   const onPage = active && route.kind === 'project' && route.projectId === projectId;
+  const goalUrl = onPage ? parseGoalGraphUrl(location.pathname, location.search) : { kind: 'none' } as const;
   if (onPage && !retained.current.onPage) retained.current.selection = empty();
   retained.current.onPage = onPage;
   let selected: ProjectReading | null = null;
@@ -148,14 +149,21 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
     : !onPage || location.entryId === null ? (previous.generation === generation ? nativeSelected ?? previous.selection : empty()) : selected ?? empty();
   const urlSection = onPage && route.kind === 'project' ? route.tab : null;
   const mismatch = urlSection !== null && admitted.section !== urlSection;
-  const selection: ProjectReading = mismatch ? { ...empty(), section: urlSection } : admitted;
+  const admittedSelection: ProjectReading = mismatch ? { ...empty(), section: urlSection } : admitted;
+  const goalMatches = goalUrl.kind === 'goal' && admittedSelection.section === 'tasks' && admittedSelection.view === 'goals' && admittedSelection.projectGraphWitness === goalUrl.goalId;
+  // An address is an intent, not an already authorized reader. Hide a previous
+  // entry until the current Project snapshot has admitted the requested Goal.
+  const pendingGoal = goalUrl.kind !== 'none' && !goalMatches;
+  const selection: ProjectReading = pendingGoal
+    ? { ...admittedSelection, projectGraphWitness: null, detail: null, ...(goalUrl.kind === 'goal' ? { section: 'tasks', view: 'goals' } as const : {}) }
+    : admittedSelection;
   useLayoutEffect(() => {
     if (!onPage || error) return;
     retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection, entryId: location.entryId, onPage };
     if (retired && location.entryId !== null && readSelection?.projectGraphWitness === null && readSelection.detail === null) fence.entries.set(location.entryId, generation);
     // setView intentionally does nothing for equal values, so bind that entry here.
     if (carry && location.entryId !== null && readSelection?.detail === null) fence.entries.set(location.entryId, generation);
-    if (location.entryId !== null && (selected === null || mismatch || urlSection === null)) {
+    if (!pendingGoal && location.entryId !== null && (selected === null || mismatch || urlSection === null)) {
       const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
       url.searchParams.set('tab', selection.section);
       navigation.setView(projectHistory(userId, projectId, selection), { to: url.pathname + url.search + url.hash, replace: true, onCommit: () => {
@@ -163,8 +171,8 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
         if (entryId !== null) fence.entries.set(entryId, generation);
       } });
     }
-  }, [onPage, error, selection, selected, location, navigation, userId, projectId, key, fence, generation, retired, readSelection, carry, mismatch, urlSection]);
-  const select = (next: ProjectReading, replace = false, onCommit?: () => void, consumeFragment: boolean | 'chain' = false) => {
+  }, [onPage, error, selection, selected, location, navigation, userId, projectId, key, fence, generation, retired, readSelection, carry, mismatch, urlSection, pendingGoal]);
+  const select = (next: ProjectReading, replace = false, onCommit?: () => void, consumeFragment: boolean | 'chain' | 'goal' | 'goal-invalid' = false) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (entryId !== null) fence.entries.set(entryId, generation); };
     const url = new URL(location.pathname + location.search + location.hash, window.location.origin);
@@ -173,6 +181,12 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
       url.hash = '';
     }
     if (next.section !== selection.section || consumeFragment === 'chain') url.searchParams.delete('chain');
+    if (consumeFragment === 'goal-invalid') {
+      url.searchParams.delete('goalGraph');
+      url.searchParams.delete('chain');
+    } else if (goalUrl.kind !== 'none' && !(goalUrl.kind === 'goal' && next.section === 'tasks' && next.view === 'goals' && next.projectGraphWitness === goalUrl.goalId)) {
+      url.searchParams.delete('goalGraph');
+    }
     const view = projectHistory(userId, projectId, next);
     if (location.entryId === null && consumeFragment) nativeViews.current.set(view, { key, fence, generation });
     navigation.setView(view, { to: url.pathname + url.search + url.hash, replace: replace || Boolean(consumeFragment), preserveNative: Boolean(consumeFragment), onCommit: () => { record(); onCommit?.(); } });

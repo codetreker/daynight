@@ -1643,6 +1643,13 @@ commit, and add history only for a different selection. Traversal does not save
 a preference. Modified and middle clicks retain native link behavior; keyboard
 navigation and stable panel relationships remain available on empty projects.
 
+A Goal's complete graph can also be opened at
+`/projects/{projectId}?tab=tasks&goalGraph={goalId}`. The current authorized
+project snapshot must confirm the Goal; the address survives sign-in and reload,
+and closing the graph removes its parameter. Invalid, missing or non-Goal targets
+are reported as unavailable. Filtering and pagination do not limit the graph or
+change when opening it from the address.
+
 Overview and Task list use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
 inert outside Task list. Leaving Task list or its Task chains category closes the

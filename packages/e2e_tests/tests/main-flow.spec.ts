@@ -342,4 +342,36 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     await expect(reader.locator(`.task-chain-dialog .react-flow__node[data-id="${successorId}"]`)).toBeVisible();
     await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
   } finally { await anonymous.close(); }
+
+  const goalTitle = `Share Goal ${randomUUID()}`;
+  const goalCreation = await cli(["task", "create", "--project", projectId!, "--type", "goal", "--title", goalTitle]);
+  const goalId = goalCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(goalId).toBeDefined();
+  const goalTaskTitle = `Goal task ${randomUUID()}`;
+  const goalTaskCreation = await cli(["task", "create", "--project", projectId!, "--parent", goalId!, "--title", goalTaskTitle, "--status", "todo"]);
+  const goalTaskId = goalTaskCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(goalTaskId).toBeDefined();
+  const goalURL = `${topology.baseURL}/projects/${projectId}?tab=tasks&goalGraph=${goalId}`;
+  const goalReaderContext = await page.context().browser()!.newContext({ locale: "en-US", ignoreHTTPSErrors: true, proxy: { server: topology.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" } });
+  try {
+    const reader = await goalReaderContext.newPage();
+    await reader.goto(goalURL);
+    await expect(reader).toHaveURL(/\/login\?returnPath=/);
+    await reader.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
+    await reader.getByRole("button", { name: "Authorize local identity", exact: true }).click();
+    const graph = reader.locator(`#task-graph-${goalId}`);
+    await expect(reader).toHaveURL(goalURL);
+    await expect(graph.getByRole("heading", { name: goalTitle, exact: true })).toBeVisible();
+    await expect(graph.locator(`.react-flow__node[data-id="${goalTaskId}"]`)).toContainText(goalTaskTitle);
+    await reader.reload();
+    await expect(reader).toHaveURL(goalURL);
+    await expect(graph.getByRole("heading", { name: goalTitle, exact: true })).toBeVisible();
+    await expect(graph.locator(`.react-flow__node[data-id="${goalTaskId}"]`)).toContainText(goalTaskTitle);
+    await graph.getByRole("button", { name: "Close dependency graph", exact: true }).click();
+    await expect(graph).toHaveCount(0);
+    await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+    await reader.reload();
+    await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+    await expect(graph).toHaveCount(0);
+  } finally { await goalReaderContext.close(); }
 });

@@ -2,7 +2,7 @@ import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { ExecutionPlatform, GraphTask, Project, TaskStatus } from "../../api/types";
-import { navigate, parseTaskChainUrl } from "../../app/router";
+import { navigate, parseGoalGraphUrl, parseTaskChainUrl } from "../../app/router";
 import { browserNavigation } from "../../app/navigation";
 import { useBrowserLocation } from "../../app/browser-location";
 import { useProjectHistory } from "../../app/use-page-history";
@@ -97,6 +97,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const navigation = browserNavigation();
   const navigationBusy = useSyncExternalStore(navigation.subscribeDecision, navigation.isBusy);
   const history = useProjectHistory(viewer.userId, projectId, true, { section: preferredSection, view: preferredView }, viewer, isDisplayedGoal);
+  const historyRef = useRef(history);
+  historyRef.current = history;
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
   const [tasksMounted, setTasksMounted] = useState(false);
@@ -138,14 +140,33 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const closedDetail = useRef(detailSelection);
   const currentSelection = useRef(selection);
   currentSelection.current = selection;
+  const currentLocation = useRef(location);
+  currentLocation.current = location;
+  const retireGraphReaders = (reading: typeof selection) => {
+    if (reading.detail?.insideProjectGraph !== true) return;
+    navigation.retireScope({ identity: viewer, projectId, taskId: reading.detail.id });
+    const child = reading.detail.goalChildren?.task?.id;
+    if (child !== undefined) navigation.retireScope({ identity: viewer, projectId, taskId: child });
+  };
+  const retireGraphReadersRef = useRef(retireGraphReaders);
+  retireGraphReadersRef.current = retireGraphReaders;
   const currentGraphSnapshot = useRef(graph.snapshot);
   currentGraphSnapshot.current = graph.snapshot;
   const retiredReading = useRef<{ summaryId: string | null; snapshot: GraphSnapshot | null; entryId: string | null; section: ProjectSection; view: TaskView; goalWitness: string | null; waitForFocus: boolean } | null>(null);
   useLayoutEffect(() => viewer.subscribe((event) => {
     if (event.projectId !== projectId) return;
-    if (event.accessRevoked) { retiredReading.current = null; return; }
+    if (event.accessRevoked) {
+      retiredReading.current = null;
+      const current = currentLocation.current;
+      if (parseGoalGraphUrl(current.pathname, current.search).kind !== "none") {
+        retireGraphReadersRef.current(currentSelection.current);
+        historyRef.current.select({ ...currentSelection.current, projectGraphWitness: null, detail: null }, true, undefined, "goal-invalid");
+      }
+      return;
+    }
     const reading = currentSelection.current;
     if (!event.historyChanged || (reading.detail === null && reading.projectGraphWitness === null)) return;
+    if (parseGoalGraphUrl(currentLocation.current.pathname, currentLocation.current.search).kind === "goal") retireGraphReadersRef.current(reading);
     const goalWitness = reading.projectGraphWitness !== null && displayedGoal.current === reading.projectGraphWitness ? reading.projectGraphWitness : null;
     retiredReading.current = { summaryId: reading.detail?.source === "summary" ? reading.detail.id : null,
       snapshot: currentGraphSnapshot.current, entryId: browserNavigation().snapshot().entryId, section: reading.section, view: reading.view,
@@ -267,11 +288,15 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     return () => { displayedGoal.current = null; };
   }, [openGraphTarget, chainOverlay, graphWitness]);
   useLayoutEffect(() => {
-    if (graphWitness === null || currentSnapshot === null || currentSnapshot.receivedAt === null || openGraphTarget !== null) return;
-    history.select({ ...selection, projectGraphWitness: null }, true);
+    if (graphWitness === null || currentSnapshot === null || currentSnapshot.receivedAt === null) return;
+    const goalUrl = parseGoalGraphUrl(location.pathname, location.search);
+    const lostLinkedGoal = goalUrl.kind === "goal" && goalUrl.goalId === graphWitness && currentSnapshot.summaries.get(graphWitness)?.type !== "goal";
+    if (!lostLinkedGoal && openGraphTarget !== null) return;
+    if (lostLinkedGoal) retireGraphReaders(selection);
+    history.select({ ...selection, projectGraphWitness: null, ...(lostLinkedGoal ? { detail: null } : {}) }, true);
     if (section !== "tasks") focusVisible(document.getElementById(`project-section-tab-${section}`));
     else if (activeView !== "chains" && activeView !== "goals") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
-  }, [graphWitness, openGraphTarget, section, activeView, currentSnapshot, selection, history.select]);
+  }, [graphWitness, openGraphTarget, section, activeView, currentSnapshot, selection, history.select, location]);
   const onOpenListChain = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
     history.select({ ...selection, projectGraphWitness: id }, false, () => {
       listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger }; pausedOrigin.current = null;
@@ -279,7 +304,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     });
   }, [activeView, history.select, selection]);
   const onOpenGoalGraph = useCallback((id: string, trigger: HTMLElement) => onOpenListChain(id, trigger, id), [onOpenListChain]);
-  const onCloseChain = useCallback(() => { history.select({ ...selection, projectGraphWitness: null }, true); }, [history.select, selection]);
+  const onCloseChain = useCallback(() => { history.select({ ...selection, projectGraphWitness: null, detail: selection.detail?.insideProjectGraph ? null : selection.detail }, true); }, [history.select, selection]);
 
   const selectedSummary = useRef<{ id: string; revision: number } | null>(null);
   if (detailSelection === null || detailSelection.source !== "summary") selectedSummary.current = null;
@@ -585,8 +610,28 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     })();
   }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, setStatusFilter, platformFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
+  const goalUrl = parseGoalGraphUrl(location.pathname, location.search);
+  useEffect(() => {
+    if (navigationBusy || goalUrl.kind === "none") return;
+    if (goalUrl.kind === "invalid") {
+      history.select({ ...selection, projectGraphWitness: null, detail: null }, true, () => setNotice({ kind: "overview-target-unavailable" }), "goal-invalid");
+      return;
+    }
+    if (selection.section === "tasks" && selection.view === "goals" && selection.projectGraphWitness === goalUrl.goalId) return;
+    // A cached preview can supply background content but cannot authorize a URL.
+    if (currentSnapshot === null || currentSnapshot.receivedAt === null || snapshot !== currentSnapshot) return;
+    if (currentSnapshot.summaries.get(goalUrl.goalId)?.type !== "goal") {
+      history.select({ ...selection, projectGraphWitness: null, detail: null }, true, () => setNotice({ kind: "overview-target-unavailable" }), "goal-invalid");
+      return;
+    }
+    history.select({ ...selection, section: "tasks", view: "goals", projectGraphWitness: goalUrl.goalId, detail: null }, true, () => {
+      listOrigin.current = null; pausedOrigin.current = null; originalTrigger.current = null; searchTrigger.current = false; restoreRequested.current = false;
+    }, "goal");
+  }, [goalUrl.kind, goalUrl.kind === "goal" ? goalUrl.goalId : null, navigationBusy, currentSnapshot, snapshot, selection, history.select]);
+
   const attemptedFragment = useRef<typeof location | null>(null);
   useEffect(() => {
+    if (goalUrl.kind !== "none") return;
     const query = parseTaskChainUrl(location.pathname, location.search);
     if (navigationBusy || snapshot === null || (query.kind === "none" && !location.hash.startsWith("#task=") && !location.hash.startsWith("#chain=")) || attemptedFragment.current === location) return;
     if (query.kind !== "none" && (currentSnapshot === null || currentSnapshot.receivedAt === null || snapshot.receivedAt === null)) return;
@@ -603,7 +648,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (id === null || !snapshot.index.nodes.has(id)) { browserNavigation().clearFragment(); setNotice({ kind: "overview-target-unavailable" }); return; }
     if (chain) onNavigateExternalChain(id, heading.current!, true);
     else onNavigateExternalTask(id, heading.current!, true);
-  }, [snapshot, currentSnapshot, location, navigationBusy, onNavigateExternalTask, onNavigateExternalChain, history.select, selection]);
+  }, [snapshot, currentSnapshot, location, navigationBusy, onNavigateExternalTask, onNavigateExternalChain, history.select, selection, goalUrl.kind]);
 
   useLayoutEffect(() => {
     if (navigationWitness === null || snapshot === null || section !== "tasks") return;
@@ -717,7 +762,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             <button className="snapshot-notice-dismiss" type="button" aria-label={m.dismissNotice} title={m.dismissNotice}
               onClick={() => { setNotice(null); heading.current?.focus({ preventScroll: true }); }}><span aria-hidden="true">×</span></button>
           </div>}
-          {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
+          {notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
           {snapshot !== null && notice?.kind === "overview-tag-check-failed" && <p className="snapshot-notice" role="alert">{locale === "zh-CN" ? "无法核对选中的标签，请重试。" : "Could not check the selected tags. Try again."}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>

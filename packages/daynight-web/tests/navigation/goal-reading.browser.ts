@@ -3323,6 +3323,47 @@ test('Goal graph header details retain browser history and protect an unsaved Go
   expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]);
 });
 
+test('linked Goal graph keeps its URL through Back and Forward and protects nested drafts', async ({ page }) => {
+  const fixture = await install(page);
+  const writes: string[] = [];
+  page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
+  await page.goto(`/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  const graphDialog = page.locator(`#task-graph-${goalId}`);
+  await expect(graphDialog).toBeVisible();
+  const target = new URL(page.url()).pathname + new URL(page.url()).search;
+  expect(target).toBe(`/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  await graphDialog.getByRole('button', { name: 'Goal details', exact: true }).click();
+  const detail = page.locator('.goal-detail-surface');
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = detail.locator('.thread-composer textarea');
+  await draft.fill('Linked graph draft');
+  await page.goBack();
+  await expect(detail.getByRole('tab', { name: 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  const confirm = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Keep editing' }).click();
+  await detail.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await expect(draft).toHaveValue('Linked graph draft');
+  await page.goBack();
+  await page.goBack();
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(detail).toHaveCount(0);
+  await expect(graphDialog).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`goalGraph=${goalId}$`));
+  await page.goForward();
+  await expect(detail).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`goalGraph=${goalId}$`));
+  await page.goBack();
+  await expect(detail).toHaveCount(0);
+  await graphDialog.getByRole('button', { name: 'Close dependency graph', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=tasks$`));
+  await page.reload();
+  await expect(graphDialog).toHaveCount(0);
+  expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]); expect(writes).toEqual([]);
+});
+
 test('Empty Goal opens a graph without manufacturing nodes or a loading failure', async ({ page }) => {
   const fixture = await install(page); fixture.emptyGoal();
   await page.goto(`/projects/${projectId}`);

@@ -56,4 +56,6 @@ conflicting stored reading cannot restore a different section. Preferences remai
 useful for bare entry, while native links and a stable workspace preserve browser
 and in-session interactions. Nested selections retain their existing history and resource lifetimes. Ordinary
 chain links additionally provide an explicit, one-time entry as described in the
-[chain sharing decision](2026-11-18-task-chain-sharing.md).
+[chain sharing decision](2026-11-18-task-chain-sharing.md). The
+[Goal graph address decision](2026-11-18-goal-graph-address.md) adds a durable
+Goal graph entry with its own admission and close behavior.
