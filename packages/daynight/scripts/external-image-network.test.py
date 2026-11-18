@@ -92,7 +92,7 @@ class AdmissionTests(unittest.TestCase):
         answers = {fqdn: ["10.0.141.0", "2001:db8::1"], short: ["10.0.141.1", "2001:db8::2"]}
         def resolve(host, *args, **kwargs):
             return [(network.socket.AF_INET6 if ":" in address else network.socket.AF_INET,
-                     network.socket.SOCK_STREAM, 0, "", (address, 0)) for address in answers[host]]
+                     network.socket.SOCK_STREAM, 0, "", (address, 0, 0, 0) if ":" in address else (address, 0)) for address in answers[host]]
         hosts = f"10.0.141.1 extra.internal\n{fqdn} {short}\n10.20.1.2 protected.internal\n203.0.113.1 external.internal\n"
         with patch.object(network.socket, "getaddrinfo", side_effect=resolve):
             domains, cidrs, observed = network.protected_hosts(hosts, ["10.20.1.0/24"], short)
@@ -113,7 +113,8 @@ class AdmissionTests(unittest.TestCase):
         with patch.object(network.socket, "getaddrinfo", side_effect=resolve):
             with self.assertRaisesRegex(ValueError, "/etc/hosts line 1 alias.*runner"):
                 network.protected_hosts(f"{fqdn} {short}\n", [], short)
-        invalid_answers = [[], [(network.socket.AF_INET6, network.socket.SOCK_STREAM, 0, "", ("fe80::1%eth0", 0))],
+        invalid_answers = [[], [(network.socket.AF_INET6, network.socket.SOCK_STREAM, 0, "", ("fe80::1%eth0", 0, 0, 0))],
+                           [(network.socket.AF_INET6, network.socket.SOCK_STREAM, 0, "", ("fe80::1", 0, 0, 2))],
                            [(network.socket.AF_INET, network.socket.SOCK_STREAM, 0, "", ("not-an-address", 0))]]
         for answers in invalid_answers:
             with self.subTest(answers=answers), patch.object(network.socket, "getaddrinfo", return_value=answers):

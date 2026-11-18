@@ -163,6 +163,8 @@ def protected_hosts(hosts, cidrs, hostname):
                 for family, _, _, _, sockaddr in answers:
                     if family not in (socket.AF_INET, socket.AF_INET6):
                         raise ValueError(f"Unsupported resolver family for {source}: {inventory_value(alias)}")
+                    if family == socket.AF_INET6 and (len(sockaddr) != 4 or sockaddr[3] != 0):
+                        raise ValueError(f"Scoped resolver address for {source}: {inventory_value(alias)}")
                     candidate = inventory_address(sockaddr[0], f"{source} {alias} resolver address")
                     if candidate.version != (4 if family == socket.AF_INET else 6) or "%" in str(candidate):
                         raise ValueError(f"Invalid resolver address for {source}: {inventory_value(sockaddr[0])}")
