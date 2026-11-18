@@ -1009,6 +1009,9 @@ policy. Its service/DNS exceptions compare both original and final addresses
 and ports; protected targets remain denied after DNAT in INPUT and FORWARD.
 Actual host addresses/routes and the two owned Docker containers/networks,
 including their labels, addresses and aliases, supply the deployment inventory.
+For a nonstandard hosts row containing this runner's FQDN and short name, both
+names and all their host-resolver addresses enter the protected inventory;
+unrecognized or unresolvable rows stop setup before network mutation.
 The trusted external-image profile binds its policy identity to the installed
 rule digest.
 Source shutdown adds a separate deny and verifies per-protocol counter increases

@@ -72,7 +72,7 @@ class AdmissionTests(unittest.TestCase):
              r"ip route\[0\]\.dst: 'invalid'"),
             (lambda: network.protected_cidrs([{"addr_info": [{"family": "inet", "local": "bad", "prefixlen": 24}]}], []),
              r"ip address\[0\]\.addr_info\[0\] local/prefixlen: 'bad/24'"),
-            (lambda: network.protected_domains("runner.example alias\n", []),
+            (lambda: network.protected_hosts("runner.example alias\n", [], "runner"),
              r"/etc/hosts line 1 address: 'runner.example'"),
         ]
         for operation, diagnostic in cases:
@@ -80,14 +80,48 @@ class AdmissionTests(unittest.TestCase):
                 operation()
 
         with self.assertRaisesRegex(ValueError, "<redacted invalid value>") as failure:
-            network.protected_domains("https://user:secret@example.org alias\n", [])
+            network.protected_hosts("https://user:secret@example.org alias\n", [], "runner")
         self.assertNotIn("secret", str(failure.exception))
         with self.assertRaisesRegex(ValueError, "host row fields: 0='runner.example', 1=<redacted invalid value>") as failure:
-            network.protected_domains("runner.example user:secret\n", [])
+            network.protected_hosts("runner.example user:secret\n", [], "runner")
         self.assertNotIn("secret", str(failure.exception))
 
+    def test_runner_hostname_row_resolves_all_addresses_and_preserves_aliases(self):
+        fqdn = "ip-10-0-141-0.us-west-2.compute.internal"
+        short = "ip-10-0-141-0"
+        answers = {fqdn: ["10.0.141.0", "2001:db8::1"], short: ["10.0.141.1", "2001:db8::2"]}
+        def resolve(host, *args, **kwargs):
+            return [(network.socket.AF_INET6 if ":" in address else network.socket.AF_INET,
+                     network.socket.SOCK_STREAM, 0, "", (address, 0)) for address in answers[host]]
+        hosts = f"10.0.141.1 extra.internal\n{fqdn} {short}\n10.20.1.2 protected.internal\n203.0.113.1 external.internal\n"
+        with patch.object(network.socket, "getaddrinfo", side_effect=resolve):
+            domains, cidrs, observed = network.protected_hosts(hosts, ["10.20.1.0/24"], short)
+        self.assertEqual(domains, ["extra.internal", short, fqdn, "protected.internal"])
+        self.assertEqual(set(cidrs), {"10.0.141.0/32", "10.0.141.1/32", "2001:db8::1/128", "2001:db8::2/128"})
+        self.assertEqual(observed[0], {"source": "/etc/hosts line 2 alias", "alias": fqdn, "addresses": ["10.0.141.0", "2001:db8::1"]})
+
+    def test_unrecognized_hostname_rows_and_unresolved_aliases_fail(self):
+        fqdn, short = "runner.example", "runner"
+        for hosts, hostname in ((f"{fqdn} {short}\n", "other"), (f"{fqdn} wrong\n", short),
+                                (f"{fqdn} {short} extra\n", short), ("999.999.999.999 999\n", "999")):
+            with self.subTest(hosts=hosts), self.assertRaisesRegex(ValueError, "/etc/hosts line 1"):
+                network.protected_hosts(hosts, [], hostname)
+        def resolve(host, *args, **kwargs):
+            if host == short:
+                raise network.socket.gaierror("not found")
+            return [(network.socket.AF_INET, network.socket.SOCK_STREAM, 0, "", ("10.0.0.1", 0))]
+        with patch.object(network.socket, "getaddrinfo", side_effect=resolve):
+            with self.assertRaisesRegex(ValueError, "/etc/hosts line 1 alias.*runner"):
+                network.protected_hosts(f"{fqdn} {short}\n", [], short)
+        invalid_answers = [[], [(network.socket.AF_INET6, network.socket.SOCK_STREAM, 0, "", ("fe80::1%eth0", 0))],
+                           [(network.socket.AF_INET, network.socket.SOCK_STREAM, 0, "", ("not-an-address", 0))]]
+        for answers in invalid_answers:
+            with self.subTest(answers=answers), patch.object(network.socket, "getaddrinfo", return_value=answers):
+                with self.assertRaisesRegex(ValueError, "/etc/hosts line 1 alias"):
+                    network.protected_hosts(f"{fqdn} {short}\n", [], short)
+
     def test_invalid_host_inventory_aborts_before_network_mutation(self):
-        for invalid_route in (True, False):
+        for problem in ("route", "address", "unresolved"):
             calls = []
             def fake_command(*args, **kwargs):
                 calls.append(args)
@@ -96,17 +130,21 @@ class AdmissionTests(unittest.TestCase):
                 if args[:3] == ("ip", "-j", "address"):
                     return SimpleNamespace(stdout="[]", returncode=0)
                 if args[:3] == ("ip", "-j", "route"):
-                    return SimpleNamespace(stdout=json.dumps([{"gateway": "runner.example"}] if invalid_route else []), returncode=0)
+                    return SimpleNamespace(stdout=json.dumps([{"gateway": "runner.example"}] if problem == "route" else []), returncode=0)
                 if args[:4] == ("ip", "-6", "-j", "route"):
                     return SimpleNamespace(stdout="[]", returncode=0)
                 self.fail(f"Unexpected command before inventory rejection: {args}")
-            with self.subTest(invalid_route=invalid_route), tempfile.TemporaryDirectory(dir=SCRATCH) as directory, \
+            hosts = "runner.example runner\n" if problem == "unresolved" else "999.999.999.999 alias\n"
+            with self.subTest(problem=problem), tempfile.TemporaryDirectory(dir=SCRATCH) as directory, \
                  patch.dict(network.os.environ, {"SUDO_UID": "1001", "SUDO_GID": "1001"}), \
                  patch.object(network.shutil, "which", return_value="/tool"), \
                  patch.object(network, "command", side_effect=fake_command), \
                  patch.object(network, "service_assets", return_value={"protectedCidrs": [], "protectedDomains": []}), \
-                 patch.object(network.Path, "read_text", return_value="not-an-ip alias\n"):
-                with self.assertRaisesRegex(ValueError, "ip route\\[0\\]\\.gateway" if invalid_route else "/etc/hosts line 1 address"):
+                 patch.object(network.socket, "gethostname", return_value="runner"), \
+                 patch.object(network.socket, "getaddrinfo", side_effect=network.socket.gaierror("not found")), \
+                 patch.object(network.Path, "read_text", return_value=hosts):
+                diagnostic = {"route": r"ip route\[0\]\.gateway", "address": "/etc/hosts line 1 address", "unresolved": "/etc/hosts line 1 alias.*runner.example"}[problem]
+                with self.assertRaisesRegex(ValueError, diagnostic):
                     network.setup(Path(directory) / "run", "8080", ["http://example.org/a.png", "https://example.org/a.png"])
                 self.assertFalse((Path(directory) / "run").exists())
                 self.assertFalse(any(call[0] in ("nft", "iptables") or "netns" in call for call in calls))
