@@ -1,14 +1,18 @@
 package github
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -274,5 +278,49 @@ func TestProjectWebhookBodyCancellation(t *testing.T) {
 	mux.ServeHTTP(w, r)
 	if w.Body.Len() != 0 {
 		t.Fatalf("response written after cancellation: %s", w.Body.String())
+	}
+}
+
+func TestProjectWebhookInvalidProjectClosesUnreadBody(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterProjectWebhookRoute(mux, projectWebhookSecretsFunc(func(context.Context, string) (store.GitHubProjectWebhookSecret, error) {
+		t.Error("credential read for invalid project")
+		return store.GitHubProjectWebhookSecret{}, nil
+	}), projectWebhookReceiveFunc(func(context.Context, string, core.ProjectWebhookIdentity, core.WebhookEvent) (core.ProjectWebhookReceiptResult, error) {
+		t.Error("receipt for invalid project")
+		return "", nil
+	}), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	for _, tc := range []struct{ name, framing string }{
+		{"content length", "Content-Length: 2\r\n\r\n{"},
+		{"chunked", "Transfer-Encoding: chunked\r\n\r\n8\r\n{"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fmt.Fprintf(conn, "POST /api/v1/github/projects/invalid/webhook HTTP/1.1\r\nHost: localhost\r\n%s", tc.framing); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(conn)
+			response, err := http.ReadResponse(reader, nil)
+			if err != nil {
+				t.Fatalf("incomplete request blocked response: %v", err)
+			}
+			body, err := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if err != nil || response.StatusCode != http.StatusNotFound || !response.Close {
+				t.Fatalf("status=%d close=%v body=%q read=%v", response.StatusCode, response.Close, body, err)
+			}
+			if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) && !errors.Is(err, syscall.ECONNRESET) {
+				t.Fatalf("unread-body connection remained open: %v", err)
+			}
+		})
 	}
 }

@@ -45,6 +45,7 @@ func (h *projectWebhookHandler) receive(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 	id, err := model.CanonicalID(r.PathValue("projectId"))
 	if err != nil {
+		httpx.CloseUnreadBody(w, r)
 		h.failure(w, r, http.StatusNotFound, "not_found", "project webhook not found", "identity")
 		return
 	}
