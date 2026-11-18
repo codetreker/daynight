@@ -6,7 +6,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, stat, un
 import { OperationError, type Operation } from "../../api/operation.js";
 import { cleanupOperation } from "../cleanup-operation.js";
 import { canonicalId } from "../../api/parse.js";
-import { runRepositoryGit } from "../../repository/git.js";
+import { RepositoryGitError, runRepositoryGit } from "../../repository/git.js";
 import { startOwnedRepositoryGit, RepositoryGitCleanupPendingError, type GitSettlement, type OwnedRepositoryGit } from "../../repository/git-owned.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
@@ -117,7 +117,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     })();
     return hooks;
   };
-  const git = async (cwd: string, args: readonly string[], operation: Operation, timeoutMs?: number, mutation?: Omit<WorkerGitPending, "error" | "attemptId">): Promise<string> => {
+  const prepareGitCommand = async (args: readonly string[], operation: Operation, timeoutMs?: number) => {
     operation.check();
     const environment: Record<string, undefined> = {};
     for (const name of Object.keys(process.env)) {
@@ -125,8 +125,12 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (["GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CURL_VERBOSE"].includes(key) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(key) || key.startsWith("GIT_TRACE")) environment[name] = undefined;
     }
     const commandArgs = ["-c", `core.hooksPath=${await hookDirectory()}`, "-c", "submodule.recurse=false", ...args];
-    operation.check();
     const commandOptions = { environment, timeoutMs: timeoutMs === undefined ? operation.limits.requestMs : timeoutMs };
+    return { commandArgs, commandOptions };
+  };
+  const git = async (cwd: string, args: readonly string[], operation: Operation, timeoutMs?: number, mutation?: Omit<WorkerGitPending, "error" | "attemptId">): Promise<string> => {
+    const { commandArgs, commandOptions } = await prepareGitCommand(args, operation, timeoutMs);
+    operation.check();
     if (mutation === undefined) return line((await runGit(cwd, commandArgs, operation, commandOptions)).stdout);
     const attemptId = randomUUID();
     const command = startOwnedGit(cwd, commandArgs, operation, commandOptions);
@@ -157,12 +161,26 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     const remote = await git(root, [...context, "config", "--get-all", "remote.origin.url"], operation);
     if (remote.includes("\n") || repositoryIdentity(remote) !== repositoryIdentity(repoUrl)) throw new Error("The repository origin does not match its configured address.");
   };
+  const readRepositoryRoot = async (root: string, operation: Operation): Promise<string> => {
+    const { commandArgs, commandOptions } = await prepareGitCommand(["rev-parse", "--is-bare-repository", "--show-toplevel"], operation);
+    operation.check();
+    let response: string;
+    try { response = (await runGit(root, commandArgs, operation, { ...commandOptions, captureFailedStdout: true })).stdout; }
+    catch (error) {
+      // rev-parse writes the bare flag before failing to locate a worktree root.
+      if (error instanceof RepositoryGitError && error.exitCode === 128 && error.signal === null &&
+        (error.failedStdout === "true\n" || error.failedStdout === "true\r\n")) throw new Error("The worker repository must have a primary worktree.");
+      throw error;
+    }
+    const header = /^false\r?\n/.exec(response);
+    if (header === null) throw new Error("The worker repository must have a primary worktree.");
+    return absolute(line(response.slice(header[0].length)), "Git root");
+  };
   const inspectRepository = async (project: WorkerProject, operation: Operation): Promise<WorkerRepository> => {
     const root = absolute(project.localPath, "Repository path");
     const rootIdentity = await directory(root);
     if (rootIdentity === null) throw new Error(`The original repository ${root} is missing.`);
-    if (await git(root, ["rev-parse", "--is-bare-repository"], operation) !== "false") throw new Error("The worker repository must have a primary worktree.");
-    const top = absolute(await git(root, ["rev-parse", "--show-toplevel"], operation), "Git root");
+    const top = await readRepositoryRoot(root, operation);
     if (await directory(top) !== rootIdentity) throw new Error("The configured repository path must identify its worktree root.");
     await validateOrigin(root, project.repoUrl, operation);
     const commonDirectory = await realpath(absolute(await git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation), "Git common directory"));
