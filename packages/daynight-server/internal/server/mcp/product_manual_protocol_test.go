@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,15 +33,70 @@ func (manualTestOAuth) AuthenticateAccess(_ context.Context, token, resource str
 	return store.OAuthAccessIdentity{Principal: model.Principal{Kind: model.OAuthCredential, UserID: "no-project", CredentialID: "access"}, GrantID: "grant"}, nil
 }
 
+const manualOverviewURI = "daynight://manuals/overview.md"
+
+const expectedManualInstructions = "Daynight manages projects, tasks and goals, and agent sessions.\nBefore using its tools, read `daynight://manuals/overview.md` via `resources/read`.\n"
+
+type manualHandshake struct {
+	method       string
+	instructions string
+}
+
 type manualCacheTransport struct {
 	base          http.RoundTripper
 	bad           atomic.Bool
 	badResultType atomic.Bool
 	checked       atomic.Int32
+	mu            sync.Mutex
+	handshakes    []manualHandshake
 }
 
 func (tr *manualCacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	var method string
+	if req.Body != nil {
+		data, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body = io.NopCloser(bytes.NewReader(data))
+		var request struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(data, &request) == nil {
+			method = request.Method
+		}
+	}
 	response, err := tr.base.RoundTrip(req)
+	if err == nil && (method == "initialize" || method == "server/discover") {
+		data, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		response.Body = io.NopCloser(bytes.NewReader(data))
+		// Streamable HTTP may encode an individual response as an SSE event.
+		payload := data
+		if strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "data:") {
+					payload = []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+					break
+				}
+			}
+		}
+		var wire struct {
+			Result *struct {
+				Instructions string `json:"instructions"`
+			} `json:"result"`
+		}
+		var instructions string
+		if json.Unmarshal(payload, &wire) == nil && wire.Result != nil {
+			instructions = wire.Result.Instructions
+		}
+		tr.mu.Lock()
+		tr.handshakes = append(tr.handshakes, manualHandshake{method: method, instructions: instructions})
+		tr.mu.Unlock()
+	}
 	if err == nil && response.Header.Get("Cache-Control") != "no-store" {
 		tr.bad.Store(true)
 	}
@@ -88,6 +144,31 @@ func TestProductManualProtocol(t *testing.T) {
 				if err != nil || init == nil || init.ProtocolVersion != version || init.Instructions != string(instructions) || init.Capabilities == nil || init.Capabilities.Resources == nil || init.Capabilities.Resources.Subscribe || init.Capabilities.Resources.ListChanged || init.Capabilities.Logging == nil || init.Capabilities.Tools == nil {
 					t.Fatalf("initialization = %+v, read error = %v", init, err)
 				}
+				wantMethod := "initialize"
+				if version == "2026-07-28" {
+					wantMethod = "server/discover"
+				}
+				transport.mu.Lock()
+				handshakes := append([]manualHandshake(nil), transport.handshakes...)
+				transport.mu.Unlock()
+				if len(handshakes) != 1 || handshakes[0].method != wantMethod || handshakes[0].instructions != expectedManualInstructions {
+					t.Fatalf("wire handshakes = %+v; want %s and exact instructions", handshakes, wantMethod)
+				}
+				// Read directly from the handshake before listing resources, including for
+				// the OAuth principal which has no Project.
+				uri := manualURIReference.FindString(handshakes[0].instructions)
+				if uri != manualOverviewURI {
+					t.Fatalf("handshake URI = %q", uri)
+				}
+				direct, err := session.ReadResource(ctx, &sdk.ReadResourceParams{URI: uri})
+				overview, sourceErr := fs.ReadFile(productManualFS, "manuals/overview.md")
+				if err != nil || sourceErr != nil || direct == nil || len(direct.Contents) != 1 || direct.Contents[0].URI != manualOverviewURI || direct.Contents[0].MIMEType != "text/markdown" || direct.Contents[0].Text != string(overview) || len(direct.Contents[0].Blob) != 0 {
+					t.Fatalf("direct overview = %+v, error=%v source error=%v", direct, err, sourceErr)
+				}
+				tools, err := session.ListTools(ctx, nil)
+				if err != nil || tools == nil || len(tools.Tools) != 1 || tools.Tools[0].Name != "test_only" || tools.Tools[0].Description != "Test tool" || tools.Tools[0].InputSchema == nil {
+					t.Fatalf("tool discovery = %+v, error=%v", tools, err)
+				}
 				list, err := session.ListResources(ctx, nil)
 				if err != nil || len(list.Resources) != len(productManualManifest) || list.NextCursor != "" {
 					t.Fatalf("list = %+v, error = %v", list, err)
@@ -104,6 +185,10 @@ func TestProductManualProtocol(t *testing.T) {
 						t.Fatalf("duplicate resource %s", resource.URI)
 					}
 					found[resource.URI] = resource
+				}
+				overviewResource := found[manualOverviewURI]
+				if overviewResource == nil || overviewResource.Name != "overview" || overviewResource.Title != "Daynight MCP overview" || overviewResource.Description != "Find the right Daynight guide, establish Project context, and read the guidance required for each operation." || overviewResource.MIMEType != "text/markdown" || overviewResource.Size != int64(len(overview)) {
+					t.Fatalf("overview metadata = %+v", overviewResource)
 				}
 				for _, expected := range productManualManifest {
 					resource := found[expected.Resource.URI]
@@ -141,7 +226,7 @@ func TestProductManualProtocol(t *testing.T) {
 				if transport.bad.Load() {
 					t.Fatal("an MCP response lacked Cache-Control: no-store")
 				}
-				if version == "2026-07-28" && (transport.badResultType.Load() || transport.checked.Load() != int32(1+2*len(productManualManifest))) {
+				if version == "2026-07-28" && (transport.badResultType.Load() || transport.checked.Load() != int32(2+2*len(productManualManifest))) {
 					t.Fatalf("modern wire resultType checks: count=%d, failed=%v", transport.checked.Load(), transport.badResultType.Load())
 				}
 			})

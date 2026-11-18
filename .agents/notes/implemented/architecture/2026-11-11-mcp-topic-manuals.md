@@ -13,10 +13,13 @@ guidance.
 
 ## Decision
 
-The server embeds twelve complete English operation guides and one short
-initialization instruction. The purpose index and Resource descriptions identify
-the required topics. Common write safety has one detailed owner; operation guides
-retain their specific versions, identity, pagination, integrity and recovery rules.
+The original publication embedded twelve complete English operation guides and
+an initialization instruction containing the purpose index. The
+[overview entry decision](2026-11-18-mcp-overview-entry.md) moves that index into
+a separately readable Resource and keeps the handshake brief. Resource
+descriptions and the overview identify the required topics. Common write safety
+has one detailed owner; operation guides retain their specific versions, identity,
+pagination, integrity and recovery rules.
 Material organization keeps information ownership and sufficiency separate from
 Step, Thread and transfer protocols.
 
@@ -24,7 +27,7 @@ The fixed `productManualManifest` owns production paths, public metadata and
 strict content sizes. Loading and registration use that inventory; tests assert
 the expected public URI set independently. Instructions and topic references use
 absolute Resource URIs, and invalid or incomplete sources fail before registration.
-The topics remain the only edited content source; no aggregate or runtime link
+The overview and topics are edited content sources; no runtime aggregation or link
 conversion is required.
 
 The existing concepts, dependencies, write-safety and materials URIs remain.
