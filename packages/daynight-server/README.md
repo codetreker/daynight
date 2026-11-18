@@ -1232,11 +1232,15 @@ and the same numerical thresholds.
 ### Worker read-only transport tests
 
 The WebSocket and Broker tests use real HTTP routes, credential parsing and
-channels with controlled actor and Worker facts. They retain actual deadlines,
-cancellation, fences, frames, capabilities and JSON delivery. The PostgreSQL
-revocation and native acceptance cases use actual credentials and reports.
+channels with controlled actor and Worker facts. They exercise deadlines,
+cancellation, fences, frames, capabilities and JSON delivery. The HTTP refusal
+tests send raw TCP requests, including incomplete bodies, to the same routes.
+A strict Broker substitute fails the test on any Worker operation. The
+PostgreSQL revocation and native acceptance cases use actual credentials and
+reports.
+
 The [read-only transport fixture decision](../../.agents/notes/implemented/testing/2026-11-18-worker-readonly-transport-fixtures.md)
-records the proof boundary.
+records the verification scope.
 
 ### Project HTTP tests
 
