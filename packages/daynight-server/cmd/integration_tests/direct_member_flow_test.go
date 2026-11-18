@@ -65,6 +65,35 @@ func serverAPIDirectMemberNormalFlow(t *testing.T, f *fixture) {
 	defer transport.CloseIdleConnections()
 	target.client = &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: tokens.AccessToken, next: transport}}
 	target.userID = member.UserID
+	directProject := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Direct project member", RepoURL: "https://github.com/example/direct-project-member", TeamID: &destination.ID, ExpectedUserID: f.userID}, http.StatusCreated)
+	directPath := "/api/v1/projects/" + directProject.ID
+	teamBefore := requestJSON[api.TeamMemberList](t, f, http.MethodGet, "/api/v1/teams/"+destination.ID+"/members", nil, http.StatusOK)
+	requestJSON[api.ProjectDocument](t, &target, http.MethodGet, directPath, nil, http.StatusNotFound)
+	type directReceipt struct {
+		Added       bool                   `json:"added"`
+		Participant api.ProjectParticipant `json:"participant"`
+		ActorAccess api.ProjectAccess      `json:"actorAccess"`
+	}
+	direct := requestJSON[directReceipt](t, f, http.MethodPost, directPath+"/members/"+member.UserID, map[string]any{"expectedUserId": f.userID}, http.StatusOK)
+	if !direct.Added || direct.Participant.UserID != member.UserID || direct.Participant.EffectiveRole != "member" || direct.Participant.InheritedFrom != nil || direct.Participant.DirectGrant == nil || direct.Participant.DirectGrant.Role != "member" || direct.ActorAccess.EffectiveRole != "admin" {
+		t.Fatalf("direct project receipt differs: %+v", direct)
+	}
+	directAccess := requestJSON[api.ProjectDocument](t, &target, http.MethodGet, directPath, nil, http.StatusOK).Access
+	if directAccess.EffectiveRole != "member" || directAccess.TeamRole != nil || directAccess.DirectGrant == nil || !reflect.DeepEqual(*directAccess.DirectGrant, *direct.Participant.DirectGrant) {
+		t.Fatalf("direct project access differs: %+v", directAccess)
+	}
+	roster := requestJSON[api.ProjectParticipantList](t, f, http.MethodGet, directPath+"/members", nil, http.StatusOK)
+	if actual := expectID(t, roster.Items, member.UserID, func(item api.ProjectParticipant) string { return item.UserID }); !reflect.DeepEqual(actual, direct.Participant) {
+		t.Fatal("project roster did not retain the direct receipt")
+	}
+	again := requestJSON[directReceipt](t, f, http.MethodPost, directPath+"/members/"+member.UserID, map[string]any{"expectedUserId": f.userID}, http.StatusOK)
+	if again.Added || !reflect.DeepEqual(again.Participant, direct.Participant) {
+		t.Fatalf("repeated direct project receipt differs: %+v", again)
+	}
+	teamAfter := requestJSON[api.TeamMemberList](t, f, http.MethodGet, "/api/v1/teams/"+destination.ID+"/members", nil, http.StatusOK)
+	if !reflect.DeepEqual(teamBefore, teamAfter) {
+		t.Fatal("direct project addition changed Team membership")
+	}
 	requestJSON[api.ProjectDocument](t, &target, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusNotFound)
 	invitation := requestJSON[api.CreatedProjectInvitation](t, f, http.MethodPost, "/api/v1/projects/"+project.ID+"/invitations", api.ProjectInvitationMutationRequest{ExpectedUserID: f.userID}, http.StatusCreated)
 	_, token, ok := strings.Cut(invitation.Link, "#")

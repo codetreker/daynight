@@ -367,8 +367,19 @@ grant、邀请、Task 或 GitHub App 集成，也不泄露目标冲突项目的�
 `none < member < admin` 下的最大值。只有继承权限时 directGrant 为 null；有效角色不等于可写授权记录。
 
 独立授权的新增、修改和移除由有效 Project admin 执行，可针对本人或其他 admin；不改变 Team 角色，
-也不要求保留 direct admin。新增目标必须已经是有效 ProjectParticipant，外部用户仍须本人接受邀请，
-不能通过任意用户 ID 加入项目。Team admin 即使有 direct member grant，有效角色仍为 admin。
+也不要求保留 direct admin。grants 路径的新增目标必须已经是有效 ProjectParticipant；项目外的既有账号
+可通过下述直接添加路径加入，其他人仍可本人接受邀请。Team admin 即使有 direct member grant，有效角色仍为 admin。
+
+有效 Project admin 可使用 `POST /api/v1/projects/{projectId}/members/{userId}` 直接添加既有账号。
+请求仅接受 `{expectedUserId}`，不接受 query、角色、资料、游标或版本；路径和主体必须是非零规范 UUID，
+主体必须匹配当前凭据。未知、重复、缺失、null、错误类型字段与非法 Unicode 均被拒绝。成功返回
+`200 {added,participant,actorAccess}`，participant 与成员名册单项一致，actorAccess 是事务中的当前主体访问。
+请求沿用用户凭据、Cookie 来源和 OAuth API audience、scope 与绑定校验；响应为 `no-store`，
+仅已建立真实主体的响应设置 `Daynight-User-ID`。无项目访问返回 `404 not_found`，普通成员返回 `403 forbidden`。
+无访问的目标获得独立 member grant；已有继承、独立或两种访问时返回 `added:false` 和实际来源、角色、版本及时间，
+不改写授权。目标不存在返回 `404 user_not_found`。此操作不创建账号、Team 成员或邀请；新增授权与 webhook
+eligibility 同事务提交，等待后重验权限及凭据，仅确认提交后返回成功。未知提交为 `503 write_outcome_unknown`，
+不得自动重放；后续读取只证明当前事实。该路径支持 POST、PATCH 和 DELETE，原有 PATCH、DELETE 合同保持不变。
 
 `PUT /api/v1/projects/{projectId}/grants/{userId}` 接受
 `{version:null|正 int64,role:"member"|"admin",expectedUserId}`：null 要求 grant 不存在，
@@ -706,10 +717,11 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 | 缺失、无效、撤销或到期用户凭据 | 401 unauthenticated JSON |
 | Team/项目不存在或当前主体没有对应成员资格 | 404 not_found JSON |
 | member 调用 admin 功能、Cookie 写请求来源错误 | 403 forbidden JSON |
-| Team 管理、项目创建或转移、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
+| Team 管理、项目创建或转移、直接添加项目成员、新增/修改/移除独立项目授权或创建、撤销、接受邀请时 expectedUserId 与实际主体不符 | 409 identity_mismatch，领域行与版本不变 |
 | 独立授权存在性或观察版本不符；ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 直接添加的目标已是不同角色的 Team 成员 | 409 resource_conflict，成员版本与时间不变 |
 | 新增独立授权的目标不是有效 participant | 404 not_found |
+| 直接添加的目标账号不存在 | 404 user_not_found |
 | 变更 Personal Team | 409 personal_team_immutable |
 | 删除仍有活跃 Project ownership 引用的 Team | 409 team_not_empty |
 | Team 真实改名或项目真实转移所需版本已达最大正 int64 | 409 version_exhausted；经核对的 no-op 仍有效 |
