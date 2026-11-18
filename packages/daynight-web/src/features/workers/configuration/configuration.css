@@ -137,3 +137,17 @@
 .task-tag-filter, .task-tag-target { min-width: 0; overflow-wrap: anywhere; }
 .task-tag-names { display: inline-flex; flex-wrap: wrap; gap: 4px; max-width: 100%; vertical-align: middle; }
 .task-tag-name { border: 1px solid #d5dce5; border-radius: 4px; padding: 1px 5px; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; }
+.task-tag-heading, .task-tag-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.task-tag-heading label { margin: 0; }
+.task-tag-editor { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; border: 1px solid #d5dce5; border-radius: 6px; padding: 6px; }
+.task-tag-editor:focus-within { outline: 2px solid #344054; outline-offset: 2px; }
+.task-tag-editor input { flex: 1 1 150px; min-width: 0; border: 0; box-shadow: none; }
+.task-tag-chips { display: contents; }
+.task-tag-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 6px; border: 1px solid #d5dce5; border-radius: 4px; background: #f0f3f7; overflow-wrap: anywhere; }
+.task-tag-chip span { min-width: 0; white-space: pre-wrap; }
+.task-tag-chip button { flex: none; border: 0; background: transparent; color: #344054; cursor: pointer; font-size: 18px; }
+.task-tag-chip button:disabled { cursor: default; }
+.task-tag-clear { border: 0; padding: 4px; background: transparent; color: #344d8a; cursor: pointer; white-space: nowrap; }
+.task-tag-clear:disabled { color: #687486; cursor: default; }
+.task-tag-clear:focus-visible, .task-tag-chip button:focus-visible { outline: 2px solid #344054; outline-offset: 2px; }
+@media (max-width: 420px) { .task-tag-heading, .task-tag-actions { align-items: flex-start; flex-wrap: wrap; } }

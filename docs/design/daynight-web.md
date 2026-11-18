@@ -146,6 +146,8 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 `configuration/model.ts` 拥有表单投影、校验、逐字段覆盖和结果派生。表单不编辑模式或第三工具；旧字段在原始目标中保留，用户明确保存完整候选时才移除。preferPlatformSpecificTasks 独立保存为布尔草稿，由运行设置中的原生 checkbox 编辑，不混入数值输入。开关修改参与同一 dirty、保存和取消流程，逐项反馈明确处理 true、false 与 null，并计入整体应用结果；`useWorkerConfiguration` 拥有当前资源、编辑基线、原始草稿、提交快照及读取/保存状态。有效配置值与输入原文分别保存，使非法整数或 JSON 仍能完整显示。Agent/model/args 按同一 native 元组构造提交，项目覆盖仅输出显式拥有的字段；换 Agent 后的适用默认值是展示推导，不能把继承意图展开写回服务端。默认及项目配置的选择字段采用 [NativeSelect](native-select.md) 的 `form`/`fill` 变体；公共层统一 38px 高度、箭头、文字留白、焦点和禁用外观，配置网格仅拥有外部布局。label、描述、联动字段关联与原生事件保留，长选项的完整文本仍在选项中。字段及保存的详细机制由[Worker 配置设计](daynight-worker-configuration.md#web-字段与保存)拥有。
 
+任务标签筛选复用同一编辑生命周期：自由文本及待输入保留在草稿，名称与模式按筛选语义比较，清空规范为 any。已知子字段合并、未知内容保留、支持观察的派发准入与异步应用摘要由[Worker 配置设计](daynight-worker-configuration.md#web-字段与保存)拥有。
+
 归档 Session 控件复用运行设置的 checkbox、帮助与应用反馈；服务能力和最新观察项分别决定目标可用性和 Worker 编辑资格，落后目标版本的观察仍证明支持。已保存目标、未提交草稿及实际观察分开保存；不支持时保留已有草稿和目标，保存其他设置不覆盖归档值。详细合同由[Worker 配置需求](../spec/daynight-worker-configuration.md#web-消费者)拥有。
 
 sudo 清理控件以目标字段的存在性判定服务是否提供配置，不使用 Worker 能力报告作为编辑条件。已知布尔值通过同一原始基底合并及完整回执比较，未提供字段不添加。Linux/macOS 可编辑，Windows 和未知平台禁用；平台变化时该草稿保留，提交其他字段沿用基底中的 sudo 值。观察项缺失时逐项及整体状态保持等待，不把目标保存当成应用。
