@@ -21,7 +21,7 @@ A Goal independently owns its description, properties, Thread and attachments. I
 
 Shared material has one effective owner regardless of which Session or child produces it. When a Goal-wide conclusion becomes effective, update and verify its Goal owner. A completed child or conclusion left only in its material/Thread does not synchronize the Goal. Preserve task-specific evidence with its producer.
 
-Update overall Goal progress when stage results, scope or decisions change, delivery is verified, or significant blockers arise. State achieved outcomes, remaining scope and material blockers/limitations. Service `progress` counts direct children; it neither synchronizes conclusions nor establishes delivery or acceptance. [Tasks](daynight://manuals/tasks.md) owns Goal lifecycle effects.
+Update overall Goal progress when stage results, scope or decisions change, delivery is verified, or significant blockers arise. State achieved outcomes, remaining scope and material blockers/limitations. Service `progress` counts direct children; it neither synchronizes conclusions nor establishes delivery or acceptance. [Task writes](daynight://manuals/task-writes.md) owns Goal lifecycle effects.
 
 ## Define complete work concisely
 
@@ -35,7 +35,7 @@ Classify by purpose: a migration plan may be a formal deliverable; the Session's
 
 Read complete current owner content and required sources, using [Task projections](daynight://manuals/tasks.md) and separate material reads. For an effective change, rewrite a coherent whole preserving requirements, references, examples and essential rationale, then verify the saved content. Preserve immutable Thread history and point readers to the effective owner. A correction left only in Thread while the requirement remains contradictory is incomplete. Recording a conclusion grants no execution authority.
 
-`description` replaces the whole field; [Tasks](daynight://manuals/tasks.md) defines its versioned mutation. Preserve Markdown newlines, code and valid links. Descriptions retain their raw string; Web renders CommonMark/GFM and displays raw HTML as text.
+`description` replaces the whole field; [Task writes](daynight://manuals/task-writes.md) defines its versioned mutation. Preserve Markdown newlines, code and valid links. Descriptions retain their raw string; Web renders CommonMark/GFM and displays raw HTML as text.
 
 ## References, inputs and results
 
