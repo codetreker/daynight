@@ -252,7 +252,7 @@ var workerArchiveSessionsSQL string
 //go:embed schema/migrations/081_worker_alias.sql
 var workerAliasSQL string
 
-//go:embed migrations/082_worker_task_tag_filter.sql
+//go:embed schema/migrations/082_worker_task_tag_filter.sql
 var workerTaskTagFilterSQL string
 
 type migration struct {
