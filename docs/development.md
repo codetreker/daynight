@@ -530,6 +530,11 @@ the same SQL owner in memory and file cases; capacity stress probes run separate
 from ordinary test selection. The
 [memory SQLite decision](../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)
 owns storage selection and connection ownership.
+The image release receipt fixture keeps a real competing SQLite writer. Only
+the tested journal connection uses a short busy wait after checking its
+production default. The
+[image receipt contention decision](../.agents/notes/implemented/testing/2026-11-18-image-receipt-busy-budget.md)
+owns the write-failure and recovery proof.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
