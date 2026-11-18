@@ -589,7 +589,7 @@ Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
-The detail overview places the current task panel or retained task snapshot after read and offline notices, before runtime monitoring and host telemetry. Its DOM order matches the visual and keyboard order.
+The detail overview places a single monitoring time line after Worker read and offline notices, before the current task panel or retained task snapshot. It preserves the received status, relative age and absolute capture time, using the same read state and expiry rule as the monitoring body. Loading, absent and expired observations hide the line; a failed refresh retains it while the retained observation remains displayable. The task panel remains the first business panel, followed by monitoring errors and retry, projection notices, runtime details and host telemetry. DOM order matches the visual and keyboard order, and the time line wraps naturally at narrow widths.
 
 Detail resource cards render actual OS type/release/version/architecture, CPU
 model/logical processor count/use, used/total memory and available/total capacity

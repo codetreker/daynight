@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { WorkerMonitoringDetail, WorkerMonitoringItem } from '../src/api/worker-monitoring';
 import { taskDetailUrl } from '../src/app/router';
-import { MonitoringCard, WorkerMonitoring } from '../src/features/workers/WorkerMonitoring';
+import { MonitoringCard, WorkerMonitoring, WorkerMonitoringTime } from '../src/features/workers/WorkerMonitoring';
 import type { WorkerReadState } from '../src/features/workers/useWorkerObservation';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
@@ -97,16 +97,21 @@ it.each([
 it('distinguishes loading, absent, read error, stale and expiry at their boundaries', () => {
   const refresh = vi.fn();
   const failed = { ...state(null, null), status: 'error' as const, error: new ApiError('network'), refresh };
-  const view = renderWithLocale(<WorkerMonitoring state={failed} readEnabled />, { locale: 'en' });
+  const content = (observation: Parameters<typeof WorkerMonitoring>[0]['state']) => <><WorkerMonitoringTime state={observation} /><WorkerMonitoring state={observation} readEnabled /></>;
+  const view = renderWithLocale(content(failed), { locale: 'en' });
   expect(screen.getByRole('alert')).toHaveTextContent('Runtime monitoring could not be updated'); expect(screen.queryByText('No recent runtime observation')).toBeNull();
+  expect(document.querySelector('.monitoring-time')).toBeNull();
   fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 89_999)} readEnabled />); expect(screen.queryByText(/Runtime observation is stale/)).toBeNull();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 90_000)} readEnabled />); expect(screen.getByText(/Runtime observation is stale/)).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 3_599_999)} readEnabled />); expect(screen.getByText('2 / 2')).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={state(detail, time + 3_600_000)} readEnabled />); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument(); expect(screen.queryByText('2 / 2')).toBeNull();
+  view.rerender(content(state(detail, time + 89_999))); expect(screen.queryByText(/Runtime observation is stale/)).toBeNull();
+  expect(document.querySelector('.monitoring-time')).toHaveTextContent('Received');
+  view.rerender(content(state(detail, time + 90_000))); expect(screen.getByText(/Runtime observation is stale/)).toBeInTheDocument();
+  view.rerender(content(state(detail, time + 3_599_999))); expect(screen.getByText('2 / 2')).toBeInTheDocument();
+  expect(document.querySelector('.monitoring-time')).toHaveTextContent('Captured');
+  view.rerender(content(state(detail, time + 3_600_000))); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument(); expect(screen.queryByText('2 / 2')).toBeNull();
+  expect(document.querySelector('.monitoring-time')).toBeNull();
   const absent: WorkerMonitoringDetail = { observedAt: receivedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' };
-  view.rerender(<WorkerMonitoring state={state(absent)} readEnabled />); expect(screen.getByText('No recent runtime observation')).toBeInTheDocument();
-  view.rerender(<WorkerMonitoring state={{ ...state(absent), expired: true }} readEnabled />); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument();
+  view.rerender(content(state(absent))); expect(screen.getByText('No recent runtime observation')).toBeInTheDocument();
+  view.rerender(content({ ...state(absent), expired: true })); expect(screen.getByText('Runtime observation expired')).toBeInTheDocument();
 });
 
 const summary: Extract<WorkerMonitoringItem, { state: 'available' }> = { workerId: id(1), state: 'available', revision: id(4), receivedAt, expiresAt: '2026-11-09T13:00:00Z', summary: {

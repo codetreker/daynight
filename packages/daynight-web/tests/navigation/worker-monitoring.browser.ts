@@ -43,7 +43,7 @@ const install = async (page: Page, retained = false, locale = 'zh-CN') => {
     if (path === '/api/v1/projects') return send({ items: [project], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}`) return send(project);
     if (path === '/api/v1/me/workers') return send(workerPage([{ ...workerSummary(), machine: { ...workerSummary().machine, name: longWorkerName } }]));
-    if (path === `/api/v1/me/workers/${target}`) { const detail = workerDetail(); detail.worker.tasks[0]!.title = longTitle; return send(detail); }
+    if (path === `/api/v1/me/workers/${target}`) { const detail = workerDetail(); detail.worker.tasks[0]!.title = longTitle; return send(detail, 200, { 'Daynight-Worker-Tool-Paths': '2' }); }
     if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: [retained ? 'capacity-full' : 'cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
     if (path === `/api/v1/me/workers/${target}/monitoring`) return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: 'complete', permissionProjection: 'current', data: {
@@ -58,7 +58,7 @@ const install = async (page: Page, retained = false, locale = 'zh-CN') => {
   return state;
 };
 
-for (const width of [1360, 390, 320]) test(`monitoring interactions and reading stability at ${width}px`, async ({ page }) => {
+for (const width of [1360, 390, 320]) test(`monitoring interactions and reading stability at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: width === 1360 ? 900 : 844 });
   const state = await install(page); await page.goto('/workers');
   await expect(page.locator('.monitoring-card-state')).toContainText('2 / 2');
@@ -69,9 +69,19 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   if (width === 320) { await card.focus(); await page.keyboard.press('Enter'); }
   else await card.click();
   await expect(page.getByText('清理占用容量')).toBeVisible();
+  const monitoringTime = page.locator('.monitoring-time');
+  await expect(monitoringTime).toHaveCount(1); await expect(monitoringTime).toContainText('收到时间'); await expect(monitoringTime).toContainText('采集时间');
+  const taskPanel = page.locator('.worker-task-heading-label').locator('xpath=ancestor::section[1]');
+  expect(await monitoringTime.evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.worker-task-heading-label')!.closest('section')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  const timeBox = await monitoringTime.boundingBox(), taskBox = await taskPanel.boundingBox();
+  expect(timeBox!.y + timeBox!.height).toBeLessThanOrEqual(taskBox!.y);
+  if (width <= 390) expect(await monitoringTime.evaluate(element => element.getBoundingClientRect().height > Number.parseFloat(getComputedStyle(element).lineHeight))).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('monitoring-time.png'), fullPage: true });
   const tabs = page.locator('[data-worker-tab="overview"]:visible'); await tabs.focus(); await page.keyboard.press('ArrowRight');
   await expect(page.locator('[data-worker-tab="configuration"]:visible')).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('ArrowLeft'); await expect(tabs).toHaveAttribute('aria-selected', 'true');
+  await expect(monitoringTime).toBeHidden();
+  await page.keyboard.press('ArrowLeft'); await expect(tabs).toHaveAttribute('aria-selected', 'true'); await expect(monitoringTime).toBeVisible();
   const issue = page.locator('.monitoring-issue'); await issue.locator('summary').click();
   await expect(issue).toHaveAttribute('open', ''); await expect(issue).toContainText('所需命令失败。');
   const path = issue.locator('code.monitoring-worktree'); await expect(path).toHaveText(longPath);
@@ -88,8 +98,11 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   const after = await issue.boundingBox(); expect(Math.abs(after!.y - before!.y)).toBeLessThan(4);
   state.fail = true; await page.getByRole('button', { name: '刷新', exact: true }).click();
   const alert = page.getByRole('alert').filter({ hasText: '运行监控更新失败' }); await expect(alert).toBeVisible();
+  await expect(monitoringTime).toHaveCount(1); await expect(monitoringTime).toContainText('采集时间');
+  expect(await taskPanel.evaluate(panel => !!(panel.compareDocumentPosition(document.querySelector('.monitoring-notice')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
   await expect(issue).toHaveAttribute('open', ''); state.fail = false;
   await alert.getByRole('button', { name: '重试' }).click(); await expect(alert).toHaveCount(0);
+  await expect(monitoringTime).toHaveCount(1);
   await issue.getByRole('link', { name: longTitle }).click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
   await page.goBack(); await expect(page.getByText('清理占用容量')).toBeVisible();
   const taskLink = page.locator('.worker-task-table').getByRole('link', { name: longTitle });
@@ -99,6 +112,7 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   const resourceBefore = await resources.boundingBox();
   await page.evaluate(() => { const original = performance.now.bind(performance); Object.defineProperty(performance, 'now', { configurable: true, value: () => original() + 3_600_000 }); });
   await expect(page.getByText('运行观测已过期')).toBeVisible({ timeout: 5000 });
+  await expect(monitoringTime).toHaveCount(0);
   const resourceAfter = await resources.boundingBox(); expect(Math.abs(resourceAfter!.y - resourceBefore!.y)).toBeLessThan(4);
 });
 
