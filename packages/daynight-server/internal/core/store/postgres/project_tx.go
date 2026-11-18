@@ -58,3 +58,7 @@ func (tx *ProjectTx) WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO {
 func (tx *ProjectTx) GitHubProjectWebhookDAO() GitHubProjectWebhookWriteDAO {
 	return github.NewProjectWebhookWriter(tx.tx, tx.projectID)
 }
+
+func (tx *ProjectTx) GitHubProjectWebhookReceiptDAO() GitHubProjectWebhookReceiptDAO {
+	return github.NewProjectWebhookReceipt(tx.tx, tx.projectID)
+}
