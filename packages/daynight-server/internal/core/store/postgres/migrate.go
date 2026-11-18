@@ -256,12 +256,6 @@ var workerAliasSQL string
 //go:embed schema/migrations/082_worker_task_tag_filter.sql
 var workerTaskTagFilterSQL string
 
-//go:embed schema/migrations/084_project_github_webhook.sql
-var projectGitHubWebhookSQL string
-
-//go:embed schema/migrations/085_github_webhook_status.sql
-var githubWebhookStatusSQL string
-
 //go:embed schema/migrations/086_usage_records.sql
 var usageRecordsSQL string
 
@@ -356,8 +350,6 @@ var schemaMigrations = []migration{
 	{version: 81, sql: workerAliasSQL},
 	{version: 82, sql: workerTaskTagFilterSQL},
 	{version: 83, sql: migration083.SQL(), transform: migration083.Apply, transformSource: migration083.TransformSource()},
-	{version: 84, sql: projectGitHubWebhookSQL},
-	{version: 85, sql: githubWebhookStatusSQL},
 	{version: 86, sql: usageRecordsSQL},
 }
 

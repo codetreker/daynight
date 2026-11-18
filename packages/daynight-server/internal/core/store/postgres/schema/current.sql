@@ -538,12 +538,7 @@ CREATE TABLE "project_github" (
     "sync_enabled" boolean DEFAULT false NOT NULL,
     "app_resource_id" "uuid",
     "team_grant_id" "uuid",
-    "credential_version" bigint,
-    "hook_repository_id" bigint,
-    "hook_version" bigint,
-    "hook_enabled" boolean DEFAULT false NOT NULL,
-    "hook_secret" "bytea",
-    "hook_last_received_at" timestamp with time zone
+    "credential_version" bigint
 );
 
 CREATE TABLE "project_github_pending_prs" (

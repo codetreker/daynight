@@ -988,27 +988,6 @@ intent to off, so those Projects must explicitly enable it after reconnecting.
 Remove the old `github` configuration section and `DAYNIGHT_GITHUB_*` variables
 and dispose of their deployment secrets; the server no longer reads them.
 
-Before applying migration 085, stop incoming traffic and fully drain all older
-server replicas and background writers. Its one-time normalization clears the
-six mixed PR Webhook diagnostic fields and advances affected revisions; it
-preserves connection versions, generations, PRs, pending hints, claims and their
-expiry, access hints, polling schedules and `not_before`. Revision overflow or
-SQL failure rolls back that migration and its ledger entry together. Earlier
-committed migrations remain applied. Restarting after success does not clear
-new PR diagnostics again. Older writers must not resume and recreate mixed
-diagnostics.
-
-This preparation build continues receiving App pull request deliveries while
-installation access rechecks maintain independent access state and rate-limit
-schedules. Project webhook reception remains disabled. Retain the preparation
-artifact, commit and complete ordered migration/checksum list for a later
-activation build. A same-database rollback requires identical complete ledgers
-and draining the active build first; otherwise restore a verified matching
-database backup and account for writes after that backup. The
-[runtime design](../../docs/design/github-connection-runtime.md) and
-[storage design](../../docs/design/github-pr-storage.md) describe the retained
-state and the diagnostic ownership.
-
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
 bytes (0x21–0x7e), without whitespace or a required prefix. Invalid values stop
