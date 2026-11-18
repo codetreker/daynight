@@ -3,6 +3,7 @@ import type { TaskDetail } from '../../src/api/types';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import { expectTagPalette } from '../helpers/tagPalette';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const personalId = '00000000-0000-4000-8000-000000000701';
@@ -1112,11 +1113,16 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await tagName.fill('Created independently');
   const hex = picker.getByRole('textbox', { name: zh ? '十六进制颜色' : 'Hex color' });
   await expect(hex).toHaveValue('#9AA3B2');
+  await expectTagPalette(picker, locale, width);
   if (kind === 'task') {
-    const blue = picker.getByRole('button', { name: zh ? '蓝色 #4C88C7' : 'Blue #4C88C7' });
-    await blue.focus(); await page.keyboard.press('Space');
-    await expect(blue).toHaveAttribute('aria-pressed', 'true');
-    await expect(hex).toHaveValue('#4C88C7');
+    const plum = picker.getByRole('button', { name: zh ? '梅紫色 #864C94' : 'Plum #864C94' });
+    const magenta = picker.getByRole('button', { name: zh ? '洋红色 #AF377D' : 'Magenta #AF377D' });
+    await plum.focus(); await page.keyboard.press('Tab');
+    await expect(magenta).toBeFocused(); await page.keyboard.press('Space');
+    await expect(magenta).toHaveAttribute('aria-pressed', 'true');
+    expect(await magenta.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+    await expect(hex).toHaveValue('#AF377D');
+    await expect(picker.locator('.tag-color-preview .task-tag-dot')).toHaveCSS('background-color', 'rgb(175, 55, 125)');
   } else {
     await hex.fill('#12a4cd');
     await expect(picker.locator('.tag-color-preview .task-tag-dot')).toHaveCSS('background-color', 'rgb(18, 164, 205)');
@@ -1128,7 +1134,7 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await createTag.focus(); await page.keyboard.press('Enter');
   await expect(picker.locator('.tag-picker-selected')).toContainText('Created independently');
   await expect(hex).toHaveValue('#9AA3B2');
-  expect(state.tagCreates).toEqual([{ name: 'Created independently', color: kind === 'task' ? '#4C88C7' : '#12A4CD' }]);
+  expect(state.tagCreates).toEqual([{ name: 'Created independently', color: kind === 'task' ? '#AF377D' : '#12A4CD' }]);
   await dialog.getByRole('button', { name: zh ? '取消' : 'Cancel', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(state.tags.some(tag => tag.name === 'Created independently')).toBe(true);
