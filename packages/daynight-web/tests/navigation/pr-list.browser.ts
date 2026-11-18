@@ -119,6 +119,7 @@ for (const width of [1440, 800, 390, 320]) test(`production project navigation, 
   }
   await prs.focus();
   await page.keyboard.press('Home'); await expect(overview).toBeFocused();
+  await page.keyboard.press(width > 740 ? 'ArrowDown' : 'ArrowRight'); await expect(page.locator('#project-section-tab-statistics')).toBeFocused();
   await page.keyboard.press(width > 740 ? 'ArrowDown' : 'ArrowRight'); await expect(tasks).toBeFocused();
   await expect(page.locator('#project-section-panel-tasks')).toContainText('pr-list-fixture');
   await page.keyboard.press('End'); await expect(page.locator('#project-section-tab-tags')).toBeFocused();
@@ -538,5 +539,152 @@ test('directory conflict retains two pages until the complete replacement preser
   const after = await anchor.evaluate(element => element.getBoundingClientRect().top - element.parentElement!.getBoundingClientRect().top);
   expect(Math.abs(after - before)).toBeLessThanOrEqual(1);
   expect(await scroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  expect(state.unexpected).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`project statistics charts and author selection at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    await page.route('**/pull-request-statistics?*', async route => {
+      const url = new URL(route.request().url()), authorId = url.searchParams.get('authorId');
+      const daily = Array(30).fill('0'); daily[29] = '4';
+      const authorDaily = Array(30).fill('0'); authorDaily[29] = '2';
+      await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: 'author' } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+    });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}?tab=statistics`);
+    const panel = page.locator('#project-section-panel-statistics');
+    const taskChart = panel.getByRole('listbox', { name: locale === 'en' ? 'Tasks created daily' : '每日新建任务' });
+    const prChart = panel.getByRole('listbox', { name: locale === 'en' ? 'PRs created daily' : '每日新建 PR' });
+    await expect(taskChart.getByRole('option')).toHaveCount(30);
+    await expect(prChart.getByRole('option')).toHaveCount(30);
+    await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-label', /: 4$/);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await prChart.focus(); await page.keyboard.press('End');
+    await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-selected', 'true');
+    const picker = panel.locator('.pr-author-trigger');
+    await picker.click();
+    await page.locator('[data-author-id="42"]').click();
+    await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-label', /: 2$/);
+    await expect(panel.locator('.statistics-total strong').last()).toHaveText('5');
+    await expect(picker).toBeFocused();
+    expect(state.pageReads).toEqual([]);
+    await page.reload();
+    await expect(page.locator('#project-section-tab-statistics')).toHaveAttribute('aria-selected', 'true');
+  });
+}
+
+test('statistics charts expose the touched date and count at phone width', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 800 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    const state = await installPrList(page);
+    await page.route('**/pull-request-statistics?*', async route => {
+      const url = new URL(route.request().url()), daily = Array(30).fill('0');
+      daily[29] = '4';
+      await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily, authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+    });
+    await page.goto(`/projects/${projectId}?tab=statistics`);
+    const panel = page.locator('#project-section-panel-statistics');
+    for (const [label, expected] of [['Tasks created daily', /: [0-9]+$/], ['PRs created daily', /: 4$/]] as const) {
+      const chart = panel.getByRole('listbox', { name: label });
+      await expect(chart.getByRole('option')).toHaveCount(30);
+      const last = chart.getByRole('option').last();
+      await last.tap();
+      await expect(last).toHaveAttribute('aria-selected', 'true');
+      const reading = await last.getAttribute('aria-label');
+      expect(reading).toMatch(expected);
+      await expect(chart.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " bar-chart ")][1]').locator('output')).toHaveText(reading!);
+      await chart.evaluate(element => { element.parentElement!.scrollLeft = 0; });
+      await page.keyboard.press('Shift+Tab');
+      await page.keyboard.press('Tab');
+      await expect(chart).toBeFocused();
+      await expect.poll(() => chart.evaluate(element => element.parentElement!.scrollLeft)).toBeGreaterThan(0);
+      const visible = await last.evaluate(element => {
+        const point = element.getBoundingClientRect(), scroll = element.parentElement!.parentElement!.getBoundingClientRect();
+        return point.left >= scroll.left - 1 && point.right <= scroll.right + 1;
+      });
+      expect(visible).toBe(true);
+    }
+    expect(state.unexpected).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
+test('task statistics failure leaves PR statistics readable and retry restores the task chart', async ({ page }) => {
+  const state = await installPrList(page);
+  state.graphFailure = true;
+  await page.goto(`/projects/${projectId}?tab=statistics`);
+  const panel = page.locator('#project-section-panel-statistics');
+  const taskCard = panel.locator('.statistics-card').first(), prCard = panel.locator('.statistics-card').last();
+  await expect(taskCard.getByRole('alert')).toContainText('Unable to load task statistics');
+  await expect(taskCard.getByRole('listbox')).toHaveCount(0);
+  await expect(prCard.getByRole('listbox', { name: 'PRs created daily' }).getByRole('option')).toHaveCount(30);
+  await expect(prCard.locator('.statistics-total strong')).toHaveText('0');
+  state.graphFailure = false;
+  await taskCard.getByRole('button', { name: 'Retry' }).click();
+  await expect(taskCard.getByRole('listbox', { name: 'Tasks created daily' }).getByRole('option')).toHaveCount(30);
+  await expect(taskCard.locator('.statistics-total strong')).toHaveText('1');
+  await expect(prCard.getByRole('listbox', { name: 'PRs created daily' }).getByRole('option')).toHaveCount(30);
+  expect(state.unexpected).toEqual([]);
+});
+
+test('PR statistics failure leaves task statistics readable and retry restores the PR chart', async ({ page }) => {
+  const state = await installPrList(page);
+  let fail = true;
+  await page.route('**/pull-request-statistics?*', async route => {
+    if (fail) return route.fulfill({ status: 500, json: { error: { code: 'internal_error', message: 'Fixture read failure', requestId: 'statistics-fixture' } }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+    const url = new URL(route.request().url());
+    return route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+  });
+  await page.goto(`/projects/${projectId}?tab=statistics`);
+  const panel = page.locator('#project-section-panel-statistics');
+  const taskCard = panel.locator('.statistics-card').first(), prCard = panel.locator('.statistics-card').last();
+  await expect(prCard.getByRole('alert')).toContainText('Unable to load PR statistics');
+  await expect(prCard.getByRole('listbox')).toHaveCount(0);
+  await expect(taskCard.getByRole('listbox', { name: 'Tasks created daily' }).getByRole('option')).toHaveCount(30);
+  await expect(taskCard.locator('.statistics-total strong')).toHaveText('1');
+  fail = false;
+  await prCard.getByRole('button', { name: 'Retry' }).click();
+  await expect(prCard.getByRole('listbox', { name: 'PRs created daily' }).getByRole('option')).toHaveCount(30);
+  await expect(prCard.locator('.statistics-total strong')).toHaveText('5');
+  await expect(taskCard.getByRole('listbox', { name: 'Tasks created daily' }).getByRole('option')).toHaveCount(30);
+  expect(state.unexpected).toEqual([]);
+});
+
+
+test('project navigation labels remain distinct at 320px in both languages', async ({ page }) => {
+  const state = await installPrList(page);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(`/projects/${projectId}?tab=statistics`);
+  const tabs = page.locator('.project-section-tab');
+  for (const locale of ['en', 'zh-CN']) {
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const labels = await tabs.evaluateAll(elements => elements.map(element => {
+      const text = [...element.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+      if (!text) throw new Error('Missing tab label');
+      const range = document.createRange(); range.selectNodeContents(text);
+      const box = range.getBoundingClientRect(), tab = element.getBoundingClientRect();
+      return { label: text.textContent, left: box.left, right: box.right, tabLeft: tab.left, tabRight: tab.right };
+    }));
+    expect(labels).toHaveLength(5);
+    for (let index = 0; index < labels.length; index++) {
+      const label = labels[index]!;
+      expect(label.left, `${locale}: ${label.label} starts inside its tab`).toBeGreaterThanOrEqual(label.tabLeft - 1);
+      expect(label.right, `${locale}: ${label.label} ends inside its tab`).toBeLessThanOrEqual(label.tabRight + 1);
+      if (index > 0) expect(label.left, `${locale}: adjacent labels do not overlap`).toBeGreaterThanOrEqual(labels[index - 1]!.right);
+    }
+    await page.locator('.project-section-tab[aria-selected="true"]').focus();
+    for (const [key, section] of [['End', 'tags'], ['Home', 'overview']] as const) {
+      await page.keyboard.press(key);
+      const tab = page.locator(`#project-section-tab-${section}`);
+      await expect(tab).toBeFocused();
+      await expect.poll(() => tab.evaluate(element => {
+        const selected = element.getBoundingClientRect(), container = element.parentElement!.getBoundingClientRect();
+        return selected.left >= container.left - 1 && selected.right <= container.right + 1;
+      })).toBe(true);
+    }
+  }
   expect(state.unexpected).toEqual([]);
 });

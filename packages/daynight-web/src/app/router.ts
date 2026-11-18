@@ -6,7 +6,7 @@ import { accountSelection, type AccountSelection } from './account-route';
 
 export type TaskDetailTab = "description" | "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
-export type ProjectSection = "overview" | "tasks" | "prs" | "tags";
+export type ProjectSection = "overview" | "statistics" | "tasks" | "prs" | "tags";
 
 export type WebhookRoute = {
   readonly kind: "webhooks";
@@ -113,12 +113,12 @@ export const parseRoute = (pathname: string, search = ""): Route => {
   const tabs = new URLSearchParams(search).getAll("tab");
   if (projectId === null || tabs.length > 1) return { kind: "notFound" };
   const tab = tabs[0];
-  if (tab !== undefined && tab !== "overview" && tab !== "tasks" && tab !== "prs" && tab !== "tags") return { kind: "notFound" };
+  if (tab !== undefined && tab !== "overview" && tab !== "statistics" && tab !== "tasks" && tab !== "prs" && tab !== "tags") return { kind: "notFound" };
   return { kind: "project", projectId, tab: tab ?? null };
 };
 
 export const projectSectionUrl = (projectId: string, section: ProjectSection): string => {
-  if (canonicalId(projectId) === null || !["overview", "tasks", "prs", "tags"].includes(section)) throw new ApiError("protocol");
+  if (canonicalId(projectId) === null || !["overview", "statistics", "tasks", "prs", "tags"].includes(section)) throw new ApiError("protocol");
   return `/projects/${encodeURIComponent(projectId)}?${new URLSearchParams({ tab: section })}`;
 };
 

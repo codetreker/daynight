@@ -23,6 +23,7 @@ export function BarChart({ label, points, domainMax, formatValue }: BarChartProp
   }
   const id = useId();
   const plotRef = useRef<HTMLDivElement>(null);
+  const pointerFocus = useRef(false);
   const [selectedKey, setSelectedKey] = useState(points[0]!.key);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const foundIndex = points.findIndex(point => point.key === selectedKey);
@@ -66,7 +67,9 @@ export function BarChart({ label, points, domainMax, formatValue }: BarChartProp
     <div className="bar-chart__grid">
       <div className="bar-chart__scale" aria-hidden="true"><span>{formatValue(domainMax)}</span><span>{formatValue(0n)}</span></div>
       <div className="bar-chart__scroll" style={gridStyle}>
-      <div className="bar-chart__plot" ref={plotRef} role="listbox" aria-orientation="horizontal" tabIndex={0} aria-label={label} aria-activedescendant={`${id}-${selectedIndex}`} onFocus={revealSelected} onKeyDown={onKeyDown} onPointerLeave={() => setHoveredKey(null)}>
+      <div className="bar-chart__plot" ref={plotRef} role="listbox" aria-orientation="horizontal" tabIndex={0} aria-label={label} aria-activedescendant={`${id}-${selectedIndex}`} onPointerDown={() => { pointerFocus.current = true; }}
+        onPointerCancel={() => { pointerFocus.current = false; }} onBlur={() => { pointerFocus.current = false; }}
+        onFocus={() => { if (!pointerFocus.current) revealSelected(); pointerFocus.current = false; }} onKeyDown={onKeyDown} onPointerLeave={() => setHoveredKey(null)}>
         {points.map((point, index) => {
           // Divide while still in bigint: converting either operand first can overflow.
           const height = domainMax === 0n ? 0 : Number(point.value * 10000n / domainMax) / 100;

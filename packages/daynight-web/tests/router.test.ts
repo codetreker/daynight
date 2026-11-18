@@ -31,7 +31,7 @@ describe("route parsing", () => {
   });
 
   it("parses and builds project section URLs and retains valid login destinations", () => {
-    for (const tab of ["overview", "tasks", "prs", "tags"] as const) {
+    for (const tab of ["overview", "statistics", "tasks", "prs", "tags"] as const) {
       const url = projectSectionUrl(projectId, tab);
       expect(url).toBe(`/projects/${projectId}?tab=${tab}`);
       expect(parseRoute(`/projects/${projectId}`, `?other=1&tab=${tab}`)).toEqual({ kind: "project", projectId, tab });

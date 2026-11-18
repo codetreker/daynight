@@ -56,6 +56,11 @@ export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') =
           error: state.scene === 'stale' ? { code: 'remote_error', message: 'Temporary upstream failure', at } : null },
         webhook: { running: false, lastReceivedAt: missing ? null : at, lastAttemptAt: missing ? null : at, lastSuccessAt: missing ? null : at, error: null } });
     }
+    if (path === `/api/v1/projects/${projectId}/pull-request-statistics`) {
+      const authorId = url.searchParams.get('authorId');
+      return send({ projectId, endDate: url.searchParams.get('endDate'), revision: String(state.revision), projectTotal: '0', availability: 'ready', hasAuthors: false,
+        daily: Array(30).fill('0'), authorId, author: null, authorDaily: authorId === null ? null : Array(30).fill('0') });
+    }
     if (path === `/api/v1/projects/${projectId}/pull-request-authors`) {
       state.authorReads.push(url.search);
       if (state.authorError) return send(fault(), 500);

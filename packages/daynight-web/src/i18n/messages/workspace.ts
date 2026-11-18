@@ -112,6 +112,7 @@ export type WorkspaceMessages = {
   readonly sections: {
     readonly label: string;
     readonly overview: string;
+    readonly statistics: string;
     readonly tasks: string;
     readonly prs: string;
     readonly tags: string;
