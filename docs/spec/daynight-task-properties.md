@@ -110,16 +110,16 @@ daynight task properties <task-id> --json
 daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"修复同步"}]' --if-version <observed-version>
 daynight task set-property <task-id> pullRequests '[]' --if-version <observed-version>
 daynight task remove-property <task-id> pullRequests --if-version <observed-version>
-daynight task set-property <task-id> paused true --if-version <observed-version>
-daynight task set-property <task-id> paused false --if-version <observed-version>
-daynight task remove-property <task-id> paused --if-version <observed-version>
+daynight task set-property <task-id> blocked true --if-version <observed-version>
+daynight task set-property <task-id> blocked false --if-version <observed-version>
+daynight task remove-property <task-id> blocked --if-version <observed-version>
 ~~~
 
 create/update 不提供 PR 专用选项。创建后的属性通过通用设置命令维护；原生 HTTP create/PATCH 的原子多字段能力保留。设置 PR 时提交完整有序数组，保留仍需要的所有关联。
 
 显式 --if-version 直接提交；省略时先 GET 属性资源取得任务版本，再提交一次修改。版本冲突不重试；预读不能替代先前决定所依据的版本，不确定结果只读回核对后重新决定。
 
-读取 --json 返回完整 PropertyResource 或定义目录；普通读取按名称打印完整属性 JSON，所有输出使用既有终端安全转义。set/remove 成功后输出服务确认的当前 PropertyResource，不推测 no-op 的额外结果字段。非法写入属性值的服务端 400 保持操作失败，不改成 CLI 语法错误；正常读取、解码和数据库故障继续传播。所有读取均不补默认值、不截断或静默丢键。
+读取 --json 返回完整 PropertyResource 或定义目录；普通读取按名称打印完整属性 JSON，所有输出使用既有终端安全转义。set/remove 成功后输出服务确认的当前 PropertyResource，不推测 no-op 的额外结果字段。非法写入属性值的服务端 400 保持操作失败，不改成 CLI 语法错误；正常读取、解码和数据库故障继续传播。设置回执必须包含请求的键；删除 blocked 或 paused 时，回执必须同时省略两个键，否则写入结果未确认。所有读取均不补默认值、不截断或静默丢键。新版 CLI 与 Worker 要求服务端支持 blocked。
 
 操作系统不能承载的进程参数可通过 HTTP API 提交；传输限制不产生 URL/title 内容规则。[CLI 需求](daynight-project-task.md)拥有共享语法、补全和完整命令契约。
 

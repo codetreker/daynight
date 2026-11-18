@@ -1481,16 +1481,16 @@ Generic commands do not introduce custom attributes or make worker publicly
 writable. To set PR references, supply the whole ordered array of url/title
 objects, preserving every entry still needed.
 
-The writable boolean property `paused` controls periodic worker continuation
+The writable boolean property `blocked` controls periodic worker continuation
 pings and automatic input. Set it to `true` to suppress those inputs, or set it to `false` or remove it to
 restore the usual policy. Observation and original-run stopping remain available. An absent key remains absent in reads. The
 property can change during an active claim without changing task status,
-execution ownership or timing:
+execution ownership or timing. The service also returns the compatible `paused` key with the same value when present; both keys are absent after removal. New clients require a service that supports `blocked`:
 
 ```bash
-daynight task set-property <task-id> paused true --if-version <observed-version>
-daynight task set-property <task-id> paused false --if-version <observed-version>
-daynight task remove-property <task-id> paused --if-version <observed-version>
+daynight task set-property <task-id> blocked true --if-version <observed-version>
+daynight task set-property <task-id> blocked false --if-version <observed-version>
+daynight task remove-property <task-id> blocked --if-version <observed-version>
 ```
 
 The value positional argument can be empty. Use `--` before a positional
@@ -2678,7 +2678,7 @@ justify pausing or ending the turn.
 
 A genuine blocker that cannot be resolved autonomously and requires external
 input, permission, resources or a decision calls for recorded evidence, attempted
-solutions and the next step. The agent sets and confirms its task's `paused`
+solutions and the next step. The agent sets and confirms its task's `blocked`
 property, keeps it in progress and returns control to the scheduler. Before
 resuming it verifies the original assignment, resolution and authorization and
 clears and confirms its own pause. Independent pauses, restrictions, revocations,
@@ -3008,7 +3008,7 @@ A paused execution keeps its active claim, native session ID, worktree and
 capacity slot. The worker continues publishing `waiting` when execution is blocked. A failed summary update is retried using a newly read
 task version without consuming native recovery budget; an unchanged confirmed
 summary is not written again. Ordinary restart and shutdown cannot clear this
-pause. It is separate from `task.properties.paused`, which controls automatic
+pause. It is separate from `task.properties.blocked`, which controls automatic
 input as described above.
 
 Normal Web terminal cleanup keeps its original cleanup operation identity and

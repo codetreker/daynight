@@ -33,7 +33,7 @@ for (const sessionId of [null, uuid(6)]) {
   const instruction = sessionId === null ? "This is a new native conversation for this execution." : "Continue this execution in its original native conversation and worktree. Reconcile interrupted business work before proceeding.";
   const [body] = prompt.split("Assignment:\n\n");
   const restored = body.replace(instruction, "{{Instructions for starting a new native conversation or resuming in the original native conversation and worktree}}") + "Assignment:\n\n{{The complete Assignment JSON injected at runtime}}\n";
-  assert.equal(createHash("sha256").update(restored).digest("hex"), "6c7078dbe5ec581ccbcdf35710eae697327eae2ec35b408deb602f389a119c82");
+  assert.equal(createHash("sha256").update(restored).digest("hex"), "da3d148d2f6b5a42995835b0d82fab405f39d4d50a81ff8c809f11d911368e28");
   const assignment = JSON.parse(prompt.split("Assignment:\n\n")[1]);
   assert.deepEqual(assignment, { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: task.worktree.worktreePath, branch: task.worktree.branch, platform, nativeSessionId: sessionId, configuration: task.configuration });
   assert.ok(prompt.includes(sessionId === null ? "new native conversation" : "original native conversation"));

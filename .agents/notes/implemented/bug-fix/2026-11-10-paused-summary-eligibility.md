@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-A completed task can retain `properties.paused=true`. Counting it in pause
+A completed task can retain `properties.blocked=true`. Counting it in pause
 summaries suggests that an operator has an outstanding paused task and can make
 the project overview navigate to that completed task. The property still matters
 on the task itself, including its detail and unpause operation.

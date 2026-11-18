@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../src/api/task-properties.js";
+import { parseTaskProperties, readPullRequests, readTaskBlocked, readWorkerClaim, sameTaskProperties } from "../../src/api/task-properties.js";
 
 describe("generic task properties", () => {
   it("retains unknown keys, nested version fields and value presence", () => {
@@ -33,17 +33,19 @@ describe("generic task properties", () => {
 });
 
 describe("typed property consumers", () => {
-  it("retains absence and explicit paused values when consumed", () => {
-    expect(readTaskPaused(parseTaskProperties({}))).toBeUndefined();
-    expect(readTaskPaused(parseTaskProperties({ paused: false }))).toBe(false);
-    expect(readTaskPaused(parseTaskProperties({ paused: true }))).toBe(true);
-    expect(sameTaskProperties({}, { paused: false })).toBe(false);
+  it("retains absence and explicit blocked values when consumed", () => {
+    expect(readTaskBlocked(parseTaskProperties({}))).toBeUndefined();
+    expect(readTaskBlocked(parseTaskProperties({ blocked: false }))).toBe(false);
+    expect(readTaskBlocked(parseTaskProperties({ blocked: true }))).toBe(true);
+    expect(readTaskBlocked(parseTaskProperties({ paused: true }))).toBeUndefined();
+    expect(readTaskBlocked(parseTaskProperties({ blocked: false, paused: false }))).toBe(false);
+    expect(sameTaskProperties({}, { blocked: false })).toBe(false);
   });
 
-  it.each([null, "false", 0, [], {}])("rejects malformed present paused values when consumed %#", (paused) => {
-    const properties = parseTaskProperties({ paused });
-    expect(properties.paused).toEqual(paused);
-    expect(() => readTaskPaused(properties)).toThrow("invalid response");
+  it.each([null, "false", 0, [], {}])("rejects malformed present blocked values when consumed %#", (blocked) => {
+    const properties = parseTaskProperties({ blocked });
+    expect(properties.blocked).toEqual(blocked);
+    expect(() => readTaskBlocked(properties)).toThrow("invalid response");
   });
 
   it("distinguishes a missing PR property from an explicitly empty array", () => {

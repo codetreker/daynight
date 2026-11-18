@@ -1,6 +1,6 @@
 import { createApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
-import { readTaskPaused, readWorkerClaim } from "../../api/task-properties.js";
+import { readTaskBlocked, readWorkerClaim } from "../../api/task-properties.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { loadServerConfiguration } from "../../config/server.js";
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
@@ -17,6 +17,6 @@ export async function checkWorkerTask(ticket: ControllerLaunchTicket, home: stri
     const task = await createApiClient({ serverUrl: ticket.serverOrigin, serverToken: config.serverToken, expectedUserId: ticket.userId, operation }).getTask(ticket.projectId, ticket.taskId);
     const claim = readWorkerClaim(task.properties);
     if (task.status !== "in_progress" || !task.allowAgents || claim?.state !== "active" || claim.claimId !== ticket.claimId || claim.workerId !== ticket.workerId || claim.worktreeId !== ticket.worktreeId || claim.userId !== ticket.userId || claim.agent !== ticket.provider || claim.agentControlMode !== "web") return "claim_invalid";
-    return readTaskPaused(task.properties) === true ? "task_paused" : null;
+    return readTaskBlocked(task.properties) === true ? "task_paused" : null;
   } finally { operation.dispose(); }
 }

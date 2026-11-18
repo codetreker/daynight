@@ -210,16 +210,20 @@ describe("task commands over HTTP", () => {
     expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith("[]\n"); expect(f.context.stderr).not.toHaveBeenCalled();
   });
 
-  it("preserves paused, blocked and not-ready facts in show and the two-task inventory", async () => {
-    const blocked = { ...task, properties: { paused: true }, ready: false, dependsOn: [otherId], blockedBy: [otherId] };
+  it.each([true, false, undefined])("preserves both property aliases with value %s in task and property JSON", async value => {
+    const properties = value === undefined ? {} : { blocked: value, paused: value };
+    const blocked = { ...task, properties, ready: false, dependsOn: [otherId], blockedBy: [otherId] };
     const prerequisite = { ...task, id: otherId, title: "Prerequisite" };
     const { description: _blockedDescription, ...blockedListItem } = blocked;
     const { description: _prerequisiteDescription, ...prerequisiteListItem } = prerequisite;
-    const f = await fixture((request, response) => respond(response, request.path.endsWith(taskId) ? blocked : { items: [prerequisite, blocked], nextCursor: null }));
+    const resource = { projectId, taskId, version: task.version, properties };
+    const f = await fixture((request, response) => respond(response, request.path.endsWith("/properties") ? resource : request.path.endsWith(taskId) ? blocked : { items: [prerequisite, blocked], nextCursor: null }));
     await f.run(["show", taskId, "--json"]);
     expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(withTaskObservation(blocked));
     await f.run(["list", "--json"]);
     expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual([prerequisiteListItem, blockedListItem].map(withTaskObservation));
+    await f.run(["properties", taskId, "--json"]);
+    expect(parseApiJson(f.context.stdout.mock.calls[2]![0])).toEqual(resource);
     expect(f.context.stderr).not.toHaveBeenCalled();
   });
   it.each([false, true].flatMap((removeDepends) => [undefined, "9223372036854775807"].map((version) => ({ removeDepends, version }))))("deletes once with exact version $version and removal consent $removeDepends", async ({ version, removeDepends }) => {

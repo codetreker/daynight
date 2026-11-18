@@ -103,7 +103,7 @@ set-status保持原三态转换并提供不可恢复的cancelled终态，均受�
 也不授予额外创建或执行权限。无实际后续工作的终端任务不制造后继或临时执行步骤。
 Managed 可在已有创建授权内登记已确认的必要后继，包括方案 assignment 要求的交付
 拆分，但不开始或执行后继。缺少创建授权或必需内容时，沿既有人类介入流程补齐。
-managed 确需用户介入时，按仓库流程 [Request user interaction](daynight-worker.md#w-08人工介入与强制撤回) 先核验原 assignment，以观察版本将自己任务设为 paused=true 并回读确认，再输出问题、保存 Session 等待上下文并退出循环，保持 in_progress。用户自由选择回应方式；反馈后核验原 assignment、问题已解决及授权允许恢复，解除暂停并回读确认后继续原任务，未解决则保持暂停。失败、冲突和未知结果遵守 write-safety，普通 CI/review 等待不触发该暂停，不选择其他任务或执行后续阶段。
+managed 确需用户介入时，按仓库流程 [Request user interaction](daynight-worker.md#w-08人工介入与强制撤回) 先核验原 assignment，以观察版本将自己任务设为 blocked=true 并回读确认，再输出问题、保存 Session 等待上下文并退出循环，保持 in_progress。用户自由选择回应方式；反馈后核验原 assignment、问题已解决及授权允许恢复，解除暂停并回读确认后继续原任务，未解决则保持暂停。失败、冲突和未知结果遵守 write-safety，普通 CI/review 等待不触发该暂停，不选择其他任务或执行后续阶段。
 
 讨论任务按用户确认与阶段验收完成。独立的仓库代码、文档、原型交付以及用户明确纳入
 讨论验收的 PR 交付，仍需真实检查、授权合并和平台确认；保留开放 PR 的指令继续有效，

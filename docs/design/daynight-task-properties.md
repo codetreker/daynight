@@ -39,7 +39,7 @@ TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更
 
 blocked 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
 
-兼容写入入口把 paused 归一为 blocked，两个名称同值合并、异值拒绝。协议投影在属性存在时生成同值的 blocked 与 paused，缺席时均省略；属性目录同时列出兼容名称。共享编码器计量实际回执，相对旧 paused 单键按每个对象的 true 15 字节或 false 16 字节补偿，MCP 按实际出现次数和原 RPC ID 转义规则计量。CLI/Web 通用属性对象保持所有键，旧 typed reader 在消费处严格解释 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
+兼容写入入口把 paused 归一为 blocked，两个名称同值合并、异值拒绝。协议投影在属性存在时生成同值的 blocked 与 paused，缺席时均省略；属性目录同时列出兼容名称。共享编码器计量实际回执，相对旧 paused 单键按每个对象的 true 15 字节或 false 16 字节补偿，MCP 按实际出现次数和原 RPC ID 转义规则计量。CLI/Web 通用属性对象保持所有键。新版 CLI、Worker 与 Controller 的 typed reader 在消费处严格解释 blocked；旧客户端仍读取兼容的 paused。缺席表示自动输入未因该属性暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在适用的实际输入递交边界读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。Web 在详情与摘要准入时验证该值，从摘要派生独立的暂停展示集合，并通过普通任务 PATCH 解除暂停；图节点不承载 properties，具体展示与写入协调由[Web 设计](daynight-web.md#暂停展示与解除)拥有。
 
 ## 独立表与读取
 
@@ -106,7 +106,7 @@ blocked 迁移直接改名属性行，验证旧布尔值并让主键冲突或坏
 
 ## 客户端与现有入口
 
-CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、paused、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
+CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR、blocked、Worker 与 Session startup reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 与 sessionStartup 键。
 
 CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/archived/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 

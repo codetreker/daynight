@@ -12,9 +12,9 @@ const jsonValue = (value: unknown): JsonValue => {
 export const parseTaskProperties = (value: unknown): TaskProperties =>
   Object.fromEntries(Object.entries(record(value)).map(([name, item]) => [name, jsonValue(item)]));
 
-export const readTaskPaused = (properties: TaskProperties): boolean | undefined => {
-  if (!Object.hasOwn(properties, "paused")) return undefined;
-  return typeof properties.paused === "boolean" ? properties.paused : malformed();
+export const readTaskBlocked = (properties: TaskProperties): boolean | undefined => {
+  if (!Object.hasOwn(properties, "blocked")) return undefined;
+  return typeof properties.blocked === "boolean" ? properties.blocked : malformed();
 };
 
 export const readSessionStartupReport = (properties: TaskProperties): SessionStartupReport | undefined =>

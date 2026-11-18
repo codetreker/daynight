@@ -15,7 +15,7 @@ alias. Public property projections include both names with the same value when
 present. The migration renames existing rows without changing task metadata or
 capturing a business event. Web normalizes both representations for its caches
 and sends `blocked:false` to unblock. Its [alias decision](2026-11-18-web-task-property-alias.md)
-retains the cache rationale. The [property design](../../../../docs/design/daynight-task-properties.md)
+retains the cache rationale. CLI, Worker and Controller read `blocked` for automatic-input admission, and the CLI retains both projected keys in generic JSON. New clients require a server that supports `blocked`; old clients continue to read `paused`. The [property design](../../../../docs/design/daynight-task-properties.md)
 owns the protocol, capacity and deployment details.
 
 ## Alternatives
