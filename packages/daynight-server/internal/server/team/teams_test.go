@@ -27,13 +27,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestTeamHTTPSessionPATAndIdentityPermissions(t *testing.T) {
-	h := authTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
+func testTeamHTTPSessionPATAndIdentityPermissions(t *testing.T, fixture teamIntegrationFixture) {
+	h := fixture.forCase(t)
 	admin, member, outsider := h.Login(t, "team-admin"), h.Login(t, "team-member"), h.Login(t, "team-outsider")
 	cookies := []*http.Cookie{admin}
 	user := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", cookies, nil, ""), 200)
@@ -124,8 +119,8 @@ func TestTeamHTTPOutcomeClassificationAndResponseFailures(t *testing.T) {
 	}
 }
 
-func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
-	h := teamTestHandler(t)
+func testTeamHTTPStrictInputAndPagination(t *testing.T, fixture teamIntegrationFixture) {
+	h := teamTestHandler(t, fixture)
 	db := h.database
 	actor := h.principal.UserID
 	suffix := `,"expectedUserId":"` + actor + `"}`
@@ -183,8 +178,8 @@ func TestTeamHTTPStrictInputAndPagination(t *testing.T) {
 	}
 }
 
-func TestTeamHTTPPageCountAndCursor(t *testing.T) {
-	h := teamTestHandler(t)
+func testTeamHTTPPageCountAndCursor(t *testing.T, fixture teamIntegrationFixture) {
+	h := teamTestHandler(t, fixture)
 	actor := h.principal.UserID
 	var teams []api.Team
 	for _, suffix := range []string{"one", "two"} {

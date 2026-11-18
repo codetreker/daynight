@@ -3,8 +3,6 @@ package team
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -15,18 +13,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/google/uuid"
 )
 
-func TestTeamMembersHTTP(t *testing.T) {
-	h := authTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
-	h.Handler = httpx.RequestLogging(logger, mux)
+func testTeamMembersHTTP(t *testing.T, fixture teamIntegrationFixture) {
+	h := fixture.forCase(t)
 	admin, member, outsider := h.Login(t, "members-admin"), h.Login(t, "members-member"), h.Login(t, "members-outsider")
 	a, m, o := []*http.Cookie{admin}, []*http.Cookie{member}, []*http.Cookie{outsider}
 	me := func(c []*http.Cookie) api.User {
@@ -167,13 +159,8 @@ func TestTeamMembersHTTP(t *testing.T) {
 	}
 }
 
-func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
-	h := authTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	mux := http.NewServeMux()
-	h.Auth.RegisterRoutes(mux)
-	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
-	h.Handler = mux
+func testTeamMembersConcurrentLastAdmin(t *testing.T, fixture teamIntegrationFixture) {
+	h := fixture.forCase(t)
 	a, b := h.Login(t, "concurrent-a"), h.Login(t, "concurrent-b")
 	ac, bc := []*http.Cookie{a}, []*http.Cookie{b}
 	au := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", ac, nil, ""), 200)
