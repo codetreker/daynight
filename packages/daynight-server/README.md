@@ -2440,6 +2440,33 @@ page to the DAO for both scopes. PostgreSQL tests verify continuation in both
 lists, along with deletion intent and cleanup visibility.
 [Bot definition HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-definition-http-test-owners.md)
 
+### Bot defaults HTTP tests
+
+Five defaults and creation refusal tests use the production Bot routes with
+PAT or Session cookie authentication and strict CreateResolved and DefaultsFor
+callbacks. The callbacks verify raw overrides, including the uppercase Worker
+ID, and the request principal and context. Parser, method, anonymous, revoked
+PAT and cookie Origin refusals leave both callbacks unused. Independent preview
+facts retain the empty Worker array, usable and unsupported candidate details,
+provider defaults, explicit offline choice and UTC observation time.
+
+```bash
+source scripts/env.sh
+env -u DAYNIGHT_TEST_DATABASE_URL -u DAYNIGHT_TEST_UNIAUTH_FIXTURE \
+  go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^Test(BotDefaultsHTTP(StrictCreateAndDefaultsInputs|ReadableEmptyDefaults|CandidatesAndExplicitOfflineChoice|BrowserCreationRequiresOrigin)|BotCreationHTTPSelectionRefusals)$' \
+  ./internal/server/bot
+```
+
+Service tests forward database observations to the real resolver. Core
+verifies selection with online legacy and usable Workers, explicit offline
+selection, foreign Worker refusal and overflow with 101 usable Workers.
+PostgreSQL tests verify owner scope, heartbeat age, decoded provider data and
+the bounded creation candidate query.
+The real HTTP creation tests retain successful creation, replay, lost responses
+and refusal after deleting the PAT from PostgreSQL.
+[Bot defaults HTTP decision](../../.agents/notes/implemented/testing/2026-11-18-bot-defaults-http-test-owners.md)
+
 ### MCP protocol tests
 
 `internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,
