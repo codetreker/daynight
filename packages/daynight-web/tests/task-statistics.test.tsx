@@ -1,11 +1,17 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../src/api/client';
+import type { CacheEvent } from '../src/features/task-cache/project-cache';
 import { TaskStatistics } from '../src/features/project-statistics/TaskStatistics';
 import { createDateWindow } from '../src/features/project-statistics/date-window';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
 vi.mock('../src/features/task-assignees/TaskAssignees', () => ({ useTaskAssigneeDemand: () => ({ people: new Map([['user-a', { name: 'Same' }], ['user-b', { name: 'Same' }]]) }) }));
+const listeners = new Set<(event: CacheEvent) => void>();
+vi.mock('../src/features/task-cache/TaskCacheProvider', () => ({ useTaskCacheScope: () => scope }));
+vi.mock('../src/features/projects/ProjectAccess', () => ({ useProjectAccessSession: () => null }));
+const scope = { subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
 const render = createLocaleRender('en');
 const dateWindow = createDateWindow(Date.parse('2026-03-08T12:00:00Z'), () => 0);
 const snapshot = (tasks: { id: string; createdAt: string; assignedTo: string | null }[]) => ({ graph: { tasks }, observedAt: '2026-03-08T12:00:00Z', revision: 1 } as unknown as GraphSnapshot);
@@ -40,5 +46,30 @@ describe('task statistics', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(retry).toHaveBeenCalledOnce();
     expect(screen.queryByRole('listbox')).toBeNull();
+  });
+  it('retains the selection while the admitted snapshot is unavailable and resets it only when a new snapshot excludes it', () => {
+    const view = render(<TaskStatistics projectId="project" snapshot={snapshot(entries)} error={null} onRetry={() => {}} window={dateWindow} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter tasks by assignee' }), { target: { value: 'user-a' } });
+    view.rerender(<TaskStatistics projectId="project" snapshot={null} error={null} onRetry={() => {}} window={dateWindow} />);
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
+    view.rerender(<TaskStatistics projectId="project" snapshot={snapshot(entries)} error={null} onRetry={() => {}} window={dateWindow} />);
+    expect(screen.getByRole('combobox', { name: 'Filter tasks by assignee' })).toHaveValue('user-a');
+    expect(within(screen.getByRole('listbox', { name: 'Tasks created daily' })).getAllByRole('option')[29]).toHaveAccessibleName(/: 1$/);
+    view.rerender(<TaskStatistics projectId="project" snapshot={snapshot(entries.filter(entry => entry.assignedTo !== 'user-a'))} error={null} onRetry={() => {}} window={dateWindow} />);
+    expect(screen.getByRole('combobox', { name: 'Filter tasks by assignee' })).toHaveValue('');
+  });
+  it('retains the selection across temporary isolation but clears it after confirmed access withdrawal', () => {
+    const view = render(<TaskStatistics projectId="project" snapshot={snapshot(entries)} error={null} onRetry={() => {}} window={dateWindow} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter tasks by assignee' }), { target: { value: 'user-a' } });
+    act(() => { for (const listener of listeners) listener({ projectId: 'project', accessRevoked: true, directAccessUncertain: true, error: new ApiError('server', 404, 'not_found') }); });
+    act(() => { for (const listener of listeners) listener({ projectId: 'project', accessRevoked: true, peerHintWithdrawal: true, error: new ApiError('server', 404, 'not_found') }); });
+    view.rerender(<TaskStatistics projectId="project" snapshot={null} error={null} onRetry={() => {}} window={dateWindow} />);
+    act(() => { for (const listener of listeners) listener({ projectId: 'project', directAccessRecheck: true, accessRestored: true }); });
+    view.rerender(<TaskStatistics projectId="project" snapshot={snapshot(entries)} error={null} onRetry={() => {}} window={dateWindow} />);
+    expect(screen.getByRole('combobox', { name: 'Filter tasks by assignee' })).toHaveValue('user-a');
+    act(() => { for (const listener of listeners) listener({ projectId: 'project', directAccessUncertain: true }); });
+    act(() => { for (const listener of listeners) listener({ projectId: 'project', directAccessRecheck: true, error: new ApiError('server', 404, 'not_found') }); });
+    expect(screen.getByRole('combobox', { name: 'Filter tasks by assignee' })).toHaveValue('');
   });
 });

@@ -26,7 +26,7 @@ export function ProjectStatistics(props: {
   const selected = pr.author === null ? all : data?.authorDaily?.map(BigInt) ?? all;
   const ready = data?.availability === 'ready';
   return <div className="statistics-stack">
-    <TaskStatistics projectId={props.projectId} snapshot={props.canRead && props.snapshot?.observedAt !== null && (props.snapshot?.revision ?? 0) > 0 ? props.snapshot : null} error={props.taskError} onRetry={props.onTaskRetry} window={window} />
+    <TaskStatistics key={JSON.stringify([props.userId, props.projectId])} projectId={props.projectId} snapshot={props.canRead && props.snapshot?.observedAt !== null && (props.snapshot?.revision ?? 0) > 0 ? props.snapshot : null} error={props.taskError} onRetry={props.onTaskRetry} window={window} />
     <section className="statistics-card" aria-labelledby="pr-statistics-title">
       <header className="statistics-header"><h2 id="pr-statistics-title">{m.prs}</h2>{ready && <div className="statistics-total"><span>{m.total}</span><strong>{new Intl.NumberFormat(locale).format(BigInt(data.projectTotal))}</strong></div>}</header>
       {pr.error !== null && <div className="statistics-state error" role="alert">{m.prError}<button className="button" type="button" onClick={pr.refresh}>{m.retry}</button></div>}

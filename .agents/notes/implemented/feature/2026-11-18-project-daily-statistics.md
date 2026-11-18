@@ -13,7 +13,10 @@ Task and pull request reads have different availability and authorization paths.
 The project statistics section combines the admitted ordinary TaskSync snapshot
 and the project PR aggregation in separate panels. Both use the browser's local
 30-day UTC interval table and the shared bar chart. Person selections retain
-stable account IDs and do not change totals or the all-person scale. The [Web
+stable account IDs and do not change totals or the all-person scale. A temporary
+absence of an admitted task snapshot hides its data while retaining the selection;
+an admitted snapshot excluding that person or confirmed access withdrawal clears
+it. Identity and project changes isolate the selection. The [Web
 specification](../../../../docs/spec/daynight-web.md#项目统计) owns visible behavior;
 the [Web design](../../../../docs/design/daynight-web.md#项目每日统计) owns the
 client mechanisms.

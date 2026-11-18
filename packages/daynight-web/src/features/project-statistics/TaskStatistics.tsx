@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ApiError } from '../../api/client';
 import type { GraphSnapshot } from '../projects/useTaskGraph';
+import { useProjectAccessSession } from '../projects/ProjectAccess';
+import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskAssigneeDemand } from '../task-assignees/TaskAssignees';
 import { personName } from '../task-assignment/TaskAssigneeIdentity';
 import { NativeSelect } from '../../ui/native-select/NativeSelect';
@@ -13,12 +16,24 @@ export function TaskStatistics({ projectId, snapshot, error, onRetry, window }: 
   readonly onRetry: () => void; readonly window: DateWindow;
 }) {
   const { locale } = useI18n();
+  const scope = useTaskCacheScope();
+  const access = useProjectAccessSession(projectId);
   const m = statisticsText(locale);
   const tasks = snapshot?.graph.tasks ?? [];
   const ids = useMemo(() => [...new Set(tasks.flatMap(task => task.assignedTo === null ? [] : [task.assignedTo]))].sort(), [tasks]);
   const { people } = useTaskAssigneeDemand(projectId, ids);
   const [selected, setSelected] = useState('');
-  useEffect(() => { if (selected !== '' && !ids.includes(selected)) setSelected(''); }, [ids, selected]);
+  useEffect(() => { if (snapshot !== null && selected !== '' && !ids.includes(selected)) setSelected(''); }, [snapshot, ids, selected]);
+  useEffect(() => {
+    const unsubscribe = scope.subscribe(event => {
+      if (event.projectId !== projectId) return;
+      const error = event.error;
+      const missing = error instanceof ApiError && error.kind === 'server' && error.status === 404 && error.code === 'not_found';
+      if (missing && (event.directAccessRecheck || event.accessRevoked && !event.directAccessUncertain && !event.peerHintWithdrawal)) setSelected('');
+    });
+    const unsubscribeWithdrawal = access?.subscribeProjectReadWithdrawal(() => setSelected(''));
+    return () => { unsubscribe(); unsubscribeWithdrawal?.(); };
+  }, [scope, access, projectId]);
   const effective = ids.includes(selected) ? selected : '';
   const all = Array<bigint>(30).fill(0n), filtered = Array<bigint>(30).fill(0n);
   for (const task of tasks) {
