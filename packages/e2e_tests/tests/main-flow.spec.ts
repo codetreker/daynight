@@ -318,7 +318,9 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   const firstChain = await cli(["task", "create", "--project", projectId!, "--title", "Share chain root", "--status", "todo"]);
   const chainId = firstChain.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(chainId).toBeDefined();
-  await cli(["task", "create", "--project", projectId!, "--title", "Share chain successor", "--status", "todo", "--depends-on", chainId!]);
+  const secondChain = await cli(["task", "create", "--project", projectId!, "--title", "Share chain successor", "--status", "todo", "--depends-on", chainId!]);
+  const successorId = secondChain.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(successorId).toBeDefined();
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: topology.baseURL });
   await page.goto(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
   await page.getByRole("tab", { name: "Task chains", exact: true }).click();
@@ -336,6 +338,8 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     await reader.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
     await reader.getByRole("button", { name: "Authorize local identity", exact: true }).click();
     await expect(reader.locator(".task-chain-dialog .react-flow__node")).toHaveCount(2);
+    await expect(reader.locator(`.task-chain-dialog .react-flow__node[data-id="${chainId}"]`)).toBeVisible();
+    await expect(reader.locator(`.task-chain-dialog .react-flow__node[data-id="${successorId}"]`)).toBeVisible();
     await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
   } finally { await anonymous.close(); }
 });
