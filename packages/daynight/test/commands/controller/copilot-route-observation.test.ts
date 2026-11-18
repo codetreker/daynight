@@ -3,6 +3,14 @@ import { CopilotRouteObserver, declaredCopilotRouteDigest, parseCopilotRouteObse
 import { createHash } from "node:crypto";
 import { canonicalImageJson } from "../../../src/session/image-values.js";
 
+vi.mock("node:timers", async original => {
+  const actual = await original<typeof import("node:timers")>();
+  return { ...actual, default: {
+    setTimeout: (callback: () => void, milliseconds: number) => globalThis.setTimeout(callback, milliseconds),
+    clearTimeout: (timer: NodeJS.Timeout) => globalThis.clearTimeout(timer),
+  } };
+});
+
 const endpoint = { type: "openai", wireApi: "responses", transport: "http", baseUrl: "https://api.enterprise.githubcopilot.com" };
 afterEach(() => vi.useRealTimers());
 const fixture = () => {
@@ -93,7 +101,11 @@ test.each(["model", "endpoint"])("a timed-out %s read retains one pending RPC an
   if (stage === "model") session.rpc.model.getCurrent.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
   else session.rpc.provider.getEndpoint.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
   const pending = observer.read(session); await Promise.resolve();
-  await vi.advanceTimersByTimeAsync(5000);
+  let settled = false;
+  void pending.then(() => { settled = true; });
+  await vi.advanceTimersByTimeAsync(4999);
+  expect(settled).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
   expect(await pending).toBeNull();
   for (let i = 0; i < 5; i++) expect(await observer.read(session)).toBeNull();
   expect(session.rpc.model.getCurrent).toHaveBeenCalledTimes(1);
