@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"testing"
 	"time"
 
@@ -17,16 +16,16 @@ import (
 // A transaction-local wrapper records publication and acknowledgement ordering.
 // Its queue models due work; rescheduled entries are no longer due in this run.
 type pollHintsHarness struct {
-	f            *pollFixture
-	queue        []store.GitHubPendingPR
-	events       []string
-	pendingCount int
-	pendingError error
-	loseLease    bool
-	unknownAck   bool
-	acked        bool
-	rows         map[int64]githubpr.PullRequest
-	cursors      []int64
+	f             *pollFixture
+	queue         []store.GitHubPendingPR
+	events        []string
+	pendingCount  int
+	pendingError  error
+	loseLease     bool
+	unknownAck    bool
+	acked         bool
+	unseenBatches [][]int64
+	cursors       []int64
 }
 
 type pollHintsDAO struct {
@@ -72,38 +71,24 @@ func (d *pollHintsDAO) Publish(ctx context.Context, lease store.GitHubLease, ite
 	ok, err := d.GitHubWorkDAO.Publish(ctx, lease, items)
 	if ok && err == nil {
 		d.published = items[0].Number
-		for _, item := range items {
-			if d.h.rows != nil {
-				if previous, exists := d.h.rows[item.Number]; exists && item.SeenPollID == nil {
-					item.SeenPollID = previous.SeenPollID
-				}
-				d.h.rows[item.Number] = item
-			}
-		}
 		d.h.events = append(d.h.events, fmt.Sprintf("publish:%d", items[0].Number))
 	}
 	return ok, err
 }
 
 func (d *pollHintsDAO) UnseenActive(ctx context.Context, lease store.GitHubLease, pollID string, after int64, limit int) ([]int64, bool, error) {
-	if d.h.rows == nil {
+	if d.h.unseenBatches == nil {
 		return d.GitHubWorkDAO.UnseenActive(ctx, lease, pollID, after, limit)
 	}
 	if lease != d.h.f.lease || pollID != lease.Token || limit != 100 {
 		d.h.f.t.Fatalf("unseen lease=%+v poll=%q limit=%d", lease, pollID, limit)
 	}
+	index := len(d.h.cursors)
+	if index >= len(d.h.unseenBatches) {
+		d.h.f.t.Fatalf("unexpected unseen query after %d", after)
+	}
 	d.h.cursors = append(d.h.cursors, after)
-	var numbers []int64
-	for n, row := range d.h.rows {
-		if n > after && row.State == "open" && (row.SeenPollID == nil || *row.SeenPollID != pollID) {
-			numbers = append(numbers, n)
-		}
-	}
-	sort.Slice(numbers, func(i, j int) bool { return numbers[i] < numbers[j] })
-	if len(numbers) > limit {
-		numbers = numbers[:limit]
-	}
-	return numbers, true, nil
+	return d.h.unseenBatches[index], true, nil
 }
 
 func (d *pollHintsDAO) AckPending(_ context.Context, lease store.GitHubLease, number int64, request string) (bool, error) {
@@ -285,13 +270,14 @@ func TestPollHintFailuresStopBeforeNextDetail(t *testing.T) {
 	}
 }
 
-// An in-poll hint must not create another unseen active row in a later batch.
-func TestPollHintDoesNotExtendDynamicAbsenceTraversal(t *testing.T) {
+// An in-poll hint carries the poll identity across absence batches.
+func TestPollHintDoesNotExtendAbsenceTraversal(t *testing.T) {
 	f := newPollFixture(t)
-	h := &pollHintsHarness{f: f, rows: make(map[int64]githubpr.PullRequest)}
-	for n := int64(101); n <= 201; n++ {
-		h.rows[n] = githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: n, State: "open"}}
+	first := make([]int64, 100)
+	for i := range first {
+		first[i] = int64(101 + i)
 	}
+	h := &pollHintsHarness{f: f, unseenBatches: [][]int64{first, {201}, nil}}
 	h.install()
 	r := h.remote()
 	pull := r.pull
@@ -304,9 +290,16 @@ func TestPollHintDoesNotExtendDynamicAbsenceTraversal(t *testing.T) {
 	if err := f.run(r); err != nil {
 		t.Fatal(err)
 	}
-	row := h.rows[1000]
-	if row.SeenPollID == nil || *row.SeenPollID != f.lease.Token {
-		t.Fatalf("hint publication missing poll token: %+v", row)
+	var hint *githubpr.PullRequest
+	for _, batch := range f.publications {
+		for i := range batch {
+			if batch[i].Number == 1000 {
+				hint = &batch[i]
+			}
+		}
+	}
+	if hint == nil || hint.SeenPollID == nil || *hint.SeenPollID != f.lease.Token {
+		t.Fatalf("hint publication missing poll token: %+v", hint)
 	}
 	if !reflect.DeepEqual(h.cursors, []int64{0, 200, 201}) {
 		t.Fatalf("unexpected absence batches: %v", h.cursors)
