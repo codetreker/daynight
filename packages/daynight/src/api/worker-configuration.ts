@@ -1,3 +1,4 @@
+import { parseTaskTagFilter, parseTaskTagFilterKey, type WorkerTaskTagFilter } from "./task-tag-filter.js";
 import { parseWorkerCloudToolPaths, parseToolPathsBootstrap, workerConfigurationCapabilities, type WorkerCloudToolPaths, type WorkerToolPathsBootstrap, type WorkerConfigurationCapabilityInput } from "./worker-tool-paths.js";
 import { decodeWorkerConfigurationSource } from "./worker-configuration-source.js";
 import { jsonObjectSources } from "./json-source.js";
@@ -7,7 +8,7 @@ import { array, bool, fields, id, malformed, record, timestamp } from "./validat
 
 export type WorkerCloudNative = { readonly agent: "codex" | "copilot" | "claude"; readonly model: string | null; readonly args: readonly string[] };
 export type WorkerCloudProject = { readonly projectId: string; readonly nativeOverrides: Readonly<Partial<WorkerCloudNative>> };
-export type WorkerCloudValue = { readonly enableSudoCleanup?: boolean; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly agentControlMode?: AgentControlMode | null; readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean; readonly native: WorkerCloudNative; readonly projects: readonly WorkerCloudProject[] };
+export type WorkerCloudValue = { readonly taskTagFilter?: WorkerTaskTagFilter; readonly enableSudoCleanup?: boolean; readonly toolPaths?: WorkerCloudToolPaths; readonly archiveSessions?: boolean; readonly agentControlMode?: AgentControlMode | null; readonly maxConcurrent: number; readonly pollIntervalMs: number; readonly recoveryLimit: number; readonly preferPlatformSpecificTasks: boolean; readonly native: WorkerCloudNative; readonly projects: readonly WorkerCloudProject[] };
 export type WorkerCloudDesired = { readonly revision: string; readonly updatedAt: string; readonly value: WorkerCloudValue };
 export type WorkerCloudFailure = {
   readonly code: "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "invalid_configuration" | "io_error" | "unavailable";
@@ -15,12 +16,12 @@ export type WorkerCloudFailure = {
   readonly phase: "validate" | "prepare" | "apply" | "stop" | "persist";
   readonly occurredAt: string;
 };
-export type WorkerCloudItemKey = { readonly kind: "maxConcurrent" | "pollIntervalMs" | "recoveryLimit" | "preferPlatformSpecificTasks" | "enableSudoCleanup" | "archiveSessions" | "agentControlMode" | "native" }
+export type WorkerCloudItemKey = { readonly kind: "taskTagFilter" | "maxConcurrent" | "pollIntervalMs" | "recoveryLimit" | "preferPlatformSpecificTasks" | "enableSudoCleanup" | "archiveSessions" | "agentControlMode" | "native" }
   | { readonly kind: "projectPreparation" | "projectRemoval" | "projectNative"; readonly projectId: string };
 export type WorkerCloudItem = {
   readonly key: WorkerCloudItemKey;
   readonly targetRevision: string;
-  readonly appliedValue: number | WorkerCloudNative | boolean | AgentControlMode | null;
+  readonly appliedValue: string | number | WorkerCloudNative | boolean | AgentControlMode | null;
   readonly state: "pending" | "applying" | "applied" | "error";
   readonly error: WorkerCloudFailure | null;
   readonly lastFailure: WorkerCloudFailure | null;
@@ -77,7 +78,7 @@ export const parseWorkerCloudNative = (value: unknown, limits = true): WorkerClo
 };
 export const parseWorkerCloudValue = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudValue => {
   const { controlMode, toolPaths, archiveSessions } = workerConfigurationCapabilities(options);
-  const data = exact(value, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(typeof value === "object" && value !== null && Object.hasOwn(value, "enableSudoCleanup") ? ["enableSudoCleanup"] : []), ...(controlMode ? ["agentControlMode"] : []), ...(toolPaths ? ["toolPaths"] : []), ...(archiveSessions ? ["archiveSessions"] : [])]);
+  const data = exact(value, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "preferPlatformSpecificTasks", "native", "projects", ...(typeof value === "object" && value !== null && Object.hasOwn(value, "taskTagFilter") ? ["taskTagFilter"] : []), ...(typeof value === "object" && value !== null && Object.hasOwn(value, "enableSudoCleanup") ? ["enableSudoCleanup"] : []), ...(controlMode ? ["agentControlMode"] : []), ...(toolPaths ? ["toolPaths"] : []), ...(archiveSessions ? ["archiveSessions"] : [])]);
   const seen = new Set<string>();
   const projects = boundedArray(data.projects, limits ? 128 : Infinity, value => {
     const project = exact(value, ["projectId", "nativeOverrides"]), projectId = id(project.projectId);
@@ -90,7 +91,7 @@ export const parseWorkerCloudValue = (value: unknown, limits = true, options: Wo
       ...(Object.hasOwn(overrides, "args") ? { args: nativeArgs(overrides.args, limits) } : {}),
     } };
   });
-  return { ...(Object.hasOwn(data, "enableSudoCleanup") ? { enableSudoCleanup: bool(data.enableSudoCleanup) } : {}), ...(archiveSessions ? { archiveSessions: bool(data.archiveSessions) } : {}), ...(toolPaths ? { toolPaths: parseWorkerCloudToolPaths(data.toolPaths) } : {}), ...(controlMode ? { agentControlMode: data.agentControlMode === null ? null : parseWorkerControlMode(data.agentControlMode) } : {}), maxConcurrent: scalar(data.maxConcurrent, 1, limits ? 64 : Number.MAX_SAFE_INTEGER), pollIntervalMs: scalar(data.pollIntervalMs, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0, limits ? 10 : Number.MAX_SAFE_INTEGER), preferPlatformSpecificTasks: bool(data.preferPlatformSpecificTasks), native: parseWorkerCloudNative(data.native, limits), projects };
+  return { ...(Object.hasOwn(data, "taskTagFilter") ? { taskTagFilter: parseTaskTagFilter(data.taskTagFilter) } : {}), ...(Object.hasOwn(data, "enableSudoCleanup") ? { enableSudoCleanup: bool(data.enableSudoCleanup) } : {}), ...(archiveSessions ? { archiveSessions: bool(data.archiveSessions) } : {}), ...(toolPaths ? { toolPaths: parseWorkerCloudToolPaths(data.toolPaths) } : {}), ...(controlMode ? { agentControlMode: data.agentControlMode === null ? null : parseWorkerControlMode(data.agentControlMode) } : {}), maxConcurrent: scalar(data.maxConcurrent, 1, limits ? 64 : Number.MAX_SAFE_INTEGER), pollIntervalMs: scalar(data.pollIntervalMs, limits ? 1000 : 1, limits ? 60_000 : 2_147_483_647), recoveryLimit: scalar(data.recoveryLimit, 0, limits ? 10 : Number.MAX_SAFE_INTEGER), preferPlatformSpecificTasks: bool(data.preferPlatformSpecificTasks), native: parseWorkerCloudNative(data.native, limits), projects };
 };
 export const parseWorkerCloudDesired = (value: unknown, limits = true, options: WorkerConfigurationCapabilityInput = false): WorkerCloudDesired => {
   const data = exact(value, ["revision", "updatedAt", "value"]);
@@ -114,7 +115,7 @@ export const parseWorkerCloudItem = (value: unknown, limits = true, options: Wor
     key = { kind, projectId: id(keyData.projectId) };
   } else {
     exact(keyData, ["kind"]);
-    if (kind !== "maxConcurrent" && kind !== "pollIntervalMs" && kind !== "recoveryLimit" && kind !== "preferPlatformSpecificTasks" && kind !== "enableSudoCleanup" && kind !== "native" && !(controlMode && kind === "agentControlMode") && !(archiveSessions && kind === "archiveSessions")) return malformed();
+    if (kind !== "taskTagFilter" && kind !== "maxConcurrent" && kind !== "pollIntervalMs" && kind !== "recoveryLimit" && kind !== "preferPlatformSpecificTasks" && kind !== "enableSudoCleanup" && kind !== "native" && !(controlMode && kind === "agentControlMode") && !(archiveSessions && kind === "archiveSessions")) return malformed();
     key = { kind };
   }
   const state = data.state;
@@ -123,6 +124,7 @@ export const parseWorkerCloudItem = (value: unknown, limits = true, options: Wor
   let appliedValue: WorkerCloudItem["appliedValue"] = null;
   if (data.appliedValue !== null) {
     switch (kind) {
+      case "taskTagFilter": appliedValue = parseTaskTagFilterKey(data.appliedValue); break;
       case "agentControlMode": appliedValue = parseWorkerControlMode(data.appliedValue); break;
       case "native": case "projectNative": appliedValue = parseWorkerCloudNative(data.appliedValue, limits); break;
       case "maxConcurrent": appliedValue = scalar(data.appliedValue, 1, limits ? 64 : Number.MAX_SAFE_INTEGER); break;
@@ -140,8 +142,8 @@ export const parseWorkerCloudObservation = (value: unknown, limits = true, optio
   const { controlMode, archiveSessions } = workerConfigurationCapabilities(options);
   const data = exact(value, ["baseRevision", "desiredRevision", "items"]);
   const desiredRevision = parseWorkerCloudRevision(data.desiredRevision), seen = new Set<string>();
-  const items = boundedArray(data.items, limits ? 1026 + Number(controlMode) + Number(archiveSessions) : Infinity, item => parseWorkerCloudItem(item, limits, options));
-  if (limits && items.filter(item => item.key.kind !== "agentControlMode" && item.key.kind !== "archiveSessions" && item.key.kind !== "enableSudoCleanup").length > 1025) return malformed();
+  const items = boundedArray(data.items, limits ? 1027 + Number(controlMode) + Number(archiveSessions) : Infinity, item => parseWorkerCloudItem(item, limits, options));
+  if (limits && items.filter(item => item.key.kind !== "agentControlMode" && item.key.kind !== "archiveSessions" && item.key.kind !== "enableSudoCleanup" && item.key.kind !== "taskTagFilter").length > 1025) return malformed();
   for (const item of items) {
     const key = `${item.key.kind}:${"projectId" in item.key ? item.key.projectId : ""}`;
     if (seen.has(key) || BigInt(item.targetRevision) > BigInt(desiredRevision)) return malformed();

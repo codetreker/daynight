@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { WorkerTaskTagFilter } from "../../api/task-tag-filter.js";
 import { receiveWorkerDesired, parseWorkerCloudDesired, desiredCapabilitySources } from "../../api/worker-configuration.js";
 import { ProtocolError } from "../../api/validation.js";
 import type { ReceivedWorkerDesired, WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
@@ -23,7 +24,7 @@ export type TrackedConfigurationItem = {
   readonly blockedByRemovalId: string | null;
 };
 export type WorkerConfigurationCache = {
-  readonly schemaVersion: 10;
+  readonly schemaVersion: 11;
   readonly identity: WorkerConfigurationIdentity;
   readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string; readonly pendingApplication: boolean };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;
@@ -52,6 +53,8 @@ export type WorkerConfigurationSnapshot = {
     readonly recoveryLimit: number | null;
     readonly preferPlatformSpecificTasks: boolean | null;
     readonly archiveSessions: boolean | null;
+    readonly taskTagFilter: WorkerTaskTagFilter | null | undefined;
+    readonly taskTagFilterKey: string | null | undefined;
     readonly native: WorkerCloudNative | null;
     readonly projects: readonly { readonly projectId: string; readonly native: WorkerCloudNative | null; readonly ready: boolean }[];
   };
