@@ -16,6 +16,7 @@ import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
 import { openSessionContent, type SessionContent } from "./content/session-content.js";
+import type { TimelineContentPolicy } from "./content/timeline-store.js";
 import { assertNoOrphanTimelineSource } from "./content/migration.js";
 import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, sqliteDatabaseIsMissing, sqliteTransactionOutcome, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
@@ -187,19 +188,27 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   let closed = false;
   let mediaInstance: ControllerMediaStore | undefined;
   const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, sessionContent.resourceFiles, { read, write: atomic }, getSnapshot, options.imageDecoder); };
-  const projectTimeline = (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
+  const preserveTimelineAssociations = <T extends SourceTimelineEntry>(input: T): T => {
+    let entry = input;
     const source = db.prepare("SELECT origin FROM input_message_origins WHERE entry_id=?").get(entry.entryId) as { origin: "user" | "daynight" } | undefined;
     if (source) {
       if (entry.kind !== "user_message" || entry.origin !== undefined && entry.origin !== source.origin) throw new Error("Timeline update changed its original input origin.");
       entry = { ...entry, origin: source.origin };
     }
-    const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
-    void ignored; void ignoredSequence;
     const originals = db.prepare("SELECT i.image_id,i.resource_id,i.part_index FROM native_input_publication_images i JOIN native_input_publications p ON p.operation_id=i.operation_id WHERE json_extract(p.value,'$.receipt.identity.entryId')=?").all(entry.entryId) as { image_id: string; resource_id: string; part_index: number }[];
     for (const original of originals) {
       const part = entry.kind === "user_message" ? entry.content[original.part_index] : undefined;
       if (!part || part.type !== "image" && part.type !== "image_unavailable" || part.imageId !== original.image_id || part.type === "image" && part.resourceId !== original.resource_id) throw new Error("Timeline update cannot move or replace a committed original image association.");
     }
+    return entry;
+  };
+  // Identity and online publication belong to the caller. Excluded history must
+  // not allocate source sequences or acknowledge operations on its behalf.
+  const saveTimelineHistory = (entry: TimelineEntry, policy: TimelineContentPolicy) => atomic(() => sessionContent.timeline.save(preserveTimelineAssociations(entry), policy));
+  const projectTimeline = (input: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
+    const entry = preserveTimelineAssociations(input);
+    const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
+    void ignored; void ignoredSequence;
     const contentHash = controllerPayloadHash(content);
     const previous = sessionContent.timeline.get(entry.entryId);
     const previousContent = previous ? (({ revision, entrySeq, ...value }) => { void revision; void entrySeq; return value; })(previous) : null;
@@ -209,7 +218,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
     parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
     const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
-    sessionContent.timeline.save(durableEntry);
+    // The existing relay rebuilds tools and approvals from this complete source.
+    // Body-only activation requires its independent online state first.
+    saveTimelineHistory(durableEntry, "legacy");
     return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
   });
   const associateInputMessage = (operationId: string, nativeSessionId: string, entryId: string): string => atomic(() => {
@@ -353,6 +364,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     hasTimelineEntry: (entryId: string): boolean => read(() => sessionContent.timeline.has(entryId)),
     getTimelineEntry: (entryId: string): TimelineEntry | undefined => read(() => sessionContent.timeline.get(entryId)),
     projectTimeline,
+    saveTimelineHistory,
     associateInputMessage,
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload"> & { intent?: SessionCommand }): ControllerOperation => atomic(() => {
       if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("Controller operation ID must be a UUID.");

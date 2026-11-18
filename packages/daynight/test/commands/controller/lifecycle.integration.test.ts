@@ -11,6 +11,7 @@ import { validateControllerLocalRequest } from "../../../src/commands/controller
 import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
+import type { TimelineEntry } from "../../../src/session/protocol.js";
 const roots: string[] = [];
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -35,6 +36,34 @@ const fixture = async () => {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "worker-managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   return { home, ticket };
 };
+it("keeps explicit body-history writes independent of pending operations and source acknowledgements", async () => {
+  const { home, ticket } = await fixture(), file = path.join(home, "state.sqlite");
+  let store = openControllerLifecycleStore(file, ticket);
+  const operationId = randomUUID();
+  const body: TimelineEntry = { entryId: randomUUID(), entrySeq: "2", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Run `echo hello`\nstdout: hello" }] };
+  const tool: TimelineEntry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "tool_call", callId: "tool-1", name: "shell", status: "completed", truncated: false, input: "echo hello", output: [{ type: "text", text: "hello" }] };
+  try {
+    store.prepareOperation({ operationId, kind: "send_message", payload: { text: "request" } });
+    store.markDispatching(operationId);
+    store.appendEvent({ kind: "state", payload: { marker: "pending" } });
+    const source = store.getHistorySource();
+    expect(store.saveTimelineHistory(tool, "task_body")).toMatchObject({ status: "excluded", contentPolicy: "task_body" });
+    expect(store.saveTimelineHistory(body, "task_body")).toMatchObject({ status: "saved", contentPolicy: "task_body" });
+    expect(store.getTimelineEntry(tool.entryId)).toBeUndefined();
+    expect(store.getTimelineEntry(body.entryId)).toEqual(body);
+    expect(store.getOperation(operationId)?.state).toBe("dispatching");
+    expect(store.getHistorySource()).toEqual(source);
+    expect(store.pendingEvents()).toHaveLength(1);
+    store.close();
+    store = openControllerLifecycleStore(file, ticket);
+    expect(store.getTimelineEntry(body.entryId)).toEqual(body);
+    expect(store.getTimelineEntry(tool.entryId)).toBeUndefined();
+    expect(store.getOperation(operationId)?.state).toBe("dispatching");
+    store.acknowledgeEvents("1");
+    expect(store.getTimelineEntry(body.entryId)).toEqual(body);
+    expect(store.getOperation(operationId)?.state).toBe("dispatching");
+  } finally { store.close(); }
+});
 it("retains unknown dispatch and committed events across restart without replaying the operation", async () => {
   const { home, ticket } = await fixture();
   const directory = controllerExecutionDirectory(home, ticket.executionId); await mkdir(directory, { recursive: true });
@@ -244,6 +273,11 @@ it.each(["user", "daynight"] as const)("retains %s message origins through recei
     store.markDispatching(conflictingOperation);
     expect(() => store.associateInputMessage(conflictingOperation, nativeSessionId, entry.entryId)).toThrow(/conflicts/);
     expect(() => store.associateInputMessage(operationId, "another-native-session", entry.entryId)).toThrow(/identity/);
+    const saved = store.getTimelineEntry(entry.entryId)!;
+    expect(() => store.saveTimelineHistory({ ...entry, entrySeq: saved.entrySeq, revision: "3", origin: origin === "user" ? "daynight" : "user" }, "task_body")).toThrow(/original input origin/);
+    expect(store.getTimelineEntry(entry.entryId)).toEqual(saved);
+    expect(store.saveTimelineHistory({ ...entry, entrySeq: saved.entrySeq, revision: "3" }, "task_body").status).toBe("saved");
+    expect(store.getTimelineEntry(entry.entryId)).toMatchObject({ origin, revision: "3" });
     expect(store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 10 }).items).toEqual(expect.arrayContaining([expect.objectContaining({ entryId: entry.entryId, origin })]));
   } finally { store.close(); }
 });
