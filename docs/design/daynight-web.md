@@ -144,6 +144,8 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 `api/worker-configuration.ts` 复用同源客户端、no-store、取消、401、requestId 和 principal 准入，独立解析配置响应，严格校验已知目标、观测与错误，并保留未知目标和观测源文本。每个响应在解析和资源错误处理前先核对当前账号。目标与观测版本保留规范十进制字符串，不经 Number 转换。数据含义及合法范围由[配置协议](../spec/daynight-worker-configuration.md)拥有，响应正文不增加 supported 或 Task 字段；客户端要求 Daynight-Worker-Tool-Paths: 2 回显，并独立保存 Daynight-Worker-Archive-Sessions: 1 能力。旧模式和第三工具只作为原始目标可见，完整保存候选明确移除它们。
 
+已初始化配置的手动刷新按钮位于首个“运行设置”面板的标题行，与标题左右对齐；配置页顶部不设独占刷新行。按钮使用 `type="button"`，沿用 `state.refresh`，在读取准入暂停、刷新中或保存期间禁用，并显示现有刷新中标签。原始配置响应的折叠入口及能力投影说明保留在面板前，正常与冲突提示维持各自顺序和内容宽度。手动刷新只读取配置，保留草稿、非法输入原文和原文展开状态；后台读取保持已显示内容。首载、未初始化、不可用及失败的独立状态入口沿用各自重试或刷新行为。
+
 `configuration/model.ts` 拥有表单投影、校验、逐字段覆盖和结果派生。表单不编辑模式或第三工具；旧字段在原始目标中保留，用户明确保存完整候选时才移除。preferPlatformSpecificTasks 独立保存为布尔草稿，由运行设置中的原生 checkbox 编辑，不混入数值输入。开关修改参与同一 dirty、保存和取消流程，逐项反馈明确处理 true、false 与 null，并计入整体应用结果；`useWorkerConfiguration` 拥有当前资源、编辑基线、原始草稿、提交快照及读取/保存状态。有效配置值与输入原文分别保存，使非法整数或 JSON 仍能完整显示。Agent/model/args 按同一 native 元组构造提交，项目覆盖仅输出显式拥有的字段；换 Agent 后的适用默认值是展示推导，不能把继承意图展开写回服务端。默认及项目配置的选择字段采用 [NativeSelect](native-select.md) 的 `form`/`fill` 变体；公共层统一 38px 高度、箭头、文字留白、焦点和禁用外观，配置网格仅拥有外部布局。label、描述、联动字段关联与原生事件保留，长选项的完整文本仍在选项中。字段及保存的详细机制由[Worker 配置设计](daynight-worker-configuration.md#web-字段与保存)拥有。
 
 归档 Session 控件复用运行设置的 checkbox、帮助与应用反馈；服务能力和最新观察项分别决定目标可用性和 Worker 编辑资格，落后目标版本的观察仍证明支持。已保存目标、未提交草稿及实际观察分开保存；不支持时保留已有草稿和目标，保存其他设置不覆盖归档值。详细合同由[Worker 配置需求](../spec/daynight-worker-configuration.md#web-消费者)拥有。
