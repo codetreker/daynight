@@ -36,7 +36,11 @@ func RegisterProjectWebhookRoute(mux *http.ServeMux, secrets store.GitHubProject
 	}
 	h := &projectWebhookHandler{secrets: secrets, receiver: receiver, logger: logger, budget: webhookBudget}
 	mux.HandleFunc("POST /api/v1/github/projects/{projectId}/webhook", h.receive)
-	mux.HandleFunc("/api/v1/github/projects/{projectId}/webhook", httpx.MethodNotAllowed(logger, "POST"))
+	methodNotAllowed := httpx.MethodNotAllowed(logger, "POST")
+	mux.HandleFunc("/api/v1/github/projects/{projectId}/webhook", func(w http.ResponseWriter, r *http.Request) {
+		httpx.CloseUnreadBody(w, r)
+		methodNotAllowed(w, r)
+	})
 }
 
 func (h *projectWebhookHandler) receive(w http.ResponseWriter, r *http.Request) {
