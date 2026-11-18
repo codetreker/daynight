@@ -2052,7 +2052,13 @@ The explicit `integration` build tag keeps these flows outside ordinary unit
 test discovery. The runner selects `TestServerAPINormalFlows`,
 `TestServerAPISessionNormalFlow` and `TestServerAPICredentialUsageNormalFlow`;
 each test owns its real Server process, UniAuth gateway, login, PAT and isolated
-resources. Task groups run sequentially with separate projects: lifecycle,
+resources. The fixture holds its public loopback listener before starting the
+gateway and proxies it to the Server's ephemeral listener only after direct
+readiness succeeds. The public origin and gateway callback remain stable across
+Server restarts; the proxy withdraws the old backend before shutdown and keeps
+the listener until fixture cleanup. The
+[fixture decision](../../.agents/notes/implemented/testing/2026-11-18-api-integration-public-listener.md)
+records the trade-offs. Task groups run sequentially with separate projects: lifecycle,
 search pagination and dependency graph, property and Sync readback, Step
 operations, Thread replies, Attachment bytes, personal Worker prompt
 synchronization, and Worker claim/Agent discussion.
