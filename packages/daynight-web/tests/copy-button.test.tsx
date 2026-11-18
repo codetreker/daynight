@@ -30,3 +30,28 @@ describe('shared copy button', () => {
     expect(button).toHaveFocus();
   });
 });
+
+it('isolates pending and completed copies across value generations and permits retry', async () => {
+  const { act } = await import('@testing-library/react');
+  const { ValueCopyButton } = await import('../src/ui/copy-button/ValueCopyButton');
+  let finish!: () => void;
+  const writeText = vi.fn().mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; }))
+    .mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('denied')).mockResolvedValueOnce(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const button = (value: string) => <ValueCopyButton value={value} label="Copy link" copiedLabel="Copied" focusablePending feedback={state => <span data-testid="state">{state}</span>} />;
+  const view = render(button('A'));
+  const copy = screen.getByRole('button', { name: 'Copy link' });
+  copy.focus(); fireEvent.click(copy); fireEvent.click(copy);
+  expect(writeText).toHaveBeenCalledTimes(1); expect(copy).toHaveAttribute('aria-disabled', 'true'); expect(copy).toHaveFocus();
+  view.rerender(button('B')); view.rerender(button('A'));
+  expect(screen.getByTestId('state')).toHaveTextContent('idle');
+  await act(async () => finish());
+  expect(screen.getByTestId('state')).toHaveTextContent('idle');
+  fireEvent.click(copy); await screen.findByText('Copied');
+  view.rerender(button('B')); view.rerender(button('A'));
+  expect(screen.getByTestId('state')).toHaveTextContent('idle');
+  fireEvent.click(copy); await screen.findByText('failed');
+  fireEvent.click(copy); await screen.findByText('Copied');
+  expect(writeText).toHaveBeenCalledTimes(4);
+  view.unmount(); vi.unstubAllGlobals();
+});
