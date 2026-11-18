@@ -1822,6 +1822,13 @@ PostgreSQL tests retain persisted grant updates, visibility after removal,
 concurrent writers, and rollback. The [Project grant actor decision](../../.agents/notes/implemented/testing/2026-11-18-project-grant-actor-tests.md)
 records the proof boundary.
 
+Project creation and member read tests use controlled principals and scopes
+to check exact request forwarding, creation results, and errors before or
+during a callback. Store tests retain real PAT authentication, creator grant
+insertion and rollback, and SQL filtering before pagination. The
+[Project member fixture decision](../../.agents/notes/implemented/testing/2026-11-18-project-member-creation-tests.md)
+records the proof boundary.
+
 Project transfer tests use controlled scopes for preflight, cancellation,
 missing targets and exhausted versions. They execute the real transfer rules,
 including confirmed same-team saves at the version limit. Real PostgreSQL
