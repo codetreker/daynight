@@ -1795,6 +1795,27 @@ mocked outcomes cannot establish them. The
 [Runtime test boundary decision](../../.agents/notes/implemented/testing/2026-11-09-bot-runtime-service-test-boundary.md)
 records the operation bindings and proof ownership.
 
+### GitHub App grant HTTP tests
+
+The five physical grant scenarios run sequentially under
+`TestGrantAdapterPostgres`. They share one isolated PostgreSQL schema and pool,
+with independent callers, App and Team resources, grant IDs and external
+GitHub App IDs. The real routes, GrantManager and PostgreSQL operations retain
+the grant lifecycle, personal owner projection and post-location Team
+deletion cases.
+
+With `DAYNIGHT_TEST_DATABASE_URL` set to an isolated PostgreSQL database, run:
+
+```bash
+source scripts/env.sh
+go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestGrantAdapter(Postgres|DatabaseFailure)$' ./internal/server/github
+```
+
+`TestGrantAdapterDatabaseFailure` can also run without PostgreSQL because
+the grant read returns explicit failures to the real Manager.
+[GitHub App grant fixture decision](../../.agents/notes/implemented/testing/2026-11-18-github-grant-http-fixtures.md)
+
 ### Team service tests
 
 The `internal/service/team` suite executes Team scope callbacks, completion
