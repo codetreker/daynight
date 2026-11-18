@@ -4,6 +4,7 @@ import type { ComponentProps } from 'react';
 vi.mock('../src/app/router', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/app/router')>(),
   taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+  buildGoalGraphUrl: (projectId: string, goalId: string) => `http://localhost/projects/${projectId}?tab=tasks&goalGraph=${goalId}`,
 }));
 import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';

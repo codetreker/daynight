@@ -3189,8 +3189,9 @@ test.describe('Goal compact graph on touch screens', () => {
   });
 });
 
-for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal overview graph preserves reading and keyboard focus at ${width}px in ${locale}`, async ({ page }, info) => {
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal overview graph preserves reading and keyboard focus at ${width}px in ${locale}`, async ({ page, context }, info) => {
   await page.setViewportSize({ width, height: 800 });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const fixture = await install(page, locale); fixture.addGoalInspectionGraph();
   const title = 'Long Goal 长标题 '.repeat(16).trim(); fixture.setGoalTitle(title);
   await page.goto(`/projects/${projectId}`);
@@ -3254,12 +3255,25 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     await expectHit(goalDetails);
     const layout = await dialog.evaluate(element => {
       const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-      const header = box('.task-chain-header'), heading = box('.task-chain-heading'), close = box('.task-chain-close'), details = box('.goal-graph-header-actions .button'), toolbar = box('.graph-toolbar');
-      return { belowClose: details.top >= close.bottom, aboveToolbar: details.bottom <= toolbar.top, rightOfHeading: details.left >= heading.right,
+      const header = box('.task-chain-header'), heading = box('.task-chain-heading'), close = box('.task-chain-close'), details = box('.goal-graph-header-actions .button'), copy = box('.goal-graph-copy'), toolbar = box('.graph-toolbar');
+      return { belowClose: details.top >= close.bottom, aboveToolbar: details.bottom <= toolbar.top, rightOfHeading: details.left >= heading.right || details.top >= heading.bottom, copyBeforeDetails: copy.right <= details.left, sameRow: copy.top === details.top || Math.abs(copy.top - details.top) < 5,
         insideHeader: details.left >= header.left && details.right <= header.right && details.top >= header.top && details.bottom <= header.bottom,
         noOverflow: element.scrollWidth <= element.clientWidth && document.documentElement.scrollWidth <= innerWidth };
     });
-    expect(layout).toEqual({ belowClose: true, aboveToolbar: true, rightOfHeading: true, insideHeader: true, noOverflow: true });
+    expect(layout).toEqual({ belowClose: true, aboveToolbar: true, rightOfHeading: true, copyBeforeDetails: true, sameRow: true, insideHeader: true, noOverflow: true });
+    const copy = dialog.getByRole('button', { name: locale === 'en' ? 'Copy link' : '复制链接', exact: true });
+    const beforeCopy = await viewport.getAttribute('style');
+    if (fullscreen) { await copy.focus(); await page.keyboard.press('Enter'); } else await copy.click();
+    await expect(copy).toBeFocused();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`${new URL(page.url()).origin}/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+    await expect(copy).toHaveText(locale === 'en' ? 'Copied' : '已复制');
+    await expect(viewport).toHaveAttribute('style', beforeCopy!);
+    await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
+    if (!fullscreen && width === 1440 && locale === 'en') {
+      const target = await page.evaluate(() => navigator.clipboard.readText());
+      const recipient = await context.newPage(); const recipientFixture = await install(recipient, locale); recipientFixture.addGoalInspectionGraph(); recipientFixture.setGoalTitle(title); await recipient.goto(target);
+      await expect(recipient.locator(`#task-graph-${goalId}`)).toBeVisible(); await recipient.close();
+    }
     await dialog.getByRole('button', { name: locale === 'en' ? 'Zoom in' : '放大', exact: true }).click();
     const transform = await viewport.getAttribute('style');
     const nodePositions = await positions();
@@ -3664,4 +3678,67 @@ test('shares the ordinary chain inside a Goal using its readable member', async 
   await expect(page.locator('.task-chain-dialog .react-flow__node')).toHaveCount(2);
   await expect(page).toHaveURL(`${new URL(target).origin}/projects/${projectId}?tab=tasks`);
   expect(state.statusWrites()).toEqual([]); expect(state.edits()).toEqual([]);
+});
+
+test('Goal graph copy retries and retires pending and settled results across A to B to A', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const fixture = await install(page); fixture.addExternalGoalChain();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const open = async (id: string) => { await page.locator(`#project-goal-graph-${id}`).click(); await expect(page.locator(`#task-graph-${id}`)).toBeVisible(); };
+  const close = async () => { await page.keyboard.press('Escape'); await expect(page.locator('.task-chain-dialog')).toHaveCount(0); };
+  const graph = (id: string) => page.locator(`#task-graph-${id}`);
+  const copy = (id: string) => graph(id).getByRole('button', { name: 'Copy link', exact: true });
+  await open(goalId);
+  await page.evaluate(() => {
+    const state = window as typeof window & { releaseCopy?: () => void; writes?: number };
+    state.writes = 0;
+    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => { state.writes!++; return new Promise<void>(resolve => { state.releaseCopy = resolve; }); } });
+  });
+  await copy(goalId).focus(); await page.keyboard.press('Enter'); await page.keyboard.press('Enter');
+  await expect(copy(goalId)).toHaveAttribute('aria-disabled', 'true'); await expect(copy(goalId)).toBeFocused();
+  expect(await page.evaluate(() => (window as typeof window & { writes: number }).writes)).toBe(1);
+  await close(); await open(otherGoalId); await close(); await open(goalId);
+  await page.evaluate(() => (window as typeof window & { releaseCopy: () => void }).releaseCopy());
+  await expect(copy(goalId)).toHaveText('Copy link'); await expect(copy(goalId)).not.toHaveAttribute('aria-disabled', 'true');
+  await page.evaluate(() => { delete (navigator.clipboard as unknown as { writeText?: unknown }).writeText; });
+  await copy(goalId).click(); await expect(copy(goalId)).toHaveText('Copied');
+  await close(); await open(otherGoalId); await close(); await open(goalId);
+  await expect(copy(goalId)).toHaveText('Copy link');
+  await page.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) }); });
+  const canvas = graph(goalId).locator('.task-graph-canvas'); const before = await canvas.boundingBox();
+  await copy(goalId).click();
+  await expect(graph(goalId).getByRole('alert')).toHaveText('Could not copy the link. Try again.');
+  await expect(copy(goalId)).toBeFocused(); expect(await canvas.boundingBox()).toEqual(before);
+  await page.evaluate(() => { delete (navigator.clipboard as unknown as { writeText?: unknown }).writeText; });
+  await copy(goalId).click(); await expect(copy(goalId)).toHaveText('Copied');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`http://127.0.0.1:4209/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+});
+
+test('readable empty Goal graph copies its link', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const fixture = await install(page); fixture.emptyGoal();
+  await page.goto(`/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  const dialog = page.locator(`#task-graph-${goalId}`);
+  await expect(dialog).toBeVisible(); await expect(dialog.locator('.task-node')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Copy link', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`http://127.0.0.1:4209/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  expect(fixture.edits()).toEqual([]); expect(fixture.statusWrites()).toEqual([]);
+});
+
+test('Goal graph account refresh notice stays reachable on a narrow screen', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await install(page);
+  await page.goto(`/projects/${projectId}?tab=tasks&goalGraph=${goalId}`);
+  const dialog = page.locator(`#task-graph-${goalId}`); await expect(dialog).toBeVisible();
+  await page.evaluate(() => { localStorage.setItem('daynight.activeUser', JSON.stringify('00000000-0000-4000-8000-000000000999')); window.dispatchEvent(new Event('focus')); });
+  const notice = dialog.locator('.account-refresh-notice');
+  await expect(notice.getByText('Account changed', { exact: true })).toBeVisible();
+  await expect(notice.getByRole('button', { name: 'Refresh page' })).toBeVisible();
+  const fits = await notice.evaluate(element => {
+    const noticeBox = element.getBoundingClientRect(), header = element.parentElement!.getBoundingClientRect();
+    return noticeBox.left >= header.left && noticeBox.right <= header.right && element.scrollWidth <= element.clientWidth;
+  });
+  expect(fits).toBe(true);
 });

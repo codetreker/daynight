@@ -34,8 +34,8 @@ The Goal graph header also opens its own Goal through a secondary Goal details
 button below the close control. It passes the actual button and Goal ID through
 the existing graph reader, retaining the graph witness, overlay owner, browser
 history and focus return target. The same header is used in normal and fullscreen
-modes; a separate action column keeps both controls reachable beside a wrapping
-title. Empty Goals and retained graphs with refresh errors use the same action.
+modes; the [Goal graph copy decision](2026-11-18-goal-graph-copy.md) adds a
+responsive action row beside or below the wrapping title. Empty Goals and retained graphs with refresh errors use the same action.
 Ordinary chains and embedded graphs keep their existing entrances.
 
 The [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
