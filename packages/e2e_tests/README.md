@@ -86,6 +86,8 @@ do not start a Worker process. A registered Worker's monitoring read returns an
 absent observation through the real Redis-backed Server. Separately, a real
 compiled Worker with no selected Projects reports to that Server and Redis; the
 production Web reads the same Worker's observation, capacity and timestamps.
+The journey correlates the rendered timestamps with a completed browser response;
+failed requests and unavailable bodies remain in bounded failure diagnostics.
 That Worker also keeps reporting while the Web sets a Chinese display alias,
 reloads it, observes a later report without losing it, modifies it and explicitly
 clears it. List/detail readback verifies the same stable Worker and machine IDs.
@@ -199,12 +201,13 @@ Dependency caches can accelerate preparation, but every invocation still builds
 and runs the current checkout. The [test-writing rules](../../docs/writing_tests.md)
 define the distinction between module, API integration and product E2E tests.
 
-The separate provider navigation validation exercises controlled TLS and HTTP
-stalls, CONNECT head handling and connection reuse with the real local provider
-and Chromium. It is not part of the normal product journey or CI harness:
+The separate browser validations exercise controlled TLS and HTTP stalls, CONNECT
+head handling, connection reuse and monitoring response cancellation with real
+Chromium. They are not part of the normal product journey or CI harness:
 
 ```bash
 node --test packages/e2e_tests/validation/provider-navigation.test.mjs
+node --test packages/e2e_tests/validation/worker-monitoring-response.test.mjs
 ```
 
 ## Results and cleanup
