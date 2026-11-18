@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, projectSectionUrl, replaceRoute, taskDetailUrl } from "../src/app/router";
+import { buildTaskChainUrl, invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, parseTaskChainUrl, projectSectionUrl, replaceRoute, taskDetailUrl } from "../src/app/router";
 import { browserNavigation } from '../src/app/navigation';
 import { projectSettingsUrl, type ProjectSettingsTab } from '../src/app/project-settings-route';
 
@@ -9,6 +9,20 @@ const projectId = "a0000000-0000-0000-0000-000000000001";
 afterEach(() => window.history.replaceState(null, "", "/"));
 
 describe("route parsing", () => {
+  it("builds a same-origin chain link and accepts exactly one canonical query witness on the tasks tab", () => {
+    const url = new URL(buildTaskChainUrl(projectId, taskId));
+    expect(url.origin).toBe(window.location.origin);
+    expect(url.pathname + url.search).toBe(`/projects/${projectId}?tab=tasks&chain=${taskId}`);
+    expect(parseTaskChainUrl(url.pathname, url.search)).toEqual({ kind: 'chain', taskId });
+    expect(isLoginReturnPath(url.pathname + url.search)).toBe(true);
+    for (const search of ['?tab=tasks&chain=bad', `?tab=tasks&chain=${taskId}&chain=${taskId}`, `?tab=tasks&chain=${taskId.toUpperCase()}`]) {
+      expect(parseTaskChainUrl(url.pathname, search)).toEqual({ kind: 'invalid' });
+    }
+    expect(parseTaskChainUrl(url.pathname, `?tab=prs&chain=${taskId}`)).toEqual({ kind: 'none' });
+    expect(parseTaskChainUrl(`${url.pathname}/tasks/${taskId}`, `?tab=tasks&chain=${taskId}`)).toEqual({ kind: 'none' });
+    expect(() => buildTaskChainUrl('bad', taskId)).toThrow();
+    expect(() => buildTaskChainUrl(projectId, 'bad')).toThrow();
+  });
   it("maps the project list and canonicalizes decoded UUIDs", () => {
     expect(parseRoute("/projects")).toEqual({ kind: "projects" });
     expect(parseRoute("/")).toEqual({ kind: "notFound" });

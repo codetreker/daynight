@@ -54,5 +54,6 @@ Each outer section has a durable shareable address without serializing drafts or
 resource data. URL and history must be committed as one admitted choice, and a
 conflicting stored reading cannot restore a different section. Preferences remain
 useful for bare entry, while native links and a stable workspace preserve browser
-and in-session interactions. Nested selections remain limited to their existing
-history and resource lifetimes rather than becoming reloadable URLs.
+and in-session interactions. Nested selections retain their existing history and resource lifetimes. Ordinary
+chain links additionally provide an explicit, one-time entry as described in the
+[chain sharing decision](2026-11-18-task-chain-sharing.md).

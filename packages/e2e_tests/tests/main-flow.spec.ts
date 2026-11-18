@@ -314,4 +314,28 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await page.reload();
   await expect(page.locator(".task-claim")).toContainText("New E2E worker");
   await expect(page.locator(".task-claim")).not.toContainText("Original E2E worker");
+
+  const firstChain = await cli(["task", "create", "--project", projectId!, "--title", "Share chain root", "--status", "todo"]);
+  const chainId = firstChain.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+  expect(chainId).toBeDefined();
+  await cli(["task", "create", "--project", projectId!, "--title", "Share chain successor", "--status", "todo", "--depends-on", chainId!]);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: topology.baseURL });
+  await page.goto(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+  await page.getByRole("tab", { name: "Task chains", exact: true }).click();
+  await page.locator(`#task-chain-graph-${chainId}`).click();
+  const chain = page.locator(".task-chain-dialog");
+  await chain.getByRole("button", { name: "More task chain actions" }).click();
+  await chain.getByRole("menuitem", { name: "Copy link" }).click();
+  const shared = `${topology.baseURL}/projects/${projectId}?tab=tasks&chain=${chainId}`;
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(shared);
+  const anonymous = await page.context().browser()!.newContext({ locale: "en-US", ignoreHTTPSErrors: true, proxy: { server: topology.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" } });
+  try {
+    const reader = await anonymous.newPage();
+    await reader.goto(shared);
+    await expect(reader).toHaveURL(/\/login\?returnPath=/);
+    await reader.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
+    await reader.getByRole("button", { name: "Authorize local identity", exact: true }).click();
+    await expect(reader.locator(".task-chain-dialog .react-flow__node")).toHaveCount(2);
+    await expect(reader).toHaveURL(`${topology.baseURL}/projects/${projectId}?tab=tasks`);
+  } finally { await anonymous.close(); }
 });

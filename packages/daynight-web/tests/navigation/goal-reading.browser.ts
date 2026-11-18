@@ -3481,3 +3481,20 @@ test('touch copies an empty terminal Goal', async ({ browser }) => {
     await expect(surface.locator('.task-detail-notifications').getByRole('status')).toHaveText('Link copied');
   } finally { await context.close(); }
 });
+
+test('shares the ordinary chain inside a Goal using its readable member', async ({ page, context }) => {
+  const state = await install(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  await restoreGoalGraph(page, page.locator('.goal-detail-surface'));
+  const graphDialog = page.locator('.task-chain-dialog');
+  await graphDialog.getByRole('button', { name: 'More task chain actions' }).click();
+  await graphDialog.getByRole('menuitem', { name: 'Copy link' }).click();
+  const target = `${new URL(page.url()).origin}/projects/${projectId}?tab=tasks&chain=${firstId}`;
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target);
+  await expect(graphDialog).toBeVisible();
+  await page.goto(target);
+  await expect(page.locator('.task-chain-dialog .react-flow__node')).toHaveCount(2);
+  await expect(page).toHaveURL(`${new URL(target).origin}/projects/${projectId}?tab=tasks`);
+  expect(state.statusWrites()).toEqual([]); expect(state.edits()).toEqual([]);
+});

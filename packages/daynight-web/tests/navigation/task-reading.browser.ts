@@ -756,3 +756,42 @@ test('project section history protects a real task draft through cancellation an
   expect(await page.evaluate(id => localStorage.getItem(`daynight:project-section:${id}`), projectId)).toBe(original.preference);
   expect(state.writes).toEqual([]);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`shares an ordinary chain without changing its reading state at ${width}px in ${locale}`, async ({ page, context }) => {
+    const state = await install(page, false, true, 'A long chain title '.repeat(8));
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    await page.locator(`#task-chain-graph-${taskId}`).click();
+    const graph = page.locator('.task-chain-dialog');
+    const more = locale === 'en' ? 'More task chain actions' : '更多任务链操作';
+    const copy = locale === 'en' ? 'Copy link' : '复制链接';
+    const target = `${new URL(page.url()).origin}/projects/${projectId}?tab=tasks&chain=${taskId}`;
+    const viewport = graph.locator('.react-flow__viewport');
+    await expect(viewport).toBeVisible();
+    const before = await viewport.getAttribute('style');
+    const trigger = graph.getByRole('button', { name: more });
+    await trigger.press('ArrowDown'); await page.keyboard.press('End'); await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused(); await expect(graph).toBeVisible();
+    await trigger.click(); await graph.getByRole('menuitem', { name: copy }).click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target);
+    await expect(viewport).toHaveAttribute('style', before!);
+    await graph.getByRole('button', { name: locale === 'en' ? 'View fullscreen' : '全屏查看' }).click();
+    await trigger.click(); await graph.getByRole('menuitem', { name: copy }).click();
+    await expect(graph).toHaveClass(/task-chain-dialog-fullscreen/);
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target);
+    await page.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) }); });
+    await trigger.click(); await graph.getByRole('menuitem', { name: copy }).click();
+    await expect(graph.getByRole('alert')).toContainText(locale === 'en' ? 'Could not copy the link. Try again.' : '无法复制链接，请重试。');
+    await page.evaluate(() => { delete (navigator.clipboard as unknown as { writeText?: unknown }).writeText; });
+    await trigger.click(); await graph.getByRole('menuitem', { name: copy }).click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target);
+    const reader = await context.newPage(); await reader.goto(target);
+    await expect(reader.locator('.task-chain-dialog .react-flow__node')).toHaveCount(2);
+    await expect(reader).toHaveURL(`${new URL(target).origin}/projects/${projectId}?tab=tasks`);
+    expect(state.writes).toEqual([]); await reader.close();
+  });
+}

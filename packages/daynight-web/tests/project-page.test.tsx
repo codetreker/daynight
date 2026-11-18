@@ -182,6 +182,49 @@ describe("project dashboard", () => {
     expect(localStorage.getItem(`daynight:project-section:${projectId}`)).toBeNull();
   });
 
+  it("consumes a chain query through the current component and does not replay a competing fragment", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?other=retained&tab=tasks&chain=${B}#chain=${C}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    const view = render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
+    expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
+    expect(location.search).toBe("?other=retained&tab=tasks");
+    expect(location.hash).toBe(""); expect(history.length).toBe(length);
+    fireEvent.click(chainDialog().getByRole('button', { name: '关闭依赖图' }));
+    view.rerender(<ProjectPage projectId={projectId} />);
+    expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it.each([`chain=${X}`, 'chain=bad', `chain=${A}&chain=${B}`])("consumes an unavailable or invalid chain query %s", async query => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=tasks&other=retained&${query}`);
+    graphRequest.mockResolvedValue(graph());
+    const length = history.length;
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByText("对应的任务分组已不可见，请从任务列表选择任务。")).toBeVisible();
+    expect(location.search).toBe('?tab=tasks&other=retained'); expect(history.length).toBe(length);
+    expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it("discards a chain query when the user changes section while the index is pending", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=tasks&chain=${A}`);
+    const pending = deferred<TaskGraph>(); graphRequest.mockReturnValue(pending.promise);
+    render(<ProjectPage projectId={projectId} />);
+    fireEvent.click(sectionTabs().getByRole("tab", { name: "标签" }));
+    expect(location.search).toBe('?tab=tags');
+    await act(async () => { pending.resolve(graph()); });
+    await waitForGraph();
+    expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
+  });
+
+  it("opens the task when the query witness has become a singleton", async () => {
+    history.replaceState(null, "", `/projects/${projectId}?tab=tasks&chain=${A}`);
+    graphRequest.mockResolvedValue(graph([seeds[0]!]));
+    render(<ProjectPage projectId={projectId} />);
+    expect(await screen.findByTestId('selected-task')).toHaveTextContent(A);
+    expect(location.search).toBe('?tab=tasks');
+  });
+
   it("consumes an invalid fragment without changing the selected section", async () => {
     history.replaceState(null, "", `/projects/${projectId}?tab=prs#task=${X}`);
     graphRequest.mockResolvedValue(graph());

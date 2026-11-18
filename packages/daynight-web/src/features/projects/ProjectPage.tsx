@@ -2,7 +2,7 @@ import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { GraphTask, Project, TaskStatus } from "../../api/types";
-import { navigate } from "../../app/router";
+import { navigate, parseTaskChainUrl } from "../../app/router";
 import { browserNavigation } from "../../app/navigation";
 import { useBrowserLocation } from "../../app/browser-location";
 import { useProjectHistory } from "../../app/use-page-history";
@@ -419,7 +419,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   useEffect(() => clearTargetHighlight, [clearTargetHighlight]);
 
 
-  const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement, fromFragment = false) => {
+  const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement, fromFragment: boolean | 'chain' = false) => {
     const select: typeof history.select = (next, replace, onCommit) => history.select(next, replace, onCommit, fromFragment);
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
@@ -470,7 +470,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     else select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
   }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, setStatusFilter, tagFilter.value, tagFilter.invalid, section, saveSectionPosition, onSectionChange, onViewChange]);
 
-  const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement, fromFragment = false) => {
+  const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement, fromFragment: boolean | 'chain' = false) => {
     const select: typeof history.select = (next, replace, onCommit) => history.select(next, replace, onCommit, fromFragment);
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
@@ -572,15 +572,23 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
 
   const attemptedFragment = useRef<typeof location | null>(null);
   useEffect(() => {
-    if (navigationBusy || snapshot === null || (!location.hash.startsWith("#task=") && !location.hash.startsWith("#chain=")) || attemptedFragment.current === location) return;
+    const query = parseTaskChainUrl(location.pathname, location.search);
+    if (navigationBusy || snapshot === null || (query.kind === "none" && !location.hash.startsWith("#task=") && !location.hash.startsWith("#chain=")) || attemptedFragment.current === location) return;
+    if (query.kind !== "none" && (currentSnapshot === null || currentSnapshot.receivedAt === null || snapshot.receivedAt === null)) return;
     attemptedFragment.current = location;
+    if (query.kind !== "none") {
+      if (query.kind === "invalid" || snapshot.index.nodes.get(query.taskId)?.type !== "task") {
+        history.select(selection, true, () => setNotice({ kind: "overview-target-unavailable" }), 'chain');
+      } else onNavigateExternalChain(query.taskId, heading.current!, 'chain');
+      return;
+    }
     const chain = location.hash.startsWith("#chain=");
     const value = new URLSearchParams(location.hash.slice(1)).get(chain ? "chain" : "task");
     const id = value === null ? null : canonicalId(value);
     if (id === null || !snapshot.index.nodes.has(id)) { browserNavigation().clearFragment(); setNotice({ kind: "overview-target-unavailable" }); return; }
     if (chain) onNavigateExternalChain(id, heading.current!, true);
     else onNavigateExternalTask(id, heading.current!, true);
-  }, [snapshot, location, navigationBusy, onNavigateExternalTask, onNavigateExternalChain]);
+  }, [snapshot, currentSnapshot, location, navigationBusy, onNavigateExternalTask, onNavigateExternalChain, history.select, selection]);
 
   useLayoutEffect(() => {
     if (navigationWitness === null || snapshot === null || section !== "tasks") return;
