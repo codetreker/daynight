@@ -1894,6 +1894,11 @@ slot contention, revocation, and restart behavior. The
 [MCP download admission decision](../../.agents/notes/implemented/testing/2026-11-18-mcpdownload-admission-fixtures.md)
 records the proof boundary.
 
+Download read failure tests keep actual private files, permits and range reads
+with controlled transfer records. A failed source precheck cannot allocate a
+transfer or consume a slot. The [download failure decision](../../.agents/notes/implemented/testing/2026-11-18-mcpdownload-read-failure-fixtures.md)
+records the retained file and database witnesses.
+
 ### Attachment service and store tests
 
 The complete `internal/service/attachment` suite"

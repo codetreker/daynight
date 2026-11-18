@@ -19,17 +19,19 @@ import (
 )
 
 type admissionFixture struct {
-	t       *testing.T
-	ctx     context.Context
-	now     time.Time
-	service *Service
-	actor   mcptransfer.Actor
-	input   Input
-	pending []admissionStep
+	t         *testing.T
+	ctx       context.Context
+	permitCtx context.Context
+	now       time.Time
+	service   *Service
+	actor     mcptransfer.Actor
+	input     Input
+	pending   []admissionStep
 }
 
 type admissionStep struct {
 	name    string
+	permit  bool
 	cause   error
 	outcome store.TransactionOutcome
 	calls   []admissionDAOCall
@@ -37,11 +39,12 @@ type admissionStep struct {
 }
 
 type admissionDAOCall struct {
-	name   string
-	args   []any
-	cause  error
-	record model.PrivateTransfer
-	saved  model.PrivateTransfer
+	name          string
+	args          []any
+	cause         error
+	record        model.PrivateTransfer
+	saved         model.PrivateTransfer
+	permitRenewal bool
 }
 
 type admissionDAO struct {
@@ -67,7 +70,17 @@ func (s admissionFiles) PutTransfer(context.Context, filestorage.TransferNamespa
 	return filestorage.FileInfo{}, nil
 }
 
+type admissionStorage interface {
+	filestorage.Storage
+	filestorage.TransferStorage
+}
+
 func newAdmissionFixture(t *testing.T) *admissionFixture {
+	t.Helper()
+	return newAdmissionFixtureWithStorage(t, admissionFiles{t: t})
+}
+
+func newAdmissionFixtureWithStorage(t *testing.T, files admissionStorage) *admissionFixture {
 	t.Helper()
 	const credential = "20000000-0000-4000-8000-000000000001"
 	f := &admissionFixture{
@@ -78,7 +91,6 @@ func newAdmissionFixture(t *testing.T) *admissionFixture {
 		},
 		input: Input{ProjectID: "30000000-0000-4000-8000-000000000001", TaskID: "40000000-0000-4000-8000-000000000001", Path: "file"},
 	}
-	files := admissionFiles{t: t}
 	lifecycle, err := mcptransfer.New(f, files, files, 1<<30, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -113,10 +125,17 @@ func (f *admissionFixture) expect(steps ...admissionStep) {
 
 func (f *admissionFixture) take(ctx context.Context, name string) admissionStep {
 	f.t.Helper()
-	if ctx != f.ctx || len(f.pending) == 0 || f.pending[0].name != name {
-		f.t.Fatalf("unexpected download admission step %s: same context=%v pending=%#v", name, ctx == f.ctx, f.pending)
+	if len(f.pending) == 0 || f.pending[0].name != name {
+		f.t.Fatalf("unexpected download admission step %s: pending=%#v", name, f.pending)
 	}
 	step := f.pending[0]
+	want := f.ctx
+	if step.permit {
+		want = f.permitCtx
+	}
+	if want == nil || ctx != want {
+		f.t.Fatalf("download admission step %s changed its context", name)
+	}
 	f.pending = f.pending[1:]
 	return step
 }
@@ -178,11 +197,15 @@ func (d *admissionDAO) Authorize(ctx context.Context, principal model.Principal,
 func (d *admissionDAO) Put(ctx context.Context, record model.PrivateTransfer, version int64) (model.PrivateTransfer, error) {
 	call := d.take(ctx, "Put", record.ID, version)
 	before := call.record
-	if record.UpdatedAt.Before(before.UpdatedAt) || !record.UpdatedAt.Before(before.HardExpiresAt) {
-		d.t.Fatalf("invalid transfer renewal time: %v", record.UpdatedAt)
+	if call.permitRenewal {
+		before.ExpiresAt = call.saved.ExpiresAt
+	} else {
+		if record.UpdatedAt.Before(before.UpdatedAt) || !record.UpdatedAt.Before(before.HardExpiresAt) {
+			d.t.Fatalf("invalid transfer renewal time: %v", record.UpdatedAt)
+		}
+		before.UpdatedAt = record.UpdatedAt
+		before.ExpiresAt = minTransferDeadline(record.UpdatedAt.Add(time.Hour), before.HardExpiresAt)
 	}
-	before.UpdatedAt = record.UpdatedAt
-	before.ExpiresAt = minTransferDeadline(record.UpdatedAt.Add(time.Hour), before.HardExpiresAt)
 	if !reflect.DeepEqual(record, before) {
 		d.t.Fatalf("renewal changed transfer content or binding: got %#v want %#v", record, before)
 	}
