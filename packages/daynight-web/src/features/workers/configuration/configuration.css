@@ -133,3 +133,5 @@
   .config-save-bar .draft-summary { width: 100%; }
   .config-save-bar > .button { flex: 1; }
 }
+
+.task-tag-filter, .task-tag-target { min-width: 0; overflow-wrap: anywhere; }
