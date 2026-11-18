@@ -147,8 +147,6 @@ func TestRegisteredMemberExpiryDuringEligibilityWaitRollsBackJoin(t *testing.T) 
 	mustQueryExec(t, db, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, project, team.ID)
 	mustQueryExec(t, db, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'confirmation_required',1,now(),now())`, subscription, uuid.NewString(), project, target.ID)
 	before := authorizationReceiverRow(t, ctx, db, "webhook_subscriptions", "id", subscription)
-	expires := time.Now().UTC().Add(2 * time.Second)
-	mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, actor.CredentialID, expires)
 	holder, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -157,24 +155,14 @@ func TestRegisteredMemberExpiryDuringEligibilityWaitRollsBackJoin(t *testing.T) 
 	if _, err = holder.Exec(ctx, `SELECT id FROM webhook_subscriptions WHERE id=$1 FOR UPDATE`, subscription); err != nil {
 		t.Fatal(err)
 	}
+	expires := armMemberCredentialExpiry(t, ctx, db.Pool, "oauth_access_tokens", actor.CredentialID, 2)
 	done := make(chan error, 1)
 	go func() {
 		_, err := directMembers(db).AddExistingMember(ctx, actor, team.ID, target.ID, actor.UserID)
 		done <- err
 	}()
 	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT s.id::text,s.project_id::text", holder.Conn().PgConn().PID())
-	for {
-		var expired bool
-		if err = db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired); err != nil {
-			t.Fatal(err)
-		}
-		if expired {
-			break
-		}
-		if err = testutil.WaitThreadClock(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
+	waitForMemberCredentialExpiry(t, ctx, db.Pool, expires)
 	if err = holder.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

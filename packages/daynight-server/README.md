@@ -949,6 +949,27 @@ intent to off, so those Projects must explicitly enable it after reconnecting.
 Remove the old `github` configuration section and `DAYNIGHT_GITHUB_*` variables
 and dispose of their deployment secrets; the server no longer reads them.
 
+Before applying migration 085, stop incoming traffic and fully drain all older
+server replicas and background writers. Its one-time normalization clears the
+six mixed PR Webhook diagnostic fields and advances affected revisions; it
+preserves connection versions, generations, PRs, pending hints, claims and their
+expiry, access hints, polling schedules and `not_before`. Revision overflow or
+SQL failure rolls back that migration and its ledger entry together. Earlier
+committed migrations remain applied. Restarting after success does not clear
+new PR diagnostics again. Older writers must not resume and recreate mixed
+diagnostics.
+
+This preparation build continues receiving App pull request deliveries while
+installation access rechecks maintain independent access state and rate-limit
+schedules. Project webhook reception remains disabled. Retain the preparation
+artifact, commit and complete ordered migration/checksum list for a later
+activation build. A same-database rollback requires identical complete ledgers
+and draining the active build first; otherwise restore a verified matching
+database backup and account for writes after that backup. The
+[runtime design](../../docs/design/github-connection-runtime.md) and
+[storage design](../../docs/design/github-pr-storage.md) describe the retained
+state and the diagnostic ownership.
+
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
 bytes (0x21–0x7e), without whitespace or a required prefix. Invalid values stop
@@ -3257,6 +3278,20 @@ error code and duration; names and credentials are excluded. The
 | `GET` | `/api/v1/projects` | `200`, project page |
 | `GET` | `/api/v1/projects/{projectId}` | `200`, project |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | `200`, full project with saved settings |
+| `POST` | `/api/v1/projects/{projectId}/member-candidates/search` | `200`, registered account candidate page for effective admins |
+
+Candidate search accepts exactly required `expectedUserId,query` and optional
+`limit,cursor`. Inherited, independently granted and Personal Project admins use
+the same effective-role check; members and nonparticipants cannot read the
+directory. A read snapshot revalidates the credential and Project authority before
+the shared account query. Empty searches still authorize. Literal name/email
+matching, ASCII case folding and UUID seek pagination match Team search, while
+Project cursors bind their own resource, user, credential, normalized query and
+page size. Team cursor behavior remains unchanged. The no-store response contains
+`{items,nextCursor,actorRole:"admin"}`, with actual account IDs and nullable profile
+fields. Snapshot failures suppress results; queries, cursors and profiles stay
+out of diagnostics. The [authentication requirements](../../docs/spec/daynight-auth.md#项目管理员候选搜索)
+own exact limits and refusal behavior.
 
 Creation accepts `name`, `repoUrl`, required `expectedUserId` and optional
 `teamId`. The expected user must match the principal before domain SQL. The

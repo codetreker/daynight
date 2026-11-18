@@ -19,8 +19,8 @@ type candidateReader struct {
 	team      model.Team
 	teamErr   error
 	teamCalls int
-	queries   []store.TeamMemberCandidateQuery
-	page      store.TeamMemberCandidatePage
+	queries   []store.UserCandidateQuery
+	page      store.UserCandidatePage
 	queryErr  error
 }
 
@@ -31,7 +31,7 @@ func (d *candidateReader) Team(_ context.Context, user, id string) (model.Team, 
 	}
 	return d.team, d.teamErr
 }
-func (d *candidateReader) MemberCandidates(_ context.Context, q store.TeamMemberCandidateQuery) (store.TeamMemberCandidatePage, error) {
+func (d *candidateReader) MemberCandidates(_ context.Context, q store.UserCandidateQuery) (store.UserCandidatePage, error) {
 	d.queries = append(d.queries, q)
 	return d.page, d.queryErr
 }
@@ -77,14 +77,14 @@ func TestCandidateSearchAdmissionAndTraversal(t *testing.T) {
 	team := namedTeam(p)
 	team.ID = id
 	firstID, secondID := uuid.NewString(), uuid.NewString()
-	reader := &candidateReader{team: team, page: store.TeamMemberCandidatePage{Items: []model.TeamMemberCandidate{{UserID: firstID}}, HasMore: true}}
+	reader := &candidateReader{team: team, page: store.UserCandidatePage{Items: []model.UserCandidate{{UserID: firstID}}, HasMore: true}}
 	input := CandidateSearchInput{ExpectedUserID: p.UserID, Query: "  AbC "}
 	_, search, err := ValidateCandidateSearch(p, id, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := SearchMemberCandidates(t.Context(), reader, p, id, search)
-	if err != nil || page.NextCursor == nil || !reflect.DeepEqual(reader.queries, []store.TeamMemberCandidateQuery{{Query: "abc", Limit: 20}}) {
+	page, err := SearchMemberCandidates(t.Context(), reader, reader, p, id, search)
+	if err != nil || page.NextCursor == nil || !reflect.DeepEqual(reader.queries, []store.UserCandidateQuery{{Query: "abc", Limit: 20}}) {
 		t.Fatalf("first page %+v queries %+v err %v", page, reader.queries, err)
 	}
 	input.Cursor = page.NextCursor
@@ -92,8 +92,8 @@ func TestCandidateSearchAdmissionAndTraversal(t *testing.T) {
 	if err != nil || second.afterID == nil || *second.afterID != firstID {
 		t.Fatalf("cursor %+v %v", second, err)
 	}
-	reader.page = store.TeamMemberCandidatePage{Items: []model.TeamMemberCandidate{{UserID: secondID}}}
-	page, err = SearchMemberCandidates(t.Context(), reader, p, id, second)
+	reader.page = store.UserCandidatePage{Items: []model.UserCandidate{{UserID: secondID}}}
+	page, err = SearchMemberCandidates(t.Context(), reader, reader, p, id, second)
 	if err != nil || page.NextCursor != nil || len(page.Items) != 1 || page.Items[0].UserID != secondID || reader.teamCalls != 2 {
 		t.Fatalf("second page %+v %v", page, err)
 	}
@@ -119,24 +119,24 @@ func TestCandidateSearchAdmissionAndTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader.queries = nil
-	page, err = SearchMemberCandidates(t.Context(), reader, p, id, empty)
+	page, err = SearchMemberCandidates(t.Context(), reader, reader, p, id, empty)
 	if err != nil || page.Items == nil || len(page.Items) != 0 || len(reader.queries) != 0 {
 		t.Fatalf("blank page %+v queries %+v %v", page, reader.queries, err)
 	}
 	reader.team.Membership.Role = model.ProjectMemberRole
-	_, err = SearchMemberCandidates(t.Context(), reader, p, id, search)
+	_, err = SearchMemberCandidates(t.Context(), reader, reader, p, id, search)
 	faultCode(t, err, "forbidden")
 	reader.team.Membership.Role = model.ProjectAdmin
 	reader.team.Kind = "personal"
-	_, err = SearchMemberCandidates(t.Context(), reader, p, id, search)
+	_, err = SearchMemberCandidates(t.Context(), reader, reader, p, id, search)
 	faultCode(t, err, "personal_team_immutable")
 	reader.teamErr = model.ErrNotFound
-	_, err = SearchMemberCandidates(t.Context(), reader, p, id, search)
+	_, err = SearchMemberCandidates(t.Context(), reader, reader, p, id, search)
 	faultCode(t, err, "not_found")
 	reader.teamErr = nil
 	reader.team.Kind = "ordinary"
 	reader.queryErr = errors.New("store error")
-	_, err = SearchMemberCandidates(t.Context(), reader, p, id, search)
+	_, err = SearchMemberCandidates(t.Context(), reader, reader, p, id, search)
 	if !errors.Is(err, reader.queryErr) {
 		t.Fatalf("lost error: %v", err)
 	}

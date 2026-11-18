@@ -13,10 +13,10 @@ import (
 
 type existingMemberDAO struct {
 	directMemberDAO
-	candidate func(context.Context, string) (model.TeamMemberCandidate, error)
+	candidate func(context.Context, string) (model.UserCandidate, error)
 }
 
-func (d existingMemberDAO) MemberCandidate(ctx context.Context, id string) (model.TeamMemberCandidate, error) {
+func (d existingMemberDAO) MemberCandidate(ctx context.Context, id string) (model.UserCandidate, error) {
 	return d.candidate(ctx, id)
 }
 
@@ -37,7 +37,7 @@ func TestAddExistingMemberPreservesMembershipAndReadsCurrentProfile(t *testing.T
 	p, target := principal(), uuid.NewString()
 	team := namedTeam(p)
 	name := "Current name"
-	candidate := model.TeamMemberCandidate{UserID: target, Profile: model.ProjectParticipantProfile{Name: &name}}
+	candidate := model.UserCandidate{UserID: target, Profile: model.ProjectParticipantProfile{Name: &name}}
 	for _, role := range []model.ProjectRole{model.ProjectAdmin, model.ProjectMemberRole} {
 		for _, existing := range []bool{false, true} {
 			t.Run(string(role)+map[bool]string{true: " existing", false: " new"}[existing], func(t *testing.T) {
@@ -71,7 +71,7 @@ func TestAddExistingMemberPreservesMembershipAndReadsCurrentProfile(t *testing.T
 						}
 						return member, nil
 					},
-				}, candidate: func(ctx context.Context, id string) (model.TeamMemberCandidate, error) {
+				}, candidate: func(ctx context.Context, id string) (model.UserCandidate, error) {
 					calls = append(calls, "profile")
 					if ctx != t.Context() || id != target {
 						t.Fatal("profile input")
@@ -128,9 +128,9 @@ func TestAddExistingMemberRejectsBeforeFurtherAccess(t *testing.T) {
 					calls = append(calls, "insert")
 					return model.TeamMember{}, tc.addErr
 				},
-			}, candidate: func(context.Context, string) (model.TeamMemberCandidate, error) {
+			}, candidate: func(context.Context, string) (model.UserCandidate, error) {
 				calls = append(calls, "profile")
-				return model.TeamMemberCandidate{}, tc.candidateErr
+				return model.UserCandidate{}, tc.candidateErr
 			}}
 			result, err := AddExistingMember(t.Context(), d, p, target)
 			if result != (ExistingMemberResult{}) || !reflect.DeepEqual(calls, tc.calls) {

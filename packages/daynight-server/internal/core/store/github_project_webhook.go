@@ -50,3 +50,26 @@ type GitHubProjectWebhookSecret struct {
 type GitHubProjectWebhookSecretReader interface {
 	ReadGitHubProjectWebhookSecret(context.Context, string) (GitHubProjectWebhookSecret, error)
 }
+
+// GitHubProjectWebhookReceiptScope is bound to a live, locked Project.
+type GitHubProjectWebhookReceiptScope interface {
+	GitHubProjectWebhookReceiptDAO() GitHubProjectWebhookReceiptDAO
+}
+
+// GitHubProjectWebhookReceiptFacts are read while the connection row is locked.
+type GitHubProjectWebhookReceiptFacts struct {
+	Exists, Enabled, SyncEnabled, BindingValid, AccessAvailable bool
+	Version, RepositoryID, CurrentRepositoryID                  *int64
+	Generation                                                  int64
+}
+
+type GitHubProjectWebhookReceiptWrite struct {
+	Enqueue               bool
+	Number                int64
+	RequestID, DeliveryID string
+}
+
+type GitHubProjectWebhookReceiptDAO interface {
+	LockReceipt(context.Context) (GitHubProjectWebhookReceiptFacts, error)
+	RecordReceipt(context.Context, GitHubProjectWebhookReceiptWrite) error
+}

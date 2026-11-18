@@ -220,7 +220,7 @@ export const saveWorkerConfiguration = async (workerId: string, revision: string
     const archiveHeader = response.headers.get('Daynight-Worker-Archive-Sessions');
     if (archiveHeader !== null && archiveHeader !== '1' || archiveSupported && archiveHeader !== '1') throw new ApiError('protocol', response.status);
     const resource = rememberDocument(data as ConfigurationDocument), baseline = workerConfigurationBaseline(resource);
-    if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource, { archiveSessions: archiveSupported })) throw new ApiError('protocol', response.status);
+    if (resource.desired === null || baseline === null || BigInt(resource.desired.revision) < BigInt(expected) || BigInt(resource.desired.revision) > BigInt(expected) + 1n || !configurationValueSourcesEqual(baseline.valueSource, submission.valueSource, { archiveSessions: archiveSupported, semanticTagFilter: true })) throw new ApiError('protocol', response.status);
     admission.onConfirmed?.(resource);
     return resource;
   }, decoder({ controlMode: false, toolPaths: true, archiveSessions: archiveSupported && response.headers.get('Daynight-Worker-Archive-Sessions') === '1' }), false, admission.onRejected);

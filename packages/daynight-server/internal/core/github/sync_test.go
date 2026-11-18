@@ -2,6 +2,7 @@ package github
 
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,50 @@ func TestAccessRecoveryAndRepositoryNames(t *testing.T) {
 		if _, _, err := RepositoryParts(name); err == nil {
 			t.Fatalf("accepted %q", name)
 		}
+	}
+}
+
+func TestAccessRetryPreservesPRChannelsAndRateLimit(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	old, poll := now.Add(-time.Hour), now.Add(time.Hour)
+	code, message := "previous", "Previous failure"
+	app, installation, repo := int64(1), int64(2), int64(3)
+	c := githubpr.Connection{Enabled: true, SyncEnabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo,
+		PollIntervalMinutes: 5, AccessState: "available", NextPollAt: &poll,
+		LastPollAttemptAt: &old, LastFullSuccessAt: &old, PollErrorCode: &code, PollErrorMessage: &message, PollErrorAt: &old,
+		LastWebhookAttemptAt: &old, LastWebhookSuccessAt: &old, WebhookErrorCode: &code, WebhookErrorMessage: &message, WebhookErrorAt: &old}
+	for _, tc := range []struct {
+		name    string
+		failure Failure
+		delay   time.Duration
+	}{
+		{"temporary", Failure{Code: "github_unavailable"}, RetryDelay},
+		{"short rate limit", Failure{Code: "github_rate_limited", RetryAt: now.Add(time.Second)}, RetryDelay},
+		{"upstream rate limit", Failure{Code: "github_rate_limited", RetryAt: now.Add(2 * time.Minute)}, 2 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, want := Runtime(c), Runtime(c)
+			next := now.Add(tc.delay)
+			want.NextAccessCheckAt = &next
+			if tc.failure.Code == "github_rate_limited" {
+				want.NotBefore = &next
+			}
+			AccessRetry(&w, now, tc.failure)
+			if !reflect.DeepEqual(w, want) {
+				t.Fatalf("access retry changed independent state: got %+v want %+v", w, want)
+			}
+			if w.NotBefore != nil {
+				hint := "new-installation-signal"
+				connection := c
+				connection.AccessHintID, connection.NextAccessCheckAt, connection.NotBefore = &hint, &now, w.NotBefore
+				if got := WorkKind(connection, app, next.Add(-time.Nanosecond), true); got != "" {
+					t.Fatalf("new hint bypassed rate limit: %s", got)
+				}
+				if got := WorkKind(connection, app, next, true); got != WorkAccess {
+					t.Fatalf("access did not resume at limit: %s", got)
+				}
+			}
+		})
 	}
 }
 

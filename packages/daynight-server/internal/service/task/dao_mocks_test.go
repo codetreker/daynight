@@ -86,15 +86,21 @@ var _ store.ThreadWriter = (*taskStoreMock)(nil)
 
 type taskSnapshotScopeMock struct {
 	taskMockBase
-	CredentialDAOFn func() store.CredentialReader
-	TeamDAOFn       func() store.TeamReader
-	ProjectDAOFn    func() store.ProjectReader
-	TaskDAOFn       func() store.TaskReader
-	WorkerDAOFn     func() store.WorkerReader
-	SessionDAOFn    func() store.SessionReader
-	BotDAOFn        func() store.BotReader
-	AttachmentDAOFn func() store.AttachmentReader
-	ObservedAtFn    func(context.Context) (time.Time, error)
+	CredentialDAOFn    func() store.CredentialReader
+	TeamDAOFn          func() store.TeamReader
+	ProjectDAOFn       func() store.ProjectReader
+	TaskDAOFn          func() store.TaskReader
+	WorkerDAOFn        func() store.WorkerReader
+	SessionDAOFn       func() store.SessionReader
+	BotDAOFn           func() store.BotReader
+	AttachmentDAOFn    func() store.AttachmentReader
+	ObservedAtFn       func(context.Context) (time.Time, error)
+	UserCandidateDAOFn func() store.UserCandidateReader
+}
+
+func (mock *taskSnapshotScopeMock) UserCandidateDAO() store.UserCandidateReader {
+	mock.need("UserCandidateDAO", mock.UserCandidateDAOFn != nil)
+	return mock.UserCandidateDAOFn()
 }
 
 func (mock *taskSnapshotScopeMock) CredentialDAO() store.CredentialReader {

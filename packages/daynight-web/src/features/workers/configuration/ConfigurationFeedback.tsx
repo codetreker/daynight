@@ -60,13 +60,13 @@ export const taskTagApplicationState = (resource: WorkerConfigurationResource, d
   return configurationOutcomeState(resource, item, digest.digest);
 };
 
-export const ConfigurationTaskTagFeedback = ({ resource, filter, digest }: { readonly resource: WorkerConfigurationResource; readonly filter: WorkerTaskTagFilter; readonly digest: TaskTagDigest }) => {
+export const ConfigurationTaskTagFeedback = ({ resource, filter, digest, changed = false }: { readonly resource: WorkerConfigurationResource; readonly filter: WorkerTaskTagFilter; readonly digest: TaskTagDigest; readonly changed?: boolean }) => {
   const { messages: { workers: { configuration: m } } } = useI18n();
   const item = configurationOutcome(resource, 'taskTagFilter');
   const state = item === undefined ? 'pending' : item.state !== 'applied' ? item.state : digest.state === 'ready' ? configurationOutcomeState(resource, item, digest.digest) : 'pending';
   const actual = item?.appliedValue == null ? m.unavailableValue : digest.state !== 'ready' ? m.unavailableValue : item.appliedValue === digest.digest ? <TaskTagFilterValue filter={filter} /> : m.taskTags.different;
   return <div className="application-feedback" aria-live="polite">
-    <span className={`status-chip ${state}`}>{item === undefined ? m.taskTags.unconfirmed : m.state[state]}</span>
+    <span className={`status-chip ${changed ? 'unsaved' : state}`}>{changed ? m.state.unsaved : item === undefined ? m.taskTags.unconfirmed : m.state[state]}</span>
     {digest.state !== 'ready' && <span className={digest.state === 'error' ? 'field-error' : ''}>{digest.state === 'checking' ? m.taskTags.checking : m.taskTags.checkFailed}</span>}
     <span className="current-value">{m.actual}: {actual}</span>
     {item !== undefined && <span className="configuration-item-version">{m.targetVersion} {item.targetRevision}</span>}

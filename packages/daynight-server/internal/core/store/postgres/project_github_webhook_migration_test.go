@@ -11,14 +11,17 @@ func TestProjectGitHubWebhookMigrationPreservesExistingConnection(t *testing.T) 
 	parallelRootDatabaseTest(t)
 	ctx := context.Background()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {
+	if len(schemaMigrations) < 84 || schemaMigrations[83].version != 84 {
+		t.Fatal("unexpected migration boundary")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:83]); err != nil {
 		t.Fatal(err)
 	}
 	id := uuid.NewString()
 	if _, err := pool.Exec(ctx, `INSERT INTO project_github(project_id,version,generation,revision,repository_id) VALUES($1,7,8,9,10)`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:84]); err != nil {
 		t.Fatal(err)
 	}
 	var preserved bool

@@ -73,6 +73,10 @@ func (s configurationReadScope) WorkerDAO() store.WorkerReader {
 	s.calls.take("read dao", nil)
 	return s.dao
 }
+func (s configurationReadScope) UserCandidateDAO() store.UserCandidateReader {
+	configurationUnexpected(s.calls.t, "UserCandidateDAO")
+	return nil
+}
 func (s configurationReadScope) CredentialDAO() store.CredentialReader {
 	configurationUnexpected(s.calls.t, "CredentialDAO")
 	return nil

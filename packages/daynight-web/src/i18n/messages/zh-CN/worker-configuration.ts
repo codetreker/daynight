@@ -19,7 +19,7 @@ export const workerConfiguration: WorkerConfigurationMessages = {
   },
   leaveQuestion: '离开此 Worker 的配置并放弃未保存的修改吗？',
   leaveExplanation: '未保存的修改将丢失。已提交到服务端的更改不会撤销。',
-  taskTags: { title: '任务标签筛选', detail: '跨项目按标签名称匹配；未设置时不限标签。', empty: '不限标签', any: '任意', all: '全部', unsupportedService: '请升级服务以使用任务标签筛选。', unsupportedWorker: 'Worker 尚未确认支持标签筛选。请升级 Worker 或等待首次上报。', unconfirmed: '支持未确认', checking: '核对中', checkFailed: '无法核对应用状态', different: '已应用值与当前目标不同' },
+  taskTags: { target: '已保存目标', match: '标签匹配方式', matchAny: '匹配任意标签', matchAll: '匹配全部标签', placeholder: '输入标签名称', add: '添加', clear: '清空限制', invalid: '标签名称应为 1–64 个字符，且不能包含控制字符。', remove: (name: string) => `移除标签 ${name}`, title: '任务标签筛选', detail: '跨项目按标签名称匹配；未设置时不限标签。', empty: '不限标签', any: '任意', all: '全部', unsupportedService: '请升级服务以使用任务标签筛选。', unsupportedWorker: 'Worker 尚未确认支持标签筛选。请升级 Worker 或等待首次上报。', unconfirmed: '支持未确认', checking: '核对中', checkFailed: '无法核对应用状态', different: '已应用值与当前目标不同' },
   overview: '运行监控', system: '系统监控', configuration: '配置', prompt: '提示词', sections: 'Worker 页面', loading: '正在读取配置', unavailable: 'Worker 配置不可用',
   uninitialized: '尚未接入配置管理', uninitializedDetail: '运行支持配置管理的 Worker，导入本机设置。',
   readFailed: '读取配置失败。', saveFailed: '保存配置失败。', networkError: '请检查网络连接后重试。', protocolError: '服务返回了无效的配置响应。',

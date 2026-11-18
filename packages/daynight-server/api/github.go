@@ -60,6 +60,20 @@ type PullRequestAuthorPage struct {
 	Items      []PullRequestDirectoryAuthor `json:"items"`
 	NextCursor *string                      `json:"nextCursor"`
 }
+
+// PullRequestStatistics describes retained project PRs in a caller-supplied date window.
+type PullRequestStatistics struct {
+	ProjectID    string             `json:"projectId"`
+	EndDate      string             `json:"endDate"`
+	Revision     string             `json:"revision"`
+	ProjectTotal string             `json:"projectTotal"`
+	Availability string             `json:"availability"`
+	HasAuthors   bool               `json:"hasAuthors"`
+	Daily        [30]string         `json:"daily"`
+	AuthorID     *string            `json:"authorId"`
+	Author       *PullRequestAuthor `json:"author"`
+	AuthorDaily  *[30]string        `json:"authorDaily"`
+}
 type PullRequestBase struct {
 	RepositoryID       string `json:"repositoryId"`
 	RepositoryFullName string `json:"repositoryFullName"`

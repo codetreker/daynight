@@ -307,7 +307,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP INDEX project_pull_requests_author_number`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,84)`); err != nil || result.RowsAffected() != 8 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,84,85)`); err != nil || result.RowsAffected() != 9 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
