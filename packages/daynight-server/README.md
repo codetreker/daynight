@@ -2836,6 +2836,14 @@ isolated PostgreSQL database for its other fixtures:
 env -u DAYNIGHT_TEST_DATABASE_URL go test ./internal/server/auth -run '^TestAuthentication(UniAuthIdentityAndCredentials|UniAuthBrowserBindingAndConsumption|RealUniAuthResultWireLoss)$' -count=1
 ```
 
+The browser-binding test counts SDK `POST /auth/result` requests synchronously
+through a transport that delegates to the real gateway. Subprocess log delivery
+does not establish request ordering. The test retains the gateway's HTTP 410
+`result_unavailable` response as proof that the successful callback consumed its
+one-time result; captured logs still check credential redaction. The
+[request observation decision](../../.agents/notes/implemented/testing/2026-11-18-uniauth-result-request-observation.md)
+records this distinction.
+
 The real archive upload and response socket deadlines
 can be checked separately with
 `DAYNIGHT_TEST_ARCHIVE_DEADLINE=1 GOFLAGS="-overlay=scripts/unit-overlay.json" go test -tags=stress ./internal/server/session -run '^TestStressArchive(Upload|Send)DeadlineReleasesCapacity$' -count=1 -timeout=5m`;
