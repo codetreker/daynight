@@ -1786,7 +1786,11 @@ and Project authorization before archive metadata, and stop at the failing
 terminal query. Real PostgreSQL still establishes missing-row error mapping,
 connection reuse, and persisted terminal reads. The
 [Session archive read decision](../../.agents/notes/implemented/testing/2026-11-18-session-archive-read-fixtures.md)
-records the proof boundary.
+records the proof boundary. Session scope error and dispatch tests supply known
+credential, registration and location facts. They execute the real entry points
+and assert that a failed query stops subsequent work. The
+[Session scope failure decision](../../.agents/notes/implemented/testing/2026-11-18-session-scope-failure-tests.md)
+describes the controlled and physical proof owners.
 
 From this module, run the complete database-independent Session suite with:
 
