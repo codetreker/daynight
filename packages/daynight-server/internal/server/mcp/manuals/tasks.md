@@ -2,7 +2,7 @@
 
 Start with [Overview](daynight://manuals/overview.md).
 
-Use this topic for definitions, projections, readiness, inventories and property reads. Task/Goal creation, metadata/status/property changes and deletion require [Task writes](daynight://manuals/task-writes.md) with [Write safety](daynight://manuals/write-safety.md). Dependency-only changes require [Dependencies](daynight://manuals/dependencies.md) and Write safety. Creating a Task with dependencies or changing other Task fields alongside dependencies requires both mutation topics.
+Use this topic for definitions, projections, readiness, inventories and property reads. Task/Goal creation, metadata/status/property changes and deletion require [Task writes](daynight://manuals/task-writes.md) with [Write safety](daynight://manuals/write-safety.md). Dependency-only changes require [Dependency writes](daynight://manuals/dependency-writes.md), Dependency graphs and Write safety. Creating a Task with dependencies or changing other Task fields alongside dependencies requires both mutation topics.
 
 ## Select the observation
 
@@ -26,7 +26,7 @@ Task reads default to `summary`: identity, type/parent, marked `titlePreview`/`t
 | `task_list` | Complete list resources including title, properties, relationships and times, **without description** |
 | `task_graph` | Complete selected relationship scope; compact nodes still omit Task description, properties and version |
 
-Full time-bearing resources expose creation/update times and nullable `startedAt`, `completedAt`, `cancelledAt`. Returned `dependsOn` includes all prerequisites; `externalDependsOn` is its subset. Write inputs use a different partition described in [Dependencies](daynight://manuals/dependencies.md). Full and summary Task resources include `tags: [{id,name}]`, or `[]`.
+Full time-bearing resources expose creation/update times and nullable `startedAt`, `completedAt`, `cancelledAt`. Returned `dependsOn` includes all prerequisites; `externalDependsOn` is its subset. Write inputs use a different partition described in [Dependency writes](daynight://manuals/dependency-writes.md). Full and summary Task resources include `tags: [{id,name}]`, or `[]`.
 
 Full Task show does not supply attachment inventory/bytes or complete Step/Thread collections. Normal list/show and non-dependency-only graph add ephemeral Session observations; ready results, Task mutation receipts and dependency-only graphs do not. Task versions freeze neither Session state, attachment bytes nor separate observations. [Session reads](daynight://manuals/session-reads.md) owns freshness, partial observations and nullable send eligibility; observations grant no intervention authority.
 
