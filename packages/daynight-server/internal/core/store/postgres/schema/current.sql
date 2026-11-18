@@ -1,4 +1,4 @@
--- Schema snapshot version: 80
+-- Schema snapshot version: 81
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1483,6 +1483,8 @@ CREATE TABLE "workers" (
     "configuration_observation_revision" bigint DEFAULT 0 NOT NULL,
     "configuration_observation" "jsonb",
     "archive_sessions" boolean DEFAULT true NOT NULL,
+    "alias_value" "text",
+    "alias_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "worker_configuration_complete" CHECK (((("configuration_revision" IS NULL) AND ("configuration_updated_at" IS NULL) AND ("desired_configuration" IS NULL)) OR (("configuration_revision" IS NOT NULL) AND ("configuration_updated_at" IS NOT NULL) AND ("desired_configuration" IS NOT NULL) AND ("jsonb_typeof"("desired_configuration") = 'object'::"text")))),
     CONSTRAINT "worker_configuration_observation_object" CHECK ((("configuration_observation" IS NULL) OR ("jsonb_typeof"("configuration_observation") = 'object'::"text"))),
     CONSTRAINT "worker_configuration_observation_revision_nonnegative" CHECK (("configuration_observation_revision" >= 0)),

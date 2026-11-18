@@ -144,12 +144,27 @@ func workerHTTPUnexpected(t *testing.T, method string) {
 
 type workerHTTPWriteDAO struct {
 	t                                     *testing.T
+	WorkerAliasCall                       func(context.Context, string, string) (model.WorkerAlias, error)
+	SetWorkerAliasCall                    func(context.Context, string, string, int64, model.WorkerAlias) error
 	ReportTaskSnapshotsCall               func(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error)
 	UpsertWorkerCall                      func(context.Context, model.WorkerSnapshot) (model.WorkerSnapshot, error)
 	WorkerConfigurationCall               func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 	ConfigurationProjectAccessCall        func(context.Context, string, string) error
 	SetWorkerConfigurationCall            func(context.Context, string, string, int64, model.WorkerConfiguration) (model.WorkerDesiredConfiguration, error)
 	SetWorkerConfigurationObservationCall func(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
+}
+
+func (d *workerHTTPWriteDAO) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
+	if d.WorkerAliasCall == nil {
+		workerHTTPUnexpected(d.t, "WorkerAlias")
+	}
+	return d.WorkerAliasCall(ctx, u, w)
+}
+func (d *workerHTTPWriteDAO) SetWorkerAlias(ctx context.Context, u, w string, expected int64, next model.WorkerAlias) error {
+	if d.SetWorkerAliasCall == nil {
+		workerHTTPUnexpected(d.t, "SetWorkerAlias")
+	}
+	return d.SetWorkerAliasCall(ctx, u, w, expected, next)
 }
 
 func (d *workerHTTPWriteDAO) ReportTaskSnapshots(ctx context.Context, id string, v model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
@@ -215,6 +230,7 @@ func (s *workerHTTPWriteScope) AdmitWorker(ctx context.Context, u, w string, d t
 }
 
 type workerHTTPReader struct {
+	WorkerAliasCall         func(context.Context, string, string) (model.WorkerAlias, error)
 	t                       *testing.T
 	WorkersCall             func(context.Context, string, time.Time, store.Page) (store.WorkerPage, error)
 	WorkerSummariesCall     func(context.Context, string, time.Time, store.Page) (store.WorkerSummaryPage, error)
@@ -227,6 +243,12 @@ func (d *workerHTTPReader) Workers(ctx context.Context, u string, now time.Time,
 		workerHTTPUnexpected(d.t, "Workers")
 	}
 	return d.WorkersCall(ctx, u, now, p)
+}
+func (d *workerHTTPReader) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
+	if d.WorkerAliasCall == nil {
+		workerHTTPUnexpected(d.t, "WorkerAlias")
+	}
+	return d.WorkerAliasCall(ctx, u, w)
 }
 func (d *workerHTTPReader) WorkerSummaries(ctx context.Context, u string, now time.Time, p store.Page) (store.WorkerSummaryPage, error) {
 	if d.WorkerSummariesCall == nil {

@@ -15,6 +15,12 @@ cancelling reads. Task graph errors do not block PR browsing. The
 states, unknown counts, identity admission and retained-page behavior. The list
 selects one primary synchronization notice while retaining independent diagnostics.
 
+The Worker detail header edits an account-owned [display alias](../../docs/design/worker-alias.md).
+List and detail titles prefer that alias while preserving the original machine
+name and complete Worker ID. Alias saves use an independent observed version;
+conflicts and unknown results require an explicit read before another save.
+Old services remain readable without alias editing.
+
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)

@@ -2,6 +2,15 @@ import type { WorkersMessages } from '../workers';
 import { workerConfiguration } from './worker-configuration';
 
 export const workers: WorkersMessages = {
+  alias: {
+    label: 'Worker alias', machineName: 'Machine name', set: 'Set alias', edit: 'Edit alias',
+    save: 'Save alias', saving: 'Saving…', cancel: 'Cancel', clear: 'Clear alias',
+    hint: '1–80 characters. Surrounding whitespace is removed. Control characters and directional overrides are not allowed.',
+    current: 'Saved alias', none: 'Not set', failed: 'The alias could not be saved or checked. Your input is retained.',
+    conflict: 'The alias changed elsewhere. Check the saved alias before submitting again. Your input is retained.',
+    unknown: 'The save result is unknown. Check the saved alias before deciding whether to save again.',
+    check: 'Check saved alias', checked: 'The saved alias is shown above. Your input is retained; review it before saving.',
+  },
   configuration: workerConfiguration,
   title: 'My Workers', subtitle: 'See recently active Workers and their runtime status.', list: 'Worker list',
   loading: 'Loading Workers', loadingDetail: 'Reading recent Workers and their runtime observations.',

@@ -40,6 +40,15 @@ type admissionServiceFixture struct {
 	entered           chan struct{}
 }
 
+func (f *admissionServiceFixture) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	f.t.Fatal("unexpected alias read")
+	return model.WorkerAlias{}, nil
+}
+func (f *admissionServiceFixture) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	f.t.Fatal("unexpected alias write")
+	return nil
+}
+
 func newAdmissionServiceFixture(t *testing.T) *admissionServiceFixture {
 	t.Helper()
 	at := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)

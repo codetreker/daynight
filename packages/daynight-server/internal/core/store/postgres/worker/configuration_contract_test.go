@@ -239,6 +239,7 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectedLegacy := testutil.WorkerSnapshotFixture(admin.UserID, workerID, worker.CreatedAt)
+	expectedLegacy.Alias = model.WorkerAlias{Version: 1}
 	expectedLegacy.LastReportedAt = worker.LastReportedAt.Add(time.Second)
 	expectedLegacy.Telemetry.SampledAt = sampledAt
 	worker.LastReportedAt = worker.LastReportedAt.Add(time.Second)
@@ -645,6 +646,7 @@ CREATE TRIGGER refuse_config_observation BEFORE UPDATE ON workers FOR EACH ROW E
 		t.Fatalf("observation failure or rollback lost: %+v %v", completion, err)
 	}
 	after := testutil.ReadWorkerSnapshot(t, database, userID, workerID, worker.LastReportedAt)
+	worker.Alias = model.WorkerAlias{Version: 1}
 	if !reflect.DeepEqual(after, worker) {
 		t.Fatalf("observation failure committed partial heartbeat: before=%+v after=%+v", worker, after)
 	}

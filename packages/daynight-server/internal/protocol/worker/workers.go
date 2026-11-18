@@ -105,6 +105,7 @@ type WorkerTaskSnapshot struct {
 }
 
 type WorkerSummary struct {
+	Alias                *Alias        `json:"alias,omitempty"`
 	WorkerID             string        `json:"workerId"`
 	Machine              WorkerMachine `json:"machine"`
 	Platform             string        `json:"platform"`

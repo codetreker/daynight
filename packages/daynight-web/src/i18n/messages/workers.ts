@@ -1,6 +1,12 @@
 import type { WorkerConfigurationMessages } from './worker-configuration';
 
 export type WorkersMessages = {
+  readonly alias: {
+    readonly label: string; readonly machineName: string; readonly set: string; readonly edit: string;
+    readonly save: string; readonly saving: string; readonly cancel: string; readonly clear: string;
+    readonly hint: string; readonly current: string; readonly none: string; readonly failed: string;
+    readonly conflict: string; readonly unknown: string; readonly check: string; readonly checked: string;
+  };
   readonly configuration: WorkerConfigurationMessages;
   readonly title: string;
   readonly subtitle: string;

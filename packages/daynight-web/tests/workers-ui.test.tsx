@@ -12,6 +12,7 @@ import { useWorker } from '../src/features/workers/useWorker';
 import { getFormats } from '../src/i18n/formats';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { toolPathActual, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
+import { WORKER_USER, workerResponse } from './helpers/workers';
 
 vi.mock('../src/features/workers/useWorkers', () => ({ useWorkers: vi.fn() }));
 vi.mock('../src/features/workers/useWorker', () => ({ useWorker: vi.fn() }));
@@ -84,6 +85,17 @@ describe('Worker software summary', () => {
 });
 
 describe('Worker list presentation', () => {
+  it('uses aliases without hiding duplicate machine identities or changing links', () => {
+    listState = listed([1, 2].map(n => ({ ...summary(n), machine: summary().machine, alias: { value: '办公室 Windows', version: '2' } })));
+    showList();
+    const links = screen.getAllByRole('link', { name: 'View 办公室 Windows' });
+    expect(links).toHaveLength(2);
+    links.forEach((link, index) => {
+      expect(link).toHaveAttribute('href', `/workers/${id(index + 1)}`);
+      expect(link).toHaveTextContent(summary().machine.name);
+      expect(link).toHaveTextContent(id(index + 1));
+    });
+  });
   it('shows account observations, distinct unknown and idle tasks, offline snapshots and real detail links', () => {
     listState = listed([summary(), summary(2), { ...summary(3), lastReportedAt: new Date(now - 6 * 3600_000).toISOString(), activeTaskCount: 2 }, { ...summary(4), taskObservationState: 'unavailable', taskObservedAt: null, activeTaskCount: null }]);
     showList();
@@ -168,6 +180,23 @@ describe('Worker list presentation', () => {
 });
 
 describe('Worker detail presentation', () => {
+  it('updates the alias immediately and never rolls back to an older polling response', async () => {
+    detailState = shown({ ...detail(), alias: { value: null, version: '1' } });
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(workerResponse({ workerId: id(1), alias: { value: '办公室 Windows', version: '2' } }));
+    try {
+      const element = <WorkerDetailPage userId={WORKER_USER} workerId={id(1)} readEnabled />;
+      const view = renderWithLocale(element, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
+      fireEvent.click(screen.getByRole('button', { name: 'Set alias' }));
+      fireEvent.change(screen.getByRole('textbox', { name: 'Worker alias' }), { target: { value: '办公室 Windows' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save alias' }));
+      await screen.findByRole('heading', { name: '办公室 Windows' });
+      detailState = shown({ ...detail(), alias: { value: null, version: '1' } });
+      view.rerender(<WorkerDetailPage userId={WORKER_USER} workerId={id(1)} readEnabled />);
+      expect(screen.getByRole('heading', { name: '办公室 Windows' })).toBeInTheDocument();
+      expect(document.querySelector('.worker-machine-name')).toHaveTextContent(`Machine name: ${detail().machine.name}`);
+      expect(screen.getByText(`Worker ID · ${id(1)}`)).toBeInTheDocument();
+    } finally { fetch.mockRestore(); }
+  });
   it.each(['current', 'idle', 'offline', 'stale', 'pending', 'failed refresh'] as const)('places the task panel first with %s data', scenario => {
     const worker = detail();
     if (scenario === 'idle') detailState = shown({ ...worker, activeTaskCount: 0, tasks: [] });

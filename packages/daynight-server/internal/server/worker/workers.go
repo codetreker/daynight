@@ -25,6 +25,8 @@ type workersHandler struct {
 }
 
 type workerService interface {
+	Alias(context.Context, model.Principal, string) (model.WorkerAlias, error)
+	PutAlias(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
 	Report(context.Context, model.Principal, string, model.WorkerReport) (service.WorkerReportResult, error)
 	ReportSync(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (service.ConfigurationSyncResult, error)
 	List(context.Context, model.Principal, model.PageRequest) (service.WorkerPage, error)
@@ -63,6 +65,9 @@ func RegisterRoutes(mux *http.ServeMux, workers workerService, auth *authhttp.Au
 func registerRoutes(mux *http.ServeMux, handler *workersHandler, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
 	logger := handler.logger
 	base := "/api/v1/me/workers"
+	mux.HandleFunc("GET "+base+"/{workerId}/alias", require(handler.alias))
+	mux.HandleFunc("PUT "+base+"/{workerId}/alias", require(handler.alias))
+	mux.HandleFunc(base+"/{workerId}/alias", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
 	mux.HandleFunc("POST "+base+"/monitoring/query", require(handler.queryMonitoring))
 	mux.HandleFunc(base+"/monitoring/query", require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	mux.HandleFunc("GET "+base+"/{workerId}/monitoring", require(handler.getMonitoring))
@@ -183,6 +188,10 @@ func (h *workersHandler) report(w http.ResponseWriter, request *http.Request, pr
 func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	page, err := httpx.PageRequest(request)
+	var aliases bool
+	if err == nil {
+		aliases, err = aliasProtocol(request.Header)
+	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
 		return
@@ -193,11 +202,21 @@ func (h *workersHandler) list(w http.ResponseWriter, request *http.Request, prin
 		return
 	}
 	response := api.WorkerPage{ObservedAt: result.ObservedAt.UTC(), Items: result.Items, NextCursor: result.NextCursor}
+	if aliases {
+		w.Header().Set(workerAliasHeader, "1")
+		for i := range response.Items {
+			response.Items[i].Alias = workerprotocol.ProjectAlias(result.Aliases[i])
+		}
+	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	id, logger, err := h.resource(request, principal)
+	var aliases bool
+	if err == nil {
+		aliases, err = aliasProtocol(request.Header)
+	}
 	if err == nil && (request.URL.RawQuery != "" || request.URL.ForceQuery) {
 		err = httpx.InvalidInput("worker detail does not accept query parameters")
 	}
@@ -219,7 +238,12 @@ func (h *workersHandler) get(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "worker_report", "read", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, api.WorkerDetailResponse{ObservedAt: result.ObservedAt.UTC(), Worker: workerprotocol.DetailForCapabilities(result.Worker, capabilities)})
+	detail := workerprotocol.DetailForCapabilities(result.Worker, capabilities)
+	if aliases {
+		w.Header().Set(workerAliasHeader, "1")
+		detail.Alias = workerprotocol.ProjectAlias(result.Worker.Alias)
+	}
+	httpx.WriteJSON(w, request, logger, http.StatusOK, api.WorkerDetailResponse{ObservedAt: result.ObservedAt.UTC(), Worker: detail})
 }
 
 func workerDetailResponse(worker model.WorkerSnapshot) api.WorkerDetail {

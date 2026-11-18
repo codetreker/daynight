@@ -855,6 +855,10 @@ type workerReaderMock struct {
 	WorkerConfigurationFn func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 }
 
+func (*workerReaderMock) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	panic("unexpected worker alias read")
+}
+
 func (mock *workerReaderMock) Workers(p0 context.Context, p1 string, p2 time.Time, p3 store.Page) (store.WorkerPage, error) {
 	mock.need("Workers", mock.WorkersFn != nil)
 	return mock.WorkersFn(p0, p1, p2, p3)

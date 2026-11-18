@@ -85,6 +85,9 @@ do not start a Worker process. A registered Worker's monitoring read returns an
 absent observation through the real Redis-backed Server. Separately, a real
 compiled Worker with no selected Projects reports to that Server and Redis; the
 production Web reads the same Worker's observation, capacity and timestamps.
+That Worker also keeps reporting while the Web sets a Chinese display alias,
+reloads it, observes a later report without losing it, modifies it and explicitly
+clears it. List/detail readback verifies the same stable Worker and machine IDs.
 The journey starts no native agent and does not replace normal tool preflight. The same resource IDs and content cross the clients
 and persist in the real database.
 

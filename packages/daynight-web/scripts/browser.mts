@@ -59,6 +59,7 @@ export const browserConfigs = [
   'session-record-layout-playwright.config.ts',
   'worker-configuration-navigation-playwright.config.ts',
   'worker-tool-paths-playwright.config.ts',
+  'worker-alias-playwright.config.ts',
   'bots-viewport-playwright.config.ts',
 ] as const;
 

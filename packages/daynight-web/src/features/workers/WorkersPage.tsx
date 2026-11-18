@@ -26,9 +26,11 @@ export const WorkersPage = ({ readEnabled }: { readonly readEnabled: boolean }) 
       {workers.length === 0 ? <section className="state-box" role="status"><div className="state-icon"><WorkerIcon /></div><h2>{m.empty}</h2><p>{m.emptyDetail}</p></section> : <>
         <div className="worker-summary-strip"><span>{m.count({ count: format.number(workers.length) })}</span><span>{m.onlineCount({ count: format.number(onlineCount) })}</span><span>{m.offlineCount({ count: format.number(workers.length - onlineCount) })}</span></div>
         <ul className="worker-grid" aria-label={m.list}>{workers.map(worker => <li key={worker.workerId}>
-          <a className="worker-card" href={`/workers/${worker.workerId}`} onClick={followWorkerLink} aria-label={m.open({ name: worker.machine.name })}>
+          <a className="worker-card" href={`/workers/${worker.workerId}`} onClick={followWorkerLink} aria-label={m.open({ name: worker.alias?.value ?? worker.machine.name })}>
             <div className="worker-card-top"><span className="worker-machine-icon"><WorkerIcon /></span><WorkerStatusBadge online={isWorkerOnline(worker, serverMilliseconds!)} stale={state.stale} /></div>
-            <h2 className="worker-name">{worker.machine.name}</h2><p className="worker-platform">{platform.names[worker.platform]}</p>
+            <h2 className="worker-name"><bdi>{worker.alias?.value ?? worker.machine.name}</bdi></h2>
+            {worker.alias?.value != null && <p className="worker-machine-name">{m.alias.machineName}: <bdi>{worker.machine.name}</bdi></p>}
+            <p className="worker-card-id">{m.workerId}: {worker.workerId}</p><p className="worker-platform">{platform.names[worker.platform]}</p>
             <p className="worker-workload"><WorkerTaskSummary worker={worker} serverMilliseconds={serverMilliseconds!} stale={state.stale} /></p>
             {(() => { const entry = monitoring.snapshot?.items.find(value => value.item.workerId === worker.workerId); return <MonitoringCard expired={entry?.expired ?? false} item={entry?.item ?? null} now={entry === undefined ? null : Date.parse(entry.observedAt) + performance.now() - entry.receivedMonotonic} />; })()}
             <div className="worker-card-footer"><div className="worker-last-report">{m.lastReported} <span className="worker-last-time"><WorkerTimestamp value={worker.lastReportedAt} /></span></div>

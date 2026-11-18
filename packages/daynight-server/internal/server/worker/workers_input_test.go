@@ -170,12 +170,27 @@ func capacityExpectedSnapshot(t *testing.T, user, worker string, body map[string
 
 type capacityReportOperations struct {
 	t             *testing.T
+	alias         func(context.Context, model.Principal, string) (model.WorkerAlias, error)
+	putAlias      func(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
 	report        func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
 	sync          func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
 	put           func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
 	get           func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
 	list          func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
 	configuration func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+}
+
+func (s *capacityReportOperations) Alias(ctx context.Context, p model.Principal, id string) (model.WorkerAlias, error) {
+	if s.alias == nil {
+		return model.WorkerAlias{}, s.unexpected("Alias")
+	}
+	return s.alias(ctx, p, id)
+}
+func (s *capacityReportOperations) PutAlias(ctx context.Context, p model.Principal, id, expected string, v *string) (model.WorkerAlias, error) {
+	if s.putAlias == nil {
+		return model.WorkerAlias{}, s.unexpected("PutAlias")
+	}
+	return s.putAlias(ctx, p, id, expected, v)
 }
 
 func (s *capacityReportOperations) unexpected(method string) error {

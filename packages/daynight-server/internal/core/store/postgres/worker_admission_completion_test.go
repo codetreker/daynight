@@ -84,6 +84,7 @@ func TestWorkerAdmissionCompletionClockRollbackAndSQLFailure(t *testing.T) {
 	if err != nil || completion.Outcome != TransactionCommitted || !stored.LastReportedAt.Equal(admission.ObservedAt) || afterWrite.Before(stored.LastReportedAt) || afterWrite.Sub(stored.LastReportedAt) > 10*time.Second || !stored.Telemetry.SampledAt.After(stored.LastReportedAt) {
 		t.Fatalf("database clock was not persisted: %+v stored=%+v observed=%v err=%v", completion, stored, afterWrite, err)
 	}
+	stored.Alias = model.WorkerAlias{Version: 1}
 	if actual := readWorkerSnapshot(t, database, owner, id, afterWrite); !reflect.DeepEqual(actual, stored) {
 		t.Fatalf("future timestamp repair did not persist: got=%+v want=%+v", actual, stored)
 	}
@@ -145,6 +146,7 @@ func TestWorkerAdmissionCompletionClockRollbackAndSQLFailure(t *testing.T) {
 	if err != nil || completion.Outcome != TransactionCommitted {
 		t.Fatalf("SQL failure retained its admission lock: %+v %v", completion, err)
 	}
+	stored.Alias = model.WorkerAlias{Version: 1}
 	if actual := readWorkerSnapshot(t, database, owner, id, stored.LastReportedAt); !reflect.DeepEqual(actual, stored) {
 		t.Fatalf("recovered report did not persist: got=%+v want=%+v", actual, stored)
 	}
@@ -248,6 +250,7 @@ func TestWorkerAdmissionCompletionWaitResamplesAndCancellationReleasesLock(t *te
 	if written.err != nil || written.completion.Outcome != TransactionCommitted || written.admission.ActiveCount != 99 || !written.admission.ObservedAt.After(fixtureAt) || !written.stored.LastReportedAt.Equal(written.admission.ObservedAt) {
 		t.Fatalf("waiting transaction did not resample after lock: %+v", written)
 	}
+	written.stored.Alias = model.WorkerAlias{Version: 1}
 	if actual := readWorkerSnapshot(t, database, owner, added, written.admission.ObservedAt); !reflect.DeepEqual(actual, written.stored) {
 		t.Fatalf("waiting report did not persist: got=%+v want=%+v", actual, written.stored)
 	}
@@ -322,6 +325,7 @@ func TestWorkerAdmissionCompletionWaitResamplesAndCancellationReleasesLock(t *te
 	if err != nil || completion.Outcome != TransactionCommitted {
 		t.Fatalf("cancellation retained the owner lock: %+v %v", completion, err)
 	}
+	updated.Alias = model.WorkerAlias{Version: 1}
 	if actual := readWorkerSnapshot(t, database, owner, added, updated.LastReportedAt); !reflect.DeepEqual(actual, updated) {
 		t.Fatalf("active report at capacity did not persist: got=%+v want=%+v", actual, updated)
 	}
