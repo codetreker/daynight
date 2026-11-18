@@ -223,6 +223,11 @@ after the root has exited and a real descendant holds the original pipe. They
 still join the actual pipe close. The
 [Git cancellation clock decision](../.agents/notes/implemented/testing/2026-11-18-worker-git-cancel-grace-clock.md)
 owns the controlled timer and separate real-time coverage.
+The privileged Worktree cleanup fixture pauses the actual sudo child beside
+its case-owned release file. It observes cancellation and an excluded
+overlapping removal before allowing the child to proceed. The
+[sudo fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-sudo-fixture-handshake.md)
+owns the real-process handshake.
 Bot CLI probe fixtures retain the real guardian, descendants, process inventory,
 signals and joined cleanup. On POSIX, the test freezes the stop clock after the
 target process group receives TERM and advances it only after a real inventory

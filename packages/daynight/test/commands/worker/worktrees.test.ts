@@ -1354,29 +1354,54 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     const f = await fixture(); const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "19" }) });
     const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const owned = path.join(binding.worktreePath, "root-owned");
-    execFileSync("/usr/bin/sudo", ["-n", "mkdir", owned], { timeout: 10000 });
-    const shim = path.join(f.root, "commands"), marker = path.join(f.root, "started"); await mkdir(shim);
+    const shim = path.join(f.root, "commands"), ready = path.join(f.root, "sudo-ready"), release = path.join(f.root, "sudo-release");
+    await mkdir(shim);
     const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-    await writeFile(path.join(shim, "sudo"), `#!/bin/sh\nshift 4\nprintf started > ${shellQuote(marker)}\nexec /usr/bin/sudo -n -u root -- /bin/sh -c 'sleep 2; exec "$@"' sh "$@"\n`, { mode: 0o755 });
-    const previousPath = process.env.PATH; process.env.PATH = `${shim}:${previousPath ?? ""}`;
+    const hold = path.join(shim, "hold-sudo.sh");
+    await writeFile(hold, `#!/bin/sh
+set -eu
+ready=$1
+release=$2
+shift 2
+[ "$(/usr/bin/id -u)" = 0 ]
+: > "$ready"
+attempts=0
+while [ ! -f "$release" ]; do
+  attempts=$((attempts + 1))
+  if [ "$attempts" -ge 400 ]; then
+    printf '%s\\n' 'Privileged fixture was not released.' >&2
+    exit 1
+  fi
+  sleep 0.025
+done
+exec "$@"
+`);
+    await writeFile(path.join(shim, "sudo"), `#!/bin/sh\nshift 4\nexec /usr/bin/sudo -n -u root -- /bin/sh ${shellQuote(hold)} ${shellQuote(ready)} ${shellQuote(release)} "$@"\n`, { mode: 0o755 });
+    execFileSync("/usr/bin/sudo", ["-n", "mkdir", owned], { timeout: 10000 });
+    const previousPath = process.env.PATH;
+    const restorePath = () => { if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath; };
+    process.env.PATH = `${shim}:${previousPath ?? ""}`;
     const controller = new AbortController(); let settled = false;
     const attempt = adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(error => error).finally(() => { settled = true; });
     try {
-      const deadline = Date.now() + 10000;
-      while (Date.now() < deadline && await lstat(marker).catch(() => null) === null) await new Promise(resolve => setTimeout(resolve, 25));
-      expect(await readFile(marker, "utf8")).toBe("started");
+      await vi.waitFor(async () => expect((await lstat(ready)).isFile()).toBe(true), { timeout: 10_000, interval: 10 });
       controller.abort(new Error("cancel test"));
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise<void>(resolve => setImmediate(resolve));
       expect(settled).toBe(false);
       await expect(adapter.removeWorktree(f.project, f.owner, {})).rejects.toThrow("already in progress");
+      expect(settled).toBe(false);
+      await writeFile(release, "");
       expect(errorText(await attempt)).toContain("cancel");
-      process.env.PATH = previousPath;
+      restorePath();
       await adapter.removeWorktree(f.project, f.owner, {});
       expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
     } finally {
-      process.env.PATH = previousPath;
-      await attempt;
-      execFileSync("/usr/bin/sudo", ["-n", "rm", "-rf", "--", owned], { timeout: 10000 });
+      restorePath();
+      try { await writeFile(release, ""); }
+      finally {
+        await attempt;
+        execFileSync("/usr/bin/sudo", ["-n", "rm", "-rf", "--", owned], { timeout: 10000 });
+      }
     }
   });
 
