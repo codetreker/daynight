@@ -9,6 +9,18 @@ const original = Buffer.from("original");
 const resource = { resourceId:id(6),status:"available",name:"result.txt",mediaType:"text/plain",byteLength:"8",sha256:digest(original),error:null };
 const manifest = () => ({schemaVersion:3,contentKind:"native_timeline",recordId:id(1),fence:{sessionId:id(1),claimId:id(2),executionGeneration:"1"},provider:"codex",nativeSessionId:"native",controllerId:id(3),controllerInstanceId:id(4),timeline:{fileId:id(7),sha256:digest(JSON.stringify(timeline)),byteLength:String(Buffer.byteLength(JSON.stringify(timeline)))},resources:[{resource,blobId:id(8)}],completeness:"complete"});
 
+test("body policy is explicit, Task-only, and checked against actual archive entries", async () => {
+  expect(archive.parseSessionArchiveManifest(manifest())).not.toHaveProperty("contentPolicy");
+  const body = archive.parseSessionArchiveManifest({ ...manifest(), contentPolicy: "task_body" });
+  await expect(archive.verifySessionArchiveMetadata(body, Buffer.from(JSON.stringify(timeline)))).resolves.toEqual(timeline);
+  for (const contentPolicy of [null, "legacy", "bot_detail", 1]) expect(() => archive.parseSessionArchiveManifest({ ...manifest(), contentPolicy })).toThrow();
+  expect(() => archive.parseSessionArchiveManifest({ ...manifest(), contentPolicy: "task_body", fence: { sessionId: id(1), testExecutionId: id(2), executionGeneration: "1" } })).toThrow();
+  const toolBytes = Buffer.from(JSON.stringify({ entries: [{ entryId: id(9), entrySeq: "1", revision: "1", kind: "tool_call", callId: "tool", name: "shell", status: "completed", input: "echo output", output: [{ type: "text", text: "tool output" }], truncated: false }] }));
+  const toolManifest = { ...manifest(), resources: [], timeline: { ...manifest().timeline, byteLength: String(toolBytes.length), sha256: digest(toolBytes) } };
+  await expect(archive.verifySessionArchiveMetadata(archive.parseSessionArchiveManifest(toolManifest), toolBytes)).resolves.toBeDefined();
+  await expect(archive.verifySessionArchiveMetadata(archive.parseSessionArchiveManifest({ ...toolManifest, contentPolicy: "task_body" }), toolBytes)).rejects.toThrow();
+});
+
 test("validates external archive identity and exact resource closure without embedding original bytes", async () => {
   expect(typeof archive.parseSessionArchiveManifest).toBe("function");
   const parsed = archive.parseSessionArchiveManifest(manifest());

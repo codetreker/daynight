@@ -73,6 +73,8 @@ type archiveLedgerEntry struct {
 	ByteLength   int    `json:"b"`
 }
 type archiveLedger struct {
+	ContentPolicy                          string               `json:",omitempty"`
+	OnlineImageOccurrences                 []sp.ImageOccurrence `json:",omitempty"`
 	HistoryEpoch, SourceThrough, HistoryID string
 	FinalSourceThrough                     string `json:",omitempty"`
 	FinalHistoryEpoch                      string `json:",omitempty"`
@@ -110,12 +112,19 @@ func makeArchiveLedger(history sp.ArchiveHistoryContent, epoch string, through i
 			return archiveLedger{}, archiveConflict()
 		}
 	}
-	result := archiveLedger{HistoryEpoch: epoch, SourceThrough: history.SourceThrough, Entries: []archiveLedgerEntry{}, Resources: history.Resources}
+	result := archiveLedger{ContentPolicy: history.ContentPolicy, OnlineImageOccurrences: history.OnlineImageOccurrences, HistoryEpoch: epoch, SourceThrough: history.SourceThrough, Entries: []archiveLedgerEntry{}, Resources: history.Resources}
 	_, _, projectionErr := sp.ArchiveReferences(history.Entries)
 	result.Sealable = projectionErr == nil
 	result.Occurrences, err = archiveHistoryOccurrences(history.Entries)
 	if err != nil {
 		return archiveLedger{}, err
+	}
+	for _, online := range result.OnlineImageOccurrences {
+		for _, retained := range result.Occurrences {
+			if online.ImageID == retained.ImageID {
+				return archiveLedger{}, archiveConflict()
+			}
+		}
 	}
 	for _, entry := range history.Entries {
 		data, err := sp.MarshalWire(entry)
@@ -730,6 +739,9 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 					}
 				}
 				ledger := candidate
+				if ledger.ContentPolicy != "" && r.Snapshot.ClaimID == "" || op.historyWriter == nil && len(ledger.OnlineImageOccurrences) != 0 {
+					return invalidArchiveFile(archiveConflict())
+				}
 				ledger.SourceEpoch = sourceEpoch(r)
 				if history.HistoryEpoch != r.Snapshot.HistoryEpoch || history.SourceThrough != decimal(through) {
 					return invalidArchiveFile(archiveConflict())
@@ -739,6 +751,23 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 					return archiveConflict()
 				}
 				if previous.HistoryID != "" {
+					if previous.ContentPolicy != ledger.ContentPolicy {
+						return invalidArchiveFile(archiveConflict())
+					}
+					if op.historyWriter != nil {
+						for _, old := range previous.OnlineImageOccurrences {
+							found := false
+							for _, current := range ledger.OnlineImageOccurrences {
+								if current.ImageID == old.ImageID {
+									found = jsonEqual(encode(old), encode(current))
+									break
+								}
+							}
+							if !found {
+								return invalidArchiveFile(archiveConflict())
+							}
+						}
+					}
 					if op.historyWriter != nil {
 						e = verifySourceHistoryAdvance(previous, ledger)
 					} else if op.historyWriter == nil && previous.FinalSourceThrough != "" {
@@ -748,6 +777,11 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 					}
 					if e != nil {
 						return invalidArchiveFile(e)
+					}
+				}
+				if op.historyWriter == nil && previous.ContentPolicy == "task_body" {
+					if e = op.execution.retireOnlineImageReferences(ctx, tx, r, previous.OnlineImageOccurrences, ledger.Resources); e != nil {
+						return e
 					}
 				}
 				if e = checkContentPublication(ctx, tx, op.id, historyContentChange{ledger}); e != nil {
@@ -974,6 +1008,10 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 			return archiveConflict()
 		}
 		if !jsonEqual(bundle.Resources, encode(manifest.Resources)) {
+			return archiveConflict()
+		}
+		var ledger archiveLedger
+		if json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.ContentPolicy != manifest.ContentPolicy || len(ledger.OnlineImageOccurrences) != 0 {
 			return archiveConflict()
 		}
 		var e error
@@ -1329,7 +1367,7 @@ func resetArchivePreparation(ctx context.Context, tx *operationTx, dao store.Ses
 // A later synchronization may only revise the same stopped-source entries.
 // Unchanged entries retain their original revision; changed projections advance it.
 func verifyArchiveHistoryAdvance(previous, next archiveLedger) error {
-	if previous.HistoryEpoch != next.HistoryEpoch || previous.SourceThrough != next.SourceThrough || len(previous.Entries) != len(next.Entries) {
+	if previous.ContentPolicy != next.ContentPolicy || previous.HistoryEpoch != next.HistoryEpoch || previous.SourceThrough != next.SourceThrough || len(previous.Entries) != len(next.Entries) {
 		return archiveConflict()
 	}
 	changed := false
@@ -1368,7 +1406,7 @@ func verifySourceHistoryAdvance(previous, next archiveLedger) error {
 }
 
 func verifyHistoryAdvance(previous, next archiveLedger, sameEpoch bool) error {
-	if previous.latestHistoryEpoch() != next.HistoryEpoch || sameEpoch && number(next.SourceThrough) < number(previous.SourceThrough) || len(next.Entries) < len(previous.Entries) {
+	if previous.ContentPolicy != next.ContentPolicy || previous.latestHistoryEpoch() != next.HistoryEpoch || sameEpoch && number(next.SourceThrough) < number(previous.SourceThrough) || len(next.Entries) < len(previous.Entries) {
 		return archiveConflict()
 	}
 	sameSource := sameEpoch && next.SourceThrough == previous.SourceThrough

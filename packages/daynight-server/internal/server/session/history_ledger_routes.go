@@ -24,6 +24,7 @@ func (h *Routes) registerHistoryLedgerRoutes(mux *http.ServeMux) {
 	}
 }
 func (h *Routes) historyLedger(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Daynight-Task-Body-History-Version", "1")
 	w.Header().Set("Cache-Control", "no-store")
 	protocol, err := selectedSessionProtocol(r)
 	if err != nil || protocol != sp.Protocol {

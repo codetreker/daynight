@@ -140,6 +140,7 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     </details> : null}
     {issue && (error || view.errorCode !== 'controller_offline') ? unavailable ?? <p className="session-error" role="alert">{issue}{assistantShell && (error || !hasContent) ? <button className="inline-link" onClick={retry}>{m.retryHistory}</button> : null}</p> : null}
     {readOnly && view.archiveState !== 'ready' ? <p className="session-empty" role="status">{archiveLabel}</p> : null}
+    {readOnly && view.archiveState === 'ready' && view.archiveContentPolicy === 'task_body' ? <p className="session-empty">{m.bodyHistory}</p> : null}
     {timeline ? assistantShell || slots?.renderEmpty ? <div className="session-timeline-shell session-presentation-timeline">{timeline}{empty != null && empty !== false ? <div className="session-presentation-empty">{empty}</div> : null}{assistantShell && !hasContent && !issue && previewMode ? <div className="session-presentation-pending" role="status">{pending ?? <SessionPendingContent />}</div> : null}</div> : timeline : null}
     {client && !readOnly && operations.length > 0 ? <div className="session-receipts" aria-live="polite">{operations.map(operation => {
       const receipt = operationPresentation(operation, view.operationProgress);

@@ -2,7 +2,7 @@
 
 ## 职责与入口
 
-本文的现有入口与原文读取机制保留原合同；[正文保存与期限规格](../spec/task-session-history.md)中的 `taskBodyHistoryVersion=1` 和 `taskHistoryDirectoryVersion=1` 是须显式启用的新增能力，不表示现有路由已提供它们。Bot 窗口使用独立的[近期历史能力](../spec/bot-session-view.md#近期历史窗口合同)，不复用 Task 的七天期限。
+本文的现有入口与原文读取机制保留原合同。服务端通过 `Daynight-Task-Body-History-Version: 1` 声明正文历史协议支持；生产方必须核对能力后使用正文格式。协议支持不改变旧 Controller 的保存策略，也不表示[正文保存与期限规格](../spec/task-session-history.md)中的 `taskHistoryDirectoryVersion=1` 或七天清理已启用。Bot 窗口使用独立的[近期历史能力](../spec/bot-session-view.md#近期历史窗口合同)，不复用 Task 的七天期限。
 
 `core/session` 拥有当前关联、历史目录、读取授权、Controller 内容请求及归档验证。`service/session.History` 根据共享 `Inspection` 的明确 Session 身份协调 live 或 archive 读取，并返回持有归档句柄的 `ReadResult`。HTTP 与 MCP 只解析输入、传递真实 principal、预算包络和输出结果；CLI 通过 HTTP 读取，不能访问 Worker 的文件。
 
@@ -31,6 +31,12 @@ Controller 每次连接发送 `X-Daynight-Content-Read-Version: 1`。服务端�
 MCP 在 SDK 执行前拒绝包含历史读取的多调用 batch 和无法容纳的请求 ID，避免其他结果或 ID 回显突破历史响应预算。独立读取及单调用 legacy batch 使用最多 256 KiB 的专用响应缓冲；完整编码后才提交，分次写入或错误包络超限时统一返回有界 `resource_limit_exceeded`。其他工具保留既有编码路径。归档许可持续持有到缓冲结果最终写出或取消。
 
 ## 归档与权限生命周期
+
+正文历史同步在原有四字段 `historyEpoch`、`sourceThrough`、`entries`、`resources` 之外显式携带 `contentPolicy=task_body` 和 `onlineImageOccurrences`。旧格式仍严格使用四字段；正文格式只允许 claim 绑定，条目仅限用户和助手消息。首次提交的策略归原 Session ledger 持有，后续同步不能改变。`sourceThrough` 继续覆盖完整源事件序列，条目序号允许因工具排除而不连续。
+
+在线工具及 reasoning 图片使用最多 4096 个累积位置描述，不上传工具正文。位置集合保护同一 Session 的捕获身份，工具修订移除图片不会移除仍有引用的旧位置。最终 settling history 必须提交空位置集合；服务端在同一引用事务内解除在线图片引用，独占资源交给既有上传回收及读取租约机制处理，共享正文图片保持引用。
+
+schema3 manifest 的文件与资源布局保持不变，正文变体新增 `contentPolicy=task_body`。读取方同时验证策略与实际 timeline 类型，不能把工具条目装入正文归档。原始 `/archive/content` 读取正文变体要求请求头 `Daynight-Task-Body-History-Version: 1`；旧读者收到明确 `upgrade_required`，旧 manifest 仍可无该头读取。新 Web 读者保留策略元数据，并说明归档只保留消息及其图片。历史页与正文块的旧 JSON 字段不变；协商请求可从 `Daynight-Session-Content-Policy` 响应头识别正文归档。live 原文仍供在线工具查看，不伪装成正文历史。取舍见[协议决策](../../.agents/notes/implemented/architecture/2026-11-19-task-body-history-protocol.md)。
 
 正文保存能力的生产入口按条目类型形成持久投影，后续同步、容量统计和归档消费同一投影。消息正文及其资源闭包保留；独立工具详情继续供在线显示，但不进入正文归档。传输确认水位、待确认事件和执行控制由各自账本持有，不能因投影排除工具而丢失确认或后续正文。旧格式归档保留原工具内容与读取校验，策略有意排除的工具不作为正文覆盖缺口。
 
