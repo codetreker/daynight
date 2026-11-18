@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldNative, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { startCopilotRuntime } from "../../../../dist/commands/controller/providers/copilot-runtime.js";
 import { isCopilotBridgeImage, retainCopilotBridgeImage, releaseCopilotBridgeImage, sendCopilotBridgeImages, observeCopilotBridgeRoute } from "../../../../dist/commands/controller/providers/copilot-bridge.js";
@@ -56,6 +56,36 @@ const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNa
   if (mode === "capture-failure") throw new Error("Fixture shared media owner capacity exhausted.");
   return openNativeMediaSpool(path.join(root, randomUUID()), maxBytes, () => {}, () => {});
 } });
+const closeAfterNativeGrace = async () => {
+  const [native, helper] = children;
+  const schedule = globalThis.setTimeout;
+  const armed = Promise.withResolvers();
+  let expire;
+  // The shutdown RPC and bridge deadlines run before the helper exits. Only
+  // the acknowledged native exit grace is armed after that successful exit.
+  globalThis.setTimeout = (callback, milliseconds, ...args) => {
+    if (milliseconds !== 1500 || helper.exitCode !== 0) return schedule(callback, milliseconds, ...args);
+    const handle = schedule(() => {}, 20_000).unref();
+    expire = () => { clearTimeout(handle); callback(...args); };
+    globalThis.setTimeout = schedule;
+    armed.resolve(true);
+    return handle;
+  };
+  let closing;
+  try {
+    closing = runtime.close();
+    assert.equal(await Promise.race([armed.promise, closing.then(() => false)]), true, "Acknowledged shutdown must arm the 1500 ms native exit grace.");
+    await yieldNative();
+    assert.equal(records().filter(record => record.method === "runtime.shutdown").length, 1);
+    assert.equal(native.exitCode, null, "The native process must remain live during the grace period.");
+    assert.equal(native.signalCode, null);
+    assert.deepEqual(nativeStopSignals, [], "The native process must receive no signal before the grace expires.");
+  } finally {
+    globalThis.setTimeout = schedule;
+    expire?.();
+    await closing;
+  }
+};
 let releaseReader;
 process.once("SIGTERM", () => { void runtime.close(true).finally(() => process.exit(1)); });
 try {
@@ -210,7 +240,9 @@ try {
         await client.ping("emit"); await eventually(() => events.some(event => event.id === "tool-event"));
         const liveMarker = events.find(event => event.id === "tool-event").data.result.contents[1].data;
         releaseReader = retainCopilotBridgeImage(liveMarker);
-        await runtime.close(); assert(existsSync(liveMarker.path)); assert(isCopilotBridgeImage(liveMarker));
+        if (mode === "normal") await closeAfterNativeGrace();
+        else await runtime.close();
+        assert(existsSync(liveMarker.path)); assert(isCopilotBridgeImage(liveMarker));
         releaseReader(); releaseReader = undefined; assert(!existsSync(liveMarker.path)); assert(!isCopilotBridgeImage(liveMarker));
         assert.equal(runtime.bridgeMetrics().mediaCount, 0);
       }
