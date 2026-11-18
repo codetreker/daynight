@@ -12,10 +12,14 @@ while a page or request still holds associated details.
 ## Decision
 
 The Worker pages read the independent monitoring contract alongside the existing
-snapshot. The list batches loaded Worker IDs, and detail shows the actual scheduler,
-capacity, activities, failures and latest recovery in Runtime monitoring. The
-[system monitoring decision](2026-11-18-worker-system-monitoring-tab.md) places
-host resources on a peer tab. Redis
+snapshot. The list batches loaded Worker IDs. Detail places the monitoring time
+line after Worker read and offline notices and before the task panel, so the
+observation age is visible before interpreting task and runtime data. The task
+panel remains the first business panel, followed by monitoring errors, projection
+notices, scheduler, capacity, activities, failures and latest recovery in Runtime
+monitoring. The [system monitoring decision](2026-11-18-worker-system-monitoring-tab.md)
+places host resources on a peer tab. The time line and monitoring body consume the same read state and
+expiry predicate; moving presentation does not add another request or clock. Redis
 observation time and a monotonic browser clock determine monitoring freshness;
 the existing heartbeat clock still determines online status. Missing, expired and
 failed reads remain distinct. The [Web design](../../../../docs/design/daynight-web.md#我的-worker-列表与详情)

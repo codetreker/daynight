@@ -113,7 +113,7 @@ describe("Worker configuration cache", () => {
     expect(first.current().effective.native).toBeNull();
     expect(first.current().retainedArchiveSessions).toBe(false);
     expect(first.readCleanupPolicy()).toEqual({ enableSudoCleanup: true, revision: "10" });
-    expect(invalid).toHaveBeenCalledWith("10", "unsupported_legacy_fields");
+    expect(invalid).toHaveBeenCalledWith("10", "unsupported_configuration");
     await first.stop();
     const second = await createWorkerConfigurationManager(options);
     await second.receive(receiveWorkerDesired(raw), "9"); await second.settle();

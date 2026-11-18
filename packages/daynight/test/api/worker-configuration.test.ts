@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiClient } from "../../src/api/client.js";
 import { stringifyApiJson } from "../../src/api/json.js";
@@ -59,22 +60,39 @@ describe("Worker cloud configuration protocol", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("preserves future source values across GET and both report receipt variants", async () => {
+  it.each(["web", "herdr", null] as const)("preserves retired mode %j and unknown tool source across GET and both report receipt variants", async agentControlMode => {
     const future = '{"negative":-2,"fraction":1.25,"integer":9007199254740993,"exponent":1e9999,"array":[true,null]}';
-    const desiredJson = JSON.stringify(networkDesired).replace('"value":{', `"future":${future},"value":{"future":${future},`).replace('"agent":"codex"', `"agent":"codex","future":${future}`);
+    const desiredJson = JSON.stringify(networkDesired).replace('"maxConcurrent":2', '"maxConcurrent":4').replace('"value":{', `"future":${future},"value":{"agentControlMode":${JSON.stringify(agentControlMode)},"future":${future},`).replace('"agent":"codex"', `"agent":"codex","future":${future}`).replace('"toolPaths":{', `"toolPaths":{"herdr":${future},`);
+    const expected = { ...networkDesired, value: { ...networkValue, maxConcurrent: 4 } };
     const configJson = `{"desired":${desiredJson},"observationRevision":"1","observationAccepted":true,"future":${future}}`;
-    const rawResponse = (source: string, version: string) => new Response(source, { headers: { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": version, "Daynight-Worker-Tool-Paths": "2" } });
-    const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(rawResponse(`{"desired":${desiredJson},"observationRevision":"0","observation":null,"future":${future}}`, "1"))
-      .mockResolvedValueOnce(rawResponse(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson}}`, "1"))
-      .mockResolvedValueOnce(rawResponse(`{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson.slice(0, -1)},"prompts":[]}}`, "2"));
-    const client = api(fetch);
-    expect((await client.getWorkerConfiguration(workerId)).desired).toEqual({ json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: networkDesired });
-    expect((await client.reportWorkerConfiguration(workerId, report, configuration)).configuration).toEqual({ json: configJson, desired: { json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: networkDesired }, observationRevision: "1", observationAccepted: true });
-    const sync = await client.reportWorkerConfiguration(workerId, report, configuration, []);
-    expect(sync.configuration.desired?.json).toBe(desiredJson);
-    expect(sync.configuration.json).toBe(configJson);
-    expect(sync.prompts).toEqual({ ok: true, results: [] });
+    const responses = [
+      `{"desired":${desiredJson},"observationRevision":"0","observation":null,"future":${future}}`,
+      `{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson}}`,
+      `{"observedAt":"${time}","lastReportedAt":"${time}","configuration":${configJson.slice(0, -1)},"prompts":[]}}`,
+    ];
+    let received = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      response.writeHead(200, { "Content-Type": "application/json", "Daynight-User-ID": userId, "Daynight-Worker-Configuration": received === 2 ? "2" : "1", "Daynight-Worker-Tool-Paths": "2" });
+      response.end(responses[received++]);
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("Missing fixture server address.");
+    const operation = createOperation(); operations.push(operation);
+    const client = createApiClient({ serverUrl: `http://127.0.0.1:${address.port}`, serverToken: "fixture-token", expectedUserId: userId, operation });
+    try {
+      expect((await client.getWorkerConfiguration(workerId)).desired).toEqual({ json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: expected });
+      expect((await client.reportWorkerConfiguration(workerId, report, configuration)).configuration).toEqual({ json: configJson, desired: { json: desiredJson, revision: desired.revision, updatedAt: desired.updatedAt, known: expected }, observationRevision: "1", observationAccepted: true });
+      const sync = await client.reportWorkerConfiguration(workerId, report, configuration, []);
+      expect(sync.configuration.desired?.json).toBe(desiredJson);
+      expect(sync.configuration.desired?.known).toEqual(expected);
+      expect(sync.configuration.json).toBe(configJson);
+      expect(sync.prompts).toEqual({ ok: true, results: [] });
+      expect(received).toBe(3);
+    } finally {
+      await new Promise<void>((resolve, reject) => { server.close(error => error === undefined ? resolve() : reject(error)); server.closeAllConnections(); });
+    }
   });
   it("requires the negotiated control mode field and validates its distinct observation value", () => {
     expect(parseWorkerCloudValue({ ...value, agentControlMode: "web" }, true, true).agentControlMode).toBe("web");

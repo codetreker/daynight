@@ -9,7 +9,7 @@ import { useWorker } from './useWorker';
 import { WorkerStatusBadge } from './WorkerStatusBadge';
 import { followWorkerLink, WorkerReadNotice, WorkerReadState, WorkerRefresh, WorkerTimestamp } from './presentation';
 import { WorkerEditingPanels } from './configuration/WorkerEditingPanels';
-import { WorkerMonitoring } from './WorkerMonitoring';
+import { WorkerMonitoring, WorkerMonitoringTime } from './WorkerMonitoring';
 import { WorkerSystemSnapshot } from './WorkerSystemSnapshot';
 import { useWorkerPageAnchor } from './useWorkerPageAnchor';
 import { useWorkerMonitoring } from './useWorkerMonitoring';
@@ -90,6 +90,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
     {worker === undefined || unavailable ? <WorkerReadState kind="detail" {...state} status={unavailable ? 'unavailable' : state.status} readEnabled /> : <>
       <WorkerReadNotice {...state} observedAt={snapshot!.observedAt} readEnabled />
       {!online && <section className="worker-snapshot-notice" role="status"><span aria-hidden="true">◷</span><div><p>{m.offlineNotice}</p><p>{m.lastReported}: <WorkerTimestamp value={worker.lastReportedAt} /> · {m.offlineDetail}</p></div></section>}
+      <WorkerMonitoringTime state={monitoring} />
       <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
         {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
         <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>

@@ -2,6 +2,7 @@ import { fireEvent, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { WorkerDetail, WorkerSummary } from '../src/api/workers';
+import type { WorkerMonitoringDetail } from '../src/api/worker-monitoring';
 import { taskDetailUrl } from '../src/app/router';
 import { WorkersPage } from '../src/features/workers/WorkersPage';
 import { WorkerDetailPage } from '../src/features/workers/WorkerDetailPage';
@@ -9,6 +10,7 @@ import { WorkerStatusBadge } from '../src/features/workers/WorkerStatusBadge';
 import { formatWorkerBytes, formatWorkerRelative } from '../src/features/workers/presentation';
 import { useWorkers } from '../src/features/workers/useWorkers';
 import { useWorker } from '../src/features/workers/useWorker';
+import { useWorkerMonitoring } from '../src/features/workers/useWorkerMonitoring';
 import { getFormats } from '../src/i18n/formats';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { toolPathActual, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
@@ -16,7 +18,7 @@ import { WORKER_USER, workerResponse } from './helpers/workers';
 
 vi.mock('../src/features/workers/useWorkers', () => ({ useWorkers: vi.fn() }));
 vi.mock('../src/features/workers/useWorker', () => ({ useWorker: vi.fn() }));
-vi.mock('../src/features/workers/useWorkerMonitoring', () => { const state = { snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh: () => {} }; return { useWorkerMonitoring: () => state, useWorkerMonitoringSummaries: () => state }; });
+vi.mock('../src/features/workers/useWorkerMonitoring', () => { const state = { snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh: () => {} }; return { useWorkerMonitoring: vi.fn(), useWorkerMonitoringSummaries: () => state }; });
 const id = (n: number) => `0000000${n}-1111-4111-8111-111111111111`;
 const observedAt = '2026-10-29T12:00:00Z';
 const now = Date.parse(observedAt);
@@ -33,8 +35,15 @@ const detail = () => ({ ...summary(), inventoryObservedAt: '2026-10-29T11:59:30Z
   },
 } satisfies WorkerDetail);
 const refresh = vi.fn();
+const monitoringDetail: WorkerMonitoringDetail = { observedAt, state: 'available', revision: id(4), runId: id(5), sequence: '1', receivedAt: report, expiresAt: new Date(now + 3_580_000).toISOString(), detailCoverage: 'partial', permissionProjection: 'current', data: {
+  runId: id(5), sequence: '1', capturedAt: report, lifecycle: 'running',
+  scheduler: { phase: 'waiting-poll', coverage: 'complete', cycleId: null, lastCompletedAt: report, lastSuccessfulAt: report, lastOutcome: 'completed', nextPollAt: null },
+  capacity: null, admission: { observedAt: report, coverage: 'complete', reasons: [] }, reservations: [], activities: [], currentFailures: [], lastRecovery: null,
+  detailCoverage: 'partial', delivery: { lastSucceededAt: report, lastFailure: null },
+} };
 let listState: ReturnType<typeof useWorkers>;
 let detailState: ReturnType<typeof useWorker>;
+let monitoringState: ReturnType<typeof useWorkerMonitoring>;
 const listed = (items: readonly WorkerSummary[] = [summary()]): ReturnType<typeof useWorkers> => ({ snapshot: { observedAt, items }, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh });
 const shown = (worker: WorkerDetail = detail()): ReturnType<typeof useWorker> => ({ snapshot: { observedAt, worker }, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh });
 const showList = () => renderWithLocale(<WorkersPage readEnabled />, { locale: 'en' });
@@ -49,8 +58,10 @@ beforeEach(() => {
   window.history.replaceState(null, '', `/workers/${id(1)}`);
   window.dispatchEvent(new PopStateEvent('popstate'));
   refresh.mockReset(); listState = listed(); detailState = shown();
+  monitoringState = { snapshot: null, status: 'loading', refreshing: false, error: null, stale: false, serverMilliseconds: null, refresh, expired: false };
   vi.mocked(useWorkers).mockImplementation(() => listState);
   vi.mocked(useWorker).mockImplementation(() => detailState);
+  vi.mocked(useWorkerMonitoring).mockImplementation(() => monitoringState);
 });
 
 describe('Worker software summary', () => {
@@ -183,6 +194,54 @@ describe('Worker list presentation', () => {
 });
 
 describe('Worker detail presentation', () => {
+  it.each(['current', 'offline', 'failed Worker refresh'] as const)('places one monitoring time after notices and before the first business panel with %s data', scenario => {
+    monitoringState = { ...monitoringState, snapshot: monitoringDetail, status: 'ready', serverMilliseconds: now };
+    if (scenario === 'offline') detailState = shown({ ...detail(), lastReportedAt: new Date(now - 3600_000).toISOString() });
+    if (scenario === 'failed Worker refresh') detailState = { ...shown(), stale: true, error: new ApiError('network') };
+    const view = showDetail();
+    const overview = document.querySelector('[data-worker-panel="overview"]')!;
+    const time = overview.querySelector('.monitoring-time')!;
+    const panel = overview.querySelector('.worker-task-heading-label')!.closest('section')!;
+    expect(overview.querySelectorAll('.monitoring-time')).toHaveLength(1);
+    expect(time).toHaveTextContent('Received'); expect(time).toHaveTextContent('Captured');
+    expect(time.querySelectorAll('time')).toHaveLength(2);
+    expect(time.querySelector('time')).toHaveAttribute('datetime', report);
+    expect(time.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(overview.querySelector('[data-worker-reading]')).toBe(panel);
+    expect(panel.compareDocumentPosition(screen.getByText('Some details were omitted.')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const notice of overview.querySelectorAll('.worker-sync-notice, .worker-snapshot-notice')) {
+      expect(notice.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    view.setLocale('zh-CN');
+    expect(time).toHaveTextContent('收到时间'); expect(time).toHaveTextContent('采集时间');
+    expect(overview.querySelectorAll('.monitoring-time')).toHaveLength(1);
+  });
+
+  it.each(['loading', 'absent', 'elapsed expiry', 'known expiry'] as const)('omits monitoring time for %s while retaining the task panel', scenario => {
+    monitoringState = { ...monitoringState, status: 'ready', snapshot: monitoringDetail, serverMilliseconds: now };
+    if (scenario === 'loading') monitoringState = { ...monitoringState, snapshot: null, serverMilliseconds: null, status: 'loading' };
+    if (scenario === 'absent') monitoringState = { ...monitoringState, snapshot: { observedAt, state: 'absent', revision: null, runId: null, sequence: null, receivedAt: null, expiresAt: null, data: null, detailCoverage: 'complete', permissionProjection: 'current' } };
+    if (scenario === 'elapsed expiry') monitoringState = { ...monitoringState, serverMilliseconds: Date.parse(report) + 3_600_000 };
+    if (scenario === 'known expiry') monitoringState = { ...monitoringState, expired: true };
+    showDetail();
+    expect(document.querySelector('.monitoring-time')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Build reliable workers' })).toBeInTheDocument();
+  });
+
+  it('retains the monitoring time above tasks on failed refresh and retries below the task panel', () => {
+    monitoringState = { ...monitoringState, status: 'ready', snapshot: monitoringDetail, serverMilliseconds: now + 90_000, stale: true, error: new ApiError('network') };
+    showDetail();
+    const time = document.querySelector('.monitoring-time')!;
+    const panel = document.querySelector('.worker-task-heading-label')!.closest('section')!;
+    const alert = screen.getByRole('alert');
+    expect(time).toHaveTextContent('Runtime observation is stale'); expect(time).toHaveTextContent('Captured');
+    expect(document.querySelectorAll('.monitoring-time')).toHaveLength(1);
+    expect(time.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(alert).toHaveTextContent('The last confirmed observation remains visible.');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it('updates the alias immediately and never rolls back to an older polling response', async () => {
     detailState = shown({ ...detail(), alias: { value: null, version: '1' } });
     const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(workerResponse({ workerId: id(1), alias: { value: '办公室 Windows', version: '2' } }));

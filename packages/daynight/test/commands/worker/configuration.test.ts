@@ -342,12 +342,12 @@ describe("Worker cloud configuration application", () => {
       expect(reopened.current().desired).toBeNull();
       expect(reopened.current().effective.native).toBeNull();
       expect(applyNative).not.toHaveBeenCalled();
-      expect(invalid).toHaveBeenCalledWith("2", "unsupported_legacy_fields");
+      expect(invalid).toHaveBeenCalledWith("2", "unsupported_configuration");
       expect((JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache).authority.desiredJson).toBe(raw);
     } finally { operation.dispose(); }
   });
 
-  it.each(["mode", "tools"] as const)("rejects a same-revision removal of legacy %s from raw authority", async field => {
+  it.each(["mode", "tools"] as const)("rejects a same-revision removal of retired %s from raw authority", async field => {
     const applyNative = vi.fn(async () => {}), first = await fixture({ applyNative }), valid = desired("1", "original", false);
     const legacy = { ...valid, value: field === "mode" ? { ...valid.value, agentControlMode: "web" as const } : { ...valid.value, toolPaths: { ...valid.value.toolPaths!, herdr: { kind: "auto" as const } } } };
     await first.manager.receive(receivedDesired(legacy)); await first.manager.settle();
@@ -357,8 +357,8 @@ describe("Worker cloud configuration application", () => {
     expect(failure).toBeInstanceOf(Error);
     fixtures.find(entry => entry.manager === first.manager)!.expectedStopError = failure;
     expect((await readConfigurationCache(first.file, identity, new AbortController().signal)).cache.authority.desiredJson).toBe(raw);
-    expect(first.manager.current().effective.native).toBeNull();
-    expect(applyNative).not.toHaveBeenCalled();
+    expect(first.manager.current().effective.native).toEqual(valid.value.native);
+    expect(applyNative).toHaveBeenCalledTimes(1);
   });
 
   it("accepts an archive capability projection at the same revision", async () => {
@@ -369,49 +369,66 @@ describe("Worker cloud configuration application", () => {
     expect(manager.current().effective.archiveSessions).toBe(false);
   });
 
-  it("retains an applied schema 10 legacy Web target without executing or rewriting it after restart", async () => {
-    const first = await fixture(), initial = { ...desired("1", "original", false), value: { ...desired("1", "original", false).value, toolPaths: { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const } } } };
+  it("applies a pending schema 10 target with retired fields after the same authoritative GET and revalidates on restart", async () => {
+    const first = await fixture(), initial = desired("1", "original", false);
     await first.manager.receive(receivedDesired(initial)); await first.manager.settle(); await first.manager.stop();
     const cache = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
-    const legacy = { ...initial, value: { ...initial.value, agentControlMode: "web" as const, toolPaths: { ...initial.value.toolPaths, herdr: { kind: "auto" } } } };
-    const raw = JSON.stringify(legacy);
-    const recordId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", generation = cache.authority.generation;
-    const mode = { recordId, origin: { generation, targetRevision: "1", source: "application" }, value: { key: { kind: "agentControlMode" }, targetRevision: "1", appliedValue: "web", state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, backoffStep: 0, failureId: null, started: false, actualSource: { kind: "observed", recordId, generation, targetRevision: "1" }, blockedByRemovalId: null };
-    await writeFile(first.file, JSON.stringify({ ...cache, authority: { ...cache.authority, desiredJson: raw, pendingApplication: false }, currentItems: [...cache.currentItems, mode] }));
-    const applyNative = vi.fn(async () => {}), invalid = vi.fn();
-    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative, onInvalidDesired: invalid });
-    fixtures.push({ manager: reopened, directory: first.directory });
-    expect(reopened.current().effective.native).toBeNull();
-    await reopened.receive(receivedDesired(legacy)); await reopened.settle();
-    expect(reopened.current().effective.native).toBeNull();
-    expect(reopened.current().desired).toBeNull();
-    expect(applyNative).not.toHaveBeenCalled();
-    expect(invalid).toHaveBeenCalledWith("1", "unsupported_legacy_fields");
-    expect((JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache).authority.desiredJson).toBe(raw);
+    const updated = desired("2", "updated", false);
+    const retained = { ...updated, value: { ...updated.value, agentControlMode: "herdr", toolPaths: { ...updated.value.toolPaths, herdr: { kind: "auto" } }, future: { retained: true } } };
+    const raw = JSON.stringify(retained);
+    await writeFile(first.file, JSON.stringify({ ...cache, authority: { ...cache.authority, desiredJson: raw, pendingApplication: true } }));
+    const applyNative = vi.fn(async () => {}), invalid = vi.fn(), operation = createOperation();
+    const client = createApiClient({ serverUrl: "http://localhost:8787", expectedUserId: identity.userId, operation, fetch: async () => new Response(JSON.stringify({ desired: retained, observationRevision: "0", observation: null }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": identity.userId, "Daynight-Worker-Configuration": "1", "Daynight-Worker-Tool-Paths": "2" } }) });
+    try {
+      const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative, onInvalidDesired: invalid });
+      fixtures.push({ manager: reopened, directory: first.directory });
+      expect(reopened.current().effective.native).toBeNull();
+      expect(applyNative).not.toHaveBeenCalled();
+      const resource = await client.getWorkerConfiguration(identity.workerId);
+      expect(resource.desired).toMatchObject({ json: raw, known: updated });
+      await reopened.receive(resource.desired, resource.observationRevision); await reopened.settle();
+      expect(reopened.current().effective.native).toEqual(updated.value.native);
+      expect(reopened.current().effective.maxConcurrent).toBe(updated.value.maxConcurrent);
+      expect(applyNative).toHaveBeenCalledTimes(1);
+      expect(invalid).not.toHaveBeenCalled();
+      expect(reopened.report().observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+      const saved = JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache;
+      expect(saved).toMatchObject({ schemaVersion: 10, authority: { desiredJson: raw, applicationRevision: "2", pendingApplication: false } });
+      await reopened.stop();
+      const againApply = vi.fn(async () => {});
+      const again = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: againApply });
+      fixtures.push({ manager: again, directory: first.directory });
+      expect(again.current().effective.native).toBeNull();
+      expect(againApply).not.toHaveBeenCalled();
+      await again.receive(resource.desired, resource.observationRevision); await again.settle();
+      expect(again.current().effective.native).toEqual(updated.value.native);
+      expect(againApply).toHaveBeenCalledTimes(1);
+      expect((JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache).authority.desiredJson).toBe(raw);
+    } finally { operation.dispose(); }
   });
 
-  it("retains an unsupported raw mode without applying it or accepting an old receipt", async () => {
+  it("retains an unsupported raw native value without applying it or accepting an old receipt", async () => {
     const applyNative = vi.fn(async () => {}), invalid = vi.fn();
     const { manager, file } = await fixture({ applyNative, onInvalidDesired: invalid });
     const first = desired("1", "original", false);
     await manager.receive(receivedDesired(first)); await manager.settle();
     const sent = manager.report();
-    const rejected = { ...first, revision: "2", value: { ...first.value, agentControlMode: "herdr" as const } };
+    const rejected = { ...first, revision: "2", value: { ...first.value, native: { ...first.value.native, model: " " } } };
     await manager.receive(receivedDesired(rejected)); await manager.settle();
     expect(manager.current().desired).toBeNull();
     expect(manager.current().effective.native).toBeNull();
     expect(manager.current().selectedProjects).toBeNull();
     expect(manager.report().observation).toBeNull();
     expect(JSON.parse((JSON.parse(await readFile(file, "utf8")) as WorkerConfigurationCache).authority.desiredJson!)).toEqual(rejected);
-    expect(invalid).toHaveBeenCalledWith("2", "unsupported_legacy_fields");
+    expect(invalid).toHaveBeenCalledWith("2", "unsupported_configuration");
     expect(applyNative).toHaveBeenCalledTimes(1);
     expect(await manager.acknowledge(sent, receivedReceipt({ desired: first, observationRevision: "1", observationAccepted: true }))).toBe("ignored");
     expect(manager.current().desired).toBeNull();
   });
 
-  it("reports a cached unsupported mode again after the first authoritative read", async () => {
+  it("reports a cached unsupported native value again after the first authoritative read", async () => {
     const first = await fixture(), original = desired("1", "original", false);
-    const rejected = { ...original, value: { ...original.value, agentControlMode: "herdr" as const } };
+    const rejected = { ...original, value: { ...original.value, native: { ...original.value.native, model: " " } } };
     await first.manager.receive(receivedDesired(rejected)); await first.manager.settle(); await first.manager.stop();
     const before = (JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache).authority.desiredJson;
     const applyNative = vi.fn(async () => {}), invalid = vi.fn();
@@ -419,7 +436,7 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     expect(invalid).not.toHaveBeenCalled();
     await reopened.receive(receivedDesired(rejected)); await reopened.settle();
-    expect(invalid).toHaveBeenCalledWith("1", "unsupported_legacy_fields");
+    expect(invalid).toHaveBeenCalledWith("1", "unsupported_configuration");
     expect(applyNative).not.toHaveBeenCalled();
     expect(reopened.current().effective.native).toBeNull();
     expect((JSON.parse(await readFile(first.file, "utf8")) as WorkerConfigurationCache).authority.desiredJson).toBe(before);

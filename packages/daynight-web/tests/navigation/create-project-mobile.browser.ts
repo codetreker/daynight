@@ -2,14 +2,14 @@ import { expect, test, type Page } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000201', personalId = '00000000-0000-4000-8000-000000000701', time = '2026-10-20T09:00:00Z';
 async function install(page: Page) {
-  const state = { writes: 0, meReads: 0, failIdentity: false, identityGate: null as Promise<void> | null, createGate: Promise.withResolvers<void>() };
+  const state = { writes: 0, meReads: 0, failIdentity: false, identityGate: null as Promise<void> | null, createGate: Promise.withResolvers<void>(), repositoryConflict: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': userId } });
     const error = { error: { code: 'internal_error', message: 'Fixture refusal', requestId: 'fixture-error' } };
     if (path === '/api/v1/me') { state.meReads++; if (state.identityGate) await state.identityGate; return state.failIdentity ? send(error, 503) : send({ id: userId, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
-    if (path === '/api/v1/projects' && request.method() === 'POST') { state.writes++; await state.createGate.promise; return send(error, 400); }
+    if (path === '/api/v1/projects' && request.method() === 'POST') { state.writes++; await state.createGate.promise; return state.repositoryConflict ? send({ error: { code: 'project_repository_conflict', message: 'Fixture refusal', requestId: 'repository-conflict' } }, 409) : send(error, 400); }
     if (path === '/api/v1/projects' || path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     return send(error, 404);
@@ -17,9 +17,9 @@ async function install(page: Page) {
   return state;
 }
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
-  test(`create project retains focus and failed draft at ${width}px in ${locale}`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 844 }); const state = await install(page); await page.goto('/projects');
+for (const locale of ['en', 'zh-CN'] as const) for (const [width, repositoryConflict] of [[320, false], [390, false], [320, true], [1280, true]] as const) {
+  test(`create project retains focus and failed draft at ${width}px in ${locale} (repository conflict: ${repositoryConflict})`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 }); const state = await install(page); state.repositoryConflict = repositoryConflict; await page.goto('/projects');
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     const opener = page.getByRole('button', { name: locale === 'en' ? '＋ Create project' : '＋ 创建项目', exact: true });
     await opener.click(); const dialog = page.locator('dialog.auth-dialog'); await expect(dialog).toBeVisible();
@@ -37,7 +37,11 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     try {
       await expect.poll(() => state.writes).toBe(1); await expect(name).toBeDisabled(); await expect(repository).toBeDisabled();
       await page.keyboard.press('Escape'); await expect(dialog).toBeVisible();
-      state.createGate.resolve(); await expect(dialog.getByRole('alert')).toContainText('fixture-error');
+      state.createGate.resolve(); await expect(dialog.getByRole('alert')).toContainText(repositoryConflict ? 'repository-conflict' : 'fixture-error');
+      await expect(dialog.getByRole('alert')).toContainText(repositoryConflict
+        ? locale === 'en' ? 'The target Team already has a project for this repository.' : '目标 Team 已有同一仓库的项目。'
+        : locale === 'en' ? 'The project could not be created.' : '项目创建失败');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await expect(name).toHaveValue(rawName); await expect(repository).toHaveValue(rawRepo); expect(state.writes).toBe(1);
       await dialog.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true }).click();
       await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();

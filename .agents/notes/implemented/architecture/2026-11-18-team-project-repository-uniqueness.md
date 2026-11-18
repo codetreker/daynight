@@ -43,7 +43,12 @@ the archived [client discovery decision](../../archived/bug-fix/2026-10-21-proje
 deferral of service uniqueness and extends the [Project boundary decision](2026-11-05-server-project-boundaries.md).
 The [MCP lookup decision](../feature/2026-11-06-mcp-project-management.md) still owns
 full-visible-project reuse; cross-Team reuse and discovery ambiguity remain
-separate from the actual-write constraint.
+separate from the actual-write constraint. Web creation and transfer map trusted
+server 409 repository conflicts in their existing error regions, while transfer
+also explains an unavailable repository identity. Localized messages retain the
+request ID without exposing the server message or private conflicting Project.
+The existing rejection state retains drafts and navigation; unknown writes keep
+their separate, read-only inspection flow.
 
 ## Alternatives
 

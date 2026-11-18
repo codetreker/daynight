@@ -15,13 +15,13 @@ const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
 type State = {
   directOnly: boolean; actorLost: boolean; loseResponse: boolean; conflict: boolean;
   retainAccess: boolean; transferred: boolean; sourceRead: 'ok' | 'missing' | 'network';
-  forbidden: boolean; hold: Promise<void> | null;
+  forbidden: boolean; hold: Promise<void> | null; repositoryError: string | null;
   holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdTeams: Promise<void> | null; paginated: boolean; longNames: boolean;
   targetVersion: bigint; requests: string[]; writes: string[]; previews: string[];
 };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, longNames: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
+  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, repositoryError: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, longNames: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
   const ownership = { teamId: sourceId, version: 1n };
   const grant = { projectId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time };
   const access = () => state.transferred ? { projectId, ownerTeam: target, ownership: { teamId: targetId, version: 2n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: grant } : { projectId, ownerTeam: source, ownership, effectiveRole: 'admin', teamRole: state.directOnly ? null : 'admin', canTransfer: !state.directOnly, directGrant: state.directOnly || state.retainAccess ? grant : null };
@@ -54,6 +54,7 @@ const install = async (page: Page): Promise<State> => {
     if (path === `/api/v1/projects/${projectId}/transfer`) {
       state.writes.push(request.postData()!);
       if (state.hold !== null) await state.hold;
+      if (state.repositoryError !== null) return send(error(state.repositoryError), 409);
       if (state.forbidden) { state.directOnly = true; return send(error('forbidden'), 403); }
       if (state.conflict) { state.targetVersion++; return send(error('version_conflict'), 409); }
       state.actorLost = !state.retainAccess; state.transferred = true;
@@ -88,6 +89,29 @@ const preview = async (page: Page, targetValue = targetId) => {
 };
 
 for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
+  for (const code of ['project_repository_conflict', 'project_repository_identity_unavailable'] as const) {
+    test(`retains the transfer form after ${code} at ${width}px in ${locale}`, async ({ page }) => {
+      const state = await install(page); state.repositoryError = code;
+      await page.setViewportSize({ width, height: 900 }); await start(page);
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      await page.getByRole('button', { name: locale === 'en' ? 'Transfer project' : '转移项目', exact: true }).click();
+      const dialog = page.getByRole('dialog'), draft = dialog.locator('#transfer-target');
+      await draft.fill(targetId);
+      await dialog.getByRole('button', { name: locale === 'en' ? 'Preview' : '预览', exact: true }).click();
+      const confirm = dialog.getByRole('button', { name: locale === 'en' ? 'Confirm transfer' : '确认转移' });
+      await expect(confirm).toBeEnabled(); await confirm.click();
+      const message = code === 'project_repository_conflict'
+        ? locale === 'en' ? 'The target Team already has a project for this repository.' : '目标 Team 已有同一仓库的项目。'
+        : locale === 'en' ? 'The current repository address cannot be recognized, so this project cannot be transferred.' : '当前仓库地址无法识别，无法转移项目。';
+      await expect(dialog.getByRole('alert')).toContainText(message);
+      await expect(dialog.getByRole('alert')).toContainText('00000000-0000-4000-8000-000000000099');
+      await expect(draft).toHaveValue(targetId); await expect(draft).toBeEnabled(); await expect(confirm).toBeEnabled();
+      await expect(dialog.getByText('Destination Team', { exact: true })).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings`));
+      expect(state.writes).toHaveLength(1); expect(state.transferred).toBe(false);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+  }
   test(`native Team menu cancellation retains the transfer draft at ${width}px in ${locale}`, async ({ page }, testInfo) => {
     const state = await install(page); state.paginated = true; state.longNames = true;
     await page.setViewportSize({ width, height: 900 }); await start(page);

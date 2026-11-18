@@ -590,11 +590,17 @@ Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
-Runtime monitoring places the current task panel or retained task snapshot after
-read and offline notices, before scheduler and capacity observations. Its DOM
-order matches the visual and keyboard order. System monitoring shares the same
-Worker snapshot and clock without another read on tab selection; its refresh
-reads only the snapshot and does not display runtime monitoring errors.
+Runtime monitoring places a single monitoring time line after Worker read and
+offline notices, before the current task panel or retained task snapshot. It
+preserves the received status, relative age and absolute capture time, using the
+same read state and expiry rule as the monitoring body. Loading, absent and
+expired observations hide the line; a failed refresh retains it while the
+retained observation remains displayable. The task panel remains the first
+business panel, followed by monitoring errors and retry, projection notices and
+runtime details. DOM order matches the visual and keyboard order, and the time
+line wraps naturally at narrow widths. System monitoring shares the same Worker
+snapshot and clock without another read on tab selection; its refresh reads only
+the snapshot and does not display runtime monitoring errors.
 
 System monitoring resource cards render actual OS type/release/version/architecture,
 CPU model/logical processor count/use, used/total memory and available/total capacity
@@ -733,8 +739,13 @@ admin. Background checks preserve the dialog and its paged selection; transfer
 waits for current authorization and verifies ownership again. The dialog accepts a Team selected from the paged
 membership list, a UUID, or a same-origin Team page URL. Preview displays the
 target and predicted access before confirmation. The request binds the observed
-ownership and target versions and the authenticated user; conflicts require a
-new preview and confirmation. Direct grants and invitations remain intact.
+ownership and target versions and the authenticated user; ownership or target
+version conflicts require a new preview and confirmation. Repository conflicts
+and an unrecognizable current repository address have dedicated English and
+Chinese errors in the existing dialog. Confirmed refusals retain the target,
+preview and request ID without closing the editor or navigating. Creation uses
+the same repository-conflict explanation while retaining its name, address and
+original Team. Direct grants and invitations remain intact.
 
 A validated receipt determines success. Retained access is installed in the
 Project access session; loss of access revokes the matching Task cache generation
