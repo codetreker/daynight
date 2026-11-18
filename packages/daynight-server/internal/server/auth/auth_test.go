@@ -576,27 +576,37 @@ func (logs *identityIntegrationLogs) Write(value []byte) (int, error) {
 	return logs.buffer.Write(value)
 }
 
-func (logs *identityIntegrationLogs) count(value string) int {
-	logs.mu.Lock()
-	defer logs.mu.Unlock()
-	return strings.Count(logs.buffer.String(), value)
-}
-
 func (logs *identityIntegrationLogs) contains(value string) bool {
 	logs.mu.Lock()
 	defer logs.mu.Unlock()
 	return strings.Contains(logs.buffer.String(), value)
 }
 
+type identityResultTransport struct {
+	origin   string
+	base     http.RoundTripper
+	requests atomic.Int64
+}
+
+func (transport *identityResultTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	// Subprocess logs can arrive after the callback response. Observe SDK requests
+	// synchronously while preserving the real gateway transport and response.
+	if request.URL.Scheme+"://"+request.URL.Host == transport.origin && request.Method == http.MethodPost && request.URL.Path == "/auth/result" {
+		transport.requests.Add(1)
+	}
+	return transport.base.RoundTrip(request)
+}
+
 type identityIntegration struct {
-	plan          *identityHTTPPlan
-	server        *httptest.Server
-	gateway       string
-	client        *uniauth.Client
-	logs          *identityIntegrationLogs
-	sessionCookie string
-	callbackPath  string
-	secrets       []string
+	plan            *identityHTTPPlan
+	server          *httptest.Server
+	gateway         string
+	client          *uniauth.Client
+	resultTransport *identityResultTransport
+	logs            *identityIntegrationLogs
+	sessionCookie   string
+	callbackPath    string
+	secrets         []string
 }
 
 func newIdentityIntegration(t *testing.T) *identityIntegration {
@@ -615,14 +625,15 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	ready := testauth.StartGatewayWithOutput(t, callback, logs)
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(base.CloseIdleConnections)
-	client, err := uniauth.New(uniauth.Config{BaseURL: ready.Origin, AppID: ready.AppID, AppSecret: ready.AppSecret, AllowLoopbackHTTP: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: base}})
+	resultTransport := &identityResultTransport{origin: ready.Origin, base: base}
+	client, err := uniauth.New(uniauth.Config{BaseURL: ready.Origin, AppID: ready.AppID, AppSecret: ready.AppSecret, AllowLoopbackHTTP: true, HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: resultTransport}})
 	if err != nil {
 		t.Fatal("construct real UniAuth SDK client failed")
 	}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	server.Config.Handler = identityHTTPHandler(t, plan, origin, callback, client, logger)
 	server.Start()
-	return &identityIntegration{plan: plan, server: server, gateway: ready.Origin, client: client, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
+	return &identityIntegration{plan: plan, server: server, gateway: ready.Origin, client: client, resultTransport: resultTransport, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
 }
 
 func identityHTTPHandler(t *testing.T, plan *identityHTTPPlan, origin, callback string, client *uniauth.Client, logger *slog.Logger) http.Handler {
@@ -865,18 +876,18 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 	integration := newIdentityIntegration(t)
 	browser, stranger := identityBrowser(t), identityBrowser(t)
 	callback := integration.providerCallback(t, browser, integration.start(t, browser), "alice")
-	before := integration.logs.count("type=fixture_result_request")
+	before := integration.resultTransport.requests.Load()
 	identityRequest(t, stranger, http.MethodGet, callback.String(), "", nil, http.StatusUnauthorized)
 	identityRequest(t, stranger, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before {
+	if integration.resultTransport.requests.Load() != before {
 		t.Fatal("an unbound callback retrieved the gateway result")
 	}
 	integration.complete(t, browser, callback)
-	if integration.logs.count("type=fixture_result_request") != before+1 {
+	if integration.resultTransport.requests.Load() != before+1 {
 		t.Fatal("a bound login must retrieve its one-time gateway result exactly once")
 	}
 	identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before+1 {
+	if integration.resultTransport.requests.Load() != before+1 {
 		t.Fatal("a repeated Daynight callback retrieved the result again")
 	}
 	_, err := integration.client.Retrieve(t.Context(), callback.Query().Get("code"))
@@ -894,7 +905,7 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindings := deniedBrowser.Jar.Cookies(mainURL)
-	before = integration.logs.count("type=fixture_result_request")
+	before = integration.resultTransport.requests.Load()
 	deniedBinding := identityCookie(t, deniedBrowser, integration.server.URL, identityHTTPBinding(denied.Query().Get("state")))
 	integration.plan.consume(denied.Query().Get("state"), deniedBinding, true)
 	response, _ := identityRequest(t, deniedBrowser, http.MethodGet, denied.String(), "", nil, http.StatusSeeOther)
@@ -905,7 +916,7 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 	deniedBrowser.Jar.SetCookies(mainURL, bindings)
 	integration.plan.consume(denied.Query().Get("state"), deniedBinding, false)
 	identityRequest(t, deniedBrowser, http.MethodGet, denied.String(), "", nil, http.StatusUnauthorized)
-	if integration.logs.count("type=fixture_result_request") != before {
+	if integration.resultTransport.requests.Load() != before {
 		t.Fatal("provider denial or its replay retrieved an identity result")
 	}
 	for _, secret := range integration.secrets {
