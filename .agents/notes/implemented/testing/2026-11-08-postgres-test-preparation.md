@@ -113,6 +113,14 @@ another case uses the fixture. Invalid migration-history cases restore the
 complete original ledger, including checksums and `applied_at`, and compare it
 before the next fault. A failed case stops subsequent fixture reuse.
 
+The [Team Invitation fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/team_invitations_test.go)
+uses independent Teams, actors and tokens in one Store. Transactional table
+drops still produce a missing-table error and restore the original relation
+and invitation before reuse. The consume fault removes and verifies its
+trigger and function before retrying the same token. Waiter cases observe the
+other transaction's backend, drain the waiter, and verify persisted results
+and connection reuse before moving on. Any failed case stops reuse.
+
 The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
 and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
 matrices each use one Store. Cases keep distinct App, grant, and Project
