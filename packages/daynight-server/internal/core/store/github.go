@@ -14,6 +14,28 @@ type GitHubReadDAO interface {
 	PullRequest(context.Context, string, int64) (githubpr.PullRequest, error)
 	PullRequests(context.Context, GitHubPRQuery) (GitHubPRPage, error)
 	PullRequestCounts(context.Context, GitHubPRCountsQuery) (GitHubPRCounts, error)
+	PullRequestStatistics(context.Context, GitHubPRStatisticsQuery) (GitHubPRStatistics, error)
+}
+
+// GitHubPRStatisticsQuery describes validated, ascending half-open time segments.
+// DateIndices parallels Boundaries; -1 denotes a gap or the final boundary.
+type GitHubPRStatisticsQuery struct {
+	ProjectID   string
+	AuthorID    *int64
+	Boundaries  []time.Time
+	DateIndices []int32
+}
+
+// A nil DateIndex combines all records outside the named date segments.
+type GitHubPRStatisticsBucket struct {
+	DateIndex          *int32
+	Total, AuthorTotal int64
+	HasAuthors         bool
+}
+
+type GitHubPRStatistics struct {
+	Buckets []GitHubPRStatisticsBucket
+	Author  *githubpr.Author
 }
 
 // GitHubAuthorQuery selects a bounded page of canonical saved authors.
