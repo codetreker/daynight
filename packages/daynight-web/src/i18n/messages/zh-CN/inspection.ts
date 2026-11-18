@@ -134,7 +134,7 @@ export const inspection: InspectionMessages = {
     refreshFailed: "任务详情更新失败",
     retainedData: "正在显示上次成功读取的详情，将自动重试更新。",
     networkError: "无法连接服务，请检查本地服务后重试。", notFoundError: "这个任务已无法读取，请刷新任务图。",
-    loadError: "暂时无法读取任务详情，请重试。", retry: "重试详情", ready: "可开始", blocked: "被阻塞",
+    loadError: "暂时无法读取任务详情，请重试。", retry: "重试详情", ready: "可开始", blocked: "未就绪",
     stale: "任务详情与当前任务图不同，刷新后可查看一致的进度和关系。", refreshGraph: "刷新任务图",
     retainedDetail: "当前显示之前读取的任务详情，确认最新详情前无法修改任务。",
     description: "描述", noDescription: "暂无描述", relationsMetadata: "任务关系与元数据", currentGoal: "所属 Goal", noGoal: "未归属 Goal", dependencies: "前置依赖", noDependencies: "无前置依赖",

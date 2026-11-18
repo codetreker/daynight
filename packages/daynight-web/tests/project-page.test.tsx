@@ -799,7 +799,7 @@ describe("project dashboard", () => {
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
     await act(async () => { pending.resolve(graph()); });
     expect(await screen.findByRole("heading", { name: "核心项目" })).toBeTruthy(); await waitForGraph();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["4", "1", "3", "0", "2", "1"]);
+    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["4", "1", "3", "0", "2", "1"]);
     expect(screen.getByText("完成比例 25%")).toBeTruthy();
     expect(screen.getAllByText("待处理的子集")).toHaveLength(2);
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
@@ -970,7 +970,7 @@ describe("project dashboard", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await waitFor(() => expect(number("任务总数")).toBe("0"));
     expect(taskTabs().getByRole("tab", { name: "Goal" })).toBeVisible();
-    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
+    expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "未就绪"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
     expect(screen.getByText("完成比例 0%")).toBeTruthy();
   });
 

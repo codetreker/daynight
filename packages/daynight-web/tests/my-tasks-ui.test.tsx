@@ -68,7 +68,7 @@ describe('personal task overview', () => {
     const first = within(screen.getByText('Task 0').closest('li')!);
     expect(first.getByText('Recorded machine: Previous machine')).toBeInTheDocument();
     expect(first.getByText('Linux')).toBeInTheDocument();
-    expect(first.getByText('Blocked')).toBeInTheDocument();
+    expect(first.getByText('Not ready')).toBeInTheDocument();
     expect(first.getByText('Urgent')).toBeInTheDocument();
     expect(first.getByText('前端')).toBeInTheDocument();
     expect(first.getByText(a.task.id)).toBeInTheDocument();
@@ -79,7 +79,7 @@ describe('personal task overview', () => {
     expect(screen.getByText('No machine record')).toBeInTheDocument();
     view.setLocale('zh-CN');
     expect(screen.getByText('执行机器记录：Previous machine')).toBeInTheDocument();
-    expect(screen.getByText('被阻塞')).toBeInTheDocument();
+    expect(screen.getByText('未就绪')).toBeInTheDocument();
   });
 
   it('retains the page across refresh, clamps it after removal, and links to the real Task and Goal', () => {

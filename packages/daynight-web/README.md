@@ -1693,10 +1693,10 @@ execution consistency and full prerequisite inspection.
 
 Standalone rows are compact native detail triggers with title, individual
 status, ID, creation time, enabled automation permission and known execution timing. The
-clock and duration follow creation time in the same wrapping information line. An
-unsatisfied prerequisite produces an explicit Blocked / 被阻塞 badge; done and
-cancelled prerequisites are satisfied. A chain row
-expands a task list through its main native button, independently of its
+clock and duration follow creation time in the same wrapping information line.
+Rows show a Not ready / 未就绪 badge when a prerequisite is unsatisfied.
+Completed and cancelled prerequisites are satisfied. A chain row expands a
+task list through its main native button, independently of its
 sibling dependency-graph button. Complete and scoped chains show the same 32×32
 icon control as the Goal graph action, with a localized tooltip and an accessible
 name containing the chain title and action. The list contains every other

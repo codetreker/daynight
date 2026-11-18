@@ -345,7 +345,7 @@ describe('project assignee filtering', () => {
     expect(children).toHaveTextContent('Task 2');
     expect(children).toHaveTextContent('Task 4');
     const child = document.getElementById(`chain-task-${id(1)}-${id(3)}`)!;
-    expect(child.closest('.task-row')).toHaveTextContent('被阻塞');
+    expect(child.closest('.task-row')).toHaveTextContent('未就绪');
     fireEvent.click(child);
     const detail = screen.getByRole('dialog');
     await within(detail).findByRole('heading', { name: 'Task 3' });

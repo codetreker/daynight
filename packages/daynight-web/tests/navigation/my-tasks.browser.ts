@@ -255,7 +255,7 @@ for (const width of [320, 1280]) {
     await expect(group.getByRole('link', { name: `查看 Goal：${longGoal}` })).toBeVisible();
     await expect(group.getByText(`认领机器：${longWorker}`)).toBeVisible();
     await expect(group.getByText(longTag)).toBeVisible();
-    await expect(group.getByText('被阻塞')).toBeVisible();
+    await expect(group.getByText('未就绪')).toBeVisible();
     await expect(group.getByText('Linux')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.getByLabel('语言').selectOption('en');
