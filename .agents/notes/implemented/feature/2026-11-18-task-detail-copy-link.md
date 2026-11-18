@@ -9,9 +9,10 @@ incidental tab or attachment selection into the recipient's reading context.
 
 ## Decision
 
-The ordinary Task detail menu copies the absolute Overview URL of the Task being
-read. It is available while detail is readable, including terminal Tasks and
-Tasks opened from Goals. Clipboard feedback follows the reading identity and
+The shared detail menu copies the absolute default-page URL of the Task or Goal
+being read. Goal detail uses a resource-specific accessible menu name; other
+consumers can supply their own name. Copying is available while detail is
+readable, including terminal resources and Tasks opened from Goals. Clipboard feedback follows the reading identity and
 is discarded when that identity or availability changes. New-tab navigation
 continues to preserve the selected tab and attachment.
 
@@ -22,6 +23,6 @@ selection and produce different links for the same Task.
 
 ## Consequences
 
-The copied link consistently opens the Task overview, subject to normal access
-checks. Clipboard refusal is visible and retryable; it does not change the
+The copied link consistently opens the Task overview or Goal description, subject
+to normal access checks. Clipboard refusal is visible and retryable; it does not change the
 reader's navigation or draft.

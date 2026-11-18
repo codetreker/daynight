@@ -2,14 +2,16 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskDetailNotice } from './TaskDetailNotice';
 
-export const TaskDetailActions = ({ popout, copyUrl, canDelete, onDelete }: {
+export const TaskDetailActions = ({ popout, copyUrl, canDelete, onDelete, menuLabel }: {
   readonly popout?: string;
   readonly copyUrl?: string;
   readonly canDelete: boolean;
   readonly onDelete?: () => void;
+  readonly menuLabel?: string;
 }) => {
   const { messages } = useI18n();
   const m = messages.inspection.detail;
+  const label = menuLabel ?? m.moreActions;
   const [open, setOpen] = useState(false);
   const container = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -74,13 +76,13 @@ export const TaskDetailActions = ({ popout, copyUrl, canDelete, onDelete }: {
   }, [open]);
 
   return <div className="task-detail-actions" ref={container} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) close(false); }}>
-    <button className="button task-detail-more" type="button" ref={trigger} aria-label={m.moreActions} title={m.moreActions} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+    <button className="button task-detail-more" type="button" ref={trigger} aria-label={label} title={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
       onClick={() => open ? close(false) : show('first')} onKeyDown={(event) => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowDown' ? 'first' : 'last'); }
       }}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
     </button>
-    {open && <div className="task-detail-action-menu" ref={menu} id={menuId} popover="auto" role="menu" aria-label={m.moreActions} tabIndex={-1} onKeyDown={(event) => {
+    {open && <div className="task-detail-action-menu" ref={menu} id={menuId} popover="auto" role="menu" aria-label={label} tabIndex={-1} onKeyDown={(event) => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (event.key === 'Tab') close(true);
       else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
