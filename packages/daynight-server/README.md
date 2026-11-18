@@ -1352,6 +1352,29 @@ and that normal connectivity prove different responsibilities. The
 [inner assembly test decision](../../.agents/notes/implemented/testing/2026-11-09-business-application-assembly-tests.md)
 records the three bindings and the retained lifetime proof.
 
+### Webhook HTTP fixture groups
+
+The Webhook configuration lifecycle, committed response-loss, and post-commit
+authorization tests each own one isolated PostgreSQL schema, pool and base
+HTTP listener. Within each group, sequential cases have their own bounded
+context and use fresh actors, resources and operation IDs. Response-loss
+writers and post-commit gates remain case-local. The gated client and listener
+finish before the next case.
+
+With `DAYNIGHT_TEST_DATABASE_URL` set to an isolated PostgreSQL database, run:
+
+```bash
+source scripts/env.sh
+go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestHTTP(ConfigurationLifecycle|CommittedWriteResponseLoss|CommittedWriteWhenResponseAuthorizationChanges)$' \
+  ./internal/server/webhook
+```
+
+The tests retain actual authentication, SQL, committed receipts and persisted
+readback. The catalog query failure and other cases that change schema-wide
+state own separate fixtures.
+[Webhook HTTP fixture decision](../../.agents/notes/implemented/testing/2026-11-18-webhook-http-fixture-lifetime.md)
+
 ### Webhook retention configuration tests
 
 Retention binds one stateful Core configuration collector through its private
