@@ -48,7 +48,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-e2e"]) {
+for (const name of ["verify", "verify-installed", "prepare-runtime-package", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -118,34 +118,69 @@ const artifactPaths = (step: string): string[] => {
   return value === "|" ? [...step.matchAll(/^            (.+)$/gm)].map((match) => match[1]!) : [value];
 };
 
-test("the ordinary Ubuntu producer alone supplies the runtime matrix package", () => {
+test("an independent current-run producer supplies the runtime matrix package", () => {
+  const producer = jobs.get("prepare-runtime-package")!;
   const runtime = jobs.get("verify-runtime")!;
-  assert.match(runtime, /^    needs: \[detect-changes, verify\]$/m);
+  for (const setting of ["needs: detect-changes", "if: ${{ needs.detect-changes.outputs.cli == 'true' }}", "runs-on: ubuntu-latest", "timeout-minutes: 10", "COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack", "XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache", "persist-credentials: false", "node-version: 24", "check-latest: true", "package-manager-cache: false", "version: 11.28.6", "run_install: false", "dest: ${{ github.workspace }}/.tmp/pnpm"]) assert.ok(producer.includes(setting));
+  assert.doesNotMatch(producer, /ref:|continue-on-error|download-artifact/);
+  const install = "run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store";
+  const build = "run: pnpm build";
+  const pack = 'run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"';
+  for (const step of [install, build, pack]) assert.ok(producer.includes(step));
+  assert.ok(producer.indexOf(install) < producer.indexOf(build));
+  assert.ok(producer.indexOf(build) < producer.indexOf(pack));
   const producers = [...jobs.entries()].filter(([, stage]) => stage.includes('pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"'));
-  assert.deepEqual(producers.map(([name]) => name), ["verify"]);
-  const upload = uploadSteps(ordinary).find((step) => artifactName(step) === "daynight-runtime-package")!;
-  assert.ok(upload);
-  assert.match(upload, /^        if: matrix.os == 'ubuntu-latest'$/m);
+  assert.deepEqual(producers.map(([name]) => name), ["prepare-runtime-package"]);
+  const uploads = [...jobs.entries()].flatMap(([name, stage]) => uploadSteps(stage).filter(step => artifactName(step) === "daynight-runtime-package").map(step => ({ name, step })));
+  assert.deepEqual(uploads.map(upload => upload.name), ["prepare-runtime-package"]);
+  const upload = uploads[0]!.step;
+  assert.ok(producer.indexOf(pack) < producer.indexOf(upload));
   assert.deepEqual(artifactPaths(upload), [".tmp/daynight-runtime.tgz"]);
-  assert.ok(runtime.includes("name: daynight-runtime-package"));
+  for (const setting of ["include-hidden-files: true", "if-no-files-found: error", "retention-days: 1"]) assert.ok(upload.includes(setting));
+  assert.doesNotMatch(upload, /if:|continue-on-error/);
+  for (const setting of ["needs: [detect-changes, prepare-runtime-package]", "if: ${{ needs.detect-changes.outputs.cli == 'true' }}", "fail-fast: false", "node: [22.14.0, 22, 24, node]", "runs-on: ubuntu-latest", "timeout-minutes: 5", "name: daynight-runtime-package", "npm install --prefix .tmp/runtime-consumer --engine-strict", "node packages/daynight/scripts/check-runtime.mjs .tmp/runtime-consumer/node_modules/@codetreker/daynight"]) assert.ok(runtime.includes(setting));
+  assert.doesNotMatch(runtime, /run-id:|repository:|continue-on-error/);
+  const producerSteps = stepsOf(producer);
+  assert.match(producer, /^    needs: detect-changes$/m);
+  assert.ok(producerSteps[0]!.includes("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"));
+  assert.ok(producerSteps[1]!.includes("actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"));
+  assert.ok(producerSteps[2]!.includes("pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115"));
+  assert.ok(upload.includes("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"));
+  for (const step of producerSteps) assert.doesNotMatch(step, /^        if:|continue-on-error/m);
+  const runtimeSteps = stepsOf(runtime);
+  const checkout = runtimeSteps.find(step => step.includes("actions/checkout@"))!;
+  const setup = runtimeSteps.find(step => step.includes("actions/setup-node@"))!;
+  const download = runtimeSteps.find(step => step.includes("actions/download-artifact@"))!;
+  const installRuntime = runtimeSteps.find(step => step.includes("npm install --prefix"))!;
+  const verifyRuntime = runtimeSteps.find(step => step.includes("check-runtime.mjs"))!;
+  assert.ok(checkout.includes("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"));
+  assert.ok(checkout.includes("persist-credentials: false"));
+  assert.doesNotMatch(checkout, /ref:/);
+  for (const setting of ["actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1", "node-version: ${{ matrix.node }}", "check-latest: true", "package-manager-cache: false"]) assert.ok(setup.includes(setting));
+  for (const setting of ["actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", "name: daynight-runtime-package", "path: .tmp/"]) assert.ok(download.includes(setting));
+  assert.ok(installRuntime.includes('npm install --prefix .tmp/runtime-consumer --engine-strict --no-audit --no-fund --package-lock=false "$GITHUB_WORKSPACE/.tmp/daynight-runtime.tgz"'));
+  assert.ok(installRuntime.includes(".tmp/runtime-consumer/package.json"));
+  for (const [first, second] of [[checkout, setup], [setup, download], [download, installRuntime], [installRuntime, verifyRuntime]]) assert.ok(runtimeSteps.indexOf(first!) < runtimeSteps.indexOf(second!));
+  for (const step of runtimeSteps) assert.doesNotMatch(step, /^        if:|continue-on-error/m);
+  assert.ok(!ordinary.includes("daynight-runtime-package"));
   assert.ok(!installed.includes("daynight-runtime-package"));
 });
 
 test("native stages retain phase-owned environment, acceptance and failure-probe artifacts without collisions", () => {
   const ordinaryUploads = uploadSteps(ordinary);
   const installedUploads = uploadSteps(installed);
-  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-runtime-package", "daynight-cli-tests-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-probes-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-failures-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-termination-macos-15", "daynight-cli-tests-results-${{ matrix.os }}${{ matrix.suffix }}"]);
+  assert.deepEqual(ordinaryUploads.map(artifactName), ["daynight-cli-tests-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-probes-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-failures-${{ matrix.os }}${{ matrix.suffix }}", "daynight-cli-tests-termination-macos-15", "daynight-cli-tests-results-${{ matrix.os }}${{ matrix.suffix }}"]);
   assert.deepEqual(installedUploads.map(artifactName), ["daynight-cli-installed-${{ matrix.os }}", "daynight-cli-installed-probes-${{ matrix.os }}"]);
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
   assert.equal(new Set(names).size, names.length);
-  assert.deepEqual(artifactPaths(ordinaryUploads[1]!), [".tmp/validation-environment.json"]);
+  assert.deepEqual(artifactPaths(ordinaryUploads[0]!), [".tmp/validation-environment.json"]);
   assert.deepEqual(artifactPaths(installedUploads[0]!), [".tmp/validation-environment.json", ".tmp/installed-cli-preparation.json"]);
-  for (const probe of [ordinaryUploads[2]!, installedUploads[1]!]) {
+  for (const probe of [ordinaryUploads[1]!, installedUploads[1]!]) {
     assert.match(probe, /^        if: \$\{\{ always\(\) && steps.environment.outcome != 'skipped' \}\}$/m);
     assert.deepEqual(artifactPaths(probe), [".tmp/validation-probes.json"]);
     assert.match(probe, /^          if-no-files-found: error$/m);
   }
-  const failures = ordinaryUploads[3]!;
+  const failures = ordinaryUploads[2]!;
   assert.match(failures, /^        if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(artifactPaths(failures), [".tmp/cli-test-failures/*.jsonl"]);
   assert.match(failures, /^          include-hidden-files: true$/m);
@@ -271,11 +306,12 @@ test("macOS termination diagnostics use only the ordinary matrix and upload afte
 test("matrix artifacts retain unique names for both Windows shards and every other native phase", () => {
   const names = uploadSteps(ordinary).flatMap((step) => {
     const name = artifactName(step);
-    if (name === "daynight-runtime-package" || name === "daynight-cli-tests-termination-macos-15") return [name];
+    if (name === "daynight-cli-tests-termination-macos-15") return [name];
     const entries = name.startsWith("daynight-cli-tests-results-") ? ordinaryEntries.filter(entry => entry.os === "windows-latest") : ordinaryEntries;
     return entries.map(entry => name.replace("${{ matrix.os }}", entry.os).replace("${{ matrix.suffix }}", entry.suffix));
   });
   names.push(...uploadSteps(installed).flatMap(step => nativePlatforms.map(platform => artifactName(step).replace("${{ matrix.os }}", platform))));
+  names.push(...uploadSteps(jobs.get("prepare-runtime-package")!).map(artifactName));
   assert.equal(names.length, 22);
   assert.equal(new Set(names).size, names.length);
   for (const { os, suffix } of ordinaryEntries) {
@@ -311,11 +347,11 @@ test("Windows discovery remains whole and execution outcome comes from the real 
 
 const selectedCLIStep = stepsOf(gate).find(step => step.includes("name: Require selected CLI jobs to succeed\n"))!;
 const selectedCLICommand = selectedCLIStep.match(/^        run: (.+)$/m)![1]!;
-const cliResults = { CLI_RESULT: "success", INSTALLED_RESULT: "success", RUNTIME_RESULT: "success" };
+const cliResults = { CLI_RESULT: "success", INSTALLED_RESULT: "success", PACKAGE_RESULT: "success", RUNTIME_RESULT: "success" };
 
 test("selected CLI requires every ordinary shard, installed phase and runtime job", () => {
   assert.match(selectedCLIStep, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
-  for (const [variable, job] of [["CLI_RESULT", "verify"], ["INSTALLED_RESULT", "verify-installed"], ["RUNTIME_RESULT", "verify-runtime"]]) {
+  for (const [variable, job] of [["CLI_RESULT", "verify"], ["INSTALLED_RESULT", "verify-installed"], ["PACKAGE_RESULT", "prepare-runtime-package"], ["RUNTIME_RESULT", "verify-runtime"]]) {
     assert.ok(selectedCLIStep.includes(`${variable}: \${{ needs.${job}.result }}`));
   }
 });
@@ -355,7 +391,7 @@ test("the final gate verifies both current-run artifacts against its own checkou
 });
 
 test("unselected CLI matrices may skip while other selected modules succeed", () => {
-  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-runtime": "skipped" }), 0);
+  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "prepare-runtime-package": "skipped", "verify-runtime": "skipped" }), 0);
 });
 
 const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;

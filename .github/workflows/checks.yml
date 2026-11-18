@@ -110,18 +110,6 @@ jobs:
       - name: Test the compiled CLI with macOS termination diagnostics
         if: matrix.os == 'macos-15'
         run: node packages/daynight/scripts/observe-native-validation.mjs --signal-intents --output .tmp/native-validation -- pnpm --filter @codetreker/daynight exec vitest run
-      - name: Pack the CLI for runtime compatibility checks
-        if: matrix.os == 'ubuntu-latest'
-        run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
-      - name: Upload the runtime compatibility package
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-runtime-package
-          path: .tmp/daynight-runtime.tgz
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
       - name: Upload ordinary CLI environment
         if: ${{ always() && steps.environment.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -229,9 +217,45 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  prepare-runtime-package:
+    name: prepare runtime compatibility package
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - run: pnpm build
+      - name: Pack the CLI for runtime compatibility checks
+        run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
+      - name: Upload the runtime compatibility package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-runtime-package
+          path: .tmp/daynight-runtime.tgz
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
   verify-runtime:
     name: verify (Node.js ${{ matrix.node }})
-    needs: [detect-changes, verify]
+    needs: [detect-changes, prepare-runtime-package]
     if: ${{ needs.detect-changes.outputs.cli == 'true' }}
     strategy:
       fail-fast: false
@@ -620,7 +644,7 @@ jobs:
 
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-e2e]
+    needs: [detect-changes, verify, verify-installed, prepare-runtime-package, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -633,8 +657,9 @@ jobs:
         env:
           CLI_RESULT: ${{ needs.verify.result }}
           INSTALLED_RESULT: ${{ needs.verify-installed.result }}
+          PACKAGE_RESULT: ${{ needs.prepare-runtime-package.result }}
           RUNTIME_RESULT: ${{ needs.verify-runtime.result }}
-        run: test "$CLI_RESULT" = success && test "$INSTALLED_RESULT" = success && test "$RUNTIME_RESULT" = success
+        run: test "$CLI_RESULT" = success && test "$INSTALLED_RESULT" = success && test "$PACKAGE_RESULT" = success && test "$RUNTIME_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         with:
