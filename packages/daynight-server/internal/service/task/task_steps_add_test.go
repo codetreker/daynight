@@ -609,3 +609,12 @@ func (p *strictWriteProject) RotateTagCatalogEpoch(context.Context) error {
 	p.f.unexpected("RotateTagCatalogEpoch")
 	return nil
 }
+
+func (p *strictWriteProject) RepositoryIdentity(context.Context) (*string, error) {
+	p.f.unexpected("RepositoryIdentity")
+	return nil, nil
+}
+func (p *strictWriteProject) RepositoryOccupied(context.Context, string, string) (bool, error) {
+	p.f.unexpected("RepositoryOccupied")
+	return false, nil
+}

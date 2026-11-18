@@ -351,3 +351,10 @@ func (s *writeWitnessScope) TaskTagDAO() store.TaskTagWriteDAO { panic(s.f.unexp
 func (d *writeWitnessProjectDAO) RotateTagCatalogEpoch(context.Context) error {
 	panic(d.f.unexpected("RotateTagCatalogEpoch"))
 }
+
+func (d *writeWitnessProjectDAO) RepositoryIdentity(context.Context) (*string, error) {
+	panic(d.f.unexpected("ProjectWriteDAO.RepositoryIdentity"))
+}
+func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, string) (bool, error) {
+	panic(d.f.unexpected("ProjectWriteDAO.RepositoryOccupied"))
+}

@@ -11,7 +11,7 @@ func repositoryOccupied(ctx context.Context, tx pgx.Tx, teamID, identity string)
 	var occupied bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_ownership o JOIN projects p ON p.id=o.project_id
  WHERE o.team_id=$1 AND p.deleted_at IS NULL AND p.repository_identity=$2)`, teamID, identity).Scan(&occupied)
-	return occupied, pg.QueryError("read Team repository occupancy", err)
+	return occupied, pg.AuthQueryError("read Team repository occupancy", err)
 }
 
 func (tx *creator) RepositoryOccupied(ctx context.Context, teamID, identity string) (bool, error) {
@@ -25,5 +25,5 @@ func (tx *writer) RepositoryOccupied(ctx context.Context, teamID, identity strin
 func (tx *writer) RepositoryIdentity(ctx context.Context) (*string, error) {
 	var identity *string
 	err := tx.tx.QueryRow(ctx, `SELECT repository_identity FROM projects WHERE id=$1`, tx.projectID).Scan(&identity)
-	return identity, pg.QueryError("read locked Project repository identity", err)
+	return identity, pg.AuthQueryError("read locked Project repository identity", err)
 }

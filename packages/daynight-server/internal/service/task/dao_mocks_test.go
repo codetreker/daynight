@@ -563,6 +563,8 @@ type projectWriterMock struct {
 	CreateGrantFn           func(context.Context, string, model.ProjectRole) (model.ProjectGrant, error)
 	LockTransferOwnershipFn func(context.Context) (model.ProjectOwnership, error)
 	LockTransferTeamsFn     func(context.Context, string, string) (store.TransferTeam, store.TransferTeam, error)
+	RepositoryIdentityFn    func(context.Context) (*string, error)
+	RepositoryOccupiedFn    func(context.Context, string, string) (bool, error)
 	MoveOwnershipFn         func(context.Context, string) (model.ProjectOwnership, error)
 }
 
@@ -936,3 +938,12 @@ func (mock *projectWriterMock) RotateTagCatalogEpoch(context.Context) error {
 }
 
 func (s *taskSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (mock *projectWriterMock) RepositoryIdentity(ctx context.Context) (*string, error) {
+	mock.need("RepositoryIdentity", mock.RepositoryIdentityFn != nil)
+	return mock.RepositoryIdentityFn(ctx)
+}
+func (mock *projectWriterMock) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	mock.need("RepositoryOccupied", mock.RepositoryOccupiedFn != nil)
+	return mock.RepositoryOccupiedFn(ctx, team, identity)
+}

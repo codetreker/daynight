@@ -3,7 +3,6 @@ package postgres
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -94,10 +93,8 @@ func TestRepositoryIdentityMigrationRollsBackConflicts(t *testing.T) {
 			one := putMigrationRepository(t, pool, team, first, false)
 			two := putMigrationRepository(t, pool, team, second, false)
 			err := migrate(t.Context(), pool, schemaMigrations)
-			for errors.Unwrap(err) != nil {
-				err = errors.Unwrap(err)
-			}
-			if err == nil || !strings.Contains(err.Error(), team) || !strings.Contains(err.Error(), one) || !strings.Contains(err.Error(), two) || strings.Contains(err.Error(), "private-secret") || strings.Contains(err.Error(), "github.com") {
+			diagnostic := migrationErrorMessages(err)
+			if err == nil || !strings.Contains(diagnostic, team) || !strings.Contains(diagnostic, one) || !strings.Contains(diagnostic, two) || strings.Contains(diagnostic, "private-secret") || strings.Contains(diagnostic, "github.com") {
 				t.Fatalf("migration conflict diagnostic: %v", err)
 			}
 			var columns, ledger int
@@ -112,4 +109,19 @@ func TestRepositoryIdentityMigrationRollsBackConflicts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func migrationErrorMessages(err error) string {
+	if err == nil {
+		return ""
+	}
+	result := err.Error()
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			result += "\n" + migrationErrorMessages(child)
+		}
+	} else if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		result += "\n" + migrationErrorMessages(wrapped.Unwrap())
+	}
+	return result
 }

@@ -1118,3 +1118,12 @@ func (mock *taskHTTPProjectWriterMock) RotateTagCatalogEpoch(context.Context) er
 func (s *taskHTTPSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO {
 	panic("unexpected GitHubDAO access")
 }
+
+func (mock *taskHTTPProjectWriterMock) RepositoryIdentity(ctx context.Context) (*string, error) {
+	mock.need("RepositoryIdentity", false)
+	panic("unreachable")
+}
+func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+	mock.need("RepositoryOccupied", false)
+	panic("unreachable")
+}
