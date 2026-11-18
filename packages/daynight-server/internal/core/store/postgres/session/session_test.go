@@ -352,7 +352,7 @@ func testSessionDAOTaskArchiveLocksAndWorkerDecodeFailure(t *testing.T, db *post
 	ctx := context.Background()
 	project := queryProject(t, db, 1)
 	task := queryTask(t, db, project.ID, 2, model.TaskInProgress)
-	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','true')`, task.ID)
+	mustQueryExec(t, db, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','true')`, task.ID)
 	sessionDAOTransaction(t, db, func(dao store.SessionDAO) error {
 		current, err := dao.LockTask(ctx, project.ID, task.ID)
 		if err != nil || current.Status != "in_progress" {

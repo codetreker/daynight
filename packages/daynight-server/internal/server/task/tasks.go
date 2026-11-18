@@ -60,7 +60,7 @@ func taskResponse(task model.Task, request *http.Request) (api.Task, error) {
 }
 
 func propertiesResponse(properties model.TaskProperties) api.TaskProperties {
-	return taskproperties.Clone(properties)
+	return taskprotocol.Properties(properties)
 }
 
 func propertyValues(properties api.TaskWritableProperties) model.TaskProperties {

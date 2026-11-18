@@ -1,6 +1,7 @@
 package properties
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"slices"
@@ -10,7 +11,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
+// CanonicalName maps the legacy public spelling to the persisted name.
+func CanonicalName(name string) string {
+	if name == "paused" {
+		return "blocked"
+	}
+	return name
+}
+
 func CheckWritable(name string) error {
+	name = CanonicalName(name)
 	definition, ok := taskproperty.Definitions()[name]
 	if !ok {
 		return &taskproperty.ValidationError{Path: "properties", Rule: "properties contains an unknown attribute"}
@@ -38,17 +48,22 @@ func normalizeWritable(values model.TaskProperties) (model.TaskProperties, error
 		if err := CheckWritable(name); err != nil {
 			return nil, err
 		}
-		value, err := taskproperty.NormalizeValue(name, values[name])
+		canonical := CanonicalName(name)
+		value, err := taskproperty.NormalizeValue(canonical, values[name])
 		if err != nil {
 			return nil, err
 		}
-		result[name] = value
+		if existing, ok := result[canonical]; ok && !bytes.Equal(existing, value) {
+			return nil, &taskproperty.ValidationError{Path: "properties.blocked", Rule: "properties.blocked and properties.paused must agree"}
+		}
+		result[canonical] = value
 	}
 	return result, nil
 }
 
 func DecodePatch(data []byte) (model.TaskPropertiesPatch, error) {
 	names := slices.Sorted(maps.Keys(taskproperty.Definitions()))
+	names = append(names, "paused")
 	fields, err := jsonobject.Decode(data, "properties", names...)
 	if err != nil {
 		return nil, &taskproperty.ValidationError{Path: "properties", Rule: err.Error(), Cause: err}
@@ -57,6 +72,7 @@ func DecodePatch(data []byte) (model.TaskPropertiesPatch, error) {
 }
 
 func ParseInput(name, input string) (json.RawMessage, error) {
+	name = CanonicalName(name)
 	if err := CheckWritable(name); err != nil {
 		return nil, err
 	}

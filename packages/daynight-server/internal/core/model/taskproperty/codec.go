@@ -63,10 +63,10 @@ func NormalizeStored(properties model.TaskProperties) (model.TaskProperties, err
 	return result, nil
 }
 
-func normalizePaused(raw json.RawMessage) (json.RawMessage, error) {
+func normalizeBlocked(raw json.RawMessage) (json.RawMessage, error) {
 	var value *bool
 	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
-		return nil, fmt.Errorf("properties.paused must be a boolean")
+		return nil, fmt.Errorf("properties.blocked must be a boolean")
 	}
 	return json.Marshal(*value)
 }

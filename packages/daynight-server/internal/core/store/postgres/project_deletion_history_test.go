@@ -26,7 +26,7 @@ func TestProjectDeletionPreservesHistoricalRowsAndCommitsRetirement(t *testing.T
 	exec := func(sql string, args ...any) { t.Helper(); mustQueryExec(t, db, sql, args...) }
 	exec(`INSERT INTO tasks(id,project_id,title,status,version,started_at) VALUES($1,$3,'main','in_progress',7,now()),($2,$3,'dependency','done',3,now())`, task, dependency, project.ID)
 	exec(`INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project.ID, task, dependency)
-	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'paused','false')`, task)
+	exec(`INSERT INTO task_properties(task_id,name,value) VALUES($1,'blocked','false')`, task)
 	exec(`INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,'abcd1234',0,'step','details','done',now(),now())`, task)
 	exec(`INSERT INTO task_thread_messages(task_id,created_at,author_user_id,author_agent,body) VALUES($1,now(),$2,false,'thread history')`, task, owner.UserID)
 	exec(`INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,grant_hash,grant_expires_at,connection_expires_at) VALUES($1,$2,$3,$4,$5,$6,'{"name":"history"}','{"lifecycle":"active","controls":{"x":1}}','abc',now()+interval '1 hour',now()+interval '1 hour')`, sid, project.ID, task, uuid.NewString(), owner.UserID, uuid.NewString())

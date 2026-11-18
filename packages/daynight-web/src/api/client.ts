@@ -437,7 +437,7 @@ export const unpauseTask = async (
   if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: stringifyApiJson({ version: exactVersion, properties: { paused: false } }),
+    body: stringifyApiJson({ version: exactVersion, properties: { blocked: false } }),
   }, admission.onDispatch);
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 200) admission.onWriteConfirmed?.();

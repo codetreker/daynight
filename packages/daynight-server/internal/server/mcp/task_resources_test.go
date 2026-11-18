@@ -450,14 +450,18 @@ func TestMCPTaskPropertyBudgetFollowsMode(t *testing.T) {
 	}
 	defer release()
 	schema := taskData(t, f.client, "task_properties", map[string]any{"mode": "schema"})
-	if _, ok := object(t, schema["properties"])["paused"]; !ok {
+	definitions := object(t, schema["properties"])
+	if definitions["paused"] == nil || definitions["blocked"] == nil {
 		t.Fatalf("schema response: %#v", schema)
 	}
 	taskError(t, f.client, "task_properties", map[string]any{"mode": "values", "projectId": f.project, "taskId": testTargetID}, "resource_busy")
 	release()
-	expectTaskGet(t, f, taskFixtureTask(), nil)
+	item := taskFixtureTask()
+	item.Properties = model.TaskProperties{"blocked": json.RawMessage(`false`)}
+	expectTaskGet(t, f, item, nil)
 	values := taskData(t, f.client, "task_properties", map[string]any{"mode": "values", "projectId": f.project, "taskId": testTargetID})
-	if values["taskId"] != testTargetID {
+	properties := object(t, values["properties"])
+	if properties["blocked"] != false || properties["paused"] != false || values["taskId"] != testTargetID {
 		t.Fatalf("property response: %#v", values)
 	}
 }

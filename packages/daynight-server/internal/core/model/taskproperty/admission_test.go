@@ -68,7 +68,7 @@ func TestPropertyValueBudgetAndCanonicalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	violation(t, taskproperty.AdmitValue("pullRequests", escapedRaw), "properties.pullRequests", 8193, 8192)
-	props := model.TaskProperties{"pullRequests": prBudget(t, 8192), "paused": json.RawMessage(`false`)}
+	props := model.TaskProperties{"pullRequests": prBudget(t, 8192), "blocked": json.RawMessage(`false`)}
 	if err := taskproperty.Admit(props); err != nil {
 		t.Fatal(err)
 	}
@@ -84,10 +84,10 @@ func TestPropertyValueBudgetAndCanonicalization(t *testing.T) {
 	if err := taskproperty.AdmitValue("unknown", json.RawMessage(`true`)); err == nil {
 		t.Fatal("unknown property accepted")
 	}
-	if err := taskproperty.AdmitValue("paused", json.RawMessage(`true`)); err != nil {
+	if err := taskproperty.AdmitValue("blocked", json.RawMessage(`true`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := taskproperty.AdmitValue("paused", json.RawMessage(`false`)); err != nil {
+	if err := taskproperty.AdmitValue("blocked", json.RawMessage(`false`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := properties.Normalize(model.TaskProperties{"worker": json.RawMessage(`{}`)}); err == nil {
@@ -203,14 +203,14 @@ func TestOversizedNormalizedValueIsRejectedBeforeDecode(t *testing.T) {
 func TestAdmitPropertiesReturnsTheIndividualViolation(t *testing.T) {
 	oversized := prBudget(t, taskproperty.MaxValueBytes+1)
 	values, err := taskproperty.Normalize(model.TaskProperties{
-		"paused":       json.RawMessage(`true`),
+		"blocked":      json.RawMessage(`true`),
 		"pullRequests": oversized,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	violation(t, taskproperty.Admit(values), "properties.pullRequests", taskproperty.MaxValueBytes+1, taskproperty.MaxValueBytes)
-	if string(values["paused"]) != "true" || string(values["pullRequests"]) != string(oversized) {
+	if string(values["blocked"]) != "true" || string(values["pullRequests"]) != string(oversized) {
 		t.Fatal("admission modified a candidate property")
 	}
 	values["pullRequests"] = prBudget(t, taskproperty.MaxValueBytes)
