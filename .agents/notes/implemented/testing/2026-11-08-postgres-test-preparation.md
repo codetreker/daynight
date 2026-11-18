@@ -38,6 +38,16 @@ execution to one parent, and larger scheduler values cannot increase the permit
 capacity. Package concurrency and production connection and migration-lock
 defaults remain unchanged.
 
+Module CI gives the PostgreSQL root test package a dedicated database inside
+the shared PostgreSQL instance. The fixed migration advisory key has
+database-local scope, so other packages can initialize their fixtures while
+the root package replays history or applies the snapshot. The root package
+selects the alternate URL in its test entry point, before any fixture opens a
+connection. Its subprocesses inherit the selected URL. Lock observations
+against instance-wide PostgreSQL views must identify the owning fixture or the
+actual blocker. The independent lifecycle and API checks keep their own
+databases.
+
 Each selected parent's fixtures retain schemas, `search_path`, `application_name`
 and operational pools separate from other parents. Contention observers identify
 the fixture's application, an exact backend or a query marker that cannot match
@@ -61,12 +71,12 @@ The executor tests in
 and callers of `controlledAppExecutor` in
 [`github_executor_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/github_executor_test.go)
 retain serial scheduling while they replace process-global `http.DefaultTransport`.
-The App Work tests that use the database-wide `waitAppWorkLock` observation in
+The App Work tests that use the fixture-scoped `waitAppWorkLock` observation in
 [`github_app_work_scope_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/github_app_work_scope_test.go)
 and the two database-wide waiter observations in
 [`webhook_scope_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/webhook_scope_test.go)
-also remain serial: another fixture's blocked backend can satisfy their
-readiness predicate without the intended operation reaching its lock.
+retain their serial scheduling. The webhook observations match the current
+database and can see another fixture's blocked backend.
 
 The three gated Credential Usage tests in
 [`credential_usage_test.go`](../../../../packages/daynight-server/internal/core/store/postgres/credential_usage_test.go)

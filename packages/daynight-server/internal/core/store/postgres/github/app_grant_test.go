@@ -139,7 +139,9 @@ func TestGrantWaitsForTeamRoot(t *testing.T) {
 	var pid int
 	deadline := time.Now().Add(5 * time.Second)
 	for pid == 0 {
-		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%SELECT id::text FROM teams WHERE id=$1 FOR SHARE%' LIMIT 1),0)`).Scan(&pid); err != nil {
+		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE wait_event_type='Lock'
+			AND query LIKE '%SELECT id::text FROM teams WHERE id=$1 FOR SHARE%'
+			AND $1=ANY(pg_blocking_pids(pid)) LIMIT 1),0)`, tx.Conn().PgConn().PID()).Scan(&pid); err != nil {
 			t.Fatal(err)
 		}
 		if time.Now().After(deadline) {
