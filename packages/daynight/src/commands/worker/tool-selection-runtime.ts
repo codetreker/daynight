@@ -62,7 +62,7 @@ export const createWorkerToolSelectionRuntime = (options: {
     prepareNative,
     configurationOptions: {
       readToolSelectionKeys: (native: WorkerCloudNative) => {
-        const keys: Partial<Record<"codex" | "copilot" | "herdr", string>> = {};
+        const keys: Partial<Record<"codex" | "copilot", string>> = {};
         if (native.agent === "codex" || native.agent === "copilot") {
           const launch = manager.currentSelection(native.agent, "web");
           if (launch !== undefined) keys[native.agent] = launch.selectionKey;
@@ -72,7 +72,7 @@ export const createWorkerToolSelectionRuntime = (options: {
       prepareToolSelection: async (native: WorkerCloudNative, targets: ToolSelectionTargets, signal: AbortSignal): Promise<void> => { setTargets(targets); await prepareNative(native, signal); },
     },
     freezeConfiguration: async (configuration: ExecutionConfiguration, signal: AbortSignal): Promise<ExecutionConfiguration> => {
-      if (configuration.agentControlMode === "herdr" || configuration.herdrLaunch !== undefined) throw new Error("Herdr execution is no longer supported.");
+      if (configuration.agentControlMode === "herdr") throw new Error("Herdr execution is no longer supported.");
       if (configuration.toolLaunch !== undefined) {
         if (configuration.toolLaunch.context !== "web") throw new Error("The frozen tool does not identify a Web execution.");
         return configuration;

@@ -64,7 +64,7 @@ func TestAdmissionSnapshotUsesLockedObservation(t *testing.T) {
 		CPU:      model.WorkerProbe[model.WorkerCPU]{State: "error", CheckedAt: client, Code: &code},
 		Memory:   model.WorkerProbe[model.WorkerMemory]{State: "error", CheckedAt: client, Code: &code},
 		Disk:     model.WorkerProbe[model.WorkerDisk]{State: "error", CheckedAt: client, Code: &code},
-		Versions: model.WorkerVersions{Daynight: "1", Herdr: missing, Codex: missing, Copilot: missing},
+		Versions: model.WorkerVersions{Daynight: "1", Codex: missing, Copilot: missing},
 	}
 	input := model.WorkerReport{Telemetry: telemetry, TaskInventory: &model.WorkerTaskInventory{ObservedAt: inventory, Claims: []model.WorkerTaskReference{}}}
 	got := SnapshotForReport(owner, worker, input, locked, []model.WorkerObservedTask{})

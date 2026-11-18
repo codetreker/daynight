@@ -276,11 +276,6 @@ describe("worker report publication boundaries", () => {
 
 describe("minimal worker resource reconciliation", () => {
 
-  const reservedConfiguration = (): ExecutionConfiguration => {
-    const herdrLaunch = { ...frozenToolLaunch("codex", "herdr"), tool: "herdr" as const }; herdrLaunch.selectionKey = toolSelectionKey(herdrLaunch);
-    return { ...configuration, agentControlMode: "herdr", herdrLaunch, toolLaunch: frozenToolLaunch("codex", "herdr") };
-  };
-
   it("completes Web control with the original execution", async () => {
     const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
     const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());

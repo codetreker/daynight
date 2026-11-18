@@ -44,45 +44,10 @@ func TestRecordingSourceProvenance(t *testing.T) {
 	}
 }
 
-func TestControlDispatchDigestBindsActorAndIntent(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2")
-	raw, err := os.ReadFile(filepath.Join(root, "valid-control-dispatch.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, err := DecodeMessage(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := m.Payload.(ControlDispatch)
-	want, err := ControlRequestDigest(d.ActorUserID, d.Request)
-	if err != nil || want != d.RequestDigest {
-		t.Fatalf("request digest %s: %v", want, err)
-	}
-	for _, change := range []func(*ControlDispatch){
-		func(d *ControlDispatch) { d.ActorUserID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-		func(d *ControlDispatch) { d.Request.BrowserClientID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-	} {
-		changed := d
-		change(&changed)
-		m.Payload = changed
-		data, err := json.Marshal(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = DecodeMessage(data); err == nil {
-			t.Fatal("changed actor/intent accepted with old digest")
-		}
-	}
-}
-
 func TestProvenanceRejectsInvalidProducerBytes(t *testing.T) {
 	// encoding/json would silently replace malformed UTF-8 and hash different
 	// bytes. Provenance must fail instead of attributing that replacement to a source.
 	invalidText := string([]byte{0xff})
-	if _, err := ControlRequestDigest(invalidText, ControlRequest{}); err == nil {
-		t.Fatal("invalid actor bytes acquired a digest")
-	}
 	archive := Archive{Runs: []Run{{ExecutionGeneration: "1", SegmentIDs: []string{"segment"}}}, Files: []FrameFile{{SegmentID: "segment", Data: invalidText}}}
 	if _, err := SourceDigest(archive, "1"); err == nil {
 		t.Fatal("invalid source bytes acquired a digest")

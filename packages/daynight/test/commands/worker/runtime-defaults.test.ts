@@ -48,6 +48,7 @@ describe("worker startup configuration defaults", () => {
   it.each([
     { source: "worker: null\n", message: "worker must be a mapping" },
     { source: "worker:\n  agentControlMode: invalid\n", message: "worker.agentControlMode must be herdr or web" },
+    { source: "worker:\n  agentControlMode: herdr\n", message: "herdr is no longer supported" },
     { source: "worker:\n  repositoryRoot: false\n", message: "worker.repositoryRoot must be nonempty text" },
   ])("rejects invalid local-owned configuration before authentication: $source", async ({ source, message }) => {
     const { homeDirectory, paths, before } = await fixture(source);

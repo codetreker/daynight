@@ -8,7 +8,6 @@ export type WorkerPaths = ConfigurationPaths & {
   databaseFile: string;
   configurationFile: string;
   lockFile: string;
-  herdrDirectory: string;
   logsDirectory: string;
   temporaryDirectory: string;
 };
@@ -25,7 +24,6 @@ export const resolveWorkerPaths = (
     databaseFile: pathApi.join(workerDirectory, "state.sqlite"),
     configurationFile: pathApi.join(workerDirectory, "configuration.json"),
     lockFile: pathApi.join(workerDirectory, "instance.lock"),
-    herdrDirectory: pathApi.join(workerDirectory, "h"),
     logsDirectory: pathApi.join(workerDirectory, "logs"),
     temporaryDirectory: pathApi.join(workerDirectory, "tmp"),
   };

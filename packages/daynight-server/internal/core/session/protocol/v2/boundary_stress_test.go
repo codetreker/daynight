@@ -16,7 +16,7 @@ func requireLocalStress(t *testing.T) {
 	}
 }
 
-func TestStressExactArchiveAndMessageBytes(t *testing.T) {
+func TestStressExactArchiveBytes(t *testing.T) {
 	requireLocalStress(t)
 	base := fixtureBytes(t, "valid-archive")
 	padded := append(append([]byte{}, base...), []byte(strings.Repeat(" ", MaxArchiveBytes-len(base)))...)
@@ -27,15 +27,7 @@ func TestStressExactArchiveAndMessageBytes(t *testing.T) {
 	if _, e := DecodeArchive(padded); e == nil {
 		t.Fatal("oversized archive accepted")
 	}
-	registration := []byte(registrationJSON)
-	message := append(append([]byte{}, registration...), []byte(strings.Repeat(" ", MaxMetadataBytes-len(registration)))...)
-	if _, e := DecodeMessage(message); e != nil {
-		t.Fatal(e)
-	}
-	message = append(message, ' ')
-	if _, e := DecodeMessage(message); e == nil {
-		t.Fatal("oversized message accepted")
-	}
+
 }
 
 func TestStressExactSegmentAndGapLimit(t *testing.T) {

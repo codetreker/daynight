@@ -11,15 +11,15 @@ test("runtime freezes inspected facts and host snapshots do no process work", as
   await writeFile(entry, `#!/usr/bin/env node\nimport{appendFileSync}from'node:fs';appendFileSync(${JSON.stringify(receipt)},JSON.stringify(process.argv.slice(2))+'\\n');console.log(process.argv.includes('--version')?'codex-cli 1.0.0':'app-server --stdio');\n`);
   await chmod(entry, 0o755);
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
-    localToolPaths: { codex: { kind: "path", path: entry }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
+    localToolPaths: { codex: { kind: "path", path: entry }, copilot: { kind: "path", path: path.join(root, "missing-copilot") } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
   try {
     const prepare = vi.spyOn(runtime.manager, "prepare");
-    const target = { source: "cloud" as const, revision: "1", choices: { codex: { kind: "path" as const, path: entry }, copilot: null, herdr: null } };
+    const target = { source: "cloud" as const, revision: "1", choices: { codex: { kind: "path" as const, path: entry }, copilot: null } };
     await runtime.configurationOptions.prepareToolSelection({ agent: "codex", model: null, args: [] }, target, operation.signal);
     expect(runtime.configurationOptions.readToolSelectionKeys({ agent: "codex", model: null, args: [] })).toEqual({ codex: expect.any(String) });
     expect(prepare.mock.calls.map(([tool, context]) => [tool, context])).toEqual([["codex", "web"]]);
-    expect(runtime.manager.snapshot().entries.find(entry => entry.tool === "herdr")).toBeUndefined();
+    expect(runtime.manager.snapshot().entries.map(entry => entry.tool)).toEqual(["codex"]);
     const configuration = await runtime.freezeConfiguration({ agent: "codex", model: null, args: [], recoveryLimit: 3 }, operation.signal);
     expect(configuration.toolObservation).toMatchObject({ version: "1.0.0" }); expect(configuration.toolLaunch?.entryPath).toBe(entry); expect(configuration.toolLaunch?.context).toBe("web");
     const before = await readFile(receipt, "utf8");
@@ -39,7 +39,7 @@ test("tool preparation waits for authoritative targets and suspends again when t
   const root = await mkdtemp(path.join(scratch, "authority-")), receipt = path.join(root, "receipt"), entry = path.join(root, "codex.mjs");
   await writeFile(entry, `#!/usr/bin/env node\nimport{appendFileSync}from'node:fs';appendFileSync(${JSON.stringify(receipt)},'probe\\n');console.log(process.argv.includes('--version')?'codex-cli 1.0.0':'app-server --stdio');\n`);
   await chmod(entry, 0o755);
-  const choices = { codex: { kind: "path" as const, path: entry }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
+  const choices = { codex: { kind: "path" as const, path: entry }, copilot: { kind: "auto" as const } };
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [], localToolPaths: choices });
   const signal = new AbortController().signal;
   try {
@@ -61,7 +61,7 @@ test("background preparation follows Copilot demand on each refresh", async () =
   const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, "demand-"));
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
-    localToolPaths: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
+    localToolPaths: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
   runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") } } });
   const prepare = vi.spyOn(runtime.manager, "prepare");
@@ -89,7 +89,7 @@ test("demand changes during a refresh take effect after the current preparation 
   const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, "pending-"));
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
-    localToolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+    localToolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
   runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" } } });
   let release!: () => void;

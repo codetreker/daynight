@@ -6,7 +6,7 @@
 
 Worker 复用已持久化的稳定 workerId、实例锁及启动时固定的认证账号。本地身份、认证和配置交换就绪后立即触发报告，随后每 30 秒独立触发；成功取得完整自有 claim 清单和确认新 claim 也触发报告。报告先于仓库与业务执行 backend 准备，不等待任务清单成功、候选查询、执行 tick 或原生任务结束。空项目、空闲、满并发、较大的 pollIntervalMs 和应用长操作均不停止定时报告。
 
-报告在 Herdr 和 Web 执行模式中使用同一机制。采集 Herdr 版本只观察私有端点，不能启动 daemon、调用 ensureInstance、修复 integration 或初始化延迟的 Herdr 执行 backend。纯 Web Worker 无须安装或启动 Herdr。
+报告只采集 Web 执行所需的原生工具事实，不探测或启动 Herdr。
 
 CLI 将当前运行包的 version 及启动时捕获一次的绝对 workingDirectory 显式交给 runtime。磁盘只表示该目录所在文件系统；不使用任务 worktree、repositoryRoot、home 或系统根目录代替。上报没有独立公开命令或配置开关，也不修改任务、claim、凭据或执行资格。
 
@@ -63,12 +63,11 @@ Windows bare Codex 探测先按 Node 字母序选择第一个大小写不敏感 
 | 内存 | totalmem 与 totalmem-freemem，单位为 bytes |
 | 磁盘 | 启动目录文件系统的 `blocks*bsize` 总量和 `bavail*bsize` 可用量，单位为 bytes；可用量表示调用身份可用空间 |
 | Daynight | 当前运行 CLI 包注入的版本 |
-| Herdr | 当前 Worker 与服务所属私有 daemon 的只读 ping 版本；macOS 使用原始 run 身份验证后的端点，多个存活 daemon 必须版本一致；不确定或混合版本为 error/unavailable，确证无存活 daemon 为 not_running |
 | Codex、Copilot | 已观察到的原生版本；仅确证 executable 不存在为 not_installed，权限、命令、输出或超时故障为 error，未检查不能冒充已安装或未安装 |
 
 资源计数必须是非负安全整数，容量关系和 CPU 差分必须有效。越界、未推进或不一致的采样明确失败，不使用截断值。磁盘计算先使用 bigint，再验证可精确表示范围。底层 statfs 无法取消；某次超时后最多保留一个未完成调用，之后的磁盘探测在其完成前报告 timeout，不继续排队 I/O 或追加等待监听。
 
-独立版本采集的 Codex/Copilot 成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。接入工具管理器时版本报告只读所选工具快照，不为报告重新探测；Copilot 后台需求由[助手托管预检](daynight-worker-snapshots.md#助手托管预检)定义。清理未确认期间的替代探测禁令不随缓存到期解除；取得可靠清理确认后，按原生只读探测恢复规则绕过对应旧失败缓存。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。Herdr 每次报告重新观察，不复用旧实例版本。
+独立版本采集的 Codex/Copilot 成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。接入工具管理器时版本报告只读所选工具快照，不为报告重新探测；Copilot 后台需求由[助手托管预检](daynight-worker-snapshots.md#助手托管预检)定义。清理未确认期间的替代探测禁令不随缓存到期解除；取得可靠清理确认后，按原生只读探测恢复规则绕过对应旧失败缓存。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。
 
 macOS 存在 durable journal 时，只读其原有格式，按当前 workerId 和 serverOrigin 选择执行记录；不迁移、恢复或修改 journal、claim 与控制状态，也不回退到遗留共享端点。忽略 stopped_confirmed run 与已确认退出的原始 daemon；stop_unknown 仍可报告经过验证的存活 daemon 版本，但不因此改变执行或停止结论。准备阶段已记录 daemon 身份时也观察它；已请求启动而尚无身份、进程身份未知或变化、端点被替换或仍存活进程的端点缺失均为 error/unavailable。每次 ping 前后核对端点的原始进程与 audit 身份；所有存活 daemon 的版本一致才为 ok。journal 读取、权限及协议错误保留字段错误。
 
@@ -125,6 +124,5 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 受控命令或内存复现只证明上述分支与清理确认规则，不证明真实 Worker 已恢复或助手创建、启动成功。现场首次超时原因与原进程实际退出时刻须有各自证据；新采集器成功不能补足旧进程证据，也不能据此承诺刷新页面恢复旧 Worker。
 
-Herdr 验证覆盖实际 per-run 路径、零存活 run、多 run 同版本与混合版本、原始身份退出和替换、已确认停止、stop_unknown、准备阶段、损坏或旧 journal、端点身份变化、权限与协议故障，以及采集期限和取消；同时证明原始控制记录未变、旧平台和纯 Web 保持只读延迟边界，私有证据不进入报告。
 
 实际平台采集验证使用真实 OS、CPU、内存、statfs 及原生版本命令，分别记录 Linux、macOS ARM64、Windows 的环境与状态。fixture 证明分支行为，不能代替实际平台结果；完整原生执行、恢复与业务交付仍遵守整体 Worker 验收边界。

@@ -4,7 +4,7 @@ The `@codetreker/daynight` package provides the `daynight` command and its `dn`
 alias. Use it to manage server-backed projects, tasks, discussion threads,
 attachments, Webhooks and Bot definitions, inspect remote Workers, install the
 `using-daynight` skill for coding agents, run foreground task workers through
-Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer
+browser-connected native Controllers, and run a local GitHub PR reviewer
 through Copilot CLI. Both command names share configuration and behavior. Supported native platforms are Linux, Windows
 and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
@@ -116,9 +116,8 @@ absolute path such as `DN_CONFIG_DIR="$HOME/.daynight-test"`. Paths shown under
 The root includes credentials, worker identity, Worker/Review SQLite databases,
 locks, logs, caches, Controller launch tickets, journals, content and resume leases.
 Controller IPC identities are scoped to this root; long Unix socket paths use a
-private owner-checked temporary directory. Herdr retains its native socket length
-limit and reports an error for overly long roots; select a shorter root for
-Herdr mode. Native home and Provider session directories remain unchanged.
+private owner-checked temporary directory. Native home and Provider session
+directories remain unchanged.
 Project `.daynight` bindings, Git worktrees, installed skills, npm installations
 and remote service data are not isolated by this setting.
 
@@ -2050,13 +2049,11 @@ defines its freshness, permissions and retention.
 
 Snapshots include actual OS, logical CPU count and utilization, memory usage,
 and available/total space for the filesystem containing the directory where
-`worker run` started. They also include the running Daynight version, a read-only
-private Herdr version observation, and observed Codex/Copilot tool versions.
+`worker run` started. They also include the running Daynight version and observed Codex/Copilot tool versions.
 An unchecked tool is not reported as installed or missing. Standalone native CLI
 results are cached for at most 60 seconds with their original check time; the
 composed Worker reads the tool manager snapshot without another version probe.
-Reporting does not run launch preflight or repair integrations; a pure-Web worker
-does not start Herdr to collect its version. Unknown task inventory and
+Reporting does not run launch preflight or repair integrations. Unknown task inventory and
 observed idleness remain distinct, and individual probe errors remain explicit.
 The [reporting requirements](../../docs/spec/daynight-worker-reporting.md) and
 [design](../../docs/design/daynight-worker-reporting.md) define sampling,
@@ -2277,8 +2274,8 @@ not require parsing stale managed YAML values. `model: null` clears the model;
 omitted Project override fields preserve inheritance, while `args: []` clears
 arguments explicitly.
 
-`worker.toolPaths` accepts local selections for `codex`, `copilot` and `herdr`.
-The parser returns a complete choice for all three tools; an omitted mapping,
+`worker.toolPaths` accepts local selections for `codex` and `copilot`.
+The parser returns a complete choice for both tools; an omitted mapping,
 omitted tool or per-tool `null` selects automatic discovery. An empty or
 whitespace-only string is invalid. The mapping itself must be an object and
 rejects other tool names. For example:
@@ -2288,7 +2285,6 @@ worker:
   toolPaths:
     codex: /Users/example/.nvm/versions/node/v24.22.1/bin/codex
     copilot: null
-    herdr: /opt/homebrew/bin/herdr
 ```
 
 Cloud configuration exchanges these choices when the server negotiates tool-path
@@ -2311,9 +2307,8 @@ environment variables, split arguments, or access the filesystem. Provide one
 complete file path; native arguments remain in their existing configuration.
 The shared resolver owns existence, executable format and interpreter checks.
 
-For resolver callers, automatic Codex and Herdr selection searches the captured
-Worker PATH. Automatic Copilot selects the bundled native runtime in Web context
-and the captured PATH in Herdr context; explicit choices select only that entry's
+Automatic Codex selection searches the captured Worker PATH. Automatic Copilot
+selects the bundled native runtime; explicit choices select only that entry's
 installation. Node entries use the frozen Worker Node executable. npm Node shims
 are mapped to their target from a bounded snapshot without executing shell text;
 comments and harmless formatting changes do not require a registered template.
@@ -2851,15 +2846,12 @@ recovery ledger. The
 
 ## Web worker sessions
 
-Select Agent `codex`, `claude` or `copilot` with an adopted `web` target in
-My Workers → Configuration. Before enrollment, omitting `worker.agentControlMode`
+Select Agent `codex`, `claude` or `copilot` in My Workers → Configuration. Before enrollment, omitting `worker.agentControlMode`
 uses `web` for bootstrap. A saved explicit `herdr` target is not converted or
 applied. The service freezes the mode on each claim; existing claim identity is
 not changed by configuration updates.
 
-Web execution does not initialize, start or probe Herdr. Independent runtime
-reporting only reads the private endpoint for its version and does not initialize
-the Herdr execution backend. Codex uses a private app-server over stdio, Claude
+Codex uses a private app-server over stdio, Claude
 uses the bundled Agent SDK, and Copilot uses the bundled SDK with
 its own headless runtime. Provider arguments are checked for that backend before
 claiming. The service must advertise the matching Session protocol and provider.
@@ -2989,8 +2981,7 @@ and its orderly shutdown restart are not paused merely because the count has
 reached its limit.
 
 A paused execution keeps its active claim, native session ID, worktree and
-capacity slot. The worker continues publishing `waiting` with `herdr:null` even
-when execution is blocked. A failed summary update is retried using a newly read
+capacity slot. The worker continues publishing `waiting` when execution is blocked. A failed summary update is retried using a newly read
 task version without consuming native recovery budget; an unchanged confirmed
 summary is not written again. Ordinary restart and shutdown cannot clear this
 pause. It is separate from `task.properties.paused`, which controls automatic

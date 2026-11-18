@@ -34,41 +34,15 @@ func wireBytes(t *testing.T, v any) []byte {
 	return b
 }
 
-func TestConsumerRoundTripsAndReceiptDigest(t *testing.T) {
-	for _, name := range []string{"valid-registration", "valid-native-u32", "valid-native-adapter", "valid-ready-receipt", "valid-unavailable-receipt", "valid-operation", "valid-keys"} {
-		t.Run(name, func(t *testing.T) {
-			message, e := DecodeMessage(fixtureBytes(t, name))
-			if e != nil {
-				t.Fatal(e)
-			}
-			if _, e = DecodeMessage(wireBytes(t, message)); e != nil {
-				t.Fatal(e)
-			}
-			if message.Type == "receipt" {
-				digest, e := ReceiptDigest(message)
-				if e != nil || digest != message.Payload.(Receipt).DispositionDigest {
-					t.Fatalf("receipt digest %s %v", digest, e)
-				}
-			}
-		})
-	}
+func TestArchiveRoundTrips(t *testing.T) {
 	for _, name := range []string{"valid-archive", "valid-partial-archive", "valid-multiple-runs-clock-rollback"} {
-		archive, e := DecodeArchive(fixtureBytes(t, name))
-		if e != nil {
-			t.Fatal(e)
+		archive, err := DecodeArchive(fixtureBytes(t, name))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if _, e = DecodeArchive(wireBytes(t, archive)); e != nil {
-			t.Fatal(e)
+		if _, err = DecodeArchive(wireBytes(t, archive)); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if _, e := ReceiptDigest(Message{}); e == nil {
-		t.Fatal("wrong digest kind accepted")
-	}
-	if _, e := ReceiptDigest(Message{Envelope: Envelope{Type: "receipt"}}); e == nil {
-		t.Fatal("missing receipt accepted")
-	}
-	if _, e := ReceiptDigest(Message{Envelope: Envelope{Type: "receipt"}, Payload: Registration{}}); e == nil {
-		t.Fatal("wrong receipt payload accepted")
 	}
 }
 func TestNativeIdentityAndProtocolSelection(t *testing.T) {
@@ -123,13 +97,9 @@ func TestCanonicalEscapesAndMalformedRawJSON(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{"", `{`, `[`, `{"x":`, `{"x":1,}`, `[1,]`, `{"x":1,"\u0078":2}`, `true false`, `NaN`, `1e9999`, `"\ud800"`, `"\udfff"`, `"\ud800x"`, `"\ud800\u0000"`, `"\uXXXX"`, `"\u0"`, `"\`, "\ufeff{}", strings.Repeat("[", 66) + "0" + strings.Repeat("]", 66), string([]byte{0xff})} {
-		if _, e := DecodeMessage([]byte(raw)); e == nil {
+		if _, e := strictJSON([]byte(raw)); e == nil {
 			t.Fatalf("malformed JSON accepted: %q", raw)
 		}
-	}
-	v := strings.Replace(registrationJSON, "term_18a03f12", `term_\ud83d\ude00`, 1)
-	if _, e := DecodeMessage([]byte(v)); e != nil {
-		t.Fatal(e)
 	}
 	if _, e := DecodeArchive([]byte(`null`)); e == nil {
 		t.Fatal("null archive accepted")
@@ -139,17 +109,13 @@ func TestAllV2ObjectFieldsAreRequiredAndClosed(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		archive bool
-	}{{"valid-registration", false}, {"valid-control", false}, {"valid-ledger", false}, {"valid-finalization", false}, {"valid-ready-receipt", false}, {"valid-archive", true}} {
+	}{{"valid-archive", true}} {
 		base := fixtureObject(t, test.name)
 		var walk func(any, func())
 		check := func() {
 			raw := wireBytes(t, base)
 			var e error
-			if test.archive {
-				_, e = DecodeArchive(raw)
-			} else {
-				_, e = DecodeMessage(raw)
-			}
+			_, e = DecodeArchive(raw)
 			if e == nil {
 				t.Fatalf("accepted missing or unknown field in %s", test.name)
 			}
@@ -207,9 +173,7 @@ func TestOversizedRawPayloadsAreRejectedBeforeParsing(t *testing.T) {
 	if _, err := DecodeArchive(make([]byte, MaxArchiveBytes+1)); err == nil {
 		t.Fatal("oversized raw archive accepted")
 	}
-	if _, err := DecodeMessage(make([]byte, MaxMetadataBytes+1)); err == nil {
-		t.Fatal("oversized raw message accepted")
-	}
+
 }
 
 func archiveWithSegments(t *testing.T, count int) map[string]any {
@@ -264,11 +228,8 @@ func TestCanonicalOriginEquivalence(t *testing.T) {
 		{"https://daynight.cc?", false}, {"https://daynight.cc#", false}, {"https://daynight.cc/", false}, {"https://example.com:99999", false}, {"https://127.1", false}, {"https://example.com:0443", false}, {"https://example.com:", false}, {"https://example.com:443", false}, {"http://example.com:80", false}, {"https://EXAMPLE.com", false}, {"https://example.123", false}, {"https://127.0.0.1.", false}, {"https://[0:0:0:0:0:0:0:1]", false}, {"https://[::ffff:192.0.2.1]", false}, {"https://user@example.com", false}, {"https://foo!bar", false}, {"file://example.com", false}, {"https://", false},
 	} {
 		t.Run(test.value, func(t *testing.T) {
-			message := fixtureObject(t, "valid-registration")
-			mapAt(mapAt(message["payload"])["owner"])["serverOrigin"] = test.value
-			_, e := DecodeMessage(wireBytes(t, message))
-			if (e == nil) != test.valid {
-				t.Fatalf("valid=%v %v", test.valid, e)
+			if origin(test.value) != test.valid {
+				t.Fatalf("valid=%v", test.valid)
 			}
 		})
 	}
@@ -340,7 +301,7 @@ func TestCanonicalJSONRejectsInvalidProducerUnicode(t *testing.T) {
 }
 
 func TestLimitsSharedWithTypeScript(t *testing.T) {
-	expected := map[string]any{"protocolHeader": ProtocolHeader, "leaseTtlMs": LeaseTTLMillis, "leaseRenewMs": LeaseRenewalMillis, "inputMaxBytes": MaxPasteBytes, "inputTimeoutMs": InputTimeoutMillis, "archiveMaxBytes": MaxArchiveBytes, "recordingMaxBytes": MaxRecordingBytes, "metadataMaxBytes": MaxMetadataBytes, "frameMaxBytes": MaxFrameBytes, "maxFrames": MaxFrames, "maxSegments": MaxSegments, "maxGaps": MaxGaps, "maxDimension": MaxDimension, "maxRuns": MaxRuns, "maxRowBytes": MaxRowBytes, "maxTextRuns": MaxTextRuns, "sampleIntervalMs": SampleIntervalMillis, "checkpointIntervalMs": CheckpointIntervalMillis, "maxRetainedWorktrees": MaxRetainedWorktrees, "pendingSourceMaxBytes": MaxPendingSourceBytes, "minimumFreeBytes": MinFreeDiskBytes, "viewerPendingFrames": ViewerPendingFrames, "viewerStallMs": ViewerStallMillis, "uploadRetryMinMs": ArchiveRetryInitialMillis, "uploadRetryMaxMs": ArchiveRetryMaxMillis}
+	expected := map[string]any{"protocolHeader": ProtocolHeader, "archiveMaxBytes": MaxArchiveBytes, "recordingMaxBytes": MaxRecordingBytes, "metadataMaxBytes": MaxMetadataBytes, "frameMaxBytes": MaxFrameBytes, "maxFrames": MaxFrames, "maxSegments": MaxSegments, "maxGaps": MaxGaps, "maxDimension": MaxDimension, "maxRuns": MaxRuns, "maxRowBytes": MaxRowBytes, "maxTextRuns": MaxTextRuns, "sampleIntervalMs": SampleIntervalMillis, "checkpointIntervalMs": CheckpointIntervalMillis}
 	raw := fixtureBytes(t, "limits")
 	got, e := strictJSON(raw)
 	if e != nil {
@@ -354,62 +315,5 @@ func TestLimitsSharedWithTypeScript(t *testing.T) {
 	if e != nil || string(want) != string(actual) {
 		t.Fatalf("cross-language limits differ: %s %s %v", want, actual, e)
 	}
-	message, e := DecodeMessage(fixtureBytes(t, "valid-ready-receipt"))
-	if e != nil {
-		t.Fatal(e)
-	}
-	message.Protocol = string([]byte{0xff})
-	if _, e := ReceiptDigest(message); e == nil {
-		t.Fatal("invalid producer Unicode receipt hashed")
-	}
-}
 
-func TestProducerRejectsMismatchedDiscriminators(t *testing.T) {
-	registration, err := DecodeMessage(fixtureBytes(t, "valid-registration"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name    string
-		payload Payload
-		kind    string
-	}{
-		{"wrong message type", registration.Payload, "snapshot"},
-		{"missing message payload", nil, "registration"},
-		{"nil concrete payload", (*Registration)(nil), "registration"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			message := registration
-			message.Type = test.kind
-			message.Payload = test.payload
-			if _, err := json.Marshal(message); err == nil {
-				t.Fatal("message discriminator did not describe its payload")
-			}
-		})
-	}
-	keysMessage, err := DecodeMessage(fixtureBytes(t, "valid-keys"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := keysMessage.Payload.(Operation)
-	for _, test := range []struct {
-		name    string
-		payload InputPayload
-		kind    string
-	}{
-		{"keys encoded as paste", original.Payload, "paste"},
-		{"paste encoded as keys", Paste{Text: "hello"}, "keys"},
-		{"missing operation payload", nil, "keys"},
-		{"nil concrete operation payload", (*Keys)(nil), "keys"},
-		{"nil concrete paste payload", (*Paste)(nil), "paste"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			operation := original
-			operation.Kind = test.kind
-			operation.Payload = test.payload
-			if _, err := json.Marshal(operation); err == nil {
-				t.Fatal("operation discriminator did not describe its payload")
-			}
-		})
-	}
 }

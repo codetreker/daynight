@@ -12,11 +12,10 @@ import { NativeCapabilityError, validateNativeModelObservation, type NativeModel
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const capabilityFailure = (error: unknown): unknown => error instanceof ToolSelectionError ? error : error instanceof Error && "code" in error && ["capability_error", "limit_exceeded", "cleanup_unknown"].includes(String(error.code)) ? error
   : new NativeCapabilityError("capability_error", error instanceof Error ? error.message : "Native capability discovery failed.", { cause: error });
-export type NativeProbeOptions = { native: WorkerCloudNative; cwd: string; environment: NodeJS.ProcessEnv; mode?: "web" | "herdr"; toolLaunch?: ResolvedToolLaunch; toolRuntimeRoot?: string };
+export type NativeProbeOptions = { native: WorkerCloudNative; cwd: string; environment: NodeJS.ProcessEnv; toolLaunch?: ResolvedToolLaunch; toolRuntimeRoot?: string };
 const runNativeRequest = async (options: NativeProbeOptions, operation: Operation, action: "verify" | "discover" | "status"): Promise<Record<string, unknown>> => {
-  const mode = options.mode ?? options.toolLaunch?.context ?? (action === "verify" ? "herdr" : "web");
   if (options.toolLaunch) {
-    if (options.toolLaunch.tool !== options.native.agent || options.toolLaunch.context !== mode) throw new Error("Native probe tool identity differs from its request.");
+    if (options.toolLaunch.tool !== options.native.agent) throw new Error("Native probe tool identity differs from its request.");
     await verifyToolLaunch(options.toolLaunch, operation, options.toolRuntimeRoot ? { trustedRuntimeRoot: options.toolRuntimeRoot } : {});
   }
   const environment = { ...options.environment };
@@ -27,7 +26,7 @@ const runNativeRequest = async (options: NativeProbeOptions, operation: Operatio
   let failure: unknown;
   let observation: Record<string, unknown> | undefined;
   try {
-    const result = await probe.run(process.execPath, [fileURLToPath(new URL("./native-selection-probe.js", import.meta.url)), JSON.stringify({ agent: options.native.agent, model: options.native.model, args: options.native.args, mode, ...(options.toolLaunch ? { toolLaunch: options.toolLaunch } : {}), ...(options.toolRuntimeRoot ? { toolRuntimeRoot: options.toolRuntimeRoot } : {}) }), action]);
+    const result = await probe.run(process.execPath, [fileURLToPath(new URL("./native-selection-probe.js", import.meta.url)), JSON.stringify({ agent: options.native.agent, model: options.native.model, args: options.native.args, ...(options.toolLaunch ? { toolLaunch: options.toolLaunch } : {}), ...(options.toolRuntimeRoot ? { toolRuntimeRoot: options.toolRuntimeRoot } : {}) }), action]);
     let response: unknown;
     try { response = JSON.parse(result.stdout); } catch { throw new NativeCapabilityError("capability_error", "Native model/effort selection probe returned invalid output."); }
     if (typeof response !== "object" || response === null || !("ok" in response) || response.ok !== true) {
@@ -136,15 +135,14 @@ export type NativeSelectionVerifier = Pick<ReturnType<typeof createNativeSelecti
 export const createWorkerToolInspector = (options: { cwd: string; environment: NodeJS.ProcessEnv; toolRuntimeRoot?: string; codexProbes?: CodexProbeOwner }) => {
   const verifier = createNativeSelectionVerifier(), codex = options.codexProbes ?? createCodexProbeOwner(options.environment, options.cwd);
   const request = (launch: ResolvedToolLaunch): NativeProbeOptions => {
-    if (launch.tool === "herdr") throw new Error("Herdr runtime inspection belongs to its instance adapter.");
-    return { native: { agent: launch.tool, model: null, args: [] }, cwd: options.cwd, environment: options.environment, mode: launch.context, toolLaunch: launch, ...(options.toolRuntimeRoot ? { toolRuntimeRoot: options.toolRuntimeRoot } : {}) };
+    return { native: { agent: launch.tool, model: null, args: [] }, cwd: options.cwd, environment: options.environment, toolLaunch: launch, ...(options.toolRuntimeRoot ? { toolRuntimeRoot: options.toolRuntimeRoot } : {}) };
   };
   const invocation = (launch: ResolvedToolLaunch, scope = options) => ({ file: launch.command.file, toolLaunch: launch, environment: scope.environment, workingDirectory: scope.cwd });
   const modelProbe = <T>(input: NativeProbeOptions & { toolLaunch: ResolvedToolLaunch }, operation: Operation, run: () => Promise<T>): Promise<T> => codex.observe(invocation(input.toolLaunch, input), operation, run);
   return {
     reconcile: async (launch: ResolvedToolLaunch, operation: Operation): Promise<number> => {
       const receipt = await withinOperation(codex.reconcileRecipe(launch, operation), operation);
-      if (launch.tool !== "herdr") await withinOperation(verifier.reconcileRecipe(launch, operation), operation);
+      await withinOperation(verifier.reconcileRecipe(launch, operation), operation);
       return receipt;
     },
     admit: (launch: ResolvedToolLaunch, receipt: unknown): void => codex.admitRecipe(launch, receipt),
@@ -157,10 +155,7 @@ export const createWorkerToolInspector = (options: { cwd: string; environment: N
         if (launch.tool === "copilot" && launch.context === "web") version = await verifier.status(request(launch), operation);
         else {
           const result = await runOwnedCommand({ ...toolCommand(launch, launch.tool === "copilot" ? ["--no-auto-update", "--version"] : ["--version"]), environment: options.environment, cwd: options.cwd }, operation);
-          if (launch.tool === "herdr") {
-            const match = /^herdr (\d+\.\d+\.\d+)(?:\s|$)/m.exec(result.stdout);
-            if (!match) throw new ToolSelectionError(launch.tool, launch.context, "probe", "unrecognized_output"); version = match[1]!;
-          } else version = parseNativeAgentVersion(launch.tool, result.stdout);
+          version = parseNativeAgentVersion(launch.tool, result.stdout);
           if (launch.tool === "codex" && launch.context === "web") {
             const help = await runOwnedCommand({ ...toolCommand(launch, ["app-server", "--stdio", "--help"]), environment: options.environment, cwd: options.cwd }, operation);
             if (!["app-server", "--stdio"].every(flag => help.stdout.includes(flag))) throw new ToolSelectionError(launch.tool, launch.context, "probe", "incompatible_runtime");
@@ -170,8 +165,8 @@ export const createWorkerToolInspector = (options: { cwd: string; environment: N
       };
       return codex.observe(invocation(launch), operation, inspect);
     },
-    assertAvailable: (launch: ResolvedToolLaunch): void => { codex.assertAvailable(invocation(launch)); if (launch.tool !== "herdr") verifier.assertAvailable(request(launch)); },
-    revision: (launch: ResolvedToolLaunch): number => codex.revision(invocation(launch)) + (launch.tool !== "herdr" ? verifier.revision(request(launch)) : 0),
+    assertAvailable: (launch: ResolvedToolLaunch): void => { codex.assertAvailable(invocation(launch)); verifier.assertAvailable(request(launch)); },
+    revision: (launch: ResolvedToolLaunch): number => codex.revision(invocation(launch)) + verifier.revision(request(launch)),
     close: async (operation?: Operation): Promise<void> => {
       const results = await Promise.allSettled([verifier.close(operation), ...(options.codexProbes ? [] : [codex.close(operation)])]);
       const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);

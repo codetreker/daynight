@@ -263,7 +263,7 @@ describe("Worker configuration cache", () => {
     expect(corrected.currentItems.find(item => item.value.key.kind === "enableSudoCleanup")).toMatchObject({ value: { state: "pending", appliedValue: null }, actualSource: null });
     expect(upgraded.retainedItems).toContainEqual(withoutMode(savedArchive));
     expect(upgraded.hiddenCapabilitySources).toEqual(source.hiddenCapabilitySources);
-    const snapshot = (value: ActiveCache) => configurationSnapshot(value, false, new Map(), { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, () => { throw new Error("An unsynchronized snapshot cannot prove a native selection."); });
+    const snapshot = (value: ActiveCache) => configurationSnapshot(value, false, new Map(), { codex: { kind: "auto" }, copilot: { kind: "auto" } }, () => { throw new Error("An unsynchronized snapshot cannot prove a native selection."); });
     expect(snapshot(upgraded).retainedArchiveSessions).toBe(false);
     const unknown = parseConfigurationCache({ ...source, retainedItems: [] }, identity).cache;
     expect(snapshot(unknown).retainedArchiveSessions).toBeNull();

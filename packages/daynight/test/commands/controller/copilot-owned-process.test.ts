@@ -18,7 +18,7 @@ const fixture = async () => {
   await writeFile(entry, `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(receipt)},JSON.stringify({node:process.execPath,args:process.argv.slice(2),routeGate:process.env.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT??null})); console.log('Listening on port 12345'); setInterval(()=>{},1000);`);
   const operation = createOperation();
   try {
-    const launch = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: entry }, cwd: root, environment: process.env, workerNode: node }, operation);
+    const launch = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "path", path: entry }, cwd: root, environment: process.env, workerNode: node }, operation);
     let closed = Promise.resolve();
     const onSpawn = (child: ChildProcess) => { closed = new Promise<void>(resolve => child.once("close", () => resolve())); };
     const close = async (runtime: ReturnType<typeof startCopilotProcess>) => {

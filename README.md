@@ -234,8 +234,7 @@ Code or Copilot. When local mode is omitted, the first bootstrap candidate uses
 `web`. A local bootstrap candidate that explicitly selects `herdr` is refused
 with instructions to adjust it. An explicit cloud `herdr` target is retained
 unchanged and reported as unsupported. Existing Herdr claims and resources are
-handled by their user. The current service contract still exposes its negotiated
-mode fields; saving a target is not application confirmation.
+handled by their user. The current service accepts Web execution; saving a target is not application confirmation.
 
 Before enrollment, `repo add` lists accessible Projects for multiselection. Use
 `--project PROJECT_UUID` for an explicit noninteractive registration;
@@ -262,9 +261,7 @@ responsibility and blocks replacement; external temporary resources may remain.
 Web retains its original execution evidence and recovery pause across restarts.
 An exhausted or paused Web execution keeps its claim and slot, reports waiting,
 and requires explicit retry with the original native identity and complete stop
-proof. Legacy Herdr runtime code remains in the repository;
-its presence does not establish automatic handling of historical Herdr claims
-or resources. Those resources remain the user's responsibility. See the
+proof. Historical Herdr claims and resources remain the user's responsibility. See the
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 for the current configuration and recovery boundaries.
 

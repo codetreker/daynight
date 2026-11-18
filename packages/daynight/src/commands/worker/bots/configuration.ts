@@ -7,7 +7,7 @@ export const botNativeConfiguration = (configuration: BotConfiguration): WorkerC
   const native = { agent: configuration.provider, model: configuration.model, args: [...configuration.args] };
   // Legacy launch tickets retain their original argument shape across upgrades.
   if (configuration.selection === undefined) return native;
-  const normalized = normalizeWorkerNative(native, "web", configuration.reasoningEffort == null ? {} : { agentReasoningEffort: configuration.reasoningEffort }, true, true);
+  const normalized = normalizeWorkerNative(native, configuration.reasoningEffort == null ? {} : { agentReasoningEffort: configuration.reasoningEffort }, true, true);
   // A null final effort delegates to native defaults, even if the report carried
   // an older argument value. Normalization places its single effort pair last.
   const args = configuration.reasoningEffort === null && normalized.report.reasoningEffort.value !== null

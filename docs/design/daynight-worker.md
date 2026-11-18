@@ -59,11 +59,9 @@ Worker 用期望状态与实际状态之差选择动作，不以重复的步骤�
   worker/
     configuration.json # 云端目标、逐项实际值及报告确认
     state.sqlite       # projects、tasks、cleanup_schedules
-    herdr-executions.sqlite # macOS Herdr 运行与停止证据
     instance.lock
     logs/
     tmp/
-    h/                 # legacy 私有 Herdr 配置与状态
       r/<instance>/    # macOS 每个实际运行代次的独占实例
 <local_path>/.worktrees/daynight/<worktree_id>/
 ```
@@ -90,7 +88,7 @@ Setup 在终端内汇总只读环境报告、单选 Copilot/Codex/Claude 并选�
 
 ### 本地原生覆盖与来源
 
-`local-native.ts` 负责两个新字段的存在性、字符串约束及旧 model 同层冲突。`native-overrides.ts` 在已解析云端全局或项目原生元组上独立应用本地两项，抽取 model/effort 参数、去重并映射当前 Provider 的 Web/Herdr 表达。其它原生参数交给既有验证器；Codex 非相关 TOML 设置保留。
+`local-native.ts` 负责两个新字段的存在性、字符串约束及旧 model 同层冲突。`native-overrides.ts` 在已解析云端全局或项目原生元组上独立应用本地两项，抽取 model/effort 参数、去重并映射当前 Provider 的 Web 表达。其它原生参数交给既有验证器；Codex 非相关 TOML 设置保留。
 
 `runtime.ts` 的云端应用入口验证规范化结果，管理器仍持久保存原始云端 appliedValue。提供给 coordinator 与助手 host 的是规范化后配置；机器报告单独输出 `runtimeConfiguration`，由 `schemaVersion:1` 标识来源对象。这样本地覆盖不冒充 desired 或云端应用值，移除后重新组合会恢复真实下层来源。null/native 表示委托原生配置，不把未知值当作探测结果。尚未接纳的本地候选不成为有效执行配置或来源观察；原执行的实际参数继续由其冻结记录表达。
 
@@ -106,7 +104,7 @@ Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力
 
 `commands/worker/config.ts` 与 `configuration-source.ts` 共用这个解析器，两种本地配置结果都包含三项 choice；缺文件的默认读取仍不创建配置文件。语法检查不读取程序文件、不启动子进程，也不把路径规范化成另一入口，保留符号链接和词法路径供工具解析器核验。`parseWorkerCloudBootstrap` 提供两项公开 choice，由 API 按协议投影；本地 choice 没有云端“未采纳”状态，独立候选在云端已有目标时仍可填未采纳项。
 
-`platform/tool-executables.ts` 提供 `resolveToolLaunch({tool,context,choice,environment,cwd,workerNode?}, operation)`、`verifyToolLaunch(launch, operation, {trustedRuntimeRoot?})`、`toolCommand(launch, args)` 与 `probeResourceKey(launch, {cwd,environment})`。平台模块不依赖 Worker 调度或 Provider。捕获环境负责 Windows PATH/PATHEXT 大小写归一化；自动搜索按捕获 cwd 解释相对 PATH 项，发布的入口始终为绝对路径。自动 Codex 与 Herdr 使用 PATH，Copilot 的 Web 上下文使用随包 native，Herdr 上下文使用 PATH；显式选择不回退其它安装。
+`platform/tool-executables.ts` 提供 `resolveToolLaunch({tool,context,choice,environment,cwd,workerNode?}, operation)`、`verifyToolLaunch(launch, operation, {trustedRuntimeRoot?})`、`toolCommand(launch, args)` 与 `probeResourceKey(launch, {cwd,environment})`。平台模块不依赖 Worker 调度或 Provider。捕获环境负责 Windows PATH/PATHEXT 大小写归一化；自动搜索按捕获 cwd 解释相对 PATH 项，发布的入口始终为绝对路径。自动 Codex 使用 PATH，Copilot 使用随包 native；显式选择不回退其它安装。
 
 入口适配器支持 native、Node 入口及 npm Node shim。Node 入口使用 `workerNode`（缺省 `process.execPath`）的 realpath；Codex JavaScript loader 与普通 Node 入口使用相同命令，由 loader 自行选择 native。官方 Copilot 根据入口所属 manifest 定位同一安装的 native。解析器不登记 Codex 发行摘要或复刻 native 布局，实际版本和协议兼容性由运行探测确认。
 
@@ -293,7 +291,7 @@ Runtime 的未绑定仓库经远端解析 Project 后，用扫描结果核对 va
 
 新领取在远端写入前跳过仍有同 task 旧资源的候选，再直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending；确认名额和旧执行收尾后提交 active、准备资源。请求结果未知时记录 Warning，不创建资源、不重发原请求；后续完整清单找回实际授予。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 
-现有远端 phase、Herdr 和 nativeSessionId 字段是当前观察的展示投影。每次基于新读到的 task/claim 与精确版本更新，未知响应记录日志后重新读取；投影不决定本机资源动作，也不保存待提交摘要回执。
+远端 phase 和 nativeSessionId 是当前观察的展示投影；旧 Herdr 属性只保留历史读取。每次基于新读到的 task/claim 与精确版本更新，未知响应记录日志后重新读取；投影不决定本机资源动作，也不保存待提交摘要回执。
 
 ## Git 工作区与资源身份
 
@@ -350,7 +348,7 @@ Backend 在 worktree 准备、initialize、launcher.prepare/launch 和原生输�
 
 Shutdown 在停止进程前识别已停止或失败的耗尽执行并保存暂停，避免把故障停机写成正常关停来源；尚未完成的显式 retry 也保留为暂停，不能通过 orderly restart 获得第二次尝试。兼容既有数据时，restartAfterShutdown=true 且 journal 没有 error 仍被视为旧正常关停来源；该标记不提供写入前进程状态的完整历史，不能据此重建所有旧故障。
 
-执行放行与远端摘要对账分离。原生恢复暂停或编排阻塞阻止执行时，Coordinator 仍以最新读取的 task 版本发布 `phase=waiting`、原 `nativeSessionId` 与 `herdr:null`，保留 active claim。发布失败只记录摘要错误，后续完整库存重新读取版本并对账，不增加原生恢复计数或清除暂停。支持启动观察的服务还接收与当前代际绑定的 startupReport；编排等待不能写成原生 recovery blocked，健康原执行仍报告 ready/none。既有阶段字段与报告都一致时不再写入。具体来源、兼容和读写校验由[启动观察协议](task-session-protocol.md#启动观察的独立上报)拥有。暂停继续承担名额及资源责任，不触发终止清理或业务完成。
+执行放行与远端摘要对账分离。原生恢复暂停或编排阻塞阻止执行时，Coordinator 仍以最新读取的 task 版本发布 `phase=waiting`与原 `nativeSessionId`，保留 active claim。发布失败只记录摘要错误，后续完整库存重新读取版本并对账，不增加原生恢复计数或清除暂停。支持启动观察的服务还接收与当前代际绑定的 startupReport；编排等待不能写成原生 recovery blocked，健康原执行仍报告 ready/none。既有阶段字段与报告都一致时不再写入。具体来源、兼容和读写校验由[启动观察协议](task-session-protocol.md#启动观察的独立上报)拥有。暂停继续承担名额及资源责任，不触发终止清理或业务完成。
 
 显式 retry 仍受 runner 实例锁和原 active claim 校验保护。authorizeRecoveryRetry 保证 pauseReason 非空并设置 retryAuthorized=true，表示一次尚未消费的原身份恢复授权。完整停止验证通过后，beginWebGeneration 在同一 SQLite 事务中递增 count、建立新 generation、清除 pauseReason 并保留 retryAuthorized=true；换代与消费授权不能留下可重复尝试的中断窗口。普通 beginRecovery 不消费显式授权。
 
@@ -429,7 +427,7 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 ## 验证边界
 
-本地工具路径测试执行真实 YAML 解析与两个配置入口，验证三项缺省值、null、未知键、相对路径、控制字符、非法 Unicode、4096 字节边界及原字符串保留。POSIX 与 Windows path API 的纯语法测试不证明另一操作系统能启动对应文件；文件、解释器、shim 和子进程行为须由共享解析器在对应平台验证。云端 bootstrap 和 API 测试验证版本 2、升级拒绝及明确 auto 不会重新读取本地旧路径。
+本地工具路径测试执行真实 YAML 解析与两个配置入口，验证两项缺省值、null、未知键、相对路径、控制字符、非法 Unicode、4096 字节边界及原字符串保留。POSIX 与 Windows path API 的纯语法测试不证明另一操作系统能启动对应文件；文件、解释器、shim 和子进程行为须由共享解析器在对应平台验证。云端 bootstrap 和 API 测试验证版本 2、升级拒绝及明确 auto 不会重新读取本地旧路径。
 
 配置验证使用受控时间、请求屏障、延后 I/O 与真实缓存读写，覆盖未知 JSON 与远端未知 kind 的接收→保存→重启、schema 1–5 转换、存储失败保留源、已知非法值/重复键/深度边界、未知-only 在途 native/项目准备不重复应用、applicationRevision 消费、迟到低版本 receipt，以及运行期/重启后的GET 较低/null 恢复、同版本语义冲突拒绝、null 重新导入及当前文件快照、未知响应先读、旧 generation ACK、原高版本停止与重新选择、cloud-first 和无 picker 的空项目启动、原始覆盖意图、身份/损坏/持久化拒绝、Web native 真实工具证明、旧格式重验与未采纳模式准入、单提交 owner 的 receive/apply/ACK 竞争、旧目标晚完成、快速恢复及飞行期间新失败。coordinator/runtime 测试观察实际并发、下一次轮询、恢复上限和 native 参数消费者；长应用与任务清单失败期间报告继续，健康进程不能因参数变更重启。项目没有已确认准备结果时保持 pending，不用 native 验证代替准备或停止证明。
 

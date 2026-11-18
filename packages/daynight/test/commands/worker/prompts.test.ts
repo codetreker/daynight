@@ -19,7 +19,7 @@ const fixture = () => {
   const task: ManagedAssignment = {
     projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), status: "active", agent: "codex", sessionId: null,
     serverOrigin: "https://daynight.example", workerId: uuid(4), worktreeId: uuid(5),
-    configuration: { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 2 },
+    configuration: { agent: "codex", model: "current-model", args: ["--sandbox", "read-only"], recoveryLimit: 2 },
     worktree: { repositoryPath, commonDirectory: path.join(repositoryPath, ".git"), worktreePath: path.join(repositoryPath, ".worktrees", "daynight", uuid(2)), branch: `daynight/${uuid(2)}` },
   };
   return { task, build: buildWorkerPrompt };

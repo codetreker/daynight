@@ -4,7 +4,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
-import type { TaskPlatform, WorkerExecutableProbe, WorkerHerdrProbe } from "../../../src/api/types.js";
+import type { TaskPlatform, WorkerExecutableProbe } from "../../../src/api/types.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { createWorkerTelemetryCollector } from "../../../src/commands/worker/telemetry.js";
 
@@ -14,7 +14,7 @@ const platform = (): TaskPlatform => {
   if (process.platform === "win32") return "windows";
   throw new Error("Native telemetry qualification requires a supported Worker platform.");
 };
-const versionSummary = (probe: WorkerExecutableProbe | WorkerHerdrProbe) => probe.state === "ok"
+const versionSummary = (probe: WorkerExecutableProbe) => probe.state === "ok"
   ? { state: probe.state, version: probe.value }
   : probe.state === "error" ? { state: probe.state, code: probe.code } : { state: probe.state };
 
@@ -27,7 +27,7 @@ it("qualifies resource and pure software probes on the native operating system",
     const startup = path.join(root, "cwd"); const home = path.join(root, "home");
     await Promise.all([mkdir(startup), mkdir(home)]);
     const manifest = JSON.parse(await readFile(path.resolve(import.meta.dirname, "../../../package.json"), "utf8")) as { version: string };
-    const paths = { ...resolveWorkerPaths(home), herdrDirectory: path.join(root, "h"), logsDirectory: path.join(root, "l") };
+    const paths = { ...resolveWorkerPaths(home), logsDirectory: path.join(root, "l") };
     const collector = createWorkerTelemetryCollector({ paths, homeDirectory: home, version: manifest.version, workingDirectory: startup, machine: { id: "native-qualification", name: "Native qualification" }, platform: platform(), workerId: "native-qualification", serverOrigin: "https://daynight.example" });
     const began = performance.now();
     const { telemetry } = await collector.collect(operation);

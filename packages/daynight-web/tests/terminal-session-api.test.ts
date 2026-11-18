@@ -5,8 +5,8 @@ import { createTerminalSessionApi, parseSessionHistory } from '../src/api/termin
 import { createSessionApi } from '../src/api/sessions';
 import { hashSessionBytes } from '../../daynight/src/session/v2/values';
 const fixture = (name: string) => JSON.parse(readFileSync(`../daynight/test/session/fixtures/v2/${name}.json`, 'utf8'));
-const r = fixture('valid-registration');
-const owner = r.payload.owner;
+const r = fixture('valid-archive');
+const owner = r.owner;
 const response = (body: unknown, principal = owner.ownerUserId, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': principal } });
 const api = () => createTerminalSessionApi(owner.projectId, owner.taskId, owner.ownerUserId, vi.fn(), owner.serverOrigin);
 const signal = () => new AbortController().signal;

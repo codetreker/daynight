@@ -1,6 +1,6 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、强制撤回及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/archived/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
+状态：服务端认领、归属更新、释放、强制撤回及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/archived/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree；Web backend 与 Controller 提供原生执行及资源操作，前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
 
 ## 资源和属性所有权
 

@@ -26,7 +26,7 @@ const fixture = () => {
   const marker = `daynight-worker:${JSON.stringify({ ...owner, leaf: "1:1", root: "2:2", common: "3:3" })}`;
   git(repo, ["worktree", "add", "--lock", "--reason", marker, "-b", `daynight/${owner.taskId}`, "--", cwd]);
   const admin = git(cwd, ["rev-parse", "--absolute-git-dir"]);
-  const paths = { ...resolveWorkerPaths(root), workerDirectory: path.join(root, "worker"), herdrDirectory: path.join(root, "herdr") }; mkdirSync(paths.workerDirectory, { recursive: true });
+  const paths = { ...resolveWorkerPaths(root), workerDirectory: path.join(root, "worker") }; mkdirSync(paths.workerDirectory, { recursive: true });
   const store = openWorkerStore(path.join(root, "state.sqlite"));
   const project = { projectId: owner.projectId, repoUrl: "https://example.test/repo.git", localPath: repo };
   const repository = { root: repo, commonDirectory, rootIdentity: "test", commonIdentity: "test" };

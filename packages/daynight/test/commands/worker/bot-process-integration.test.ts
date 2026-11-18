@@ -369,7 +369,7 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
     // Load compiled production modules so owned model probes execute their actual sibling entry points.
     const compiled = await import(pathToFileURL(path.join(dist, "commands/worker/tool-selection-runtime.js")).href) as typeof import("../../../src/commands/worker/tool-selection-runtime.js");
     tools = compiled.createWorkerToolSelectionRuntime({ workerDirectory: path.join(state, "worker"), cwd, environment: probeEnvironment,
-      localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } }, readActiveSelections: () => [] });
+      localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") } }, readActiveSelections: () => [] });
   }
   const selectToolLaunch = vi.fn(async (_agent: "codex" | "copilot", signal: AbortSignal) => {
     if (tools !== undefined) return tools.selectToolLaunch("codex", signal);
@@ -550,7 +550,7 @@ test("keeps A/B version, host, models and native Bot launches on their selected 
       toolSelections: [runtime.manager.currentSelection("codex", "web")?.selectionKey] }),
     verifier: { discover: async (input, operation) => {
       const toolLaunch = await runtime.manager.selectForNewExecution("codex", "web", operation);
-      return runtime.inspector.discover({ ...input, toolLaunch, mode: "web", toolRuntimeRoot: runtime.toolRuntimeRoot }, operation);
+      return runtime.inspector.discover({ ...input, toolLaunch, toolRuntimeRoot: runtime.toolRuntimeRoot }, operation);
     } } });
   cleanups.push(async () => { models.close(); await host.close(); });
   const inspect = async (tool: "A" | "B", version: string) => {

@@ -109,7 +109,7 @@ activeSelections 由原 Task/Bot 责任按选择聚合，不逐 Task 枚举。�
 `timeout`、`command_failed`、`invalid_output`、`unavailable`。
 model 为 null 或最多 256 UTF-8 字节的非空白文本；args 为显式数组，最多 128 项，每项为最多 4096 UTF-8 字节的非空白文本。目录、model 和 args 不接受控制字符。`unsupported_arguments` 必须同时清空 model 为 null、args 为 []，不能把不支持的原生命令或凭据作为报告内容。
 
-默认 Provider 才能继承全局 model/args；其它 Provider 使用各自原生默认，即 model=null、args=[]。需要预检的 Provider 按 Web 适配器参数规则检查，Worker 任务使用 Herdr 不影响该规则。Worker 本机核对真实目录与可执行文件；服务端只校验路径语法，不访问另一台机器的目录。Windows 接受完整盘符路径或 UNC 路径，不接受 drive-relative 路径。
+默认 Provider 才能继承全局 model/args；其它 Provider 使用各自原生默认，即 model=null、args=[]。需要预检的 Provider 按 Web 适配器参数规则检查。Worker 本机核对真实目录与可执行文件；服务端只校验路径语法，不访问另一台机器的目录。Windows 接受完整盘符路径或 UNC 路径，不接受 drive-relative 路径。
 
 当前有效全局或任一项目选择 Copilot，或本 Worker 存在非删除的 Copilot Bot 定义时，后台需要 Copilot 检查。没有此需求且没有可纯读取的现有成功 Web selection 证明时，Copilot 条目为 `available=false`、`reason=unavailable`、`model=null`、`args=[]`，不产生该 Provider 的采集 issue；未检查不能作为未安装或成功的证据。现有成功证明可用于报告，但不能因此重新解析或探测。配置未应用时保留原配置应用预检；明确请求 Copilot 的模型发现和新执行仍按需准备。实际需要检查时，真实错误继续报告。
 
