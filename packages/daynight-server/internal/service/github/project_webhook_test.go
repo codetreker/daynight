@@ -69,6 +69,9 @@ func TestProjectWebhookManagerCompletion(t *testing.T) {
 		{"committed", store.TransactionCommitted, nil, true, false},
 		{"not committed", store.TransactionNotCommitted, errors.New("rollback"), false, false},
 		{"unknown", store.TransactionUnknown, lost, false, true},
+		{"not committed without error", store.TransactionNotCommitted, nil, false, false},
+		{"unexpected outcome", "", nil, false, false},
+		{"committed with error", store.TransactionCommitted, errors.New("cleanup failed"), false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,7 +90,7 @@ func TestProjectWebhookManagerCompletion(t *testing.T) {
 				if err == nil || result.Version != nil {
 					t.Fatalf("result=%+v err=%v", result, err)
 				}
-				if !errors.Is(err, tc.cause) {
+				if tc.cause != nil && !errors.Is(err, tc.cause) {
 					t.Fatalf("lost cause: %v", err)
 				}
 				var management *ManagementError
@@ -96,5 +99,22 @@ func TestProjectWebhookManagerCompletion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Invalid identities and inputs must be refused before a write scope is opened.
+func TestProjectWebhookManagerRejectsInvalidInputBeforeWrite(t *testing.T) {
+	manager := NewProjectWebhookManager(nil)
+	for _, tc := range []struct {
+		id    string
+		input core.ProjectWebhookInput
+	}{
+		{"invalid-id", core.ProjectWebhookInput{ExpectedUserID: mgmtPrincipal.UserID}},
+		{mgmtProject, core.ProjectWebhookInput{ExpectedUserID: "different-user"}},
+	} {
+		result, err := manager.Update(t.Context(), mgmtPrincipal, tc.id, tc.input)
+		if err == nil || result.Version != nil {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
 	}
 }
