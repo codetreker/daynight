@@ -49,12 +49,24 @@ export const MonitoringCard = ({ item, now, expired = false }: { readonly item: 
 
 export const MonitoringListError = ({ state, readEnabled }: { readonly state: WorkerReadState<unknown>; readonly readEnabled: boolean }) => <ErrorNotice state={state} readEnabled={readEnabled} />;
 
-export const WorkerMonitoring = ({ state, readEnabled }: { readonly state: WorkerReadState<WorkerMonitoringDetail> & { readonly expired?: boolean }; readonly readEnabled: boolean }) => {
-  const { locale, format } = useI18n();
+type MonitoringReadState = WorkerReadState<WorkerMonitoringDetail> & { readonly expired?: boolean };
+
+const isMonitoringExpired = (state: MonitoringReadState) => state.expired === true || state.snapshot?.state === 'available' && state.serverMilliseconds !== null && state.serverMilliseconds - Date.parse(state.snapshot.receivedAt) >= 3_600_000;
+
+export const WorkerMonitoringTime = ({ state }: { readonly state: MonitoringReadState }) => {
+  const { locale } = useI18n();
   const m = monitoringMessages(locale);
   const data = state.snapshot;
   const now = state.serverMilliseconds;
-  const expired = state.expired === true || data?.state === 'available' && now !== null && now - Date.parse(data.receivedAt) >= 3_600_000;
+  if (data === null || data.state === 'absent' || isMonitoringExpired(state)) return null;
+  return <p className="monitoring-time">{now === null ? m.observed : <Age receivedAt={data.receivedAt} now={now} />} · {m.captured}: <WorkerTimestamp value={data.data.capturedAt} /></p>;
+};
+
+export const WorkerMonitoring = ({ state, readEnabled }: { readonly state: MonitoringReadState; readonly readEnabled: boolean }) => {
+  const { locale, format } = useI18n();
+  const m = monitoringMessages(locale);
+  const data = state.snapshot;
+  const expired = isMonitoringExpired(state);
   if (data === null) return <section className="worker-panel monitoring-empty"><ErrorNotice state={state} readEnabled={readEnabled} /><h2>{state.status === 'loading' ? m.loading : m.unknown}</h2></section>;
   if (data.state === 'absent' || expired) return <section className="worker-panel monitoring-empty"><ErrorNotice state={state} readEnabled={readEnabled} /><h2>{expired ? m.expired : m.absent}</h2><p>{m.absentDetail}</p></section>;
   const observation = data.data;
@@ -62,7 +74,6 @@ export const WorkerMonitoring = ({ state, readEnabled }: { readonly state: Worke
   const incomplete = data.permissionProjection === 'restricted' || data.detailCoverage === 'partial';
   return <div className="monitoring-content">
     <ErrorNotice state={state} readEnabled={readEnabled} />
-    <p className="monitoring-time">{now === null ? m.observed : <Age receivedAt={data.receivedAt} now={now} />} · {m.captured}: <WorkerTimestamp value={observation.capturedAt} /></p>
     {data.permissionProjection === 'restricted' && <p className="monitoring-projection">{m.restricted}</p>}
     {(data.detailCoverage === 'partial' || observation.admission.coverage === 'partial' || observation.capacity?.detailCoverage === 'partial') && <p className="monitoring-projection">{m.partial}</p>}
     <div className="monitoring-grid">
