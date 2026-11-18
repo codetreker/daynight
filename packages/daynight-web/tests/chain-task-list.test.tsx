@@ -1,5 +1,8 @@
 import { summariesForIndex } from "./helpers/taskSync";
 
+// Membership and task navigation do not depend on the independent usage reader.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+
 // These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
 vi.mock('../src/app/router', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/app/router')>(),
@@ -202,7 +205,7 @@ describe('Goal task lists', () => {
     fireEvent.click(disclosure());
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
     expect(disclosure()).toHaveAttribute('aria-controls', children().id);
-    const rows = within(children()).getAllByRole('link');
+    const rows = within(children()).getAllByRole('link').filter(link => link.classList.contains('task-row-title'));
     expect(rows.map((row) => row.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
     expect(rows.map((row) => row.closest('.task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
     expect(rows.map((row) => row.closest('.task-row')!.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
@@ -342,7 +345,7 @@ describe('Goal task lists', () => {
     expect(removed.isConnected).toBe(false);
     expect(disclosure()).toHaveFocus();
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
-    expect(within(children()).getAllByRole('link')).toHaveLength(2);
+    expect(within(children()).getAllByRole('link').filter(link => link.classList.contains('task-row-title'))).toHaveLength(2);
     expect(screen.getByRole('link', { name: 'Implementation' })).toBeVisible();
     expect([...children().querySelectorAll('.task-row-title')].map((title) => title.textContent)).toEqual(['Other root', 'Implementation']);
     expect(disclosure().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');

@@ -7,6 +7,9 @@ import { unsupportedSessionObservation } from '../../daynight/src/api/task-obser
 import { CurrentAccountProvider } from '../src/app/CurrentAccountContext';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 
+// Usage polling has its own lifecycle tests; these timers belong to task observations.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+
 const mock = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock('../src/features/my-tasks/useMyTasks', () => ({ useMyTasks: () => mock.value }));
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;

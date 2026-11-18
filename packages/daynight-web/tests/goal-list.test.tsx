@@ -1,5 +1,8 @@
 import type { ComponentProps } from 'react';
 
+// Usage requests are independent of Goal membership and Session observation.
+vi.mock('../src/features/usage/useTaskUsage', async original => ({ ...await original<typeof import('../src/features/usage/useTaskUsage')>(), useTaskUsage: () => ({ summary: null, error: null, pending: false, retry: () => {} }) }));
+
 // These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
 vi.mock('../src/app/router', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/app/router')>(),

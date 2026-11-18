@@ -204,6 +204,26 @@ aggregationRole 精确过滤，limit 1..100，按 `(createdAt,id)` 升序 keyset
 generation 停止和 grant 自然到期；不能只比较 usage 行版本。
 过期为 `cursor_expired`。
 
+## Task 用量界面
+
+Task 卡片提供紧凑摘要并链接到 Detail 的用量页签；Detail 顶部保留相同入口。
+卡片的批量摘要独立于 Task 同步和缓存，最多一百项一批，不能每张卡片发一次请求，
+也不能依赖 Task.version 或 updatedAt 推断用量是否更新。
+
+简写仅用于摘要。明细以精确十进制整数显示 input、output、cache、reasoning 和 total；
+未知值明确显示未知，合法零仍为零。total 未知时可显示带指标名的已知小计，
+不得把部分 output 或 input 称作合计。cache 和 reasoning 标明包含关系，不能再加到
+input/output 上。展示完整性、最近计量时间、查询时间和可解释的缺失原因；
+不把 unsupported、暂不可用、无数据或采集中混成完整结果。
+
+用量页签按执行或计量来源读取有界分页，支持模型、Provider 和执行过滤。
+每项保留执行、模型、来源身份、计量口径与指标；无法归属或已包含的来源不得
+被界面再次相加。错误允许重试，分页失效保留已读内容并提供刷新，权限撤销清除
+相应私有投影。用量读取失败不影响其他 Detail 页签和任务操作。入口、筛选、重试
+与分页支持键盘，小屏下精确整数与来源可换行或在所属区域滚动。
+
+## 当前成员汇总
+
 Chain 双向沿普通依赖展开，external 不加入；Goal 仅当前直接普通子 Task，
 包括 cancelled，不沿链扩展。先 distinct Task，再关联事实，重叠视图不能二次相加。
 聚合仅允许读取整个 Project 普通任务集合的账户；否则
@@ -211,3 +231,9 @@ Chain 双向沿普通依赖展开，external 不加入；Goal 仅当前直接普
 当前成员不含 soft-delete，删除/移动/边分类变化使 membershipRevision 和游标失效。
 响应明确 `membershipPolicy:"current_members_excludes_deleted"`。最多 10,000 成员，
 超限 `aggregate_scope_too_large`，不得截断后报完整；缺失成员按 Task ID 分页，最多 100。
+
+图中的 Chain/Goal 用量入口和 Goal Detail 的用量页签消费同一个聚合接口，
+明确显示「当前成员 · 不含已删除任务」、统计时点、有已知用量的成员数、未知成员数
+及完整性分类，并可从缺失成员定位到任务。withKnownUsage 与完整性分类重叠，
+不能把其相加当作成员总数。查询失败允许重试，范围权限不足时不得拼接可见成员
+的本地统计作为替代；成员页失效保留已读内容，刷新后从第一页继续。

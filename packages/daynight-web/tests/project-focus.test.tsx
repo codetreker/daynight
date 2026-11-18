@@ -10,6 +10,13 @@ import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/
 import { focusProjectList } from '../src/features/projects/project-list-focus';
 import type { RefObject } from 'react';
 
+// Focus fixtures model a service without the independent usage API.
+vi.mock('../src/api/usage', async original => {
+  const actual = await original<typeof import('../src/api/usage')>();
+  const { ApiError } = await import('../src/api/client');
+  return { ...actual, getUsageCapabilities: async () => { throw new ApiError('server', 404, 'usage_unsupported'); } };
+});
+
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 

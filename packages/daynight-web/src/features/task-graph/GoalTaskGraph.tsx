@@ -1,3 +1,4 @@
+import { UsageProjectProvider } from '../usage/UsageSummaryView';
 import { useCallback, useMemo, useRef, useState, type RefObject } from 'react';
 import { getViewportForBounds } from '@xyflow/react';
 import type { TaskSummary } from '../../api/types';
@@ -140,11 +141,11 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
       fullscreen={fullscreen} enterFullscreenLabel={m.enterFullscreen} exitFullscreenLabel={m.exitFullscreen}
       resetButton={resetButton} onReset={fit} resetLabel={m.goalFit}
       notice={directionIssue === undefined ? undefined : m.orientationIssue[directionIssue]} />
-    <TaskGraphCanvas canvasId={`flow-${goalId}`} nodes={nodes} geometry={fallbackGeometry} inspection={inspection} onClearInspection={clearInspection}
+    <UsageProjectProvider projectId={projectId}><TaskGraphCanvas canvasId={`flow-${goalId}`} nodes={nodes} geometry={fallbackGeometry} inspection={inspection} onClearInspection={clearInspection}
           viewportFactory={viewportFactory} framingKey={`${goalId}:${direction}`} framingRevision={framingRevision} onFramingReset={onFramingReset}
           minZoom={minZoom} maxZoom={1.8} fitViewOptions={fitViewOptions} framingReady={geometry !== null} onSizeChange={onSizeChange} onFitView={fit}
           emptyState={!hasTasks ? <div className="graph-error">{m.goalEmpty}</div> : undefined}
-          overlay={result.error ? <div className="graph-error" role="alert"><h3>{m.layoutErrorTitle}</h3><p>{m.goalLayoutError}</p><button type="button" className="button" onClick={retry}>{project.retryRefresh}</button></div> : undefined} />
+          overlay={result.error ? <div className="graph-error" role="alert"><h3>{m.layoutErrorTitle}</h3><p>{m.goalLayoutError}</p><button type="button" className="button" onClick={retry}>{project.retryRefresh}</button></div> : undefined} /></UsageProjectProvider>
     {hasTasks && !result.error && <div className="graph-foot"><span>{m.directionLegend}</span><span>{m.goalExternalLegend}</span></div>}
   </div>;
 };

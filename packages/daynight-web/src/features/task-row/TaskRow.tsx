@@ -1,3 +1,5 @@
+import { TaskUsageSummary } from '../usage/UsageSummaryView';
+import { navigate, taskDetailUrl } from '../../app/router';
 import { memo, useCallback, useId, useLayoutEffect, useRef, type MouseEvent, type ReactNode } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { completedAtFor } from '../task-completion/model';
@@ -115,6 +117,7 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
             event.preventDefault(); goal.onOpen(event.currentTarget);
           }}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg><span>{goal.title}</span><span aria-hidden="true">↗</span></a>}
         </div>
+        <TaskUsageSummary projectId={projectId} taskId={model.id} active={tagsActive} compact href={taskDetailUrl(projectId, model.id, { tab: 'usage', path: null })} onOpen={() => navigate(taskDetailUrl(projectId, model.id, { tab: 'usage', path: null }))} />
         {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
       </div>
       <div className="task-row-status">
