@@ -2,12 +2,15 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func TestRegisterRepository(t *testing.T) {
@@ -76,67 +79,90 @@ func TestRegisterRepository(t *testing.T) {
 }
 
 func TestRegisterRepositoryValidationAndFailure(t *testing.T) {
-	projects, database, _, principal := projectService(t)
-	ctx := context.Background()
-	input := core.CreateProject{Name: "", RepoURL: "https://example.com/repo", ExpectedUserID: principal.UserID}
-	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
-		t.Fatal("invalid name accepted")
-	} else {
-		requireFault(t, err, "invalid_input")
-	}
-	input.Name, input.RepoURL = "Name", "https://example.com/%2f"
-	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
-		t.Fatal("invalid repository accepted")
-	} else {
-		requireFault(t, err, "invalid_input")
+	for _, test := range []struct {
+		name  string
+		input core.CreateProject
+	}{
+		{"empty name", core.CreateProject{RepoURL: "https://example.com/repo", ExpectedUserID: resolvePrincipal.UserID}},
+		{"encoded slash", core.CreateProject{Name: "Name", RepoURL: "https://example.com/%2f", ExpectedUserID: resolvePrincipal.UserID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project, created, err := NewProjects(projectValidationStore{}).RegisterRepository(t.Context(), resolvePrincipal, test.input, true)
+			requireFault(t, err, "invalid_input")
+			if !reflect.DeepEqual(project, model.Project{}) || created {
+				t.Fatalf("validation returned a project: %#v created=%v", project, created)
+			}
+		})
 	}
 
-	// A legacy or corrupt Project address must not be silently skipped during discovery.
-	legacy := input
-	legacy.RepoURL = "https://example.com/legacy"
-	old, err := projects.Create(ctx, principal, legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Pool.Exec(ctx, "UPDATE projects SET repo_url=$1 WHERE id=$2", "https://example.com/%2f", old.ID); err != nil {
-		t.Fatal(err)
-	}
-	input.RepoURL = "https://example.com/other"
-	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
-		t.Fatal("unidentifiable existing repository silently ignored")
-	} else {
+	input := core.CreateProject{Name: "Name", RepoURL: "https://example.com/other", ExpectedUserID: resolvePrincipal.UserID}
+	t.Run("invalid stored address", func(t *testing.T) {
+		invalid := resolveCandidate("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "https://example.com/%2f")
+		db := newCompletionProjectReadPlan(t, t.Context(), []completionProjectReadCall{
+			resolveCall(store.Page{Limit: 100}, store.ProjectPage{Items: []model.Project{invalid}}, nil),
+		})
+		project, created, err := NewProjects(db).RegisterRepository(t.Context(), resolvePrincipal, input, true)
 		requireFault(t, err, "invalid_input")
-	}
-	database.Close()
-	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
-		t.Fatal("database failure ignored")
-	}
+		if !reflect.DeepEqual(project, model.Project{}) || created {
+			t.Fatalf("invalid repository candidate returned a project: %#v created=%v", project, created)
+		}
+	})
+	t.Run("snapshot begin failure", func(t *testing.T) {
+		begin := &store.Error{Phase: "begin snapshot", Cause: errors.New("closed pool"), DatabaseFailure: true}
+		db := newCompletionProjectReadPlan(t, t.Context(), nil)
+		db.begin = begin
+		project, created, err := NewProjects(db).RegisterRepository(t.Context(), resolvePrincipal, input, true)
+		assertProjectStoreFailure(t, project, err, begin)
+		if created {
+			t.Fatal("snapshot failure reported a created Project")
+		}
+	})
 }
 
 func TestRegisterRepositoryScansAllVisiblePages(t *testing.T) {
-	projects, _, _, principal := projectService(t)
-	ctx := context.Background()
-	input := core.CreateProject{Name: "Repository", RepoURL: "https://example.com/target", ExpectedUserID: principal.UserID}
-	first, err := projects.Create(ctx, principal, input)
-	if err != nil {
-		t.Fatal(err)
+	input := core.CreateProject{Name: "Repository", RepoURL: "https://example.com/target", ExpectedUserID: resolvePrincipal.UserID}
+	firstPage := make([]model.Project, 100)
+	for i := range firstPage {
+		id := fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1)
+		firstPage[i] = resolveCandidate(id, fmt.Sprintf("https://example.com/other-%d", i))
 	}
-	for i := 0; i < 100; i++ {
-		other := core.CreateProject{Name: "Other", RepoURL: fmt.Sprintf("https://example.com/other-%d", i), ExpectedUserID: principal.UserID}
-		if _, err := projects.Create(ctx, principal, other); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if project, created, err := projects.RegisterRepository(ctx, principal, input, false); err != nil || created || project.ID != first.ID {
-		t.Fatalf("match across pages: %#v %v %v", project, created, err)
-	}
-	if _, err := projects.Create(ctx, principal, input); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
-		t.Fatal("ambiguity across pages accepted")
-	} else {
-		requireFault(t, err, "resource_conflict")
+	firstMatch := firstPage[0]
+	firstMatch.RepoURL = input.RepoURL
+	laterMiss := resolveCandidate("00000000-0000-4000-8000-000000000101", "https://example.com/other-100")
+	laterMatch := resolveCandidate("00000000-0000-4000-8000-000000000102", input.RepoURL)
+
+	for _, test := range []struct {
+		name       string
+		matchFirst bool
+		later      []model.Project
+		confirm    bool
+		want       model.Project
+		wantFault  string
+	}{
+		{name: "first-page match", matchFirst: true, later: []model.Project{laterMiss}, want: firstMatch},
+		{name: "later-page match", later: []model.Project{laterMiss, laterMatch}, want: laterMatch},
+		{name: "matches on both pages", matchFirst: true, later: []model.Project{laterMiss, laterMatch}, confirm: true, wantFault: "resource_conflict"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			first := append([]model.Project(nil), firstPage...)
+			if test.matchFirst {
+				first[0] = firstMatch
+			}
+			last := first[len(first)-1]
+			db := newCompletionProjectReadPlan(t, t.Context(), []completionProjectReadCall{
+				resolveCall(store.Page{Limit: 100}, store.ProjectPage{Items: first, HasMore: true}, nil),
+				resolveCall(store.Page{After: &store.Position{CreatedAt: last.CreatedAt, ID: last.ID}, Limit: 100}, store.ProjectPage{Items: test.later}, nil),
+			})
+			project, created, err := NewProjects(db).RegisterRepository(t.Context(), resolvePrincipal, input, test.confirm)
+			if test.wantFault != "" {
+				requireFault(t, err, test.wantFault)
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(project, test.want) || created {
+				t.Fatalf("register result = %#v created=%v, want %#v without creation", project, created, test.want)
+			}
+		})
 	}
 }
 
