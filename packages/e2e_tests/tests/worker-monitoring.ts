@@ -88,7 +88,7 @@ export const verifyWorkerMonitoring = async (page: Page): Promise<void> => {
       expect(current.alias.value).toBe("办公室 Windows");
       return Date.parse(current.lastReportedAt) > Date.parse(original.lastReportedAt);
     }, { timeout: 45_000, intervals: [1_000] }).toBe(true);
-    await page.getByRole("link", { name: "Back to my Workers", exact: true }).click();
+    await page.getByRole("link", { name: "Back to my Workers" }).click();
     await expect(page.locator(`a.worker-card[href="/workers/${workerId}"]`)).toContainText("办公室 Windows");
     await page.locator(`a.worker-card[href="/workers/${workerId}"]`).click();
     await page.getByRole("button", { name: "Edit alias", exact: true }).click();
