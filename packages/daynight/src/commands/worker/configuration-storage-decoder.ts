@@ -5,6 +5,8 @@ import { configurationJsonChunks } from "./configuration-json.js";
 import { parseWorkerCloudItem, parseWorkerCloudRevision, parseConfigurationDesired } from "./configuration-storage-wire.js";
 import { receiveStoredDesired9, receiveWorkerDesired, validateHiddenCapabilitySource, validateWorkerRemoteObservation, workerCapabilityKeys } from "./configuration-storage-source.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, AgentControlMode, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity } from "./configuration-storage-types.js";
+import { decodeCurrentConfigurationCache } from "./configuration-storage-current.js";
+import type { WorkerConfigurationCache as CurrentConfigurationCache } from "./configuration-model.js";
 
 type DecodedTracked = Omit<TrackedConfigurationItem, "nativeMode"> & { readonly nativeMode?: AgentControlMode | null };
 type DecodedStorageCache = Omit<WorkerConfigurationCache, "schemaVersion" | "authority" | "currentItems" | "retainedItems"> & {
@@ -238,7 +240,7 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   const currentReceived = authority.desiredJson === null || !webOnly ? null : receiveStoredDesired9(authority.desiredJson);
   // Schema 10 can persist the current network authority without changing its storage envelope.
   // Older decoders continue to interpret their original wire formats independently.
-  const networkReceived = authority.desiredJson === null || data.schemaVersion !== 10 ? null : receiveCurrentDesired(authority.desiredJson, { controlMode: false, toolPaths: true, archiveSessions: currentCapabilitySources(authority.desiredJson).has("archiveSessions") });
+  const networkReceived = authority.desiredJson === null || data.schemaVersion !== 10 ? null : receiveCurrentDesired(authority.desiredJson, { controlMode: false, toolPaths: true, archiveSessions: currentCapabilitySources(authority.desiredJson).has("archiveSessions") }, true, false);
   const desired = networkReceived?.known ?? legacyReceived?.known ?? currentReceived?.known ?? null;
   const rawRevision = legacyReceived?.known.revision ?? currentReceived?.revision ?? null;
   const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
@@ -303,9 +305,10 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   return { cache: parsed, migration: missingSudo || missingArchive ? { received: { ...legacyReceived!, revision: legacyReceived!.known.revision, updatedAt: legacyReceived!.known.updatedAt }, previousDesired: previousDesired! } : null };
 };
 
-export const decodeConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): DecodedCache & { readonly migrated: boolean } => {
+export const decodeConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): (DecodedCache | { readonly cache: CurrentConfigurationCache; readonly migration: null }) & { readonly migrated: boolean } => {
   if (typeof source !== "object" || source === null || Array.isArray(source)) throw new TypeError("Worker configuration cache has an invalid structure.");
-  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 10;
+  const data = source as Record<string, unknown>, version = data.schemaVersion, migrated = version !== 11;
+  if (version === 11) return { cache: decodeCurrentConfigurationCache(data, identity), migration: null, migrated: false };
   if (version === 6 || version === 7 || version === 8 || version === 9 || version === 10) return { ...parseCurrent(data, identity, version === 6 || version === 7, version === 9 || version === 10), migrated };
   return { cache: upgradeSchema5(parseSchema5(version === 5 ? data : upgradeLegacy(parseLegacy(data, identity), identity) as unknown as Record<string, unknown>, identity, undefined, true)), migration: null, migrated };
 };

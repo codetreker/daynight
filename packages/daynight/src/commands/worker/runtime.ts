@@ -440,10 +440,15 @@ export const runWorker = async (options: {
     const toolRuntime = tools;
     let retainedView: WorkerCoordinatorConfiguration | undefined;
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
+      const taskTagFilter = snapshot.effective.taskTagFilterKey === undefined ? {} : { taskTagFilterKey: snapshot.effective.taskTagFilterKey };
       if (snapshot.selectedProjects === null) {
-        if (retainedView !== undefined) return retainedView;
+        if (retainedView !== undefined) {
+          const { taskTagFilterKey: _previousFilter, ...retained } = retainedView;
+          return { ...retained, ...taskTagFilter };
+        }
         const projects = getStore().listProjects().map(project => project.projectId);
         return projects.length === 0 ? null : { repositories: [], targetProjectIds: projects, readyProjectIds: projects, globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false,
+          ...taskTagFilter,
           ...(snapshot.retainedRecoveryLimit === null ? {} : { recoveryLimit: snapshot.retainedRecoveryLimit }) };
       }
       const effective = snapshot.effective;
@@ -453,7 +458,7 @@ export const runWorker = async (options: {
         const binding = prepared.get(project.projectId);
         if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, effective.recoveryLimit, local) });
       }
-      retainedView = { repositories, targetProjectIds: snapshot.selectedProjects.map(project => project.projectId), readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
+      retainedView = { repositories, targetProjectIds: snapshot.selectedProjects.map(project => project.projectId), readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks, ...taskTagFilter };
       return retainedView;
     };
     const transitions = new Map<string, string>();
@@ -560,7 +565,8 @@ export const runWorker = async (options: {
         const current = view(snapshot);
         if (current !== null) coordinator?.updateConfiguration(current);
         else if (snapshot.selectedProjects !== null) {
-          retainedView = { repositories: [], targetProjectIds: snapshot.selectedProjects.map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false };
+          retainedView = { repositories: [], targetProjectIds: snapshot.selectedProjects.map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false,
+            ...(snapshot.effective.taskTagFilterKey === undefined ? {} : { taskTagFilterKey: snapshot.effective.taskTagFilterKey }) };
           coordinator?.updateConfiguration(retainedView);
         }
         scheduleInitialRemovals?.();
@@ -776,6 +782,7 @@ export const runWorker = async (options: {
             return manager.isReady() && current.effective.agentControlMode === "web" && current.selectedProjects !== null && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
+          onConfigurationStale: () => { exchange.markNeedsRead(); reporter!.trigger(); },
           requestReconcile: reconcileWake.request,
           onPromptDemand: projectIds => { if (currentPromptSource.setDemand(projectIds)) reporter!.demandChanged(); },
           emit, signal });
@@ -1031,7 +1038,8 @@ export const runWorkerControl = async (options: {
           const native = selected === undefined ? effective.native : selected.native;
           return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, effective.recoveryLimit!, local) }];
         });
-        coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
+        coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks,
+          ...(effective.taskTagFilterKey === undefined ? {} : { taskTagFilterKey: effective.taskTagFilterKey }) };
       }
     }
     if (options.request.kind === "release" || frozenRetry) await initializeConfiguration();
@@ -1084,8 +1092,10 @@ export const runWorkerControl = async (options: {
       const frozen = web.webStore.getTask(original)?.configuration ?? (saved === null ? null : { ...saved, agentControlMode: "web", recoveryLimit: workerConfigurationDefaults.recoveryLimit });
       coordinatorConfiguration = { repositories: [], globalConfiguration: frozen, recoveryLimit: frozen?.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     }
+    const taskTagFilterKey = configurationManager?.current().effective.taskTagFilterKey;
     const coordinator = createWorkerCoordinator({
       freezeConfiguration: toolRuntime.freezeConfiguration, store, git, ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...coordinatorConfiguration,
+      ...(taskTagFilterKey === undefined ? {} : { taskTagFilterKey }),
       archiveSessions: controlArchiveSessions,
       emit: diagnostics.emit, signal,
     });

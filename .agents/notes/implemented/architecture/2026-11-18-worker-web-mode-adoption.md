@@ -24,7 +24,7 @@ items. The original migration created only a pending mode obligation, without an
 actual value or source. Other records and responsibilities retain their existing
 migration rules. The [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md)
 replaces public mode adoption: ordinary current target transitions do not create
-mode items and Workers do not publish mode observations. Schema 10 remains the current storage format,
+mode items and Workers do not publish mode observations. Schema 10 retains its historical storage format; schema 11 adds tag application proofs,
 and the frozen reader still validates historical mode facts. Unsupported or
 unknown targets remain raw authority and close admission.
 

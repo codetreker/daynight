@@ -9,6 +9,7 @@ import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import { ApiError } from "../../../src/api/client.js";
+import { taskTagFilterKey } from "../../../src/api/task-tag-filter.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
@@ -126,6 +127,7 @@ it("keeps cloud configuration current and retains frozen Web identity for recove
   const claim = { projectId: uuid(1), taskId: uuid(802), claimId: uuid(803) };
   const firstCancel = new AbortController(); cancellations.add(firstCancel);
   finishAtTick(firstCancel, options => {
+    expect(options).not.toHaveProperty("taskTagFilterKey");
     const configuration = options.repositories[0]!.configuration;
     expect(configuration.model).toBe("previous-cloud-model");
     expect(configuration.args).toEqual(["--sandbox", "workspace-write"]);
@@ -157,4 +159,55 @@ it("keeps cloud configuration current and retains frozen Web identity for recove
   await runWorker({ ...f, signal: restartedCancel.signal });
   expect(remote.configuration).toHaveBeenCalledTimes(2);
   expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+}, 30_000);
+
+it("publishes the persisted tag filter proof and rereads authority after a stale acquisition hint", async () => {
+  const f = await fixture();
+  const firstFilter = { names: ["Backend"], match: "any" as const };
+  const nextFilter = { names: ["urgent", "backend"], match: "all" as const };
+  const target = (revision: string, taskTagFilter: typeof firstFilter | typeof nextFilter): WorkerCloudDesired => ({ ...desired(), revision, value: { ...desired().value, taskTagFilter } });
+  const remote = mocks.remote(); mocks.remote.mockClear();
+  remote.configuration.mockResolvedValueOnce(resource(target("1", firstFilter))).mockResolvedValue(resource(target("2", nextFilter)));
+  let channel!: NonNullable<ReporterOptions["configuration"]>;
+  const reported = reporter();
+  mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration!; return reported; });
+  const cancellation = new AbortController(); cancellations.add(cancellation);
+  let checkedInitial = false, hintSent = false;
+  let failure: unknown;
+  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+    let current = options;
+    return {
+      archiveYield: () => false,
+      updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+      tick: vi.fn(async () => {
+        try {
+          if (!current.readyProjectIds?.includes(uuid(1)) || current.repositories.length === 0) return;
+          if (!checkedInitial) {
+            checkedInitial = true;
+            expect(current.taskTagFilterKey).toBe(taskTagFilterKey(firstFilter));
+            const checkpoint = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));
+            expect(checkpoint.currentItems).toContainEqual(expect.objectContaining({ value: expect.objectContaining({ key: { kind: "taskTagFilter" }, state: "applied", appliedValue: current.taskTagFilterKey }) }));
+            const operation = createOperation({ signal: cancellation.signal });
+            try {
+              await channel.prepare!(operation);
+              expect(remote.configuration).toHaveBeenCalledOnce();
+              current.onConfigurationStale!();
+              expect(reported.trigger).toHaveBeenCalledOnce();
+              await channel.prepare!(operation);
+              expect(remote.configuration).toHaveBeenCalledTimes(2);
+            } finally { operation.dispose(); }
+            hintSent = true;
+          }
+          if (hintSent && current.taskTagFilterKey === taskTagFilterKey(nextFilter)) cancellation.abort();
+        } catch (error) { failure = error; cancellation.abort(); }
+      }),
+      shutdown: vi.fn(async () => true),
+    };
+  });
+  await runWorker({ ...f, signal: cancellation.signal });
+  if (failure !== undefined) throw failure;
+  expect(checkedInitial).toBe(true);
+  expect(hintSent).toBe(true);
+  expect(remote.configuration).toHaveBeenCalledTimes(2);
+  expect(remote.reportConfiguration).not.toHaveBeenCalled();
 }, 30_000);

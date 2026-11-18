@@ -22,7 +22,7 @@ Configuration-local semantic comparison uses decoded strings, unordered object
 members, ordered arrays and exact decimal digit/exponent tuples. It does not
 change the global API serializer or convert unknown numbers through floating point.
 
-The current schema 10 keeps `authority.desiredJson` as the sole persisted target
+The current schema 11 keeps `authority.desiredJson` as the sole persisted target
 and records
 `applicationRevision` separately from the received revision. Known target changes
 reconcile normally. Unknown-only, timestamp-only and forward revision-only changes
@@ -88,7 +88,7 @@ continues to govern its own outbound protocol.
 
 The Worker can retain future configuration through restart and continue processing
 known settings without claiming future settings are applied. Full source and its
-known view consume memory, and schema 10 requires a binary that understands the new
+known view consume memory, and schema 11 requires a binary that understands the new
 cache. The [sudo cleanup decision](../feature/2026-11-17-worker-sudo-cleanup.md)
 records the schema 6 to 7 recognition of that field as a new pending target. Individual raw source strings remain subject to runtime token limits even
 though the aggregate checkpoint is streamed. Compatibility depends on actually
