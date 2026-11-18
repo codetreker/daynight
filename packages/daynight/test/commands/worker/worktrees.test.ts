@@ -143,6 +143,19 @@ const fixture = async (refFormat: RefFormat = "files") => {
   git(f.repository, ["config", `url.${bare}.insteadOf`, remote]);
   return { ...f, bare };
 };
+type RepositoryFixture = Awaited<ReturnType<typeof repositoryFixture>>;
+// Existing-worktree cases start with native registration and a published manifest.
+const addRegisteredFixtureWorktree = (f: RepositoryFixture, commonDirectory: string, owner: ResourceOwner): WorktreeBinding => {
+  const branch = `daynight/${owner.taskId}`;
+  const worktreePath = path.join(f.repository, ".worktrees", "daynight", owner.worktreeId);
+  git(f.repository, ["-c", `core.hooksPath=${path.join(f.root, "fixture-hooks")}`, "worktree", "add", "-b", branch, "--", worktreePath, "HEAD"]);
+  createWorktreeManifestStore(commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
+  return { repositoryPath: f.repository, commonDirectory, worktreePath, branch };
+};
+const prepareCleanupFixture = async (f: RepositoryFixture, adapter: ReturnType<typeof manager>): Promise<WorktreeBinding> => {
+  const { commonDirectory } = await adapter.prepareRepository(f.project, operation());
+  return addRegisteredFixtureWorktree(f, commonDirectory, f.owner);
+};
 const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
 const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => path.normalize(field.slice(9)));
 const privateBases = (cwd: string): string => git(cwd, ["for-each-ref", "--format=%(refname)", "refs/daynight/worker-bases/"]);
@@ -417,15 +430,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       const f = await repositoryFixture("files");
       const adapter = manager(f.root);
       const { commonDirectory } = await adapter.prepareRepository(f.project, operation());
-      const addRegisteredWorktree = (owner: ResourceOwner): WorktreeBinding => {
-        // Inventory starts with a published registration. The prepare/fetch cases
-        // separately exercise how a new registration is created from an origin.
-        const branch = `daynight/${owner.taskId}`;
-        const worktreePath = path.join(f.repository, ".worktrees", "daynight", owner.worktreeId);
-        git(f.repository, ["-c", `core.hooksPath=${path.join(f.root, "fixture-hooks")}`, "worktree", "add", "-b", branch, "--", worktreePath, "HEAD"]);
-        createWorktreeManifestStore(commonDirectory).publish({ schemaVersion: 1, ...owner, directoryName: owner.worktreeId });
-        return { repositoryPath: f.repository, commonDirectory, worktreePath, branch };
-      };
+      const addRegisteredWorktree = (owner: ResourceOwner): WorktreeBinding => addRegisteredFixtureWorktree(f, commonDirectory, owner);
       return { f, adapter, addRegisteredWorktree };
     };
 
@@ -1045,9 +1050,9 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it("continues partial content deletion while preserving the original Git pointer", async () => {
-    const f = await fixture(); const failure = new Error("controlled partial filesystem removal"); let partial = true;
+    const f = await repositoryFixture("files"); const failure = new Error("controlled partial filesystem removal"); let partial = true;
     const adapter = manager(f.root, { removeDirectory: async (target, options) => { await rm(target, options); if (partial) { partial = false; throw failure; } } });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation()); const admin = administrativeDirectory(binding.worktreePath);
+    const binding = await prepareCleanupFixture(f, adapter);
     const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
     await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toBe(failure);
     expect(createWorktreeManifestStore(path.join(f.repository, ".git")).read(ids.worktreeId)).toMatchObject(f.owner);
@@ -1057,71 +1062,71 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   });
 
   it.skipIf(process.platform === "win32")("uses the captured cleanup policy only for a verified permission obstacle", async () => {
-    const f = await fixture(); let enabled = true, calls = 0;
+    const f = await repositoryFixture("files"); let enabled = true, calls = 0;
     const denied = Object.assign(new Error("denied"), { code: "EACCES" });
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: enabled, revision: "42" }),
       removeDirectory: async () => { enabled = false; throw denied; },
       runShellRemoval: async (root, target) => { calls++; expect(root).toBe(f.repository); await rm(target, { recursive: true }); },
     });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const binding = await prepareCleanupFixture(f, adapter);
     await adapter.removeWorktree(f.project, f.owner, {});
     expect(calls).toBe(1); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
     expect(git(f.repository, ["rev-parse", `refs/heads/${binding.branch}`])).not.toBe("");
   });
 
   it.skipIf(process.platform === "win32")("preserves both permission and actual shell errors", async () => {
-    const f = await fixture(); const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
+    const f = await repositoryFixture("files"); const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async () => { throw new Error("sudo denied"); },
     });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     const error = errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error));
     expect(error).toContain("ordinary denied"); expect(error).toContain("sudo denied"); expect(error).toContain("42");
   });
 
   it("does not elevate an ordinary I/O failure", async () => {
-    const f = await fixture(); let calls = 0;
+    const f = await repositoryFixture("files"); let calls = 0;
     const io = Object.assign(new Error("filesystem I/O failed"), { code: "EIO" });
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
       removeDirectory: async () => { throw io; }, runShellRemoval: async () => { calls++; },
     });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     await expect(adapter.removeWorktree(f.project, f.owner, {})).rejects.toBe(io);
     expect(calls).toBe(0);
   });
 
   it.skipIf(process.platform !== "win32")("never invokes sudo on Windows even when enabled", async () => {
-    const f = await fixture(); let calls = 0;
+    const f = await repositoryFixture("files"); let calls = 0;
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async () => { calls++; },
     });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     expect(errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error))).toContain("ordinary denied");
     expect(calls).toBe(0);
   });
 
   it.skipIf(process.platform === "win32")("retains registration and both errors when privileged removal is partial", async () => {
-    const f = await fixture();
+    const f = await repositoryFixture("files");
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
       removeDirectory: async () => { throw denied; },
       runShellRemoval: async (_root, target) => { await rm(path.join(target, "tracked.txt")); throw new Error("partial shell removal"); },
     });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const binding = await prepareCleanupFixture(f, adapter);
     const error = errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error));
     expect(error).toContain("ordinary denied"); expect(error).toContain("partial shell removal");
     expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
   });
 
   it.skipIf(process.platform === "win32")("retains an unattributable nonempty leaf after partial privileged removal", async () => {
-    const f = await fixture(); let calls = 0;
+    const f = await repositoryFixture("files"); let calls = 0;
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
       removeDirectory: async () => { throw denied; },
       runShellRemoval: async (_root, target) => { calls++; await rm(path.join(target, ".git")); throw new Error("privileged partial removal"); },
     });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const binding = await prepareCleanupFixture(f, adapter);
     const first = errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error));
     expect(first).toContain("ordinary denied"); expect(first).toContain("privileged partial removal");
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
@@ -1135,7 +1140,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
 
 
   it.skipIf(process.platform === "win32")("retains the permission error when Git registration removal fails", async () => {
-    const f = await fixture();
+    const f = await repositoryFixture("files");
     const denied = Object.assign(new Error("ordinary denied"), { code: "EACCES" });
     const adapter = manager(f.root, { readCleanupPolicy: () => ({ enableSudoCleanup: true, revision: "42" }),
       removeDirectory: async () => { throw denied; }, runShellRemoval: async (_root, target) => { await rm(target, { recursive: true }); },
@@ -1144,7 +1149,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
         return runRepositoryGit(cwd, args, op, options);
       }),
     });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const binding = await prepareCleanupFixture(f, adapter);
     const error = errorText(await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error));
     expect(error).toContain("ordinary denied"); expect(error).toContain("registration failure");
     expect(worktreePaths(f.repository)).toContain(path.normalize(binding.worktreePath));
@@ -1408,13 +1413,13 @@ exec "$@"
 
 
   it("uses a fresh observation budget after the effect deadline", async () => {
-    const f = await fixture(); let offset = 0;
+    const f = await repositoryFixture("files"); let offset = 0;
     const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       const result = await runRepositoryGit(cwd, args, op, options);
       if (args.includes("worktree") && args.includes("remove")) offset = 301_000;
       return result;
     }) });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     const now = performance.now.bind(performance);
     const clock = vi.spyOn(performance, "now").mockImplementation(() => now() + offset);
     try {
@@ -1426,8 +1431,8 @@ exec "$@"
   });
 
   it("reports an effect deadline after the already-absent early return", async () => {
-    const f = await fixture(); const adapter = manager(f.root);
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    const f = await repositoryFixture("files"); const adapter = manager(f.root);
+    await prepareCleanupFixture(f, adapter);
     await adapter.removeWorktree(f.project, f.owner, {});
     const now = performance.now.bind(performance); let offset = 0;
     const clock = vi.spyOn(performance, "now").mockImplementation(() => now() + offset);
@@ -1441,12 +1446,12 @@ exec "$@"
   });
 
   it("does not observe absence when repository validation fails before acquiring the gate", async () => {
-    const f = await fixture(); const failure = new Error("repository observation failed"); let armed = false; let reads = 0;
+    const f = await repositoryFixture("files"); const failure = new Error("repository observation failed"); let armed = false; let reads = 0;
     const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
       if (armed) { reads++; if (reads === 1) throw failure; }
       return runRepositoryGit(cwd, args, op, options);
     } });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     await adapter.removeWorktree(f.project, f.owner, {});
     armed = true;
     await expect(adapter.removeWorktree(f.project, f.owner, {})).rejects.toBe(failure);
@@ -1454,7 +1459,7 @@ exec "$@"
   });
 
   it("preserves both removal and fresh observation errors", async () => {
-    const f = await fixture(); const effect = new Error("remove failed"); const observation = new Error("observation failed"); let removed = false;
+    const f = await repositoryFixture("files"); const effect = new Error("remove failed"); const observation = new Error("observation failed"); let removed = false;
     const adapter = manager(f.root, {
       startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
         if (args.includes("worktree") && args.includes("remove")) { removed = true; throw effect; }
@@ -1465,14 +1470,14 @@ exec "$@"
         return runRepositoryGit(cwd, args, op, options);
       },
     });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     const error = await adapter.removeWorktree(f.project, f.owner, {}).catch(error => error);
     expect(error).toBeInstanceOf(AggregateError);
     expect(error).toMatchObject({ cause: effect, errors: [effect, observation] });
   });
 
   it("waits for the original Git join before observing absence", async () => {
-    const f = await fixture(); const joined = Promise.withResolvers<GitSettlement>(); const reported = Promise.withResolvers<void>();
+    const f = await repositoryFixture("files"); const joined = Promise.withResolvers<GitSettlement>(); const reported = Promise.withResolvers<void>();
     const failure = new RepositoryGitCleanupPendingError([], new Error("Git outcome failed after removal")); let readsAfterRemoval = 0; let removed = false;
     const adapter = manager(f.root, {
       runGit: async (cwd, args, op, options) => { if (removed) readsAfterRemoval++; return runRepositoryGit(cwd, args, op, options); },
@@ -1482,7 +1487,7 @@ exec "$@"
         return { outcome, joined: joined.promise, requestStop: () => {} };
       },
     });
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const binding = await prepareCleanupFixture(f, adapter);
     const second = manager(f.root);
     let completed = false;
     const result = adapter.removeWorktree(f.project, f.owner, {}).finally(() => { completed = true; });
@@ -1498,7 +1503,7 @@ exec "$@"
   });
 
   it("does not start a fresh observation after outer cancellation", async () => {
-    const f = await fixture(); const controller = new AbortController(); let removed = false; let readsAfterRemoval = 0;
+    const f = await repositoryFixture("files"); const controller = new AbortController(); let removed = false; let readsAfterRemoval = 0;
     const adapter = manager(f.root, {
       runGit: async (cwd, args, op, options) => { if (removed) readsAfterRemoval++; return runRepositoryGit(cwd, args, op, options); },
       startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
@@ -1507,13 +1512,13 @@ exec "$@"
         return result;
       }),
     });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(error => error);
     expect(errorText(error)).toContain("shutdown"); expect(readsAfterRemoval).toBe(0);
   });
 
   it("preserves an effect error and cancellation between budgets without observing again", async () => {
-    const f = await fixture(); const controller = new AbortController();
+    const f = await repositoryFixture("files"); const controller = new AbortController();
     const effect = new Error("lost removal response"), shutdown = new Error("shutdown between budgets");
     let removed = false; let readsAfterRemoval = 0;
     const adapter = manager(f.root, {
@@ -1524,7 +1529,7 @@ exec "$@"
         return result;
       }),
     });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(error => error);
     expect(error).toBeInstanceOf(AggregateError);
     expect(error.cause).toBe(effect);
@@ -1534,14 +1539,14 @@ exec "$@"
   });
 
   it.each([false, true])("preserves cancellation after a successful fresh observation (effect failed: %s)", async (failEffect) => {
-    const f = await fixture(); const controller = new AbortController(); const shutdown = new Error("shutdown after observation");
+    const f = await repositoryFixture("files"); const controller = new AbortController(); const shutdown = new Error("shutdown after observation");
     const effect = new Error("lost removal response");
     const adapter = manager(f.root, { startOwnedGit: ownedRunner(async (cwd, args, op, options) => {
       const result = await runRepositoryGit(cwd, args, op, options);
       if (failEffect && args.includes("worktree") && args.includes("remove")) throw effect;
       return result;
     }) });
-    await adapter.prepareWorktree(f.project, f.owner, operation());
+    await prepareCleanupFixture(f, adapter);
     let completed = 0;
     cleanupBoundary.afterSuccess = () => { if (++completed === (failEffect ? 1 : 2)) controller.abort(shutdown); };
     const error = await adapter.removeWorktree(f.project, f.owner, { signal: controller.signal }).catch(error => error);
@@ -1556,13 +1561,13 @@ exec "$@"
   });
 
   it("keeps cancellation joined and rejects overlapping cleanup until the original removal settles", async () => {
-    const f = await fixture();
+    const f = await repositoryFixture("files");
     const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
     const adapter = manager(f.root, { removeDirectory: async (target, options) => {
       entered.resolve(); await release.promise; await rm(target, options);
     } });
     const second = manager(f.root);
-    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const binding = await prepareCleanupFixture(f, adapter);
     const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
     let settled = false;
     const result = adapter.removeWorktree(f.project, f.owner, op).then(() => { settled = true; return null; }, error => { settled = true; return error; });
