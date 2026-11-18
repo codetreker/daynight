@@ -131,6 +131,13 @@ trigger and function before retrying the same token. Waiter cases observe the
 other transaction's backend, drain the waiter, and verify persisted results
 and connection reuse before moving on. Any failed case stops reuse.
 
+The Bot DAO binding and preference matrices share one schema per parent.
+Each case owns an actual transaction. Rollback removes the case rows and
+restores transactional catalog faults before reuse. Missing-relation cases
+verify PostgreSQL SQLSTATE `42P01`, and the native preference matrix still
+rolls back to its savepoint before reading defaults. The tested version gates
+and preference results do not depend on the absolute Bot creation sequence.
+
 The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
 and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
 matrices each use one Store. Cases keep distinct App, grant, and Project
