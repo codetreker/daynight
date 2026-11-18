@@ -15,8 +15,8 @@ that must remain intact.
 A shared copy button owns the native button, decorative overlapping-squares icon
 and internal presentation for icon-only and text actions. It uses a transparent
 resting surface, a light enabled hover and a visible keyboard focus outline;
-external layout and localized labels belong to consumers. The [UI principles](../../../../docs/ui-design.md#share-copy-button-presentation)
-own the visual contract. A separate shared value-copy adapter serves Task and
+external layout and localized labels belong to consumers. The [Web design](../../../../docs/design/daynight-web.md#复制控件的职责)
+owns the visual contract. A separate shared value-copy adapter serves Task and
 Goal consumers. Team, Setup, Webhook, secret dialogs and Worker paths retain
 their own clipboard operations, guards, feedback and identity boundaries. The
 [Team ID decision](../feature/2026-11-05-web-team-id-copy.md) retains the rationale
