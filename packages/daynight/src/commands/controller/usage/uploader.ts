@@ -164,7 +164,7 @@ export const createUsageUploader = (options: UsageUploaderOptions) => {
     failures = 0; nextAttempt = 0;
   };
   const run = async () => {
-    if (closed || disabled || Date.now() < nextAttempt) return;
+    if (closed || disabled || Date.now() < nextAttempt || store.states().length === 0) return;
     try {
       if (!profiles) {
         const result = await request("/api/usage/v1/capabilities", await options.readParentToken());
