@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,16 +48,27 @@ type strictAuthHTTP struct {
 
 func newStrictAuthHTTP(t *testing.T) *strictAuthHTTP {
 	t.Helper()
+	return newStrictAuthHTTPWithSettings(t, authconfig.AuthSettings{PublicOrigin: authRequestOrigin, AllowHTTPTestOrigin: true})
+}
+
+func newStrictAuthHTTPWithSettings(t *testing.T, settings authconfig.AuthSettings) *strictAuthHTTP {
+	t.Helper()
 	h := &strictAuthHTTP{t: t}
 	callbackCalls := 0
 	identity := &strictIdentity{
 		t: t,
 		callback: func() string {
 			callbackCalls++
-			return authRequestOrigin + "/api/v1/auth/callback"
+			return settings.PublicOrigin + "/api/v1/auth/callback"
 		},
 		validateLogin: func(provider, returnPath string) error {
 			return h.consume("ValidateLogin", provider, returnPath).err
+		},
+		startLogin: func(ctx context.Context, provider, returnPath, browserScope string) (identitycore.LoginStart, error) {
+			return authRequestResult[identitycore.LoginStart](h.take(ctx, "StartLogin", provider, returnPath, browserScope))
+		},
+		completeLogin: func(ctx context.Context, query url.Values, binding string) (identitycore.LoginCompletion, error) {
+			return authRequestResult[identitycore.LoginCompletion](h.take(ctx, "CompleteLogin", query, binding))
 		},
 		authenticate: func(ctx context.Context, kind model.CredentialKind, value string) (model.Principal, error) {
 			return authRequestResult[model.Principal](h.take(ctx, "Authenticate", kind, value))
@@ -79,7 +91,7 @@ func newStrictAuthHTTP(t *testing.T) *strictAuthHTTP {
 	}
 	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
 	var err error
-	h.auth, err = NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: authRequestOrigin, AllowHTTPTestOrigin: true}, logger)
+	h.auth, err = NewAuthentication(identity, settings, logger)
 	if err != nil || callbackCalls != 1 {
 		t.Fatalf("construct authentication: callback calls=%d err=%v", callbackCalls, err)
 	}

@@ -20,6 +20,8 @@ type strictIdentity struct {
 	t             *testing.T
 	callback      func() string
 	validateLogin func(string, string) error
+	startLogin    func(context.Context, string, string, string) (identitycore.LoginStart, error)
+	completeLogin func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
 	authenticate  func(context.Context, model.CredentialKind, string) (model.Principal, error)
 	user          func(context.Context, model.Principal) (model.User, error)
 	patchUser     func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
@@ -56,11 +58,17 @@ func (m *strictIdentity) ValidateLogin(provider, returnPath string) error {
 	}
 	return m.validateLogin(provider, returnPath)
 }
-func (m *strictIdentity) StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error) {
-	return identitycore.LoginStart{}, m.unexpected("StartLogin")
+func (m *strictIdentity) StartLogin(ctx context.Context, provider, returnPath, browserScope string) (identitycore.LoginStart, error) {
+	if m.startLogin == nil {
+		return identitycore.LoginStart{}, m.unexpected("StartLogin")
+	}
+	return m.startLogin(ctx, provider, returnPath, browserScope)
 }
-func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error) {
-	return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
+func (m *strictIdentity) CompleteLogin(ctx context.Context, query url.Values, binding string) (identitycore.LoginCompletion, error) {
+	if m.completeLogin == nil {
+		return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
+	}
+	return m.completeLogin(ctx, query, binding)
 }
 func (m *strictIdentity) User(ctx context.Context, principal model.Principal) (model.User, error) {
 	if m.user == nil {
