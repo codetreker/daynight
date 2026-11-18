@@ -262,6 +262,9 @@ var usageRecordsSQL string
 //go:embed schema/migrations/087_task_blocked.sql
 var taskBlockedSQL string
 
+//go:embed schema/migrations/088_github_coverage.sql
+var githubCoverageSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -355,6 +358,7 @@ var schemaMigrations = []migration{
 	{version: 83, sql: migration083.SQL(), transform: migration083.Apply, transformSource: migration083.TransformSource()},
 	{version: 86, sql: usageRecordsSQL},
 	{version: 87, sql: taskBlockedSQL},
+	{version: 88, sql: githubCoverageSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

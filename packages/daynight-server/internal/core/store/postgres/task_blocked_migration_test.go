@@ -1,16 +1,23 @@
 package postgres
 
 import (
+	"slices"
 	"testing"
 )
+
+func taskBlockedMigrationIndex(t *testing.T) int {
+	t.Helper()
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 87 })
+	if index < 1 {
+		t.Fatal("blocked property migration is missing")
+	}
+	return index
+}
 
 func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	beforeMigrations := schemaMigrations[:len(schemaMigrations)-1]
-	if schemaMigrations[len(schemaMigrations)-1].version != 87 {
-		t.Fatal("expected blocked property migration as the latest migration")
-	}
+	beforeMigrations := schemaMigrations[:taskBlockedMigrationIndex(t)]
 	if err := migrate(ctx, pool, beforeMigrations); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +89,7 @@ func TestTaskBlockedMigrationRejectsBadRowsAtomically(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {
+			if err := migrate(ctx, pool, schemaMigrations[:taskBlockedMigrationIndex(t)]); err != nil {
 				t.Fatal(err)
 			}
 			db := &Store{Pool: pool}

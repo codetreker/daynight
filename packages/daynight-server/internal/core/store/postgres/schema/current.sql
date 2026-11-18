@@ -1,4 +1,4 @@
--- Schema snapshot version: 87
+-- Schema snapshot version: 88
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -539,6 +539,15 @@ CREATE TABLE "project_github" (
     "app_resource_id" "uuid",
     "team_grant_id" "uuid",
     "credential_version" bigint
+);
+
+CREATE TABLE "project_github_coverage" (
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "started_at" timestamp with time zone NOT NULL,
+    "ended_at" timestamp with time zone,
+    CONSTRAINT "project_github_coverage_check" CHECK ((("ended_at" IS NULL) OR (("ended_at" = "date_trunc"('second'::"text", "ended_at")) AND ("ended_at" > "started_at")))),
+    CONSTRAINT "project_github_coverage_started_at_check" CHECK (("started_at" = "date_trunc"('second'::"text", "started_at")))
 );
 
 CREATE TABLE "project_github_pending_prs" (
@@ -1684,6 +1693,9 @@ ALTER TABLE ONLY "private_upload_chunks"
 ALTER TABLE ONLY "private_upload_chunks"
     ADD CONSTRAINT "private_upload_chunks_transfer_id_object_id_key" UNIQUE ("transfer_id", "object_id");
 
+ALTER TABLE ONLY "project_github_coverage"
+    ADD CONSTRAINT "project_github_coverage_pkey" PRIMARY KEY ("project_id", "repository_id", "started_at");
+
 ALTER TABLE ONLY "project_github_pending_prs"
     ADD CONSTRAINT "project_github_pending_prs_pkey" PRIMARY KEY ("project_id", "number");
 
@@ -2010,6 +2022,8 @@ CREATE INDEX "project_github_access_due" ON "project_github" USING "btree" ("nex
 CREATE INDEX "project_github_app_resource" ON "project_github" USING "btree" ("app_resource_id", "project_id");
 
 CREATE INDEX "project_github_binding" ON "project_github" USING "btree" ("app_id", "installation_id", "repository_id");
+
+CREATE UNIQUE INDEX "project_github_coverage_open" ON "project_github_coverage" USING "btree" ("project_id", "repository_id") WHERE ("ended_at" IS NULL);
 
 CREATE INDEX "project_github_pending_prs_due" ON "project_github_pending_prs" USING "btree" ("next_attempt_at", "project_id");
 

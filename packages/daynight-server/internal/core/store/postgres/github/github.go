@@ -77,6 +77,10 @@ func (w *writer) ObservedAt(ctx context.Context) (time.Time, error) {
 }
 
 func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurationWrite) (bool, error) {
+	previous, err := w.Connection(ctx)
+	if err != nil {
+		return false, err
+	}
 	args := []any{w.projectID, c.Version, c.Generation, c.Revision, c.Enabled, c.AppID, c.InstallationID, c.RepositoryID,
 		c.InstallationAccountLogin, c.RepositoryFullName, c.RepositoryPrivate, c.PollIntervalMinutes, c.AccessState,
 		c.AccessReason, c.AccessCheckedAt, c.NextAccessCheckAt, c.NextPollAt, c.ExpectedVersion, c.SyncEnabled}
@@ -106,6 +110,25 @@ func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurat
 	}
 	if result.RowsAffected() != 1 {
 		return false, nil
+	}
+	oldCoverage := previous.SyncEnabled && previous.RepositoryID != nil
+	newCoverage := c.SyncEnabled && c.RepositoryID != nil
+	sameRepository := oldCoverage && newCoverage && *previous.RepositoryID == *c.RepositoryID
+	if (oldCoverage || newCoverage) && !sameRepository {
+		at, err := coverageBoundary(ctx, w.tx)
+		if err != nil {
+			return false, err
+		}
+		if oldCoverage {
+			if err = setCoverage(ctx, w.tx, w.projectID, *previous.RepositoryID, false, at); err != nil {
+				return false, err
+			}
+		}
+		if newCoverage {
+			if err = setCoverage(ctx, w.tx, w.projectID, *c.RepositoryID, true, at); err != nil {
+				return false, err
+			}
+		}
 	}
 	// The Project and connection locks precede pending-row deletion. Keeping
 	// only this generation makes management writes and signals serialize.

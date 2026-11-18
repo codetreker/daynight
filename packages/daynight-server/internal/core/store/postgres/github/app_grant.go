@@ -274,6 +274,29 @@ func (w *grantWriter) stopConnections(ctx context.Context, grantID, projectID an
 	if exhausted {
 		return 0, &model.Fault{Code: "version_exhausted", Message: "GitHub connection version is exhausted."}
 	}
+	rows, err := w.tx.Query(ctx, `SELECT project_id::text FROM project_github WHERE app_resource_id=$1 AND ($2::uuid IS NULL OR team_grant_id=$2) AND ($3::uuid IS NULL OR project_id=$3) AND sync_enabled ORDER BY project_id`, w.appID, grantID, projectID)
+	if err != nil {
+		return 0, pg.QueryError("read stopping github coverage", err)
+	}
+	var projects []string
+	for rows.Next() {
+		var project string
+		if err = rows.Scan(&project); err != nil {
+			rows.Close()
+			return 0, pg.QueryError("read stopping github coverage", err)
+		}
+		projects = append(projects, project)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, pg.QueryError("read stopping github coverage", err)
+	}
+	for _, project := range projects {
+		if err = closeConnectionCoverage(ctx, w.tx, project); err != nil {
+			return 0, err
+		}
+	}
 	if _, err = w.tx.Exec(ctx, `DELETE FROM project_github_pending_prs WHERE project_id IN (SELECT project_id FROM project_github WHERE app_resource_id=$1 AND ($2::uuid IS NULL OR team_grant_id=$2) AND ($3::uuid IS NULL OR project_id=$3))`, w.appID, grantID, projectID); err != nil {
 		return 0, pg.QueryError("clear grant pending", err)
 	}

@@ -10,7 +10,7 @@ import (
 func TestMigratedBlockedWhitespaceSetIsNoOp(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:taskBlockedMigrationIndex(t)]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}

@@ -66,6 +66,41 @@ func WorkKind(c githubpr.Connection, appID int64, now time.Time, pendingDue bool
 
 func due(at *time.Time, now time.Time) bool { return at != nil && !at.After(now) }
 
+// EligibleFirstPublication applies the same first-publication rule to polling
+// and hints. The caller obtains facts and publishes in the same locked scope.
+func EligibleFirstPublication(p githubpr.PullRequest, facts store.GitHubPublicationFacts) bool {
+	if facts.Current != nil || p.State == "open" {
+		return true
+	}
+	at := p.GitHubClosedAt
+	if p.State == "merged" {
+		at = p.GitHubMergedAt
+	}
+	return at != nil && facts.Period != nil && !at.Before(facts.Period.StartedAt) && (facts.Period.EndedAt == nil || at.Before(*facts.Period.EndedAt))
+}
+
+// StaleObservation rejects an irreversible merge regression and an older
+// conflicting state transition. updated_at is not a general ordering token for
+// other fields; equal timestamps require the caller to confirm conflicting facts.
+func StaleObservation(p githubpr.PullRequest, facts store.GitHubPublicationFacts) bool {
+	if facts.Current == nil {
+		return false
+	}
+	current := facts.Current
+	if current.State == "merged" && p.State != "merged" {
+		return true
+	}
+	if p.State == "merged" && current.State != "merged" {
+		return false
+	}
+	changed := current.State != p.State || !sameInstant(current.GitHubClosedAt, p.GitHubClosedAt) || !sameInstant(current.GitHubMergedAt, p.GitHubMergedAt)
+	return changed && current.GitHubUpdatedAt.After(p.GitHubUpdatedAt)
+}
+
+func sameInstant(a, b *time.Time) bool {
+	return a == nil && b == nil || a != nil && b != nil && a.Equal(*b)
+}
+
 // Normalize verifies the stable base identity and maps GitHub's state without
 // using updated_at as an ordering token. pollID is supplied only by full polls.
 func Normalize(o githubpr.Observation, projectID string, repositoryID int64, observedAt time.Time, pollID *string) (githubpr.PullRequest, error) {
@@ -82,7 +117,13 @@ func Normalize(o githubpr.Observation, projectID string, repositoryID int64, obs
 			return githubpr.PullRequest{}, errors.New("open github pull request has merge time")
 		}
 	case "closed":
+		if o.ClosedAt == nil || o.ClosedAt.IsZero() {
+			return githubpr.PullRequest{}, errors.New("closed github pull request has no close time")
+		}
 		if o.MergedAt != nil {
+			if o.MergedAt.IsZero() {
+				return githubpr.PullRequest{}, errors.New("merged github pull request has no merge time")
+			}
 			state = "merged"
 		}
 	default:

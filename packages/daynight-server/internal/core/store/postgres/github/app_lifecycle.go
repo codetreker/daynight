@@ -99,6 +99,9 @@ func (d *projectRetirement) Stop(ctx context.Context, v store.GitHubStopDecision
 	if exhausted {
 		return &model.Fault{Code: "version_exhausted", Message: "GitHub connection version is exhausted."}
 	}
+	if err := closeConnectionCoverage(ctx, d.tx, d.id); err != nil {
+		return err
+	}
 	if _, err := d.tx.Exec(ctx, `DELETE FROM project_github_pending_prs WHERE project_id=$1`, d.id); err != nil {
 		return pg.QueryError("clear unbound retirement pending", err)
 	}

@@ -19,3 +19,5 @@ Use one callable executor per claimed Project. Short database transactions estab
 ## Consequences
 
 The executor can resume through subsequent work after failures and preserves independent poll and webhook status. Bounded hint opportunities prevent a long absence traversal from deferring all hints while ensuring a continuously replenished queue does not stop poll progress. Open observations from in-poll hints carry the current poll marker, so newly inserted hints do not continually extend the absence traversal; independent hints carry no poll marker. A crashed process or uncertain renewal can leave a claim until its five-minute expiry. Per-Project isolation can repeat requests for the same repository; the caller owns scheduling and lifecycle integration. The [synchronization setting decision](2026-11-14-project-github-sync-setting.md) uses the generation and lease fence to reject work after synchronization is disabled.
+
+The [terminal discovery decision](2026-11-18-github-terminal-pr-discovery.md) extends this mechanism with coverage intervals and bounded all-state discovery.

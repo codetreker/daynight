@@ -160,6 +160,9 @@ func assertAppWorkFenced(t *testing.T, w store.GitHubAppWorkDAO, lease store.Git
 	if _, valid, err := w.HasPending(ctx, lease); err != nil || valid {
 		t.Fatalf("has pending escaped: %v %v", valid, err)
 	}
+	if _, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &now); err != nil || valid {
+		t.Fatalf("publication facts escaped: %v %v", valid, err)
+	}
 }
 
 func TestAppWorkEveryWriteRejectsStaleAuthorization(t *testing.T) {
@@ -412,5 +415,276 @@ func TestAppWorkLeaseAndDueFailuresPreserveState(t *testing.T) {
 	mustExec(t, tx, `ROLLBACK TO SAVEPOINT missing_pending`)
 	if due, err := w.HasDuePending(ctx, now.Add(time.Second)); err != nil || !due {
 		t.Fatalf("pending changed after error: %v %v", due, err)
+	}
+}
+
+func TestPublicationFactsAndHintAcknowledgementAreAtomic(t *testing.T) {
+	f := newAppWorkFixture(t)
+	ctx := t.Context()
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	end := start.Add(30 * time.Second)
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,30,$2,$3)`, f.project, start, end); err != nil {
+		t.Fatal(err)
+	}
+	tx := begin(t, f.db, pgx.TxOptions{})
+	w, lease, now := f.claimed(t, tx)
+	facts, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current != nil || facts.Period == nil || !facts.Period.StartedAt.Equal(start) || facts.Period.EndedAt == nil || !facts.Period.EndedAt.Equal(end) {
+		t.Fatalf("facts: %+v valid=%v err=%v", facts, valid, err)
+	}
+	if _, valid, err = w.PublicationFacts(ctx, lease, 31, 42, &start); err != nil || valid {
+		t.Fatalf("wrong repo accepted: %v %v", valid, err)
+	}
+	p := githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: 42, GitHubID: 420, URL: "https://github.com/owner/repo/pull/42", State: "closed", BaseRef: "main", HeadSHA: "sha", GitHubCreatedAt: start, GitHubUpdatedAt: start, GitHubClosedAt: &start, ObservedAt: now}}
+	if !core.EligibleFirstPublication(p, facts) {
+		t.Fatal("start should be included")
+	}
+	if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{p}); err != nil || !ok {
+		t.Fatalf("publish: %v %v", ok, err)
+	}
+	if ok, err := w.AckPending(ctx, lease, 42, f.request); err != nil || !ok {
+		t.Fatalf("ack: %v %v", ok, err)
+	}
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n, pending int
+	if err = f.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_pull_requests WHERE project_id=$1), (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1 AND request_id=$2)`, f.project, f.request).Scan(&n, &pending); err != nil || n != 0 || pending != 1 {
+		t.Fatalf("rollback: rows=%d pending=%d err=%v", n, pending, err)
+	}
+	tx2 := begin(t, f.db, pgx.TxOptions{})
+	w, lease, _ = f.claimed(t, tx2)
+	facts, valid, err = w.PublicationFacts(ctx, lease, 30, 42, &end)
+	p.GitHubClosedAt = &end
+	if err != nil || !valid || core.EligibleFirstPublication(p, facts) {
+		t.Fatalf("end boundary facts=%+v valid=%v err=%v", facts, valid, err)
+	}
+}
+
+func TestCoverageClosedByIntentRemovalAndOldClaimFenced(t *testing.T) {
+	for _, action := range []string{"grant", "project"} {
+		t.Run(action, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+				t.Fatal(err)
+			}
+			claimTx := begin(t, f.db, pgx.TxOptions{})
+			_, lease, _ := f.claimed(t, claimTx)
+			if err := claimTx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			stopTx := begin(t, f.db, pgx.TxOptions{})
+			if action == "project" {
+				if err := github.InvalidateProject(ctx, stopTx, f.project); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				stop := github.NewConnectionStopWriter(stopTx, f.app)
+				if ok, err := stop.StopProjectConnection(ctx, f.project, f.grant, core.DisconnectionDecision()); err != nil || !ok {
+					t.Fatalf("stop %v %v", ok, err)
+				}
+			}
+			if err := stopTx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var end *time.Time
+			if err := f.db.Pool.QueryRow(ctx, `SELECT ended_at FROM project_github_coverage WHERE project_id=$1`, f.project).Scan(&end); err != nil || end == nil || !end.After(start) || end.Nanosecond() != 0 {
+				t.Fatalf("closed period: %v %v", end, err)
+			}
+			checkTx := begin(t, f.db, pgx.TxOptions{})
+			_, err := github.NewAppWorkWriter(ctx, checkTx, f.project, &f.identity)
+			if !errors.Is(err, store.ErrGitHubAppWorkUnavailable) {
+				t.Fatalf("old claim %s admitted: %v", lease.Token, err)
+			}
+		})
+	}
+}
+
+func TestPublicationAndHintCommitEligibility(t *testing.T) {
+	for _, eligible := range []bool{true, false} {
+		t.Run(fmt.Sprintf("eligible_%v", eligible), func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+			end := start.Add(30 * time.Second)
+			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,30,$2,$3)`, f.project, start, end); err != nil {
+				t.Fatal(err)
+			}
+			tx := begin(t, f.db, pgx.TxOptions{})
+			w, lease, now := f.claimed(t, tx)
+			at := start
+			if !eligible {
+				at = end
+			}
+			facts, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &at)
+			if err != nil || !valid {
+				t.Fatalf("facts %v %v", valid, err)
+			}
+			p := githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: 42, GitHubID: 420, URL: "https://github.com/owner/repo/pull/42", State: "closed", BaseRef: "main", HeadSHA: "sha", GitHubCreatedAt: start, GitHubUpdatedAt: at, GitHubClosedAt: &at, ObservedAt: now}}
+			if core.EligibleFirstPublication(p, facts) != eligible {
+				t.Fatal("incorrect eligibility")
+			}
+			if eligible {
+				if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{p}); err != nil || !ok {
+					t.Fatalf("publish %v %v", ok, err)
+				}
+			}
+			if ok, err := w.AckPending(ctx, lease, 42, f.request); err != nil || !ok {
+				t.Fatalf("ack %v %v", ok, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var state *string
+			var pending int
+			if err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT state FROM project_pull_requests WHERE project_id=$1 AND number=42),(SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1 AND request_id=$2)`, f.project, f.request).Scan(&state, &pending); err != nil || pending != 0 || (state != nil) != eligible || (state != nil && *state != "closed") {
+				t.Fatalf("state=%v pending=%d err=%v", state, pending, err)
+			}
+		})
+	}
+}
+
+func TestCoverageConfigurationTransitionsFenceClaim(t *testing.T) {
+	f := newAppWorkFixture(t)
+	ctx := t.Context()
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+		t.Fatal(err)
+	}
+	claimTx := begin(t, f.db, pgx.TxOptions{})
+	_, lease, _ := f.claimed(t, claimTx)
+	if err := claimTx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	change := func(sync, enabled bool, version, generation int64) {
+		t.Helper()
+		tx := begin(t, f.db, pgx.TxOptions{})
+		d := github.NewProjectAppWriter(tx, f.project)
+		c := store.GitHubConfigurationWrite{ExpectedVersion: version, Version: version + 1, Generation: generation, Revision: 7 + generation, Enabled: enabled, SyncEnabled: sync, AppID: ptr(int64(91)), InstallationID: ptr(int64(20)), RepositoryID: ptr(int64(30)), PollIntervalMinutes: 5, AccessState: "available"}
+		w := store.GitHubProjectAppWrite{Configuration: c, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}
+		if !enabled {
+			w.AppResourceID = nil
+			w.GrantID = nil
+			w.CredentialVersion = nil
+			c.AppID = nil
+			c.InstallationID = nil
+			c.AccessState = "unknown"
+			w.Configuration = c
+		}
+		if ok, err := d.Save(ctx, w); err != nil || !ok {
+			t.Fatalf("save %v %v", ok, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	change(false, true, 2, 2)
+	var ended *time.Time
+	if err := f.db.Pool.QueryRow(ctx, `SELECT ended_at FROM project_github_coverage WHERE project_id=$1`, f.project).Scan(&ended); err != nil || ended == nil || !ended.After(start) {
+		t.Fatalf("disable ended=%v err=%v", ended, err)
+	}
+	change(true, true, 3, 3)
+	var open int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL`, f.project).Scan(&open); err != nil || open != 1 {
+		t.Fatalf("reenable open=%d err=%v", open, err)
+	}
+	check := begin(t, f.db, pgx.TxOptions{})
+	w, err := github.NewAppWorkWriter(ctx, check, f.project, &f.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid, err := w.ValidLease(ctx, lease); err != nil || valid {
+		t.Fatalf("old lease valid=%v err=%v", valid, err)
+	}
+	if err := check.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	change(false, false, 4, 4)
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL`, f.project).Scan(&open); err != nil || open != 0 {
+		t.Fatalf("disconnect open=%d err=%v", open, err)
+	}
+}
+
+func TestCoverageFailureAbortsConnectionStops(t *testing.T) {
+	for _, action := range []string{"grant", "project", "unbound retirement", "unbound pending failure", "unbound revision failure"} {
+		t.Run(action, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(action, "unbound") {
+				if _, err := f.db.Pool.Exec(ctx, `UPDATE project_github SET enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL WHERE project_id=$1`, f.project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx := begin(t, f.db, pgx.TxOptions{})
+			var retirement store.GitHubProjectRetirementDAO
+			if strings.HasPrefix(action, "unbound") {
+				retirement = github.NewProjectRetirement(tx, f.project)
+				if _, err := retirement.LockBinding(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			switch action {
+			case "unbound pending failure":
+				mustExec(t, tx, `ALTER TABLE project_github_pending_prs RENAME TO inaccessible_pending`)
+			case "unbound revision failure":
+				mustExec(t, tx, `ALTER TABLE project_github RENAME COLUMN revision TO inaccessible_revision`)
+			default:
+				mustExec(t, tx, `ALTER TABLE project_github_coverage RENAME TO inaccessible_coverage`)
+			}
+			var err error
+			switch action {
+			case "grant":
+				_, err = github.NewConnectionStopWriter(tx, f.app).StopProjectConnection(ctx, f.project, f.grant, core.DisconnectionDecision())
+			case "project":
+				err = github.InvalidateProject(ctx, tx, f.project)
+			case "unbound retirement", "unbound pending failure", "unbound revision failure":
+				err = retirement.Stop(ctx, core.DisconnectionDecision())
+			}
+			if err == nil {
+				t.Fatal("connection stop ignored coverage failure")
+			}
+			if failed, _ := store.DatabaseErrorFacts(err); !failed {
+				t.Fatalf("database failure lost: %v", err)
+			}
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var intact bool
+			if err = f.db.Pool.QueryRow(ctx, `SELECT sync_enabled AND generation=1 AND EXISTS(SELECT 1 FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL) AND EXISTS(SELECT 1 FROM project_github_pending_prs WHERE project_id=$1) FROM project_github WHERE project_id=$1`, f.project).Scan(&intact); err != nil || !intact {
+				t.Fatalf("failed stop changed state: %v %v", intact, err)
+			}
+		})
+	}
+}
+
+func TestPublicationFactsExposeDatabaseFailures(t *testing.T) {
+	for _, table := range []string{"project_pull_requests", "project_github_coverage"} {
+		t.Run(table, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			tx := begin(t, f.db, pgx.TxOptions{})
+			w, lease, now := f.claimed(t, tx)
+			mustExec(t, tx, `ALTER TABLE `+table+` RENAME TO inaccessible_facts`)
+			_, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &now)
+			if err == nil || valid {
+				t.Fatalf("missing %s accepted: valid=%v err=%v", table, valid, err)
+			}
+			if failed, _ := store.DatabaseErrorFacts(err); !failed {
+				t.Fatalf("database failure lost: %v", err)
+			}
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var pending int
+			if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1 AND request_id=$2`, f.project, f.request).Scan(&pending); err != nil || pending != 1 {
+				t.Fatalf("failed facts changed pending: %d %v", pending, err)
+			}
+		})
 	}
 }

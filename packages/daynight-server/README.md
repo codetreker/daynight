@@ -988,6 +988,12 @@ intent to off, so those Projects must explicitly enable it after reconnecting.
 Remove the old `github` configuration section and `DAYNIGHT_GITHUB_*` variables
 and dispose of their deployment secrets; the server no longer reads them.
 
+Before migration 088, stop and drain old server replicas. The migration starts
+coverage at one UTC second for retained repositories with synchronization intent,
+preserves existing PRs and hints, and schedules available connections for a new
+full poll. Start only the matching new service after migration; restoring the old
+binary requires a matching database backup.
+
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
 bytes (0x21–0x7e), without whitespace or a required prefix. Invalid values stop

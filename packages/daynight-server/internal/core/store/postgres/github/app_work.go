@@ -143,6 +143,13 @@ func (w *appWorkWriter) Publish(ctx context.Context, lease store.GitHubLease, it
 	return w.sql.Publish(ctx, lease, items)
 }
 
+func (w *appWorkWriter) PublicationFacts(ctx context.Context, lease store.GitHubLease, repositoryID, number int64, terminalAt *time.Time) (store.GitHubPublicationFacts, bool, error) {
+	if valid, err := w.ValidLease(ctx, lease); err != nil || !valid {
+		return store.GitHubPublicationFacts{}, false, err
+	}
+	return w.sql.PublicationFacts(ctx, lease, repositoryID, number, terminalAt)
+}
+
 func (w *appWorkWriter) PublishRepository(ctx context.Context, lease store.GitHubLease, observation store.GitHubRepositoryObservation) (bool, error) {
 	if valid, err := w.ValidLease(ctx, lease); err != nil || !valid {
 		return false, err
