@@ -122,6 +122,46 @@ func TestProjectWebhookReceiptRequiresLock(t *testing.T) {
 	}
 }
 
+func TestProjectWebhookReceiptLockFailures(t *testing.T) {
+	f := newProjectAppFixture(t)
+	ctx := t.Context()
+	if _, _, err := f.write(ctx, "connect", 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("missing connection", func(t *testing.T) {
+		tx := begin(t, f.db, pgx.TxOptions{})
+		facts, err := github.NewProjectWebhookReceipt(tx, uuid.NewString()).LockReceipt(ctx)
+		if err != nil || facts.Exists {
+			t.Fatalf("missing connection: %+v %v", facts, err)
+		}
+	})
+	t.Run("corrupt configuration", func(t *testing.T) {
+		tx := begin(t, f.db, pgx.TxOptions{})
+		mustExec(t, tx, `UPDATE project_github SET hook_version=1,hook_repository_id=8,hook_enabled=true,hook_secret=NULL WHERE project_id=$1`, f.project)
+		facts, err := github.NewProjectWebhookReceipt(tx, f.project).LockReceipt(ctx)
+		if err == nil || !facts.Exists {
+			t.Fatalf("corrupt configuration: %+v %v", facts, err)
+		}
+	})
+	t.Run("connection query failure", func(t *testing.T) {
+		tx := begin(t, f.db, pgx.TxOptions{})
+		_, err := github.NewProjectWebhookReceipt(tx, "invalid-uuid").LockReceipt(ctx)
+		var failure *store.Error
+		if !errors.As(err, &failure) || !failure.DatabaseFailure || failure.Phase != "lock project webhook receipt" {
+			t.Fatalf("lock failure: %v", err)
+		}
+	})
+	t.Run("binding query failure", func(t *testing.T) {
+		tx := begin(t, f.db, pgx.TxOptions{})
+		mustExec(t, tx, `ALTER TABLE github_app_team_grants RENAME TO unavailable_grants`)
+		_, err := github.NewProjectWebhookReceipt(tx, f.project).LockReceipt(ctx)
+		var failure *store.Error
+		if !errors.As(err, &failure) || !failure.DatabaseFailure || failure.Phase != "read project webhook receipt binding" {
+			t.Fatalf("binding failure: %v", err)
+		}
+	})
+}
+
 func TestProjectWebhookReceiptIsProjectScoped(t *testing.T) {
 	f := newProjectAppFixture(t)
 	ctx := t.Context()
