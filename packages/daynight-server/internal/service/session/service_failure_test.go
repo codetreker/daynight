@@ -5,14 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
@@ -133,13 +134,6 @@ func (d failureDAO) LockArchiveTask(ctx context.Context, p, id string) (store.Se
 	}
 	return d.SessionDAO.LockArchiveTask(ctx, p, id)
 }
-func (d failureDAO) LockTerminal(ctx context.Context, id string) ([]byte, error) {
-	if d.point == "terminal" {
-		return nil, errSessionDAO
-	}
-	return d.SessionDAO.LockTerminal(ctx, id)
-}
-
 func TestServiceStorageFailuresAreReturnedWithoutPublishingWork(t *testing.T) {
 	f := newServiceFixture(t)
 	ctx := context.Background()
@@ -223,20 +217,47 @@ func TestServiceDispatchAuthorizationUsesCurrentCredentials(t *testing.T) {
 }
 
 func TestServiceTerminalStorageFailures(t *testing.T) {
-	f := newServiceFixture(t)
-	ctx := context.Background()
-	files, err := local.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = files.Close() })
-	id, _, _ := seedTerminalHistory(t, f, files)
-	for _, point := range []string{"archive_task", "credential", "project", "terminal"} {
-		t.Run("archive/"+point, func(t *testing.T) {
-			s := New(failureWriter{SessionWriter: f.db, point: point}, f.service.engine)
-			_, err := s.TerminalArchiveStatus(ctx, f.owner, f.project, f.task, id)
-			if !errors.Is(err, errSessionDAO) {
-				t.Fatalf("failure not returned: %v", err)
+	actor := model.Principal{Kind: model.PATCredential, UserID: "10000000-0000-4000-8000-000000000001", CredentialID: "20000000-0000-4000-8000-000000000001"}
+	const project = "30000000-0000-4000-8000-000000000001"
+	const task = "40000000-0000-4000-8000-000000000001"
+	const sessionID = "50000000-0000-4000-8000-000000000001"
+	for _, test := range []struct {
+		point   string
+		failure string
+		calls   []string
+	}{
+		{"archive_task", "task", []string{"task"}},
+		{"credential", "credential", []string{"task", "credential"}},
+		{"project", "project", []string{"task", "credential", "project"}},
+		{"terminal", "load", []string{"task", "credential", "project", "load"}},
+	} {
+		t.Run("archive/"+test.point, func(t *testing.T) {
+			ctx := t.Context()
+			dao := &terminalAccessDAO{
+				t: t, ctx: ctx, actor: actor, project: project, task: task, session: sessionID,
+				failure: test.failure, cause: errSessionDAO,
+			}
+			writes := 0
+			writer := archiveCompletionOrderWriter(func(actual context.Context, run func(store.SessionScope) error) (store.Completion, error) {
+				writes++
+				if actual != ctx || writes != 1 {
+					t.Fatalf("unexpected terminal archive transaction: same context=%v writes=%d", actual == ctx, writes)
+				}
+				err := run(terminalAccessScope{dao: dao})
+				if !errors.Is(err, errSessionDAO) {
+					t.Fatalf("terminal archive callback lost its storage failure: %v", err)
+				}
+				outcome := store.TransactionNotCommitted
+				return store.Completion{Outcome: outcome}, &store.TransactionError{Phase: "operation", Outcome: outcome, Cause: err}
+			})
+			engine := core.NewEngine(nil)
+			t.Cleanup(func() { stopHistoryEngine(t, engine) })
+			result, err := New(writer, engine).TerminalArchiveStatus(ctx, actor, project, task, sessionID)
+			if !errors.Is(err, errSessionDAO) || !reflect.DeepEqual(result, v2.Message{}) {
+				t.Fatalf("terminal archive returned data or lost its failure: %#v, %v", result, err)
+			}
+			if writes != 1 || !reflect.DeepEqual(dao.calls, test.calls) {
+				t.Fatalf("terminal archive writes=%d calls=%v, want 1 write and %v", writes, dao.calls, test.calls)
 			}
 		})
 	}
