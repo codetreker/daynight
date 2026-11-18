@@ -87,11 +87,14 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     const copied = locale === 'en' ? 'Link copied' : '已复制链接';
     const target = `${new URL(page.url()).origin}/projects/${projectId}/tasks/${taskId}`;
     const check = async (surface: Locator) => {
-      const before = page.url(); const trigger = surface.getByRole('button', { name: more });
+      const before = page.url(); const historyLength = await page.evaluate(() => history.length); const trigger = surface.getByRole('button', { name: more });
       await trigger.press('ArrowDown');
       const item = surface.getByRole('menuitem', { name: copy });
       await expect(item).toBeVisible();
-      await page.keyboard.press('End'); await page.keyboard.press('Home');
+      const enabled = surface.locator('[role="menuitem"]:not(:disabled)');
+      await page.keyboard.press('End'); await expect(enabled.last()).toBeFocused();
+      await page.keyboard.press('Home'); await expect(enabled.first()).toBeFocused();
+      await page.keyboard.press('ArrowDown'); await expect(enabled.nth(await enabled.count() > 1 ? 1 : 0)).toBeFocused();
       await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
       await trigger.press('ArrowDown');
       expect(await item.evaluate(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })).toBe(true);
@@ -99,7 +102,12 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
       await expect(trigger).toBeFocused(); await expect(surface.getByText(copied)).toBeVisible();
       await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(target);
       expect(page.url()).toBe(before);
+      expect(await page.evaluate(() => history.length)).toBe(historyLength);
     };
+    const overview = dialog.locator('.task-detail-panel-overview');
+    await overview.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    const scroll = await overview.evaluate(element => element.scrollTop); expect(scroll).toBeGreaterThan(0);
+    await check(dialog); expect(await overview.evaluate(element => element.scrollTop)).toBe(scroll);
     await dialog.getByRole('tab', { name: locale === 'en' ? 'Discussion' : '讨论', exact: true }).click();
     const draft = dialog.locator('.thread-composer textarea'); await draft.fill('Retained draft');
     await check(dialog); await expect(draft).toHaveValue('Retained draft');
