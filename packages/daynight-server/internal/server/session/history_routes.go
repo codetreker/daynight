@@ -40,6 +40,8 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 		path := sessionBase + "/{sessionId}/" + operation
 		mux.HandleFunc("GET "+path, auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
 			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Daynight-Task-Body-History-Version", "1")
+			policy := ""
 			fail := func(err error) { httpx.WriteError(w, r, logger, "session", operation, err) }
 			for _, key := range []string{"projectId", "taskId", "sessionId"} {
 				id, err := model.CanonicalID(r.PathValue(key))
@@ -71,6 +73,7 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 				err = e
 				if result != nil {
 					value, retained = result.Data, result
+					policy = result.Data.ContentPolicy
 				}
 			} else {
 				q, e := httpx.QueryValues(r, "cursor")
@@ -86,6 +89,7 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 				err = e
 				if result != nil {
 					value, retained = result.Data, result
+					policy = result.Data.ContentPolicy
 				}
 			}
 			if retained != nil {
@@ -102,6 +106,9 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 			if retained == nil {
 				fail(errors.New("history read returned no result"))
 				return
+			}
+			if values := r.Header.Values("Daynight-Task-Body-History-Version"); len(values) == 1 && values[0] == "1" && policy == "task_body" {
+				w.Header().Set("Daynight-Session-Content-Policy", policy)
 			}
 			httpx.WriteJSON(w, r, logger, http.StatusOK, value)
 		}))

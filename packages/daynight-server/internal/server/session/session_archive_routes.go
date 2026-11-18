@@ -66,6 +66,7 @@ func archiveReservation(r *http.Request) io.Closer {
 	return reservation
 }
 func (h *Routes) archiveStatus(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	w.Header().Set("Daynight-Task-Body-History-Version", "1")
 	if _, err := httpx.QueryValues(r); err != nil {
 		h.Failure(w, r, err)
 		return
@@ -86,7 +87,14 @@ func (h *Routes) archiveContent(w http.ResponseWriter, r *http.Request, p model.
 	// The archive is already validated JSON. Preserve its exact bytes inside
 	// the v1 envelope instead of letting the JSON encoder rewrite them.
 	data := make([]byte, 0, len(out.Data)+12)
-	if _, err := sp.DecodeArchiveManifest(out.Data); err == nil {
+	if manifest, err := sp.DecodeArchiveManifest(out.Data); err == nil {
+		versions := r.Header.Values("Daynight-Task-Body-History-Version")
+		if manifest.ContentPolicy == "task_body" && (len(versions) != 1 || versions[0] != "1") {
+			err = archiveCleanupError(&model.Fault{Code: "upgrade_required", Message: "This archive requires Task body history version 1."}, out.Close())
+			h.Failure(w, r, err)
+			return
+		}
+		w.Header().Set("Daynight-Task-Body-History-Version", "1")
 		h.sendArchive(w, r, out.Data, 120*time.Second, out)
 		return
 	}

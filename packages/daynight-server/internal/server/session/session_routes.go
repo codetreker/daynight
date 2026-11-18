@@ -411,6 +411,7 @@ func (h *Routes) accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn
 	}
 	if protocol == sp.Protocol {
 		w.Header().Set("Daynight-Session-Direct-Upload-Version", "1")
+		w.Header().Set("Daynight-Task-Body-History-Version", "1")
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{protocol}, InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {

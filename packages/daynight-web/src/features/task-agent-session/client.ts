@@ -58,6 +58,7 @@ export type SessionViewState = {
   readonly environmentConnected: boolean;
   readonly errorCode: string | null;
   readonly archiveState: SessionArchiveStatus['state'] | 'loading' | null;
+  readonly archiveContentPolicy?: 'task_body' | null;
   readonly operationProgress: ReadonlyMap<string, 'sending' | 'waiting'>;
   readonly settingIntents: ReadonlyMap<string, SessionSettingIntent>;
   readonly draft: SessionDraft;
@@ -782,7 +783,7 @@ export class TaskSessionClient {
       const resources = archive.schemaVersion === 3 ? archive.resources.map(({ resource }) => resource) : archive.resources.map(({ resource, data }) => data === null && resource.status === 'available' ? { ...resource, status: 'unavailable' as const } : resource);
       const state = hydrateSession(emptySessionState(), finalSnapshot, archive.entries, resources);
       this.replaceHistory = false;
-      this.publish({ archiveState: 'ready', state, historyLoaded: true, historyCoverage: this.pageCoverage(archive.entries, finalSnapshot.lastTimelineSeq, finalSnapshot.lastEventSeq, true, null), status: 'ready', connected: false, error: null });
+      this.publish({ archiveState: 'ready', archiveContentPolicy: archive.schemaVersion === 3 ? archive.contentPolicy ?? null : null, state, historyLoaded: true, historyCoverage: this.pageCoverage(archive.entries, finalSnapshot.lastTimelineSeq, finalSnapshot.lastEventSeq, true, null), status: 'ready', connected: false, error: null });
     } catch (error) {
       if (!this.currentReadCurrent(flight) || !this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
       if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }

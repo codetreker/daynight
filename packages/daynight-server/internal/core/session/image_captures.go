@@ -525,6 +525,13 @@ func verifyImageOccurrence(ctx context.Context, tx *operationTx, r *record, occu
 	if json.Unmarshal(bundle.Ledger, &ledger) != nil {
 		return conflict()
 	}
+	if ledger.ContentPolicy == "task_body" && bundle.Phase == "active" && ledger.HistoryEpoch == r.Snapshot.HistoryEpoch && ledger.SourceThrough == decimal(r.SourceSeq) && ledger.HistoryID == bundle.HistoryID && ledger.TargetSourceEpoch == "" && (ledger.SourceEpoch == "" || ledger.SourceEpoch == sourceEpoch(r)) {
+		for _, position := range ledger.OnlineImageOccurrences {
+			if jsonEqual(encode(position), encode(occurrence)) {
+				return nil
+			}
+		}
+	}
 	for _, position := range ledger.Occurrences {
 		if position.ImageID == occurrence.ImageID && position.EntryID == occurrence.EntryID && position.Container == occurrence.Container && model.EqualOptional(position.PartID, occurrence.PartID) && model.EqualOptional(position.SourceRevision, occurrence.SourceRevision) && model.EqualOptional(position.SourceTextSHA256, occurrence.SourceTextSHA256) && model.EqualOptional(position.CallIDSHA256, archiveCallIDSHA256(occurrence.CallID)) {
 			return nil

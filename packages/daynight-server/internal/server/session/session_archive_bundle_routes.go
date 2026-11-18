@@ -48,6 +48,7 @@ func (h *Routes) registerUnifiedArchiveRoutes(mux *http.ServeMux, base string) {
 }
 func (h *Routes) unifiedArchiveParameters(next httpx.AuthenticatedHandler) httpx.AuthenticatedHandler {
 	return func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		w.Header().Set("Daynight-Task-Body-History-Version", "1")
 		protocol, err := selectedSessionProtocol(r)
 		if err != nil || protocol != sp.Protocol {
 			h.Failure(w, r, httpx.InvalidInput("Unified archives require the Session v1 protocol."))

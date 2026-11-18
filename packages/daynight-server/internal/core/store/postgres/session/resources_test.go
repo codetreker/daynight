@@ -20,6 +20,7 @@ import (
 
 func TestSessionImageStore(t *testing.T) {
 	suite := newSessionStoreSuite(t)
+	suite.run(t, "ResourceUploadOwnerIsScopedAndIndependentOfCaptureAttempt", testResourceUploadOwnerIsScopedAndIndependentOfCaptureAttempt)
 	suite.run(t, "DirectFirstIdentityAndChunkIntentCommitTogether", testDirectFirstIdentityAndChunkIntentCommitTogether)
 	suite.run(t, "ExternalCaptureWritesCompareExactObservedState", testExternalCaptureWritesCompareExactObservedState)
 	suite.run(t, "FailedCaptureIdentityPersistsAndRollsBack", testFailedCaptureIdentityPersistsAndRollsBack)
@@ -56,6 +57,41 @@ func TestSessionImageStore(t *testing.T) {
 	suite.run(t, "SavedResourceVisibilityRequiresActorOrPublishedReference", testSavedResourceVisibilityRequiresActorOrPublishedReference)
 	suite.run(t, "ExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion", testExternalResourceLedgerPersistsIdentityBudgetPinsAndDeletion)
 	suite.run(t, "ExternalMediaLedgerReconnectCaptureAndAdmission", testExternalMediaLedgerReconnectCaptureAndAdmission)
+}
+
+func testResourceUploadOwnerIsScopedAndIndependentOfCaptureAttempt(t *testing.T, db *postgres.Store) {
+	id, actor := prepareImageSession(t, db)
+	resource, attempt := uuid.NewString(), uuid.NewString()
+	upload := store.SessionUploadRecord{SessionID: id, ActorID: actor.UserID, BlobID: resource, Spec: sp.ImageUploadSpec{UploadID: attempt, ImageID: uuid.NewString(), ByteLength: "8"}, Receipt: sp.ImageUploadReceipt{State: "complete"}, ExpiresAt: time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)}
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		return base.(store.SessionResourceDAO).SaveSessionUpload(t.Context(), upload)
+	})
+	sessionDAOTransaction(t, db, func(base store.SessionDAO) error {
+		owners := base.(store.SessionResourceUploadDAO)
+		got, err := owners.SessionUploadByResource(t.Context(), id, resource)
+		if err != nil {
+			return err
+		}
+		if got.Spec.UploadID != attempt || got.BlobID != resource || got.ActorID != actor.UserID || got.Receipt.State != "complete" || !got.ExpiresAt.Equal(upload.ExpiresAt) {
+			t.Fatal(got)
+		}
+		for _, key := range [][2]string{{uuid.NewString(), resource}, {id, uuid.NewString()}, {id, attempt}} {
+			if _, err = owners.SessionUploadByResource(t.Context(), key[0], key[1]); !errors.Is(err, model.ErrNotFound) {
+				t.Fatal(key, err)
+			}
+		}
+		return nil
+	})
+	tx, err := db.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pgsession.New(tx).(store.SessionResourceUploadDAO).SessionUploadByResource(t.Context(), id, resource); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatal(err)
+	}
 }
 
 func testDirectFirstIdentityAndChunkIntentCommitTogether(t *testing.T, db *postgres.Store) {
