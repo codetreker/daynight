@@ -1,19 +1,24 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 	"github.com/google/uuid"
 )
 
 type receiptServiceDAO struct {
-	t      *testing.T
-	ctx    context.Context
-	writes int
+	t         *testing.T
+	ctx       context.Context
+	writes    int
+	requestID string
 }
 
 func (d *receiptServiceDAO) LockReceipt(ctx context.Context) (store.GitHubProjectWebhookReceiptFacts, error) {
@@ -31,7 +36,30 @@ func (d *receiptServiceDAO) RecordReceipt(ctx context.Context, write store.GitHu
 		d.t.Fatalf("invalid request ID: %q", write.RequestID)
 	}
 	d.writes++
+	d.requestID = write.RequestID
 	return nil
+}
+
+func TestProjectWebhookReceiverLogsQueueCorrelation(t *testing.T) {
+	ctx := requestid.With(t.Context(), "http-request")
+	dao := &receiptServiceDAO{t: t, ctx: ctx}
+	writer := &receiptServiceWriter{t: t, dao: dao, outcome: store.TransactionCommitted}
+	var output bytes.Buffer
+	receiver, err := NewProjectWebhookReceiver(writer, slog.New(slog.NewJSONHandler(&output, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = receiver.Receive(ctx, mgmtProject, core.ProjectWebhookIdentity{ProjectID: mgmtProject, Version: 3, RepositoryID: 42}, core.WebhookEvent{Kind: "pull_request", RepositoryID: 42, Number: 7, DeliveryID: "delivery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(output.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["request_id"] != "http-request" || entry["queue_request_id"] != dao.requestID || entry["delivery_id"] != "delivery" || entry["project_id"] != mgmtProject || entry["write_outcome"] != "committed" {
+		t.Fatalf("correlation log: %+v", entry)
+	}
 }
 
 type receiptServiceScope struct {
@@ -79,7 +107,7 @@ func TestProjectWebhookReceiverCompletion(t *testing.T) {
 			ctx := t.Context()
 			dao := &receiptServiceDAO{t: t, ctx: ctx}
 			writer := &receiptServiceWriter{t: t, dao: dao, outcome: tc.outcome, cause: tc.cause}
-			receiver, err := NewProjectWebhookReceiver(writer)
+			receiver, err := NewProjectWebhookReceiver(writer, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -98,14 +126,14 @@ func TestProjectWebhookReceiverCompletion(t *testing.T) {
 	}
 }
 func TestProjectWebhookReceiverRejectsInvalidProjectBeforeWrite(t *testing.T) {
-	receiver, err := NewProjectWebhookReceiver(&receiptServiceWriter{})
+	receiver, err := NewProjectWebhookReceiver(&receiptServiceWriter{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = receiver.Receive(t.Context(), "bad", core.ProjectWebhookIdentity{}, core.WebhookEvent{}); err == nil {
 		t.Fatal("invalid project accepted")
 	}
-	if _, err = NewProjectWebhookReceiver(nil); err == nil {
+	if _, err = NewProjectWebhookReceiver(nil, nil); err == nil {
 		t.Fatal("nil store accepted")
 	}
 	if _, err = receiver.Receive(t.Context(), mgmtProject, core.ProjectWebhookIdentity{ProjectID: uuid.NewString(), Version: 3, RepositoryID: 42}, core.WebhookEvent{Kind: "pull_request", RepositoryID: 42, Number: 7, DeliveryID: "delivery"}); err == nil {
@@ -117,7 +145,7 @@ func TestProjectWebhookReceiverSuppressesStaleSnapshot(t *testing.T) {
 	ctx := t.Context()
 	dao := &receiptServiceDAO{t: t, ctx: ctx}
 	writer := &receiptServiceWriter{t: t, dao: dao, outcome: store.TransactionCommitted}
-	receiver, err := NewProjectWebhookReceiver(writer)
+	receiver, err := NewProjectWebhookReceiver(writer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

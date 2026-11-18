@@ -4,20 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 	"github.com/google/uuid"
 )
 
 // ProjectWebhookReceiver persists an already authenticated project delivery.
-type ProjectWebhookReceiver struct{ db store.ProjectWriter }
+type ProjectWebhookReceiver struct {
+	db     store.ProjectWriter
+	logger *slog.Logger
+}
 
-func NewProjectWebhookReceiver(db store.ProjectWriter) (*ProjectWebhookReceiver, error) {
+func NewProjectWebhookReceiver(db store.ProjectWriter, logger *slog.Logger) (*ProjectWebhookReceiver, error) {
 	if db == nil {
 		return nil, errors.New("project webhook receiver requires store")
 	}
-	return &ProjectWebhookReceiver{db: db}, nil
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &ProjectWebhookReceiver{db: db, logger: logger}, nil
 }
 
 // Receive reports a receipt only after the transaction confirms its commit.
@@ -38,8 +46,15 @@ func (r *ProjectWebhookReceiver) Receive(ctx context.Context, projectID string, 
 		result, operationErr = core.RecordProjectWebhook(ctx, receipt.GitHubProjectWebhookReceiptDAO(), identity, event, requestID)
 		return operationErr
 	})
-	if err = committed(completion, err); err != nil {
+	err = committed(completion, err)
+	attrs := []any{"component", "github_webhook", "phase", "receive", "request_id", requestid.From(ctx), "queue_request_id", requestID, "project_id", projectID, "configuration_version", identity.Version, "event", event.Kind, "delivery_id", event.DeliveryID, "write_outcome", string(completion.Outcome)}
+	if event.Kind == "pull_request" {
+		attrs = append(attrs, "pr_number", event.Number)
+	}
+	if err != nil {
+		r.logger.WarnContext(ctx, "project github webhook receipt failed", attrs...)
 		return "", fmt.Errorf("project webhook receipt: %w", err)
 	}
+	r.logger.InfoContext(ctx, "project github webhook receipt recorded", append(attrs, "result", string(result))...)
 	return result, nil
 }
