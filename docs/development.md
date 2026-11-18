@@ -13,6 +13,7 @@ working directory is specified.
 - [Web development](#web-development)
 - [Public Markdown image integration](#public-markdown-image-integration)
 - [Product E2E](#product-e2e)
+- [Component delivery and activation](#component-delivery-and-activation)
 - [Package versions](#package-versions)
 - [npm publication](#npm-publication)
 - [CI selection](#ci-selection)
@@ -999,6 +1000,37 @@ receipts and resource cleanup. CI reserves a separate always-run recovery step
 before uploading only result and log directories; it does not upload private
 credentials, database data or copied artifacts. Preparation can fetch dependencies; the running
 system does not require an external database, auth deployment or GitHub account.
+
+## Component delivery and activation
+
+Plan PR boundaries separately from runtime activation. Before grouping changes
+in one PR because behavior must switch together, identify the smallest set of
+effects that must take effect together and the invariant they protect. Test the
+proposed PR boundary against a concrete intermediate state: if a complete
+supporting capability with its own meaningful verification merges first, what
+would fail when that revision is built, started or run before the switch? If
+that state is safe, review and merge the capability separately. Keep the final
+switch focused on the changes that actually need to take effect together.
+
+Check what the intermediate revision actually runs, including startup and data
+changes. A registered database migration may execute at server startup even
+when no new route is mounted. Preserve any required coordination of data
+migrations, running processes and traffic; separate source PRs do not remove
+those constraints. Avoid adding flags or temporary adapters solely to split a PR.
+
+Plan service deployment, artifact publication, and client adoption separately.
+A published CLI does not upgrade installed clients or restart Workers, and a
+server deployment does not refresh open Web tabs. Identify the version and
+capability combinations covered by the applicable support policy, and preserve
+their required behavior through each rollout step. If a change would break a
+supported combination, establish and verify a compatible path or confirm a
+support change before exposing the new behavior.
+
+[Product E2E](#product-e2e) verifies the Server, CLI and Web built from one
+source revision. That evidence covers the tested combination. Verify required
+mixed-version combinations separately in a controlled environment. Code
+acceptance does not depend on production deployment or actual client adoption
+unless those operations are explicitly part of the deliverable.
 
 ## Local stress validation
 

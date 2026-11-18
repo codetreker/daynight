@@ -224,21 +224,25 @@ curl --fail-with-body --header "Authorization: Bearer $DAYNIGHT_TOKEN" \
   "$DAYNIGHT_BASE_URL/api/v1/projects/$PROJECT_ID/tasks"
 ```
 
-Creation produces todo with version 1 and nullable execution endpoints. Creation
-and metadata PATCH omit status. Status writes use only
-`PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` with exact positive int64
-version and one of todo/in_progress/done. All nine pairs are supported. Version
-is checked first; matching same-state preserves version/update time/timing,
-actual change increments once. Entering active/done requires every direct
-prerequisite done; reopening done refuses direct active/done dependents, including
-external edges. Materials and unrelated fields remain unchanged.
+Ordinary Task creation defaults to `proposed` at version 1 with null execution
+timestamps. Creation can also explicitly select `todo`; metadata edits do not
+set status. Use `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` with the
+exact positive int64 version and one of `proposed`, `todo`, `in_progress`, `done`
+or `cancelled`. A valid same-state request preserves the version, update time
+and timing; a real transition increments the version once. Entering
+`in_progress` or `done` requires all direct prerequisites, including external
+ones, to be `done` or `cancelled`. Reopening a `done` task is refused when a
+direct dependent is `in_progress` or `done`. Cancellation is irreversible and
+preserves materials and execution history. Release any active Worker claim
+before cancelling its task.
 
-Entering in_progress starts a new interval, return to todo clears both endpoints,
-in-progress to done preserves a nullable start and writes the real end, and
-todo to done records only an end. Migration 014 converts legacy proposed rows to
-todo once, changing only their state/version/update time and preserving historical
-timing and other fields. Default, data, CHECK and ledger change atomically.
-Coordinate service/Web deployment and CLI upgrades; old action routes have no aliases.
+Entering `in_progress` starts a new interval. Returning to `proposed` or `todo`
+clears both execution endpoints. Completing from `in_progress` records the end
+and preserves a nullable start; direct completion from `proposed` or `todo`
+records only the end. Cancellation records `cancelledAt` without replacing the
+execution interval. See the [Task status contract](../../docs/spec/daynight-task-status.md)
+for transition and timing details and the [development guide](../../docs/development.md#component-delivery-and-activation)
+for component delivery and activation.
 
 Copy the created task ID into TASK_ID. With no intervening changes, the following
 starts execution at version 1 and completes it at version 2. Both are real changes.
