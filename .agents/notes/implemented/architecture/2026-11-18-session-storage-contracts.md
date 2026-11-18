@@ -20,6 +20,11 @@ Provider acceptance. Their field and failure owners are the
 [assistant specification](../../../../docs/spec/assistant.md) and
 [Bot view specification](../../../../docs/spec/bot-session-view.md).
 
+The [explicit timeline save policy](2026-11-18-timeline-history-policy.md) provides
+module-level selection and results. Its compatibility callers retain detailed
+history until live reconstruction and versioned history consumers can activate
+the body policy together.
+
 Task body selection occurs by entry kind before history persistence. A readable
 archive receives at least seven days from the later of scope termination and
 its first successful commit, with an explicit legacy upgrade grace period.
