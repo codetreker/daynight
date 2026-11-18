@@ -232,6 +232,10 @@ its case-owned release file. It observes cancellation and an excluded
 overlapping removal before allowing the child to proceed. The
 [sudo fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-sudo-fixture-handshake.md)
 owns the real-process handshake.
+The PID-reuse observation test replaces only the saved birth in a native
+proof. The live process and inspection stay real. The
+[stale birth fixture decision](../.agents/notes/implemented/testing/2026-11-18-controller-stale-birth-fixture.md)
+owns the identity proof.
 Bot CLI probe fixtures retain the real guardian, descendants, process inventory,
 signals and joined cleanup. On POSIX, the test freezes the stop clock after the
 target process group receives TERM and advances it only after a real inventory
