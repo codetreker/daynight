@@ -22,6 +22,11 @@ Local YAML supplies the initial import only; later cloud values retain authority
 The setting is independent of native execution configuration and does not change
 existing claims or pending startup priority.
 
+The [Task scheduling priority proposal](../../proposed/feature/2026-11-18-task-scheduling-priority.md)
+would place business priority before this preference and extend the independent
+rotation groups. It is not implemented; the ordering described here remains the
+current behavior.
+
 An enabled coordinator scans eligible Projects for exact-platform candidates
 before considering unrestricted candidates. Platform-specific and ordinary
 acquisition retain independent Project rotation positions. Ordinary acquisition
