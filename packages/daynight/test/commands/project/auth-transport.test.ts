@@ -27,7 +27,7 @@ it("authenticates every request in project duplicate lookup and creation", async
   }) };
   try {
     await runProjectCommand(["create", project.name, "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies);
-    expect(requests.map(({ method, path }) => [method, path])).toEqual([["GET", "/api/v1/projects"], ["GET", "/api/v1/me"], ["GET", `/api/v1/teams/${teamId}`], ["POST", "/api/v1/projects"]]);
+    expect(requests.map(({ method, path }) => [method, path])).toEqual([["GET", "/api/v1/me"], ["GET", "/api/v1/projects"], ["GET", `/api/v1/teams/${teamId}`], ["POST", "/api/v1/projects"]]);
     expect(requests.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
     expect(context.stdout.mock.calls[0]![0]).toContain(`Project created.\nID: ${projectId}\n`);
     expect(context.stdout.mock.calls[0]![0]).not.toContain(token); expect(context.stderr).not.toHaveBeenCalled();

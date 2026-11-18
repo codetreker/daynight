@@ -103,11 +103,10 @@ daynight task list
 daynight task ready
 ```
 
-`project create` returns the existing project when exactly one accessible project
-matches the repository, and reports multiple matches as ambiguous. Only a new
-project uses `--team <uuid|personal>`, the configured default Team, or Personal
-when no default exists. Omit `--confirm` for interactive confirmation; a
-noninteractive creation requires it. Task commands discover the project from the
+`project create` selects `--team <uuid|personal>`, the configured default Team,
+or Personal when no default exists. It returns an accessible matching project
+owned by that Team and reports multiple matches as ambiguous. Omit `--confirm`
+for interactive confirmation; a noninteractive creation requires it. Task commands discover the project from the
 repository. Use `--project <project-id>` to select one explicitly. Open the Web
 app to browse the same tasks and progress.
 

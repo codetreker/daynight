@@ -134,10 +134,10 @@ describe("project command boundaries", () => {
 
   it("returns the original server project for an equivalent repository without renaming it", async () => {
     const { api, context, dependencies } = fixture([project]);
-    await runProjectCommand(["create", "A different name", "--repo", "https://git.example/Org/Repo"], context, dependencies);
+    await runProjectCommand(["create", "A different name", "--repo", "https://git.example/Org/Repo", "--team", "personal"], context, dependencies);
     expect(api.listProjects).toHaveBeenCalledOnce();
     expect(api.createProject).not.toHaveBeenCalled();
-    expect(api.getTeamCurrentUser).not.toHaveBeenCalled();
+    expect(api.getTeamCurrentUser).toHaveBeenCalledOnce();
     expect(api.getTeam).not.toHaveBeenCalled();
     expect(context.stdout.mock.calls[0]![0]).toContain(`Project already exists.\nID: ${id}\nName: ${project.name}\n`);
     expect(context.workingDirectory).not.toHaveBeenCalled();
@@ -152,9 +152,9 @@ describe("project command boundaries", () => {
 
   it("requires confirmation only when creation is necessary", async () => {
     const { api, context, dependencies } = fixture();
-    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl], context, dependencies)).rejects.toThrow("confirmation");
+    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal"], context, dependencies)).rejects.toThrow("confirmation");
     expect(api.listProjects).toHaveBeenCalledOnce();
-    expect(api.getTeamCurrentUser).not.toHaveBeenCalled();
+    expect(api.getTeamCurrentUser).toHaveBeenCalledOnce();
     expect(api.createProject).not.toHaveBeenCalled();
   });
 
@@ -181,16 +181,24 @@ describe("project command boundaries", () => {
   it("rejects ambiguous repository matches with their IDs before creation", async () => {
     const second = { ...project, id: "22222222-2222-2222-2222-222222222222", repoUrl: "https://git.example/Org/Repo" };
     const { api, context, dependencies } = fixture([project, second]);
-    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl], context, dependencies)).rejects.toThrow(`Multiple projects match this repository (${id}, ${second.id})`);
+    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal"], context, dependencies)).rejects.toThrow(`Multiple projects match this repository (${id}, ${second.id})`);
     expect(api.createProject).not.toHaveBeenCalled();
     expect(context.stdout).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid listed repository before creation even after an earlier match", async () => {
+  it("skips a historical unparseable repository while retaining a valid match", async () => {
     const { api, context, dependencies } = fixture([project, { ...project, repoUrl: "invalid repository" }]);
-    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies)).rejects.toThrow("Invalid repository address");
+    await runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal"], context, dependencies);
     expect(api.createProject).not.toHaveBeenCalled();
-    expect(context.stdout).not.toHaveBeenCalled();
+    expect(context.stdout.mock.calls[0]![0]).toContain(`Project already exists.\nID: ${id}`);
+  });
+
+  it("creates in the target Team when an equivalent Project belongs to another Team", async () => {
+    const otherTeam = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const { api, context, dependencies } = fixture([{ ...project, ownership: { teamId: otherTeam, version: 1n } }]);
+    await runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies);
+    expect(api.getTeam).toHaveBeenCalledExactlyOnceWith(userId, user.personalTeam.id);
+    expect(api.createProject).toHaveBeenCalledExactlyOnceWith({ name: "Name", repoUrl: project.repoUrl, expectedUserId: userId, teamId: user.personalTeam.id }, expect.any(String));
   });
 
   it("checks cancellation after listing and does not create", async () => {

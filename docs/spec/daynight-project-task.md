@@ -170,20 +170,21 @@ daynight project show <project-id> --json
 CLI 报告服务错误，不截断或重试。名称、Team 选择和详情 UUID 的参数错误必须在配置读取及网络访问之前拒绝；
 重复 `--confirm` 或 `--confirm=false` 也是参数错误。
 
-创建在写入前必须读取配置 server 的全部可访问 project 分页，将选定 repo 地址与
-每个 `repoUrl` 按 PT3 的同一规则比较。唯一匹配时成功输出 `Project already exists.`
-和既有 project，不解析 Team、不要求确认、不发送创建或修改请求，保留其名称与地址。
-多个匹配时报告歧义及全部匹配 ID，不创建。零匹配时才选择新项目的 Team：显式
-`--team` 优先，否则使用规范 origin 和当前用户的配置默认；没有默认时使用该用户的
-Personal Team。配置目标失效或无权时明确失败，不切换其他 Team。确认目标及当前用户
-资格后，交互调用须确认；`--confirm` 跳过提示，非交互调用缺少该开关时拒绝写入。
+创建在预检前选择目标 Team：显式 `--team` 优先，否则使用规范 origin 和当前用户的
+配置默认；没有默认时使用该用户的 Personal Team。配置值无效时明确失败，不切换其他
+Team；显式目标不依赖配置默认。读取配置 server 的全部可访问 project 分页，先按
+`ownership.teamId` 筛选目标 Team，再按 PT3 比较选定地址与 `repoUrl`。无法按身份规则
+解析的历史候选不参与匹配。唯一匹配时输出 `Project already exists.` 和既有 project，
+不要求 Team 成员资格或确认，不发送创建或修改请求，保留名称与地址；独立 Project
+授权足以复用。多个匹配时报告歧义及全部匹配 ID，不创建。零匹配时验证目标 Team 和
+当前用户资格，交互调用须确认；`--confirm` 跳过提示，非交互调用缺少该开关时拒绝写入。
 提交真实 `expectedUserId`、目标 Team ID、原始名称与所选原始地址，核对响应主体；
 创建者获得独立 admin 授权，未知写入不自动重放。任一分页、响应验证、
 Git、取消或期限错误均按实际原因失败，不得把查询失败视为零匹配；完整预检成功
 并确认剩余预算后才能发送创建请求。该客户端预检不承诺并发创建的原子唯一性，
 服务在真实创建和转移中保证同一 Team 的活跃仓库身份唯一，并以
 `project_repository_conflict` 拒绝并发输家；CLI 按既有 409 失败分支报告，不自动重发。
-不同 Team 仍可分别拥有同仓库 Project；当前客户端的跨 Team 本地复用行为保持如上所述。
+不同 Team 仍可分别拥有同仓库 Project；独立仓库发现继续按全部可见 Project 判断歧义。
 
 创建、列表和详情不读取或改写当前仓库关联；转移可读取关联或通过仓库发现项目，
 但不改写关联或 ignore 规则。Project 操作不 clone 仓库，也不启动 review。列表查询配置 server 中主体可访问的全部 project，不按当前仓库或 Team 筛选。详情使用
