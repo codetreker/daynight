@@ -95,6 +95,14 @@ func controlledAppExecutor(t *testing.T, db *Store, upstream *controlledGitHub, 
 			}
 			item, ok := upstream.pulls[number]
 			if !ok {
+				for _, observed := range upstream.page {
+					if observed.Number == number {
+						item, ok = observed, true
+						break
+					}
+				}
+			}
+			if !ok {
 				http.Error(w, "missing", http.StatusNotFound)
 				return
 			}
@@ -188,6 +196,7 @@ func TestGitHubExecutorPersistsPollAndConcurrentHint(t *testing.T) {
 	// Reopening the same PR restores the retained row to the active set.
 	second.State, second.ClosedAt, second.HeadSHA = "open", nil, "reopened-head"
 	second.Description = pointerString("reopened body")
+	upstream.pulls[2] = second
 	upstream.page = []githubpr.Observation{first, second}
 	mustQueryExec(t, db, `UPDATE project_github SET next_poll_at=clock_timestamp() WHERE project_id=$1`, project.ID)
 	if err = executor.Execute(ctx, project.ID); err != nil {
