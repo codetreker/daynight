@@ -73,8 +73,7 @@ describe("linked administrative authority", () => {
   it("rejects pointers to primary or sibling Git administration without changing their HEAD, index, branches or files", async () => {
     for (const redirect of ["primary", "sibling"] as const) {
       const f = fixture(); const local = await f.manager.ensureRepository(f.configuration); const first = f.reserve();
-      const prepared = await f.manager.prepareWorktree(f.store, local, first.id, proof);
-      if (prepared.kind !== "prepared") throw new Error("Expected preparation.");
+      const worktreePath = f.stageOwnedWorktree(local.root, first);
       const sibling = path.join(f.directory, "manual-sibling"); rawGit(local.root, ["worktree", "add", "-b", "manual-sibling", sibling, f.base]);
       const snapshot = (root: string) => {
         const admin = rawGit(root, ["rev-parse", "--absolute-git-dir"]);
@@ -85,31 +84,30 @@ describe("linked administrative authority", () => {
       };
       for (const root of [local.root, sibling]) { writeFileSync(path.join(root, "file.txt"), `${root === sibling ? "sibling" : "primary"} staged`); rawGit(root, ["add", "file.txt"]); }
       const primaryBefore = snapshot(local.root); const siblingBefore = snapshot(sibling);
-      const ownedAdmin = rawGit(prepared.path, ["rev-parse", "--absolute-git-dir"]);
+      const ownedAdmin = rawGit(worktreePath, ["rev-parse", "--absolute-git-dir"]);
       const destination = redirect === "primary" ? local.commonDirectory : rawGit(sibling, ["rev-parse", "--absolute-git-dir"]);
-      overwriteExistingFile(path.join(prepared.path, ".git"), `gitdir: ${destination.split(path.sep).join("/")}\n`);
+      overwriteExistingFile(path.join(worktreePath, ".git"), `gitdir: ${destination.split(path.sep).join("/")}\n`);
       const next = f.nextRevision(first.id, commit(f.upstream, "next PR\n", f.head));
       await expect(f.manager.prepareWorktree(f.store, local, next.id, proof)).rejects.toThrow("own administrative registration");
       expect(snapshot(local.root)).toEqual(primaryBefore); expect(snapshot(sibling)).toEqual(siblingBefore);
       f.update({ state: "closed" }); f.store.supersedeReview(next.id, proof, 30);
       await expect(f.manager.cleanupWorktree(f.store, local, next, proof)).rejects.toThrow("own administrative registration");
       expect(snapshot(local.root)).toEqual(primaryBefore); expect(snapshot(sibling)).toEqual(siblingBefore);
-      expect(existsSync(ownedAdmin)).toBe(true); expect(existsSync(prepared.path)).toBe(true);
+      expect(existsSync(ownedAdmin)).toBe(true); expect(existsSync(worktreePath)).toBe(true);
     }
   }, 60_000);
 
   it("accepts a valid relative administrative backpointer and explicitly binds force commands to that administration", async () => {
     const f = fixture(); const local = await f.manager.ensureRepository(f.configuration); const first = f.reserve();
-    const prepared = await f.manager.prepareWorktree(f.store, local, first.id, proof);
-    if (prepared.kind !== "prepared") throw new Error("Expected preparation.");
-    const admin = rawGit(prepared.path, ["rev-parse", "--absolute-git-dir"]);
-    rawGit(local.root, ["worktree", "repair", "--relative-paths", prepared.path]);
+    const worktreePath = f.stageOwnedWorktree(local.root, first);
+    const admin = rawGit(worktreePath, ["rev-parse", "--absolute-git-dir"]);
+    rawGit(local.root, ["worktree", "repair", "--relative-paths", worktreePath]);
     expect(path.isAbsolute(readFileSync(path.join(admin, "gitdir"), "utf8").trim())).toBe(false);
-    expect(path.isAbsolute(readFileSync(path.join(prepared.path, ".git"), "utf8").trim().slice("gitdir: ".length))).toBe(false);
+    expect(path.isAbsolute(readFileSync(path.join(worktreePath, ".git"), "utf8").trim().slice("gitdir: ".length))).toBe(false);
     const next = f.nextRevision(first.id, commit(f.upstream, "new relative PR\n", f.head));
     expect(await f.manager.prepareWorktree(f.store, local, next.id, proof)).toMatchObject({ kind: "prepared" });
     for (const call of f.calls.filter((call) => call.args.includes("checkout") || call.args.includes("clean"))) {
-      for (const [flag, target] of [["--git-dir", admin], ["--work-tree", prepared.path]] as const) {
+      for (const [flag, target] of [["--git-dir", admin], ["--work-tree", worktreePath]] as const) {
         const argument = call.args[call.args.indexOf(flag) + 1]!;
         expect(path.isAbsolute(argument)).toBe(true);
         const actual = statSync(argument, { bigint: true });
