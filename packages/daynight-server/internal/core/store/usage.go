@@ -34,6 +34,8 @@ type UsageFilter struct {
 	AfterTime                            *time.Time
 	AfterID                              string
 	Limit                                int
+	// ObservedAt fixes the clock for coverage predicates; zero uses database time.
+	ObservedAt time.Time
 }
 type UsageRevision struct {
 	Count, Hash string

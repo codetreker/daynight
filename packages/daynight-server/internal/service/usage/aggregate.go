@@ -78,7 +78,7 @@ func (s *Service) Aggregate(ctx context.Context, p model.Principal, project, kin
 		for _, m := range members {
 			ids = append(ids, m.ID)
 		}
-		filter := store.UsageFilter{ProjectID: project, TaskIDs: ids}
+		filter := store.UsageFilter{ProjectID: project, TaskIDs: ids, ObservedAt: now}
 		items, err := summaries(ctx, scope, filter, ids, permission, now)
 		if err != nil {
 			return err

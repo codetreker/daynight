@@ -168,6 +168,10 @@ collecting/complete/partial/unsupported/unavailable/unregistered 类别互斥，
 查询将未 seal 的到期、撤权、停止或归档执行派生为 partial（有已知量）或
 unavailable（无已知量），保留 missing_final 与具体原因；Task done 不是停止证据。
 正常 sealed 结果不因 grant 自然到期而退化，新 source conflict 仍可降为 partial。
+父凭据有效性按每个 state 最初登记时保留的凭据与 authority 判断，不能因同一
+Session 重连换用另一有效 PAT 而恢复旧 state 的授权。经停止证明推进 generation 后，
+旧 generation 的未 seal state 按已停止派生 missing_final/collector_failed，
+不能沿用新 generation 的 active 状态；这不撤销仍合法的原窗口补报。
 同 Session 的恢复 state 不能掩盖旧缺口。先判 collecting，再判完整，再按已知量、
 故障、不支持和无数据决定 completeness。
 
@@ -185,7 +189,10 @@ records 使用 `kind=measurement|execution_state`，支持 stateId/model/provide
 aggregationRole 精确过滤，limit 1..100，按 `(createdAt,id)` 升序 keyset。
 签名游标绑定身份、资源、过滤、权限、集合 revision 和最后键，15 分钟过期。
 每页同一 repeatable-read 快照中重新授权、验证集合 revision；新增、修正、删除、
-归属或权限变化返回 `reset_required`，不混合两个时点。过期为 `cursor_expired`。
+归属或权限变化返回 `reset_required`，不混合两个时点。页面包含 execution_state 时，
+还须绑定影响可见派生状态的事实，包括原父凭据、Task pause/allowAgents、
+generation 停止和 grant 自然到期；不能只比较 usage 行版本。
+过期为 `cursor_expired`。
 
 Chain 双向沿普通依赖展开，external 不加入；Goal 仅当前直接普通子 Task，
 包括 cancelled，不沿链扩展。先 distinct Task，再关联事实，重叠视图不能二次相加。

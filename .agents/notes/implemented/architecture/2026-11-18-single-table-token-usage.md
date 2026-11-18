@@ -10,7 +10,12 @@ than once, while missing native data can look indistinguishable from a genuine
 zero. Reporting can also arrive after an execution finishes, without being
 authorized to modify its successor.
 The current Session snapshot also advances on reconnect, so it cannot prove
-every field of the original usage registration.
+every field of the original usage registration, parent credential or stopped
+generation. Effective coverage can change on revocation or expiry without a
+usage row update, so stored row versions alone cannot establish a consistent
+execution-state page. Usage authorization must also share the account and
+Session lock order of existing registration operations; opposite orders turn
+valid concurrent requests into a database deadlock.
 
 ## Decision
 
@@ -30,7 +35,15 @@ executions and expired collectors.
 Coverage fixes the existing Session scope once and uses predicate-matched
 partial indexes for known measurements and attribution gaps. Sessions without
 measurements remain in the result. It reads only state identity and coverage
-fields; API records keep their independent complete projection.
+fields; API records keep their independent complete projection. Each state's
+original parent credential remains its authorization source, and confirmed
+generation transitions preserve stopped collectors' gaps without revoking
+their valid late-report windows.
+State-inclusive page revisions include the effective state and reasons at one
+operation clock in the same read snapshot, not the clock value itself.
+Authorization locks the original PAT and account before the Session, matching
+the existing Test registration ordering and retaining the account-deletion
+barrier.
 
 The private grant hash record combines a versioned token hash with an immutable
 registration-identity digest. Rotation preserves that digest, allowing exact
@@ -63,6 +76,18 @@ replaces the connection epoch, losing the original comparison value. Separate
 identity columns would widen the storage schema for equality-only evidence;
 a private hash envelope retains that evidence and independently rotatable
 token hashes in the existing credential field.
+
+**Using the latest Session credential and lifecycle for every state.**
+Reconnect can replace the PAT, and recovery can leave the Session active under
+a new generation. Applying those facts to older states hides revoked original
+credentials and stopped collectors. Per-state authorization and generation
+context preserve the original source's bounds and coverage gaps.
+
+**Using only stored row versions for execution-state page revisions.**
+Pause, revocation and natural grant expiry can alter the visible projection
+without changing a usage row. Such cursors mix two effective states under one
+snapshot token. The revision must also cover the effective projection, without
+keeping a transaction open between requests or adding a snapshot table.
 
 **Historical aggregate membership.** A financial point-in-time membership ledger
 would require another stored history and product contract. Current distinct
@@ -101,6 +126,11 @@ record handling.
 Coverage indexes add storage and write maintenance. Native revisions that alter
 canonical metrics can also affect the known-measurement predicate; this cost
 buys bounded existence checks instead of repeatedly scanning ledger history.
+
+Coverage and state-inclusive page revisions depend on retained original
+credentials and confirmed generation transitions, not only ledger mutations.
+These reads remain batched; measurement-only pages do not acquire a time-based
+reset merely because an unrelated collector's effective state changes.
 
 Migration retention means rollback requires a binary that recognizes the usage
 migration even when its feature is disabled. Removing migration history or the

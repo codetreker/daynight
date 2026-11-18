@@ -113,17 +113,17 @@ func (s *Service) authority(ctx context.Context, scope store.UsageScope, session
 			return a, err
 		}
 	}
-	if write {
-		if _, err = scope.SessionDAO().LockSession(ctx, session.ID); err != nil {
-			return a, err
-		}
-	}
 	valid, err := dao.ParentValid(ctx, parent, user, write)
 	if err != nil {
 		return a, err
 	}
 	if !valid {
 		return a, core.Fault("permission_revoked")
+	}
+	if write {
+		if _, err = scope.SessionDAO().LockSession(ctx, session.ID); err != nil {
+			return a, err
+		}
 	}
 	if session.Scope == "task" {
 		a.Access, err = dao.ProjectAccess(ctx, user, *session.ProjectID, write)
@@ -200,11 +200,11 @@ func (s *Service) State(ctx context.Context, p model.Principal, id string) (mode
 		if _, err = readPermission(ctx, scope, p, session, true); err != nil {
 			return err
 		}
-		executions, err := scope.UsageDAO().Executions(ctx, store.UsageFilter{SessionID: r.SessionID})
+		now, err := scope.UsageDAO().Now(ctx)
 		if err != nil {
 			return err
 		}
-		now, err := scope.UsageDAO().Now(ctx)
+		executions, err := scope.UsageDAO().Executions(ctx, store.UsageFilter{SessionID: r.SessionID, ObservedAt: now})
 		if err != nil {
 			return err
 		}

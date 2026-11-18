@@ -117,39 +117,64 @@ func (d *DAO) Metrics(ctx context.Context, f store.UsageFilter) (model.UsageSumm
 	}
 	return result, queryError("aggregate usage", err)
 }
-func (d *DAO) executionStates(ctx context.Context, f store.UsageFilter) ([]model.UsageRecord, error) {
+func (d *DAO) executionStates(ctx context.Context, f store.UsageFilter) ([]store.UsageExecution, error) {
 	f.Kind = "execution_state"
-	f.Limit = 0
-	query, args := recordsQuery(f, `id::text,session_id::text,execution_generation::text,
+	where, args := recordFilter(f)
+	args = append(args, f.ObservedAt)
+	query := `SELECT id::text,session_id::text,task_id::text,execution_generation::text,
  COALESCE(capability->>'qualification',''),COALESCE(capability->>'measurementPlane',''),
- collection_state,reason_codes,grant_expires_at,grant_revoked_at,sealed_at`)
+ collection_state,reason_codes,grant_expires_at,grant_revoked_at,sealed_at,
+ EXISTS(SELECT 1 FROM personal_access_tokens p JOIN users u ON u.id=p.user_id
+ WHERE p.id=usage_records.grant_parent_credential_id AND p.user_id=usage_records.native_authority_user_id
+ AND (p.expires_at IS NULL OR p.expires_at>$` + strconv.Itoa(len(args)) + `)),
+ EXISTS(SELECT 1 FROM usage_records r WHERE r.session_id=usage_records.session_id AND r.record_kind='measurement' AND r.disposition='active' AND r.aggregation_role='counted' AND (r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL OR r.cache_read_tokens IS NOT NULL OR r.cache_write_tokens IS NOT NULL OR r.reasoning_tokens IS NOT NULL OR r.total_tokens IS NOT NULL)),
+ EXISTS(SELECT 1 FROM usage_records r WHERE r.session_id=usage_records.session_id AND r.record_kind='measurement' AND r.disposition='active' AND r.aggregation_role='unattributed'),
+ EXISTS(SELECT 1 FROM usage_records r WHERE r.session_id=usage_records.session_id AND r.record_kind='measurement' AND r.disposition='active' AND r.aggregation_role='included' AND NOT EXISTS(SELECT 1 FROM usage_records parent WHERE parent.record_kind='measurement' AND parent.native_authority_user_id=r.native_authority_user_id AND parent.provider=r.provider AND parent.native_session_id=r.native_session_id AND parent.source_key=r.included_in_source_key AND parent.aggregation_role='counted' AND parent.disposition='active' AND COALESCE(parent.anchor_state_id,parent.state_id)=COALESCE(r.anchor_state_id,r.state_id)))
+ FROM usage_records WHERE ` + where + ` ORDER BY created_at,id`
 	rows, err := d.tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, pg.QueryError("usage coverage states", err)
 	}
 	defer rows.Close()
-	out := []model.UsageRecord{}
+	out := []store.UsageExecution{}
 	for rows.Next() {
 		var r model.UsageRecord
+		var e store.UsageExecution
+		var unattributed, missingParent bool
 		r.Capability = &model.UsageCapability{}
-		if err = rows.Scan(&r.ID, &r.SessionID, &r.Generation, &r.Capability.Qualification, &r.Capability.MeasurementPlane, &r.CollectionState, &r.ReasonCodes, &r.GrantExpiresAt, &r.GrantRevokedAt, &r.SealedAt); err != nil {
+		if err = rows.Scan(&r.ID, &r.SessionID, &r.TaskID, &r.Generation, &r.Capability.Qualification, &r.Capability.MeasurementPlane, &r.CollectionState, &r.ReasonCodes, &r.GrantExpiresAt, &r.GrantRevokedAt, &r.SealedAt, &e.ParentValid, &e.Known, &unattributed, &missingParent); err != nil {
 			return nil, err
 		}
-		out = append(out, r)
+		if unattributed {
+			e.GapReasons = append(e.GapReasons, "attribution_unknown")
+		}
+		if missingParent {
+			e.GapReasons = append(e.GapReasons, "inclusion_parent_missing")
+		}
+		e.State = &r
+		out = append(out, e)
 	}
 	return out, queryError("usage coverage states", rows.Err())
 }
 func (d *DAO) Executions(ctx context.Context, f store.UsageFilter) ([]store.UsageExecution, error) {
+	if f.ObservedAt.IsZero() {
+		now, err := d.Now(ctx)
+		if err != nil {
+			return nil, err
+		}
+		f.ObservedAt = now
+	}
 	where, args := scopeFilter(f, "s", "id")
 	states, err := d.executionStates(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	bySession := map[string][]*model.UsageRecord{}
+	bySession := map[string][]store.UsageExecution{}
 	for i := range states {
-		r := &states[i]
-		bySession[r.SessionID] = append(bySession[r.SessionID], r)
+		r := states[i]
+		bySession[r.State.SessionID] = append(bySession[r.State.SessionID], r)
 	}
+	args = append(args, f.ObservedAt)
 	// The coverage predicates match partial indexes, keeping existence probes
 	// bounded without rescanning all measurements or inflating JIT plan costs.
 	query := `WITH execution_scope AS MATERIALIZED (
@@ -159,7 +184,7 @@ func (d *DAO) Executions(ctx context.Context, f store.UsageFilter) ([]store.Usag
  FROM task_sessions s WHERE ` + where + ` AND s.bot_id IS NULL
 )
  SELECT s.id::text,s.backend,s.task_id::text,s.current_generation,
- EXISTS(SELECT 1 FROM personal_access_tokens p JOIN users u ON u.id=p.user_id WHERE p.id=s.parent_credential_id AND p.user_id=s.owner_user_id AND (p.expires_at IS NULL OR p.expires_at>clock_timestamp())),
+ EXISTS(SELECT 1 FROM personal_access_tokens p JOIN users u ON u.id=p.user_id WHERE p.id=s.parent_credential_id AND p.user_id=s.owner_user_id AND (p.expires_at IS NULL OR p.expires_at>$` + strconv.Itoa(len(args)) + `)),
  CASE WHEN s.scope='test' THEN true ELSE EXISTS(SELECT 1 FROM task_resource_rows t JOIN (` + pg.ProjectAccessRelation + `) a ON a.project_id=t.project_id AND a.user_id=s.owner_user_id WHERE t.id=s.task_id AND t.project_id=s.project_id AND t.effective_deleted_at IS NULL AND t.allow_agents AND NOT EXISTS(SELECT 1 FROM task_properties p WHERE p.task_id=t.id AND p.name='paused' AND p.value='true')) END,
  s.stopped,
  EXISTS(SELECT 1 FROM usage_records r WHERE r.session_id=s.id AND r.record_kind='measurement' AND r.disposition='active' AND r.aggregation_role='counted' AND (r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL OR r.cache_read_tokens IS NOT NULL OR r.cache_write_tokens IS NOT NULL OR r.reasoning_tokens IS NOT NULL OR r.total_tokens IS NOT NULL)),
@@ -190,15 +215,27 @@ func (d *DAO) Executions(ctx context.Context, f store.UsageFilter) ([]store.Usag
 			out = append(out, e)
 		} else {
 			registeredCurrent := false
-			for _, r := range runs {
+			for _, run := range runs {
+				r := run.State
 				registeredCurrent = registeredCurrent || r.Generation == currentGeneration
 				copy := e
 				copy.State = r
+				copy.ParentValid = run.ParentValid
+				// Publishing a later generation requires the original controller's stop proof.
+				copy.Stopped = e.Stopped || r.Generation != currentGeneration
 				out = append(out, copy)
 			}
 			if !registeredCurrent {
 				out = append(out, e)
 			}
+		}
+		delete(bySession, e.SessionID)
+	}
+	for _, runs := range bySession {
+		for _, run := range runs {
+			run.SessionID = run.State.SessionID
+			run.TaskID = run.State.TaskID
+			out = append(out, run)
 		}
 	}
 	return out, queryError("usage coverage", rows.Err())

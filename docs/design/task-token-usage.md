@@ -29,12 +29,15 @@ Task/session/state 明细索引支持范围查询和 keyset。
 duplicate/stale 不改更新时间或版本。并发竞争返回可观察冲突，不在 DAO 偷偷重算业务。
 提交区分 committed、not_committed 和 unknown，保留错误链；未知不能假装回滚。
 
-写作用域的固定锁序是 Task/Goal resource → 平台 Session → 父凭据 →
-Project authorization → 按 UUID 的 usage state → 按来源键的 measurement。
+上报授权的固定锁序是按 ID 的 Task/Goal resource `FOR SHARE` →
+原 PAT/user `FOR SHARE` → 平台 Session `FOR UPDATE` →
+Project authorization 共享锁 → 按 UUID 的 usage state → 按来源键的 measurement。
 复用既有 `LockTaskResource` 与 `LockProjectAuthorization`，因为单行 CAS 不能阻止
 权限或资源生命周期在决定后、提交前变化。等待锁后重新取时间核验期限。
 批次绑定自己的 state rowVersion 和 grant 身份，轮换/撤销不能被并发穿越。
-Test 省略 Task/Project，不省略 Session、父凭据和 state。
+Test 省略 Task/Project，不省略父凭据、user、Session 和 state。
+其原 PAT/user 锁先于 Session，与既有 Test 登记的 PAT 共享锁、user 排他锁、
+Session 排他锁次序兼容；争用先在 user 等待，不能持有 Session 再等待 user。
 
 冲突诊断与计量事务结果分开表达：正常 batch 全部计量原子提交；
 来源矛盾拒绝全部计量，但将原 state 的 sticky partial 诊断持久化，并明确回执。
@@ -82,6 +85,8 @@ grant 期限最多七天且不超过平台 Session 创建后九十天；恢复�
 不能延长原 measurement originating state 的窗口。claim 完成后允许有效 grant 补报，
 不重新索取 claim，不获得操作新执行的能力。
 原父凭据失效、成员撤权、Task 禁止 Agent/pause 或资源删除均拒绝新写入。
+读时也按各 state 保留的父凭据与 native authority 判断原采集授权；同一 Session
+后续换用其他 PAT，不改变旧 state 的授权依据。
 seal 只代表原生停止并排空采集，不等同 Task done。
 
 原因集合最多十六项；合并时优先保留 sticky conflict、profile 固有限制和
@@ -113,6 +118,8 @@ summary 在 SQL 内按当前 active/counted 行聚合指标、null 数量和更�
 覆盖母集连接既有保留 Session；state generation 先归并为一个 Session，
 缺口不得被恢复代次覆盖。有效状态在查询时考虑期限、撤销及真实停止证据，
 不因 Task done 推断终止；正常 seal 的确认结果不受自然到期影响。
+已确认停止证明后的 generation 推进使旧 generation 按已停止判定，
+而非复制当前 generation 的 active 状态；仍合法的原窗口补报不因此撤销。
 查询先固定 Session 范围，保留没有计量的执行，再批量返回计量存在性及归属缺口。
 `usage_known_session` 部分索引仅含 active/counted 且至少一个规范指标非 null 的行；
 `usage_gap_session` 部分索引按 Session/role 覆盖 active/included 或 unattributed 行。
@@ -123,7 +130,11 @@ records 与 state API 仍使用独立的完整记录投影。
 投影决定 ETag，授权先于条件响应。
 
 records 在 repeatable-read 快照中授权、计算过滤集合 revision 并 keyset 查询。
-revision 包含稳定顺序的行 ID/rowVersion，而不是 Task.version 或单个最大时间。
+revision 包含稳定顺序的行 ID/rowVersion；页面可能含 state 时，还纳入同一快照、
+同一操作时钟派生的有效收集状态与原因。原父凭据撤销、Task pause 或 grant 到期
+没有改写 usage 行，也不能使旧页与新投影混合。只散列时钟影响的可见结果，
+不因每次请求的时间不同而无条件 reset；measurement-only 页面保持原集合语义。
+revision 不使用 Task.version 或单个最大时间代替这些事实。
 签名游标绑定查询、权限、集合与最后键，不保留跨请求事务、快照表或进程内游标缓存。
 集合变化要求 reset，不能悄悄把新值接到旧页。
 

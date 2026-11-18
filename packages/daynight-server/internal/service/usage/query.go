@@ -85,6 +85,7 @@ func hashSummary(r model.UsageSummary, permission string) (model.UsageSummary, e
 }
 func summaries(ctx context.Context, scope store.UsageScope, filter store.UsageFilter, ids []string, permission string, now time.Time) ([]SummaryItem, error) {
 	dao := scope.UsageDAO()
+	filter.ObservedAt = now
 	metrics, err := dao.TaskMetrics(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -163,16 +164,16 @@ func (s *Service) TestSummary(ctx context.Context, p model.Principal, id string)
 		if err != nil {
 			return err
 		}
-		filter := store.UsageFilter{SessionID: id}
+		now, err := dao.Now(ctx)
+		if err != nil {
+			return err
+		}
+		filter := store.UsageFilter{SessionID: id, ObservedAt: now}
 		out, err = dao.Metrics(ctx, filter)
 		if err != nil {
 			return err
 		}
 		executions, err := dao.Executions(ctx, filter)
-		if err != nil {
-			return err
-		}
-		now, err := dao.Now(ctx)
 		if err != nil {
 			return err
 		}
@@ -243,7 +244,7 @@ func (s *Service) decodeCursor(token string, now time.Time) (cursor, error) {
 }
 func (s *Service) Records(ctx context.Context, p model.Principal, project, task, sessionID string, input PageRequest) (RecordsPage, error) {
 	out := RecordsPage{Items: []model.UsageRecord{}}
-	if input.Limit < 1 || input.Limit > 100 || input.Kind != "measurement" && input.Kind != "execution_state" || input.StateID != "" && !core.UUID(input.StateID) || input.Model != "" && !core.Text(input.Model, 128) || input.Provider != "" && input.Provider != "copilot" && input.Provider != "claude" && input.Provider != "codex" || input.Role != "" && input.Role != "counted" && input.Role != "included" && input.Role != "unattributed" {
+	if input.Limit < 1 || input.Limit > 100 || input.Kind != "" && input.Kind != "measurement" && input.Kind != "execution_state" || input.StateID != "" && !core.UUID(input.StateID) || input.Model != "" && !core.Text(input.Model, 128) || input.Provider != "" && input.Provider != "copilot" && input.Provider != "claude" && input.Provider != "codex" || input.Role != "" && input.Role != "counted" && input.Role != "included" && input.Role != "unattributed" {
 		return out, core.Fault("invalid_filter")
 	}
 	err := s.database.ReadUsage(ctx, func(scope store.UsageScope) error {
@@ -290,6 +291,29 @@ func (s *Service) Records(ctx context.Context, p model.Principal, project, task,
 		if err != nil {
 			return err
 		}
+		type stateView struct {
+			State   string
+			Reasons []string
+		}
+		stateViews := map[string]stateView{}
+		if input.Kind != "measurement" {
+			filter.ObservedAt = now
+			executions, e := dao.Executions(ctx, filter)
+			if e != nil {
+				return e
+			}
+			for _, execution := range executions {
+				if execution.State != nil {
+					r := execution.State
+					state, reasons := core.Effective(*r, core.EffectiveFacts{Expired: r.GrantExpiresAt == nil || !now.Before(*r.GrantExpiresAt), Revoked: r.GrantRevokedAt != nil || !execution.ParentValid || !execution.Allowed, Stopped: execution.Stopped, Known: execution.Known, GapReasons: execution.GapReasons})
+					stateViews[r.ID] = stateView{state, reasons}
+				}
+			}
+			revision.Hash, err = core.Hash([]any{revision.Hash, stateViews})
+			if err != nil {
+				return err
+			}
+		}
 		out.SnapshotToken = revision.Hash
 		expiry := now.Add(15 * time.Minute).Format(time.RFC3339Nano)
 		if input.Cursor != "" {
@@ -319,22 +343,12 @@ func (s *Service) Records(ctx context.Context, p model.Principal, project, task,
 		}
 		// Projection never contains grant material; effective state comes from
 		// the same snapshot used for authorization and revision.
-		if input.Kind == "execution_state" {
-			executions, e := dao.Executions(ctx, store.UsageFilter{ProjectID: project, TaskIDs: filter.TaskIDs, SessionID: sessionID})
-			if e != nil {
-				return e
-			}
-			facts := map[string]store.UsageExecution{}
-			for _, e := range executions {
-				if e.State != nil {
-					facts[e.State.ID] = e
-				}
-			}
+		if input.Kind != "measurement" {
 			for i := range items {
-				e := facts[items[i].ID]
-				state, reasons := core.Effective(items[i], core.EffectiveFacts{Expired: items[i].GrantExpiresAt == nil || !now.Before(*items[i].GrantExpiresAt), Revoked: items[i].GrantRevokedAt != nil || !e.ParentValid || !e.Allowed, Stopped: e.Stopped, Known: e.Known, GapReasons: e.GapReasons})
-				items[i].EffectiveCollectionState = &state
-				items[i].ReasonCodes = reasons
+				if view, ok := stateViews[items[i].ID]; ok {
+					items[i].EffectiveCollectionState = &view.State
+					items[i].ReasonCodes = view.Reasons
+				}
 			}
 		}
 		out.Items = items
