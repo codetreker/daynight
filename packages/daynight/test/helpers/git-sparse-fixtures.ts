@@ -1,5 +1,5 @@
 import path from "node:path";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { expect } from "vitest";
 import { commit, createGitTestFixtures, rawGit } from "./git-fixtures.js";
 import type { GitFixtureFactory } from "./git-fixtures.js";
@@ -26,12 +26,17 @@ export const createSparseFixture = async (fixture: GitFixtureFactory, mode: Spar
   const patterns = mode.cone ? ["visible"] : ["/file.txt", "/.gitattributes", "/visible/"];
   rawGit(local.root, ["sparse-checkout", "set", mode.cone ? "--cone" : "--no-cone", mode.sparseIndex ? "--sparse-index" : "--no-sparse-index", ...patterns]);
   if (!mode.worktreeConfig) {
-    rawGit(local.root, ["config", "--local", "core.sparseCheckout", "true"]);
-    rawGit(local.root, ["config", "--local", "core.sparseCheckoutCone", String(mode.cone)]);
-    rawGit(local.root, ["config", "--local", "index.sparse", String(mode.sparseIndex)]);
+    appendFileSync(path.join(local.commonDirectory, "config"),
+      `\n[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = ${mode.cone}\n[index]\n\tsparse = ${mode.sparseIndex}\n`);
     rawGit(local.root, ["config", "--local", "extensions.worktreeConfig", "false"]);
   }
-  expect(rawGit(local.root, ["config", "--bool", "--get", "index.sparse"])).toBe(String(mode.sparseIndex));
+  const effective = Object.fromEntries(rawGit(local.root, ["config", "--bool", "--get-regexp",
+    "^(core[.]sparsecheckout(cone)?|index[.]sparse|extensions[.]worktreeconfig)$",
+  ]).split("\n").map(line => line.split(" ")));
+  expect(effective).toMatchObject({
+    "core.sparsecheckout": "true", "core.sparsecheckoutcone": String(mode.cone),
+    "index.sparse": String(mode.sparseIndex), "extensions.worktreeconfig": String(mode.worktreeConfig),
+  });
   if (mode.sparseIndex) expect(rawGit(local.root, ["ls-files", "--sparse", "--stage"]).split("\n").some((entry) => entry.startsWith("040000 "))).toBe(true);
   const snapshot = () => {
     const files: Record<string, Buffer> = {}; const directories: string[] = [];
