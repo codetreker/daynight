@@ -135,7 +135,13 @@ owns the mechanism's alternatives and limits.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
-and the total length.
+and the total length. The Task help and invalid-argument matrix uses separate
+guarded processes for its two import policies. Each invocation gets a fresh
+context from the compiled CLI. Representative cases still run the executable
+from a cold process; tests of HTTP, Git, files and process lifetime continue to
+run the executable. The
+[Task grammar fixture decision](../.agents/notes/implemented/testing/2026-11-18-task-cli-grammar-batches.md)
+owns the test boundary.
 
 API deadline fixtures control both deadline timers and the `node:perf_hooks`
 monotonic clock when setup or pagination must complete before expiry. The
