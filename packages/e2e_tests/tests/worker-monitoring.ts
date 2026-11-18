@@ -67,6 +67,42 @@ export const verifyWorkerMonitoring = async (page: Page): Promise<void> => {
       await expect(capacity).toContainText(`${observation.data.capacity.occupied} / ${observation.data.capacity.limit}`);
       await expect(capacity).toContainText(`${observation.data.capacity.available} available`);
     }
+
+    const readWorker = async () => {
+      const response = await page.request.get(root, { headers: { "Daynight-Worker-Alias": "1", "Daynight-Worker-Tool-Paths": "2" } });
+      expect(response.status(), await response.text()).toBe(200);
+      return await response.json() as { worker: { workerId: string; machine: { id: string; name: string }; lastReportedAt: string; alias: { value: string | null; version: string } } };
+    };
+    const original = (await readWorker()).worker;
+    await page.getByRole("button", { name: "Set alias", exact: true }).click();
+    await page.getByRole("textbox", { name: "Worker alias", exact: true }).fill("办公室 Windows");
+    await page.getByRole("button", { name: "Save alias", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "办公室 Windows", exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "办公室 Windows", exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      if (exited) throw new Error(`Worker exited before its next report:\n${output}`);
+      const current = (await readWorker()).worker;
+      expect(current.workerId).toBe(original.workerId);
+      expect(current.machine).toEqual(original.machine);
+      expect(current.alias.value).toBe("办公室 Windows");
+      return Date.parse(current.lastReportedAt) > Date.parse(original.lastReportedAt);
+    }, { timeout: 45_000, intervals: [1_000] }).toBe(true);
+    await page.getByRole("link", { name: "Back to my Workers" }).click();
+    await expect(page.locator(`a.worker-card[href="/workers/${workerId}"]`)).toContainText("办公室 Windows");
+    await page.locator(`a.worker-card[href="/workers/${workerId}"]`).click();
+    await page.getByRole("button", { name: "Edit alias", exact: true }).click();
+    await page.getByRole("textbox", { name: "Worker alias", exact: true }).fill("家里 Mac mini");
+    await page.getByRole("button", { name: "Save alias", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "家里 Mac mini", exact: true })).toBeVisible();
+    expect((await readWorker()).worker.alias.value).toBe("家里 Mac mini");
+    await page.getByRole("button", { name: "Edit alias", exact: true }).click();
+    await page.getByRole("button", { name: "Clear alias", exact: true }).click();
+    await expect(page.getByRole("heading", { name: original.machine.name, exact: true })).toBeVisible();
+    const cleared = (await readWorker()).worker;
+    expect(cleared.alias.value).toBeNull();
+    expect(cleared.machine).toEqual(original.machine);
+    expect(cleared.workerId).toBe(original.workerId);
   } finally {
     if (!exited) process.kill(worker.pid, "SIGINT");
     try {

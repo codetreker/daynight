@@ -76,6 +76,10 @@ func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 	}
 	assertHistoricalTasksHaveNoCancellationTime(t, database)
 	after := readWorkerSnapshot(t, database, userID, workerID, stamp)
+	if after.Alias.Value != nil || after.Alias.Version != 1 {
+		t.Fatalf("historical worker did not acquire initial alias: %+v", after.Alias)
+	}
+	original.Alias = after.Alias
 	if !reflect.DeepEqual(original, after) || !reflect.DeepEqual(before, preCancellationTaskFactsFixture(t, database)) {
 		t.Fatal("configuration migration changed telemetry or Task facts")
 	}

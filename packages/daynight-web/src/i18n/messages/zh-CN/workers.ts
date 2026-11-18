@@ -2,6 +2,15 @@ import type { WorkersMessages } from '../workers';
 import { workerConfiguration } from './worker-configuration';
 
 export const workers: WorkersMessages = {
+  alias: {
+    label: 'Worker 别名', machineName: '机器名', set: '设置别名', edit: '修改别名',
+    save: '保存别名', saving: '正在保存…', cancel: '取消', clear: '清除别名',
+    hint: '1–80 个字符，自动去除首尾空白。不允许控制字符和方向覆盖字符。',
+    current: '已保存别名', none: '未设置', failed: '无法保存或读取别名，已保留输入。',
+    conflict: '别名已被其他操作修改。请先查看已保存别名，再决定是否重新提交，输入已保留。',
+    unknown: '保存结果尚未确认。请先查看已保存别名，再决定是否重新保存。',
+    check: '查看已保存别名', checked: '上方显示当前已保存别名，输入已保留，请核对后再保存。',
+  },
   configuration: workerConfiguration,
   title: '我的 Worker', subtitle: '查看最近活跃的 Worker，以及它们的运行状态。', list: 'Worker 列表',
   loading: '正在加载 Worker', loadingDetail: '正在读取最近活跃的 Worker 及其运行状态。',

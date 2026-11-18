@@ -60,4 +60,5 @@ func serverAPIWorkerToolPathsFlow(t *testing.T, f *fixture) {
 	if after.Desired.Revision != saved.Desired.Revision || after.Desired.Value["toolPaths"].(map[string]any)["codex"].(map[string]any)["path"] != "/cloud/codex" {
 		t.Fatalf("bootstrap changed the saved target: %+v", after)
 	}
+	serverAPIWorkerAliasFlow(t, f, workerID)
 }

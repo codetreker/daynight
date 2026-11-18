@@ -20,7 +20,7 @@ func TestWorkerArchiveSessionsMigration(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT to_jsonb(w)::text FROM workers w WHERE user_id=$1 AND worker_id=$2`, user, worker).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:80]); err != nil {
 		t.Fatal(err)
 	}
 	var after string

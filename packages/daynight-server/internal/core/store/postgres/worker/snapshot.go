@@ -120,7 +120,7 @@ func (w *Writer) UpsertWorker(ctx context.Context, snapshot model.WorkerSnapshot
 
 func (s *Reader) Workers(ctx context.Context, userID string, observedAt time.Time, page store.Page) (store.WorkerPage, error) {
 	afterTime, afterID := pg.PageValues(page)
-	rows, err := s.tx.Query(ctx, `SELECT `+pg.WorkerSnapshotProjection+` FROM workers
+	rows, err := s.tx.Query(ctx, `SELECT `+pg.WorkerSnapshotAliasProjection+` FROM workers
 		WHERE user_id=$1 AND last_seen_at >= $2::timestamptz - interval '72 hours'
 		AND ($3::timestamptz IS NULL OR (created_at, worker_id)>($3, $4::uuid))
 		ORDER BY workers.created_at, workers.worker_id LIMIT $5`, userID, observedAt, afterTime, afterID, page.Limit+1)
@@ -129,7 +129,7 @@ func (s *Reader) Workers(ctx context.Context, userID string, observedAt time.Tim
 	}
 	items := make([]model.WorkerSnapshot, 0, page.Limit+1)
 	for rows.Next() {
-		item, err := pg.ScanWorkerSnapshot(rows)
+		item, err := pg.ScanAliasedWorkerSnapshot(rows)
 		if err != nil {
 			rows.Close()
 			return store.WorkerPage{}, pg.QueryError("list worker snapshots", err)
@@ -151,7 +151,7 @@ func (s *Reader) Workers(ctx context.Context, userID string, observedAt time.Tim
 }
 
 func (s *Reader) Worker(ctx context.Context, userID, workerID string, observedAt time.Time) (model.WorkerSnapshot, error) {
-	worker, err := pg.ScanWorkerSnapshot(s.tx.QueryRow(ctx, `SELECT `+pg.WorkerSnapshotProjection+` FROM workers
+	worker, err := pg.ScanAliasedWorkerSnapshot(s.tx.QueryRow(ctx, `SELECT `+pg.WorkerSnapshotAliasProjection+` FROM workers
 		WHERE user_id=$1 AND worker_id=$2 AND last_seen_at >= $3::timestamptz - interval '72 hours'`, userID, workerID, observedAt))
 	if err != nil {
 		return model.WorkerSnapshot{}, pg.QueryError("read worker snapshot", err)
@@ -210,7 +210,7 @@ func (s *Reader) WorkerSummaries(ctx context.Context, userID string, observedAt 
 	// WorkerMachine persists its untagged ID and Name fields with their Go names.
 	rows, err := s.tx.Query(ctx, `SELECT w.worker_id::text, w.created_at, w.last_seen_at,
         w.telemetry->'machine'->>'ID', w.telemetry->'machine'->>'Name', w.telemetry->>'platform',
-        w.task_snapshot->>'state', w.task_snapshot->'observedAt' AS task_observed_at,
+        w.task_snapshot->>'state', w.task_snapshot->'observedAt' AS task_observed_at, w.alias_value, w.alias_version,
         (SELECT count(*) FROM jsonb_array_elements(w.task_snapshot->'items') item
           JOIN task_resource_rows t ON t.id=(item->>'taskId')::uuid AND t.project_id=(item->>'projectId')::uuid AND t.effective_deleted_at IS NULL
           WHERE EXISTS (SELECT 1 FROM (`+pg.ProjectAccessRelation+`) a WHERE a.project_id=t.project_id AND a.user_id=$1))
@@ -226,7 +226,7 @@ func (s *Reader) WorkerSummaries(ctx context.Context, userID string, observedAt 
 	for rows.Next() {
 		var item store.WorkerSummary
 		var count int
-		if err := rows.Scan(&item.WorkerID, &item.CreatedAt, &item.LastReportedAt, &item.Machine.ID, &item.Machine.Name, &item.Platform, &item.TaskObservationState, &item.TaskObservedAt, &count); err != nil {
+		if err := rows.Scan(&item.WorkerID, &item.CreatedAt, &item.LastReportedAt, &item.Machine.ID, &item.Machine.Name, &item.Platform, &item.TaskObservationState, &item.TaskObservedAt, &item.Alias.Value, &item.Alias.Version, &count); err != nil {
 			return store.WorkerSummaryPage{}, pg.QueryError("list worker summaries", err)
 		}
 		item.CreatedAt, item.LastReportedAt = item.CreatedAt.UTC(), item.LastReportedAt.UTC()

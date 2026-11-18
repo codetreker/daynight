@@ -2814,6 +2814,31 @@ to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
 
+### Owner-managed Worker aliases
+
+`GET` and `PUT /api/v1/me/workers/{workerId}/alias` return
+`{workerId,alias:{value,version}}`. PUT requires exactly
+`{value:string|null,expectedVersion:string}`; null clears the alias. Versions are
+positive decimal int64 strings, initially `"1"`. A stale version returns
+`409 version_conflict`, including an otherwise unchanged write. Only actual
+changes increment the independent alias version.
+
+Aliases trim Unicode White_Space at both ends, contain 1–80 Unicode scalar
+values, and reject invalid Unicode, Cc, Zl/Zp, bidi controls and U+FEFF. Empty
+strings do not clear aliases. Emoji ZWJ sequences remain intact. Alias access
+uses the authenticated owner and hides other accounts' Workers with 404. It
+remains available for existing offline or expired-report Workers, changes no
+report timestamps or configuration, and survives later reports using the same
+Worker ID.
+
+List and detail GET include `alias:{value,version}` only when requested with
+`Daynight-Worker-Alias: 1`, echoed on successful negotiated reads. Invalid or
+repeated header values are rejected. Unnegotiated reads retain their exact
+previous fields; old servers without the echo do not provide alias editing.
+Aliases are selected with the summary/detail rows inside the same owner-scoped
+snapshot, without per-Worker follow-up queries. The
+[alias design](../../docs/design/worker-alias.md) owns the complete mechanism.
+
 ## Worker current monitoring
 
 The account can store and read one bounded current observation per recent

@@ -26,6 +26,13 @@ type configurationDAO struct {
 	accessUsers                                    []string
 }
 
+func (*configurationDAO) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	panic("unexpected alias read")
+}
+func (*configurationDAO) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	panic("unexpected alias write")
+}
+
 func (d *configurationDAO) ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
 	panic("unexpected task read")
 }
@@ -493,6 +500,12 @@ func (d *capacityConfigurationDAO) unexpected(method string) error {
 
 func (d *capacityConfigurationDAO) ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]store.WorkerTaskSource, error) {
 	return nil, d.unexpected("ReportTaskSnapshots")
+}
+func (d *capacityConfigurationDAO) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
+	return model.WorkerAlias{}, d.unexpected("WorkerAlias")
+}
+func (d *capacityConfigurationDAO) SetWorkerAlias(context.Context, string, string, int64, model.WorkerAlias) error {
+	return d.unexpected("SetWorkerAlias")
 }
 func (d *capacityConfigurationDAO) UpsertWorker(context.Context, model.WorkerSnapshot) (model.WorkerSnapshot, error) {
 	return model.WorkerSnapshot{}, d.unexpected("UpsertWorker")
