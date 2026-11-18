@@ -29,6 +29,10 @@ type strictIdentity struct {
 	listPATs      func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
 	revokePAT     func(context.Context, model.Principal, string) error
 	updatePAT     func(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
+	startDevice   func(context.Context, string, string) (identitycore.DeviceStart, error)
+	inspectDevice func(context.Context, model.Principal, string) (identitycore.DeviceInspection, error)
+	decideDevice  func(context.Context, model.Principal, string, string, string) error
+	redeemDevice  func(context.Context, string, string, string, string) (identitycore.MintedPAT, error)
 }
 
 var _ identityOperations = (*strictIdentity)(nil)
@@ -112,17 +116,29 @@ func (m *strictIdentity) UpdatePATExpiry(ctx context.Context, principal model.Pr
 func (m *strictIdentity) Providers(context.Context) ([]string, error) {
 	return nil, m.unexpected("Providers")
 }
-func (m *strictIdentity) StartDevice(context.Context, string, string) (identitycore.DeviceStart, error) {
-	return identitycore.DeviceStart{}, m.unexpected("StartDevice")
+func (m *strictIdentity) StartDevice(ctx context.Context, clientID, source string) (identitycore.DeviceStart, error) {
+	if m.startDevice == nil {
+		return identitycore.DeviceStart{}, m.unexpected("StartDevice")
+	}
+	return m.startDevice(ctx, clientID, source)
 }
-func (m *strictIdentity) InspectDevice(context.Context, model.Principal, string) (identitycore.DeviceInspection, error) {
-	return identitycore.DeviceInspection{}, m.unexpected("InspectDevice")
+func (m *strictIdentity) InspectDevice(ctx context.Context, principal model.Principal, userCode string) (identitycore.DeviceInspection, error) {
+	if m.inspectDevice == nil {
+		return identitycore.DeviceInspection{}, m.unexpected("InspectDevice")
+	}
+	return m.inspectDevice(ctx, principal, userCode)
 }
-func (m *strictIdentity) DecideDevice(context.Context, model.Principal, string, string, string) error {
-	return m.unexpected("DecideDevice")
+func (m *strictIdentity) DecideDevice(ctx context.Context, principal model.Principal, userCode, decision, expectedUserID string) error {
+	if m.decideDevice == nil {
+		return m.unexpected("DecideDevice")
+	}
+	return m.decideDevice(ctx, principal, userCode, decision, expectedUserID)
 }
-func (m *strictIdentity) RedeemDevice(context.Context, string, string, string, string) (identitycore.MintedPAT, error) {
-	return identitycore.MintedPAT{}, m.unexpected("RedeemDevice")
+func (m *strictIdentity) RedeemDevice(ctx context.Context, clientID, grantType, code, deviceName string) (identitycore.MintedPAT, error) {
+	if m.redeemDevice == nil {
+		return identitycore.MintedPAT{}, m.unexpected("RedeemDevice")
+	}
+	return m.redeemDevice(ctx, clientID, grantType, code, deviceName)
 }
 func (m *strictIdentity) LogoutDevice(context.Context, model.Principal) error {
 	return m.unexpected("LogoutDevice")
