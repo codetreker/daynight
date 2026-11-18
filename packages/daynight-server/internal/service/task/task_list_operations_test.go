@@ -213,6 +213,10 @@ type listOperationCapability struct {
 	name    string
 }
 
+func (mock *listOperationCapability) FindVisibleRepositoryForCreation(context.Context, model.Principal, string, string) ([]model.Project, error) {
+	return nil, mock.fail("FindVisibleRepositoryForCreation")
+}
+
 func (c *listOperationCapability) fail(method string) error {
 	return c.fixture.unexpected(c.name + "." + method)
 }

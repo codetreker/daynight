@@ -92,6 +92,10 @@ func TestDAOFailuresPreserveCauseAndPhase(t *testing.T) {
 			_, err := project.NewWriter(tx, "project").RepositoryIdentity(t.Context())
 			return err
 		}},
+		{"visible repository", "find visible Team repository", func(tx pgx.Tx) error {
+			_, err := project.NewReader(tx).FindVisibleRepositoryForCreation(t.Context(), principal("user"), "team", "identity")
+			return err
+		}},
 		{"project", "read project", func(tx pgx.Tx) error { _, err := project.NewReader(tx).Project(t.Context(), "project"); return err }},
 		{"projects", "list projects", func(tx pgx.Tx) error {
 			_, err := project.NewReader(tx).Projects(t.Context(), store.Page{Limit: 2})
@@ -195,7 +199,7 @@ func TestDAOFailuresPreserveCauseAndPhase(t *testing.T) {
 	for _, mode := range []string{"scan", "iteration"} {
 		for _, tc := range cases {
 			switch tc.name {
-			case "projects", "participants", "invitations", "scoped projects":
+			case "projects", "participants", "invitations", "scoped projects", "visible repository":
 				t.Run(tc.name+"/"+mode, func(t *testing.T) { err := tc.run(failingTx{cause: cause, rowMode: mode}); checkError(t, err, cause) })
 			}
 		}

@@ -287,16 +287,20 @@ func TestMCPOutputConstructionFailureLog(t *testing.T) {
 type mcpOrgProjectReader struct {
 	t *testing.T
 	store.ProjectReader
-	ScopedProjectsCall func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error)
-	ProjectCall        func(ctx context.Context, id string) (model.Project, error)
-	ProjectAccessCall  func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error)
-	TransferTeamCall   func(ctx context.Context, id string) (store.TransferTeam, error)
-	TransferRoleCall   func(ctx context.Context, user, project, team string) (*model.ProjectRole, error)
-	InvitationCall     func(ctx context.Context, hash []byte) (model.ProjectInvitation, error)
+	ScopedProjectsCall                   func(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error)
+	FindVisibleRepositoryForCreationCall func(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error)
+	ProjectCall                          func(ctx context.Context, id string) (model.Project, error)
+	ProjectAccessCall                    func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error)
+	TransferTeamCall                     func(ctx context.Context, id string) (store.TransferTeam, error)
+	TransferRoleCall                     func(ctx context.Context, user, project, team string) (*model.ProjectRole, error)
+	InvitationCall                       func(ctx context.Context, hash []byte) (model.ProjectInvitation, error)
 }
 
 func (d mcpOrgProjectReader) ScopedProjects(ctx context.Context, actor model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
 	return requireCallback(d.t, "MCP DAO ScopedProjectsCall", d.ScopedProjectsCall)(ctx, actor, scope, page)
+}
+func (d mcpOrgProjectReader) FindVisibleRepositoryForCreation(ctx context.Context, actor model.Principal, teamID, identity string) ([]model.Project, error) {
+	return requireCallback(d.t, "MCP DAO FindVisibleRepositoryForCreationCall", d.FindVisibleRepositoryForCreationCall)(ctx, actor, teamID, identity)
 }
 func (d mcpOrgProjectReader) Project(ctx context.Context, id string) (model.Project, error) {
 	return requireCallback(d.t, "MCP DAO ProjectCall", d.ProjectCall)(ctx, id)
