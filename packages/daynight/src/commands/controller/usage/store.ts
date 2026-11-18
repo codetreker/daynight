@@ -57,14 +57,14 @@ export const openUsageStore = (db: Database.Database, context: { read<T>(action:
     return item;
   };
   return {
-    ensureState: (generation, nativeSessionId, providerVersion) => context.write(() => {
+    ensureState: (generation, nativeSessionId, providerVersion, provider = "copilot") => context.write(() => {
       const existing = meta<string>(`generation:${generation}`);
       if (existing) {
         const value = state(existing);
-        if (value.nativeSessionId !== nativeSessionId || value.providerVersion !== providerVersion) throw new Error("Usage generation identity changed.");
+        if (value.nativeSessionId !== nativeSessionId || value.providerVersion !== providerVersion || value.provider !== provider) throw new Error("Usage generation identity changed.");
         return value;
       }
-      const value: UsageState = { stateId: randomUUID(), registrationId: randomUUID(), generation, nativeSessionId, providerVersion, provider: "copilot", grant: null, rowVersion: null, stateSequence: "0", reasons: [], stopped: false, registrationAttempted: false, grantRequestAttempted: false };
+      const value: UsageState = { stateId: randomUUID(), registrationId: randomUUID(), generation, nativeSessionId, providerVersion, provider, grant: null, rowVersion: null, stateSequence: "0", reasons: [], stopped: false, registrationAttempted: false, grantRequestAttempted: false };
       save(value); put(`generation:${generation}`, value.stateId); return value;
     }),
     states: () => context.read(() => (db.prepare("SELECT value FROM usage_meta WHERE key LIKE 'state:%' ORDER BY key").all() as { value: string }[]).map(row => JSON.parse(row.value) as UsageState)),

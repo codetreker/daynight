@@ -5,6 +5,7 @@ import { withStoppedControllerStorage } from "../stopped-storage.js";
 import { runSqliteImmediate } from "../../../platform/sqlite-access.js";
 import { countRetainedUsage, openUsageStore } from "./store.js";
 import type { UsageStore } from "./types.js";
+import { usageCollectionState } from "./profiles.js";
 import { createUsageUploader } from "./uploader.js";
 
 /** Reopens the original stopped journal for each local operation, never across IO. */
@@ -54,12 +55,13 @@ export const replayStoppedControllerUsage = async (options: {
     await uploader.tick();
     for (const state of access.store.states()) {
       if (state.stopped) continue;
-      access.store.gap(state.stateId, "missing_final");
-      access.store.gap(state.stateId, "native_recovery_gap");
       const capability = uploader.capability(state);
+      const unsupported = capability?.qualification === "unsupported";
+      const reasons = [...new Set([...state.reasons, ...(unsupported ? ["provider_unsupported"] : ["missing_final", "native_recovery_gap", ...(capability?.qualification === "verified" ? [] : ["profile_unverified"])])])];
+      for (const reason of reasons) access.store.gap(state.stateId, reason);
       if (capability) access.store.enqueueState(state.stateId, {
-        collectionState: capability.qualification === "verified" ? "partial" : "unavailable", capability,
-        reasonCodes: capability.qualification === "verified" ? ["missing_final", "native_recovery_gap"] : ["missing_final", "native_recovery_gap", "profile_unverified"],
+        collectionState: usageCollectionState(capability.qualification, true), capability,
+        reasonCodes: reasons,
         nativeStartedAt: null, nativeEndedAt: access.endedAt(), observedAt: new Date().toISOString(), seal: true,
       });
     }

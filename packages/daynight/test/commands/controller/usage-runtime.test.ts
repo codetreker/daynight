@@ -11,13 +11,14 @@ const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { try { for (const close of cleanups.splice(0).reverse()) await close(); } finally { vi.useRealTimers(); } });
 const capability = { profileId: "copilot-event-1.0.11-v1", qualification: "verified", measurementPlane: "native_event", revisionAuthority: "immutable", metrics: { inputTokens: "unknown", outputTokens: "supported", cacheReadTokens: "unknown", cacheWriteTokens: "unknown", reasoningTokens: "optional", totalTokens: "unknown" }, subagents: "included_per_event", recovery: "durable_after_ingress_only", completion: "partial_only" };
 
-const fixture = async (verified = true) => {
+const fixture = async (verified = true, provider: "copilot" | "codex" = "copilot") => {
+  const profile = provider === "copilot" ? capability : { ...capability, profileId: "codex-snapshot-unaccountable-v1", qualification: "unsupported", measurementPlane: "none", revisionAuthority: "none", completion: "unsupported", recovery: "unsupported" };
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const db = new Database(":memory:"); cleanups.push(() => { db.close(); });
   db.exec(readFileSync(new URL("../../../src/commands/controller/sqlite/journal/014-usage.sql", import.meta.url), "utf8"));
   const store = openUsageStore(db, { read: action => db.transaction(action).deferred(), write: action => db.transaction(action).immediate() });
   const identity = { sessionId: randomUUID(), executionGeneration: "1", controllerInstanceId: randomUUID() };
-  const native = { nativeSessionId: randomUUID(), providerVersion: "1.0.11/1.0.105" };
+  const native = { nativeSessionId: randomUUID(), providerVersion: provider === "copilot" ? "1.0.11/1.0.105" : "0.169.0" };
   const calls: string[] = [], batches: UsagePayload[][] = [];
   let holdBatch = false, release: (() => void) | null = null;
   const json = (response: ServerResponse, body: unknown, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(body)); };
@@ -27,12 +28,12 @@ const fixture = async (verified = true) => {
       calls.push(request.url!);
       const body = text ? JSON.parse(text) as UsagePayload : {};
       if (request.url === "/api/usage/v1/capabilities") {
-        const cap = { ...capability, qualification: verified ? "verified" : "unverified" };
-        json(response, { protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: capability.profileId, provider: "copilot", capability: { ...capability, qualification: "unverified" }, qualifiedVersions: verified ? [{ providerVersion: native.providerVersion, capability: cap }] : [] }] });
+        const cap = { ...profile, qualification: provider === "codex" ? "unsupported" : verified ? "verified" : "unverified" };
+        json(response, { protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: true, profiles: [{ id: profile.profileId, provider, capability: { ...profile, qualification: provider === "codex" ? "unsupported" : "unverified" }, qualifiedVersions: verified ? [{ providerVersion: native.providerVersion, capability: cap }] : [] }] });
       } else if (request.method === "GET") json(response, {}, 404);
       else if (request.url === "/api/usage/v1/registrations") {
         const state = store.states()[0]!;
-        json(response, { state: { id: state.stateId, sessionId: identity.sessionId, executionGeneration: "1", nativeSessionId: native.nativeSessionId, registrationId: state.registrationId, providerVersion: native.providerVersion, profileId: capability.profileId, provider: "copilot", rowVersion: "1" }, grant: { token: "g".repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }, 201);
+        json(response, { state: { id: state.stateId, sessionId: identity.sessionId, executionGeneration: "1", nativeSessionId: native.nativeSessionId, registrationId: state.registrationId, providerVersion: native.providerVersion, profileId: profile.profileId, provider, rowVersion: "1" }, grant: { token: "g".repeat(43), expiresAt: new Date(Date.now() + 3_600_000).toISOString() } }, 201);
       } else if (request.url?.endsWith("/batches")) {
         const events = body.events as UsagePayload[]; batches.push(events);
         const state = store.states()[0]!, pending = store.pending(state.stateId);
@@ -47,7 +48,7 @@ const fixture = async (verified = true) => {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   cleanups.push(() => new Promise<void>((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }));
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing fixture address.");
-  const runtime = createUsageRuntime({ serverOrigin: `http://127.0.0.1:${address.port}`, store, identity, generation: "1", connection: () => ({ connectionEpoch: "3", nativeSessionId: native.nativeSessionId }), readParentToken: async () => "parent-token" });
+  const runtime = createUsageRuntime({ provider, serverOrigin: `http://127.0.0.1:${address.port}`, store, identity, generation: "1", connection: () => ({ connectionEpoch: "3", nativeSessionId: native.nativeSessionId }), readParentToken: async () => "parent-token" });
   cleanups.push(async () => { holdBatch = false; release?.(); release = null; await runtime.close(); });
   const advance = async () => { await vi.advanceTimersByTimeAsync(1000); };
   const event = (outputTokens: number) => ({ id: randomUUID(), type: "assistant.usage", timestamp: new Date().toISOString(), data: { model: "model", outputTokens } });
@@ -92,4 +93,17 @@ test("an upload tick finishing during close cannot append collecting after the f
   expect(pending).toHaveLength(1);
   expect(pending[0]!.payload).toMatchObject({ kind: "execution_state", stateSequence: "2", collectionState: "partial", seal: true });
   expect(f.store.getState(f.store.states()[0]!.stateId).stopped).toBe(true);
+});
+
+test("Codex reports unsupported coverage without converting snapshots to measurements", async () => {
+  const f = await fixture(false, "codex"); f.runtime.ready(f.native);
+  f.runtime.observe({ ...f.native, event: f.event(900) });
+  await f.advance();
+  await vi.waitFor(() => expect(f.store.pending(f.store.states()[0]!.stateId)).toHaveLength(1));
+  expect(f.store.states()[0]!.provider).toBe("codex");
+  expect(f.store.pending(f.store.states()[0]!.stateId)[0]!.payload).toMatchObject({ collectionState: "unsupported", reasonCodes: ["provider_unsupported"] });
+  await f.runtime.close();
+  const events = f.batches.flat();
+  expect(events.some(event => event.seal === true && event.collectionState === "unsupported")).toBe(true);
+  expect(events.every(event => event.kind === "execution_state")).toBe(true);
 });

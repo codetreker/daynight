@@ -16,7 +16,7 @@ for await (const line of createInterface({input:process.stdin})) {
  if(m.method==='initialize') {
   if(process.env.CODEX_TEST_INITIALIZE==='timeout')continue;
   if(process.env.CODEX_TEST_INITIALIZE==='reject') {out({id:m.id,error:{code:-32602,message:'Fixture initialization rejected /private/profile token=private-value'}});continue;}
-  out({id:m.id,result:{}});
+  out({id:m.id,result:JSON.parse(process.env.CODEX_TEST_INITIALIZED ?? "{}")});
  }
  if(m.method==='config/read')out({id:m.id,result:{config:JSON.parse(process.env.CODEX_TEST_EFFECTIVE_CONFIG ?? '{}')}});
  if(process.env.EXPECT_WORKER_PERMISSIONS && (m.method==='thread/start'||m.method==='thread/resume')) {
