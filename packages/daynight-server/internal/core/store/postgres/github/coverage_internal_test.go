@@ -70,3 +70,60 @@ func TestCoverageSameSecondTransitions(t *testing.T) {
 		t.Fatalf("distinct intervals = %d", n)
 	}
 }
+
+func TestCoverageWriteFailuresRemainTransactional(t *testing.T) {
+	ctx := t.Context()
+	conn, err := pgx.Connect(ctx, testutil.ScopedDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	if _, err = conn.Exec(ctx, `CREATE TABLE project_github(project_id uuid, repository_id bigint, enabled boolean, sync_enabled boolean, revision bigint, last_full_generation bigint, access_state text, next_poll_at timestamptz, updated_at timestamptz)`); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := os.ReadFile("../schema/migrations/087_github_coverage.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.Exec(ctx, string(schema)); err != nil {
+		t.Fatal(err)
+	}
+	project := uuid.NewString()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err = conn.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,9,$2)`, project, start); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		at      time.Time
+		rename  bool
+	}{
+		{"reopen query fails", true, start.Add(time.Second), true},
+		{"duplicate open rejected", true, start.Add(time.Second), false},
+		{"close query fails", false, start.Add(time.Second), true},
+		{"invalid close rejected", false, start.Add(-time.Second), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.rename {
+				if _, err = tx.Exec(ctx, `ALTER TABLE project_github_coverage RENAME TO inaccessible_coverage`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = setCoverage(ctx, tx, project, 9, tc.enabled, tc.at); err == nil {
+				t.Fatal("invalid coverage write succeeded")
+			}
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var intact bool
+			if err = conn.QueryRow(ctx, `SELECT count(*)=1 AND bool_and(started_at=$2 AND ended_at IS NULL) FROM project_github_coverage WHERE project_id=$1`, project, start).Scan(&intact); err != nil || !intact {
+				t.Fatalf("failed transition changed period: %v %v", intact, err)
+			}
+		})
+	}
+}

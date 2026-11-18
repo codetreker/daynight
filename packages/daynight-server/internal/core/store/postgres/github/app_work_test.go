@@ -160,6 +160,9 @@ func assertAppWorkFenced(t *testing.T, w store.GitHubAppWorkDAO, lease store.Git
 	if _, valid, err := w.HasPending(ctx, lease); err != nil || valid {
 		t.Fatalf("has pending escaped: %v %v", valid, err)
 	}
+	if _, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &now); err != nil || valid {
+		t.Fatalf("publication facts escaped: %v %v", valid, err)
+	}
 }
 
 func TestAppWorkEveryWriteRejectsStaleAuthorization(t *testing.T) {
@@ -601,5 +604,87 @@ func TestCoverageConfigurationTransitionsFenceClaim(t *testing.T) {
 	change(false, false, 4, 4)
 	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL`, f.project).Scan(&open); err != nil || open != 0 {
 		t.Fatalf("disconnect open=%d err=%v", open, err)
+	}
+}
+
+func TestCoverageFailureAbortsConnectionStops(t *testing.T) {
+	for _, action := range []string{"grant", "project", "unbound retirement", "unbound pending failure", "unbound revision failure"} {
+		t.Run(action, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(action, "unbound") {
+				if _, err := f.db.Pool.Exec(ctx, `UPDATE project_github SET enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL WHERE project_id=$1`, f.project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx := begin(t, f.db, pgx.TxOptions{})
+			var retirement store.GitHubProjectRetirementDAO
+			if strings.HasPrefix(action, "unbound") {
+				retirement = github.NewProjectRetirement(tx, f.project)
+				if _, err := retirement.LockBinding(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			switch action {
+			case "unbound pending failure":
+				mustExec(t, tx, `ALTER TABLE project_github_pending_prs RENAME TO inaccessible_pending`)
+			case "unbound revision failure":
+				mustExec(t, tx, `ALTER TABLE project_github RENAME COLUMN revision TO inaccessible_revision`)
+			default:
+				mustExec(t, tx, `ALTER TABLE project_github_coverage RENAME TO inaccessible_coverage`)
+			}
+			var err error
+			switch action {
+			case "grant":
+				_, err = github.NewConnectionStopWriter(tx, f.app).StopProjectConnection(ctx, f.project, f.grant, core.DisconnectionDecision())
+			case "project":
+				err = github.InvalidateProject(ctx, tx, f.project)
+			case "unbound retirement", "unbound pending failure", "unbound revision failure":
+				err = retirement.Stop(ctx, core.DisconnectionDecision())
+			}
+			if err == nil {
+				t.Fatal("connection stop ignored coverage failure")
+			}
+			if failed, _ := store.DatabaseErrorFacts(err); !failed {
+				t.Fatalf("database failure lost: %v", err)
+			}
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var intact bool
+			if err = f.db.Pool.QueryRow(ctx, `SELECT sync_enabled AND generation=1 AND EXISTS(SELECT 1 FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL) AND EXISTS(SELECT 1 FROM project_github_pending_prs WHERE project_id=$1) FROM project_github WHERE project_id=$1`, f.project).Scan(&intact); err != nil || !intact {
+				t.Fatalf("failed stop changed state: %v %v", intact, err)
+			}
+		})
+	}
+}
+
+func TestPublicationFactsExposeDatabaseFailures(t *testing.T) {
+	for _, table := range []string{"project_pull_requests", "project_github_coverage"} {
+		t.Run(table, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			ctx := t.Context()
+			tx := begin(t, f.db, pgx.TxOptions{})
+			w, lease, now := f.claimed(t, tx)
+			mustExec(t, tx, `ALTER TABLE `+table+` RENAME TO inaccessible_facts`)
+			_, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &now)
+			if err == nil || valid {
+				t.Fatalf("missing %s accepted: valid=%v err=%v", table, valid, err)
+			}
+			if failed, _ := store.DatabaseErrorFacts(err); !failed {
+				t.Fatalf("database failure lost: %v", err)
+			}
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var pending int
+			if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1 AND request_id=$2`, f.project, f.request).Scan(&pending); err != nil || pending != 1 {
+				t.Fatalf("failed facts changed pending: %d %v", pending, err)
+			}
+		})
 	}
 }

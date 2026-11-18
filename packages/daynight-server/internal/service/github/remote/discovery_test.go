@@ -10,7 +10,7 @@ import (
 )
 
 func TestListAllBoundedAndFollowsValidatedLinks(t *testing.T) {
-	for _, mode := range []string{"truncate", "end", "page10_error", "cycle", "wrong_query", "page10_cycle", "page10_wrong_query"} {
+	for _, mode := range []string{"truncate", "end", "page10_error", "cycle", "wrong_query", "page10_cycle", "page10_wrong_query", "wrong_path", "bad_query", "duplicate_param"} {
 		t.Run(mode, func(t *testing.T) {
 			requests := []int{}
 			var base string
@@ -41,7 +41,18 @@ func TestListAllBoundedAndFollowsValidatedLinks(t *testing.T) {
 					if mode == "wrong_query" || (mode == "page10_wrong_query" && page == 10) {
 						state = "open"
 					}
-					w.Header().Set("Link", fmt.Sprintf(`<%s/repos/a/b/pulls?state=%s&sort=created&direction=desc&per_page=20&page=%d>; rel="next"`, base, state, next))
+					nextPath := "/repos/a/b/pulls"
+					if mode == "wrong_path" {
+						nextPath = "/repos/other/b/pulls"
+					}
+					query := fmt.Sprintf("state=%s&sort=created&direction=desc&per_page=20&page=%d", state, next)
+					if mode == "bad_query" {
+						query += "&bad=%xx"
+					}
+					if mode == "duplicate_param" {
+						query += "&state=all"
+					}
+					w.Header().Set("Link", fmt.Sprintf(`<%s%s?%s>; rel="next"`, base, nextPath, query))
 				}
 				fmt.Fprint(w, `[ {"number":1,"state":"closed","updated_at":"2026-01-01T00:00:00Z","closed_at":"2026-01-01T00:00:00Z","merged_at":null,"base":{"repo":{"id":7}}} ]`)
 			})

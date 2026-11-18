@@ -381,3 +381,99 @@ func TestExecutorStopsWhenFailedHintCannotBeRescheduled(t *testing.T) {
 		t.Fatalf("unexpected completion: %+v", f.runtimes)
 	}
 }
+
+type publicationFailureDAO struct {
+	store.GitHubWorkDAO
+	method string
+	cause  error
+}
+
+func (d publicationFailureDAO) PublicationFacts(ctx context.Context, l store.GitHubLease, repo, number int64, at *time.Time) (store.GitHubPublicationFacts, bool, error) {
+	if d.method == "facts" {
+		return store.GitHubPublicationFacts{}, false, d.cause
+	}
+	return d.GitHubWorkDAO.PublicationFacts(ctx, l, repo, number, at)
+}
+func (d publicationFailureDAO) Publish(ctx context.Context, l store.GitHubLease, items []githubpr.PullRequest) (bool, error) {
+	if d.method == "publish" {
+		return false, d.cause
+	}
+	return d.GitHubWorkDAO.Publish(ctx, l, items)
+}
+
+func TestPublicationRejectsInvalidAndFailedWrites(t *testing.T) {
+	for _, method := range []string{"invalid", "facts", "publish", "unknown"} {
+		t.Run(method, func(t *testing.T) {
+			f := newPollFixture(t)
+			cause := errors.New("controlled publication failure")
+			write := f.db.write
+			f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+				return write(ctx, id, func(source store.GitHubWorkDAO) error {
+					return work(publicationFailureDAO{GitHubWorkDAO: source, method: method, cause: cause})
+				})
+			}
+			if method == "unknown" {
+				f.unknownPublish = true
+			}
+			o := observation(5, "open", f.now)
+			if method == "invalid" {
+				o.BaseRepositoryID = 99
+			}
+			run := f.preparedRun(f.remote())
+			count, err := run.publishCount(context.Background(), []githubpr.Observation{o}, nil)
+			if err == nil || count != 0 {
+				t.Fatalf("count=%d error=%v", count, err)
+			}
+			if (method == "facts" || method == "publish") && (!errors.Is(err, cause) || !errors.Is(err, errTransaction)) {
+				t.Fatalf("lost transaction error: %v", err)
+			}
+			if method == "unknown" && !errors.Is(err, errUnknown) {
+				t.Fatalf("unknown result: %v", err)
+			}
+			if method != "unknown" && len(f.publications) != 0 {
+				t.Fatalf("unexpected writes: %v", f.publications)
+			}
+			if f.renews != 0 {
+				t.Fatalf("renewed after failed publication: %d", f.renews)
+			}
+		})
+	}
+}
+
+func TestPublicationSkipsUnknownTerminalOutsideCoverage(t *testing.T) {
+	f := newPollFixture(t)
+	f.facts = func(int64, *time.Time) store.GitHubPublicationFacts { return store.GitHubPublicationFacts{} }
+	run := f.preparedRun(f.remote())
+	count, err := run.publishCount(context.Background(), []githubpr.Observation{observation(5, "closed", f.now)}, nil)
+	if err != nil || count != 0 || len(f.publications) != 0 || f.renews != 1 {
+		t.Fatalf("count=%d err=%v publications=%v renews=%d", count, err, f.publications, f.renews)
+	}
+}
+
+func TestPublicationRejectsDatabaseAndStaleObservationFailures(t *testing.T) {
+	for _, method := range []string{"connection", "clock", "stale"} {
+		t.Run(method, func(t *testing.T) {
+			f := newPollFixture(t)
+			cause := errors.New("controlled scope failure")
+			if method != "stale" {
+				injectFailure(f, method, 1, cause)
+			} else {
+				f.facts = func(int64, *time.Time) store.GitHubPublicationFacts {
+					return store.GitHubPublicationFacts{Current: &githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{State: "merged", GitHubUpdatedAt: f.now}}}
+				}
+			}
+			run := f.preparedRun(f.remote())
+			count, err := run.publishCount(context.Background(), []githubpr.Observation{observation(5, "open", f.now)}, nil)
+			if count != 0 || len(f.publications) != 0 || f.renews != 0 {
+				t.Fatalf("count=%d publications=%v renews=%d", count, f.publications, f.renews)
+			}
+			if method == "stale" {
+				if !errors.Is(err, errObservationConflict) {
+					t.Fatalf("error=%v", err)
+				}
+			} else if !errors.Is(err, cause) || !errors.Is(err, errTransaction) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
