@@ -3304,6 +3304,10 @@ test('Goal graph header details retain browser history and protect an unsaved Go
   await expect(goalDetail).toBeVisible();
   await page.goBack(); await expect(goalDetail).toHaveCount(0); await expect(details).toBeFocused();
   await page.goForward(); await expect(goalDetail).toBeVisible();
+  await goalDetail.getByRole('button', { name: 'Close task details', exact: true }).click();
+  await expect(goalDetail).toHaveCount(0);
+  await expect(graphDialog.getByRole('button', { name: 'Close dependency graph', exact: true })).toBeFocused();
+  await details.click(); await expect(goalDetail).toBeVisible();
   await goalDetail.getByRole('tab', { name: 'Discussion', exact: true }).click();
   const draft = goalDetail.locator('.thread-composer textarea');
   await draft.fill('Goal graph header reading draft');
