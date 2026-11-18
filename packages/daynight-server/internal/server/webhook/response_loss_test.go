@@ -40,12 +40,13 @@ func (w *failedResponseWriter) Write(p []byte) (int, error) {
 // T01-A04: both a short write and an explicit failure occur after the real
 // database transaction commits; the operation remains recoverable by its ID.
 func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
+	fixture := newHTTPFixture(t)
 	for _, tc := range []struct {
 		name     string
 		explicit bool
 	}{{"short_write", false}, {"write_error", true}} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newHTTPFixture(t)
+			f := fixture.forCase(t)
 			actor := f.actor(t)
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logs, nil))
@@ -60,7 +61,7 @@ func TestHTTPCommittedWriteResponseLoss(t *testing.T) {
 			fields := createFields(actor, "response-loss", destination)
 			body := encoded(t, fields)
 			op := fields["operationId"].(string)
-			req := httptest.NewRequest("POST", "/api/v1/me/webhooks", strings.NewReader(body))
+			req := httptest.NewRequestWithContext(f.ctx, "POST", "/api/v1/me/webhooks", strings.NewReader(body))
 			req.AddCookie(&http.Cookie{Name: "daynight_session", Value: actor.cookie})
 			req.Header.Set("Origin", testOrigin)
 			req.Header.Set("Content-Type", "application/json")

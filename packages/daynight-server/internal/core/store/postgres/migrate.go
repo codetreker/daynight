@@ -256,6 +256,9 @@ var workerAliasSQL string
 //go:embed schema/migrations/082_worker_task_tag_filter.sql
 var workerTaskTagFilterSQL string
 
+//go:embed schema/migrations/086_usage_records.sql
+var usageRecordsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -347,6 +350,7 @@ var schemaMigrations = []migration{
 	{version: 81, sql: workerAliasSQL},
 	{version: 82, sql: workerTaskTagFilterSQL},
 	{version: 83, sql: migration083.SQL(), transform: migration083.Apply, transformSource: migration083.TransformSource()},
+	{version: 86, sql: usageRecordsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

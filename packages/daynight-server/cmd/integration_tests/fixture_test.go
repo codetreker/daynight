@@ -203,7 +203,7 @@ type githubFixtureConfig struct {
 	privateKey, caFile, proxyURL string
 }
 
-func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixtureConfig) *fixture {
+func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixtureConfig, extraEnvironment ...string) *fixture {
 	t.Helper()
 	binary := verifyServerBuild(t)
 	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
@@ -341,6 +341,7 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 		}
 	}
 	command.Env = append(command.Env, "DAYNIGHT_INTEGRATION_RUN_ROOT="+runRoot)
+	command.Env = append(command.Env, extraEnvironment...)
 	if github != nil {
 		command.Env = append(command.Env, "HTTPS_PROXY="+github.proxyURL, "NO_PROXY=localhost,127.0.0.1,::1", "SSL_CERT_FILE="+github.caFile)
 	}

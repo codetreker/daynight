@@ -284,6 +284,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"team_invitations",
 		"team_members",
 		"teams",
+		"usage_records",
 		"users",
 		"webhook_attempts",
 		"webhook_bindings",

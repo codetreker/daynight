@@ -23,8 +23,10 @@ records.
 The production source at commit
 [`4c34ee49`](https://github.com/codetreker/daynight/commit/4c34ee49fc28f30e2b23770a0de6fa29402e56a3)
 registered migrations through 083. Migrations 084 and 085 from the withdrawn
-work are removed from the migration list and schema snapshot. Existing databases
-at the production ledger can start with the restored schema.
+work are removed from the migration list and schema snapshot. The independent
+[token usage](../architecture/2026-11-18-single-table-token-usage.md) migration
+retains version 086. The migration runner applies 086 directly to a database
+with the production ledger through 083.
 
 ## Alternatives
 

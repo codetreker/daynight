@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	model "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type waitBarrier struct {
@@ -42,7 +44,7 @@ type claimResult struct {
 	err  error
 }
 
-func blockedClaim(ctx context.Context, url string, limit int, now time.Time, tokens []string, prefix string) (*waitBarrier, <-chan claimResult, error) {
+func prepareClaimBarrier(ctx context.Context, url, prefix string) (*waitBarrier, *pgx.Conn, error) {
 	config, err := pgx.ParseConfig(url)
 	if err != nil {
 		return nil, nil, err
@@ -53,22 +55,59 @@ func blockedClaim(ctx context.Context, url string, limit int, now time.Time, tok
 	if err != nil {
 		return nil, nil, err
 	}
+	return b, c, nil
+}
+
+func startBlockedClaim(ctx context.Context, c *pgx.Conn, limit int, now time.Time, tokens []string) <-chan claimResult {
 	results := make(chan claimResult, 1)
 	go func() {
-		defer c.Close(context.Background())
-		tx, e := c.Begin(ctx)
-		if e != nil {
-			results <- claimResult{err: e}
-			return
+		tx, err := c.Begin(ctx)
+		result := claimResult{err: err}
+		if err == nil {
+			result.rows, result.err = New(tx).Claim(ctx, limit, now, tokens)
+			if result.err == nil {
+				result.err = tx.Commit(ctx)
+			}
 		}
-		defer tx.Rollback(context.Background())
-		rows, e := New(tx).Claim(ctx, limit, now, tokens)
-		if e == nil {
-			e = tx.Commit(ctx)
+
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if tx != nil {
+			if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				result.err = errors.Join(result.err, err)
+			}
 		}
-		results <- claimResult{rows, e}
+		result.err = errors.Join(result.err, c.Close(cleanup))
+		results <- result
+		close(results)
 	}()
-	return b, results, nil
+	return results
+}
+
+func blockedClaim(ctx context.Context, url string, limit int, now time.Time, tokens []string, prefix string) (*waitBarrier, <-chan claimResult, error) {
+	barrier, conn, err := prepareClaimBarrier(ctx, url, prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	return barrier, startBlockedClaim(ctx, conn, limit, now, tokens), nil
+}
+
+func waitForWebhookExpiry(t *testing.T, ctx context.Context, conn *pgx.Conn, expiry time.Time) {
+	t.Helper()
+	const observedExpiry = `SELECT clock_timestamp() >= $1::timestamptz`
+	var expired bool
+	if err := conn.QueryRow(ctx, observedExpiry, expiry).Scan(&expired); err != nil {
+		t.Fatal(err)
+	}
+	if expired {
+		t.Fatal("webhook fixture expired before the pre-expiry observations completed")
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_sleep_until($1::timestamptz)`, expiry); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, observedExpiry, expiry).Scan(&expired); err != nil || !expired {
+		t.Fatalf("webhook fixture expiry: expired=%t error=%v", expired, err)
+	}
 }
 
 func TestDeliveryClaimFIFOAndWait(t *testing.T) {
@@ -327,37 +366,34 @@ func TestDeliveryClaimFIFOAndWait(t *testing.T) {
 	if _, err = conn.Exec(ctx, `UPDATE webhook_endpoint_waits SET not_before=NULL`); err != nil {
 		t.Fatal(err)
 	}
-	var expiry time.Time
-	if err = conn.QueryRow(ctx, `UPDATE webhook_deliveries SET expires_at=clock_timestamp()+interval '1 second' WHERE id=$1 RETURNING expires_at`, ids[0]).Scan(&expiry); err != nil {
-		t.Fatal(err)
-	}
 	expiryCtx, expiryCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer expiryCancel()
-	barrier, results, err = blockedClaim(expiryCtx, url, 1, time.Now(), []string{uuid.NewString()}, "SELECT clock_timestamp()")
+	barrier, claimant, err := prepareClaimBarrier(expiryCtx, url, "SELECT clock_timestamp()")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var expiry time.Time
+	if err = conn.QueryRow(expiryCtx, `UPDATE webhook_deliveries SET expires_at=clock_timestamp()+interval '600 milliseconds' WHERE id=$1 RETURNING expires_at`, ids[0]).Scan(&expiry); err != nil {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		t.Fatal(errors.Join(err, claimant.Close(cleanup)))
+	}
+	results = startBlockedClaim(expiryCtx, claimant, 1, time.Now(), []string{uuid.NewString()})
+	defer func(done <-chan claimResult) {
+		expiryCancel()
+		<-done
+	}(results)
 	select {
 	case <-barrier.entered:
 	case <-expiryCtx.Done():
 		t.Fatal("claim did not lock expiring candidate")
 	}
-	for {
-		var expired bool
-		if err = conn.QueryRow(expiryCtx, `SELECT clock_timestamp()>=$1`, expiry).Scan(&expired); err != nil {
-			close(barrier.release)
-			t.Fatal(err)
-		}
-		if expired {
-			break
-		}
-		select {
-		case <-expiryCtx.Done():
-			close(barrier.release)
-			t.Fatal("database clock did not advance")
-		case <-time.After(10 * time.Millisecond):
-		}
+	var lockedID string
+	var lockError *pgconn.PgError
+	if err := conn.QueryRow(expiryCtx, `SELECT id::text FROM webhook_deliveries WHERE id=$1 FOR UPDATE NOWAIT`, ids[0]).Scan(&lockedID); !errors.As(err, &lockError) || lockError.Code != "55P03" {
+		t.Fatalf("expiring candidate %s was not locked: got %q error=%v", ids[0], lockedID, err)
 	}
+	waitForWebhookExpiry(t, expiryCtx, conn, expiry)
 	close(barrier.release)
 	result = <-results
 	if result.err != nil || len(result.rows) != 1 || result.rows[0].ID != ids[1] {

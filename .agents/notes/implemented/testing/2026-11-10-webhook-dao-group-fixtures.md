@@ -45,6 +45,16 @@ in grouped cases still rolls back before the release guard. The reset restores
 data for the audited case set; it does not promise to undo arbitrary catalog or
 session changes. Groups do not enter parallel scheduling.
 
+The History and Delivery Claim expiry cases wait on the PostgreSQL clock.
+They verify their initial observations while the fixture deadline is still
+future, wait with `pg_sleep_until`, and read the clock again before testing
+post-expiry behavior. Delivery Claim connects its traced claimant before
+arming the deadline so connection setup stays outside the lock observation
+window. The trace pauses the claimant before it samples the database clock.
+The observer confirms that the intended Delivery row is already held with
+`FOR UPDATE NOWAIT`. The test cancels and drains its claimant before fixture
+cleanup on any exit from the expiry case.
+
 Actual SQL constraints, 65,536/65,537-byte capture inputs, the 500-row retention
 boundary, independent readers, snapshots, row locks, cancellation and natural
 database-clock transitions remain real. The related
