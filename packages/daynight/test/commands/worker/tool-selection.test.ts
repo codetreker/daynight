@@ -12,7 +12,7 @@ import { removeFixtureRoot } from "../../helpers/tool-fixture-cleanup.js";
 const now = "2026-11-12T00:00:00.000Z", operations: Operation[] = [];
 const op = () => { const result = createOperation({ limits: { totalMs: 5000 } }); operations.push(result); return result; };
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
-const targets = (label: string, revision = "1") => ({ source: "cloud" as const, revision, choices: { codex: { kind: "path" as const, path: path.resolve(`/tools/${label}`) }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } } });
+const targets = (label: string, revision = "1") => ({ source: "cloud" as const, revision, choices: { codex: { kind: "path" as const, path: path.resolve(`/tools/${label}`) }, copilot: { kind: "auto" as const } } });
 const launch = (label: string): ResolvedToolLaunch => ({ schemaVersion: 1, tool: "codex", context: "web", source: "explicit", entryPath: path.resolve(`/tools/${label}`), canonicalEntryPath: path.resolve(`/tools/${label}`), executablePath: path.resolve(`/tools/${label}`), interpreterPath: null, command: { file: path.resolve(`/tools/${label}`), prefixArgs: [] }, artifacts: [], selectionKey: label.charCodeAt(0).toString(16).padStart(64, "0") });
 const create = (options: { probe?: Partial<ToolSelectionProbe>; readActiveSelections?: () => readonly ActiveToolSelection[]; verify?: (value: ResolvedToolLaunch) => Promise<void>; resolve?: (input: { choice: { kind: "path"; path: string } | { kind: "auto" } }) => Promise<ResolvedToolLaunch> } = {}) => {
   const checked: string[] = [];

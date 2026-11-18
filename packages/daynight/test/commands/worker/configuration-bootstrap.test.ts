@@ -130,13 +130,13 @@ describe("Worker configuration bootstrap preparation", () => {
   it("uses one current-file snapshot for the complete candidate and rereads the next pass", async () => {
     const entered = deferred(), release = deferred();
     const resolve = vi.fn<WorkerBootstrapProjectResolver>(async input => { entered.resolve(); await release.promise; return { id: input.projectId! }; });
-    const original = { agentControlMode: "web", agent: "codex", model: "original", args: ["--original"], maxConcurrent: 3,
+    const original = { agentControlMode: "web", agent: "codex", model: "original", args: ["--sandbox", "read-only"], maxConcurrent: 3,
       toolPaths: { codex: path.join(path.parse(process.cwd()).root, "original", "codex") }, repositories: [repository(3)] };
     const f = await fixture({ worker: original }, resolve); f.entry.release.push(release.resolve);
     const first = f.provider.prepare(operation()); await entered.promise;
     await f.write({ worker: { agentControlMode: "web", agent: "claude", model: "replacement", maxConcurrent: 7, repositories: [] } });
     release.resolve();
-    expect(await first).toMatchObject({ maxConcurrent: 3, native: { agent: "codex", model: "original", args: ["--original"] },
+    expect(await first).toMatchObject({ maxConcurrent: 3, native: { agent: "codex", model: "original", args: ["--sandbox", "read-only"] },
       projects: [{ projectId: id(3) }], toolPaths: { codex: { kind: "path", path: original.toolPaths.codex } } });
     expect(await f.provider.prepare(operation())).toMatchObject({ maxConcurrent: 7, native: { agent: "claude", model: "replacement" }, projects: [] });
     expect(resolve).toHaveBeenCalledOnce(); expect(f.errors).toEqual([]);

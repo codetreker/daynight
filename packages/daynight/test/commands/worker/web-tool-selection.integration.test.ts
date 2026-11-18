@@ -95,7 +95,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
 `);
   const compiled = await import(pathToFileURL(path.join(dist, "commands/worker/tool-selection-runtime.js")).href) as typeof import("../../../src/commands/worker/tool-selection-runtime.js");
   const tools = compiled.createWorkerToolSelectionRuntime({ workerDirectory: path.join(state, "worker"), cwd: repository, environment: { ...process.env },
-    localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") }, herdr: { kind: "auto" } }, readActiveSelections: () => [] });
+    localToolPaths: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") } }, readActiveSelections: () => [] });
   tools.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: toolEntries.A }, copilot: { kind: "path", path: path.join(home, "missing-copilot") } } });
   const selectToolLaunch = vi.fn(tools.selectToolLaunch);
   const service = createServer();

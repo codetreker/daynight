@@ -111,7 +111,7 @@ describe("Worker cloud configuration application", () => {
   });
 
   it("publishes each cloud adoption without substituting local choices", async () => {
-    const localToolPaths: ToolPaths = { codex: { kind: "path", path: "/local/codex" }, copilot: { kind: "path", path: "/local/copilot" }, herdr: { kind: "auto" } };
+    const localToolPaths: ToolPaths = { codex: { kind: "path", path: "/local/codex" }, copilot: { kind: "path", path: "/local/copilot" } };
     const { manager } = await fixture({ localToolPaths });
     expect(manager.current().toolTargets).toBeNull();
     const original = desired("1", "original", false);
@@ -133,7 +133,7 @@ describe("Worker cloud configuration application", () => {
     ["web", "claude", "codex", true], ["web", "claude", "copilot", true],
   ] as const)("qualifies %s %s with missing %s: %s", async (_mode, agent, missing, ready) => {
     const applyNative = vi.fn(async () => {});
-    const { manager } = await fixture({ readToolSelectionKeys: () => ({ codex: "a".repeat(64), copilot: "b".repeat(64), herdr: "c".repeat(64) }), applyNative });
+    const { manager } = await fixture({ readToolSelectionKeys: () => ({ codex: "a".repeat(64), copilot: "b".repeat(64) }), applyNative });
     const original = desired("1", "original", false);
     const choices = { codex: { kind: "auto" as const }, copilot: { kind: "auto" as const }, [missing]: null };
     await manager.receive(receivedDesired({ ...original, value: { ...original.value, native: { agent, model: null, args: [] }, toolPaths: choices } }));
@@ -198,7 +198,7 @@ describe("Worker cloud configuration application", () => {
 
   it("invalidates only native proofs that depend on a changed tool selection", async () => {
     const blocked = deferred(), release = deferred();
-    const selections: Record<Tool, string> = { codex: "a".repeat(64), copilot: "b".repeat(64), herdr: "c".repeat(64) };
+    const selections: Record<Tool, string> = { codex: "a".repeat(64), copilot: "b".repeat(64) };
     let changing = false;
     const { manager } = await fixture({ readToolSelectionKeys: () => selections,
       applyNative: async native => { if (changing && native.agent === "codex") { blocked.resolve(); await release.promise; } },
@@ -240,7 +240,7 @@ describe("Worker cloud configuration application", () => {
         else key = "b".repeat(64);
       }, applyNative: async () => { applied.push(key!); },
     });
-    const original = desired("1", "original", false), tools: ToolPaths = { codex: { kind: "path", path: "/old/codex" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } };
+    const original = desired("1", "original", false), tools: ToolPaths = { codex: { kind: "path", path: "/old/codex" }, copilot: { kind: "auto" } };
     await manager.receive(receivedDesired({ ...original, value: { ...original.value, toolPaths: { codex: tools.codex, copilot: tools.copilot } } })); await entered.promise;
     await manager.receive(receivedDesired({ ...original, revision: "2", value: { ...original.value, toolPaths: { copilot: tools.copilot, codex: { kind: "path", path: "/new/codex" } } } }));
     release.resolve(); await manager.settle(); expect(applied).toEqual(["b".repeat(64)]);
@@ -273,7 +273,7 @@ describe("Worker cloud configuration application", () => {
     const { manager } = await fixture({ applyNative: async native => {
       if (changing && native.agent === "codex") { entered.resolve(); await release.promise; }
     } });
-    const original = desired(), tools: ToolPaths = { codex: { kind: "path", path: "/old/codex" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } };
+    const original = desired(), tools: ToolPaths = { codex: { kind: "path", path: "/old/codex" }, copilot: { kind: "auto" } };
     const first = { ...original, value: { ...original.value, toolPaths: { codex: tools.codex, copilot: tools.copilot }, projects: [{ projectId, nativeOverrides: { agent: "copilot" as const } }] } };
     await manager.receive(receivedDesired(first)); await manager.settle();
     changing = true;
@@ -1329,12 +1329,12 @@ describe("Worker cloud configuration application", () => {
   });
 
   it.each([
-    [new ToolSelectionError("codex", "herdr", "resolve", "not_found"), "not_found"],
-    [new ToolSelectionError("codex", "herdr", "verify", "permission_denied"), "permission_denied"],
-    [new ToolSelectionError("codex", "herdr", "probe", "probe_timeout"), "timeout"],
-    [new ToolSelectionError("codex", "herdr", "verify", "incompatible_runtime"), "invalid_configuration"],
-    [new ToolSelectionError("codex", "herdr", "probe", "unrecognized_output"), "invalid_output"],
-    [new ToolSelectionError("codex", "herdr", "probe", "cleanup_unknown"), "unavailable"],
+    [new ToolSelectionError("codex", "web", "resolve", "not_found"), "not_found"],
+    [new ToolSelectionError("codex", "web", "verify", "permission_denied"), "permission_denied"],
+    [new ToolSelectionError("codex", "web", "probe", "probe_timeout"), "timeout"],
+    [new ToolSelectionError("codex", "web", "verify", "incompatible_runtime"), "invalid_configuration"],
+    [new ToolSelectionError("codex", "web", "probe", "unrecognized_output"), "invalid_output"],
+    [new ToolSelectionError("codex", "web", "probe", "cleanup_unknown"), "unavailable"],
     [new OperationError("request_timeout"), "timeout"],
     [Object.assign(new Error("Untrusted upstream detail"), { code: "EACCES" }), "unavailable"],
   ] as const)("persists the established native failure classification for %s", async (failure, code) => {
@@ -1348,7 +1348,7 @@ describe("Worker cloud configuration application", () => {
 
   it("reports tool preparation at its actual phase and retains one attempt across checkpoint progress", async () => {
     const events: WorkerConfigurationApplicationEvent[] = [];
-    const error = new ToolSelectionError("codex", "herdr", "probe", "probe_timeout");
+    const error = new ToolSelectionError("codex", "web", "probe", "probe_timeout");
     const { manager } = await fixture({ prepareToolSelection: async () => { throw error; }, onApplication: event => { events.push(event); } });
     await manager.receive(receivedDesired(desired("1", "bad", false))); await manager.settle();
     expect(item(manager.current(), "native")?.error).toMatchObject({ code: "timeout", phase: "prepare" });

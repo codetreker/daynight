@@ -6,7 +6,7 @@
 
 本文是基础图片 DTO、身份、能力、上传、读取、来源登记、错误和跨层预算的唯一设计定义。[来源设计](session-image-sources.md)拥有 Markdown part/binding/retained 的完整结构和采集算法；[归档设计](session-image-archives.md)拥有 schema3、完整历史同步和封存文件 DTO；[Provider 设计](session-image-providers.md)拥有原生 payload、接受证据和历史映射；[浏览器设计](session-image-browser.md)拥有持久草稿和唯一预览接口。各消费者复用这些定义，不再建立同名竞争类型。
 
-旧记录的兼容依据为 [固定协议](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/session/protocol.ts)及[原生入口](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/commands/controller/providers/types.ts)。严格 v1、旧文字命令编码、8 MiB legacy resource、64 MiB 旧原生归档和 Herdr v2 语义保留；Provider 文字发送已迁入统一结构化输入。服务责任分别落在 `internal/core/session/` 执行、`internal/service/session/` 授权事务、`internal/core/store/` DAO、`internal/server/session/` HTTP、`internal/core/filestorage/` 文件抽象，不重建旧 `internal/sessionrelay/` 服务。
+旧记录的兼容依据为 [固定协议](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/session/protocol.ts)及[原生入口](https://github.com/codetreker/daynight/blob/7fe4684b83d4d850f3b2dc6e7772392f75b175ef/packages/daynight/src/commands/controller/providers/types.ts)。严格 v1、旧文字命令编码、8 MiB legacy resource、64 MiB 旧原生归档和 Herdr v2 已上传录像的只读语义保留；Provider 文字发送已迁入统一结构化输入。服务责任分别落在 `internal/core/session/` 执行、`internal/service/session/` 授权事务、`internal/core/store/` DAO、`internal/server/session/` HTTP、`internal/core/filestorage/` 文件抽象，不重建旧 `internal/sessionrelay/` 服务。
 
 ## 数据与控制流
 
@@ -28,7 +28,7 @@
 | name/label | 显示字符串，非空、无控制字符、UTF-8 ≤1024 bytes；不是路径或文件系统名字；下载文件名由 [浏览器设计](session-image-browser.md) 安全生成 |
 | 尺寸 | width/height 为 1..2147483647 的安全整数，尚未解码用一对 null；二者同时存在或同时 null；解码资源限制由 下文解码策略规定，失败必须显式报告 |
 
-原生 Session 继续使用 `protocol:"daynight.session.v1"`、`schemaVersion:1`、`projectionVersion:1`。Controller hello 以可选 `contentRevision:2` 协商统一媒体合同，旧缺省 revision1。服务 snapshot 仅在该合同可用时同时发布 contentRevision、capabilities.images 和 imageBudget。Herdr 的 `daynight.session.v2` 不变。旧 Worker 仍可使用文字；需要图片时明确提示升级，不能把图片降为文字。
+原生 Session 继续使用 `protocol:"daynight.session.v1"`、`schemaVersion:1`、`projectionVersion:1`。Controller hello 以可选 `contentRevision:2` 协商统一媒体合同，旧缺省 revision1。服务 snapshot 仅在该合同可用时同时发布 contentRevision、capabilities.images 和 imageBudget。Herdr 的 `daynight.session.v2` 已上传录像保留只读格式。旧 Web Controller 可继续使用其文字合同；需要图片时明确提示升级，不能把图片降为文字。
 
 统一 `SessionInput` 为可选的首个非空 TextPart 和随后有序 ImageInputPart；纯图没有虚构文字，不支持任意图文交错。含图 send_message command 显式携带 `contentRevision:2`，payload 必须有 target、draftId、draftRevision 和 expectedImageCapabilityRevision。纯文字沿既有 command 编码及原 hash。MessagePart 在原 TextPart/ResourcePart 上增加 ImagePart、ImageUnavailablePart 和 MarkdownImagePart，所有在线、历史、content 和归档路径复用相同类型。
 
@@ -457,7 +457,7 @@ Controller hello 以 contentRevision2 协商媒体，服务为该连接保留实
 | 新组件、原生能力 unknown | 禁相应图片输入，读取已存图片仍按独立权限；文字能力独立 |
 | schema1 旧归档 | 原 decoder/实际资源，无 bytes 不伪造已保存图 |
 | schema3、旧读者 | 明确要求支持统一 reader 的版本，不生成 schema1 兼容副本；原操作身份和已保存原件仍保留 |
-| Herdr/v2/schema2 | 原 terminal_recording/native_snapshot 包装、paste/keys 和归档语义不变 |
+| Herdr/v2/schema2 | 已上传 terminal_recording 归档保持只读；终端输入与控制已退役 |
 
 媒体块不分配时间线序号；统一资源事件保持原resource kind、eventSeq、historyEpoch及entry身份。旧数据转换只在读取/迁移边界，新内核不重复维护文字降级投影。
 

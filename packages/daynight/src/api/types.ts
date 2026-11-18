@@ -229,7 +229,6 @@ export type WorkerProbe<T> =
   | { readonly state: "ok"; readonly checkedAt: string; readonly value: T }
   | { readonly state: "error"; readonly checkedAt: string; readonly code: WorkerProbeCode };
 export type WorkerExecutableProbe = WorkerProbe<string> | { readonly state: "not_installed"; readonly checkedAt: string };
-export type WorkerHerdrProbe = WorkerProbe<string> | { readonly state: "not_running"; readonly checkedAt: string };
 export type WorkerOS = { readonly type: string; readonly release: string; readonly version: string; readonly arch: string };
 export type WorkerCPU = { readonly model: string; readonly logicalProcessors: number; readonly usagePercent: number };
 export type WorkerMemory = { readonly usedBytes: number; readonly totalBytes: number };
@@ -406,7 +405,7 @@ export type WorkerClaimDescriptor = {
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
   readonly agent: WorkerAgent;
-  readonly agentControlMode?: AgentControlMode;
+  readonly agentControlMode: "web";
   readonly worktreeId: string;
 };
 export type ClaimWorkerTaskInput = WorkerClaimDescriptor & { readonly version: bigint };

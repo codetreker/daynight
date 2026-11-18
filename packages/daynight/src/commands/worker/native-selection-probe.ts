@@ -4,8 +4,7 @@ import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { CopilotClient, RuntimeConnection, type SessionConfig } from "@github/copilot-sdk";
-import which from "which";
+import { CopilotClient, type SessionConfig } from "@github/copilot-sdk";
 import { createOperation } from "../../api/operation.js";
 import { parseWorkerCloudNative, type WorkerCloudNative } from "../../api/worker-configuration.js";
 import { assertNativeModelSelection, NativeCapabilityError, validateNativeModelObservation, type NativeModelObservation } from "../controller/providers/native-selection.js";
@@ -13,28 +12,23 @@ import { record, string } from "../controller/providers/native-rpc.js";
 import { withCodexConfigurationRpc } from "./codex-configuration.js";
 import { normalizeWorkerNative } from "./native-overrides.js";
 import { createNativeSelectionFs } from "./native-selection-fs.js";
-import { buildHerdrAgentArguments } from "./herdr/arguments.js";
 import { hasOwnedCommandCleanupFailure } from "./owned-command.js";
 import { parseProviderArguments } from "../controller/providers/projection.js";
 import { ToolSelectionError, type ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { parseResolvedToolLaunch } from "../../platform/tool-launch-record.js";
 import { withCopilotProbeClient, inspectCopilotStatus } from "./copilot-probe-client.js";
 
-type NativeProbeSelection = { mode?: "web" | "herdr"; toolLaunch?: ResolvedToolLaunch; toolRuntimeRoot?: string };
+type NativeProbeSelection = { toolLaunch?: ResolvedToolLaunch; toolRuntimeRoot?: string };
 
 /** Runs only inside the owned probe supervisor; no user input or persistent session is created. */
-const inspectCapabilities = async (native: WorkerCloudNative, mode: "web" | "herdr", selection: NativeProbeSelection): Promise<NativeModelObservation> => {
-  const normalized = normalizeWorkerNative(native, mode, {}, true, true), effort = normalized.report.reasoningEffort.value;
-  const webArguments = mode === "web" ? parseProviderArguments(native.agent, normalized.native.args, true) : undefined;
+const inspectCapabilities = async (native: WorkerCloudNative, selection: NativeProbeSelection): Promise<NativeModelObservation> => {
+  const normalized = normalizeWorkerNative(native, {}, true, true), effort = normalized.report.reasoningEffort.value;
+  const webArguments = parseProviderArguments(native.agent, normalized.native.args, true);
   const requested = { model: normalized.native.model, ...(effort === null ? {} : { effort }) };
   let observation: NativeModelObservation;
   if (native.agent === "codex") {
-    if (native.args.some(argument => argument === "--oss" || argument === "--local-provider" || argument.startsWith("--local-provider="))) throw new Error("Codex local-provider model capabilities cannot be validated by the native configuration probe.");
     const cwd = path.normalize(await realpath(process.cwd()));
-    // Web sessions retain native project trust. Herdr verification must instead
-    // use its launch-owned trust override; neither path creates a thread here.
-    const launchArguments = mode === "herdr" ? buildHerdrAgentArguments(normalized.native, cwd)
-      : requested.effort === undefined ? [] : ["-c", `model_reasoning_effort=${JSON.stringify(requested.effort)}`];
+    const launchArguments = requested.effort === undefined ? [] : ["-c", `model_reasoning_effort=${JSON.stringify(requested.effort)}`];
     const operation = createOperation({ limits: { totalMs: 15_000, requestMs: 10_000 } });
     try {
       observation = await withCodexConfigurationRpc({ args: [...launchArguments, ...(requested.model === null ? [] : ["-c", `model=${JSON.stringify(requested.model)}`])], cwd, environment: process.env, detached: false, ...(selection.toolLaunch ? { toolLaunch: selection.toolLaunch } : {}) }, operation, async rpc => {
@@ -64,7 +58,7 @@ const inspectCapabilities = async (native: WorkerCloudNative, mode: "web" | "her
     const closed = new Promise<void>(resolve => { release = resolve; });
     const children: ChildProcess[] = [];
     async function* input(): AsyncGenerator<SDKUserMessage> { await closed; }
-    const session = query({ prompt: input(), options: { cwd: process.cwd(), env: process.env, ...(mode === "herdr" ? { pathToClaudeCodeExecutable: "claude" } : {}), persistSession: false, settingSources: ["user", "project", "local"],
+    const session = query({ prompt: input(), options: { cwd: process.cwd(), env: process.env, persistSession: false, settingSources: ["user", "project", "local"],
       ...(webArguments?.additionalDirectories === undefined ? {} : { additionalDirectories: webArguments.additionalDirectories }),
       ...(requested.model === null ? {} : { model: requested.model }), ...(requested.effort === undefined ? {} : { effort: requested.effort as NonNullable<Options["effort"]> }),
       spawnClaudeCodeProcess: args => { const child = spawn(args.command, args.args, { cwd: args.cwd, env: args.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true }); children.push(child); return child; },
@@ -111,28 +105,15 @@ const inspectCapabilities = async (native: WorkerCloudNative, mode: "web" | "her
         catch (error) { throw Object.assign(new AggregateError([...(failure === undefined ? [] : [failure]), error], "Copilot capability session cleanup is unconfirmed."), { code: "cleanup_unknown" as const }); }
       }
     };
-    if (mode === "web" || selection.toolLaunch) {
-      const operation = createOperation({ limits: { totalMs: 15_000, requestMs: 10_000 } });
-      try { observation = await withCopilotProbeClient({ cwd, environment: process.env, sessionId, ...selection }, operation, async client => { await inspectCopilotStatus(client, selection.toolLaunch); return read(client); }); }
-      finally { operation.dispose(); }
-    } else {
-      const client = new CopilotClient({ workingDirectory: cwd, env: process.env, connection: RuntimeConnection.forStdio({ path: await which("copilot") }),
-        sessionFs: { initialCwd: cwd, sessionStatePath: path.join(cwd, ".tmp", `native-selection-${sessionId}`), conventions: process.platform === "win32" ? "windows" : "posix", capabilities: { sqlite: false } } });
-      let failure: unknown;
-      try { await client.start(); observation = await read(client); }
-      catch (error) { failure = error; throw error; }
-      finally {
-        let errors: unknown[] = [];
-        try { errors = await client.stop(); } catch (error) { errors.push(error); }
-        if (errors.length) throw Object.assign(new AggregateError([...(failure === undefined ? [] : [failure]), ...errors], "Copilot capability probe cleanup is unconfirmed."), { code: "cleanup_unknown" as const });
-      }
-    }
+    const operation = createOperation({ limits: { totalMs: 15_000, requestMs: 10_000 } });
+    try { observation = await withCopilotProbeClient({ cwd, environment: process.env, sessionId, ...selection }, operation, async client => { await inspectCopilotStatus(client, selection.toolLaunch); return read(client); }); }
+    finally { operation.dispose(); }
   }
   return validateNativeModelObservation(observation);
 };
 
-const readNativeCapabilities = async (native: WorkerCloudNative, mode: "web" | "herdr", selection: NativeProbeSelection = {}): Promise<NativeModelObservation> => {
-  try { return await inspectCapabilities(native, mode, selection); }
+const readNativeCapabilities = async (native: WorkerCloudNative, selection: NativeProbeSelection = {}): Promise<NativeModelObservation> => {
+  try { return await inspectCapabilities(native, selection); }
   catch (error) {
     if (error instanceof ToolSelectionError) throw error;
     if (error instanceof Error && "code" in error && ["capability_error", "limit_exceeded", "cleanup_unknown"].includes(String(error.code))) throw error;
@@ -141,13 +122,12 @@ const readNativeCapabilities = async (native: WorkerCloudNative, mode: "web" | "
   }
 };
 
-export const inspectNativeCapabilities = (native: WorkerCloudNative, selection: NativeProbeSelection = {}): Promise<NativeModelObservation> => readNativeCapabilities(native, selection.mode ?? "web", selection);
+export const inspectNativeCapabilities = (native: WorkerCloudNative, selection: NativeProbeSelection = {}): Promise<NativeModelObservation> => readNativeCapabilities(native, selection);
 
 export const inspectNativeSelection = async (native: WorkerCloudNative, selection: NativeProbeSelection = {}): Promise<NativeModelObservation> => {
-  const mode = selection.mode ?? "herdr";
-  const normalized = normalizeWorkerNative(native, mode), effort = normalized.report.reasoningEffort.value;
+  const normalized = normalizeWorkerNative(native), effort = normalized.report.reasoningEffort.value;
   const requested = { model: normalized.native.model, ...(effort === null ? {} : { effort }) };
-  const observation = await readNativeCapabilities(native, mode, selection);
+  const observation = await readNativeCapabilities(native, selection);
   assertNativeModelSelection(native.agent, requested, observation);
   return observation;
 };
@@ -156,16 +136,16 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   try {
     const action = process.argv[3] ?? "verify";
     if (!["verify", "discover", "status"].includes(action)) throw new NativeCapabilityError("capability_error", "Unknown native probe operation.");
-    const input = JSON.parse(process.argv[2] ?? "") as Record<string, unknown>;
+    const value: unknown = JSON.parse(process.argv[2] ?? "");
+    if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).some(key => !["agent", "model", "args", "toolLaunch", "toolRuntimeRoot"].includes(key))) throw new Error("Invalid native probe request.");
+    const input = value as Record<string, unknown>;
     const native = parseWorkerCloudNative({ agent: input.agent, model: input.model, args: input.args });
-    const mode = input.mode ?? (action === "verify" ? "herdr" : "web");
-    if (mode !== "web" && mode !== "herdr") throw new NativeCapabilityError("capability_error", "Unknown native probe context.");
-    const toolLaunch = input.toolLaunch === undefined ? undefined : parseResolvedToolLaunch(input.toolLaunch, { ...(native.agent === "claude" ? {} : { tool: native.agent }), context: mode });
+    const toolLaunch = input.toolLaunch === undefined ? undefined : parseResolvedToolLaunch(input.toolLaunch, { ...(native.agent === "claude" ? {} : { tool: native.agent }), context: "web" });
     if (input.toolRuntimeRoot !== undefined && (typeof input.toolRuntimeRoot !== "string" || !path.isAbsolute(input.toolRuntimeRoot))) throw new Error("Invalid private tool runtime root.");
     if (native.agent === "claude" && toolLaunch) throw new Error("Claude does not accept a Worker tool launch.");
-    const selection: NativeProbeSelection = { mode, ...(toolLaunch ? { toolLaunch } : {}), ...(typeof input.toolRuntimeRoot === "string" ? { toolRuntimeRoot: input.toolRuntimeRoot } : {}) };
+    const selection: NativeProbeSelection = { ...(toolLaunch ? { toolLaunch } : {}), ...(typeof input.toolRuntimeRoot === "string" ? { toolRuntimeRoot: input.toolRuntimeRoot } : {}) };
     if (action === "status") {
-      if (native.agent !== "copilot" || mode !== "web" || !toolLaunch) throw new Error("Runtime status requires a frozen Web Copilot launch.");
+      if (native.agent !== "copilot" || !toolLaunch) throw new Error("Runtime status requires a frozen Web Copilot launch.");
       const operation = createOperation({ limits: { totalMs: 15_000, requestMs: 10_000 } });
       try {
         const version = await withCopilotProbeClient({ cwd: process.cwd(), environment: process.env, ...selection }, operation, client => inspectCopilotStatus(client, toolLaunch));

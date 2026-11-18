@@ -120,7 +120,7 @@ describe("Worker cloud configuration protocol", () => {
     const runtimeProjects = projects.map(project => ({ projectId: project.projectId, native: null }));
     expect(parseWorkerRuntimeConfiguration({ schemaVersion: 1, native: null, projects: runtimeProjects.slice(0, 128) }).projects).toHaveLength(128);
     expect(() => parseWorkerRuntimeConfiguration({ schemaVersion: 1, native: null, projects: runtimeProjects })).toThrow(ProtocolError);
-    expect(workerRuntimeConfigurationReport({ native: null, projects: runtimeProjects }, "web", {})).toBeUndefined();
+    expect(workerRuntimeConfigurationReport({ native: null, projects: runtimeProjects }, {})).toBeUndefined();
   });
   it("requires a boolean platform preference and preserves false application results", () => {
     for (const preference of [true, false]) {

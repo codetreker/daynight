@@ -692,9 +692,10 @@ export const createApiClient = (options: {
     (error.code === "unsupported" || error.code === "upgrade_required") && (error.status === 400 || error.status === 404 || error.status === 501)
     || error.code === "invalid_input" && error.status === 400 && /unknown.*(?:query|parameter)|(?:query|parameter).*unknown|include.*(?:unsupported|not supported)/i.test(error.serverMessage ?? "")
   );
-  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === (descriptor.agentControlMode ?? "herdr") && worker.worktreeId === canonicalId(descriptor.worktreeId);
+  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === descriptor.agentControlMode && worker.worktreeId === canonicalId(descriptor.worktreeId);
   const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim | undefined) => boolean, sameValue = false): Promise<Task> => {
     if (Object.hasOwn(input, "continuityConfirmed")) throw new Error("continuityConfirmed is no longer accepted. New executions require fresh claim and worktree IDs.");
+    if (action === "worker.claim" && (!("agentControlMode" in input) || input.agentControlMode !== "web")) throw new Error("New worker claims require Web control mode.");
     if ((action === "worker.claim" || action === "worker.update") && Object.hasOwn(input, "herdr")) throw new Error("herdr is no longer accepted in worker claim requests.");
     const project = resourceId(projectId), task = resourceId(taskId);
     taskVersion(input.version);

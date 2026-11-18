@@ -1,26 +1,22 @@
 # Task Session 需求
 
-本页描述 Task Session 的执行模式和页面行为。Herdr 的[Session v2 协议要求](session-v2.md)另行定义终端内容、控制和归档的生产消费保证。
+本页描述 Task Session 的执行和页面行为。[Session v2 要求](session-v2.md)另行定义已上传终端录像的只读与完整性保证。
 
 
 Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额度及生命周期，不套用普通 JSON 的 1 MiB 或 15 秒期限。废弃的 `PUT /api/v1/controller-resources/{resourceId}` 不读取上传正文；有效资源继续使用现有 Controller 资源流程。
 
 ## 目标与模式
 
-任务执行采用 `herdr` 或 `web` 中的一种控制方式。两者复用现有任务资格、认领、worktree、managed assignment、进度及完成规则。模式在执行开始前确定，同一 claim 不热切换、不双启动，也不因连接失败自动降级。
+Worker 使用 `web` 执行路径，直接启动 Daynight controller，由 controller 持有私有原生会话，经 Daynight server 将结构化事件和操作连接到 Task Session。任务资格、认领、worktree、managed assignment、进度及完成规则保持独立；同一 claim 不双启动或因连接失败自动降级。
 
-- `herdr`：worker 通过 Herdr 启动原生终端会话，Task Session 只展示已上传的历史录像或不可用状态。
-- `web`：worker 直接启动 Daynight controller，由 controller 持有私有原生会话，经 Daynight server 将结构化事件和操作连接到 Task Session。整个生命周期不依赖 Herdr 安装或服务。
-
-模式由 Worker 云端配置的已应用 agentControlMode 决定。首次采纳读取 `~/.daynight/config.yml` 的 `worker.agentControlMode`，缺省为 `herdr`，已有本地 `web` 保持其值；旧服务继续使用本地模式。模式变更仅用于新 claim，原 claim 保持冻结模式、native 配置和执行身份，不提供 repository 级模式覆盖。Codex、Claude、Copilot 均属于两模式的支持范围。Codex Web 使用私有 app-server stdio；Claude Web 使用 Agent SDK；Copilot Web 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。
-
+Codex 使用私有 app-server stdio；Claude 使用 Agent SDK；Copilot 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。省略本地模式采用 Web；显式旧 Herdr 配置由用户调整，不能自动转换。旧 Herdr claim 和资源由用户处理，Task Session 只展示已上传的历史录像或不可用状态。
 本文件定义要求，不以字段或协议存在宣称运行时已完成。各组件的实际可用性与拒绝行为由[实现设计](../design/task-session-protocol.md)说明。
 
 独立 `daynight controller <provider>` 测试入口复用 Web 会话实现，其用户行为由[独立测试会话需求](controller-test-sessions.md)定义。Test 会话具有独立创建者和执行身份，不属于另一种 Task 模式，也不能替代下述 claim 与 worker 生命周期验收。
 
 ## 执行身份与页面入口
 
-服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；release 后的 task 按普通资格创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
+服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 只接受 Web；release 后的 task 按普通资格创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明；旧 Herdr 执行不由 Worker 恢复。
 
 Task 的 Session 页签按真实会话生命周期自动呈现，不提供常驻执行记录选择器或记录列表刷新行。已有 claim 时按其身份定位真实 Session：活动 Web 执行使用结构化会话，旧 Herdr claim 按 claimId 在历史目录中定位只读录像；已认领但尚未注册时保持可辨认、可恢复的等待状态，不能用时间最近的旧记录冒充当前会话。任务完成后，主阅读区自动展示该 claim 对应的只读记录，不提供发送、审批回复、设置修改、执行命令、Interrupt 或终端控制。任务完成、会话 draining 与归档 ready 分别判断；pending、failed、unavailable 和读取失败如实显示，保留既有恢复入口，不伪造完整历史。
 
@@ -30,7 +26,7 @@ Task 的 Session 页签按真实会话生命周期自动呈现，不提供常驻
 
 ## 旧客户端兼容
 
-服务端升级不要求已有 CLI 和 Herdr worker 同步升级。旧客户端继续读写其支持的 Herdr Codex/Copilot 任务，WorkerClaim 响应保持原有字段集合。新客户端能够读取旧服务端未提供 mode 的响应，将其规范化为 `herdr`；使用 Web 或新增 Provider 能力时，客户端和服务端必须均支持对应能力。
+服务端不再接受新的 Herdr 执行或推进旧 Herdr claim。依赖退役 Worker 协议字段的旧客户端需要升级；新客户端遇到不兼容服务时明确提示升级。旧服务端未提供 mode 的历史响应仍按 `herdr` 读取，不改写原记录。
 
 混合项目的普通任务列表和详情保持可读。旧客户端无法表示的 Web 或 Claude claim 不出现在其 worker 摘要中，任务本身及其状态、版本、依赖、资格仍保留真实值；这不表示服务端没有 claim。旧客户端不得据此认领、恢复、撤回、清理或修改该执行，服务端必须基于实际 claim 拒绝相关写入。
 

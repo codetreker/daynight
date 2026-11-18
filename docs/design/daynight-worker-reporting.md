@@ -16,11 +16,11 @@ flowchart LR
   A --> S[账号 Worker 快照 API]
 ```
 
-`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 取得实例锁、稳定身份、日志及认证账号，再尝试读取云端目标并建立配置模块与 collector/reporter；此时仓库准备、业务 backend 初始化与任务 tick 尚未开始。身份临时读取失败在原锁下退避恢复，配置 GET 临时失败保留未读取状态，由报告准备重新读取；认证与协议错误不变成空目标。runtime 将固定的 workerId 与 serverOrigin 交给 collector，供其筛选 durable daemon 归属。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
+`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 取得实例锁、稳定身份、日志及认证账号，再尝试读取云端目标并建立配置模块与 collector/reporter；此时仓库准备、业务 backend 初始化与任务 tick 尚未开始。身份临时读取失败在原锁下退避恢复，配置 GET 临时失败保留未读取状态，由报告准备重新读取；认证与协议错误不变成空目标。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
 
 `telemetry.ts` 只读采集运行环境，返回完整 telemetry 和私有 issue 列表。`reporter.ts` 拥有周期、触发合并、最新清单、尝试 Operation 和清洗诊断；`configuration-exchange.ts` 组织共享配置交换的实际阶段，foreground 与需要配置的管理路径复用该顺序。`remote.ts` 使用固定服务凭据及 expectedUserId 将报告转交 typed ApiClient；调用者拥有 Operation 的取消及释放。配置报告采用独立 typed 方法，对该请求设置配置能力标记并验证完整回执，普通报告保留精确两字段回执。API 对 mutable POST 使用精确 200 准入，不套用通用创建操作的 201 语义。
 
-reporter 不拥有执行 backend，不调用 task/claim 更新。Herdr 观察器直接读取私有 API 端点，不经过 runtime 的 lazyHerdr；纯 Web 执行保持对 Herdr 的延迟初始化。
+reporter 不拥有执行 backend，不调用 task/claim 更新，也不观察 Herdr 实例。
 
 ## 独立调度与生命周期
 
@@ -38,7 +38,7 @@ reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发�
 
 配置持久化与诊断文件 sink 的真实 I/O 故障通过既有 runtime failure 观察呈现阶段、retryState 和 nextAttemptAt，恢复退休同一运行内的故障身份。监控不读 JSONL、不将日志当作恢复输入，也不从最近成功配置或报告推断当前存储准入；isReady/canAdmitNewExecution 仍由本机执行所有者判定。固定诊断类别沿原内容准入，不上传原始错误或增加快照字段。
 
-取得实例锁后建立本次运行的内存观测器。Coordinator 在实际调度、执行、等待与清理边界同步更新状态；容量与领取准入共享责任投影，详情截断不改变总数。观测器不读取日志或额外发现资源。失败按受控类型映射为固定摘要：实际 Herdr 命令错误的明确非零安全整数退出、Git 命令错误的明确正安全整数退出为 command-failed；Git 启动失败的负 errno、仅信号退出或未知退出结果保持 unknown。清理阶段仅拆开已知 WorkerCleanupError 包装，不检查任意错误链或从消息猜测；原始错误仍由本机诊断处理。claim 异常的工作区位置从原操作选定的项目 checkout 与工作树绑定计算，不读文件系统或解析错误文本；Web 历史归档使用冻结的绑定，Herdr 使用生命周期 cwd 和受保护的项目绑定。没有可信配对时省略字段。快照深拷贝位置，预算不足时优先将最大编码路径改为明确超限，保留原始内存记录。共享字段与编码预算由[运行监控规范](../spec/daynight-worker-monitoring.md)持有。
+取得实例锁后建立本次运行的内存观测器。Coordinator 在实际调度、执行、等待与清理边界同步更新状态；容量与领取准入共享责任投影，详情截断不改变总数。观测器不读取日志或额外发现资源。失败按受控类型映射为固定摘要：Git 命令错误的明确正安全整数退出为 command-failed；Git 启动失败的负 errno、仅信号退出或未知退出结果保持 unknown。清理阶段仅拆开已知 WorkerCleanupError 包装，不检查任意错误链或从消息猜测；原始错误仍由本机诊断处理。claim 异常的工作区位置从原操作选定的项目 checkout 与工作树绑定计算，不读文件系统或解析错误文本；Web 历史归档使用冻结的绑定。没有可信配对时省略字段。快照深拷贝位置，预算不足时优先将最大编码路径改为明确超限，保留原始内存记录。共享字段与编码预算由[运行监控规范](../spec/daynight-worker-monitoring.md)持有。
 
 独立发送器立即捕获并直接 POST 当前状态，最多一个请求在途；成功或首次失败后等待 30 秒，连续失败后等待 60 秒，每次重新捕获。单次尝试最多 5 秒，不读取旧监控、不对账或重放旧正文；服务不支持直接入口时报告监控错误。停止期间发送器继续运行，执行和清理收尾后捕获 stopped，在总共 5 秒内等待在途尝试并至多发送一次最终快照。该通道不控制原有报告、任务或资源生命周期。
 
@@ -70,17 +70,9 @@ OS、内存和 CPU 使用 Node OS API。CPU 每次先读取逻辑处理器 times
 
 ## 纯版本探测与环境
 
-`native-version.ts` 从 preflight 提取纯 `--version` 调用和版本解析，preflight 在它之上继续执行启动能力及最低版本校验。collector 直接使用纯探测，因此旧版已安装 Codex 仍可展示。
+`native-version.ts` 提供纯 `--version` 调用和版本解析。collector 使用纯探测，因此旧版已安装 Codex 仍可展示。
 
-独立原生探测复用任务原生环境构造：保留调用方 XDG 及 provider 认证位置，不使用 daemon 的隔离 XDG 替代。它不运行 agent、hook、安装或登录。Codex/Copilot 结果在 collector 中按单调时钟缓存，年龄不足 60 秒才复用，checkedAt 保留原值；失败也缓存，到期失败覆盖旧成功。ENOENT 还需核对 cwd 及可执行搜索路径，只有确证不存在才为 not_installed。接入工具管理器时，版本报告只读其选择快照，不另起版本探测。
-
-`herdr/runtime-version.ts` 拥有平台与 durable/legacy 观察路径选择。非 macOS 平台直接使用 `createHerdrVersionObserver`；macOS 先检查 journal 是否存在，只有不存在时沿用共享端点以兼容遗留安装。存在 journal 时复用 `readHerdrLifecycleRecords` 的只读、当前格式事务；不调用可写 store、recover、迁移或 lazyHerdr。SQLite 可使用 WAL 协调文件，但不修改持久化执行记录或控制状态。无候选项时不构造原生进程观察器，纯 Web 保持 Herdr 延迟边界。
-
-观察器按固定 workerId 与 serverOrigin 筛选，读取每项当前未确认停止的 run，以及已捕获 daemon 或已请求启动的 preparation。stopped_confirmed 不参与；原始 daemon 的 exited 结果表示它已不再运行，忽略该候选。stop_unknown 不阻止只读观察，但观察结果不能解除控制不确定性。缺失、changed 或 unknown 身份产生 `HerdrVersionUnavailableError`，映射到现有 unavailable code。观察器仅使用原生边界的 observe/peer，不请求信号、停止或执行资源初始化。
-
-每个候选项通过原始进程身份检查后，解析记录中的 run 端点，在 ping 前后核对 peer 的 pid、bootId、birthToken 和 auditToken。`createHerdrVersionObserver` 仅发送 ping 并校验 pong/version。存活进程缺少端点或 peer 不一致为 unavailable；权限、协议、journal 或其它 I/O 故障保留字段错误。所有存活 daemon 的版本必须完全一致，否则单值字段返回 unavailable；无存活候选返回 not_running，不使用共享 daemon 填补 durable 结果。无版本缓存、ensure、实例启动、integration 修复或执行资源快照。
-
-collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后检查同一 collection Operation。采集超时返回 timeout，根取消仍使整体采集失败；未完成的只读调用不被宣称已取消，其完成后不能发起后续 peer 或 RPC。原始 journal、run 路径、进程与 claim 身份仅用于本机判断，不加入 wire schema 或诊断正文。
+独立原生探测保留调用方 XDG 及 provider 认证位置。它不运行 agent、hook、安装或登录。Codex/Copilot 结果在 collector 中按单调时钟缓存，年龄不足 60 秒才复用，checkedAt 保留原值；失败也缓存，到期失败覆盖旧成功。ENOENT 还需核对 cwd 及可执行搜索路径，只有确证不存在才为 not_installed。接入工具管理器时，版本报告只读其选择快照，不另起版本探测。
 
 命令 runner 用 `OwnedCommandCleanupError` 标记该次命令曾未能确认清理，`hasOwnedCommandCleanupFailure` 保留这一历史分类。私有 `WeakMap` 将错误关联到原始 `ChildProcess` 既有 `close` 监听的状态；确认依赖该命令对象及其输出流关闭，不使用可复用 PID、全局 Provider 标记或另一探测的结果。仅等待 `close` 超时且终止调用未失败的错误可以在晚到 `close` 后得到确认。只有 `exit`、leader 消失、终止失败后 `close`，以及其它清理 owner 或旧构造产生的无确认句柄错误，都不能据此解除阻塞。
 
@@ -90,7 +82,7 @@ collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后
 
 `worker/bots/host-capabilities.ts` 拥有独立的助手预检采集器，`telemetry.ts` 通过可选采集器接入同一次报告。runtime 将 Bot 管理组合的 `collect` 接入 `assistantHost`，使用当前有效的全局原生配置；组合与配置生效规则由[助手设计](assistant.md#产品组合)拥有。缺字段的旧 Worker 消费行为与[快照协议](../spec/daynight-worker-snapshots.md#助手托管预检)一致；此接入点不是用户配置开关。
 
-预检读取 Worker 启动时的真实绝对目录与全局执行配置，不选择项目或创建目录。全局 Provider 保留自己的 model/args，其它 Provider 使用 null/[]，避免切换后继承错误的模型或参数。需要预检的配置按 Web 适配器参数解析器检查，任务的 Herdr/Web 模式不改变 Bot 的 Web 规则。不支持的配置只返回闭合错误码并清空参数，不将原始错误或敏感参数带入 wire。
+预检读取 Worker 启动时的真实绝对目录与全局执行配置，不选择项目或创建目录。全局 Provider 保留自己的 model/args，其它 Provider 使用 null/[]，避免切换后继承错误的模型或参数。需要预检的配置按 Web 适配器参数解析器检查，Bot 使用相同的 Web 规则。不支持的配置只返回闭合错误码并清空参数，不将原始错误或敏感参数带入 wire。
 
 Copilot 后台需求来自当前有效全局配置、已解析继承的项目配置及本 Worker 的非删除 Bot 定义。没有需求且没有现成成功 Web selection 证明时，采集器在传播目录或参数错误前返回 unavailable 条目，不创建 Copilot issue，也不解析工具或启动探测。已有 selection 与 inspection proof 可纯读取；缺少证明不能伪造可用。需求存在时保留正常检查和真实错误，明确模型发现及执行请求仍按需准备。已有原生执行与未确认清理责任继续由原 owner 处理。
 
@@ -149,6 +141,6 @@ reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立�
 
 collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。
 
-runtime/coordinator 测试验证认证后的启动顺序、完整清单发布点、确认 claim、长 tick、纯 Web 的 Herdr 延迟边界，以及报告 join 延后时全部 job 的同步取消与未完成资源保留；typed API 测试验证精确状态、响应和账号准入。
+runtime/coordinator 测试验证认证后的启动顺序、完整清单发布点、确认 claim、长 tick、不探测 Herdr，以及报告 join 延后时全部 job 的同步取消与未完成资源保留；typed API 测试验证精确状态、响应和账号准入。
 
 原生采集测试在实际平台运行 OS、CPU、内存、statfs 和版本命令，仅报告环境及 Probe 状态。各平台通过自己的实际运行结果建立能力依据；mock 结果不推断为该平台已通过。完整任务执行与恢复另由[整体架构](daynight-worker.md#验证边界)规定。

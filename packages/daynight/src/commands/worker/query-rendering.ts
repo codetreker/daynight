@@ -1,4 +1,4 @@
-import type { WorkerExecutableProbe, WorkerHerdrProbe, WorkerProbe } from "../../api/types.js";
+import type { WorkerExecutableProbe, WorkerProbe } from "../../api/types.js";
 import { terminalText } from "../../platform/terminal.js";
 import type { WorkerDetailResponse, WorkerList, WorkerSummary } from "./query-api.js";
 
@@ -19,7 +19,7 @@ const summary = (worker: WorkerSummary, observedAt: string): string[] => [
 ];
 const probe = <T>(name: string, value: WorkerProbe<T>, describe: (value: T) => string): string =>
   line(name, `${value.state === "ok" ? describe(value.value) : `error (${value.code})`} [checked ${value.checkedAt}]`);
-const software = (name: string, value: WorkerExecutableProbe | WorkerHerdrProbe): string =>
+const software = (name: string, value: WorkerExecutableProbe): string =>
   line(name, `${value.state === "ok" ? value.value : value.state === "error" ? `error (${value.code})` : value.state} [checked ${value.checkedAt}]`);
 
 export const renderWorkerList = (result: WorkerList): string => {

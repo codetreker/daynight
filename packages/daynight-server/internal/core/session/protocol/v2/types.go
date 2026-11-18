@@ -6,40 +6,27 @@ package v2
 import (
 	"encoding/json"
 	"reflect"
-
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 // MaxHistoryCursorBytes is the existing encoded Terminal history cursor limit.
 const MaxHistoryCursorBytes = 1024
 
 const (
-	Protocol                  = "daynight.session.v2"
-	ProtocolHeader            = "Daynight-Session-Protocol"
-	MaxArchiveBytes           = 64 * 1024 * 1024
-	MaxRecordingBytes         = 60 * 1024 * 1024
-	MaxMetadataBytes          = 4 * 1024 * 1024
-	MaxFrameBytes             = 256 * 1024
-	MaxPasteBytes             = 16 * 1024
-	MaxRowBytes               = 16 * 1024
-	MaxFrames                 = 100000
-	MaxSegments               = 1000
-	MaxGaps                   = 1000
-	MaxRuns                   = 1000
-	MaxDimension              = 1000
-	MaxTextRuns               = 1000
-	LeaseTTLMillis            = 30000
-	LeaseRenewalMillis        = 10000
-	InputTimeoutMillis        = 10000
-	SampleIntervalMillis      = 350
-	CheckpointIntervalMillis  = 5000
-	ViewerStallMillis         = 10000
-	ViewerPendingFrames       = 1
-	MaxRetainedWorktrees      = 20
-	MaxPendingSourceBytes     = 2 * 1024 * 1024 * 1024
-	MinFreeDiskBytes          = 1024 * 1024 * 1024
-	ArchiveRetryInitialMillis = 5000
-	ArchiveRetryMaxMillis     = 300000
+	Protocol                 = "daynight.session.v2"
+	ProtocolHeader           = "Daynight-Session-Protocol"
+	MaxArchiveBytes          = 64 * 1024 * 1024
+	MaxRecordingBytes        = 60 * 1024 * 1024
+	MaxMetadataBytes         = 4 * 1024 * 1024
+	MaxFrameBytes            = 256 * 1024
+	MaxRowBytes              = 16 * 1024
+	MaxFrames                = 100000
+	MaxSegments              = 1000
+	MaxGaps                  = 1000
+	MaxRuns                  = 1000
+	MaxDimension             = 1000
+	MaxTextRuns              = 1000
+	SampleIntervalMillis     = 350
+	CheckpointIntervalMillis = 5000
 )
 
 type Envelope struct {
@@ -61,7 +48,7 @@ type Message struct {
 }
 
 // MarshalJSON prevents producers from labeling a typed payload as another
-// message variant. Field constraints remain the responsibility of DecodeMessage.
+// message variant.
 func (message Message) MarshalJSON() ([]byte, error) {
 	if message.Payload == nil || reflect.ValueOf(message.Payload).Kind() == reflect.Pointer && reflect.ValueOf(message.Payload).IsNil() || message.Type != message.Payload.sessionPayload() {
 		return nil, invalid("invalid_payload")
@@ -178,68 +165,6 @@ type Frame struct {
 	Full       bool           `json:"full"`
 	Rows       [][]StyledText `json:"rows"`
 }
-type Capabilities struct {
-	Observe bool `json:"observe"`
-	Control bool `json:"control"`
-	Archive bool `json:"archive"`
-}
-type Registration struct {
-	RegistrationID  string       `json:"registrationId"`
-	Mode            string       `json:"mode"`
-	Owner           Owner        `json:"owner"`
-	Binding         Binding      `json:"binding"`
-	ConnectionEpoch *string      `json:"connectionEpoch"`
-	Capabilities    Capabilities `json:"capabilities"`
-}
-type RegistrationAck struct {
-	RegistrationID  string `json:"registrationId"`
-	ConnectionEpoch string `json:"connectionEpoch"`
-}
-type Snapshot struct {
-	ConnectionEpoch string  `json:"connectionEpoch"`
-	SegmentID       string  `json:"segmentId"`
-	SegmentOrdinal  string  `json:"segmentOrdinal"`
-	Binding         Binding `json:"binding"`
-	Frame           Frame   `json:"frame"`
-	Recorded        bool    `json:"recorded"`
-}
-type Lease struct {
-	LeaseID         string `json:"leaseId"`
-	HolderUserID    string `json:"holderUserId"`
-	BrowserClientID string `json:"browserClientId"`
-	ControlEpoch    string `json:"controlEpoch"`
-	ExpiresAt       string `json:"expiresAt"`
-}
-type ControlState struct {
-	ConnectionEpoch   string   `json:"connectionEpoch"`
-	ControlEpoch      string   `json:"controlEpoch"`
-	State             string   `json:"state"`
-	Lease             *Lease   `json:"lease"`
-	InitialAssignment string   `json:"initialAssignment"`
-	AvailableActions  []string `json:"availableActions"`
-	UnavailableReason *string  `json:"unavailableReason"`
-}
-type ControlRequest struct {
-	OperationID               string  `json:"operationId"`
-	ConnectionEpoch           string  `json:"connectionEpoch"`
-	ControlEpoch              string  `json:"controlEpoch"`
-	Action                    string  `json:"action"`
-	BrowserClientID           string  `json:"browserClientId"`
-	LeaseID                   *string `json:"leaseId"`
-	DraftHandled              bool    `json:"draftHandled"`
-	InitialUnknownDisposition *string `json:"initialUnknownDisposition"`
-}
-type ControlDispatch struct {
-	ActorUserID   string         `json:"actorUserId"`
-	RequestDigest string         `json:"requestDigest"`
-	Request       ControlRequest `json:"request"`
-}
-type ControlAck struct {
-	RequestDigest string          `json:"requestDigest"`
-	Durable       bool            `json:"durable"`
-	ControlState  ControlState    `json:"controlState"`
-	Result        OperationResult `json:"result"`
-}
 type RecordingResponsibility struct {
 	ResponsibilityID string `json:"responsibilityId"`
 	RecordingEnabled bool   `json:"recordingEnabled"`
@@ -257,52 +182,6 @@ type RecordingEvidence struct {
 	Closed               bool    `json:"closed"`
 	JournalSHA256        string  `json:"journalSha256"`
 	SourceSHA256         string  `json:"sourceSha256"`
-}
-type InputPayload interface{ inputPayload() string }
-type Paste struct {
-	Text string `json:"text"`
-}
-type Keys struct {
-	Key string `json:"key"`
-}
-
-func (Paste) inputPayload() string { return "paste" }
-func (Keys) inputPayload() string  { return "keys" }
-
-type Operation struct {
-	OperationID     string       `json:"operationId"`
-	ConnectionEpoch string       `json:"connectionEpoch"`
-	SegmentID       string       `json:"segmentId"`
-	Binding         Binding      `json:"binding"`
-	ControlEpoch    string       `json:"controlEpoch"`
-	LeaseID         string       `json:"leaseId"`
-	LeaseSeq        string       `json:"leaseSeq"`
-	Kind            string       `json:"kind"`
-	Payload         InputPayload `json:"payload"`
-}
-
-// MarshalJSON preserves the input payload's paste/keys meaning on the wire.
-func (operation Operation) MarshalJSON() ([]byte, error) {
-	if operation.Payload == nil || reflect.ValueOf(operation.Payload).Kind() == reflect.Pointer && reflect.ValueOf(operation.Payload).IsNil() || operation.Kind != operation.Payload.inputPayload() {
-		return nil, invalid("invalid_payload")
-	}
-	type wireOperation Operation
-	return json.Marshal(wireOperation(operation))
-}
-
-type OperationResult struct {
-	OperationID string  `json:"operationId"`
-	State       string  `json:"state"`
-	ErrorCode   *string `json:"errorCode"`
-}
-type GenerationLedger struct {
-	Runs           []Run   `json:"runs"`
-	FinalizationID *string `json:"finalizationId"`
-}
-type Finalization struct {
-	FinalizationID string `json:"finalizationId"`
-	ClaimTerminal  bool   `json:"claimTerminal"`
-	Runs           []Run  `json:"runs"`
 }
 type ArchiveStatus struct {
 	State          string  `json:"state"`
@@ -328,25 +207,8 @@ type Receipt struct {
 	Completeness      *string              `json:"completeness"`
 	Evidence          *NoRecordingEvidence `json:"evidence"`
 }
-type NativeSnapshot struct{ sp.Snapshot }
 
-func (v NativeSnapshot) MarshalJSON() ([]byte, error)  { return sp.MarshalWire(v.Snapshot) }
-func (Registration) sessionPayload() string            { return "registration" }
-func (RegistrationAck) sessionPayload() string         { return "registration_ack" }
-func (Snapshot) sessionPayload() string                { return "snapshot" }
-func (ControlState) sessionPayload() string            { return "control_state" }
-func (ControlRequest) sessionPayload() string          { return "control_request" }
-func (ControlDispatch) sessionPayload() string         { return "control_dispatch" }
-func (ControlAck) sessionPayload() string              { return "control_ack" }
-func (RecordingResponsibility) sessionPayload() string { return "recording_responsibility" }
-func (RecordingEvidence) sessionPayload() string       { return "recording_evidence" }
-func (Operation) sessionPayload() string               { return "operation" }
-func (OperationResult) sessionPayload() string         { return "operation_result" }
-func (GenerationLedger) sessionPayload() string        { return "generation_ledger" }
-func (Finalization) sessionPayload() string            { return "finalization" }
-func (ArchiveStatus) sessionPayload() string           { return "archive_status" }
-func (Receipt) sessionPayload() string                 { return "receipt" }
-func (NativeSnapshot) sessionPayload() string          { return "native_snapshot" }
+func (ArchiveStatus) sessionPayload() string { return "archive_status" }
 
 type RecordingPolicy struct {
 	SampleIntervalMs     int `json:"sampleIntervalMs"`

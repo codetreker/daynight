@@ -13,8 +13,8 @@ const worktreeId = "66666666-6666-6666-6666-666666666666";
 const userId = "77777777-7777-7777-7777-777777777777";
 const newClaimId = "88888888-8888-8888-8888-888888888888";
 const time = "2026-10-24T12:34:56.123456789Z";
-const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
-const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
+const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId } as const;
+const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "web", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
 const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({ type: "task", parentId: null,
   id: taskId, projectId, title: "Claimed task", description: "", tags: [], properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
@@ -53,15 +53,15 @@ afterEach(async () => {
 });
 
 describe("worker protocol negotiation", () => {
-  it("advertises the extended schema for current Herdr read and claim responses", async () => {
+  it("advertises the extended schema for historical reads and Web claim responses", async () => {
     const headers: (string | string[] | undefined)[] = [];
     const origin = await listen((request, response) => {
       headers.push(request.headers["daynight-worker-protocol"]);
-      respond(response, task(claim()));
+      respond(response, task(headers.length === 1 ? { ...claim(), agentControlMode: "herdr" } : claim()));
     });
     const client = api(origin);
     await expect(client.getTask(projectId, taskId)).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
-    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "web" } } });
     expect(headers).toEqual(["2", "2"]);
   });
 });

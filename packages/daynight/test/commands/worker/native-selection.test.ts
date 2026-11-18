@@ -73,9 +73,9 @@ describe("owned native selection probe", () => {
 });
 
 
-it("keeps Web verification distinct from Herdr verification in the supervisor request", async () => {
-  await verifyWorkerNativeSelection({ native: { agent: "codex", model: null, args: [] }, cwd: "/task", environment: {}, mode: "web" }, operation);
+it("sends the native verification request to the supervisor", async () => {
+  await verifyWorkerNativeSelection({ native: { agent: "codex", model: null, args: [] }, cwd: "/task", environment: {} }, operation);
   const args = run.mock.calls[0]![1] as string[];
-  expect(JSON.parse(args[1]!)).toMatchObject({ mode: "web", agent: "codex" });
+  expect(JSON.parse(args[1]!)).toMatchObject({ agent: "codex" });
   expect(args.at(-1)).toBe("verify");
 });

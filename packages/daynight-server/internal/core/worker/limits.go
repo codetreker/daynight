@@ -131,7 +131,7 @@ func AdmitTelemetry(value model.WorkerTelemetry) error {
 		field string
 		value *string
 	}{
-		{"versions.herdr", value.Versions.Herdr.Value}, {"versions.codex", value.Versions.Codex.Value}, {"versions.copilot", value.Versions.Copilot.Value},
+		{"versions.codex", value.Versions.Codex.Value}, {"versions.copilot", value.Versions.Copilot.Value},
 	} {
 		if item.value != nil {
 			if err := bytesLimit(item.field, *item.value, MaxVersionBytes); err != nil {

@@ -32,7 +32,7 @@ func terminalArchiveReady(t *testing.T) (*terminalHTTPFixture, string, []byte, v
 	if err != nil {
 		t.Fatal(err)
 	}
-	document.SessionID, document.ClaimID, document.Owner = f.message.SessionID, f.message.ClaimID, f.message.Payload.(v2.Registration).Owner
+	document.SessionID, document.ClaimID, document.Owner = f.message.SessionID, f.message.ClaimID, f.owner
 	for index := range document.Runs {
 		document.Runs[index].Owner = document.Owner
 	}
@@ -43,12 +43,7 @@ func terminalArchiveReady(t *testing.T) (*terminalHTTPFixture, string, []byte, v
 	data = append(data, []byte("\n \t\n")...)
 	hash, size, complete := v2.HashBytes(data), strconv.Itoa(len(data)), "complete"
 	receipt := v2.Receipt{FinalizationID: document.FinalizationID, Disposition: "ready", SHA256: &hash, ByteLength: &size, Completeness: &complete}
-	message := f.message
-	message.Type, message.Payload = "receipt", receipt
-	receipt.DispositionDigest, err = v2.ReceiptDigest(message)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	f.calls.Configure(func(calls *sessionhttp.ServiceCallsForTest) {
 		calls.TryReserveArchivePreflight = func() (io.Closer, error) {
 			lease := &terminalArchiveLease{}

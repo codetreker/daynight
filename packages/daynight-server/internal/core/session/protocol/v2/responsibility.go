@@ -1,15 +1,5 @@
 package v2
 
-// ControlRequestDigest binds a control request to its authenticated actor. The
-// enclosing message binds the execution fence; consumers must compare both.
-func ControlRequestDigest(actor string, request ControlRequest) (string, error) {
-	raw, err := CanonicalJSON(map[string]any{"actorUserId": actor, "request": request})
-	if err != nil {
-		return "", err
-	}
-	return HashBytes(raw), nil
-}
-
 // SourceDigest hashes the canonical files/index selection for one registered
 // run. Callers must validate the complete archive before using this helper.
 // It deliberately does not replace the hash of the original archive bytes.

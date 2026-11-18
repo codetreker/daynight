@@ -13,8 +13,7 @@ have stopped or authorize the Worker to manage them.
 
 Remove the unused daemon, session connection, native launch mapping, lifecycle
 store and their dedicated tests and SQL resources. Native and Bot process
-ownership mechanisms remain independent. Native argument validation remains
-while its existing consumers still require it. The Worker does not open or
+ownership mechanisms remain independent. The [Web-only native model](2026-11-18-web-only-native-tool-model.md) removes the remaining Herdr argument validation after its consumers exit. The Worker does not open or
 migrate old Herdr lifecycle databases.
 
 This supersedes the active execution portions of the [frozen launch decision](../architecture/2026-11-12-herdr-frozen-tool-launch.md)
@@ -33,5 +32,4 @@ still need those proofs to establish process ownership and stopping.
 ## Consequences
 
 Old Herdr resources are not migrated, stopped or cleaned up. Uploaded historical
-recordings retain their separate read path. Native argument validation remains
-until its final consumers are removed.
+recordings retain their separate read path. Native argument validation now follows the Web-only model.

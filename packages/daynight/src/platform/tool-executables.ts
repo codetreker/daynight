@@ -73,7 +73,8 @@ const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const ordered = (artifacts: ToolArtifact[]) => [...artifacts].sort((a, b) => compare(a.role, b.role) || compare(a.path, b.path));
 const commandIdentity = (command: ResolvedToolLaunch["command"]) => ({ file: command.file, prefixArgs: command.prefixArgs });
 const artifactIdentity = (artifact: ToolArtifact) => ({ role: artifact.role, path: artifact.path, realPath: artifact.realPath, size: artifact.size, sha256: artifact.sha256 });
-export const toolSelectionKey = (launch: Omit<ResolvedToolLaunch, "selectionKey">): string => hash({
+type ToolSelectionIdentity = Omit<ResolvedToolLaunch, "selectionKey" | "tool" | "context"> & { tool: string; context: string };
+export const toolSelectionKey = (launch: ToolSelectionIdentity): string => hash({
   schemaVersion: launch.schemaVersion, tool: launch.tool, context: launch.context,
   canonicalEntryPath: launch.canonicalEntryPath, executablePath: launch.executablePath, interpreterPath: launch.interpreterPath,
   command: commandIdentity(launch.command), artifacts: ordered(launch.artifacts).map(artifactIdentity),
@@ -130,13 +131,13 @@ export const resolveToolLaunch = async (input: {
   const { tool, context } = input;
   try {
     operation.check();
-    if (!["codex", "copilot", "herdr"].includes(tool) || !["web", "herdr"].includes(context) || tool === "herdr" && context !== "herdr") throw new TypeError("Unsupported tool context.");
+    if (!["codex", "copilot"].includes(tool) || context !== "web") throw new TypeError("Unsupported tool context.");
     validateToolPath(input.cwd, "tool cwd");
     const environment = captureToolEnvironment(input.environment);
     let entryPath: string, source: ResolvedToolLaunch["source"];
     if (input.choice.kind === "path") { entryPath = validateToolPath(input.choice.path); source = "explicit"; }
     else if (input.choice.kind !== "auto") throw new TypeError("Invalid tool choice.");
-    else if (tool === "copilot" && context === "web") { entryPath = bundledCopilotEntry(); source = "bundled"; }
+    else if (tool === "copilot") { entryPath = bundledCopilotEntry(); source = "bundled"; }
     else {
       const directories = [...(process.platform === "win32" ? [input.cwd] : []), ...(environment.PATH ?? "").split(path.delimiter)];
       let found: string | null = null;

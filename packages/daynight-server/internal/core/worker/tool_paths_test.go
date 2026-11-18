@@ -12,7 +12,7 @@ import (
 
 func TestToolPathsConfigurationRetainsThreeStates(t *testing.T) {
 	document := configurationInputDocument()
-	document["toolPaths"] = map[string]any{"codex": map[string]any{"kind": "path", "path": `/Applications/工具 $()/codex`}, "copilot": map[string]any{"kind": "auto"}, "herdr": nil}
+	document["toolPaths"] = map[string]any{"codex": map[string]any{"kind": "path", "path": `/Applications/工具 $()/codex`}, "copilot": map[string]any{"kind": "auto"}}
 	value, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
 	if err != nil {
 		t.Fatalf("three-state tool configuration rejected: %v", err)
@@ -49,7 +49,7 @@ func TestToolPathsTelemetryRetainsObservation(t *testing.T) {
 }
 
 func TestToolPathsBootstrapPersistsOneWrite(t *testing.T) {
-	document := map[string]any{"bootstrap": configurationInputDocument(), "observation": nil, "toolPathsBootstrap": map[string]any{"codex": map[string]any{"kind": "path", "path": "/opt/codex"}, "copilot": map[string]any{"kind": "auto"}, "herdr": map[string]any{"kind": "auto"}}}
+	document := map[string]any{"bootstrap": configurationInputDocument(), "observation": nil, "toolPathsBootstrap": map[string]any{"codex": map[string]any{"kind": "path", "path": "/opt/codex"}, "copilot": map[string]any{"kind": "auto"}}}
 	exchange, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, document))
 	if err != nil {
 		t.Fatalf("tool bootstrap rejected: %v", err)
@@ -65,7 +65,7 @@ func TestToolPathsIndependentAdoptionAndLegacyCAS(t *testing.T) {
 	ctx, principal := t.Context(), model.Principal{UserID: "user"}
 	path := func(s string) *model.ToolPathChoice { return &model.ToolPathChoice{Kind: "path", Path: s} }
 	auto := &model.ToolPathChoice{Kind: "auto"}
-	bootstrap := model.WorkerToolPaths{Codex: path("/local/codex"), Copilot: path(`C:\Tools\copilot.exe`), Herdr: auto}
+	bootstrap := model.WorkerToolPaths{Codex: path("/local/codex"), Copilot: path(`C:\Tools\copilot.exe`)}
 	dao := configuredDAO("7")
 	dao.current.Desired.Value.ToolPaths.Codex = path("/cloud/codex")
 	receipt, err := ExchangeConfiguration(ctx, dao, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &bootstrap})

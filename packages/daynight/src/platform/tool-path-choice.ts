@@ -1,8 +1,8 @@
 import path from "node:path";
 import type { PathApi } from "./filesystem.js";
 
-export type Tool = "codex" | "copilot" | "herdr";
-export type ToolContext = "web" | "herdr";
+export type Tool = "codex" | "copilot";
+export type ToolContext = "web";
 export type ToolPathChoice = { readonly kind: "auto" } | { readonly kind: "path"; readonly path: string };
 export type ToolPaths = Readonly<Record<Tool, ToolPathChoice>>;
 
@@ -20,11 +20,12 @@ export const validateToolPath = (value: unknown, field = "tool path", pathApi: P
 /** Project local YAML choices; omission and per-tool null select auto. */
 export const parseLocalToolPaths = (value: unknown, pathApi: PathApi = path): ToolPaths => {
   if (value !== undefined && (typeof value !== "object" || value === null || Array.isArray(value))) {
-    throw new TypeError("worker.toolPaths must be a mapping containing only codex, copilot and herdr.");
+    throw new TypeError("worker.toolPaths must be a mapping containing only codex and copilot.");
   }
   const mapping = (value ?? {}) as Record<string, unknown>;
-  if (Object.keys(mapping).some(key => key !== "codex" && key !== "copilot" && key !== "herdr")) {
-    throw new TypeError("worker.toolPaths must contain only codex, copilot and herdr.");
+  if (Object.hasOwn(mapping, "herdr")) throw new TypeError("worker.toolPaths.herdr is no longer supported; remove it from the local configuration.");
+  if (Object.keys(mapping).some(key => key !== "codex" && key !== "copilot")) {
+    throw new TypeError("worker.toolPaths must contain only codex and copilot.");
   }
   const choice = (tool: Tool): ToolPathChoice => {
     const configured = Object.hasOwn(mapping, tool) ? mapping[tool] : undefined;
@@ -32,5 +33,5 @@ export const parseLocalToolPaths = (value: unknown, pathApi: PathApi = path): To
       ? { kind: "auto" }
       : { kind: "path", path: validateToolPath(configured, `worker.toolPaths.${tool}`, pathApi) };
   };
-  return { codex: choice("codex"), copilot: choice("copilot"), herdr: choice("herdr") };
+  return { codex: choice("codex"), copilot: choice("copilot") };
 };

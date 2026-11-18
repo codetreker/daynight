@@ -645,13 +645,10 @@ to preserve the original Agent PATH. Installation never adds these settings.
 The selected Daynight configuration root is preserved when a mapped target runs,
 so choosing a different executable does not silently choose another account.
 
-Only `daynight` and `dn` can be mapped. New Controller processes and new Herdr
-workspaces receive private executable shims, with targets resolved before PATH
-injection. Herdr's daemon environment is not redirected. Already-running Agent processes keep their mapping. New or resumed Controller
-processes read the current configuration; new Herdr workspaces receive the current
-mapping. Retained Herdr workspaces keep their environment, while a newly started
-Codex process receives the current launch policy. Editing configuration alone does
-not rewrite an already-running process. Ordinary terminals and the separate PR reviewer do
+Only `daynight` and `dn` can be mapped. New or resumed Controller processes
+receive private executable shims with targets resolved before PATH injection.
+Already-running Agent processes keep their mapping. Editing configuration alone
+does not rewrite a running process. Ordinary terminals and the separate PR reviewer do
 not receive these aliases. Provider settings or shell startup files can override
 PATH. For Codex, Daynight reads the native effective configuration for the Agent's
 working directory before starting or resuming it. An explicit native
@@ -661,9 +658,7 @@ retained. Daynight supplies this PATH and DN_CONFIG_DIR as explicit policy value
 so restoring a login-shell snapshot preserves the mapping. Other policy fields,
 including inheritance and include/exclude filters, are unchanged; include-only
 filters can still exclude these variables. The Web Controller reuses its native
-app-server connection. Herdr uses a bounded, session-free app-server inspection
-with the same environment and ordered configuration flags after native
-preflight. Unsupported profile inspection, failed configuration reads or
+app-server connection. Failed configuration reads or
 unconfirmed probe cleanup stop that launch instead of selecting a default PATH.
 No inspection is added when aliases are absent. Verify
 `command -v daynight` and `daynight --build-info` from the actual

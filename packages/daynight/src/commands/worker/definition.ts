@@ -9,7 +9,7 @@ const controlDetails = "Stop worker run first. The command takes the same exclus
 
 export const workerDefinition: CommandDefinition = {
   name: "worker",
-  description: "Run automatically claimed tasks in dedicated worktrees and Herdr",
+  description: "Run automatically claimed tasks in dedicated worktrees",
   commands: [{
     name: "list",
     description: "List the signed-in account's recently reported remote Workers",

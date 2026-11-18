@@ -12,7 +12,7 @@ import type { ExecutionConfiguration } from "../../../src/commands/worker/types.
 let root: string;
 beforeEach(async () => { const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(scratch, { recursive: true }); root = await mkdtemp(path.join(scratch, "host-")); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
-const configuration: ExecutionConfiguration = { agent: "copilot", agentControlMode: "herdr", model: "configured-model", args: ["--effort", "high"], recoveryLimit: 3 };
+const configuration: ExecutionConfiguration = { agent: "copilot", agentControlMode: "web", model: "configured-model", args: ["--effort", "high"], recoveryLimit: 3 };
 const output = async (command: OwnedCommand): Promise<OwnedCommandResult> => ({ stderr: "", stdout: command.args.includes("--version")
   ? command.file === "codex" ? "codex-cli 0.1.0" : command.file === "claude" ? "2.1.247 (Claude Code)" : "GitHub Copilot CLI 1.0.83"
   : command.file === "codex" ? "Usage: codex app-server --stdio" : command.file === "claude" ? "--input-format --output-format --permission-prompt-tool --include-partial-messages" : "--headless --no-auto-update" });
@@ -38,7 +38,7 @@ describe("assistant host observations", () => {
     expect(commands.find(command => command.file === "claude")!.args).toEqual(["--version"]);
   });
 
-  it("reports the global default independently of task mode and isolates other provider settings", async () => {
+  it("reports the global default and isolates other provider settings", async () => {
     const { assistantHost } = await collect();
     expect(assistantHost.defaultProvider).toBe("copilot");
     expect(assistantHost.creationConfigurationVersion).toBe(1);
@@ -50,7 +50,7 @@ describe("assistant host observations", () => {
     ]);
   });
 
-  it("rejects Herdr-only or secret arguments without including their text in the report", async () => {
+  it("rejects unsupported arguments without including their text in the report", async () => {
     const { assistantHost } = await collect({ configuration: { ...configuration, args: ["--token", "private-token"] } });
     expect(assistantHost.providers[2]).toEqual({ provider: "copilot", available: false, reason: "unsupported_arguments", model: null, args: [] });
     expect(JSON.stringify(assistantHost)).not.toContain("private-token");

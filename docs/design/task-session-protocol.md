@@ -9,15 +9,15 @@ Session 和 Test Session 的专用 cursor 在 base64 解码前检查原有较小
 
 Herdr 终端内容的[显式 v2 契约](session-v2-contract.md)使用独立严格解析器、运行代次账本和完整帧归档；历史读取由 [终端 Session 服务端设计](terminal-session-server.md)说明，网页只呈现已上传录像。Web producer、relay 路由与 v1 文件行为保持本页所述；v2 类型可用本身不代表运行端具备对应能力。
 
-Worker 通过 Web backend 支持 Codex、Claude、Copilot，并启动独立的 `daynight controller <provider> --launch-id <id>`。服务端 Session relay 与 Task Session 页面承载 Web 模式的历史和控制；Web 执行不初始化、启动或探测 Herdr。旧 Herdr claim 及资源由用户处理。独立[运行快照上报](daynight-worker-reporting.md)只读私有端点版本，不初始化 Herdr 执行 backend。
+Worker 通过 Web backend 支持 Codex、Claude、Copilot，并启动独立的 `daynight controller <provider> --launch-id <id>`。服务端 Session relay 与 Task Session 页面承载 Web 模式的历史和控制；Web 执行不初始化、启动或探测 Herdr。旧 Herdr claim 及资源由用户处理。独立[运行快照上报](daynight-worker-reporting.md)采集 Web 所需的原生工具事实。
 
 公开的 `daynight controller <provider> [options] [prompt]` 在当前目录创建独立 Test Session，前台 launcher 承担注册、凭据续签与停止证明；它不运行 worker 调度或创建 Task。其[用户需求](../spec/controller-test-sessions.md)与 Task 生命周期分开，底层 Provider、在线 relay 与 Session View 共用。
 
 ## 配置与持久身份
 
-云端原始 `agentControlMode` 保留既有目标；Worker 只应用已采纳的 web，显式 herdr 不支持且不自动转换，旧未采纳目标保持未知。本地首次候选省略模式时为 web。新 claim 只使用经过验证并持久发布的 Web/native，既有 claim 保留冻结身份。repository 继承全局模式但不可覆盖；`agent/model/args` 保持原继承规则。Codex、Claude、Copilot 均支持 Web。
+云端原始 `agentControlMode` 保留既有目标；含该旧字段的目标须由用户明确修正，不自动转换。本地省略模式时使用 web，显式 herdr 不受支持。新 claim 只使用经过验证并持久发布的 Web/native，既有 claim 保留冻结身份；`agent/model/args` 保持原继承规则。Codex、Claude、Copilot 均支持 Web。
 
-有效模式进入服务端 WorkerClaim 和本机认领索引，Web 另将配置冻结到独立执行记录和 launch ticket。服务端旧记录缺字段按 Herdr 迁移；本机最小索引按明确 schema 升级补充模式，旧详细 worker 数据库继续明确拒绝，不静默转换。没有执行证据不能补造进程、会话或已停止事实。新 claim 请求缺失模式、显式 null、herdr 或未知值均拒绝；执行摘要拒绝非空 Herdr binding。
+有效模式进入服务端 WorkerClaim 和本机认领索引，Web 另将配置冻结到独立执行记录和 launch ticket。服务端旧记录缺字段按 Herdr 迁移；本机最小索引按明确 schema 升级补充模式，旧详细 worker 数据库继续明确拒绝，不静默转换。没有执行证据不能补造进程、会话或已停止事实。新 claim 请求缺失模式、显式 null、herdr 或未知值均拒绝；认领与执行摘要请求拒绝 `herdr` 成员，包括 null。
 
 worker 主索引保存 project/task/claim、status、agent、session_id 和 agent_control_mode。历史 Herdr 索引不进入当前协调；Web 的配置、恢复预算、初始输入回执、清理期限及进程证据保存在独立 web-executions.sqlite 中，由 Web backend 负责解释，不成为 Herdr 的恢复来源。Controller 自身 journal 仍是原生调用与 outbox 的所有者。强制撤回清除 claim 的同时使对应 Session 失去普通写能力；不宣称已停止远端进程，也不提供 transfer。
 

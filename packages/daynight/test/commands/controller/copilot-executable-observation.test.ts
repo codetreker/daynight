@@ -13,7 +13,7 @@ afterEach(() => vi.clearAllMocks());
 // controls only the process boundary, without executing Copilot or Node flags.
 test.skipIf(process.platform !== "win32")("verified native executable identity belongs to the selected process lifetime", async () => {
   const operation = createOperation();
-  const launch = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: process.execPath }, cwd: process.cwd(), environment: process.env, workerNode: process.execPath }, operation).finally(() => operation.dispose());
+  const launch = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "path", path: process.execPath }, cwd: process.cwd(), environment: process.env, workerNode: process.execPath }, operation).finally(() => operation.dispose());
   const digest = launch.artifacts.find(item => item.realPath === launch.executablePath)!.sha256;
   const child = Object.assign(new EventEmitter(), { pid: 42, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(() => { child.emit("exit", 0); child.emit("close", 0); return true; }) });
   processMock.spawn.mockImplementation(() => { queueMicrotask(() => { child.emit("spawn"); child.stdout.write("Listening on port 12345\n"); }); return child; });

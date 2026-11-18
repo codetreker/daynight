@@ -5,7 +5,7 @@ import { normalizeServerUrl } from "../../../config/server.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
 import { parseFrozenToolObservation } from "../tool-observation.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration } from "../types.js";
-import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, ExecutionSummary } from "./web-types.js";
+import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState } from "./web-types.js";
 
 const integer = (value: unknown, name: string, minimum = 0): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw new Error(`${name} must be a safe integer of at least ${minimum}.`);
@@ -62,7 +62,6 @@ const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");
   return { repositoryPath: absolutePath(data.repositoryPath, "Repository path"), commonDirectory: absolutePath(data.commonDirectory, "Git common directory"), worktreePath: absolutePath(data.worktreePath, "Worktree path"), branch: text(data.branch, "Worktree branch") };
 };
-const parseExecutionSummary = (value: unknown): ExecutionSummary => { if (value !== null) throw new Error("Web execution summaries are derived from fresh remote inventory."); return value as never; };
 const parseWebExecution = (value: unknown): WebExecutionState => {
   const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown", "startupReport"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
   for (const key of ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "initialOperationId"]) id(data[key], key);
@@ -75,7 +74,7 @@ const parseWebExecution = (value: unknown): WebExecutionState => {
   data.restartAfterShutdown ??= false; bool(data.restartAfterShutdown, "Orderly controller restart");
   data.nativeHome ??= null; nullable(data.nativeHome, entry => absolutePath(entry, "Native profile home"));
   data.summary ??= null; data.initialInputState ??= "unknown"; data.activity ??= "unknown";
-  nullable(data.summary, parseExecutionSummary);
+  if (data.summary !== null) throw new Error("Web execution summaries are derived from fresh remote inventory.");
   if (data.startupReport !== undefined) {
     const report = parseSessionStartupReport(data.startupReport);
     if (report.sessionId !== data.sessionId || report.executionGeneration !== data.executionGeneration || report.controllerInstanceId !== data.controllerInstanceId) throw new Error("Startup report does not match the Web execution.");

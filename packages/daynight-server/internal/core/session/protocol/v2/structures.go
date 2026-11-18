@@ -147,10 +147,3 @@ func validFrame(v any) bool {
 	bytes, e := CanonicalJSON(v)
 	return e == nil && len(bytes) <= MaxFrameBytes
 }
-func validPaste(v any) bool {
-	s, ok := v.(string)
-	if !ok || len(s) == 0 || len(s) > MaxPasteBytes {
-		return false
-	}
-	return strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' }) < 0
-}

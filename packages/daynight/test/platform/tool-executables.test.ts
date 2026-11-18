@@ -195,13 +195,12 @@ describe("resolved tool commands", () => {
     } finally { if (timer) clearTimeout(timer); release(); await result.catch(() => {}); }
   });
 
-  it("keeps Web Copilot bundled while Herdr uses the captured external installation", async () => {
+  it("uses bundled Copilot by default and an explicit external selection", async () => {
     const root = await fixture(), entry = await script(root, "copilot.js", "external");
-    if (process.platform !== "win32") await symlink(entry, path.join(root, "copilot"), "file");
     const web = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "auto" }, cwd: root, environment: { PATH: root } }, operation());
-    const external = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "auto" }, cwd: root, environment: { PATH: root, PATHEXT: ".JS" } }, operation());
+    const external = await resolveToolLaunch({ tool: "copilot", context: "web", choice: { kind: "path", path: entry }, cwd: root, environment: { PATH: root, PATHEXT: ".JS" } }, operation());
     expect(web.source).toBe("bundled"); expect(web.interpreterPath).toBeNull();
-    expect(external.source).toBe("path");
+    expect(external.source).toBe("explicit");
     expect(web.artifacts.some(item => item.role === "runtime" && item.realPath === web.executablePath)).toBe(true);
     expect(web.executablePath).not.toBe(external.executablePath);
     const command = toolCommand(external, []);

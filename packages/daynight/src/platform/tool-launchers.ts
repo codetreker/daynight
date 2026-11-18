@@ -3,6 +3,7 @@ import { realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { Operation } from "../api/operation.js";
+import type { Tool } from "./tool-path-choice.js";
 import { openRegularToolFile, withinOperation } from "./tool-io.js";
 
 export type LauncherHost = { platform: NodeJS.Platform; arch: string; nonGlibcLinux: boolean };
@@ -20,7 +21,6 @@ const missing = (error: unknown) => error instanceof Error && "code" in error &&
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const metadataLimit = 1024 * 1024;
 const prefixLimit = 4096;
-type Tool = "codex" | "copilot" | "herdr";
 type Package = { root: string; manifestPath: string; value: Record<string, unknown>; artifact: LauncherArtifact };
 
 const read = async (file: string, operation: Operation, prefix = false): Promise<Buffer> => {

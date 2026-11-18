@@ -2,7 +2,7 @@ import type { Operation } from "../../api/operation.js";
 import type { ClaimIdentity, ResourceOwner } from "./types.js";
 
 export type CleanupTarget = ClaimIdentity & { worktreeId?: string };
-export type ExecutionRef = { owner: ResourceOwner; backend: "web" | "herdr-legacy" | "herdr-native"; runKey: string };
+export type ExecutionRef = { owner: ResourceOwner; backend: "web"; runKey: string };
 export type StopObservation =
   | { kind: "stopped"; execution: ExecutionRef; observedAt: number }
   | { kind: "running"; execution: ExecutionRef; observedAt: number }

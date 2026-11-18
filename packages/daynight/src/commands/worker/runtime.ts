@@ -170,7 +170,7 @@ const prepareWorkerAgentEnvironment = async (paths: WorkerPaths, emit: (event: W
 };
 
 const effectiveExecutionConfiguration = (native: WorkerCloudNative, recoveryLimit: number, local: WorkerLocalNativeOverrides) => ({
-  ...resolveCloudNative(normalizeWorkerNative(native, "web", local).native, "web", recoveryLimit),
+  ...resolveCloudNative(normalizeWorkerNative(native, local).native, recoveryLimit),
   ...(local.agentModel !== undefined || local.agentReasoningEffort !== undefined ? { validateNativeSelection: true as const } : {}),
 });
 
@@ -192,7 +192,7 @@ const nativeConfigurationApplication = (options: {
   return {
     current: () => environment,
     apply: async (native: WorkerCloudNative, signal: AbortSignal): Promise<void> => {
-      normalizeWorkerNative(native, "web", options.overrides);
+      normalizeWorkerNative(native, options.overrides);
       const nativeEnvironment = await getEnvironment();
       const tools = options.tools?.();
       if (tools !== undefined) {
@@ -304,6 +304,7 @@ export const runWorker = async (options: {
   try {
     signal.throwIfAborted();
     const local = await readWorkerLocalConfiguration(paths, signal);
+    if (local.agentControlMode === "herdr") throw new Error("worker.agentControlMode herdr is no longer supported; remove it or set it to web in the local configuration.");
     const { serverUrl, serverToken } = local;
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     lock = await acquireWorkerInstanceLock(paths);
@@ -603,7 +604,7 @@ export const runWorker = async (options: {
       defaultCwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, verifier: { discover: async (input, operation) => {
         if (input.native.agent !== "codex" && input.native.agent !== "copilot") return selectionVerifier.discover(input, operation);
         const toolLaunch = await toolRuntime.manager.selectForNewExecution(input.native.agent, "web", operation);
-        return toolRuntime.inspector.discover({ ...input, toolLaunch, mode: "web", toolRuntimeRoot: toolRuntime.toolRuntimeRoot }, operation);
+        return toolRuntime.inspector.discover({ ...input, toolLaunch, toolRuntimeRoot: toolRuntime.toolRuntimeRoot }, operation);
       } },
       configuration: readOnlyConfiguration.modelConfiguration,
     });
@@ -717,9 +718,9 @@ export const runWorker = async (options: {
       configuration: () => {
         const effective = manager.current().effective;
         // Assistant capability collection owns per-Provider Web argument failures.
-        // Keep Herdr-only defaults observable without failing the whole Worker report.
+        // Keep unavailable native defaults from failing the whole Worker report.
         return effective.native === null || effective.recoveryLimit === null ? null : {
-          ...normalizeWorkerNative(effective.native, "web", local, false).native,
+          ...normalizeWorkerNative(effective.native, local, false).native,
           agentControlMode: "web", recoveryLimit: effective.recoveryLimit,
           ...(local.agentModel !== undefined || local.agentReasoningEffort !== undefined ? { validateNativeSelection: true as const } : {}),
         };
@@ -738,7 +739,7 @@ export const runWorker = async (options: {
     reporter = createWorkerReporter({ signal, collect: async operation => {
       const sample = await telemetry.collect(operation);
       const snapshot = manager.current();
-      const runtimeConfiguration = workerRuntimeConfigurationReport(snapshot.effective, "web", local, "cloud");
+      const runtimeConfiguration = workerRuntimeConfigurationReport(snapshot.effective, local, "cloud");
       return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
     }, send: (report, operation) => remote.report(workerId, report, operation), emit, configuration: exchange });
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };

@@ -17,7 +17,7 @@ it("qualifies bounded native Web prerequisites without starting a session", asyn
   let issues: readonly AssistantHostIssue[] = [];
   try {
     const environment = { ...process.env, HOME: root, USERPROFILE: root, CODEX_HOME: root, CLAUDE_CONFIG_DIR: root, COPILOT_HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root };
-    const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }, environment,
+    const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, environment,
       runCommand: (command, probeOperation) => runOwnedCommand(command, probeOperation, diagnostic.start, { cleanupWithinDeadline: true }),
     });
     const started = performance.now();

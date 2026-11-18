@@ -53,12 +53,12 @@ describe("worker Project registration", () => {
 
   it("preserves comments, aliases, unknown fields, review settings, credentials and execution overrides", async () => {
     const old = project(3, "https://github.com/owner/old.git");
-    const source = `${connection}future: { enabled: true }\n# Shared defaults\nreview:\n  pollIntervalMs: 120000 # review-owned\nworker:\n  future: worker-owned\n  repositoryRoot: &root ../clones # keep root\n  agent: codex # default\n  model: global-model\n  args: [--search]\n  repositories:\n    # Keep this repository\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: &oldPath ../old\n      agent: copilot\n      model: custom-model\n      args: [] # native defaults\n      future: repository-owned\n`;
+    const source = `${connection}future: { enabled: true }\n# Shared defaults\nreview:\n  pollIntervalMs: 120000 # review-owned\nworker:\n  future: worker-owned\n  repositoryRoot: &root ../clones # keep root\n  agent: codex # default\n  model: global-model\n  args: [--sandbox, read-only]\n  repositories:\n    # Keep this repository\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: &oldPath ../old\n      agent: copilot\n      model: custom-model\n      args: [] # native defaults\n      future: repository-owned\n`;
     const f = await fixture(source);
     if (process.platform !== "win32") await chmod(f.paths.configFile, 0o640);
     const registered = await changeWorkerRepositories({ ...f, projects: [old, project()], addProjectIds: [uuid(1)] });
     expect(registered[0]).toEqual(f.snapshot.configuration.repositories[0]);
-    expect(registered[1]).toMatchObject({ agent: "codex", model: "global-model", args: ["--search"], path: path.join(f.homeDirectory, "clones/github.com/owner/repository") });
+    expect(registered[1]).toMatchObject({ agent: "codex", model: "global-model", args: ["--sandbox", "read-only"], path: path.join(f.homeDirectory, "clones/github.com/owner/repository") });
     const saved = await readFile(f.paths.configFile, "utf8");
     for (const fragment of ["future: { enabled: true }", "future: worker-owned", "future: repository-owned", "# Shared defaults", "repositoryRoot: &root ../clones # keep root", "pollIntervalMs: 120000 # review-owned", "# Keep this repository", "path: &oldPath ../old", "args: [] # native defaults", token]) expect(saved).toContain(fragment);
     if (process.platform !== "win32") expect((await stat(f.paths.configFile)).mode & 0o777).toBe(0o600);
@@ -138,13 +138,13 @@ describe("worker Project registration", () => {
 
   it("retains native argument sequence aliases while adding a different Project", async () => {
     const old = project(3, "https://github.com/owner/old.git");
-    const source = `${connection}worker:\n  args: &sharedArgs [--allow-all-tools]\n  repositories:\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: ../old\n      args: *sharedArgs\n`;
+    const source = `${connection}worker:\n  args: &sharedArgs [--effort, high]\n  repositories:\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: ../old\n      args: *sharedArgs\n`;
     const f = await fixture(source);
     await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
     const saved = await readFile(f.paths.configFile, "utf8");
-    expect(saved).toMatch(/args: &sharedArgs \[\s*--allow-all-tools\s*\]/);
+    expect(saved).toMatch(/args: &sharedArgs \[\s*--effort\s*,\s*high\s*\]/);
     expect(saved).toContain("args: *sharedArgs");
-    expect((await readWorkerConfiguration(f.paths)).repositories.every(({ args }) => args.length === 1 && args[0] === "--allow-all-tools")).toBe(true);
+    expect((await readWorkerConfiguration(f.paths)).repositories.every(({ args }) => args.length === 2 && args[0] === "--effort" && args[1] === "high")).toBe(true);
   });
 
   it("uses the worker clone root independently of review configuration", async () => {
@@ -241,10 +241,10 @@ describe("worker Project registration", () => {
 
   it("preserves unrelated edits made while the remote inventory or selection is pending", async () => {
     const f = await fixture();
-    const source = `${connection}# Concurrent settings\nworker:\n  maxConcurrent: 3\n  agent: codex\n  args: [--search]\nreview:\n  pollIntervalMs: 90000 # review\n`;
+    const source = `${connection}# Concurrent settings\nworker:\n  maxConcurrent: 3\n  agent: codex\n  args: [--sandbox, read-only]\nreview:\n  pollIntervalMs: 90000 # review\n`;
     await writeFile(f.paths.configFile, source);
     const registered = await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
-    expect(registered[0]).toMatchObject({ agent: "codex", args: ["--search"] });
+    expect(registered[0]).toMatchObject({ agent: "codex", args: ["--sandbox", "read-only"] });
     const saved = await readFile(f.paths.configFile, "utf8");
     expect(saved).toContain("# Concurrent settings");
     expect(saved).toContain("maxConcurrent: 3");

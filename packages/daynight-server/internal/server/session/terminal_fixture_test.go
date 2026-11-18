@@ -20,6 +20,7 @@ type terminalHTTPFixture struct {
 	authentication *routeAuthentication
 	base           string
 	message        v2.Message
+	owner          v2.Owner
 }
 
 func terminalHTTPSetup(t *testing.T) *terminalHTTPFixture {
@@ -30,9 +31,9 @@ func terminalHTTPSetup(t *testing.T) *terminalHTTPFixture {
 	handler := newResourceTestHandler(t, calls, authentication, principal, io.Discard)
 	app := handler.application.(*routeApplication)
 	project, task, claim, worker, worktree := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-	pane := "pane_1"
-	message := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: claim, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: project, TaskID: task, WorkerID: worker, WorktreeID: worktree, OwnerUserID: principal.UserID, ServerOrigin: "https://daynight.example", Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	f := &terminalHTTPFixture{h: handler, calls: calls, authentication: authentication, base: "/api/v1/projects/" + project + "/tasks/" + task + "/sessions", message: message}
+	owner := v2.Owner{ProjectID: project, TaskID: task, WorkerID: worker, WorktreeID: worktree, OwnerUserID: principal.UserID, ServerOrigin: "https://daynight.example", Provider: "codex"}
+	message := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, SessionID: uuid.NewString(), ClaimID: claim, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}}
+	f := &terminalHTTPFixture{h: handler, calls: calls, authentication: authentication, base: "/api/v1/projects/" + project + "/tasks/" + task + "/sessions", message: message, owner: owner}
 	f.sessionHTTPShutdown.register(t, app.Shutdown)
 	return f
 }
@@ -52,7 +53,7 @@ func terminalRequest(handler http.Handler, method, path, body, protocol string) 
 
 func (f *terminalHTTPFixture) scope(t *testing.T, ctx context.Context, p model.Principal, project, task, id string) {
 	t.Helper()
-	owner := f.message.Payload.(v2.Registration).Owner
+	owner := f.owner
 	if ctx.Err() != nil || p != f.h.principal || project != owner.ProjectID || task != owner.TaskID || id != f.message.SessionID {
 		t.Errorf("terminal use-case arguments changed: %v %v %s/%s/%s", ctx.Err(), p, project, task, id)
 	}

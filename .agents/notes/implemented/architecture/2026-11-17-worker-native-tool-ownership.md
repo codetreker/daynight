@@ -11,11 +11,9 @@ under the Herdr runtime makes retaining them dependent on a specific execution m
 ## Decision
 
 The Worker owns these mechanisms in `owned-command.ts`, `native-version.ts` and
-`codex-configuration.ts`. Herdr's remaining runtime uses the same owners while it
-exists. The move preserves process-tree termination, bounded output and deadlines,
+`codex-configuration.ts`. The shared owners remain independent of the retired Herdr runtime. The move preserves process-tree termination, bounded output and deadlines,
 the original owner's close proof and error causes. Codex configuration argument
-selection belongs with its RPC. Native selection and reporting continue to use
-their existing execution modes and protocols.
+selection belongs with its RPC. Native selection uses the [Web-only model](../simplification/2026-11-18-web-only-native-tool-model.md).
 
 The [native probe recovery decision](../bug-fix/2026-11-06-native-probe-cleanup-recovery.md)
 retains its close-confirmation and recovery guarantees. The
@@ -34,6 +32,4 @@ additional behavior.
 ## Consequences
 
 Common callers can retain their process and configuration guarantees independently
-of Herdr. This change does not remove Herdr execution, alter the public protocol,
-or migrate existing executions. Remaining Herdr-specific code can be removed
-separately without deleting shared mechanisms or their tests.
+of Herdr. Existing Herdr executions are not migrated; shared mechanisms and their tests remain.
