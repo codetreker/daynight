@@ -181,6 +181,12 @@ runner process is dead, and it does not replace the original test failure with
 success. Only results and logs are uploaded; private files and build artifacts
 stay excluded.
 
+The Playwright process has a seven-minute limit within the journey step; each
+test retains its own deadline. This leaves room for the sequential login and
+cross-client flows on CI without changing their assertions or the independent
+recovery step's deadline. It leaves less time for normal cleanup within the
+journey step when the process approaches its limit.
+
 Dependency caches can accelerate preparation, but every invocation still builds
 and runs the current checkout. The [test-writing rules](../../docs/writing_tests.md)
 define the distinction between module, API integration and product E2E tests.
