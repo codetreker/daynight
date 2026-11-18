@@ -222,3 +222,9 @@ Chain 双向沿普通依赖展开，external 不加入；Goal 仅当前直接普
 当前成员不含 soft-delete，删除/移动/边分类变化使 membershipRevision 和游标失效。
 响应明确 `membershipPolicy:"current_members_excludes_deleted"`。最多 10,000 成员，
 超限 `aggregate_scope_too_large`，不得截断后报完整；缺失成员按 Task ID 分页，最多 100。
+
+图中的 Chain/Goal 用量入口和 Goal Detail 的用量页签消费同一个聚合接口，
+明确显示「当前成员 · 不含已删除任务」、统计时点、有已知用量的成员数、未知成员数
+及完整性分类，并可从缺失成员定位到任务。withKnownUsage 与完整性分类重叠，
+不能把其相加当作成员总数。查询失败允许重试，范围权限不足时不得拼接可见成员
+的本地统计作为替代；成员页失效保留已读内容，刷新后从第一页继续。
