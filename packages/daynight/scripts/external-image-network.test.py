@@ -82,6 +82,9 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "<redacted invalid value>") as failure:
             network.protected_domains("https://user:secret@example.org alias\n", [])
         self.assertNotIn("secret", str(failure.exception))
+        with self.assertRaisesRegex(ValueError, "host row fields: 0='runner.example', 1=<redacted invalid value>") as failure:
+            network.protected_domains("runner.example user:secret\n", [])
+        self.assertNotIn("secret", str(failure.exception))
 
     def test_invalid_host_inventory_aborts_before_network_mutation(self):
         for invalid_route in (True, False):

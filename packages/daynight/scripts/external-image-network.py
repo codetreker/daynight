@@ -95,7 +95,8 @@ def inventory_network(value, source):
 
 def inventory_value(value):
     # Unexpected metadata may contain credentials; only emit address-like text.
-    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9:._/%-]{1,253}", value):
+    if isinstance(value, str) and (re.fullmatch(r"[A-Za-z0-9._/-]{1,253}", value)
+                                   or re.fullmatch(r"[a-fA-F0-9:./%]+", value)):
         return repr(value)
     return "<redacted invalid value>"
 
@@ -128,7 +129,11 @@ def protected_domains(hosts, cidrs):
         fields = line.split("#", 1)[0].split()
         if len(fields) < 2:
             continue
-        address = inventory_address(fields[0], f"/etc/hosts line {line_number} address")
+        try:
+            address = inventory_address(fields[0], f"/etc/hosts line {line_number} address")
+        except ValueError as error:
+            fields_text = ", ".join(f"{index}={inventory_value(value)}" for index, value in enumerate(fields))
+            raise ValueError(f"{error}; host row fields: {fields_text}") from None
         if not any(address in network for network in networks):
             continue
         for value in fields[1:]:
