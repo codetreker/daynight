@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
@@ -26,6 +27,10 @@ type persistenceBackend interface {
 
 func openPostgres(ctx context.Context, databaseURL string) (persistenceBackend, error) {
 	return postgres.Open(ctx, databaseURL)
+}
+
+func openPostgresWithLogger(ctx context.Context, databaseURL string, logger *slog.Logger) (persistenceBackend, error) {
+	return postgres.OpenWithLogger(ctx, databaseURL, logger)
 }
 
 func OpenPersistence(ctx context.Context, databaseURL string) (*Persistence, error) {

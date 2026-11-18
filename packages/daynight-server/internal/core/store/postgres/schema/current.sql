@@ -1,4 +1,4 @@
--- Schema snapshot version: 82
+-- Schema snapshot version: 83
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -641,6 +641,7 @@ CREATE TABLE "projects" (
     "task_cache_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "deleted_at" timestamp with time zone,
     "tag_catalog_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "repository_identity" "text" COLLATE "pg_catalog"."C",
     CONSTRAINT "projects_execution_warning_minutes_check" CHECK (("execution_warning_minutes" > 0)),
     CONSTRAINT "projects_name_check" CHECK (("btrim"("name") <> ''::"text")),
     CONSTRAINT "projects_repo_url_check" CHECK (("btrim"("repo_url") <> ''::"text")),

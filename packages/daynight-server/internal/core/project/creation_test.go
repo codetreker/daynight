@@ -11,10 +11,13 @@ import (
 )
 
 type creationDAO struct {
-	calls    []string
-	personal store.PersonalTeamFacts
-	target   store.ProjectCreationTeam
-	member   bool
+	calls        []string
+	personal     store.PersonalTeamFacts
+	target       store.ProjectCreationTeam
+	member       bool
+	occupied     bool
+	occupancyErr error
+	identity     string
 }
 
 func (d *creationDAO) CreationPersonalTeam(_ context.Context, lock bool) (store.PersonalTeamFacts, error) {
@@ -33,7 +36,7 @@ func (d *creationDAO) CreationTeamMember(_ context.Context, _ string) (bool, err
 	d.calls = append(d.calls, "member checked")
 	return d.member, nil
 }
-func (d *creationDAO) InsertProject(_ context.Context, _, _, _, teamID string) (model.Project, model.ProjectAccess, error) {
+func (d *creationDAO) InsertProject(_ context.Context, _, _, _, _, teamID string) (model.Project, model.ProjectAccess, error) {
 	d.calls = append(d.calls, "insert "+teamID)
 	return model.Project{}, model.ProjectAccess{}, nil
 }
@@ -47,14 +50,15 @@ func TestCreateTeamAdmission(t *testing.T) {
 		wantError bool
 		notFound  bool
 	}{
-		{name: "personal", dao: creationDAO{personal: store.PersonalTeamFacts{ID: "personal", MemberCount: 1, OwnerAdminCount: 1}}, calls: []string{"personal locked", "insert personal"}},
+		{name: "personal", dao: creationDAO{personal: store.PersonalTeamFacts{ID: "personal", MemberCount: 1, OwnerAdminCount: 1}}, calls: []string{"personal locked", "repository personal", "insert personal"}},
 		{name: "missing personal", dao: creationDAO{}, calls: []string{"personal locked"}, wantError: true},
 		{name: "foreign personal", input: CreateProject{TeamID: &target}, dao: creationDAO{target: store.ProjectCreationTeam{ID: target, PersonalUserID: &other}}, calls: []string{"team locked"}, wantError: true, notFound: true},
 		{name: "personal invariant", input: CreateProject{TeamID: &target}, dao: creationDAO{target: store.ProjectCreationTeam{ID: target, PersonalUserID: &user}, personal: store.PersonalTeamFacts{ID: target, MemberCount: 2, OwnerAdminCount: 1}}, calls: []string{"team locked", "personal checked"}, wantError: true},
 		{name: "ordinary denied", input: CreateProject{TeamID: &target}, dao: creationDAO{target: store.ProjectCreationTeam{ID: target}}, calls: []string{"team locked", "member checked"}, wantError: true, notFound: true},
-		{name: "ordinary member", input: CreateProject{TeamID: &target}, dao: creationDAO{target: store.ProjectCreationTeam{ID: target}, member: true}, calls: []string{"team locked", "member checked", "insert team"}},
+		{name: "ordinary member", input: CreateProject{TeamID: &target}, dao: creationDAO{target: store.ProjectCreationTeam{ID: target}, member: true}, calls: []string{"team locked", "member checked", "repository team", "insert team"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.input.RepoURL = "host:repo"
 			_, _, err := Create(context.Background(), &tc.dao, user, "project", tc.input)
 			if (err != nil) != tc.wantError || errors.Is(err, model.ErrNotFound) != tc.notFound {
 				t.Fatalf("unexpected error: %v", err)
@@ -64,4 +68,10 @@ func TestCreateTeamAdmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (d *creationDAO) RepositoryOccupied(_ context.Context, team, identity string) (bool, error) {
+	d.calls = append(d.calls, "repository "+team)
+	d.identity = identity
+	return d.occupied, d.occupancyErr
 }

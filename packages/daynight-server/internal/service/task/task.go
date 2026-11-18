@@ -61,6 +61,7 @@ type TaskListRequest struct {
 	PlatformSpecific   *bool
 	AutomaticCandidate bool
 	WorkerID           *string
+	CandidateWorkerID  *string
 }
 
 type TaskPage struct {

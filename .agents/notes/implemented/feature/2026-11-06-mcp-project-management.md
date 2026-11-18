@@ -35,9 +35,12 @@ Project services.
 
 ## Consequences
 
-Identification does not grant access or use a local Team default. Concurrent
-registrations can still create duplicate Projects; later discovery reports the
-ambiguity instead of selecting one. The identity rules must remain aligned with
-the CLI, including paths that cannot safely be treated as equivalent.
-The scan is linear in visible Projects, retaining one page and one match; an
-identity index would require coordinated identity versioning and migration.
+Identification does not grant access or use a local Team default. The later
+[Team uniqueness decision](../architecture/2026-11-18-team-project-repository-uniqueness.md)
+constrains actual creation and transfer within each owner Team; conflicting
+concurrent writes are refused. Cross-Team Projects can still make discovery
+ambiguous, and the complete-visible-project lookup can reuse another Team's
+Project before creation is attempted. The identity rules remain aligned with
+the CLI, including paths that cannot safely be treated as equivalent. The scan
+is linear in visible Projects, retaining one page and one match; its behavior
+remains distinct from the versioned persistent identity used for write occupancy.

@@ -44,7 +44,7 @@ func newFixture(t *testing.T) fixture {
 	exec(t, tx, `INSERT INTO teams(id,name) VALUES($1,'Team')`, f.team)
 	exec(t, tx, `INSERT INTO teams(id,personal_user_id) VALUES($1,$2)`, f.personal, f.owner)
 	exec(t, tx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin'),($1,$3,'member'),($4,$2,'admin')`, f.team, f.owner, f.member, f.personal)
-	_, _, err = project.NewCreation(tx, f.owner).InsertProject(t.Context(), f.project, "Project", "host:repo", f.team)
+	_, _, err = project.NewCreation(tx, f.owner).InsertProject(t.Context(), f.project, "Project", "host:repo", "scp://host:repo", f.team)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestProjectCreationAndSettingsPersist(t *testing.T) {
 	longID := uuid.NewString()
 	longName := strings.Repeat("😀", 256)
 	longURL := "https://example.com/" + strings.Repeat("x", 4096-len("https://example.com/"))
-	if _, _, err := creator.InsertProject(ctx, longID, longName, longURL, f.team); err != nil {
+	if _, _, err := creator.InsertProject(ctx, longID, longName, longURL, longURL, f.team); err != nil {
 		t.Fatal(err)
 	}
 	var storedName, storedURL string
@@ -225,7 +225,7 @@ func TestProjectPaginationScopesAndBudgets(t *testing.T) {
 	ctx := t.Context()
 	r := project.NewReader(f.tx)
 	second := uuid.NewString()
-	_, _, err := project.NewCreation(f.tx, f.owner).InsertProject(ctx, second, strings.Repeat("x", 40), "host:second", f.personal)
+	_, _, err := project.NewCreation(f.tx, f.owner).InsertProject(ctx, second, strings.Repeat("x", 40), "host:second", "scp://host:second", f.personal)
 	if err != nil {
 		t.Fatal(err)
 	}

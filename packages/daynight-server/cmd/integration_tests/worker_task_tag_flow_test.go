@@ -17,8 +17,8 @@ import (
 func serverAPIWorkerTaskTagAdmissionFlow(t *testing.T, f *fixture) {
 	project := createProject(t, f, "Worker tag admission")
 	tag := requestJSON[catalogTag](t, f, http.MethodPost, "/api/v1/projects/"+project.ID+"/tags", map[string]any{"name": "Backend"}, http.StatusCreated)
-	matching := createTask(t, f, project, "Matching", map[string]any{"status": "todo", "assignedTo": f.userID, "tagIds": []string{tag.ID}})
 	unmatched := createTask(t, f, project, "Unmatched", map[string]any{"status": "todo", "assignedTo": f.userID})
+	matching := createTask(t, f, project, "Matching", map[string]any{"status": "todo", "assignedTo": f.userID, "tagIds": []string{tag.ID}})
 	matching = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(matching), map[string]any{"version": matching.Version, "allowAgents": true}, http.StatusOK)
 	unmatched = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(unmatched), map[string]any{"version": unmatched.Version, "allowAgents": true}, http.StatusOK)
 
@@ -70,6 +70,10 @@ func serverAPIWorkerTaskTagAdmissionFlow(t *testing.T, f *fixture) {
 	names, namesOK := filter["names"].([]any)
 	if saved.Desired.Revision != "2" || read.Desired.Revision != saved.Desired.Revision || !ok || filter["match"] != "any" || !namesOK || len(names) != 1 || names[0] != "backend" {
 		t.Fatalf("saved target differs: saved=%+v read=%+v", saved, read)
+	}
+	page := requestJSON[api.TaskPage](t, f, http.MethodGet, "/api/v1/projects/"+project.ID+"/tasks?automaticCandidate=true&candidateWorkerId="+workerID+"&assignedTo=me&ready=true&allowAgents=true&compatiblePlatform=linux&limit=1", nil, http.StatusOK)
+	if len(page.Items) != 1 || page.Items[0].ID != matching.ID || page.NextCursor != nil {
+		t.Fatalf("candidate page differs: %+v", page)
 	}
 
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(`["any",["backend"]]`)))
