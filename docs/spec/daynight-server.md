@@ -344,6 +344,8 @@ Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺
 
 普通列表及 ready 支持 `tagIds`、`tagMatch` 和 `untagged`。GET 的 `tagIds` 为逗号分隔 UUID 集合，规范化后去重排序；`tagMatch` 为 `all`（默认）或 `any`，分别要求全部或任一关联。`untagged=true` 只匹配无关联条目，不能与非空 ID 集合组合；省略 ID 且不选择无标签时不增加标签条件。全部标签必须在当前 Project 存在；不存在、跨项目或已删除 ID 返回 `400 invalid_tag_filter`。资格与选页在同一读取快照完成，标签条件与现有条件 AND 组合，在排序、分页和 ready 候选限制前执行。Task 与 Goal 只按自身关联匹配，Parent 条件保持。cursor 绑定规范化集合、模式与无标签选择的摘要，改变条件后不能续页；ID 顺序或重复不改变范围。既有 query、request-target 和 cursor 大小限制继续适用，不增加标签数量配额。
 
+自动候选列表可在 `automaticCandidate=true` 时提供 `candidateWorkerId`，不得与清单 `workerId` 同用。服务按认证账号读取该 Worker 的当前目标，在授权读取快照中按任务自身标签名称筛选，再排序和分页。空或未初始化目标不限制标签；非空目标按 any/all 匹配，缺失名称仍参与 all。不存在或不可见的 Worker 返回 404，读取或目标解析失败不视为空结果。游标绑定 Worker、账号和规范化筛选语义，筛选改变后须从首页重新读取。
+
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
 Task 列表 cursor 使用版本3，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。

@@ -446,6 +446,8 @@ task 列表接受 `type`、`parentId`、`status`、`ready`、`allowAgents`、`co
 
 普通列表与 priority/ready 查询共享 `store.TagFilter`。`core/task` 将 ID 规范化、去重排序并验证 all/any/untagged 组合；service 在已授权的同一 repeatable-read scope 中通过 `TagDAO.ResolveTags` 校验全部项目内标签后再选择任务。缺失标签返回 `invalid_tag_filter`，数据库与取消错误保留。DAO 使用关联表集合条件在排序和 LIMIT 前执行 all、any 或无关联选择，与类型、Parent、状态、负责人和就绪条件 AND 组合；有效删除视图继续排除自身或父 Goal 已删除的条目。选定页仍批量加载标签引用。cursor 使用规范化标签过滤的 SHA-256 摘要绑定集合、模式和无标签状态，避免合法的大型 query 使 cursor 超过 16 KiB；摘要不承担授权或防篡改。ranked 搜索与客户端参数采用由各自查询入口拥有。取舍见[标签筛选决策](../../.agents/notes/implemented/feature/2026-11-13-task-tag-filters.md)。
 
+自动候选的 `candidateWorkerId` 独立于 inventory `workerId`。service 在同一授权快照读取账号所属 Worker 的 Raw 目标，解析名称筛选后建立绑定身份和语义摘要的 cursor scope。DAO 以单个 `text[]` 参数按 `project_tags.name_key` 检查任务自身标签：any 使用 EXISTS，all 对每个配置 key 检查不存在的关联。条件与现有资格共同在排序及 LIMIT 前生效，未初始化目标视为空筛选；读取或解析错误继续传播。名称不预先解析为项目标签 ID，因此缺失名称不会从 all 集合中消失。
+
 Task cursor 版本3绑定 type、parent、解析后的 all/unassigned/user:UUID 选择及全部其他显式筛选，platformSpecific 以可空布尔保留省略与 false 的区别，编码省略未提供的条件，排序位置仍是 createdAt、id；workerId 还绑定隐式认证 userId。me 与同一具体 UUID 具有相同 scope；另一用户的 me 或变化后的选择不能沿用旧 cursor。未指定 worker 且负责人不是 me 时仍按原显式 scope 处理，不把查询身份当作隐式负责人。账号级 Worker 列表保持版本1；workerId 筛选的 Task 页仍是任务版本3。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
