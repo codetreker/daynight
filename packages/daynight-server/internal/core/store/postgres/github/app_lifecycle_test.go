@@ -5,42 +5,60 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestProjectRetirementMissingUnboundAndIntegrity(t *testing.T) {
-	for _, kind := range []string{"no connection", "unbound", "missing App", "deleted App", "revoked grant", "missing grant", "orphan grant", "exhausted", "bound stop failure", "unbound stop failure"} {
-		t.Run(kind, func(t *testing.T) {
-			db, _ := dbFixture(t)
+	db, _ := dbFixture(t)
+	for index, kind := range []string{"no connection", "unbound", "missing App", "deleted App", "revoked grant", "missing grant", "orphan grant", "exhausted", "bound stop failure", "unbound stop failure"} {
+		if !t.Run(kind, func(t *testing.T) {
 			ctx := t.Context()
+			appID := 91 + int64(index)
 			app, grant, project, team := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
-			if _, err := db.Pool.Exec(ctx, `INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,91,'App','App','app','key','secret');`, app); err != nil {
+			if _, err := db.Pool.Exec(ctx, `INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,$2,'App','App','app','key','secret')`, app, appID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.Pool.Exec(ctx, `INSERT INTO github_app_team_grants(id,app_resource_id,team_id) VALUES($1,$2,$3)`, grant, app, team); err != nil {
 				t.Fatal(err)
 			}
 			if kind != "no connection" {
-				if _, err := db.Pool.Exec(ctx, `INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,app_resource_id,team_grant_id,credential_version,app_id,installation_id) VALUES($1,1,1,1,true,true,$2,$3,1,91,9)`, project, app, grant); err != nil {
+				if _, err := db.Pool.Exec(ctx, `INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,app_resource_id,team_grant_id,credential_version,app_id,installation_id) VALUES($1,1,1,1,true,true,$2,$3,1,$4,9)`, project, app, grant, appID); err != nil {
 					t.Fatal(err)
 				}
 			}
-			queries := map[string]string{"unbound": `UPDATE project_github SET enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL`, "missing App": `DELETE FROM github_apps`, "deleted App": `UPDATE github_apps SET deleted_at=now()`, "revoked grant": `UPDATE github_app_team_grants SET revoked_at=now()`, "missing grant": `DELETE FROM github_app_team_grants`, "orphan grant": `UPDATE project_github SET app_resource_id=NULL`, "exhausted": `UPDATE project_github SET generation=9223372036854775807`}
-			if query := queries[kind]; query != "" {
-				if _, err := db.Pool.Exec(ctx, query); err != nil {
-					t.Fatal(err)
+			var mutation string
+			target := project
+			switch kind {
+			case "unbound", "unbound stop failure":
+				mutation = `UPDATE project_github SET enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL WHERE project_id=$1`
+			case "missing App":
+				mutation, target = `DELETE FROM github_apps WHERE id=$1`, app
+			case "deleted App":
+				mutation, target = `UPDATE github_apps SET deleted_at=now() WHERE id=$1`, app
+			case "revoked grant":
+				mutation, target = `UPDATE github_app_team_grants SET revoked_at=now() WHERE id=$1`, grant
+			case "missing grant":
+				mutation, target = `DELETE FROM github_app_team_grants WHERE id=$1`, grant
+			case "orphan grant":
+				mutation = `UPDATE project_github SET app_resource_id=NULL WHERE project_id=$1`
+			case "exhausted":
+				mutation = `UPDATE project_github SET generation=9223372036854775807 WHERE project_id=$1`
+			}
+			if mutation != "" {
+				result, err := db.Pool.Exec(ctx, mutation, target)
+				if err != nil || result.RowsAffected() != 1 {
+					t.Fatalf("seed %s: %v %v", kind, result, err)
 				}
 			}
-			if strings.HasSuffix(kind, "stop failure") {
-				if kind == "unbound stop failure" {
-					if _, err := db.Pool.Exec(ctx, queries["unbound"]); err != nil {
-						t.Fatal(err)
-					}
-				}
+			stopFailure := strings.HasSuffix(kind, "stop failure")
+			if stopFailure {
 				if _, err := db.Pool.Exec(ctx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,1,1,$2,'retirement',now(),now())`, project, uuid.NewString()); err != nil {
 					t.Fatal(err)
 				}
@@ -52,7 +70,13 @@ func TestProjectRetirementMissingUnboundAndIntegrity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback(context.Background())
+			defer func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+					t.Errorf("release retirement transaction: %v", err)
+				}
+			}()
 			dao := github.NewProjectRetirement(tx, project)
 			if err = dao.Stop(ctx, core.DisconnectionDecision()); err == nil {
 				t.Fatal("unlocked stop succeeded")
@@ -72,9 +96,10 @@ func TestProjectRetirementMissingUnboundAndIntegrity(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = dao.Stop(ctx, core.DisconnectionDecision())
-			if strings.HasSuffix(kind, "stop failure") {
-				if err == nil {
-					t.Fatal("storage failure was hidden")
+			if stopFailure {
+				var pg *pgconn.PgError
+				if !errors.As(err, &pg) || pg.Code != "P0001" || pg.Message != "injected retirement update failure" {
+					t.Fatalf("retirement did not expose injected trigger failure: %v", err)
 				}
 				if err := tx.Rollback(ctx); err != nil {
 					t.Fatal(err)
@@ -82,6 +107,14 @@ func TestProjectRetirementMissingUnboundAndIntegrity(t *testing.T) {
 				var intact bool
 				if err := db.Pool.QueryRow(ctx, `SELECT sync_enabled AND version=1 AND generation=1 AND EXISTS(SELECT 1 FROM project_github_pending_prs WHERE project_id=$1) FROM project_github WHERE project_id=$1`, project).Scan(&intact); err != nil || !intact {
 					t.Fatalf("failed retirement escaped rollback=%t: %v", !intact, err)
+				}
+				if _, err := db.Pool.Exec(ctx, `DROP TRIGGER reject_retirement_update ON project_github; DROP FUNCTION reject_retirement_update()`); err != nil {
+					t.Fatal(err)
+				}
+				var removed bool
+				if err := db.Pool.QueryRow(ctx, `SELECT to_regprocedure('reject_retirement_update()') IS NULL AND NOT EXISTS
+					(SELECT 1 FROM pg_trigger WHERE tgrelid='project_github'::regclass AND tgname='reject_retirement_update')`).Scan(&removed); err != nil || !removed {
+					t.Fatalf("retirement trigger cleanup: removed=%t error=%v", removed, err)
 				}
 				return
 			}
@@ -106,7 +139,9 @@ func TestProjectRetirementMissingUnboundAndIntegrity(t *testing.T) {
 					t.Fatalf("unbound intent=%t %v", sync, err)
 				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
