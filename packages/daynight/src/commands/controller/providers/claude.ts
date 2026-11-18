@@ -8,6 +8,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SDKUserMessage, PermissionResult, Options } from "@anthropic-ai/claude-agent-sdk";
 import { queryClaudeLive, releaseClaudeLiveRecord, type ClaudeLiveQuery } from "./claude-live.js";
+import { claudeUsageProfileSupported, claudeUsageProviderVersion } from "./claude-usage.js";
 import { ClaudeImageInputs } from "./claude-image-input.js";
 import { ClaudeProjection } from "./claude-image-projection.js";
 import { openClaudeTranscriptHelper } from "./claude-transcript-helper.js";
@@ -35,6 +36,19 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   let currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, verified = false, disconnected = false;
   let controls: ClaudeControls | undefined, turnStartedAt: string | null = null, native: ClaudeLiveQuery | undefined;
   let historyReader: ClaudeTranscriptReader | undefined;
+  const usageGap = (reason: string) => {
+    try { options.usageRuntime?.gap(reason); }
+    catch { options.onDiagnostic?.("Usage collection is incomplete; the native task continues."); }
+  };
+  const usageReady = () => {
+    if (!verified || !options.usageRuntime) return;
+    const providerVersion = claudeUsageProviderVersion(native?.profile);
+    // A generation's version is immutable. A pending probe cannot establish an
+    // "unverified" identity that would conflict with its eventual native profile.
+    if (providerVersion === "unverified") return;
+    try { options.usageRuntime.ready?.({ nativeSessionId: nativeId, providerVersion }); }
+    catch { usageGap("local_storage_failed"); }
+  };
   const pendingInputMessages = new Map<string, string>();
   const projectionOptions: ProviderOptions = { ...options, onInputMessage: (operationId, sessionId, entryId) => {
     if (sessionId !== nativeId) throw new Error("Native Claude input provenance identity mismatch.");
@@ -51,7 +65,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const identity = new Promise<void>((resolve, reject) => { identityResolve = resolve; identityReject = reject; });
   void identity.catch(() => {});
   const verify = (sessionId: unknown) => { if (sessionId !== nativeId) { const error = new Error("Native Claude session identity mismatch."); identityReject(error); throw error; } if (!verified) {
-    verified = true; identityResolve(); state();
+    verified = true; identityResolve(); state(); if (native?.profile) usageReady();
     // The first dispatch can precede SessionStart. Publish the verified identity
     // before associating its retained input with the Controller's durable journal.
     for (const [operationId, entryId] of pendingInputMessages) options.onInputMessage?.(operationId, nativeId, entryId);
@@ -77,6 +91,18 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const project = (raw: unknown, history = false, historyContext?: { row: ClaudeTranscriptRecord; reader: ClaudeTranscriptReader; acknowledged?: Promise<void> }) => {
     const m = record(raw), message = record(m.message), type = string(m.type);
     if (m.session_id !== undefined) verify(m.session_id);
+    if (!history && !closed && !disconnected && (type === "system" || type === "assistant")) usageReady();
+    if (type === "assistant" && options.usageRuntime && !closed && !disconnected) {
+      // History has no original SDK/backend provenance. The existing durable
+      // usage ledger can replay its own facts without requalifying transcript rows.
+      if (history) usageGap("native_recovery_gap");
+      else if (!verified || !claudeUsageProfileSupported(native?.profile)) usageGap("profile_unverified");
+      else if (m.parent_tool_use_id === undefined) usageGap("subagent_scope_unknown");
+      else if (m.parent_tool_use_id === null) {
+        try { options.usageRuntime.observe({ nativeSessionId: nativeId, providerVersion: claudeUsageProviderVersion(native?.profile), event: m }); }
+        catch { usageGap("collector_failed"); }
+      }
+    }
     const confirmedImage = imageInputs.observe(m, history);
     if (confirmedImage) { accepted.get(confirmedImage)?.resolve(); accepted.delete(confirmedImage); }
     if (!history && !m.parent_tool_use_id && type === "system") {
@@ -151,6 +177,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       ...(typeof hint === "string" && hint ? { transcriptPath: hint } : {}), indexDirectory: options.imageRuntime.indexDirectory(), acquireIndexLease: options.imageRuntime.acquireIndexLease, onSpawn: options.onSpawn };
   };
   if (options.resumeNativeSessionId) {
+    usageGap("native_recovery_gap");
     historyReader = await openClaudeTranscriptHelper(historyOptions());
     try {
       for (;;) {
@@ -196,6 +223,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   controls = new ClaudeControls(native as ClaudeControlQuery, options.resumeNativeSessionId ? null : options.model, options.resumeNativeSessionId ? undefined : config.effort, state, options.onControlConfirmed, !!options.resumeNativeSessionId, options.controlsRevisionFloor, options.assertNativeDispatch);
   const disconnect = (error: Error) => {
     if (disconnected || closed) return;
+    usageGap("native_recovery_gap");
     disconnected = true; controls?.close(); input.close(); native?.close(); identityReject(error);
     for (const item of steered.values()) item.reject(error); steered.clear();
     for (const pending of accepted.values()) pending.reject(error); accepted.clear();
@@ -231,7 +259,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     if (failures.length) throw new AggregateError(failures, "Claude stopped image resources could not be released.");
     await pump; activity = "stopped"; for (const p of interactions.values()) { publishInteraction({ ...p.interaction, revision: "2", state: "expired" }); p.reject(stopped); p.rejectConfirmation?.(stopped); } interactions.clear(); state();
   })().catch(error => { closing = null; throw error; });
-  try { await deadline(native!.initializationResult(), "Claude initialization timed out."); if (disconnected) throw new Error("Native Claude connection ended during initialization."); await controls.refresh(); if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) }); activity = "idle"; state(); }
+  try { await deadline(native!.initializationResult(), "Claude initialization timed out."); if (disconnected) throw new Error("Native Claude connection ended during initialization."); await controls.refresh(); if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) }); if (!claudeUsageProfileSupported(native?.profile)) usageGap("profile_unverified"); usageReady(); activity = "idle"; state(); }
   catch (error) {
     // The SDK marks a native control_response rejection separately from transport errors.
     const failure = error instanceof Error && "errorClass" in error && error.errorClass === "control_request_failed"

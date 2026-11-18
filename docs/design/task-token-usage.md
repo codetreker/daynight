@@ -196,6 +196,25 @@ unsupported/provider_unsupported 的 execution_state，不读取累计或 last �
 measurement。停止和恢复保留 unsupported，不把无计量误写成零或采集失败。
 原生快照缺少可比较权威修订且含上下文估计，因此 turn/completed 不构成用量最终回执。
 
+## Claude Controller 输入计量
+
+Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止后补传。
+`claude-message-input-0.3.247-v1` 仅接收实际 SDK=0.3.247、实际 CLI 版本已知、
+backend=anthropic 的实时 root assistant 包装消息；providerVersion 编码为
+`<sdk>/<cli>/<backend>`，服务端还必须精确公布该组合的 qualification。
+
+来源键为 `claude-message-input-v1:<message.id>`，immutable revision=1。
+规范 input 是原生 input/cache-read/cache-creation 三项已知值之和，cache 是 input
+分项；output/reasoning/total/providerTotal 保持 null，不采集包装消息的输出占位值，
+不叠加 result.usage、modelUsage 或 stream_event。缺失字段保持 null，
+不安全整数逐字段变 null、保留其他已知值并记录 native_integer_unrepresentable。
+
+只有原生 profile 到达后才固定当前代次身份；提前到达的消息记录缺口。
+backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒充 Anthropic 语义。
+现有历史读取不提供原 SDK/backend provenance，因此不使用当前版本重新资格化历史
+消息；已落盘事实由原 journal 重放，未落盘窗口保留 native_recovery_gap。
+子 Agent 不纳入本平面，保留 subagent_scope_unknown，结束状态最多 partial。
+
 ## 兼容与回退
 
 写入开关默认关闭；只读能力与旧 Task/Session 协议独立。未知/未资格验证的

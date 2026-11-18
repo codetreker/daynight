@@ -77,6 +77,15 @@ Codex versions register unsupported coverage without emitting measurements;
 stopped replay preserves this result instead of treating absent tokens as failure.
 Unverified handshakes do not acquire a supported-version capability.
 
+Claude admits immutable root-message input only when the actual SDK, CLI and
+Anthropic backend are known, retaining that combination in providerVersion.
+Unknown backends never lend their values to the Anthropic plane. Missing
+profile evidence cannot create a temporary identity that would later conflict
+with the same generation. Transcript rows lack original version provenance, so
+recovery replays retained ledger facts instead of requalifying historical rows
+with the current executable. Unsafe native integers become unknown per field,
+retaining other known cache facts and an explicit precision gap.
+
 ## Alternatives
 
 **Measurements without execution coverage.** This cannot distinguish a complete
