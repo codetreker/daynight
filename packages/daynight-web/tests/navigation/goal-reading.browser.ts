@@ -3445,7 +3445,11 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.locator(`#project-goal-detail-${goalId}`).click();
   await check(zh ? '附件' : 'Attachments');
   await surface.getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
+  await surface.getByRole('tab', { name: zh ? '讨论' : 'Discussion', exact: true }).click();
+  const draft = surface.locator('.thread-composer textarea');
+  await draft.fill('Retained Goal draft');
   await check(zh ? '讨论' : 'Discussion');
+  await expect(draft).toHaveValue('Retained Goal draft');
   await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=discussion`);
   await check(zh ? '讨论' : 'Discussion');
   await page.evaluate(() => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => Promise.reject(new Error('denied')) }); });
@@ -3460,4 +3464,20 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await expect(recipient.locator('.goal-detail-surface').getByRole('tab', { name: zh ? '描述' : 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
   await recipient.close();
   expect(fixture.edits()).toEqual([]); expect(fixture.statusWrites()).toEqual([]);
+});
+
+
+test('touch copies an empty terminal Goal', async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4209', viewport: { width: 320, height: 800 }, hasTouch: true });
+  try {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    const page = await context.newPage();
+    const fixture = await install(page); fixture.emptyGoal(); fixture.setGoalStatusFixture('done', false);
+    await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+    const surface = page.locator('.goal-detail-surface');
+    await surface.getByRole('button', { name: 'More Goal actions' }).tap();
+    await surface.getByRole('menuitem', { name: 'Copy link' }).tap();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`http://127.0.0.1:4209/projects/${projectId}/tasks/${goalId}`);
+    await expect(surface.locator('.task-detail-notifications').getByRole('status')).toHaveText('Link copied');
+  } finally { await context.close(); }
 });
