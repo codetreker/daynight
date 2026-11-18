@@ -352,6 +352,13 @@ func (d *writeWitnessProjectDAO) RotateTagCatalogEpoch(context.Context) error {
 	panic(d.f.unexpected("RotateTagCatalogEpoch"))
 }
 
+func (d *writeWitnessProjectDAO) RepositoryIdentity(context.Context) (*string, error) {
+	panic(d.f.unexpected("ProjectWriteDAO.RepositoryIdentity"))
+}
+func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, string) (bool, error) {
+	panic(d.f.unexpected("ProjectWriteDAO.RepositoryOccupied"))
+}
+
 func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	panic(s.f.unexpected("WorkerClaimAdmissionDAO"))
 }

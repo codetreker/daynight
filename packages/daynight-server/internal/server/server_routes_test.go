@@ -739,7 +739,7 @@ func (d projectHTTPCreateDAO) LockCreationTeam(ctx context.Context, id string) (
 func (d projectHTTPCreateDAO) CreationTeamMember(ctx context.Context, id string) (bool, error) {
 	return d.MemberCall(ctx, id)
 }
-func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, team string) (model.Project, model.ProjectAccess, error) {
+func (d projectHTTPCreateDAO) InsertProject(ctx context.Context, id, name, repo, identity, team string) (model.Project, model.ProjectAccess, error) {
 	return d.InsertCall(ctx, id, name, repo, team)
 }
 
@@ -2954,4 +2954,8 @@ func TestRootSharedIdentityAndSessionEngine(t *testing.T) {
 	if witness.calls != 4 {
 		t.Fatalf("identity calls after Session request = %d", witness.calls)
 	}
+}
+
+func (d projectHTTPCreateDAO) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
+ if identity == "" { panic("missing creation identity") }; return false,nil
 }

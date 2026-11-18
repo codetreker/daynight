@@ -20,7 +20,7 @@ func TestHTTPSubscriptionIdentityTransferConfirmationAndCleanup(t *testing.T) {
 	}{
 		{`INSERT INTO teams(id,name) VALUES($1,'A'),($2,'B')`, []any{teamA, teamB}},
 		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$3,'admin'),($2,$3,'admin')`, []any{teamA, teamB, actor.id}},
-		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'P',$3),($2,'Q',$4)`, []any{project, other, "https://example.test/" + project, "https://example.test/" + other}},
+		{`INSERT INTO projects(id,name,repo_url,repository_identity) VALUES($1,'P',$3,$3),($2,'Q',$4,$4)`, []any{project, other, "https://example.test/" + project, "https://example.test/" + other}},
 		{`INSERT INTO project_ownership(project_id,team_id) VALUES($1,$3),($2,$3)`, []any{project, other, teamA}},
 	} {
 		if _, err := f.db.Pool.Exec(f.ctx, q.sql, q.args...); err != nil {

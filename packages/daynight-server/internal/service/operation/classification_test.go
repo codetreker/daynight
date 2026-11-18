@@ -56,6 +56,28 @@ func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
 	}
 }
 
+func TestProjectRepositoryFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"project_repository_conflict", "project_repository_identity_unavailable"} {
+		t.Run(code, func(t *testing.T) {
+			fault := &model.Fault{Code: code, Message: "Repository registration refused."}
+			for _, safe := range []error{fault, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}} {
+				if got, ok := operation.KnownFault(safe); !ok || got != fault {
+					t.Fatalf("confirmed refusal was suppressed: %#v %v", got, ok)
+				}
+			}
+			for _, unsafe := range []error{
+				&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: fault},
+				&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: fault},
+				errors.Join(fault, &store.Error{DatabaseFailure: true, Cause: errors.New("private SQL")}),
+			} {
+				if got, ok := operation.KnownFault(unsafe); ok {
+					t.Fatalf("unreliable completion exposed a repository refusal: %#v", got)
+				}
+			}
+		})
+	}
+}
+
 func TestKnownTransferAndMediaFaultsRequireConfirmedRollback(t *testing.T) {
 	for _, code := range []string{"transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "invalid_image", "image_integrity", "image_decode_failed", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "media_outcome_unknown", "archive_conflict", "archive_incomplete"} {
 		fault := &model.Fault{Code: code, Message: "refused"}

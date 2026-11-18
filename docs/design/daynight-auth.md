@@ -712,8 +712,9 @@ ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessio
 在原迁移事务内提交，任一失败均回滚；历史 migration checksum 保持。
 
 项目创建在任何领域 SQL 前核对 `expectedUserId` 与 principal。指定 Team 时锁定目标行并在
-锁后读取当前成员资格；省略时锁定并验证调用者真实 Personal Team。随后在同一事务插入
-Project、ownership 与 creator direct admin grant。创建和删除共享 Team 存在性锁，删除的
+锁后读取当前成员资格；省略时锁定并验证调用者真实 Personal Team。随后在独立
+Read Committed 语句中查询目标 Team 的活跃仓库占用，由 `core/project` 拒绝冲突，再在同一事务
+插入 Project、持久仓库身份、ownership 与 creator direct admin grant。创建和删除共享 Team 存在性锁，删除的
 独立 Read Committed 查询能看到锁等待前提交的 ownership。未确认 COMMIT 与清理失败沿用
 Team 事务的结果分类，不自动重放。`model.Project.Ownership` 是真实内部聚合，
 Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性错误，没有运行时旧数据回退。
@@ -722,7 +723,11 @@ Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性�
 项目转移预览使用 Repeatable Read 快照，先验证当前 owner Team admin，再按目标 UUID
 读取最小 Team 引用与元数据版本，并结合目标成员角色和现存 direct grant 计算预期角色。
 转移使用 Read Committed，先锁 Project，再锁 ownership，最后按 UUID 升序锁 source/target
-Team（相同时只锁一次）；锁后重新检查主体、归属及版本。Team 删除持有同一 Team 锁，
+Team（相同时只锁一次）；锁后重新检查主体、归属及版本。当前 Team 的 no-op 保持原检查；
+实际转移读取受锁 Project 的持久仓库身份，再用独立 Read Committed 语句检查目标 Team
+活跃占用，且不锁其他 Project。NULL 身份返回 `project_repository_identity_unavailable`，
+冲突返回 `project_repository_conflict`；两者都在归属写入及 GitHub App 集成副作用前拒绝。
+[仓库占用设计](daynight-server.md#team-仓库占用)拥有身份、查询及释放机制。Team 删除持有同一 Team 锁，
 随后以新语句检查 ownership，因此转入和删除不会留下悬空归属。转移不取得 Task、credential
 或 Thread head 锁，不修改 grant 或邀请；回执中的当前 access 在事务内计算，提交确认后发送。
 Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team_id 对应的 Team，再锁

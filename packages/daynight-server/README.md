@@ -521,6 +521,44 @@ understand the renamed grants or inherited authority. After a committed migratio
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
 
+### Team repository uniqueness upgrade
+
+Stop and drain all old service instances and direct Project writers before
+starting the candidate service. Keep and verify a restorable paired database/file
+backup. The migration advisory lock coordinates migrators, not old writers;
+mixed old/new writing can violate the new occupancy rule.
+
+Migration 083 adds `projects.repository_identity text COLLATE "C"`, backfills in
+bounded batches using the frozen `repositoryidentity/v1` transform, and checks
+active occupancy within each Team before committing its ledger entry. Its frozen
+Go source and SQL live under
+`internal/core/store/postgres/schema/migrations/083/`; the SQL retains its
+`migrations/083_project_repository_identity.sql` relative path within that leaf
+package. A separate `register.go` exposes SQL without changing frozen content.
+The checksum includes the identity source and `migration083` transform source,
+including its version-specific diagnostics. Changing those diagnostics changes
+the checksum; relocating unchanged files does not. The published Worker task-tag
+filter migration retains version 082 and its existing ledger checksum.
+Original addresses, business timestamps, versions, grants and history survive.
+Equivalent active identities or duplicate active unparseable raw addresses in
+one Team abort the migration with Team and Project IDs and roll back all changes
+from that migration. Correct the identified records through an authorized data
+decision before retrying. Do not merge, delete or reassign records automatically.
+An isolated unparseable address retains a NULL identity and its raw value;
+diagnostics contain `migration_version=83`, `project_id` and
+`error_kind=project_repository_identity_unavailable`, never the address or
+credentials. Known repositories remain usable.
+
+Do not admit traffic until startup and migration succeed. If the migration has
+not committed, inspect the actual schema and migration ledger before deciding
+whether to restore the stopped old service. An unknown commit acknowledgment
+requires observation, not an assumed rollback or blind replay. After migration
+commits and before writes resume, prefer a corrected candidate; restoring an
+old binary requires restoring and verifying the pre-upgrade backup first. Old
+binaries reject an unknown migration version. Once new writes have been
+admitted, use forward recovery to preserve them. Never remove migration-ledger
+rows to make an old binary start.
+
 ## MCP HTTP entry
 
 The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
@@ -2424,8 +2462,11 @@ records the proof allocation and alternatives.
 
 `internal/core/store/postgres/schema/current.sql` records the final PostgreSQL
 format produced by the complete embedded migration history in
-`internal/core/store/postgres/schema/migrations/` and migration 026 in
-`internal/core/store/postgres/schema/migrations/026/`. The snapshot includes the
+`internal/core/store/postgres/schema/migrations/`. Migrations with frozen Go
+transforms retain their independent packages and internal layouts in the
+`026/` and `083/` version directories under that same history root. Their
+registration files expose the original SQL and transformation checksums without
+rewriting frozen content. The snapshot includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
 Runtime startup uses the snapshot for an empty target namespace and retains
@@ -3204,8 +3245,21 @@ syntax, including SSH aliases and `@` inside repository paths. HTTPS userinfo,
 SSH passwords, controls, query and fragment are refused. Credential-like
 ambiguous SCP forms are rejected; use explicit SSH URL syntax when needed.
 Registration performs no network, Git, clone or CLI-configuration operations.
-Different projects can reference the same repository. UUID IDs are canonicalized
-to hyphenated lowercase; project repository metadata has no update/delete API.
+Each ordinary or Personal Team can own at most one active Project for a repository
+identity; different Teams can own Projects for the same repository. Identity uses
+the existing HTTPS/SSH/SCP equivalence rules and preserves path case. Creation
+persists the identity with the original address, ownership and creator grant in
+one transaction. Creation and actual transfer share the target Team lock and
+check active occupancy in a separate Read Committed query after authorization
+and version checks. `project_repository_conflict` returns HTTP 409 or the known
+MCP domain-error envelope without exposing the conflicting Project. Refusal
+precedes ownership and GitHub App integration effects. Soft deletion or transfer
+out releases occupancy. An actual transfer of a legacy NULL identity returns
+HTTP 409 `project_repository_identity_unavailable`; reads, deletion and an
+authorized/version-matched same-Team no-op remain available. Existing request and
+success shapes remain unchanged, and unknown writes must not be replayed.
+UUID IDs are canonicalized to hyphenated lowercase; repository metadata cannot
+be updated after creation.
 
 Every Project resource, including list items and the project embedded in task
 graphs, includes `settings: {version, executionWarningMinutes}`. Migration
