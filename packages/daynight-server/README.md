@@ -1797,8 +1797,11 @@ mock and transaction policy.
 
 Project request validation uses a valid synthetic principal and a fail-on-access
 store for UUID, creation input, pagination and entropy refusals that precede
-storage. Real creation, readback, keyset paging and operational-error tests keep
-PostgreSQL. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
+storage. Real creation, readback and keyset paging use PostgreSQL. Controlled
+storage failures and returned pages let the Service tests verify error
+propagation and cursor encoding without a database. The Store suite exercises
+actual connection, query and driver errors. The [Project read error decision](../../.agents/notes/implemented/testing/2026-11-18-project-read-error-fixtures.md)
+records the split. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
 records the input and error-chain guarantees.
 
 Project settings cancellation tests run the Service transaction callback and Core

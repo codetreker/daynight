@@ -522,9 +522,26 @@ func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T
 			t.Fatalf("missing Project relation lost its driver cause: %v", err)
 		}
 	}
-	database = closedStore(t)
-	if err := database.ReadSnapshot(context.Background(), func(SnapshotScope) error { t.Error("closed pool entered snapshot callback"); return nil }); err == nil {
-		t.Fatal("closed snapshot pool hid failure")
+	closed := closedStore(t)
+	connection, closedPoolError := closed.Pool.Acquire(ctx)
+	if closedPoolError == nil {
+		connection.Release()
+		t.Fatal("closed pool allowed acquiring a connection")
+	}
+	err := closed.ReadSnapshot(ctx, func(SnapshotScope) error {
+		t.Fatal("closed pool entered snapshot callback")
+		return nil
+	})
+	var databaseError *Error
+	if !errors.As(err, &databaseError) || !errors.Is(err, closedPoolError) {
+		t.Fatalf("closed snapshot pool lost its cause: %v", err)
+	}
+	completion, err := closed.WriteProjectCreation(ctx, queryID(1), func(ProjectCreationDAO) error {
+		t.Fatal("closed pool entered project creation callback")
+		return nil
+	})
+	if completion.Outcome != TransactionNotCommitted || !errors.As(err, &databaseError) || !errors.Is(err, closedPoolError) {
+		t.Fatalf("closed project creation pool lost its outcome or cause: %+v %v", completion, err)
 	}
 }
 

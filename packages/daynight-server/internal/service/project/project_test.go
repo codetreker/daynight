@@ -19,7 +19,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func requireFault(t *testing.T, err error, code string) *model.Fault {
@@ -119,38 +118,6 @@ func TestCreateValidationAndEntropyFailure(t *testing.T) {
 	var fault *model.Fault
 	if !errors.Is(err, sentinel) || errors.As(err, &fault) {
 		t.Fatalf("entropy failure must retain operational cause: %v", err)
-	}
-}
-
-func TestProjectStoreFailuresRemainOperational(t *testing.T) {
-	projects, database, _, principal := projectService(t)
-	database.Close()
-	ctx := context.Background()
-	_, createErr := projects.Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Project", RepoURL: "https://example.com/repo"})
-	_, getErr := projects.Get(ctx, principal, "00000000-0000-0000-0000-000000000001")
-	_, listErr := projects.List(ctx, principal, model.PageRequest{Limit: 50})
-	for _, err := range []error{createErr, getErr, listErr} {
-		var fault *model.Fault
-		var databaseError *store.Error
-		if err == nil || errors.As(err, &fault) || !errors.As(err, &databaseError) {
-			t.Fatalf("database error was masked: %#v", err)
-		}
-	}
-}
-
-func TestProjectSnapshotQueryFailuresRemainOperational(t *testing.T) {
-	projects, database, _, principal := projectService(t)
-	if _, err := database.Pool.Exec(context.Background(), "DROP TABLE projects"); err != nil {
-		t.Fatal(err)
-	}
-	_, getErr := projects.Get(context.Background(), principal, "00000000-0000-0000-0000-000000000001")
-	_, listErr := projects.List(context.Background(), principal, model.PageRequest{Limit: 50})
-	for _, err := range []error{getErr, listErr} {
-		var fault *model.Fault
-		var pgError *pgconn.PgError
-		if err == nil || errors.As(err, &fault) || !errors.As(err, &pgError) || pgError.Code != "42P01" {
-			t.Fatalf("query error was masked: %#v", err)
-		}
 	}
 }
 
@@ -294,23 +261,6 @@ func TestProjectScopedPaginationAndValidation(t *testing.T) {
 	var domain *model.Fault
 	if err == nil || !errors.As(err, &operational) || errors.As(err, &domain) {
 		t.Fatalf("Team membership query failure must remain operational: %v", err)
-	}
-}
-
-func TestProjectCursorEncodingFailureIsOperational(t *testing.T) {
-	projects, database, _, principal := projectService(t)
-	for _, number := range []int{1, 2} {
-		if _, err := createPrivateProjectFixture(database, context.Background(), principal, fmt.Sprintf("00000000-0000-0000-0000-%012d", number), "Future", "host:repo"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := database.Pool.Exec(context.Background(), "UPDATE projects SET created_at = '10000-01-01'::timestamptz"); err != nil {
-		t.Fatal(err)
-	}
-	_, err := projects.List(context.Background(), principal, model.PageRequest{Limit: 1})
-	var fault *model.Fault
-	if err == nil || errors.As(err, &fault) || !strings.Contains(err.Error(), "encode project cursor") {
-		t.Fatalf("unrepresentable cursor must fail: %#v", err)
 	}
 }
 
