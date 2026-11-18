@@ -33,6 +33,7 @@ import { GoalMutationError } from './GoalMutationError';
 import { currentTaskTags } from '../task-tags/TaskTagList';
 import { TaskTagsEditor } from '../task-tags/TaskTagsEditor';
 import { GoalInformation } from './GoalInformation';
+import { UsageAggregatePanel } from '../usage-aggregate/UsageAggregatePanel';
 import { TaskDetailNotifications } from '../task-detail/TaskDetailNotice';
 import { TaskDetailActions } from '../task-detail/TaskDetailActions';
 import '../../styles/task-detail.css';
@@ -66,10 +67,10 @@ export type GoalDetailSurfaceProps = {
   readonly onRetryDetail?: () => void;
 };
 
-type Tab = 'description' | 'attachments' | 'discussion';
+type Tab = 'description' | 'attachments' | 'discussion' | 'usage';
 const emptyPausedTaskIds: ReadonlySet<string> = new Set();
 const goalStatuses: readonly TaskStatus[] = ['todo', 'in_progress', 'done', 'cancelled'];
-const normalize = (navigation: TaskDetailNavigation): TaskDetailNavigation & { readonly tab: Tab } => ({ ...navigation, tab: navigation.tab === 'attachments' || navigation.tab === 'discussion' ? navigation.tab : 'description' });
+const normalize = (navigation: TaskDetailNavigation): TaskDetailNavigation & { readonly tab: Tab } => ({ ...navigation, tab: navigation.tab === 'attachments' || navigation.tab === 'discussion' || navigation.tab === 'usage' ? navigation.tab : 'description' });
 
 const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot, presentation, fullscreen, navigation, onNavigate, onSelectTask, onNavigateExternalTask, onNavigateExternalChain, onClose, onRestoreFocus, onRefreshGraph, graphError, attachmentApi, attachmentUrls, renderNested, goalChildren, onGoalChildrenChange, detailError, detailRefreshing = false, resourceUnavailable = false, onRetryDetail }: GoalDetailSurfaceProps) => {
   const { locale, messages, format } = useI18n();
@@ -153,8 +154,8 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
     if (snapshot?.index.nodes.get(id)?.parentId === taskId || onNavigateExternalTask === undefined) onSelectTask(id, trigger);
     else browserNavigation().requestAction(() => onNavigateExternalTask(id, trigger));
   };
-  const tabs: readonly Tab[] = ['description', 'attachments', 'discussion'];
-  const labels: Record<Tab, string> = { description: messages.inspection.detail.description, attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title };
+  const tabs: readonly Tab[] = ['description', 'attachments', 'discussion', 'usage'];
+  const labels: Record<Tab, string> = { description: messages.inspection.detail.description, attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title, usage: zh ? '用量' : 'Usage' };
   useLayoutEffect(() => { document.getElementById(`${tabPrefix}-${selection.tab}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); }, [tabPrefix, selection.tab, messages]);
   const activate = (tab: Tab) => { if (tab !== selection.tab) setSelection({ ...selection, tab }); document.getElementById(`${tabPrefix}-${tab}`)?.focus(); };
   const keyTab = (event: KeyboardEvent<HTMLButtonElement>, tab: Tab) => {
@@ -180,6 +181,7 @@ const GoalContent = ({ projectId, taskId, detail, resourceState: task, snapshot,
           </KeptMountedSlot>
           <KeptMountedSlot className="task-detail-panel task-detail-panel-attachments" id={`${tabPrefix}-panel-attachments`} role="tabpanel" aria-labelledby={`${tabPrefix}-attachments`} active={selection.tab === 'attachments'}>{!scopeLost && <TaskAttachmentsPanel projectId={projectId} taskId={taskId} active={selection.tab === 'attachments'} attachments={attachments} reveal={reveal} navigation={reference !== null && reference.path === selection.path ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => setSelection({ tab: 'attachments', path })} onRemove={(path) => { if (selection.path === path) setSelection({ ...selection, path: null }); }} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} />}</KeptMountedSlot>
           <KeptMountedSlot className="task-detail-panel task-detail-panel-discussion" id={`${tabPrefix}-panel-discussion`} role="tabpanel" aria-labelledby={`${tabPrefix}-discussion`} active={selection.tab === 'discussion'}><TaskDiscussion key={scopeLost ? 'retired' : 'active'} projectId={projectId} taskId={taskId} active={selection.tab === 'discussion'} parentUnavailable={scopeLost} trackDraft owner={root} onDetailsOpenChange={(open) => { threadDetails.current = open; }} /></KeptMountedSlot>
+          <KeptMountedSlot className="task-detail-panel" id={`${tabPrefix}-panel-usage`} role="tabpanel" aria-labelledby={`${tabPrefix}-usage`} active={selection.tab === 'usage'}>{!scopeLost && <UsageAggregatePanel projectId={projectId} scope="goal" scopeId={taskId} active={selection.tab === 'usage'} onOpenTask={openTask} />}</KeptMountedSlot>
         </div><footer className="goal-detail-footer"><button className="button danger" type="button" disabled={!task.canDisplayDelete} onClick={() => { if (task.canDelete && !authRequestsPaused()) setConfirmation({ kind: 'delete', detail }); }}>{zh ? '删除 Goal' : 'Delete Goal'}</button></footer></div>
       </div>
       </TaskDetailNotifications>

@@ -65,6 +65,9 @@ own snapshot tokens. Decimal strings stay exact through formatting with BigInt.
 Unknown totals retain their metric labels and coverage instead of being inferred
 from available input or output. The usage tab uses the existing Detail route and
 retained panels, preserving unrelated reading and drafts through pagination resets.
+Chain and Goal views consume server aggregates and their missing-member cursors
+directly. Current graph filters never redefine accounting membership; the UI
+shows known coverage and unknown members independently of completeness categories.
 
 Controller journal format 014 keeps usage source identities, grants and pending
 events separate from timeline acknowledgements. Copilot's live immutable event
