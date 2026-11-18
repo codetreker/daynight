@@ -35,7 +35,7 @@ authenticated Resources discovery and reading channel.
 ## Consequences
 
 Clients using the overview incur one Resource read per context where it has not
-already been read. The two-sentence instruction is 148 UTF-8 bytes including its
+already been read. The two-sentence instruction is 214 UTF-8 bytes including its
 final newline, compared with the previous 2,267-byte instruction. Repetition and
 total context costs depend on client behavior, matching tools and reused guides;
 byte counts alone do not establish token savings. Existing topic identities and

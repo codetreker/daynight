@@ -35,7 +35,7 @@ func (manualTestOAuth) AuthenticateAccess(_ context.Context, token, resource str
 
 const manualOverviewURI = "daynight://manuals/overview.md"
 
-const expectedManualInstructions = "Daynight manages projects, tasks and goals, and agent sessions.\nBefore using its tools, read `daynight://manuals/overview.md` via `resources/read`.\n"
+const expectedManualInstructions = "Daynight manages projects, tasks and goals, and agent sessions, helping you organize work, coordinate agents, and track progress.\nBefore using its tools, read `daynight://manuals/overview.md` via `resources/read`.\n"
 
 type manualHandshake struct {
 	method       string
