@@ -651,17 +651,17 @@ process.on('message',signal=>{if(signal==='SIGINT'||signal==='SIGTERM')process.e
       return stopPromise;
     };
     try {
-      await writeFile(leaf, `const fs=require('node:fs');const net=require('node:net');const socket=net.connect(${address.port},'127.0.0.1');socket.on('connect',()=>fs.writeFileSync(${JSON.stringify(ready)},String(process.pid)));socket.on('error',()=>process.exit(0));socket.on('close',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'stopped');process.exit(0);});`);
-      await writeFile(helper, `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,[${JSON.stringify(leaf)}],{detached:true,stdio:${holdOutput ? "['ignore','inherit','ignore']" : "'ignore'"}});child.unref();fs.writeFileSync(${JSON.stringify(helperReady)},String(process.pid));const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})&&fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.exit(0);}},10);`);
+      await writeFile(leaf, `const fs=require('node:fs');const net=require('node:net');const socket=net.connect(${address.port},'127.0.0.1');socket.on('connect',()=>{${publishFixturePid(ready)}});socket.on('error',()=>process.exit(0));socket.on('close',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'stopped');process.exit(0);});`);
+      await writeFile(helper, `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,[${JSON.stringify(leaf)}],{detached:true,stdio:${holdOutput ? "['ignore','inherit','ignore']" : "'ignore'"}});child.unref();${publishFixturePid(helperReady)}const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})&&fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.exit(0);}},10);`);
       let outcome: { output?: string; error?: unknown } | undefined;
       let leafStarted = false;
       let escapedGroup: number | undefined;
       const result = runUpdateCommand({ executable: process.execPath, arguments: [helper], cwd: directory, environment: process.env, timeoutMs: 5_000, output: "capture", cleanupProcessGroup: true });
       const observed = result.then((output) => { outcome = { output }; }, (error: unknown) => { outcome = { error }; });
       try {
-        const helperPid = Number(await waitForFile(helperReady));
+        const helperPid = await waitForFixturePid(helperReady);
         const pgid = processGroupOf(helperPid);
-        const escapedPid = Number(await waitForFile(ready));
+        const escapedPid = await waitForFixturePid(ready);
         leafStarted = true;
         escapedGroup = processGroupOf(escapedPid);
         await writeFile(release, "release");
