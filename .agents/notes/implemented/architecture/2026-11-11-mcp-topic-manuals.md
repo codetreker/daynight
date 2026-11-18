@@ -28,6 +28,8 @@ The [Task read/write decision](2026-11-18-mcp-task-read-write.md) separates Task
 read projections from lifecycle writes without removing the Task read URI.
 The [dependency read/write decision](2026-11-18-mcp-dependency-read-write.md)
 separates graph reads from relationship writes.
+The [Session history decision](2026-11-18-mcp-session-history.md) separates
+observations and inspection from complete history reads.
 
 The fixed `productManualManifest` owns production paths, public metadata and
 strict content sizes. Loading and registration use that inventory; tests assert

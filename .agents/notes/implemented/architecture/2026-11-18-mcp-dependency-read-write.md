@@ -34,4 +34,6 @@ Graph-only reads require less content, while writers obtain complete graph, writ
 and safety guidance. The existing URI remains available with a revised scope;
 metadata, links, sizes and independent catalog expectations change together.
 The catalog grows by one Resource without changes to business schemas or runtime
-composition. Session observation and history remain in their existing topic.
+composition. At adoption, Session observation and history remained in their
+existing topic; the [Session history decision](2026-11-18-mcp-session-history.md)
+subsequently separates them.

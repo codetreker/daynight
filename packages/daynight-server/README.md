@@ -534,14 +534,16 @@ or invoke business operations.
 The handshake instructions introduce Daynight and direct clients to read
 `daynight://manuals/overview.md` with `resources/read` before using its tools;
 the URI can be read without first listing Resources. Authenticated MCP clients
-can also use `resources/list` to discover the overview and thirteen topic manuals,
+can also use `resources/list` to discover the overview and fifteen topic manuals,
 and `resources/read` to obtain each complete Markdown document. The overview
 routes by operation, distinguishes required and conditional topics, and explains
 result envelopes and schematic examples. Clients can reuse complete guidance
 while it remains applicable. Task reads and lifecycle writes have separate topics;
-dependency graph reads and writes also have separate topics. Session observations
-and history share a complete topic. Dependency-only writes require dependencies,
-dependency-writes and write-safety;
+dependency graph reads and writes also have separate topics. Session observations,
+location and inspection use session-reads; history pages and complete entries for
+an exact Session and source use session-history. Sending requires session-reads
+when establishing identity or admission; recovery retains the original operation.
+Dependency-only writes require dependencies, dependency-writes and write-safety;
 creation with dependencies or mixed updates also require task-writes.
 Steps, Thread, Session messages, and attachment reads and writes have separate
 guides. Every write requires the common write-safety guide and its operation's
