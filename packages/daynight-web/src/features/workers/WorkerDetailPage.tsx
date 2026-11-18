@@ -1,4 +1,4 @@
-import { useCallback, useId, useLayoutEffect, useState, type KeyboardEvent } from 'react';
+import { useCallback, useId, useLayoutEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { WorkerTaskSnapshot } from '../../api/workers';
 import type { WorkerAgent } from '../../api/types';
 import { useWorkerHistory } from '../../app/use-page-history';
