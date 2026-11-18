@@ -113,6 +113,17 @@ another case uses the fixture. Invalid migration-history cases restore the
 complete original ledger, including checksums and `applied_at`, and compare it
 before the next fault. A failed case stops subsequent fixture reuse.
 
+The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
+and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
+matrices each use one Store. Cases keep distinct App, grant, and Project
+identities with mutations restricted to their own rows. Signal tests hold the
+installation and repository identifiers constant across Apps and read committed
+pending rows by Project. Retirement cases finish their transaction before the
+next case. The trigger fault is observed as its PostgreSQL exception, the
+affected state is read back after rollback, and the trigger and function are
+removed and checked in the catalog before reuse. A failed case or transaction
+release stops the matrix.
+
 [Task write competition](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
 uses distinct Project and Task IDs inside each matrix's store. Actual lock
 observations, competing transactions, winner/version assertions and committed
