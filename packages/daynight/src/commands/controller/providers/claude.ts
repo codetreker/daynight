@@ -8,7 +8,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SDKUserMessage, PermissionResult, Options } from "@anthropic-ai/claude-agent-sdk";
 import { queryClaudeLive, releaseClaudeLiveRecord, type ClaudeLiveQuery } from "./claude-live.js";
-import { claudeUsageProfileSupported, claudeUsageProviderVersion } from "./claude-usage.js";
+import { claudeUsageProfileSupported, claudeUsageProviderVersion, createClaudeUsageCollector } from "./claude-usage.js";
 import { ClaudeImageInputs } from "./claude-image-input.js";
 import { ClaudeProjection } from "./claude-image-projection.js";
 import { openClaudeTranscriptHelper } from "./claude-transcript-helper.js";
@@ -49,6 +49,10 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     try { options.usageRuntime.ready?.({ nativeSessionId: nativeId, providerVersion }); }
     catch { usageGap("local_storage_failed"); }
   };
+  const usageCollector = createClaudeUsageCollector(event => {
+    try { options.usageRuntime?.observe({ nativeSessionId: nativeId, providerVersion: claudeUsageProviderVersion(native?.profile), event }); }
+    catch { usageGap("collector_failed"); }
+  }, () => usageGap("native_recovery_gap"));
   const pendingInputMessages = new Map<string, string>();
   const projectionOptions: ProviderOptions = { ...options, onInputMessage: (operationId, sessionId, entryId) => {
     if (sessionId !== nativeId) throw new Error("Native Claude input provenance identity mismatch.");
@@ -91,15 +95,15 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const project = (raw: unknown, history = false, historyContext?: { row: ClaudeTranscriptRecord; reader: ClaudeTranscriptReader; acknowledged?: Promise<void> }) => {
     const m = record(raw), message = record(m.message), type = string(m.type);
     if (m.session_id !== undefined) verify(m.session_id);
-    if (!history && !closed && !disconnected && (type === "system" || type === "assistant")) usageReady();
-    if (type === "assistant" && options.usageRuntime && !closed && !disconnected) {
+    if (!history && !closed && !disconnected && (type === "system" || type === "assistant" || type === "stream_event")) usageReady();
+    if ((type === "assistant" || type === "stream_event") && options.usageRuntime && !closed && !disconnected) {
       // History has no original SDK/backend provenance. The existing durable
       // usage ledger can replay its own facts without requalifying transcript rows.
       if (history) usageGap("native_recovery_gap");
-      else if (!verified || !claudeUsageProfileSupported(native?.profile)) usageGap("profile_unverified");
+      else if (!verified || !claudeUsageProfileSupported(native?.profile)) { usageCollector.discard(); usageGap("profile_unverified"); }
       else if (m.parent_tool_use_id === undefined) usageGap("subagent_scope_unknown");
       else if (m.parent_tool_use_id === null) {
-        try { options.usageRuntime.observe({ nativeSessionId: nativeId, providerVersion: claudeUsageProviderVersion(native?.profile), event: m }); }
+        try { usageCollector.observe(m); }
         catch { usageGap("collector_failed"); }
       }
     }
@@ -151,6 +155,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
 
     if (type === "result") {
       if (history || m.parent_tool_use_id || m.user_message_uuid && m.user_message_uuid !== currentTurnId) return;
+      usageCollector.discard();
       const interrupted = cancellation && cancellation.turnId === currentTurnId && m.user_message_uuid === currentTurnId && ["aborted_streaming", "aborted_tools"].includes(string(m.terminal_reason));
       // The result can precede the interrupt receipt. Only a successful native
       // receipt and an explicitly aborted result establish user cancellation.
@@ -223,6 +228,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   controls = new ClaudeControls(native as ClaudeControlQuery, options.resumeNativeSessionId ? null : options.model, options.resumeNativeSessionId ? undefined : config.effort, state, options.onControlConfirmed, !!options.resumeNativeSessionId, options.controlsRevisionFloor, options.assertNativeDispatch);
   const disconnect = (error: Error) => {
     if (disconnected || closed) return;
+    usageCollector.discard();
     usageGap("native_recovery_gap");
     disconnected = true; controls?.close(); input.close(); native?.close(); identityReject(error);
     for (const item of steered.values()) item.reject(error); steered.clear();
@@ -245,6 +251,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const close = (): Promise<void> => closing ??= (async () => {
     const stopped = new Error("Native Claude process stopped; pending operation results are unknown.");
     await (closeRequested ??= (async () => {
+      usageCollector.discard();
       closed = true; controls?.close(); input.close(); native?.close();
       for (const item of steered.values()) item.reject(stopped); steered.clear();
       for (const pending of accepted.values()) pending.reject(stopped); accepted.clear();

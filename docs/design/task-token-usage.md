@@ -200,14 +200,27 @@ measurement。停止和恢复保留 unsupported，不把无计量误写成零或
 
 Claude 复用相同 durable ingress、source hash、grant、独立 ACK 和停止后补传。
 `claude-message-input-0.3.247-v1` 仅接收实际 SDK=0.3.247、实际 CLI 版本已知、
-backend=anthropic 的实时 root assistant 包装消息；providerVersion 编码为
+backend=anthropic 的实时 root 消息完成流；providerVersion 编码为
 `<sdk>/<cli>/<backend>`，服务端还必须精确公布该组合的 qualification。
 
 来源键为 `claude-message-input-v1:<message.id>`，immutable revision=1。
 规范 input 是原生 input/cache-read/cache-creation 三项已知值之和，cache 是 input
 分项；output/reasoning/total/providerTotal 保持 null，不采集包装消息的输出占位值，
-不叠加 result.usage、modelUsage 或 stream_event。缺失字段保持 null，
+不叠加 result.usage 或 modelUsage。缺失字段保持 null，
 不安全整数逐字段变 null、保留其他已知值并记录 native_integer_unrepresentable。
+
+SDK 0.3.247 的流式 assistant 包装消息在每个 content_block_stop 后发出，
+stop_reason=null，之后的 message_delta 仍可修正输入和缓存，因此不能提前入账。
+采集器只缓存一个 root message_start 的原生 id、model 和输入三项白名单；
+message_delta 中存在且非 null 的输入项覆盖原值，未提供的项保持原值或未知，
+不采用 CLI 内部缺失转零或累计聚合。收到非空 stop_reason 后的 message_stop 才生成
+immutable 事实。子代理流不结束 root 缓冲；缺少 start、完成证明、原生身份或模型时
+记录 native_recovery_gap，不猜关联。新的 start 覆盖未完成消息、结果返回、取消、
+断连和停止均丢弃未完成缓冲并保留缺口。非流式包装消息仅在自身 stop_reason 非空、
+没有 aborted/error 标记且没有待完成流时可直接使用；中途 block 包装消息不入账。
+原生流语义以固定发布包
+[SDK 0.3.247 类型](https://unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.247/sdk.d.ts)
+中的 SDKAssistantMessage 与 SDKPartialAssistantMessage 为准。
 
 只有原生 profile 到达后才固定当前代次身份；提前到达的消息记录缺口。
 backend 未知或其他后端不准入计量，不把 proxy 返回的数值冒充 Anthropic 语义。

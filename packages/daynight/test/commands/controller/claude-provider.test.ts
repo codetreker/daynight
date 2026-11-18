@@ -629,7 +629,7 @@ test("Claude usage receives only identified root messages from the verified live
   const fixture = nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
   const usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
   const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
-  const message = { type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_usage", model: "claude-test", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+  const message = { type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_usage", stop_reason: "end_turn", model: "claude-test", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
   try {
     expect(usageRuntime.ready).toHaveBeenCalledWith({ nativeSessionId: provider.nativeSessionId, providerVersion: "0.3.247/2.1.247/anthropic" });
     fixture.emit(message); fixture.emit({ ...message, parent_tool_use_id: "child" }); fixture.emit({ ...message, type: "stream_event" });
@@ -671,7 +671,7 @@ test("Claude late native profile fixes the first usage identity without an unver
     }), observe: vi.fn(), gap: vi.fn(),
   };
   const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState() {}, onSpawn() {}, usageRuntime });
-  const message = { type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_late_profile", model: "claude-test", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+  const message = { type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_late_profile", stop_reason: "end_turn", model: "claude-test", content: [], usage: { input_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
   try {
     const gaps = usageRuntime.gap.mock.calls.length;
     fixture.emit(message);
@@ -697,5 +697,30 @@ test("Claude known versions with unknown backend register only an unqualified id
     fixture.emit({ type: "assistant", parent_tool_use_id: null, session_id: provider.nativeSessionId, message: { id: "msg_unknown_backend", content: [] } });
     await vi.waitFor(() => expect(usageRuntime.gap.mock.calls.length).toBeGreaterThan(gaps));
     expect(usageRuntime.observe).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test("Claude provider commits corrected input only after the root stream stops", async () => {
+  const fixture = nativeFixture(true, { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" });
+  const usageRuntime = { ready: vi.fn(), observe: vi.fn(), gap: vi.fn() };
+  let steering = false;
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline() {}, onState(value) { steering = value.capabilities.steer; }, onSpawn() {}, usageRuntime });
+  const stream = (event: unknown, parent_tool_use_id: string | null = null) => fixture.emit({ type: "stream_event", session_id: provider.nativeSessionId, parent_tool_use_id, event });
+  try {
+    stream({ type: "message_start", message: { id: "msg_final", model: "claude-test", usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+    fixture.emit({ type: "assistant", session_id: provider.nativeSessionId, parent_tool_use_id: null, message: { id: "msg_final", model: "claude-test", stop_reason: null, content: [], usage: { input_tokens: 0 } } });
+    stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 11, cache_read_input_tokens: 22, cache_creation_input_tokens: 33 } });
+    stream({ type: "message_stop" }, "child");
+    fixture.emit({ type: "system", subtype: "init", session_id: provider.nativeSessionId, capabilities: ["msg_lifecycle_v1", "interrupt_cancel_queued_v1"] });
+    await vi.waitFor(() => expect(steering).toBe(true));
+    expect(usageRuntime.observe).not.toHaveBeenCalled();
+    // The following stop is the only usage completion boundary in the sequence.
+    stream({ type: "message_stop" });
+    await vi.waitFor(() => expect(usageRuntime.observe).toHaveBeenCalledOnce());
+    expect(usageRuntime.observe.mock.calls[0]![0].event).toMatchObject({ message: { id: "msg_final", stop_reason: "end_turn", usage: { input_tokens: 11, cache_read_input_tokens: 22, cache_creation_input_tokens: 33 } } });
+    stream({ type: "message_start", message: { id: "msg_interrupted", model: "claude-test", usage: { input_tokens: 99 } } });
+    fixture.emit({ type: "result", session_id: provider.nativeSessionId, is_error: true });
+    await vi.waitFor(() => expect(usageRuntime.gap).toHaveBeenCalledWith("native_recovery_gap"));
+    expect(usageRuntime.observe).toHaveBeenCalledOnce();
   } finally { await provider.close(); }
 });

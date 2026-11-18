@@ -86,7 +86,23 @@ recovery replays retained ledger facts instead of requalifying historical rows
 with the current executable. Unsafe native integers become unknown per field,
 retaining other known cache facts and an explicit precision gap.
 
+Immutable Claude facts require native message completion. SDK 0.3.247 emits
+assistant wrappers at content-block completion while their input usage can still
+change in later message deltas. One bounded root stream retains only the native
+message ID, model and input fields, applies explicit non-null delta corrections,
+and commits at message_stop after a terminal stop_reason. Unfinished streams are
+discarded with a recovery gap on replacement, interruption, result, disconnect
+or shutdown; a child stream cannot terminate its parent. Complete non-streamed
+wrappers require their own terminal stop_reason and no aborted/error marker.
+
 ## Alternatives
+
+**Committing each completed Claude content block.** A completed text or tool
+block is useful timeline evidence, which originally made its assistant wrapper
+look sufficient for input accounting. Its null stop_reason and mutable native
+usage do not establish an immutable input fact. Waiting for the native message
+stop preserves the source identity and final corrections without inventing
+local revisions or summing pipeline results.
 
 **Measurements without execution coverage.** This cannot distinguish a complete
 empty execution from an unregistered or failed collector. A state row in the

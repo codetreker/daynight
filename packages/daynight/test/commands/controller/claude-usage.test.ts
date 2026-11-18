@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
-import { claudeUsageProfileSupported, claudeUsageProviderVersion, mapClaudeUsageEvent } from "../../../src/commands/controller/providers/claude-usage.js";
+import { claudeUsageProfileSupported, claudeUsageProviderVersion, createClaudeUsageCollector, mapClaudeUsageEvent } from "../../../src/commands/controller/providers/claude-usage.js";
 
 const profile = { sdkVersion: "0.3.247", cliVersion: "2.1.247", executable: "/native/claude", backend: "anthropic" as const };
-const event = () => ({ type: "assistant", parent_tool_use_id: null, message: { id: "msg_native", model: "claude-test", usage: { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, output_tokens: 0 } } });
+const event = () => ({ type: "assistant", parent_tool_use_id: null, message: { id: "msg_native", stop_reason: "end_turn", model: "claude-test", usage: { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, output_tokens: 0 } } });
 
 test("Claude input facts include disjoint cache while placeholder output stays unknown", () => {
   const mapped = mapClaudeUsageEvent(event());
@@ -49,4 +49,50 @@ test("qualification records actual CLI and backend without widening the fixed SD
   expect(claudeUsageProfileSupported(profile)).toBe(true);
   for (const value of [null, { ...profile, sdkVersion: "0.3.248" }, { ...profile, cliVersion: "unknown" }, { ...profile, backend: "unknown" as const }, { ...profile, backend: "bedrock" as const }]) expect(claudeUsageProfileSupported(value)).toBe(false);
   expect(claudeUsageProviderVersion({ ...profile, backend: "unknown" })).toBe("0.3.247/2.1.247/unknown");
+});
+
+test("block wrappers remain provisional until delta corrections and root message stop", () => {
+  const facts: unknown[] = [], gaps: string[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => gaps.push("gap"));
+  const stream = (event: unknown, parent_tool_use_id: string | null = null) => collector.observe({ type: "stream_event", parent_tool_use_id, event });
+  const complete = () => {
+    stream({ type: "message_start", message: event().message });
+    collector.observe({ ...event(), message: { ...event().message, stop_reason: null } });
+    stream({ type: "content_block_stop", index: 0 });
+    expect(facts).toHaveLength(0);
+    stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 40, cache_read_input_tokens: 50, cache_creation_input_tokens: 60 } });
+    stream({ type: "message_stop" }, "subagent");
+    expect(facts).toHaveLength(0);
+    stream({ type: "message_stop" });
+  };
+  complete();
+  const first = mapClaudeUsageEvent(facts[0]);
+  expect(first?.metrics).toMatchObject({ inputTokens: "150", cacheReadTokens: "50", cacheWriteTokens: "60", outputTokens: null });
+  facts.length = 0; complete();
+  const replay = mapClaudeUsageEvent(facts[0]);
+  expect(replay?.sourceKey).toBe(first?.sourceKey); expect(replay?.nativeMetrics).toEqual(first?.nativeMetrics);
+  expect(gaps).toEqual([]);
+});
+
+test("incomplete streams never manufacture immutable input facts", () => {
+  const facts: unknown[] = [], gaps: string[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => gaps.push("gap"));
+  const start = () => collector.observe({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: event().message } });
+  start(); start(); expect(gaps).toHaveLength(1);
+  collector.discard(); expect(gaps).toHaveLength(2);
+  start(); collector.observe({ ...event(), aborted: true }); expect(gaps).toHaveLength(3);
+  start(); collector.observe({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_stop" } });
+  expect(gaps).toHaveLength(4); expect(facts).toEqual([]);
+  expect(mapClaudeUsageEvent({ ...event(), message: { ...event().message, stop_reason: null } })).toBeNull();
+  expect(mapClaudeUsageEvent({ ...event(), aborted: true })).toBeNull();
+});
+
+test("output-only terminal delta preserves observed inputs without inventing missing cache", () => {
+  const facts: unknown[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => { throw new Error("Unexpected stream gap"); });
+  const stream = (event: unknown) => collector.observe({ type: "stream_event", parent_tool_use_id: null, event });
+  stream({ type: "message_start", message: { id: "msg_partial_cache", model: "claude-test", usage: { input_tokens: 10, cache_read_input_tokens: 0 } } });
+  stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 7 } });
+  stream({ type: "message_stop" });
+  expect(mapClaudeUsageEvent(facts[0])?.metrics).toMatchObject({ inputTokens: null, cacheReadTokens: "0", cacheWriteTokens: null, outputTokens: null });
 });
