@@ -23,11 +23,14 @@ transaction order within a case. The parent checks connection and transaction
 quiescence and the complete preserved seed contents after every child, including
 the last. Failure stops reuse. No case enters parallel scheduling.
 
-The reset probes the complete mutable table inventory for actual rows. It
+The [shared table reset](../../../../packages/daynight-server/internal/core/store/postgres/testdata/testutil/fixture_reset.go)
+probes the complete mutable table inventory for actual rows. It
 adds every table that directly or transitively references a populated table,
 including empty referencing tables that PostgreSQL requires in the same
 `TRUNCATE`. The statement explicitly lists only those mutable tables in the
-fixture schema. An empty set skips table truncation. Every reset still restores
+fixture schema. Both the probes and truncation address only the named relations.
+An empty set skips table truncation. Each suite retains its own transaction and
+sequence handling. Every Session reset still restores
 and reads back all captured sequence values and `is_called` flags, since a
 rolled-back write can advance a sequence without leaving rows. The migration
 ledger and four other snapshot seed tables retain exact content checks after
