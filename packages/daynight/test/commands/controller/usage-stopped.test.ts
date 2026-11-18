@@ -100,12 +100,14 @@ test.each(["explicit", "automatic"] as const)("retains ACKed local conflict evid
     return Response.json({ protocol: "daynight.usage.v1", schemaVersion: 1, writeEnabled: false, profiles: [] });
   };
   expect(await replayStoppedControllerUsage({ ...f, serverToken: "parent", request })).toEqual({ pending: 1 });
-  let task = { serverOrigin: f.ticket.serverOrigin, workerId: f.ticket.workerId, userId: f.ticket.userId, worktreeId: f.ticket.worktreeId, claimId: f.ticket.claimId, status: "done", cleanup: { kind: "terminal", discardRecording: mode === "explicit" }, webExecution: { executionId: f.ticket.executionId, executionGeneration: f.ticket.executionGeneration, launchId: f.ticket.launchId, sessionId: f.ticket.sessionId } } as LocalTask;
+  let task = { projectId: f.ticket.projectId, taskId: f.ticket.taskId, serverOrigin: f.ticket.serverOrigin, workerId: f.ticket.workerId, userId: f.ticket.userId, worktreeId: f.ticket.worktreeId, claimId: f.ticket.claimId, status: "done", cleanup: { kind: "terminal", discardRecording: mode === "explicit" }, webExecution: { executionId: f.ticket.executionId, executionGeneration: f.ticket.executionGeneration, launchId: f.ticket.launchId, sessionId: f.ticket.sessionId } } as LocalTask;
   if (mode === "explicit") {
     await expect(deleteWebRecording(f.home, task, () => task, () => true)).rejects.toThrow("unresolved local conflicts");
   } else {
     // The scheduler's task selection is controlled; journal admission and deletion stay real.
-    const webStore = { listCompletedTasks: () => [task], getTask: () => task, discardRecording: () => (task = { ...task, cleanup: { ...task.cleanup!, discardRecording: true } }) } as Parameters<typeof createWebArchiveMaintenance>[0]["webStore"];
+    type MaintenanceWebStore = Parameters<typeof createWebArchiveMaintenance>[0]["webStore"];
+    const selectedStore: Pick<MaintenanceWebStore, "listCompletedTasks" | "getTask" | "discardRecording"> = { listCompletedTasks: () => [task], getTask: () => task, discardRecording: () => (task = { ...task, cleanup: { ...task.cleanup!, discardRecording: true } }) };
+    const webStore = selectedStore as MaintenanceWebStore;
     const worker = openWorkerStore(path.join(f.home, "worker.sqlite")), signal = new AbortController();
     let failed!: () => void;
     const rejected = new Promise<void>(resolve => { failed = resolve; });
