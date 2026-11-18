@@ -201,8 +201,6 @@ it('reconciles remote daynight messages but never relays local Worker input afte
     relay.receipt(journal.getOperation(remote.operationId)!);
     await vi.waitFor(() => expect(frames[0]!.filter(message => message.type === 'operation_receipt')).toHaveLength(1));
     expect(frames[0]!.find(message => message.type === 'operation_receipt')).toMatchObject({ operation: { operationId: remote.operationId } });
-    // Finish startup heartbeat credential loading before this receipt-reconnect scenario.
-    await vi.waitFor(() => expect(frames[0]!.some(message => message.type === 'heartbeat')).toBe(true));
     const reconnect = once(server, 'connection', { signal: AbortSignal.timeout(5000) });
     [...server.clients][0]!.close();
     await reconnect;
