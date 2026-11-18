@@ -883,7 +883,7 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('region', { name: '描述' }).querySelector('.task-description')?.textContent).toBe(description);
     expect(document.querySelector('img')).toBeNull();
     expect(document.querySelector('script')).toBeNull();
-    expect(screen.getByText('被阻塞')).toBeVisible();
+    expect(screen.getByText('未就绪')).toBeVisible();
     expect(within(screen.getByRole('region', { name: '前置依赖' })).getByRole('button', { name: /^前置任务，普通依赖$/ })).toBeVisible();
     expect(within(screen.getByRole('region', { name: '当前未完成的前置' })).getByRole('button', { name: /^前置任务，普通依赖$/ })).toBeVisible();
     const next = within(screen.getByRole('region', { name: '任务图快照中的直接后续' })).getByRole('button', { name: /^后续任务，普通依赖$/ });
@@ -918,7 +918,7 @@ describe('task detail dialog', () => {
     const first = props({ taskId: old.id, snapshot: snapshot([detail(), old]) });
     const view = await open(first);
     await screen.findByRole('button', { name: '刷新任务图' });
-    expect(screen.getByText('被阻塞')).toBeVisible();
+    expect(screen.getByText('未就绪')).toBeVisible();
     expect(screen.getByRole('button', { name: '待处理' })).toBeDisabled();
     const refreshed = snapshot([detail(1, { status: 'done', ready: false, version: 2n }), fresh], 2);
     await view.rerender(<TaskDetailDialog {...first} snapshot={refreshed} />);

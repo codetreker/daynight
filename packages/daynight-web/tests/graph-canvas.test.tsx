@@ -170,12 +170,12 @@ describe('task dependency canvas', () => {
   it('exposes waiting main and external nodes with their own status and unfinished prerequisites', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
-    const main = screen.getByRole('button', { name: '最终验收，待处理，被阻塞' });
+    const main = screen.getByRole('button', { name: '最终验收，待处理，未就绪' });
     expect(main.closest('.task-node')).toHaveClass('task-node-todo');
     expect(within(main).getByText('待处理')).toHaveClass('graph-status-todo');
     const external = screen.getByRole('button', { name: '发布检查，待处理，外部前置' });
     expect(external.closest('.task-node')).toHaveClass('task-node-todo', 'task-node-external');
-    expect(within(external).queryByText('被阻塞')).toBeNull();
+    expect(within(external).queryByText('未就绪')).toBeNull();
   });
 
   it('changes direction with keyboard, retains inspection, and restores a saved choice after reopening', async () => {
@@ -430,7 +430,7 @@ describe('task dependency canvas', () => {
     fireEvent.click(nodeButton('合流实现…'));
     expect(nodeShell('合流实现…').classList.contains('task-node-selected')).toBe(true);
     expect(nodeShell('最终验收').classList.contains('task-node-todo')).toBe(true);
-    expect(within(nodeButton('最终验收')).getByText('被阻塞')).toBeTruthy();
+    expect(within(nodeButton('最终验收')).getByText('未就绪')).toBeTruthy();
     expect(within(nodeButton('合流实现…')).queryByText('共享')).toBeNull();
     expect(within(nodeButton('设计方案')).getByText('外部前置')).toBeTruthy();
     expect(nodeShell('设计方案').classList.contains('task-node-done')).toBe(true);
@@ -965,14 +965,14 @@ describe('progressive task visibility', () => {
     view.rerender(<><button type="button">详情关闭控件</button><TaskGraph index={refreshed} rootId={rootId} onOpenTask={noop} /></>);
     await rendered(view.container, 70, 69);
     expect(visibleIds(view.container)).toEqual(retainedIds);
-    expect(within(view.container.querySelector<HTMLElement>(`.react-flow__node[data-id="${revised.id}"]`)!).getByRole('button', { name: '更新后的直接后续，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
+    expect(within(view.container.querySelector<HTMLElement>(`.react-flow__node[data-id="${revised.id}"]`)!).getByRole('button', { name: '更新后的直接后续，待处理，未就绪，不在所选依赖路径中' })).toBeTruthy();
     expect(outside).toHaveFocus();
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(taskShell('合流任务 · 40 个外部前置')).toHaveClass('task-node-selected');
     const reset = resetControl();
     fireEvent.click(reset);
     await rendered(view.container, 50, 49);
-    expect(within(view.container.querySelector<HTMLElement>(`.react-flow__node[data-id="${revised.id}"]`)!).getByRole('button', { name: '更新后的直接后续，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
+    expect(within(view.container.querySelector<HTMLElement>(`.react-flow__node[data-id="${revised.id}"]`)!).getByRole('button', { name: '更新后的直接后续，待处理，未就绪，不在所选依赖路径中' })).toBeTruthy();
     expect(reset).toHaveFocus();
   });
 
@@ -993,7 +993,7 @@ describe('progressive task visibility', () => {
     await rendered(view.container, 50, 49);
     expect(view.container.querySelector('.task-graph-canvas')).toBe(previousCanvas);
     expect(view.container.querySelectorAll('.task-node-selected')).toHaveLength(0);
-    expect(within(view.container.querySelector<HTMLElement>('.react-flow__node[data-id="new-main"]')!).getByRole('button', { name: '新增直接后续，待处理，被阻塞' })).toBeTruthy();
+    expect(within(view.container.querySelector<HTMLElement>('.react-flow__node[data-id="new-main"]')!).getByRole('button', { name: '新增直接后续，待处理，未就绪' })).toBeTruthy();
     expect(outside).toHaveFocus();
   });
 

@@ -345,10 +345,10 @@ describe('status in shared production task details', () => {
     expect(getTask).toHaveBeenCalledTimes(1);
     await act(async () => { mutation.resolve(commit()); });
     await waitFor(() => expect(stat('In progress')).toHaveTextContent('1'));
-    expect(stat('To do')).toHaveTextContent('1'); expect(stat('Blocked')).toHaveTextContent('0'); expect(stat('Ready')).toHaveTextContent('1');
+    expect(stat('To do')).toHaveTextContent('1'); expect(stat('Not ready')).toHaveTextContent('0'); expect(stat('Ready')).toHaveTextContent('1');
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
     expect(within(dialog).getByText('Task status confirmed.')).toBeVisible();
-    expect(within(dialog).queryByText('Blocked', { selector: '.task-detail-blocked' })).toBeNull();
+    expect(within(dialog).queryByText('Not ready', { selector: '.task-detail-blocked' })).toBeNull();
     expect(document.querySelector('.root-status')).toHaveTextContent('In progress');
     expect(document.querySelector('.task-graph-canvas')).toBe(canvas); expect(viewport()).toBe(transform);
     expect(document.querySelector('.task-chain-dialog')).toHaveClass('task-chain-dialog-fullscreen');

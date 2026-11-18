@@ -187,7 +187,7 @@ describe('Goal task lists', () => {
     expect(rows.map((row) => row.closest('.task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
     expect(rows.map((row) => row.closest('.task-row')!.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
     expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'in_progress');
-    expect(rows[1]!.closest('.task-row')).toHaveTextContent('被阻塞');
+    expect(rows[1]!.closest('.task-row')).toHaveTextContent('未就绪');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
     expect(disclosure().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');

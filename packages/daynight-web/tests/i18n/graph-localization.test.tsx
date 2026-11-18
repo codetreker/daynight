@@ -70,13 +70,13 @@ describe('localized task graph presentation', () => {
     const waitingIndex = buildGraphIndex(waitingGraph);
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} summaries={summariesForIndex(waitingIndex)} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
       openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
-    const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked, No Goal' });
+    const selected = await screen.findByRole('button', { name: '最终验收, To do, not ready, No Goal' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-progress-label')).toHaveTextContent('0/2 completed');
     expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite, No Goal' })).toBeVisible();
     view.setLocale('zh-CN');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('待处理');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞, 未归属 Goal' })).toBe(selected);
+    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪, 未归属 Goal' })).toBe(selected);
     expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置, 未归属 Goal' })).toBeVisible();
     expect(layout).toHaveBeenCalledTimes(1);
   });
@@ -94,7 +94,7 @@ describe('localized task graph presentation', () => {
     const selected = screen.getByRole('button', { name: '合流实现…, In progress, No Goal' });
     fireEvent.click(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收, To do, blocked, No Goal, outside the selected dependency path' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收, To do, not ready, No Goal, outside the selected dependency path' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '设计方案, Done, external prerequisite, No Goal, prerequisite of the selected task' })).toBeTruthy();
     const initialTransform = viewport(view.baseElement).style.transform;
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
@@ -114,7 +114,7 @@ describe('localized task graph presentation', () => {
     expect(view.baseElement.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 进行中');
     expect(screen.getByRole('button', { name: '合流实现…，进行中, 未归属 Goal，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞, 未归属 Goal，不在所选依赖路径中' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收，待处理，未就绪, 未归属 Goal，不在所选依赖路径中' })).toBeTruthy();
     expect(screen.getByRole('img', { name: '普通依赖：前置任务 A → 后续任务 C，所选依赖路径' })).toBe(relation);
     expect(screen.getByRole('group', { name: '任务依赖关系' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('button', { name: '放大' })).toHaveAttribute('title', '放大'));
@@ -145,7 +145,7 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const view = renderWithLocale(<><LanguageSelector /><TaskGraph index={index} rootId={rootId} onOpenTask={open} /></>, { locale: 'en', taskCache: true });
     await waitFor(() => { expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50); });
-    const body = screen.getByRole('button', { name: '合流任务 · 40 个外部前置, To do, blocked' });
+    const body = screen.getByRole('button', { name: '合流任务 · 40 个外部前置, To do, not ready' });
     fireEvent.click(body);
     expect(view.container.querySelector('.graph-hidden-prerequisites')).toHaveTextContent('40 additional upstream tasks are hidden');
     const expand = screen.getByRole('button', { name: 'Expand 20 prerequisite tasks and 20 dependencies, 20 prerequisites still hidden' });
@@ -161,7 +161,7 @@ describe('localized task graph presentation', () => {
     expect(screen.getByRole('button', { name: 'Reset overview' })).toBeTruthy();
     expect(screen.getByText('Chain 61 · External 40 · Tasks 70/101 · Dependencies 69/100')).toBeTruthy();
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
-    expect(screen.getByRole('button', { name: '合流任务 · 40 个外部前置，待处理，被阻塞，已选中' })).toBe(body);
+    expect(screen.getByRole('button', { name: '合流任务 · 40 个外部前置，待处理，未就绪，已选中' })).toBe(body);
     expect(body.closest('.task-node')).toHaveClass('task-node-selected');
     expect(view.container.querySelector('.graph-hidden-prerequisites')).toHaveTextContent('另有20个上游未展开');
     expect(screen.getByRole('button', { name: '展开前置 20 个任务、20 条依赖' })).toBeTruthy();

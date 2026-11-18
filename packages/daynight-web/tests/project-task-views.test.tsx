@@ -537,7 +537,7 @@ describe('project task views', () => {
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000001')).toBeVisible(); expect(row('00000000-0000-4000-8000-000000000002')).toBeVisible();
     expect(row('00000000-0000-4000-8000-000000000001').closest('.task-row')!.querySelector('.task-ready')).toHaveTextContent('可开始');
-    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.graph-blocked-badge')).toHaveTextContent('被阻塞');
+    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.graph-blocked-badge')).toHaveTextContent('未就绪');
     expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.task-ready')).toBeNull();
     expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.root-status')).toHaveTextContent('待处理');
   });
