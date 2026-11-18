@@ -24,6 +24,40 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); invalidateAuthRequests(); vi.useRealTimers(); });
 
 describe('Worker configuration editing lifetime', () => {
+  it('retains the omitted filter draft when an unrelated unknown write reconciles without support', async () => {
+    const filter = { names: ['Backend'], match: 'any' as const }, value = { ...configurationValue(), taskTagFilter: filter };
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(configurationResource('1', value)))
+      .mockRejectedValueOnce(new TypeError('connection lost'))
+      .mockResolvedValueOnce(configurationResponse(configurationResource('2', { ...value, maxConcurrent: 3 })));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, maxConcurrent: '3', taskTagFilter: { ...draft.taskTagFilter!, input: 'new' } })));
+    await act(async () => result.current.save()); await flush();
+    expect(result.current.notice).toBe('reconciled'); expect(result.current.uncertain).toBe(false);
+    expect(result.current.draft?.taskTagFilter).toEqual({ ...filter, input: 'new' });
+    expect(result.current.dirty).toBe(true); expect(result.current.saveableDirty).toBe(false);
+    const writes = fetch.mock.calls.filter(([, options]) => options?.method === 'PUT');
+    expect(writes).toHaveLength(1); expect(JSON.parse(String(writes[0]![1]!.body)).value.taskTagFilter).toEqual(filter);
+  });
+  it.each([false, true])('reconciles an unknown filter write while preserving subsequent edits: %s', async edited => {
+    const value = { ...configurationValue(), taskTagFilter: { names: [], match: 'any' as const } };
+    const observed = (revision: string, names: string[]) => ({ ...configurationResource(revision, { ...value, taskTagFilter: { names, match: 'any' as const } }), observationRevision: '1', observation: { baseRevision: '0', desiredRevision: '1', reportedAt: '2026-01-01T00:00:00Z', items: [{ key: { kind: 'taskTagFilter' as const }, targetRevision: '1', appliedValue: 'a'.repeat(64), state: 'applied' as const, error: null, lastFailure: null, nextAttemptAt: null }] } });
+    const put = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(configurationResponse(observed('1', []))).mockImplementationOnce(() => put.promise).mockResolvedValueOnce(configurationResponse(observed('2', ['BACKEND'])));
+    vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useWorkerConfiguration(workerId(1), { readEnabled: true }), { wrapper: wrapper(makeScope()) }); await flush();
+    act(() => result.current.setDraft(draft => ({ ...draft, taskTagFilter: { ...draft.taskTagFilter!, input: 'backend' } })));
+    let saving!: Promise<void>; act(() => { saving = result.current.save(); }); await flush();
+    if (edited) {
+      act(() => result.current.setDraft(draft => ({ ...draft, taskTagFilter: { ...draft.taskTagFilter!, input: 'other' } })));
+      act(() => result.current.setDraft(draft => ({ ...draft, taskTagFilter: { ...draft.taskTagFilter!, input: 'backend' } })));
+    }
+    put.reject(new TypeError('connection lost')); await act(async () => saving); await flush();
+    expect(result.current.notice).toBe('reconciled'); expect(result.current.uncertain).toBe(false);
+    expect(result.current.draft?.taskTagFilter).toEqual(edited ? { names: [], match: 'any', input: 'backend' } : { names: ['backend'], match: 'any', input: '' });
+    expect(result.current.dirty).toBe(edited);
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+  });
   it('saves pending filter text and preserves later edits during the write', async () => {
     const filter = { names: ['Backend'], match: 'any' as const };
     const value = { ...configurationValue(), taskTagFilter: filter };

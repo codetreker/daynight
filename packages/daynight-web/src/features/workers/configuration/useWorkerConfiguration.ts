@@ -196,8 +196,9 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
             return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'conflict', uncertain: false, unavailable: false, submission: null, protectedDraft: true };
           }
           const archiveBaseline = !submitted.archiveSessionsSupported && observedArchive !== undefined ? { ...reconciled.baselineDraft, archiveSessions: observedArchive } : reconciled.baselineDraft;
-          const archiveDraft = !submitted.archiveSessionsSupported && observedArchive !== undefined && reconciled.draft !== null && old.draft?.archiveSessions === old.baselineDraft?.archiveSessions ? { ...reconciled.draft, archiveSessions: observedArchive } : reconciled.draft;
-          return { ...old, resource, draft: archiveDraft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: archiveBaseline, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), protectedDraft: false };
+          let archiveDraft = !submitted.archiveSessionsSupported && observedArchive !== undefined && reconciled.draft !== null && old.draft?.archiveSessions === old.baselineDraft?.archiveSessions ? { ...reconciled.draft, archiveSessions: observedArchive } : reconciled.draft;
+          if (!submitted.tagFilterOmitted && draftRevision === submitted.draftRevision && archiveDraft !== null) archiveDraft = withBaselineFilter(archiveDraft, archiveBaseline.taskTagFilter);
+          return { ...old, resource, draft: archiveDraft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: archiveBaseline, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), protectedDraft: draftRevision !== submitted.draftRevision };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
         const protectedDraft = conflict && old.draft !== null && !configurationDraftsEqual(old.draft, submitted.draft) &&
