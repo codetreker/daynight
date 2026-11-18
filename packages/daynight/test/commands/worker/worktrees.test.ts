@@ -993,16 +993,54 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
   }, 30_000);
 
   it("exposes a real fetch timeout without creating a branch or registration", async () => {
-    const f = await fixture(); const blocker = path.join(f.root, "block-fetch.cjs");
-    await writeFile(blocker, "setInterval(() => {}, 1000);\n");
+    const f = await fixture();
+    const blocker = path.join(f.root, "block-fetch.cjs"), ready = path.join(f.root, "upload-pack-ready"), release = path.join(f.root, "upload-pack-release");
+    await writeFile(blocker, [
+      'const { existsSync, writeFileSync } = require("node:fs");',
+      `setInterval(() => { if (existsSync(${JSON.stringify(release)})) process.exit(0); }, 10);`,
+      'setTimeout(() => process.exit(86), 12000).unref();',
+      `writeFileSync(${JSON.stringify(ready)}, "ready");`,
+      "",
+    ].join("\n"));
     git(f.repository, ["config", "remote.origin.uploadpack", `\"${process.execPath}\" \"${blocker}\"`]);
-    const adapter = manager(f.root, { startOwnedGit: (cwd, args, op, options) => startOwnedRepositoryGit(cwd, args, op, args.includes("fetch") ? { ...options, timeoutMs: 1500 } : options) });
-    const failure = await adapter.prepareWorktree(f.project, f.owner, operation()).then(() => null, (error: unknown) => error);
-    expect(failure).toBeInstanceOf(Error);
-    expect(errorText(failure)).toContain("deadline exceeded");
-    expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
-    expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
-  });
+    const timeoutMs = 1500;
+    let timer: ReturnType<typeof captureSynchronousDeadline<OwnedRepositoryGit>> | undefined;
+    const adapter = manager(f.root, {
+      startOwnedGit: (cwd, args, op, options) => {
+        if (!args.includes("fetch")) return startOwnedRepositoryGit(cwd, args, op, options);
+        if (timer !== undefined) throw new Error("Unexpected second fetch in the deadline fixture.");
+        timer = captureSynchronousDeadline(() => startOwnedRepositoryGit(cwd, args, op, { ...options, timeoutMs }));
+        return timer.result;
+      },
+    });
+    const preparation = reservation(adapter.prepareWorktree(f.project, f.owner, operation())).then(() => null, (error: unknown) => error);
+    try {
+      const captured = await vi.waitFor(async () => {
+        expect(await readFile(ready, "utf8")).toBe("ready");
+        if (timer === undefined) throw new Error("Fetch timer was not captured.");
+        return timer;
+      }, { timeout: 5_000, interval: 10 });
+      expect(captured.count).toBe(1);
+      expect(captured.requested).toBe(timeoutMs);
+      let settlement: GitSettlement | undefined;
+      void captured.result.joined.then(saved => { settlement = saved; });
+      captured.markReady();
+      await captured.expire();
+      await vi.waitFor(() => expect(settlement).toMatchObject({ kind: "local-closed" }), { timeout: 4_000, interval: 10 });
+      const failure = await preparation;
+      expect(failure).toBeInstanceOf(Error);
+      expect(errorText(failure)).toContain("deadline exceeded");
+      expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/daynight/${ids.taskId}`])).toBe("");
+      expect(worktreePaths(f.repository)).toEqual([path.normalize(f.repository)]);
+      expect(privateBases(f.repository)).toBe("");
+    } finally {
+      try {
+        await writeFile(release, "release");
+        timer?.result.requestStop();
+        await Promise.allSettled([preparation, timer?.result.joined]);
+      } finally { timer?.restore(); }
+    }
+  }, 20_000);
 
   it("does not create a branch when cancellation interrupts the refresh", async () => {
     const f = await fixture(); const controller = new AbortController(); const cancelled = new Error("refresh cancelled");
