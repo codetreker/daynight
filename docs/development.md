@@ -187,6 +187,12 @@ a concurrent text acknowledgement. The SDK, transport, and process joins
 remain real; observer tests check the production deadline separately. The
 [bridge route clock decision](../.agents/notes/implemented/testing/2026-11-18-copilot-bridge-route-clock.md)
 owns this boundary.
+The compiled bridge route and read-authority fixtures that exercise ordinary
+shutdown acknowledge and exit. The retained-media scenario still acknowledges
+without exiting, proving the real signal fallback exactly once; a dedicated
+graceful shutdown scenario checks normal exit without a signal. The
+[bridge shutdown fixture decision](../.agents/notes/implemented/testing/2026-11-18-copilot-bridge-fixture-shutdown.md)
+owns these process lifetimes.
 Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
