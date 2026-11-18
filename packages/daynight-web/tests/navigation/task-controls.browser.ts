@@ -25,6 +25,7 @@ type FixtureOptions = {
   readonly exposePreviousUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
   readonly additionalTasks?: readonly TaskDetail[];
   readonly exposeDeleteTask?: (remove: () => void) => void;
+  readonly dualPauseReceipt?: boolean;
 };
 
 async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, options: FixtureOptions = {}) {
@@ -56,6 +57,11 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
       expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, type: 'task', tagIds: [], tagMatch: 'all', untagged: false, limit: 15 });
       return send({ projectId, total: 1, items: [{ id: task.id, type: task.type, parentId: task.parentId, projectId, tags: task.tags, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
+    }
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}` && request.method() === 'PATCH' && options.dualPauseReceipt) {
+      expect(request.postDataJSON()).toEqual({ version: Number(task.version), properties: { paused: false } });
+      task = { ...task, version: task.version + 1n, updatedAt: '2026-10-22T10:02:00Z', properties: { ...task.properties, paused: false, blocked: false } };
+      return send(task);
     }
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
@@ -119,6 +125,15 @@ async function openDialog(page: Page) {
   await expect(dialog).toHaveAccessibleName('Target task');
   return dialog;
 }
+
+test('confirms the existing unpause action with a dual-key service receipt', async ({ page }) => {
+  const writes = await install(page, true, false, false, false, true, undefined, {}, { dualPauseReceipt: true });
+  const dialog = await openDialog(page);
+  await expect(dialog.getByText('Paused', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Unpause' }).click();
+  await expect(dialog.getByText('The task is unpaused.')).toBeVisible();
+  expect(writes).toEqual([`PATCH /api/v1/projects/${projectId}/tasks/${taskId}`]);
+});
 
 for (const width of [320, 1280]) for (const kind of ['detail', 'graph'] as const) {
   test(`keyboard-opened ${kind} covers the open status filter at ${width}px`, async ({ page }) => {

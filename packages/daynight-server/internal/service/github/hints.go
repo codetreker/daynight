@@ -70,7 +70,7 @@ func (r *run) hints(ctx context.Context) error {
 	}
 	var failures error
 	for _, h := range hints {
-		if e := r.hint(ctx, h, owner, name); e != nil {
+		if e := r.hint(ctx, h, owner, name, nil); e != nil {
 			failures = errors.Join(failures, e)
 			if fatal(e) {
 				return failures
@@ -82,7 +82,7 @@ func (r *run) hints(ctx context.Context) error {
 	}
 	return errors.Join(failures, r.release(ctx))
 }
-func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name string) error {
+func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name string, pollID *string) error {
 	// Each hint retains its own context through fetch, publication and acknowledgement.
 	job := *r
 	job.log = r.log.With("hint_id", h.RequestID, "delivery_id", h.DeliveryID)
@@ -105,7 +105,7 @@ func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name str
 		}
 		return err
 	}
-	p, err := core.Normalize(o, r.project, *r.connection.RepositoryID, time.Time{}, nil)
+	p, err := core.Normalize(o, r.project, *r.connection.RepositoryID, time.Time{}, pollID)
 	if err != nil {
 		return r.hintFailure(ctx, h, err)
 	}

@@ -24,6 +24,12 @@ Controller journal 的唯一编号序列为 `001`–`014`，当前格式为 v14�
 
 `save` 要求调用者的原写事务仍有效，同时执行构造时传入的写权限断言；store 不开始第二套事务。已有 entry 不得改变序号、回退 revision，或在相同 revision 下改变内容。正文写入与 `timeline_totals` 的增减属于同一事务。逻辑 timeline 大小精确为 `length('{"entries":[]}') + SUM(byte_length) + max(entry_count-1, 0)`；普通新增写入的上限为 128 MiB 和 100000 条，替换扣除旧长度，历史修订不累计计费。存量读取和历史导入不按这些上限拒绝数据。
 
+保存入口接受显式 `TimelineContentPolicy`：`task_body` 仅保留 `user_message` 与 `assistant_message`，`bot_detail` 和兼容默认 `legacy` 保留全部合法类型。结果为 `{contentPolicy,status}`，其中 `status` 为 `saved`、`unchanged` 或 `excluded`。这些是当前事务内的结果；调用者的外层事务仍可能回滚。被排除条目仍须满足存量条目结构及身份校验，但不进行正文 JSON 序列化、hash 或新增正文容量准入，也不写正文、统计或编号。已有同 ID 保留行不能用被排除条目覆盖，否则拒绝写入，保留原证据。此入口不迁移或清除旧历史，不通过消息文本判断工具内容。
+
+生命周期的 `saveTimelineHistory(entry, policy)` 在原 journal 写事务内调用该入口，要求调用者已分配稳定的 `entryId`、`entrySeq` 和 `revision`；它不追加 outbox、不推进 source 序号或 ACK，也不修改 `operations` 中的待确认操作。不能从筛选后的历史推导在线工具的身份或修订。现有 `projectTimeline` 经同一入口明确选择 `legacy`，因为在线重连、待审批读取、工具图片位置与资源闭包仍依赖完整 timeline。`testExecutionId` 同时用于 Bot 和普通 Test Session，不足以推断 Bot 策略。
+
+此模块接口不声明生产方支持 `taskBodyHistoryVersion=1`。启用正文策略须同时完成独立在线状态、重连、审批、源水位、工具资源生命周期及版本化同步和归档适配；此前不能把旧全量来源标记为 `contentPolicy=task_body`。该激活边界与成本见[保存策略决策](../../.agents/notes/implemented/architecture/2026-11-18-timeline-history-policy.md)。
+
 存量正文和资源读取复用协议的结构校验，但不套用新增输入的容量限制；普通发布仍执行完整新增写入准入。每次读取验证 JSON、id、kind、序号、revision、长度与 hash。重新打开时核对实际 COUNT/SUM 与统计；损坏暴露为错误，不重建或覆盖统计。`iterate(visitor)` 在调用者的同步读事务内耗尽 SQLite statement，不返回活跃 iterator，也不允许跨 await 保留快照。
 
 普通发布在原 immediate 写事务中规范化输入、采用已提交的 user/daynight 来源、比较当前内容、分配或保留 entrySeq、递增 revision、保存正文和 totals，并追加原 outbox；相同内容保持 no-op。Markdown projection state、原生图片接收证据、原图槽/出现位置/关联及不可变 publication receipt 与正文同事务提交。迟到回执、`patchNativeImagePart` 和 Markdown rebase 都重新读取当前行；原 operation/native 身份、unknown quarantine 与不重放原生输入的规则保持。

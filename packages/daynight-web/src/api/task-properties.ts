@@ -11,7 +11,13 @@ const jsonValue = (value: unknown): JsonValue => {
 
 export const parseTaskProperties = (value: unknown): TaskProperties => {
   const data = record(value);
-  return Object.fromEntries(Object.entries(data).map(([name, item]) => [name, jsonValue(item)]));
+  const hasPaused = Object.hasOwn(data, "paused");
+  const hasBlocked = Object.hasOwn(data, "blocked");
+  if (hasPaused && typeof data.paused !== "boolean" || hasBlocked && typeof data.blocked !== "boolean" ||
+      hasPaused && hasBlocked && data.paused !== data.blocked) return malformed();
+  const properties = Object.fromEntries(Object.entries(data).filter(([name]) => name !== "blocked").map(([name, item]) => [name, jsonValue(item)]));
+  if (hasBlocked && !hasPaused) properties.paused = data.blocked as boolean;
+  return properties;
 };
 
 const pullRequest = (value: unknown): PullRequestProperty => {

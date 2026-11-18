@@ -110,7 +110,7 @@ test("Codex reports unsupported coverage without converting snapshots to measure
 
 test("Claude durable ingress keeps known cache facts when native input precision is unavailable", async () => {
   const f = await fixture(true, "claude");
-  const event = { type: "assistant", parent_tool_use_id: null, message: { id: "msg_fixed", model: "claude-fixture", usage: { input_tokens: Number.MAX_SAFE_INTEGER + 1, cache_read_input_tokens: 20, cache_creation_input_tokens: 30 } } };
+  const event = { type: "assistant", parent_tool_use_id: null, message: { id: "msg_fixed", stop_reason: "end_turn", model: "claude-fixture", usage: { input_tokens: Number.MAX_SAFE_INTEGER + 1, cache_read_input_tokens: 20, cache_creation_input_tokens: 30 } } };
   f.runtime.observe({ ...f.native, event }); f.runtime.observe({ ...f.native, event });
   const state = f.store.states()[0]!, measurements = f.store.pending(state.stateId).filter(item => item.payload.kind === "measurement");
   expect(state.provider).toBe("claude"); expect(measurements).toHaveLength(1);

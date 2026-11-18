@@ -38,17 +38,7 @@ func (r *run) poll(ctx context.Context) error {
 				return e
 			}
 		}
-		// One hint per page bounds the work stolen from the poll.
-		hints, e := r.pending(ctx, 1)
-		if e != nil {
-			return e
-		}
-		if len(hints) > 0 {
-			if e = r.hint(ctx, hints[0], owner, name); e != nil && (fatal(e) || fail(e).Code == "github_rate_limited") {
-				return e
-			}
-		}
-		return nil
+		return r.pollHint(ctx, owner, name)
 	})
 	if err != nil {
 		if fatal(err) {
@@ -82,6 +72,15 @@ func (r *run) poll(ctx context.Context) error {
 			if e = r.publish(ctx, []githubpr.Observation{o}, &r.lease.Token); e != nil {
 				return r.pollFailure(ctx, e)
 			}
+			if e = r.pollHint(ctx, owner, name); e != nil {
+				if fatal(e) {
+					return e
+				}
+				if accessErr := r.confirmPRFailure(ctx, e); accessErr != nil {
+					return accessErr
+				}
+				return r.pollFailure(ctx, e)
+			}
 			after = n
 		}
 	}
@@ -90,6 +89,21 @@ func (r *run) poll(ctx context.Context) error {
 		w.ReleaseClaim = true
 	})
 }
+
+// A single hint at each publication boundary keeps both sources progressing.
+func (r *run) pollHint(ctx context.Context, owner, name string) error {
+	hints, err := r.pending(ctx, 1)
+	if err != nil {
+		return err
+	}
+	if len(hints) > 0 {
+		if err = r.hint(ctx, hints[0], owner, name, &r.lease.Token); err != nil && (fatal(err) || fail(err).Code == "github_rate_limited") {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *run) pollFailure(ctx context.Context, cause error) error {
 	if fatal(cause) {
 		return cause

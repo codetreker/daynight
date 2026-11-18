@@ -19,14 +19,25 @@ const response = (value: unknown, status = 200, principal = TEST_VIEWER_ID) => n
 afterEach(() => vi.unstubAllGlobals());
 
 describe('task pause contract', () => {
-  it.each([{}, { paused: true }, { paused: false }])('preserves absence and explicit booleans in detail and synchronized summaries: %j', (properties) => {
-    expect(parseTaskDetail({ ...initial, properties }, project, taskId).properties).toEqual(properties);
-    expect(parseTaskSummary({ ...summary, properties }).properties).toEqual(properties);
-    expect(readTaskPaused(properties)).toBe(Object.hasOwn(properties, 'paused') ? properties.paused : undefined);
+  it.each([
+    [{}, {}], [{ paused: true }, { paused: true }], [{ paused: false }, { paused: false }],
+    [{ blocked: true }, { paused: true }], [{ blocked: false }, { paused: false }],
+    [{ blocked: true, paused: true }, { paused: true }], [{ blocked: false, paused: false }, { paused: false }],
+  ])('normalizes task pause properties in detail and synchronized summaries: %j', (properties, expected) => {
+    const input = { ...properties, future: { nested: [null, true] } };
+    const normalized = { ...expected, future: { nested: [null, true] } };
+    expect(parseTaskDetail({ ...initial, properties: input }, project, taskId).properties).toEqual(normalized);
+    expect(parseTaskSummary({ ...summary, properties: input }).properties).toEqual(normalized);
+    expect(readTaskPaused(normalized)).toBe('paused' in expected ? expected.paused : undefined);
   });
-  it.each([null, 'true', 'false', 0, 1, [], {}])('rejects a malformed present pause in details and synchronization: %j', (paused) => {
-    expect(() => parseTaskDetail({ ...initial, properties: { paused } }, project, taskId)).toThrow('invalid response');
-    expect(() => parseTaskSummary({ ...summary, properties: { paused } })).toThrow('invalid response');
+  it.each([
+    ...[null, 'true', 'false', 0, 1, [], {}].flatMap(value => [
+      { paused: value }, { blocked: value }, { paused: true, blocked: value }, { paused: value, blocked: true },
+    ]),
+    { paused: true, blocked: false }, { paused: false, blocked: true },
+  ])('rejects malformed or contradictory pause properties: %j', (properties) => {
+    expect(() => parseTaskDetail({ ...initial, properties }, project, taskId)).toThrow('invalid response');
+    expect(() => parseTaskSummary({ ...summary, properties })).toThrow('invalid response');
   });
   it('submits one property-only PATCH with the complete exact version', async () => {
     const confirmed = vi.fn(); const fetcher = vi.fn().mockResolvedValue(response(changed)); vi.stubGlobal('fetch', fetcher);
@@ -34,6 +45,14 @@ describe('task pause contract', () => {
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tasks/${taskId}`, expect.objectContaining({
       method: 'PATCH', credentials: 'same-origin', cache: 'no-store', redirect: 'error', body: '{"version":9007199254740993,"properties":{"paused":false}}',
     }));
+    expect(confirmed).toHaveBeenCalledOnce();
+  });
+  it('accepts a dual-key receipt while retaining the legacy write', async () => {
+    const confirmed = vi.fn();
+    const fetcher = vi.fn().mockResolvedValue(response({ ...changed, properties: { ...changed.properties, blocked: false } }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(unpauseTask(project, taskId, version, signal(), { ...admission, onWriteConfirmed: confirmed })).resolves.toEqual(changed);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tasks/${taskId}`, expect.objectContaining({ body: '{"version":9007199254740993,"properties":{"paused":false}}' }));
     expect(confirmed).toHaveBeenCalledOnce();
   });
   it('accepts an exact-version no-op and retains a version conflict without retrying', async () => {

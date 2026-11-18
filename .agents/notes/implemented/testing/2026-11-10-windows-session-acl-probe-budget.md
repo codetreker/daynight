@@ -32,7 +32,11 @@ exactly one explicit, non-inherited current-user FullControl allow ACE and the
 operation store to reject it. Native timeouts still use SIGKILL, await actual
 child closure, and preserve the original error as the cause. Stage diagnostics,
 fixture cleanup, production ACL behavior, and unrelated test budgets retain
-their existing ownership.
+their existing ownership. The later
+[oracle phase evidence decision](2026-11-18-windows-oracle-phase-evidence.md)
+adds command lifecycle and script checkpoints after another empty-output
+timeout at the retained 30-second bound; it does not establish a cause for
+either historical stall.
 
 The historical
 [30-second initialization watchdog](https://github.com/codetreker/daynight/blob/30ef332cdce36e33850b9f1766f12ba675bb88b2/packages/daynight-web/scripts/acceptance/runner.test.mts#L70)

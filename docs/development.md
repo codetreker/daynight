@@ -278,8 +278,17 @@ and validates canonical Base64 plus strict UTF-8 decoding, preserving Unicode
 independently of the console code page. Its sixty-second allowance belongs to a
 ninety-second test; production capture and inspection do not use it as a
 fallback. Mismatch diagnostics retain hashes, lengths and qualification flags
-without raw command text. The child is stopped and its close joined even when
-an assertion fails. The
+without raw command text. Both this CIM oracle and the independent Session
+operation-store ACL oracle use a shared test-only command runner. It records
+process spawn, script checkpoints, deadline, exit and close observations;
+failures retain bounded phase history and output diagnostics with the original
+command error. Script checkpoints distinguish PowerShell entry, ACL operations,
+CIM module initialization/query and output conversion. The unused command input
+is closed explicitly. Their existing 60-second CIM and 30-second ACL command
+deadlines remain unchanged; neither oracle retries failed commands. The
+[oracle evidence decision](../.agents/notes/implemented/testing/2026-11-18-windows-oracle-phase-evidence.md)
+records the unresolved historical cause and retained independent assertions.
+The child is stopped and its close joined even when an assertion fails. The
 [native Windows proof decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-native-process-proof.md)
 owns the implementation and its dependency limits; the
 [startup budget decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)

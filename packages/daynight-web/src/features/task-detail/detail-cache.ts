@@ -25,9 +25,11 @@ const validateRecord = (value: DetailRecord, ticket: SyncTicket, manifest: Proje
       value.userFence !== manifest.userFence || value.cacheGeneration !== manifest.cacheGeneration ||
       !Number.isSafeInteger(value.lastUsedAt) || value.lastUsedAt < 0 || !Number.isSafeInteger(value.byteSize) || value.byteSize < 0 ||
       Object.hasOwn(value.detail, "ready") || Object.hasOwn(value.detail, "blockedBy")) throw new Error("Invalid detail cache record.");
+    // The stored size describes the original representation, before property normalization.
+    if (value.byteSize !== detailByteSize(value.detail) || value.byteSize > DETAIL_CACHE_LIMITS.recordBytes) throw new Error("Invalid detail cache size.");
     const detail = intrinsic(parseTaskDetail({ ...value.detail, ready: false, blockedBy: [] }, ticket.projectId, value.taskId));
     const summary = summaries.get(value.taskId);
-    if (summary === undefined || !sameSummary(summary, summaryOf(detail)) || value.byteSize !== detailByteSize(detail) || value.byteSize > DETAIL_CACHE_LIMITS.recordBytes) throw new Error("Invalid detail cache content.");
+    if (summary === undefined || !sameSummary(summary, summaryOf(detail))) throw new Error("Invalid detail cache content.");
     return { ...value, detail };
   } catch (error) { throw new TaskCacheError("corrupt", error); }
 };
@@ -53,7 +55,7 @@ export const readCachedDetail = async (scope: TaskCacheScope, ticket: SyncTicket
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return null;
     const record = validateRecord(row, ticket, manifest, summaries);
-    await store.put({ ...record, lastUsedAt: Date.now() });
+    await store.put({ ...row, lastUsedAt: Date.now() });
     return record.detail;
   }));
 

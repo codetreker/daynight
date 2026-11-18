@@ -107,7 +107,8 @@ func waitAppWorkLock(t *testing.T, s *Store, query string) {
 	defer cancel()
 	for {
 		var waiting bool
-		err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE $1 AND pid<>pg_backend_pid())`, query).Scan(&waiting)
+		err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND application_name=current_setting('application_name')
+			AND wait_event_type='Lock' AND query LIKE $1 AND pid<>pg_backend_pid())`, query).Scan(&waiting)
 		if err != nil {
 			t.Fatal(err)
 		}
