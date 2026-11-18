@@ -317,3 +317,54 @@ func TestLimitsSharedWithTypeScript(t *testing.T) {
 	}
 
 }
+
+func TestArchiveRejectsInvalidRetainedRecording(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(map[string]any)
+	}{
+		{"non-string completeness", func(archive map[string]any) { archive["completeness"] = float64(1) }},
+		{"unfinished run", func(archive map[string]any) {
+			run := mapAt(archive["runs"].([]any)[0])
+			run["stoppedAt"], run["stopProof"] = nil, nil
+		}},
+		{"stop proof without stop time", func(archive map[string]any) {
+			mapAt(archive["runs"].([]any)[0])["stoppedAt"] = nil
+		}},
+		{"frame row exceeds byte limit", func(archive map[string]any) {
+			file := mapAt(archive["files"].([]any)[0])
+			frame, err := strictJSON([]byte(stringAt(file["data"])))
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := mapAt(mapAt(frame)["rows"].([]any)[0].([]any)[0])
+			row["text"] = strings.Repeat("x", MaxRowBytes+1)
+			data := wireBytes(t, frame)
+			file["data"], file["byteLength"], file["sha256"] = string(data), fmt.Sprint(len(data)), HashBytes(data)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			archive := fixtureObject(t, "valid-archive")
+			test.change(archive)
+			if _, err := DecodeArchive(wireBytes(t, archive)); err == nil {
+				t.Fatal("invalid retained recording accepted")
+			}
+		})
+	}
+}
+
+func TestArchiveStatusMessageDiscriminator(t *testing.T) {
+	for _, message := range []Message{
+		{Envelope: Envelope{Type: "archive_status"}},
+		{Envelope: Envelope{Type: "other"}, Payload: ArchiveStatus{State: "pending"}},
+		{Envelope: Envelope{Type: "archive_status"}, Payload: (*ArchiveStatus)(nil)},
+	} {
+		if _, err := json.Marshal(message); err == nil {
+			t.Fatal("invalid archive status envelope accepted")
+		}
+	}
+	message := Message{Envelope: Envelope{Type: "archive_status"}, Payload: ArchiveStatus{State: "pending"}}
+	if _, err := json.Marshal(message); err != nil {
+		t.Fatal(err)
+	}
+}
