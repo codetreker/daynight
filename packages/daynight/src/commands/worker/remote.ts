@@ -35,8 +35,8 @@ export type WorkerRemote = {
   project(projectId: string, signal: AbortSignal): Promise<Project>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
   ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void, onFailure?: (projectId: string, error: unknown) => void): Promise<WorkerInventory>;
-  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal, platformSpecific?: boolean): AsyncGenerator<Task>;
-  claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal): Promise<Task>;
+  candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal, platformSpecific?: boolean, candidateWorkerId?: string): AsyncGenerator<Task>;
+  claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal, taskTagFilterKey?: string): Promise<Task>;
   update(task: Task, input: Omit<UpdateWorkerClaimInput, "version" | "claimId">, signal: AbortSignal): Promise<Task>;
 };
 
@@ -167,14 +167,14 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       signal.throwIfAborted();
       return { tasks: result, coveredProjectIds, unavailableProjectIds };
     },
-    candidates: async function* (projectId, platform, signal, platformSpecific) {
-      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, automaticCandidate: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }) }, signal)) {
+    candidates: async function* (projectId, platform, signal, platformSpecific, candidateWorkerId) {
+      for await (const task of taskPages(projectId, { ready: true, allowAgents: true, automaticCandidate: true, compatiblePlatform: platform, assignedTo: "me", ...(platformSpecific === undefined ? {} : { platformSpecific }), ...(candidateWorkerId === undefined ? {} : { candidateWorkerId }) }, signal)) {
         if (readWorkerClaim(task.properties)?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
         yield task;
       }
     },
-    claim: async (candidate, descriptor, signal) => {
-      const claimed = await request(signal, (api) => api.claimWorkerTask(candidate.projectId, candidate.id, { ...descriptor, version: candidate.version }));
+    claim: async (candidate, descriptor, signal, taskTagFilterKey) => {
+      const claimed = await request(signal, (api) => api.claimWorkerTask(candidate.projectId, candidate.id, { ...descriptor, version: candidate.version, ...(taskTagFilterKey === undefined ? {} : { taskTagFilterKey }) }));
       if (readWorkerClaim(claimed.properties)?.userId !== verifiedUserId()) throw new ApiError({ operation: "worker.claim", projectId: candidate.projectId, taskId: candidate.id }, "protocol", {
         cause: new ProtocolError("The granted worker claim belongs to a different authenticated user."), outcomeUnconfirmed: true,
       });

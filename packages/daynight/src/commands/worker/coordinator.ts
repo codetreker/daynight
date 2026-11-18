@@ -17,6 +17,7 @@ import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
+import { ApiError } from "../../api/client.js";
 import type { Task, TaskPlatform, WorkerClaim, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import { ARCHIVE_REPAIR_PROBE_INTERVAL_MS, ensureCleanupSchedule } from "./cleanup-schedule.js";
 import { WorkerCleanupError } from "./cleanup-error.js";
@@ -51,6 +52,8 @@ export type WorkerCoordinatorOptions = {
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration | null; maxConcurrent: number;
   preferPlatformSpecificTasks: boolean;
   recoveryLimit?: number;
+  taskTagFilterKey?: string | null;
+  onConfigurationStale?: () => void;
   prepareProject?: (projectId: string, signal: AbortSignal) => Promise<void>;
   configurationComplete?: () => boolean;
   onPromptDemand?: (projectIds: readonly string[]) => void;
@@ -59,10 +62,11 @@ export type WorkerCoordinatorOptions = {
   requestReconcile?: () => void;
   monitoring?: ReturnType<typeof createMonitoringObserver>;
 };
-export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds" | "recoveryLimit">;
+export type WorkerCoordinatorConfiguration = Pick<WorkerCoordinatorOptions, "repositories" | "globalConfiguration" | "maxConcurrent" | "preferPlatformSpecificTasks" | "readyProjectIds" | "targetProjectIds" | "recoveryLimit" | "taskTagFilterKey">;
 
 const configurationView = (value: WorkerCoordinatorConfiguration): WorkerCoordinatorConfiguration => Object.freeze({
   maxConcurrent: value.maxConcurrent,
+  ...(value.taskTagFilterKey === undefined ? {} : { taskTagFilterKey: value.taskTagFilterKey }),
   ...(value.recoveryLimit === undefined ? {} : { recoveryLimit: value.recoveryLimit }),
   preferPlatformSpecificTasks: value.preferPlatformSpecificTasks,
   ...(value.readyProjectIds === undefined ? {} : { readyProjectIds: Object.freeze([...value.readyProjectIds]) }),
@@ -1477,7 +1481,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       capacityWarning = warning;
       if (warning !== "") options.emit({ kind: "cleanup-capacity-blocked", message: `Worker capacity is full; failed cleanup retains ${blocked.length} slot(s). ${blocked.map(identity => { const state = cleanupFailure(identity)!; return `${identity}: ${state.stage}, next retry ${new Date(state.nextAttemptAt).toISOString()}, ${state.lastError}`; }).join("; ")}. Correct the reported resource or archive failure; retries are automatic. Unconfirmed execution stops retain their slots.` });
     }
-    if (!allMappingsObserved() || capacity(resources) >= configuration.maxConcurrent || configuration.repositories.length === 0) return;
+    if (!allMappingsObserved() || capacity(resources) >= configuration.maxConcurrent || configuration.repositories.length === 0 || configuration.taskTagFilterKey === null) return;
     reconciliationPhase = "claim-search";
     observe(m => { m.setPhase("claim-search"); if (cycleCoverage === "complete") m.setAdmission("unknown", []); });
     const acquisitionConfiguration = configuration;
@@ -1499,14 +1503,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (!coveredProjects.has(repository.project.projectId) || !prepared.has(repository.project.projectId) || !resources.scannedProjects.has(repository.project.projectId)) { searchIncomplete = true; cycleCoverage = "partial"; exhausted.add(index); continue; }
           let page = candidates.get(index);
           if (page === undefined) {
-            page = platformSpecific === undefined
-              ? options.remote.candidates(repository.project.projectId, options.platform, normalSignal)
-              : options.remote.candidates(repository.project.projectId, options.platform, normalSignal, platformSpecific);
+            page = typeof acquisitionConfiguration.taskTagFilterKey === "string"
+              ? options.remote.candidates(repository.project.projectId, options.platform, normalSignal, platformSpecific, options.workerId)
+              : platformSpecific === undefined
+                ? options.remote.candidates(repository.project.projectId, options.platform, normalSignal)
+                : options.remote.candidates(repository.project.projectId, options.platform, normalSignal, platformSpecific);
             candidates.set(index, page);
           }
           let next: IteratorResult<Task>;
           try { next = await page.next(); }
           catch (error) {
+            if (acquisitionConfiguration.taskTagFilterKey !== undefined && error instanceof ApiError && error.phase === "response" && error.status === 400 && (error.code === "invalid_cursor" || error.code === "invalid_input" && error.serverMessage === "Cursor is invalid for this list.")) options.onConfigurationStale?.();
             if (!isUnavailableProject(error)) {
               if (!isWorkerCancellation(error, normalSignal)) {
                 projectSearchFailure = true;
@@ -1560,7 +1567,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           reconciliationPhase = "claim-request";
           observe(m => m.setPhase("claim-request"));
           try {
-            const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, agentControlMode: "web", worktreeId }, normalSignal);
+            const descriptor = { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, agentControlMode: "web" as const, worktreeId };
+            const granted = typeof claimConfiguration.taskTagFilterKey === "string"
+              ? await options.remote.claim(candidate, descriptor, normalSignal, claimConfiguration.taskTagFilterKey)
+              : await options.remote.claim(candidate, descriptor, normalSignal);
             const owner = remoteOwner(granted);
             if (readWorkerClaim(granted.properties)?.agentControlMode !== "web") throw new Error("The granted claim is not a Web execution.");
             const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: "web", nativeConfiguration: frozenConfiguration });
@@ -1574,6 +1584,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             return;
           } catch (error) {
             if (isWorkerCancellation(error, normalSignal)) throw error;
+            if (claimConfiguration.taskTagFilterKey !== undefined && error instanceof ApiError && error.phase === "response" && error.confirmedRefusal && error.status === 409 && ["claim_conflict", "version_conflict", "worker_task_tag_filter_unsupported"].includes(error.code ?? "")) options.onConfigurationStale?.();
             if (isUnavailableProject(error)) options.onInventory?.(null);
             cycleCoverage = "partial";
             observe(m => m.setAdmission("partial", [...quarantinedReasons(admissionAt), { code: "claim-unconfirmed", scope: { kind: "project", projectId: candidate.projectId }, observedAt: new Date(now()).toISOString(), nextAttemptAt: null }]));
