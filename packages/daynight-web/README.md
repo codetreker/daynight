@@ -362,9 +362,9 @@ credential and prompt owners retain drafts and operation results across tab
 navigation; neither secrets nor drafts enter the URL or history state. Leaving the
 account still protects unsaved prompt edits, and continuing editing restores the
 prompt URL and focus. See the [tab URL decision](../../.agents/notes/implemented/feature/2026-11-17-account-tab-urls.md).
-Worker monitoring, configuration and prompts tabs also participate in Back and
-Forward, scoped to the current user and Worker; both editing owners retain their
-drafts and operation state.
+Worker runtime monitoring, system monitoring, configuration and prompts tabs
+also participate in Back and Forward, scoped to the current user and Worker;
+both editing owners retain their drafts and operation state.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -547,13 +547,13 @@ unavailable for editing.
 ## My Workers
 
 The account-owned `/workers` list shows Workers that have reported within the
-last 72 hours. `/workers/{workerId}` presents Runtime monitoring, Configuration
-and Prompts as peer tabs, defaulting to Runtime monitoring. Arrow keys wrap
-between tabs and Home and End select the first and last; tab and panel
-accessibility associations and hidden-panel isolation remain intact. Runtime
-observations retain that window, while cloud configuration and the Worker prompt
-are independent resources. Configuration includes tool paths; Prompts contains
-the Worker prompt editor. Both routes support direct access, reloads and
+last 72 hours. `/workers/{workerId}` presents Runtime monitoring, System
+monitoring, Configuration and Prompts as peer tabs, defaulting to Runtime
+monitoring. Arrow keys wrap between tabs and Home and End select the first and
+last; tab and panel accessibility associations and hidden-panel isolation remain
+intact. Both monitoring tabs share the Worker snapshot and its window, while
+cloud configuration and the Worker prompt are independent resources.
+Configuration includes tool paths; Prompts contains the Worker prompt editor. Both routes support direct access, reloads and
 login return destinations. They mount inside the existing authenticated
 workspace and share its navigation, styles and language. Sidebar project loading
 or failure does not admit or block Worker reads. Worker ID participates in the
@@ -572,8 +572,9 @@ change that relative order.
 The list also reads current monitoring summaries in batches of at most 100 loaded
 Worker IDs. Cards show the scheduling phase and capacity, including the capacity
 stale indicator, without admission reasons or monitoring timestamps and age.
-Detail shows scheduling and admission, actual capacity, parallel
-activities, current failures and the latest recovery before host resources. Task
+Runtime monitoring shows scheduling and admission, actual capacity, parallel
+activities, current failures and the latest recovery. System monitoring separately
+shows host resources, environment and software. Task
 associations open the existing task detail; fixed diagnostic categories and real
 retry times are displayed without inventing external waits or deadlines. Claim failures may show a selectable, wrapping project-relative worktree path or a localized unavailable reason; the path provides no file operation or ownership proof.
 
@@ -589,10 +590,14 @@ Background checks retain page interaction and
 configuration drafts. The [monitoring contract](../../docs/spec/daynight-worker-monitoring.md)
 owns its fields and permission projection.
 
-The detail overview places the current task panel or retained task snapshot after read and offline notices, before runtime monitoring and host telemetry. Its DOM order matches the visual and keyboard order.
+Runtime monitoring places the current task panel or retained task snapshot after
+read and offline notices, before scheduler and capacity observations. Its DOM
+order matches the visual and keyboard order. System monitoring shares the same
+Worker snapshot and clock without another read on tab selection; its refresh
+reads only the snapshot and does not display runtime monitoring errors.
 
-Detail resource cards render actual OS type/release/version/architecture, CPU
-model/logical processor count/use, used/total memory and available/total capacity
+System monitoring resource cards render actual OS type/release/version/architecture,
+CPU model/logical processor count/use, used/total memory and available/total capacity
 of the startup working directory's filesystem. Capacity readings use localized
 IEC units while the API retains exact byte values. The directory is explicit; there
 is no inferred physical core count or fabricated device label. Zero capacity is
@@ -621,7 +626,7 @@ complete collection and exposes retry. Its last response supplies `observedAt`
 and the paired `performance.now()` receipt for a common server-time anchor.
 Online means less than 120 seconds since `lastReportedAt`; exactly 120 seconds
 is offline. Exactly 72 hours remains recent; later observations disappear, and
-an expired runtime overview becomes unavailable. This does not clear or block
+expired monitoring views become unavailable. This does not clear or block
 the Configuration tab. Browser wall-clock changes do not affect
 these rules.
 

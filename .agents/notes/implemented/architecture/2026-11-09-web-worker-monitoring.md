@@ -13,7 +13,9 @@ while a page or request still holds associated details.
 
 The Worker pages read the independent monitoring contract alongside the existing
 snapshot. The list batches loaded Worker IDs, and detail shows the actual scheduler,
-capacity, activities, failures and latest recovery before host resources. Redis
+capacity, activities, failures and latest recovery in Runtime monitoring. The
+[system monitoring decision](2026-11-18-worker-system-monitoring-tab.md) places
+host resources on a peer tab. Redis
 observation time and a monotonic browser clock determine monitoring freshness;
 the existing heartbeat clock still determines online status. Missing, expired and
 failed reads remain distinct. The [Web design](../../../../docs/design/daynight-web.md#我的-worker-列表与详情)

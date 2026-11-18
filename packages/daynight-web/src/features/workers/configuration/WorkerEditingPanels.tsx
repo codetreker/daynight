@@ -14,7 +14,7 @@ export const WorkerEditingPanels = ({ id, workerId, platform, section, readEnabl
   readonly id: string;
   readonly workerId: string;
   readonly platform?: ExecutionPlatform;
-  readonly section: 'overview' | 'configuration' | 'prompt';
+  readonly section: 'overview' | 'system' | 'configuration' | 'prompt';
   readonly readEnabled: boolean;
   readonly online: boolean | null;
   readonly tasks: readonly WorkerTaskSnapshot[];

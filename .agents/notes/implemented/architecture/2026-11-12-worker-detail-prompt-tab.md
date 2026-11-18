@@ -11,8 +11,10 @@ must preserve drafts, navigation admission and the lifetime of dispatched writes
 
 ## Decision
 
-Worker detail presents Runtime monitoring, Configuration and Prompts as peer
-tabs. A page-level editing coordinator owns both resource controllers and a
+Worker detail originally separated Runtime monitoring, Configuration and Prompts as
+peer tabs. The later [system monitoring decision](2026-11-18-worker-system-monitoring-tab.md)
+adds a peer tab for host telemetry while preserving the editing boundary. A
+page-level editing coordinator owns both resource controllers and a
 single Worker draft scope. Each tab enables its own resource reads; opened
 editors remain mounted across tab changes. The coordinator combines dirty and
 pending, uncertain, and configuration receipt publication states for owner retention while each

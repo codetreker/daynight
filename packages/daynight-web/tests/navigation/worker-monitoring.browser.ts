@@ -25,7 +25,7 @@ const retainedObservation = () => ({
   })),
 });
 const install = async (page: Page, retained = false, locale = 'zh-CN') => {
-  const state = { fail: false, activity: true };
+  const state = { fail: false, activity: true, detailReads: 0, monitoringReads: 0 };
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
@@ -43,23 +43,23 @@ const install = async (page: Page, retained = false, locale = 'zh-CN') => {
     if (path === '/api/v1/projects') return send({ items: [project], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}`) return send(project);
     if (path === '/api/v1/me/workers') return send(workerPage([{ ...workerSummary(), machine: { ...workerSummary().machine, name: longWorkerName } }]));
-    if (path === `/api/v1/me/workers/${target}`) { const detail = workerDetail(); detail.worker.tasks[0]!.title = longTitle; return send(detail); }
+    if (path === `/api/v1/me/workers/${target}`) { state.detailReads++; const detail = workerDetail(); detail.worker.tasks[0]!.title = longTitle; return send(detail, 200, { 'Daynight-Worker-Tool-Paths': '2' }); }
     if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), 200, { 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Tool-Paths': '2' });
     if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: [retained ? 'capacity-full' : 'cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
-    if (path === `/api/v1/me/workers/${target}/monitoring`) return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: 'complete', permissionProjection: 'current', data: {
+    if (path === `/api/v1/me/workers/${target}/monitoring`) { state.monitoringReads++; return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: 'complete', permissionProjection: 'current', data: {
       runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: { ...capacity, detailCoverage: 'complete' },
       admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: retained ? 'capacity-full' : 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
       activities: state.activity ? [{ operationId: workerId(6), kind: 'cleanup', phase: 'worktree-removal', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME }] : [],
       currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: null },
       ...(retained ? retainedObservation() : {}),
-    } });
+    } }); }
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
   return state;
 };
 
 for (const width of [1360, 390, 320]) test(`monitoring interactions and reading stability at ${width}px`, async ({ page }) => {
-  await page.setViewportSize({ width, height: width === 1360 ? 900 : 844 });
+  await page.setViewportSize({ width, height: width === 1360 ? 600 : 844 });
   const state = await install(page); await page.goto('/workers');
   await expect(page.locator('.monitoring-card-state')).toContainText('2 / 2');
   await expect(page.locator('.monitoring-card-state')).not.toContainText('清理占用容量');
@@ -70,7 +70,7 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   else await card.click();
   await expect(page.getByText('清理占用容量')).toBeVisible();
   const tabs = page.locator('[data-worker-tab="overview"]:visible'); await tabs.focus(); await page.keyboard.press('ArrowRight');
-  await expect(page.locator('[data-worker-tab="configuration"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('[data-worker-tab="system"]:visible')).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('ArrowLeft'); await expect(tabs).toHaveAttribute('aria-selected', 'true');
   const issue = page.locator('.monitoring-issue'); await issue.locator('summary').click();
   await expect(issue).toHaveAttribute('open', ''); await expect(issue).toContainText('所需命令失败。');
@@ -95,10 +95,13 @@ for (const width of [1360, 390, 320]) test(`monitoring interactions and reading 
   const taskLink = page.locator('.worker-task-table').getByRole('link', { name: longTitle });
   await taskLink.click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
   await page.goBack(); await expect(page.getByText('清理占用容量')).toBeVisible();
+  await page.locator('[data-worker-tab="system"]:visible').click();
   const resources = page.locator('.worker-metric-grid'); await resources.scrollIntoViewIfNeeded();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  expect(await page.evaluate(() => scrollY)).toBeGreaterThan(0);
   const resourceBefore = await resources.boundingBox();
   await page.evaluate(() => { const original = performance.now.bind(performance); Object.defineProperty(performance, 'now', { configurable: true, value: () => original() + 3_600_000 }); });
-  await expect(page.getByText('运行观测已过期')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText('运行观测已过期')).toHaveCount(1, { timeout: 5000 });
   const resourceAfter = await resources.boundingBox(); expect(Math.abs(resourceAfter!.y - resourceBefore!.y)).toBeLessThan(4);
 });
 
@@ -109,7 +112,7 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   const taskPanel = page.locator('.worker-task-heading-label').locator('xpath=ancestor::section[1]');
   const taskLink = taskPanel.getByRole('link', { name: longTitle });
   await expect(taskLink).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
-  for (const selector of ['.monitoring-content', '.worker-sample-time', '.worker-metric-grid', '.worker-detail-columns']) {
+  for (const selector of ['.monitoring-content']) {
     expect(await taskPanel.evaluate((panel, targetSelector) => !!(panel.compareDocumentPosition(document.querySelector(targetSelector)!) & Node.DOCUMENT_POSITION_FOLLOWING), selector)).toBe(true);
   }
   const taskBox = await taskPanel.boundingBox(), monitoringBox = await page.locator('.monitoring-content').boundingBox();
@@ -137,4 +140,32 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   await issue.screenshot({ path: testInfo.outputPath('retained-failure.png') });
   if (width <= 390) expect(await issue.locator('dl').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test(`system and runtime tabs partition observations at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, false, locale); await page.goto(`/workers/${target}`);
+  const runtime = page.locator('[data-worker-panel="overview"]');
+  const system = page.locator('[data-worker-panel="system"]');
+  const runtimeTab = page.locator('[data-worker-tab="overview"]:visible');
+  const systemTab = page.locator('[data-worker-tab="system"]:visible');
+  await expect(runtimeTab).toHaveAttribute('aria-selected', 'true');
+  await expect(runtime.locator('.worker-task-table')).toBeVisible();
+  await expect(runtime.locator('.worker-metric-grid')).toHaveCount(0);
+  const detailReads = state.detailReads, monitoringReads = state.monitoringReads;
+  await runtimeTab.focus(); await page.keyboard.press('ArrowRight');
+  await expect(systemTab).toBeFocused(); await expect(systemTab).toHaveAttribute('aria-selected', 'true');
+  await expect(runtime).toBeHidden(); await expect(system.locator('.worker-metric-grid')).toBeVisible();
+  await expect(system.locator('.worker-task-table, .monitoring-content')).toHaveCount(0);
+  expect(state.detailReads).toBe(detailReads); expect(state.monitoringReads).toBe(monitoringReads);
+  const length = await page.evaluate(() => history.length);
+  await systemTab.click(); expect(await page.evaluate(() => history.length)).toBe(length);
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '刷新' : 'Refresh', exact: true }).click();
+  await expect.poll(() => state.detailReads).toBe(detailReads + 1);
+  expect(state.monitoringReads).toBe(monitoringReads);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await systemTab.focus(); await page.keyboard.press('End'); await expect(page.locator('[data-worker-tab="prompt"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Home'); await expect(runtimeTab).toHaveAttribute('aria-selected', 'true');
+  await page.goBack(); await expect(page.locator('[data-worker-tab="prompt"]:visible')).toHaveAttribute('aria-selected', 'true');
+  await page.goBack(); await expect(systemTab).toHaveAttribute('aria-selected', 'true');
 });

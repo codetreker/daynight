@@ -20,6 +20,7 @@ export type WorkerConfigurationMessages = {
     readonly error: Readonly<Record<'not_found' | 'permission_denied' | 'not_executable' | 'invalid_path' | 'unsupported_launcher' | 'unrecognized_output' | 'incompatible_runtime' | 'probe_timeout' | 'cleanup_unknown' | 'tool_identity_changed' | 'legacy_tool_identity_missing' | 'io_error' | 'unavailable', string>>;
   };
   readonly overview: string;
+  readonly system: string;
   readonly configuration: string;
   readonly prompt: string;
   readonly sections: string;
