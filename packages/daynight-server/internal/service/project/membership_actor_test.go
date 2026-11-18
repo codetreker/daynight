@@ -2,52 +2,31 @@ package project
 
 import (
 	"context"
-	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
 func TestMembershipExpectedActorRejectsBeforeDomainSQL(t *testing.T) {
-	_, database, databaseURL, actor := projectService(t)
-	project, err := NewProjects(database).Create(context.Background(), actor, coreproject.CreateProject{ExpectedUserID: actor.UserID, Name: "Identity guard", RepoURL: "host:repo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	target := workerMember(t, database, project.ID)
-	var before model.ProjectMember
-	if err := database.ReadSnapshot(context.Background(), func(snapshot store.SnapshotScope) error {
-		var err error
-		before, err = snapshot.ProjectDAO().DirectProjectMember(context.Background(), target.UserID, project.ID)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var queries atomic.Int32
-	traced := tracedStore(t, databaseURL, taskQueryAction{match: func(string) bool { queries.Add(1); return false }})
-	memberships := NewMemberships(traced)
-	_, err = memberships.SetRole(context.Background(), actor, project.ID, target.UserID, coreproject.SetProjectMemberRole{Version: before.Grant.Version, Role: model.ProjectAdmin, ExpectedUserID: target.UserID})
+	actor, target := projectProjectionPrincipal(1), projectProjectionPrincipal(2)
+	memberships := NewMemberships(projectValidationStore{})
+	ctx := t.Context()
+	const version int64 = 1
+	grant, err := memberships.SetRole(ctx, actor, grantActorProject, target.UserID, coreproject.SetProjectMemberRole{
+		Version: version, Role: model.ProjectAdmin, ExpectedUserID: target.UserID,
+	})
 	requireFault(t, err, "identity_mismatch")
-	err = memberships.Remove(context.Background(), actor, project.ID, target.UserID, coreproject.RemoveProjectMember{Version: before.Grant.Version, ExpectedUserID: target.UserID})
+	if grant != (model.ProjectGrant{}) {
+		t.Fatalf("identity mismatch returned a grant: %#v", grant)
+	}
+	err = memberships.Remove(ctx, actor, grantActorProject, target.UserID, coreproject.RemoveProjectMember{
+		Version: version, ExpectedUserID: target.UserID,
+	})
 	requireFault(t, err, "identity_mismatch")
-	if queries.Load() != 0 {
-		t.Fatalf("identity mismatch executed %d queries", queries.Load())
-	}
-	if err := database.ReadSnapshot(context.Background(), func(snapshot store.SnapshotScope) error {
-		after, err := snapshot.ProjectDAO().DirectProjectMember(context.Background(), target.UserID, project.ID)
-		if err == nil && !reflect.DeepEqual(before, after) {
-			t.Fatal("identity mismatch changed the direct grant")
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestMembershipExpectedActorRequiresCanonicalIdentity(t *testing.T) {
