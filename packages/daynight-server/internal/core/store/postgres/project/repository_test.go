@@ -2,9 +2,77 @@ package project_test
 
 import (
 	"context"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
+	"errors"
 	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
+	"github.com/google/uuid"
 )
+
+func TestFindVisibleRepositoryForCreation(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	reader := project.NewReader(f.tx)
+	creator := project.NewCreation(f.tx, f.owner)
+	add := func(team, identity string) string {
+		t.Helper()
+		id := uuid.NewString()
+		if _, _, err := creator.InsertProject(ctx, id, "Candidate", "host:repo", identity, team); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	otherTeamProject := add(f.personal, "scp://host:repo")
+	legacy := add(f.team, "legacy")
+	exec(t, f.tx, `UPDATE projects SET repository_identity=NULL WHERE id=$1`, legacy)
+	deleted := add(f.team, "scp://host:repo")
+	exec(t, f.tx, `UPDATE projects SET deleted_at=statement_timestamp() WHERE id=$1`, deleted)
+	caseVariant := add(f.team, "scp://host:Repo")
+
+	check := func(user, team, identity string, ids ...string) {
+		t.Helper()
+		got, err := reader.FindVisibleRepositoryForCreation(ctx, principal(user), team, identity)
+		if err != nil || len(got) != len(ids) {
+			t.Fatalf("find user=%s team=%s identity=%q: %#v %v, want %v", user, team, identity, got, err, ids)
+		}
+		for i, id := range ids {
+			if got[i].ID != id || got[i].Ownership.TeamID != team {
+				t.Fatalf("unexpected Project %d: %#v, want %s", i, got[i], id)
+			}
+		}
+	}
+	check(f.member, f.team, "scp://host:repo", f.project)
+	check(f.member, f.personal, "scp://host:repo")
+	check(f.owner, f.personal, "scp://host:repo", otherTeamProject)
+	check(f.member, f.team, "legacy")
+	check(f.member, f.team, "scp://host:Repo", caseVariant)
+	check(f.guest, f.team, "scp://host:repo")
+	if _, err := project.NewWriter(f.tx, f.project).CreateGrant(ctx, f.guest, model.ProjectMemberRole); err != nil {
+		t.Fatal(err)
+	}
+	check(f.guest, f.team, "scp://host:repo", f.project)
+
+	// An invalid historical duplicate remains detectable, but inaccessible
+	// matches do not contribute to the ambiguity count.
+	second := add(f.team, "scp://host:repo")
+	third := add(f.team, "scp://host:repo")
+	check(f.guest, f.team, "scp://host:repo", f.project)
+	got, err := reader.FindVisibleRepositoryForCreation(ctx, principal(f.member), f.team, "scp://host:repo")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("bounded ambiguous matches: %#v %v", got, err)
+	}
+	valid := map[string]bool{f.project: true, second: true, third: true}
+	if !valid[got[0].ID] || !valid[got[1].ID] || got[0].ID == got[1].ID {
+		t.Fatalf("unexpected ambiguous matches: %#v", got)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := reader.FindVisibleRepositoryForCreation(cancelled, principal(f.member), f.team, "scp://host:repo"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled query: %v", err)
+	}
+}
 
 func TestRepositoryOccupancyAndIdentityReturnSuccessfulFacts(t *testing.T) {
 	f := newFixture(t)

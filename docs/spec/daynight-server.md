@@ -109,9 +109,10 @@ admission 时还需 session-reads；发送恢复保留原 operation。精确目�
 MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调用者可见项目。唯一匹配返回普通 Project，
 其 ID 位于 `data.id`；零匹配返回 `not_found`，多个匹配返回 `resource_conflict`，非法或超限地址返回
 `invalid_input`。读取及快照完成故障不得伪装成无匹配。该操作不创建项目、改变默认绑定或访问宿主及远端仓库；
-后续操作仍检查当前权限。MCP `project_create` 的既有可见项目查找也继续按完整可见范围
-复用唯一匹配，可能在创建事务之前返回其他 Team 的 Project；真正创建时仍受上述 Team 唯一性约束。
-跨 Team 的可见匹配可使独立仓库发现继续报告歧义。
+后续操作仍检查当前权限。MCP `project_create` 先解析目标 Team，仅复用该 Team 中唯一可见的同仓库活跃 Project，
+包括独立 Project 授权；返回 `created:false`，无需创建确认。多个可见匹配返回 `resource_conflict`，零匹配才要求
+确认并执行创建事务；创建权限通过后，不可见占用或并发竞争返回 `project_repository_conflict`。历史 NULL 身份不参与匹配。
+跨 Team 的可见匹配仍可使独立仓库发现报告歧义。
 
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，

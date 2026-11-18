@@ -1872,10 +1872,7 @@ query and driver errors. The [Project read error decision](../../.agents/notes/i
 records the split. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
 records the input and error-chain guarantees.
 
-Repository registration tests run the real matcher over controlled snapshot
-pages to verify continued scanning and refusal after ambiguity. PostgreSQL
-tests retain persisted creation and reuse, and exercise visibility and keyset
-rules. The [repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
+Repository registration tests check target Team and identity propagation, snapshot completion, ambiguity and creation guards. PostgreSQL tests verify persisted creation and reuse, visibility and the bounded lookup; independent resolution retains keyset traversal tests. The [repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
 describes the Service, Core, and Store test boundaries.
 
 Project membership tests verify actor preflight with a fail-on-access store.

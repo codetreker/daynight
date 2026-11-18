@@ -41,9 +41,7 @@ owns the mechanism and [server guide](../../../../packages/daynight-server/READM
 owns the stopped-writer upgrade and recovery procedure. This decision supersedes
 the archived [client discovery decision](../../archived/bug-fix/2026-10-21-project-create-repository-discovery.md)'s
 deferral of service uniqueness and extends the [Project boundary decision](2026-11-05-server-project-boundaries.md).
-The [MCP lookup decision](../feature/2026-11-06-mcp-project-management.md) still owns
-full-visible-project reuse; cross-Team reuse and discovery ambiguity remain
-separate from the actual-write constraint.
+The [MCP Team-scoped reuse decision](2026-11-18-mcp-team-repository-reuse.md) applies the target Team to registration lookup. Read-only discovery retains its full-visible-project scope.
 
 ## Alternatives
 

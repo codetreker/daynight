@@ -41,7 +41,7 @@ type manualManifestEntry struct {
 // The manifest is explicit: public identifiers and metadata do not derive from
 // a request URI or the contents of the embedded directory.
 var productManualManifest = []manualManifestEntry{
-	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Account, Team and Project context", Description: "Establish Account, Team and Project context and resolve a repository.", MIMEType: "text/markdown", Size: 5776}},
+	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Account, Team and Project context", Description: "Establish Account, Team and Project context and resolve a repository.", MIMEType: "text/markdown", Size: 6303}},
 	{"manuals/tasks.md", sdk.Resource{URI: "daynight://manuals/tasks.md", Name: "tasks", Title: "Task and Goal reads", Description: "Inspect Task and Goal definitions, projections, readiness, inventories and properties.", MIMEType: "text/markdown", Size: 8018}},
 	{"manuals/task-writes.md", sdk.Resource{URI: "daynight://manuals/task-writes.md", Name: "task-writes", Title: "Task and Goal writes", Description: "Create, modify or delete Tasks and Goals alongside write-safety; consult dependency-writes when changing relationships.", MIMEType: "text/markdown", Size: 8006}},
 	{"manuals/dependencies.md", sdk.Resource{URI: "daynight://manuals/dependencies.md", Name: "dependencies", Title: "Dependency graphs", Description: "Interpret ordinary and external prerequisites, graph scope and projections.", MIMEType: "text/markdown", Size: 3684}},

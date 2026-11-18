@@ -18,12 +18,7 @@ operation, checking its context, snapshot-bound reader, principal, match and
 call count. Principal and address validation remain real. The Core pagination
 test owns the full matching matrix, including cursor positions and errors.
 
-Registration tests run the real matcher over controlled DAO pages to verify the
-second page is consulted before reuse or creation. They also verify validation
-before storage and preserve discovery errors without entering creation. The
-database-backed registration test covers persisted creation and reuse, visibility
-of a competing private project, and the saved project count after a refusal.
-The Project DAO suite checks visibility filtering and SQL keysets.
+Registration tests verify target Team and identity propagation, ambiguity, validation, snapshot completion and creation guards. The later [Team-scoped reuse decision](../architecture/2026-11-18-mcp-team-repository-reuse.md) replaced registration page scanning with a bounded persisted-identity query. PostgreSQL tests cover persisted creation, reuse and visibility. The Project DAO suite checks the new lookup and independent list keysets.
 
 ## Alternatives
 
@@ -43,6 +38,4 @@ tests already exercise the visibility and keyset rules.
 ## Consequences
 
 The controlled Resolve operation verifies completion precedence and result
-suppression. Registration's controlled pages exercise the same scan and cursor
-logic with explicit bounds and without database writes. The genuine persisted
-creation and visibility assertions still run in isolated PostgreSQL.
+suppression. Registration uses controlled lookup results for its coordination; persisted creation and visibility assertions still run in isolated PostgreSQL.

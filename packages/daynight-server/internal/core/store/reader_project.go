@@ -17,6 +17,9 @@ type ProjectReader interface {
 	ProjectAccess(context.Context, model.Principal, string) (model.ProjectAccess, error)
 	AccessibleProjects(context.Context, model.Principal, Page) (ProjectPage, error)
 	ScopedProjects(context.Context, model.Principal, ProjectScope, Page) (ProjectPage, error)
+	// FindVisibleRepositoryForCreation returns at most two active, visible Projects
+	// owned by teamID with the exact persisted repository identity.
+	FindVisibleRepositoryForCreation(ctx context.Context, principal model.Principal, teamID, identity string) ([]model.Project, error)
 	TransferTeam(context.Context, string) (TransferTeam, error)
 	TransferRole(context.Context, string, string, string) (*model.ProjectRole, error)
 }
