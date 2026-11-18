@@ -323,16 +323,18 @@ records the explicit image selection and its limits. Hosted capacity failures
 require diagnosis within this ARM64 runner policy, and a supported label still
 requires real allocation and complete native test results.
 Each native job resolves the latest available Node.js 24 patch.
-The ordinary Ubuntu job builds and packs the Node.js 24 artifact consumed by the
-separate runtime matrix. Runtime jobs depend on module detection and the
-ordinary `verify` matrix, so they wait for ordinary verification on Linux,
-Windows and macOS. They do not depend on installed acceptance and check the
-Ubuntu-produced packed artifact with Node.js
-`22.14.0`, the latest `22` and `24` releases, and current
-`node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
-and exercises CLI commands, interactive prompt dependencies and SQLite. These
-checks cover the published package and its production dependency graph without
-requiring the source-development toolchain on each supported runtime.
+An independent Ubuntu `prepare-runtime-package` job builds and packs the Node.js
+24 artifact from the current workflow checkout. It depends only on module
+detection; the runtime matrix depends on detection and this producer, independently
+of both native matrices. Runtime jobs download the current run's artifact and use
+Node.js `22.14.0`, the latest `22` and `24` releases, and current `node`. Each
+runtime installs it in a fresh npm consumer with `--engine-strict` and exercises
+CLI commands, interactive prompt dependencies and SQLite. These checks cover the
+published package and its production dependency graph without requiring the
+source-development toolchain on each supported runtime. The independent producer
+requires an additional dependency installation and build; elapsed time depends
+on the critical path and runner allocation. The [runtime package decision](../.agents/notes/implemented/testing/2026-11-18-independent-runtime-package.md)
+records the trade-off.
 PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs both phases on every
@@ -342,7 +344,7 @@ Each job owns its checkout,
 toolchain, dependencies, environment recorder, build, fixtures, cleanup and
 artifacts. The Windows ordinary phase has two independent matrix entries; the
 other native phases each have one. Final `checks` requires actual success from
-all selected ordinary, installed and runtime jobs, including both
+all selected ordinary, installed, runtime package and runtime jobs, including both
 Windows ordinary shards. The two macOS jobs use separate workspaces, so their fixed
 receipt paths need no phase handoff or clearing. A failure or cancellation in
 either job fails the final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
