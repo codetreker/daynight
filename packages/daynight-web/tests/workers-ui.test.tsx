@@ -194,6 +194,69 @@ describe('Worker list presentation', () => {
 });
 
 describe('Worker detail presentation', () => {
+  it.each(['loading', 'error'] as const)('shows initial system %s and retries the machine read', status => {
+    detailState = { ...shown(), snapshot: null, serverMilliseconds: null, status, error: status === 'error' ? new ApiError('network') : null };
+    const monitorRefresh = vi.fn(); monitoringState = { ...monitoringState, refresh: monitorRefresh };
+    showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).getByText(status === 'loading' ? 'Loading Worker' : 'Worker details could not be loaded')).toBeVisible();
+    expect(within(system).queryByRole('meter')).toBeNull();
+    if (status === 'error') {
+      fireEvent.click(within(system).getByRole('button', { name: 'Retry' }));
+      expect(refresh).toHaveBeenCalledOnce(); expect(monitorRefresh).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['expired', 'unavailable'] as const)('shows system %s without old machine data and retries', scenario => {
+    detailState = scenario === 'expired' ? { ...shown(), serverMilliseconds: Date.parse(report) + 72 * 3600_000 + 1 }
+      : { ...shown(), snapshot: null, serverMilliseconds: null, status: 'unavailable' };
+    showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).getByText('Worker unavailable')).toBeVisible();
+    expect(within(system).queryByRole('meter')).toBeNull();
+    expect(within(system).queryByText('/srv/workspaces/runtime')).toBeNull();
+    fireEvent.click(within(system).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the offline system snapshot visible with its last report notice', () => {
+    detailState = shown({ ...detail(), lastReportedAt: new Date(now - 3600_000).toISOString() });
+    showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).getByRole('status')).toHaveTextContent('last reported snapshot');
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '34.25');
+    expect(within(system).getByText('/srv/workspaces/runtime')).toBeVisible();
+  });
+
+  it('retains the system snapshot and failure notice during retries until success', () => {
+    const monitorRefresh = vi.fn(); monitoringState = { ...monitoringState, refresh: monitorRefresh };
+    detailState = { ...shown(), stale: true, error: new ApiError('network') };
+    const view = showDetail(); showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    const cpu = within(system).getByRole('meter', { name: 'CPU usage' });
+    const alert = within(system).getByRole('alert');
+    expect(alert).toHaveTextContent('last confirmed observation');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(refresh).toHaveBeenCalledOnce(); expect(monitorRefresh).not.toHaveBeenCalled();
+    detailState = { ...detailState, refreshing: true };
+    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
+    expect(within(system).getByRole('alert')).toBe(alert);
+    expect(within(alert).getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toBe(cpu);
+    detailState = shown(); view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
+    expect(within(system).queryByRole('alert')).toBeNull();
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toBe(cpu);
+  });
+
+  it('isolates runtime observation failure from a healthy system snapshot', () => {
+    monitoringState = { ...monitoringState, status: 'ready', snapshot: monitoringDetail, serverMilliseconds: now, stale: true, error: new ApiError('network') };
+    showDetail();
+    expect(screen.getByRole('alert')).toHaveTextContent('Runtime monitoring could not be updated');
+    showSystem();
+    const system = screen.getByRole('tabpanel', { name: 'System monitoring' });
+    expect(within(system).queryByRole('alert')).toBeNull();
+    expect(within(system).getByRole('meter', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '34.25');
+  });
+
   it.each(['current', 'offline', 'failed Worker refresh'] as const)('places one monitoring time after notices and before the first business panel with %s data', scenario => {
     monitoringState = { ...monitoringState, snapshot: monitoringDetail, status: 'ready', serverMilliseconds: now };
     if (scenario === 'offline') detailState = shown({ ...detail(), lastReportedAt: new Date(now - 3600_000).toISOString() });
