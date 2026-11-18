@@ -182,11 +182,26 @@ describe("Worker configuration cache", () => {
     expect(parseConfigurationCache(result, identity)).toEqual({ cache: result, migrated: false });
   });
 
-  it("reopens schema 10 adoption proof without losing its provenance", () => {
+  it("reopens schema 10 mode failures and retained proofs without changing their identities", async () => {
     const original = cache();
-    const source = { ...original, schemaVersion: 10, authority: { ...original.authority, pendingApplication: false }, currentItems: original.currentItems.map(withoutMode) };
+    const currentItems = original.currentItems.map(item => withoutMode(item.value.key.kind === "agentControlMode" ? {
+      ...item, value: { ...item.value, state: "error" as const, error: failure, lastFailure: failure, nextAttemptAt: "2026-11-04T02:00:00Z" }, backoffStep: 3, failureId: 4,
+    } : item));
+    const retained = tracked(71, { kind: "agentControlMode" });
+    const retainedItems = [withoutMode({ ...retained, value: { ...retained.value, lastFailure: failure }, backoffStep: 1, failureId: 5 })];
+    const remoteObservation = { observationRevision: "7", json: '{"baseRevision":"6","desiredRevision":"10","reportedAt":"2026-11-04T02:00:00Z","items":[]}' };
+    const desiredJson = original.authority.desiredJson!.replace('"value":{', '"value":{"future":1e+999,');
+    const source: ActiveCache = { ...original, schemaVersion: 10, authority: { ...original.authority, desiredJson, pendingApplication: false }, currentItems, retainedItems, remoteObservation };
     expect(parseConfigurationCache(source, identity)).toEqual({ cache: source, migrated: false });
-    expect(() => parseConfigurationCache({ ...source, currentItems: withoutModeItems(original.currentItems) }, identity)).toThrow(/missing target/);
+    expect(() => parseConfigurationCache({ ...source, currentItems: currentItems.filter(item => item.value.key.kind !== "agentControlMode") }, identity)).toThrow(/missing target/);
+    const file = path.join(await directory(), "schema10.json"), signal = new AbortController().signal;
+    await replaceFileAtomicallyFromChunks(file, configurationCacheChunks(source), 0o600);
+    for (let restart = 0; restart < 2; restart++) {
+      const reopened = await readConfigurationCache(file, identity, signal);
+      expect(reopened).toEqual({ cache: source, migrated: false });
+      await replaceFileAtomicallyFromChunks(file, configurationCacheChunks(reopened.cache), 0o600);
+    }
+    expect(await readConfigurationCache(file, identity, signal)).toEqual({ cache: source, migrated: false });
   });
 
   it("upgrades schema 6 without inventing an applied archive value", () => {

@@ -2375,7 +2375,7 @@ cycles add no configuration GET; startup, unknown results, 400/protocol failures
 and capability discovery read first. Reporting keeps its 30-second single-flight
 scheduler, merged triggers and finite prompt batches.
 
-The Worker stores configuration facts in one schema 9
+The Worker stores configuration facts in one schema 10
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
 observation revision and local generation. The required `pendingApplication` flag
@@ -2416,25 +2416,34 @@ failures and necessary actual values. Each record has a stable `recordId` and
 immutable `origin`. Reused actual values keep their observed source; schema 4
 history with a lost successful revision remains explicitly unknown.
 
-Deployed schemas 1–8 are strictly decoded under their historical structures and
-converted to schema 9. Old targets become `desiredJson` and their revision becomes
-`applicationRevision`; older formats without a remote observation retain null.
-The conversion removes mode items and `nativeMode`. It retains a native value and
-its source only when the historical mode proves Web, and still requires validation
-in the current process. Other native values, sources and corresponding failures
-are invalidated. Original record IDs, origins, source JSON, sudo provenance,
-failure numbers, started removals and blockers remain; the generation changes and
-the report cursor resets. Previously unknown `enableSudoCleanup` or
-`archiveSessions` is reconciled as a target without manufacturing success.
-Migration publishes only after atomic
-save; failed saves retain the original file and error. Missing required fields,
-invalid scope and corrupt data remain failures. Genuine file I/O failures
-recover in the original storage scope. Reads and atomic writes process the outer
-cache in chunks using pinned `@discoveryjs/json-ext` and its cache-specific syntax
-guard; raw documents remain ordinary strings, so unknown values require no change
-to the outer numeric grammar. Aggregate file size is not limited by one JSON
-string; individual tokens and retained objects still consume their corresponding
-memory. Historical values remain readable without newer per-item limits.
+Deployed schemas 1–9 are strictly decoded under their frozen historical
+structures and converted to schema 10. Old targets become `desiredJson` and their
+revision becomes `applicationRevision`; older formats without a remote observation
+retain null. Schema 9 retains its original Web ledger without mode application
+items; current two-tool targets use schema 10 without redefining schema 9's
+interpretation. Schema 10 also reads its already persisted historical mode facts.
+
+For schemas 1–8, conversion removes mode items and `nativeMode`. It retains a
+native value and its source only when the historical mode proves Web, and still
+requires validation in the current process. Other native values, sources and
+corresponding failures are invalidated. Schema 9 native facts retain their values
+and sources. Original record IDs, origins, source JSON, remote observations,
+hidden sources, sudo provenance, failure numbers, started removals and blockers
+remain; migration changes the generation and resets the report cursor. Previously
+unknown `enableSudoCleanup` or `archiveSessions` is reconciled as a target without
+manufacturing success. Old mode or third-tool targets retain their original raw
+source and require explicit correction before application; migration does not
+convert them into current targets or create a mode application obligation.
+
+Migration publishes only after atomic save; failed saves retain the original
+file and error. Missing required fields, invalid scope and corrupt data remain
+failures. Genuine file I/O failures recover in the original storage scope. Reads
+and atomic writes process the outer cache in chunks using pinned
+`@discoveryjs/json-ext` and its cache-specific syntax guard; raw documents remain
+ordinary strings, so unknown values require no change to the outer numeric
+grammar. Aggregate file size is not limited by one JSON string; individual tokens
+and retained objects still consume their corresponding memory. Historical values
+remain readable without newer per-item limits.
 
 Application-side tool targets, native proof and Project preparation confirmations
 use `applicationRevision`, which can precede the newest received revision.

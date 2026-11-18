@@ -1195,8 +1195,9 @@ Each Task current flight retains its slot until transport and admission waiting
 settle, including cancelled requests. Archive-ready final identity checks defer
 until visible and still verify the original execution and archive content.
 Completed current discovery rechecks tab, document and request identity after
-`scope.ready` and every subsequent wait. Herdr keeps its existing hidden-channel
-and lease-release policy; independent Test/Bot authority observation is unchanged.
+`scope.ready` and every subsequent wait. Historical Herdr discovery follows the
+same visibility and request-identity checks while reading the recording catalogue.
+Independent Test/Bot authority observation is unchanged.
 The [Task Session requirements](../../docs/spec/task-sessions.md#task-详情的完整-current-读取)
 and [current-read design](../../docs/design/task-session-protocol.md#task-current-的读取可见性)
 own these boundaries.
@@ -1214,36 +1215,33 @@ The [requirements](../../docs/spec/task-sessions.md#session-显示模式) own th
 display rules; the [Session design](../../docs/design/task-session-protocol.md#session-显示菜单与入口绑定)
 owns identity binding, menu behavior and preference integration.
 
-## Herdr Sessions and recordings
+## Task Sessions and historical recordings
 
-The task Session host keeps the native Web timeline and dispatches Herdr executions
-to a read-only terminal preview with explicit control acquisition. Current project
-access permits reading both modes, while only the persisted Session owner may
-send messages, answer requests, change settings, run commands, interrupt a turn
-or control the terminal. Other project administrators and members retain live
-content, history, resources, Display, Refresh and fullscreen with execution
-interactions disabled. Native clients bind the verified claim owner; terminal
-clients check the validated owner identity separately from lifecycle and transport.
-Their local gates supplement the server owner check.
-
-Hidden terminal views close their viewer channel and release the browser lease; Worker recording
-continues independently. Controls become available only after Worker confirmation.
-During hidden state or account-change waiting, the last confirmed screen, draft and
-same-control confirmation remain in place while input, receipt polling and lease
-renewal pause. A recovery read alone does not permit input: a fresh channel
-observation matching the current fence and control epoch is also required.
-Actual disconnections and errors remain visible.
-Unknown initial submission disposition and resuming automatic input require
-separate decisions. Unknown manual input is never automatically resent.
+The task Session host displays active Web executions through the native timeline.
+Current project access permits reading, while only the persisted Session owner
+may send messages, answer requests, change settings, run commands or interrupt a
+turn. Other project administrators and members retain live content, history,
+resources, Display, Refresh and fullscreen with execution interactions disabled.
+Native clients bind the verified claim owner, and their local gates supplement
+the server owner check.
 
 The main Session tab automatically follows the task's actual claim and lifecycle,
-without an execution-record selector or catalogue refresh row. Active claims keep
-their existing Web or Herdr reader; a claim waiting for registration never borrows
-an older Session. Completed claims resolve their original Session through a
-read-only current request and display fixed history without input or control
-operations. Task completion does not imply archive readiness: pending, failed and
-unavailable archives retain their status and recovery action. Opening, refreshing
-or reconnecting the page does not launch a native conversation or resend input.
+without an execution-record selector or catalogue refresh row. An active Web claim
+keeps its native reader; a claim waiting for registration never borrows an older
+Session. Completed Web claims resolve their original Session through a read-only
+current request and display fixed history without input or control operations.
+Historical Herdr claims, including claims still marked active, resolve only
+through recording history matched to the original claim and mode. Discovery
+continues through all catalogue pages, rejects repeated cursors, and shows an
+unavailable state when no matching record exists.
+
+Already uploaded Herdr recordings retain their original identity and access
+permissions and provide read-only terminal playback. Reading does not connect to
+Herdr or the old Worker, acquire a control lease, send input or resume recording.
+Existing Herdr tasks, processes and resources remain the user's responsibility.
+Task completion does not imply archive readiness: pending, failed and unavailable
+archives retain their status and recovery action. Opening, refreshing or
+reconnecting the page does not launch a native conversation or resend input.
 
 With no claim, the tab may show the latest actual Session as read-only history.
 Only a confirmed complete empty inventory hides the tab; initial reads and
@@ -1276,7 +1274,7 @@ Verified complete frames support direct seeking, stepping and playback; partial
 recordings remain labeled and playback stops at every gap until the reader
 explicitly continues. Archive reading establishes no control connection.
 The [Herdr Session Web design](../../docs/design/herdr-session-web.md) owns
-identity, verification, control and playback behavior.
+historical identity, archive verification and read-only playback behavior.
 
 ## Task discussions
 
