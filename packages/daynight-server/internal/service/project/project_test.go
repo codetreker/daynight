@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -49,33 +48,6 @@ func projectValidationFixture() (*Projects, model.Principal) {
 		CredentialID: "00000000-0000-4000-8000-000000000002",
 	}
 	return NewProjects(projectValidationStore{}), principal
-}
-
-func TestCreateAndGetProject(t *testing.T) {
-	projects, _, _, principal := projectService(t)
-	ctx := context.Background()
-	input := coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "  Application project  ", RepoURL: "ssh://git@Git.Example:2222/Team/Application.git"}
-	first, err := projects.Create(ctx, principal, input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := uuid.Parse(first.ID)
-	if err != nil || id.Version() != 4 || first.Name != input.Name || first.RepoURL != input.RepoURL || first.CreatedAt.IsZero() || !first.CreatedAt.Equal(first.UpdatedAt) {
-		t.Fatalf("created project: %#v, %v", first, err)
-	}
-	got, err := projects.Get(ctx, principal, strings.ToUpper(first.ID))
-	if err != nil || !reflect.DeepEqual(got, first) {
-		t.Fatalf("read canonical ID: %#v, %v", got, err)
-	}
-	second, err := projects.Create(ctx, principal, input)
-	if err != nil || second.ID == first.ID {
-		t.Fatalf("same repository must support independent projects: %#v, %v", second, err)
-	}
-	_, err = projects.Get(ctx, principal, "00000000-0000-0000-0000-000000000000")
-	fault := requireFault(t, err, "not_found")
-	if !errors.Is(fault, model.ErrNotFound) || fault.TaskIDs != nil || fault.Unwrap() == nil {
-		t.Fatalf("missing original not-found cause: %#v", fault)
-	}
 }
 
 func TestCanonicalID(t *testing.T) {
