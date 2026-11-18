@@ -12,6 +12,12 @@ storage work without recovering historical permissions or live activity.
 
 ## Decision
 
+The [storage contract decision](2026-11-18-session-storage-contracts.md) defines
+an explicitly negotiated recent-window source. Its authoritative eviction
+boundary constrains future preview merging; the existing display-only authority,
+account isolation and smaller browser budgets below remain applicable. The
+window specification is not a claim that the runtime capability has shipped.
+
 The authenticated identity scope shares the existing bounded display store through
 a Bot coordinator. Only a real client's accepted, settled history supplies saved
 entries and resource descriptors. Observers obtain a store lease before scheduling

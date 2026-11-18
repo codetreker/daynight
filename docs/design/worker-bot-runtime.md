@@ -1,6 +1,6 @@
 # Worker Bot 执行层设计
 
-[需求](../spec/worker-bot-runtime.md)定义启动、维护、恢复和删除保证，[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-worker-bot-runtime.md)说明隔离、共享机制与停证取舍。
+[需求](../spec/worker-bot-runtime.md)定义启动、维护、恢复和删除保证，[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-worker-bot-runtime.md)说明隔离、共享机制与停证取舍。本文公共 Worker SQLite 和 `controller/executions/` 路径描述未迁移格式；`botRecoveryVersion=1` 的目标归属由[助手本地存储合同](../spec/assistant.md#bot-本地存储与恢复合同)拥有，不能据此把尚未迁移的执行视为已支持独立接管。
 
 ## 数据与句柄
 
@@ -27,6 +27,14 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，为独立 Session，不含 Task/claim/worktree，角色与初始输入分别编码。Controller 自身仍负责 Provider 适配与原生权限。准备出的环境和别名责任保留到原执行停止；提交前失败可以释放当前准备资源，提交后未知结果不能清理仍可能使用的目录。
 
 `backends/controller-process.ts` 被 Task 与 Bot 实际共享：日志准备、持久提交回调、detached spawn、process proof、认证 IPC 观察和按执行串行化。Task 的 worktree、claim、cleanup prompt、归档及回收仍由原 backend 持有。明确 OS 启动拒绝先持久化，再报告服务端；Provider 快速拒绝后 IPC 可能已关闭，此时只允许读取同 fence 的 journal 失败证据，旧 ready 记录不能作为当前在线证明。启动时的 Windows 进程证明通过本进程内的同一原 process handle 采集出生时间、父进程身份及完整命令行，保持证明字段结构与出生时间精度，完整 Unicode 命令行不再经过 PowerShell console 编码，并使用共享 15 秒预算；native 调用之间检查预算，已开始的调用仍须等待返回。POSIX 采集和日常身份复核仍为 5 秒；完整证明、认证 IPC 和资源责任由[Session 设计](task-session-protocol.md)拥有。
+
+## Bot 专属位置与迁移责任
+
+支持 `botRecoveryVersion=1` 的存储工厂须把执行意图、SQLite、票据、journal、缓存和恢复材料统一解析到服务及账号作用域内的 `bots/<botId>/`。Worker 公共索引可从该目录重建；发现入口不能只依赖按新 workerId 返回的远端清单。目录身份、当前账号、服务端恢复身份及 Bot 本机锁共同约束接管，公共索引丢失不授权创建替代会话。
+
+未迁移格式仍使用本文描述的公共位置。迁移协调器先证明旧执行停止，再锁定 Bot，复制含已提交 WAL 的一致快照并核验身份和资源，持久记录阶段后原子切换唯一写入位置；恢复身份的远端登记和回执确认单独对账。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。存活 Controller 优先接回，启动替代进程仍沿用下面的停证和原 native ID 条件。
+
+新位置的精确删除使用同一归属解析器，Bot 私有原生副本随其私有资料处理，共享 native home 和 cwd 保留。最小删除责任必须在执行 journal 删除后仍可读取，直至两端确认；不能通过先删整个 Bot 目录丢弃原回执和未完成责任。存储、迁移、接管和 Provider 验证分别完成前，不声明该能力或同机恢复验收成功。
 
 ## 原会话恢复
 

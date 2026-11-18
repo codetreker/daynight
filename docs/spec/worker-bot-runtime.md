@@ -2,6 +2,8 @@
 
 Bot 执行层消费[持久库存](worker-bot-inventory.md)与[角色及环境](bot-role-environment.md)，提供普通目录内的独立 Controller 启动、原身份观察、授权维护、退出停止、同一会话恢复与私有资料删除。调用者持有 Worker 实例锁，使用当前服务、账号与 Worker 绑定；Bot 不占 Task `maxConcurrent`，不创建 Project、Task、claim 或 worktree。
 
+本文现行公共 Worker SQLite、执行路径和原 Worker 绑定要求适用于未迁移格式。`botRecoveryVersion=1` 的新增[本地存储与恢复合同](assistant.md#bot-本地存储与恢复合同)要求 SQLite、执行及恢复材料归 `bots/<botId>/`，由 Bot 本机锁和独立接管保护。两端能力、迁移和原生恢复未经验证时，不能凭新规格绕过旧绑定或宣称独立恢复可用。
+
 ## 启动与身份
 
 新 Bot 初始化须使用独立的 `canAdmitNewExecution` 动态门禁，不能把能力采样 `configuration()` 的返回值当作准入。存储或当前配置不就绪时保持等待；异步环境/工具准备之后、首次持久 intent、注册以及初次 launch submission 前再次检查。初次 intent 或 Session 已固定但尚未提交原生 launch 时，仍须守住后续边界，不重新分配身份。已经提交或提交结果未知的原操作、拥有已知原生会话的冻结恢复及输入/停止仍遵守原归属，不被新初始化门禁误停或改称 environment failure。
@@ -38,7 +40,7 @@ Bot 清单发现间隔为 `min(pollIntervalMs, 5000)` 毫秒，授权维护独�
 
 删除与原执行共用同一串行化入口，等待在途启动结束后停止原 writer。IPC stop 成功回执不能替代 OS 进程树停证；停止未确认时，ticket、journal、pending 内容和操作回执保持完整。停证须匹配原 generation、Controller instance 和 Session；不能借前代停证清理可能仍运行的新代。`never_started` 仅用于确证从未启动执行的收尾，包括未提交和明确 OS 启动拒绝且没有任何进程或 snapshot 证据的首次执行；不能把未知 spawn 或未知恢复 grant 降为未启动。
 
-停止确认后，先在 Worker SQLite 持久保存停证、受限清理目标和精确完成回执，再删除执行私有资料。删除责任不能放在即将删除的 journal 内。中断和部分失败须保留同一责任并允许重试，已确认清理的目标不再重新删除；旧 `deletionId`、旧执行或被替换的文件身份不得成为清理新实例的依据。
+停止确认后，先持久保存停证、受限清理目标和精确完成回执，再删除执行私有资料。未迁移格式在 Worker SQLite 保存该责任；支持 `botRecoveryVersion=1` 的格式按 Bot 专属所有权保留最小责任，直至两端确认。删除责任不能放在即将删除的 journal 内，也不能因整个 Bot 目录先行删除而丢失。中断和部分失败须保留同一责任并允许重试，已确认清理的目标不再重新删除；旧 `deletionId`、旧执行或被替换的文件身份不得成为清理新实例的依据。
 
 清理范围仅包括该 Bot 的私有执行目录（journal、pending 内容、操作回执、日志及 relay 凭据）、本次与保留各代的 ticket 及其原子写入临时文件、认证 IPC 端点和已登记的独占 CLI 别名目录。临时文件只接受原 launch 对应的 `<launchId>.json.<uuid>.tmp`，不清理共享 launch 目录中的其它文件；正式 ticket 须核对原 Bot 执行归属。路径须由原执行身份和配置根核对，拒绝越界、符号链接及归属冲突，也拒绝以 cwd、native home 本身或包含它们的目录作为清理目标。普通 cwd、共享 native home、Bot 创建的 Task 及其 worktree 均保持不变；不调用 Agent cleanup prompt、Task worktree removal 或 StopTest，不以归档上传为前置条件。
 
@@ -46,7 +48,7 @@ Bot 清单发现间隔为 `min(pollIntervalMs, 5000)` 毫秒，授权维护独�
 
 离线或权限错误保留责任并显示实际失败；停证缺失、执行代际不明和文件清理失败不得报告完成。已保存注册意图却没有确认 sessionId，或恢复目标尚未提交而服务端 grant 是否换代无法确认时，均保留原执行资料，不能把未知注册视为从未绑定，也不能猜测一个可被接受的 stopProof。
 
-首次持久意图之前的 preflight 资源只有在当前进程仍持有其清理句柄时才能重试释放。历史 Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现，不据此宣称整个预检生命周期都具有持久删除责任。Provider 自身历史不在清理范围内，不承诺共享 native home、离线浏览器缓存或用户导出副本的物理擦除。[助手需求](assistant.md)拥有跨服务端与 Worker 的整体删除语义。
+首次持久意图之前的 preflight 资源只有在当前进程仍持有其清理句柄时才能重试释放。历史 Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现，不据此宣称整个预检生命周期都具有持久删除责任。共享 Provider 历史不在清理范围内；新存储合同中的 Bot 专属原生副本属于其私有资料。不承诺共享 native home、离线浏览器缓存或用户导出副本的物理擦除。[助手需求](assistant.md)拥有跨服务端与 Worker 的整体删除语义。
 
 ## 集成与验证边界
 

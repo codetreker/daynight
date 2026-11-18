@@ -18,6 +18,12 @@ execution, lose responsibility or authorize removal of a replacement file.
 
 ## Decision
 
+The [storage contract decision](2026-11-18-session-storage-contracts.md) defines
+Bot-owned persistence and independent takeover requirements for a new recovery
+capability. The Worker formats below remain the existing implementation until
+that guarded migration is delivered; the new specification does not establish
+native recovery acceptance.
+
 Bot launch uses the existing independent Session and Controller contracts with
 no initial user input. Frozen registration and role intent retain their
 existing inventory ownership; the

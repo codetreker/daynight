@@ -13,6 +13,12 @@ the client.
 
 ## Decision
 
+The [storage contract decision](../architecture/2026-11-18-session-storage-contracts.md)
+defines separately negotiated body-only retention and expiry requirements.
+The complete-entry behavior below remains the existing reader contract for
+available live sources and legacy archives; it does not assert that the new
+retention capability is implemented.
+
 Task Session history uses shared domain and service operations behind HTTP, MCP
 and CLI adapters. Explicit Session identity is preserved across every read. The
 Controller exposes raw journal entries through negotiated content requests;

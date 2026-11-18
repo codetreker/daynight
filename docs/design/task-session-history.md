@@ -2,6 +2,8 @@
 
 ## 职责与入口
 
+本文的现有入口与原文读取机制保留原合同；[正文保存与期限规格](../spec/task-session-history.md)中的 `taskBodyHistoryVersion=1` 和 `taskHistoryDirectoryVersion=1` 是须显式启用的新增能力，不表示现有路由已提供它们。Bot 窗口使用独立的[近期历史能力](../spec/bot-session-view.md#近期历史窗口合同)，不复用 Task 的七天期限。
+
 `core/session` 拥有当前关联、历史目录、读取授权、Controller 内容请求及归档验证。`service/session.History` 根据共享 `Inspection` 的明确 Session 身份协调 live 或 archive 读取，并返回持有归档句柄的 `ReadResult`。HTTP 与 MCP 只解析输入、传递真实 principal、预算包络和输出结果；CLI 通过 HTTP 读取，不能访问 Worker 的文件。
 
 `GET /api/v1/projects/{projectId}/tasks/{taskId}/sessions/current?view=inspection` 返回当前关联；同目录的 `?view=inspection` 返回历史页。默认视图保持浏览器既有协议。`/{sessionId}/inspection` 返回指定身份、`currentBinding`、来源与本次连接的 `contentReadVersion`。`/{sessionId}/messages` 与 `/{sessionId}/message-content` 分别读取一页和一个正文块。
@@ -29,6 +31,10 @@ Controller 每次连接发送 `X-Daynight-Content-Read-Version: 1`。服务端�
 MCP 在 SDK 执行前拒绝包含历史读取的多调用 batch 和无法容纳的请求 ID，避免其他结果或 ID 回显突破历史响应预算。独立读取及单调用 legacy batch 使用最多 256 KiB 的专用响应缓冲；完整编码后才提交，分次写入或错误包络超限时统一返回有界 `resource_limit_exceeded`。其他工具保留既有编码路径。归档许可持续持有到缓冲结果最终写出或取消。
 
 ## 归档与权限生命周期
+
+正文保存能力的生产入口按条目类型形成持久投影，后续同步、容量统计和归档消费同一投影。消息正文及其资源闭包保留；独立工具详情继续供在线显示，但不进入正文归档。传输确认水位、待确认事件和执行控制由各自账本持有，不能因投影排除工具而丢失确认或后续正文。旧格式归档保留原工具内容与读取校验，策略有意排除的工具不作为正文覆盖缺口。
+
+期限实现以服务端首次成功归档时间和当前终态时间计算，目录按一致图版本返回链、成员及原 Session。归档文件 schema、正文策略能力和目录能力分别版本化；旧 `view=inspection` 响应保持原形状。清理协调器在事务内重查图、终态版本、归档提交与引用后撤销到期读取资格，物理回收等待在途句柄释放，只删除独占字节。重开、图变化、晚到归档、时间未知和旧格式宽限期按[七天期限合同](../spec/task-session-history.md#七天期限与任务链目录)处理。该机制须由期限、清理及目录实现分别提供证据，不能从正文筛选或归档成功推断 TTL 已生效。
 
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 

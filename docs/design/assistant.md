@@ -1,6 +1,6 @@
 # 助手组合、定义与 Session 准入
 
-[需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `core/bot`、`service/bot` 和 `server/bot` 负责；`core/session` 与 `service/session` 在独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
+[需求规格](../spec/assistant.md)区分现行接口与须声明能力的新增要求。本文的管理、登记、grant 和删除机制描述现行接口；`botRecoveryVersion=1` 的存储与接管机制须完成对应实现和验证后启用。管理定义由 `core/bot`、`service/bot` 和 `server/bot` 负责；`core/session` 与 `service/session` 在独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
 
 网页选择、详情与全屏组合由[助手管理页面设计](bot-management-web.md)拥有；[助手 Session 设计](bot-session-view.md)拥有共享视图绑定与缓存，不复制本文的服务端生命周期。
 
@@ -61,6 +61,16 @@ Worker 的 assistantHost.creationConfigurationVersion=1 是支持新冻结格式
 Worker 保存完整冻结配置并使用它核对登记请求与执行身份。执行配置通过统一原生参数适配器生成，单助手值覆盖、去重原 args 中的 model/effort，保留其它已准入参数。首次原生启动复核最终组合；恢复沿用原 Session 和冻结意图，不借当前默认重配置，也不重写原生文件。Session 内临时切模型不进入 Bot 成功偏好写入路径。
 
 字段及失败语义由[助手规格](../spec/assistant.md)拥有；[原生选择决策](../../.agents/notes/implemented/architecture/2026-11-06-bot-native-selection.md)记录隔离能力查询与创建事务的原因。
+
+## Bot 独立存储与接管能力
+
+`botRecoveryVersion=1` 的[数据归属、迁移和接管要求](../spec/assistant.md#bot-本地存储与恢复合同)由 Bot 存储、Worker 对账和服务端生命周期共同实现。Bot 本机目录持有 SQLite、执行意图、票据、journal、业务认领凭据及 Provider 恢复材料；公共 Worker 库存只保留可重建索引。服务端继续使用现有数据库与资源存储，按 owner、Bot 和 Session 隔离。两端能力都可用前，既有 Worker 绑定和父 PAT 校验继续生效。
+
+迁移协调器在原执行停止并取得 Bot 锁后复制一致 SQLite 快照及已提交 WAL，核对身份和资源摘要后原子切换唯一写入位置。持久迁移阶段区分本地切换、恢复身份登记和远端回执确认，任一阶段未知都不能由下一阶段的现象推定成功。Provider 适配器分别拥有最小恢复文件集、版本兼容和原线程恢复证据；时间线缓存不能替代原生恢复材料。
+
+新 Worker 的对账入口先发现本地 Bot，再核对服务、当前账号和恢复身份；按新 Worker 过滤的远端清单不能遮蔽旧绑定。接管在服务端事务内核对 `expectedHostingGeneration`、Bot 未删除及访问权，原子推进承载 Worker 和授权，并拒绝旧承载代次写入。`hostingGeneration` 与 Controller 的 `executionGeneration` 分开：接回存活 Controller 不制造新原生执行；启动新进程仍需原 writer 停证和已知 native ID。新账号认证只用于重新核验并签发当前授权，不延长已失效父 PAT 的权限。
+
+接管请求、恢复身份与观察字段使用独立版本化合同，不向现有严格管理 DTO 或 `/grant` 静默增加字段。原请求身份及结果查询由接管用例持久保存，结果未知不重发业务输入。当前机器、状态及新鲜度来自版本化观测；数据库中的 ready 或可读缓存不授予发送资格。上述机制不声明跨机接管或真实 Provider 验收已完成。
 
 ## 登记与恢复事务
 
