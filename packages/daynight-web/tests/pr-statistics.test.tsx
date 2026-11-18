@@ -80,6 +80,22 @@ describe('PR statistics lifecycle', () => {
     await waitFor(() => expect(result.current.data?.authorId).toBe('9'));
     expect(result.current.author).toMatchObject({ id: '9', login: 'renamed' });
   });
+  it('clears a confirmed missing author and uses the returned whole-project series', async () => {
+    const missing = { ...data('8'), author: null, authorDaily: Array(30).fill('0') };
+    vi.mocked(getPRStatistics).mockResolvedValueOnce(data()).mockResolvedValueOnce(data('8')).mockResolvedValueOnce(missing).mockResolvedValueOnce(data());
+    const props = { userId, projectId, canRead: true, active: true, endDate, window: dateWindow, onPrincipalMismatch: vi.fn(), onAccessError: vi.fn() };
+    const { result } = renderHook(() => usePRStatistics(props));
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+    act(() => result.current.setAuthor({ id: '8', login: 'author', loginAmbiguous: false }));
+    await waitFor(() => expect(result.current.author?.id).toBe('8'));
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.author).toBeNull());
+    expect(result.current.data?.daily).toEqual(missing.daily);
+    expect(result.current.data?.authorDaily).toEqual(missing.authorDaily);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(getPRStatistics).toHaveBeenCalledTimes(4));
+    expect(vi.mocked(getPRStatistics).mock.calls[3]![3]).toBeNull();
+  });
   it('coalesces refresh and does not display a prior date while the next request is pending', async () => {
     const later = deferred<PRStatistics>();
     vi.mocked(getPRStatistics).mockResolvedValueOnce(data()).mockReturnValueOnce(later.promise);
