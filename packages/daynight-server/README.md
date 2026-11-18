@@ -2195,6 +2195,13 @@ remain covered by the PostgreSQL tests. The
 [Auth request and profile cache decision](../../.agents/notes/implemented/testing/2026-11-18-auth-request-cache-fixtures.md)
 records the proof boundary.
 
+PAT request and failure tests exercise the real HTTP adapter with controlled
+identity operations. They retain adapter input validation, delegated argument
+checks, error mappings and normalized time fields. The real credential and
+Store tests cover issuance, expiry, revocation and persisted metadata. The
+[PAT response decision](../../.agents/notes/implemented/testing/2026-11-18-pat-http-error-fixtures.md)
+records that split.
+
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
 remain real where they are the mechanism being verified. Root HTTP control and
 WebSocket traffic share one actual application and Engine. Runtime tests group
