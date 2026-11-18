@@ -3,6 +3,7 @@ import * as fake from "fake-indexeddb";
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { getTask, pauseAuthRequests } from "../src/api/client";
+import { parseTaskSummary } from "../src/api/task-sync";
 import type { Project, TaskSummary, TaskSync, WorkerClaim } from "../src/api/types";
 import { deriveTaskSyncBindings, eligibleTaskExecutionBinding, sameTaskExecutionBinding, taskExecutionBinding } from "../src/features/task-cache/execution-binding";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
@@ -786,6 +787,26 @@ it("keeps reordered equivalent properties write-free but rejects same-version pr
     expect(stored.summaries.get(taskId(2))!.version).toBe(1n);
     expect(stored.manifest).toEqual(initial.project.manifest);
   }
+});
+
+it.each([
+  [{ paused: true, future: 1 }, { paused: true, blocked: true, future: 1 }],
+  [{ paused: false, blocked: false, future: 1 }, { blocked: false, future: 1 }],
+  [{ blocked: true, future: 1 }, { paused: true, future: 1 }],
+])("accepts equivalent cached and synchronized pause representations at the same version", async (storedProperties, wireProperties) => {
+  const paused = "paused" in storedProperties ? storedProperties.paused : storedProperties.blocked;
+  const first = scope(); await seed(first, [task(1, { properties: { paused, future: 1 } })]);
+  const database = await inspect(); const key = [userId, projectId, taskId(1)] as [string, string, string];
+  const row = (await database.get("summaries", key))!;
+  await database.put("summaries", { ...row, summary: { ...row.summary, properties: storedProperties } });
+  first.dispose();
+  const reopened = scope();
+  const wire = task(1, { properties: wireProperties });
+  const incoming = parseTaskSummary({ ...wire, version: wire.version.toString() });
+  const result = await delta(reopened, [incoming]);
+  expect(result.changed).toBe(false);
+  expect(result.project.summaries.get(taskId(1))!.properties).toEqual({ paused, future: 1 });
+  expect((await database.get("summaries", key))!.summary.properties).toEqual(storedProperties);
 });
 
 it("applies tag rename and deletion as scoped deltas and rejects same-version contradictions", async () => {
