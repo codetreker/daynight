@@ -106,6 +106,7 @@ func (p *serverProcess) stop(t *testing.T) {
 type fixture struct {
 	context      context.Context
 	origin       string
+	callbackURL  string
 	client       *http.Client
 	userID       string
 	databaseURL  string
@@ -275,15 +276,8 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	query.Set("search_path", schema)
 	query.Set("timezone", "UTC")
 	parsed.RawQuery = query.Encode()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	origin := "http://" + address
+	proxy := newPublicProxy(t)
+	origin := proxy.origin
 	callbackURL := origin + "/api/v1/auth/callback"
 	resources.GatewayCallback = callbackURL
 	gateway := testauth.StartGatewayWithResources(t, callbackURL, stopped, func(resource testauth.GatewayResources) error {
@@ -307,7 +301,7 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	s2sSharedKey := rand.Text() + rand.Text()
 	configuration := map[string]any{
 		"s2s":        map[string]any{"allowed_origin": "https://client.example", "shared_key": s2sSharedKey},
-		"server":     map[string]any{"listen_address": address, "public_origin": origin, "preview_origin": testauth.PreviewOrigin(origin), "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
+		"server":     map[string]any{"listen_address": "127.0.0.1:0", "public_origin": origin, "preview_origin": testauth.PreviewOrigin(origin), "allow_http_test_origin": true, "startup_timeout": "10s", "shutdown_timeout": "2s"},
 		"database":   map[string]any{"url": parsed.String()},
 		"monitoring": map[string]any{"redis_url": redisURL},
 		"storage":    map[string]any{"root": "attachments"},
@@ -361,6 +355,7 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 		close(process.exited)
 	}()
 	t.Cleanup(func() { process.stop(t) })
+	t.Cleanup(proxy.clearBackend)
 	identity, err := identifyProcess(command.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -371,45 +366,17 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	}
 	readyClient := &http.Client{Timeout: time.Second}
 	t.Cleanup(readyClient.CloseIdleConnections)
-	deadline := time.NewTimer(15 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/readyz", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		response, err := readyClient.Do(request)
-		if err == nil {
-			_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-			closeErr := response.Body.Close()
-			if errors.Join(readErr, closeErr) != nil {
-				t.Fatal(errors.Join(readErr, closeErr))
-			}
-			if response.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		select {
-		case <-process.exited:
-			t.Fatalf("integration Server stopped before readiness: %v\n%s", process.waitErr, process.logs.String())
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-deadline.C:
-			t.Fatalf("integration Server did not become ready\n%s", process.logs.String())
-		case <-ticker.C:
-		}
-	}
+	proxy.setBackend(waitForBackend(t, ctx, process, readyClient, origin))
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, origin, "alice")
 	token := testauth.CreatePAT(t, browser, origin)
 	browser.CloseIdleConnections()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(transport.CloseIdleConnections)
-	f := &fixture{context: ctx, origin: origin, databaseURL: parsed.String(), s2sSharedKey: s2sSharedKey, process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
+	f := &fixture{context: ctx, origin: origin, callbackURL: callbackURL, databaseURL: parsed.String(), s2sSharedKey: s2sSharedKey, process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
 	f.restart = func(prepare func()) {
 		t.Helper()
+		proxy.clearBackend()
 		process.stop(t)
 		f.client.CloseIdleConnections()
 		readyClient.CloseIdleConnections()
@@ -435,36 +402,7 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 		if err := writeResources(); err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.NewTimer(15 * time.Second)
-		defer deadline.Stop()
-		ticker := time.NewTicker(20 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/readyz", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := readyClient.Do(request)
-			if err == nil {
-				_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-				closeErr := response.Body.Close()
-				if err := errors.Join(readErr, closeErr); err != nil {
-					t.Fatal(err)
-				}
-				if response.StatusCode == http.StatusOK {
-					return
-				}
-			}
-			select {
-			case <-next.exited:
-				t.Fatalf("restarted integration Server stopped: %v\n%s", next.waitErr, next.logs.String())
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			case <-deadline.C:
-				t.Fatalf("restarted integration Server did not become ready\n%s", next.logs.String())
-			case <-ticker.C:
-			}
-		}
+		proxy.setBackend(waitForBackend(t, ctx, next, readyClient, origin))
 	}
 	response, body := f.request(t, http.MethodGet, "/api/v1/projects", "", nil, http.StatusOK)
 	var page api.ProjectPage
@@ -479,6 +417,65 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 		t.Fatal("authenticated API did not identify its principal")
 	}
 	return f
+}
+
+// waitForBackend discovers the bound address from complete lifecycle events and
+// checks readiness directly before the public listener can route to it.
+func waitForBackend(t *testing.T, ctx context.Context, process *serverProcess, client *http.Client, origin string) string {
+	t.Helper()
+	deadline := time.NewTimer(15 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	address := ""
+	for {
+		if address == "" {
+			lines := strings.Split(process.logs.String(), "\n")
+			for _, line := range lines[:len(lines)-1] {
+				var event struct {
+					Type      string `json:"type"`
+					Component string `json:"component"`
+					Phase     string `json:"phase"`
+					Address   string `json:"address"`
+				}
+				if json.Unmarshal([]byte(line), &event) == nil && event.Type == "lifecycle" && event.Component == "server" && event.Phase == "listening" {
+					host, port, err := net.SplitHostPort(event.Address)
+					if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
+						t.Fatalf("invalid integration Server listening address %q", event.Address)
+					}
+					address = event.Address
+					break
+				}
+			}
+		}
+		if address != "" {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/readyz", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Host = strings.TrimPrefix(origin, "http://")
+			response, err := client.Do(request)
+			if err == nil {
+				_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+				closeErr := response.Body.Close()
+				if err := errors.Join(readErr, closeErr); err != nil {
+					t.Fatal(err)
+				}
+				if response.StatusCode == http.StatusOK {
+					return address
+				}
+			}
+		}
+		select {
+		case <-process.exited:
+			t.Fatalf("integration Server stopped before readiness: %v\n%s", process.waitErr, process.logs.String())
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("integration Server did not become ready\n%s", process.logs.String())
+		case <-ticker.C:
+		}
+	}
 }
 
 type tokenTransport struct {
