@@ -21,6 +21,62 @@ func sampleRecord() model.UsageRecord {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	return model.UsageRecord{ID: uuid.NewString(), Kind: "measurement", Scope: "task", ProjectID: core.Ptr(uuid.NewString()), TaskID: core.Ptr(uuid.NewString()), SessionID: uuid.NewString(), ClaimID: core.Ptr(uuid.NewString()), Generation: "1", WorkerID: core.Ptr(uuid.NewString()), AuthorityUserID: uuid.NewString(), Provider: "copilot", NativeSessionID: "native", StateID: core.Ptr(uuid.NewString()), SourceKey: core.Ptr("source"), ProfileID: "copilot-event-1.0.11-v1", ProviderVersion: "fixture", RevisionAuthority: core.Ptr("immutable"), SourceRevision: core.Ptr("1"), Finality: core.Ptr("final"), Disposition: core.Ptr("active"), AggregationRole: core.Ptr("counted"), Metrics: model.UsageMetrics{Input: core.Ptr("9007199254740993"), Output: core.Ptr("7"), Total: core.Ptr("9007199254741000")}, NativeMetrics: map[string]any{"outputTokens": "7"}, ReasonCodes: []string{}, ObservedAt: now, CreatedAt: now, UpdatedAt: now, RowVersion: "1", BodyHash: strings.Repeat("ab", 32)}
 }
+
+func TestUsageRegistrationFailsClosedOnMalformedTaskAuthorizationProperties(t *testing.T) {
+	for _, property := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"worker", []byte(`{}`)},
+		{"paused", []byte(`"not-a-boolean"`)},
+	} {
+		t.Run(property.name, func(t *testing.T) {
+			f := workflow(t)
+			testutil.PutTaskProperty(t, f.db.Pool, f.task, property.name, property.raw)
+			_, err := f.service.Register(t.Context(), f.actor, f.registration)
+			if err == nil {
+				t.Fatal("malformed authorization properties admitted a usage grant")
+			}
+			var count int
+			if err = f.db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM usage_records`).Scan(&count); err != nil || count != 0 {
+				t.Fatal("failed authorization persisted usage", count, err)
+			}
+		})
+	}
+}
+func TestUsageTaskAuthorizationReadRejectsChildHiddenByDeletedGoal(t *testing.T) {
+	f := workflow(t)
+	ctx := t.Context()
+	if err := f.db.ReadUsage(ctx, func(scope store.UsageScope) error {
+		session, err := scope.UsageDAO().Session(ctx, f.session)
+		if err != nil {
+			return err
+		}
+		auth, err := scope.UsageDAO().ReadTask(ctx, session)
+		if err == nil && (!auth.AllowAgents || !auth.ClaimActive) {
+			t.Fatal("live original execution lost its authorization", auth)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	goal := uuid.NewString()
+	testutil.MustExec(t, f.db.Pool, `INSERT INTO tasks(id,project_id,type,title,description,status) VALUES($1,$2,'goal','Parent','','todo')`, goal, f.project)
+	testutil.MustExec(t, f.db.Pool, `UPDATE tasks SET parent_id=$1 WHERE id=$2`, goal, f.task)
+	testutil.MustExec(t, f.db.Pool, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, goal)
+	err := f.db.ReadUsage(ctx, func(scope store.UsageScope) error {
+		session, err := scope.UsageDAO().Session(ctx, f.session)
+		if err != nil {
+			t.Fatal("retained execution Session disappeared", err)
+		}
+		_, err = scope.UsageDAO().ReadTask(ctx, session)
+		return err
+	})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatal("retained Session authorized a Task hidden by its deleted Goal", err)
+	}
+}
+
 func TestUsagePersistenceAndAtomicity(t *testing.T) {
 	db := testutil.OpenStore(t, postgres.Open)
 	ctx := t.Context()

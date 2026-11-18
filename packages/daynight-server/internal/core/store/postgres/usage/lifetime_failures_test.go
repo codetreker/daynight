@@ -220,3 +220,55 @@ func TestUsageMissingMemberCursorContinuesWithoutRepeatingMembers(t *testing.T) 
 	_, err = f.service.Aggregate(ctx, f.actor, uuid.NewString(), "chain", f.task, "")
 	requireCode(t, err, "resource_unavailable")
 }
+
+func TestUsageStateAndSummaryReauthorizeCredentialAndProjectAccess(t *testing.T) {
+	f := workflow(t)
+	ctx := t.Context()
+	reg, err := f.service.Register(ctx, f.actor, f.registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, outsider, _ := testutil.AuthRecords(t, f.db)
+	_, err = f.service.State(ctx, outsider, reg.State.ID)
+	requireCode(t, err, "resource_unavailable")
+	testutil.MustExec(t, f.db.Pool, `UPDATE personal_access_tokens SET created_at=clock_timestamp()-interval '1 day',expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, f.actor.CredentialID)
+	_, err = f.service.State(ctx, f.actor, reg.State.ID)
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatal("expired credential retained state access", err)
+	}
+	_, err = f.service.TaskSummaries(ctx, f.actor, f.project, []string{f.task})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatal("expired credential retained aggregate access", err)
+	}
+}
+
+func TestUsageConflictAtRevisionCapacityCannotClaimCommittedDiagnostic(t *testing.T) {
+	f := workflow(t)
+	ctx := t.Context()
+	reg, err := f.service.Register(ctx, f.actor, f.registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := measurement(reg.State.ID, "7")
+	if _, err = f.service.Batch(ctx, reg.State.ID, reg.Grant.Token, batch(original)); err != nil {
+		t.Fatal(err)
+	}
+	testutil.MustExec(t, f.db.Pool, `UPDATE usage_records SET row_version=9223372036854775807 WHERE id=$1`, reg.State.ID)
+	conflict := original
+	conflict.Metrics.Output = core.Ptr("8")
+	conflict.NativeMetrics = map[string]any{"outputTokens": "8"}
+	_, err = f.service.Batch(ctx, reg.State.ID, reg.Grant.Token, batch(conflict))
+	requireCode(t, err, "revision_overflow")
+	var fault *model.UsageFault
+	if !errors.As(err, &fault) || fault.DiagnosticCommitted {
+		t.Fatal("failed diagnostic was reported committed", err)
+	}
+	state, err := f.service.State(ctx, f.actor, reg.State.ID)
+	if err != nil || state.RowVersion != "9223372036854775807" || core.Value(state.CollectionState) != "collecting" {
+		t.Fatal("failed diagnostic changed stored state", state, err)
+	}
+	page, err := f.service.Records(ctx, f.actor, f.project, f.task, "", app.PageRequest{Kind: "measurement", Limit: 100})
+	if err != nil || len(page.Items) != 1 || core.Value(page.Items[0].Metrics.Output) != "7" {
+		t.Fatal("conflict changed original measurement", page, err)
+	}
+}

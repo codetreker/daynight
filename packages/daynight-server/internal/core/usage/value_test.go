@@ -65,6 +65,13 @@ func TestCanonicalVectors(t *testing.T) {
 	if err != nil || string(raw) != want {
 		t.Fatalf("%s %v", raw, err)
 	}
+	raw, err = Canonical([]any{"\b\t\f\r\x00\x01\x1f", map[string]any{"ab": "longer", "a": "prefix"}})
+	if err != nil || string(raw) != `["\b\t\f\r\u0000\u0001\u001f",{"a":"prefix","ab":"longer"}]` {
+		t.Fatalf("canonical escaping or prefix ordering: %s %v", raw, err)
+	}
+	if _, err = Canonical([]any{map[string]any{"fraction": 1.5}}); err == nil {
+		t.Fatal("numeric value escaped validation through a nested array")
+	}
 	if _, e := Canonical(map[string]any{"number": 1.5}); e == nil {
 		t.Fatal("unexpected floating point")
 	}
@@ -138,6 +145,15 @@ func TestProviderProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, change := range []func(*model.UsageEvent){
+		func(e *model.UsageEvent) { e.NativeTurnID = Ptr("invalid\x00turn") },
+		func(e *model.UsageEvent) { e.Model = Ptr("") },
+		func(e *model.UsageEvent) { e.ReasonCodes = []string{"model_unknown", "model_unknown"} },
+		func(e *model.UsageEvent) { e.Finality = "provisional" },
+		func(e *model.UsageEvent) { e.Finality = "unknown" },
+		func(e *model.UsageEvent) { e.AggregationRole = "unknown" },
+		func(e *model.UsageEvent) { e.NativeMetrics = nil },
+		func(e *model.UsageEvent) { e.NativeMetrics = map[string]any{"agentId": "", "outputTokens": "7"} },
+		func(e *model.UsageEvent) { e.NativeMetrics = map[string]any{"agentType": "tool", "outputTokens": "7"} },
 		func(e *model.UsageEvent) { e.Metrics.Total = Ptr("7") },
 		func(e *model.UsageEvent) { e.SourceRevision = "2" },
 		func(e *model.UsageEvent) { e.SourceKey = "random" },
@@ -150,6 +166,10 @@ func TestProviderProfiles(t *testing.T) {
 		change(&copy)
 		if ValidateMeasurement(p, copy) == nil {
 			t.Fatal("invalid provider measurement")
+		}
+		e.NativeMetrics = map[string]any{"agentId": "native-agent", "agentType": "subagent", "outputTokens": "7"}
+		if err := ValidateMeasurement(p, e); err != nil {
+			t.Fatal("valid native subagent metadata rejected", err)
 		}
 	}
 	p = Qualify(p, false)
@@ -169,6 +189,15 @@ func TestProviderProfiles(t *testing.T) {
 	e.Metrics.Input = Ptr("2")
 	if ValidateMeasurement(c, e) == nil {
 		t.Fatal("cache normalization")
+	}
+	e.NativeMetrics["input_tokens"] = nil
+	e.Metrics.Input = nil
+	if err := ValidateMeasurement(c, e); err != nil {
+		t.Fatal("unknown native input must remain representable as null", err)
+	}
+	e.Metrics.Input = Ptr("3")
+	if ValidateMeasurement(c, e) == nil {
+		t.Fatal("partial native counters became a known input total")
 	}
 }
 func TestStateAndEffectiveCoverage(t *testing.T) {

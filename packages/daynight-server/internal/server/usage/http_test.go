@@ -2,6 +2,7 @@ package usage
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -21,6 +22,16 @@ func TestStrictBoundedUsageBody(t *testing.T) {
 		{"unknown", `{"expectedRowVersion":"1","token":"secret"}`, "invalid_body"},
 		{"number", `{"expectedRowVersion":1}`, "invalid_body"},
 		{"surrogate", `{"expectedRowVersion":"\ud800"}`, "invalid_body"},
+		{"lone low surrogate", `{"expectedRowVersion":"\udc00"}`, "invalid_body"},
+		{"non-low surrogate pair", `{"expectedRowVersion":"\ud800\u0041"}`, "invalid_body"},
+		{"invalid unicode hex", `{"expectedRowVersion":"\uZZZZ"}`, "invalid_body"},
+		{"truncated unicode", `{"expectedRowVersion":"\u12`, "invalid_body"},
+		{"truncated escape", `{"expectedRowVersion":"\`, "invalid_body"},
+		{"empty", "", "invalid_body"},
+		{"truncated nested array", `[{"expectedRowVersion":}]`, "invalid_body"},
+		{"unclosed array", `[1`, "invalid_body"},
+		{"unclosed object", `{"expectedRowVersion":"1"`, "invalid_body"},
+		{"depth overflow", strings.Repeat("[", 66) + strings.Repeat("]", 66), "invalid_body"},
 		{"depth", strings.Repeat("[", 65) + strings.Repeat("]", 65), "invalid_body"},
 		{"trailing", `{"expectedRowVersion":"1"} {}`, "invalid_body"},
 		{"utf8", string([]byte{'{', '"', 0xff, '"', '}'}), "invalid_body"},
@@ -47,8 +58,97 @@ func TestStrictBoundedUsageBody(t *testing.T) {
 	if _, err := parse(httptest.NewRecorder(), r, &target); err != nil || target.Expected != "9007199254740993" {
 		t.Fatal(target, err)
 	}
+	r = httptest.NewRequest("POST", "/", strings.NewReader(`{"expectedRowVersion":"escaped\\slash\"quote\uD83D\uDE00"}`))
+	r.Header.Set("Content-Type", "application/json")
+	if _, err := parse(httptest.NewRecorder(), r, &target); err != nil || target.Expected != "escaped\\slash\"quote😀" {
+		t.Fatal("valid escapes or UTF-16 pair rejected", target, err)
+	}
 	if _, err := decodeEvent([]byte(`{"eventId":"x","kind":"execution_state","reasonCodes":[],"observedAt":"x","stateSequence":"1","collectionState":"collecting","capability":null,"nativeStartedAt":null,"nativeEndedAt":null,"seal":false,"metrics":{}}`)); err == nil {
 		t.Fatal("mixed event shape")
+	}
+}
+
+func TestMeasurementEventDecodePreservesExactAmountsAndUnionBoundary(t *testing.T) {
+	input := map[string]any{
+		"eventId": "10000000-0000-4000-8000-000000000001", "kind": "measurement",
+		"originatingStateId": "10000000-0000-4000-8000-000000000002",
+		"sourceKey":          "copilot-event-v1:10000000-0000-4000-8000-000000000003",
+		"nativeTurnId":       nil, "nativeCallId": nil, "model": "model",
+		"profileId": "copilot-event-1.0.11-v1", "revisionAuthority": "immutable",
+		"sourceRevision": "1", "finality": "final", "disposition": "active",
+		"aggregationRole": "counted", "includedInSourceKey": nil,
+		"metrics": map[string]any{
+			"inputTokens": nil, "outputTokens": "9007199254740993", "cacheReadTokens": nil,
+			"cacheWriteTokens": nil, "reasoningTokens": nil, "totalTokens": nil, "providerTotalTokens": nil,
+		},
+		"nativeMetrics": map[string]any{"outputTokens": "9007199254740993"},
+		"reasonCodes":   []string{}, "observedAt": "2026-11-18T03:00:00Z",
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := decodeEvent(raw)
+	if err != nil || event.Metrics.Output == nil || *event.Metrics.Output != "9007199254740993" || event.NativeMetrics["outputTokens"] != "9007199254740993" || event.Metrics.Input != nil {
+		t.Fatal("measurement lost exact or unknown amount", event, err)
+	}
+	for _, change := range []func(map[string]any){
+		func(v map[string]any) { delete(v, "observedAt") },
+		func(v map[string]any) { v["stateSequence"] = "1" },
+		func(v map[string]any) { v["metrics"] = []string{} },
+		func(v map[string]any) { v["metrics"] = map[string]any{"outputTokens": "7"} },
+		func(v map[string]any) {
+			metrics := v["metrics"].(map[string]any)
+			delete(metrics, "inputTokens")
+			metrics["unexpected"] = nil
+		},
+		func(v map[string]any) { v["metrics"].(map[string]any)["outputTokens"] = 7 },
+		func(v map[string]any) { v["nativeMetrics"] = map[string]any{"outputTokens": strings.Repeat("1", 4096)} },
+	} {
+		var changed map[string]any
+		if err = json.Unmarshal(raw, &changed); err != nil {
+			t.Fatal(err)
+		}
+		change(changed)
+		invalid, err := json.Marshal(changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = decodeEvent(invalid); err == nil {
+			t.Fatal("invalid measurement union admitted", string(invalid))
+		}
+	}
+	for _, invalid := range []string{
+		`{`, `{"kind":7}`, `{"kind":"unknown"}`,
+		`{"eventId":"x","kind":"execution_state","reasonCodes":[],"observedAt":"x","stateSequence":"1","collectionState":"collecting","capability":null,"nativeStartedAt":null,"nativeEndedAt":null,"seal":null}`,
+	} {
+		if _, err := decodeEvent([]byte(invalid)); err == nil {
+			t.Fatal("invalid event admitted", invalid)
+		}
+	}
+}
+
+func TestBatchRejectsInvalidBodyEventAndStatePathBeforeBusinessOperation(t *testing.T) {
+	const id = "10000000-0000-4000-8000-000000000001"
+	for _, tc := range []struct {
+		path, body string
+		status     int
+	}{
+		{id, `{`, 400},
+		{id, `{"protocol":"daynight.usage.v1","batchId":"` + id + `","events":[{"kind":"unknown"}]}`, 400},
+		{"not-a-uuid", `{"protocol":"daynight.usage.v1","batchId":"` + id + `","events":[]}`, 404},
+	} {
+		service := &controlledOperations{t: t}
+		mux := http.NewServeMux()
+		registerRoutes(mux, service, fixedAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		request := httptest.NewRequest("POST", "/api/usage/v1/states/"+tc.path+"/batches", strings.NewReader(tc.body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("x", 43))
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		if response.Code != tc.status || service.calls != 0 {
+			t.Fatal(response.Code, service.calls, response.Body.String())
+		}
 	}
 }
 

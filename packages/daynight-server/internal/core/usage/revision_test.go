@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,48 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+func TestStateValidationPreservesProfileAndTimeBoundaries(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	p, _ := FindProfile("copilot-event-1.0.11-v1", "copilot")
+	p = Qualify(p, true)
+	old := model.UsageRecord{ID: "10000000-0000-4000-8000-000000000001", CollectionState: Ptr("collecting"), StateSequence: Ptr("0"), ReasonCodes: []string{}}
+	valid := model.UsageEvent{EventID: old.ID, StateSequence: "1", CollectionState: "partial", Capability: &p.Capability, ReasonCodes: ProfileReasons("copilot"), ObservedAt: now.Format(time.RFC3339Nano)}
+	for _, change := range []func(*model.UsageEvent){
+		func(e *model.UsageEvent) { e.EventID = "" },
+		func(e *model.UsageEvent) { e.ReasonCodes = []string{"unbounded-provider-message"} },
+		func(e *model.UsageEvent) { e.NativeStartedAt = Ptr("2026-11-18T03:00:00+00:00") },
+		func(e *model.UsageEvent) { e.NativeEndedAt = Ptr("2026-11-18T03:00:00.1234567Z") },
+		func(e *model.UsageEvent) { e.CollectionState = "unknown" },
+		func(e *model.UsageEvent) { e.ReasonCodes = []string{} },
+	} {
+		event := valid
+		change(&event)
+		got, err := ApplyState(old, event, p, now)
+		if err == nil || Value(got.StateSequence) != "0" || got.SealedAt != nil {
+			t.Fatal("invalid update changed execution state", got, err)
+		}
+	}
+	unverified, _ := FindProfile(p.ID, p.Provider)
+	event := valid
+	event.Capability = &unverified.Capability
+	event.CollectionState = "unavailable"
+	event.ReasonCodes = []string{"profile_unverified"}
+	if _, err := ApplyState(old, event, unverified, now); err != nil {
+		t.Fatal("unverified profile cannot record its own unavailable state", err)
+	}
+	event.ReasonCodes = []string{}
+	if _, err := ApplyState(old, event, unverified, now); err == nil {
+		t.Fatal("unverified profile discarded its qualification diagnostic")
+	}
+	event = valid
+	event.ReasonCodes = []string{"model_unknown", "model_unknown"}
+	_, err := StateHash(old.ID, event)
+	var fault *model.UsageFault
+	if !errors.As(err, &fault) || fault.Error() != "invalid_measurement" {
+		t.Fatal("invalid reason metadata entered a state hash", err)
+	}
+}
 
 func TestIsolatedCompleteProfileAndAuthoritativeCorrection(t *testing.T) {
 	now := time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC)

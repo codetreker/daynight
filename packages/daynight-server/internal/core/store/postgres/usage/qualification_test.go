@@ -9,9 +9,38 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/usage"
 	app "github.com/codetreker/daynight/packages/daynight-server/internal/service/usage"
 	"github.com/google/uuid"
 )
+
+func TestClaudeUnqualifiedRuntimeRecordsUnavailableStateWithoutClaimingUsage(t *testing.T) {
+	f := workflow(t)
+	ctx := t.Context()
+	f.registration.ProfileID = "claude-message-input-0.3.247-v1"
+	testutil.MustExec(t, f.db.Pool, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{identity,provider}','"claude"') WHERE id=$1`, f.session)
+	testutil.MustExec(t, f.db.Pool, `UPDATE task_properties SET value=jsonb_set(value::jsonb,'{agent}','"claude"')::text WHERE task_id=$1 AND name='worker'`, f.task)
+	reg, err := f.service.Register(ctx, f.actor, f.registration)
+	if err != nil || reg.State.Capability == nil || reg.State.Capability.Qualification != "unverified" {
+		t.Fatal(reg, err)
+	}
+	event := stateEvent(reg.State, "1", "unavailable", true)
+	event.ReasonCodes = reg.State.ReasonCodes
+	if _, err = f.service.Batch(ctx, reg.State.ID, reg.Grant.Token, batch(event)); err != nil {
+		t.Fatal("unqualified Claude runtime cannot record its own limitation", err)
+	}
+	counted := measurement(reg.State.ID, "0")
+	counted.ProfileID = f.registration.ProfileID
+	counted.SourceKey = "claude-message-input-v1:message"
+	counted.NativeMetrics = map[string]any{"input_tokens": "2", "cache_read_input_tokens": "0", "cache_creation_input_tokens": "0"}
+	counted.Metrics = model.UsageMetrics{Input: core.Ptr("2"), CacheRead: core.Ptr("0"), CacheWrite: core.Ptr("0")}
+	_, err = f.service.Batch(ctx, reg.State.ID, reg.Grant.Token, batch(counted))
+	requireCode(t, err, "profile_unverified")
+	state, err := f.service.State(ctx, f.actor, reg.State.ID)
+	if err != nil || state.SealedAt == nil || core.Value(state.CollectionState) != "unavailable" {
+		t.Fatal(state, err)
+	}
+}
 
 func TestUsageConfigurationAdvertisesOnlyExactQualifiedVersions(t *testing.T) {
 	f := workflow(t)

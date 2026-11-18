@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/usage"
 )
+
+func TestRegistrationReplayRejectsCorruptStoredGrantVerifier(t *testing.T) {
+	for _, raw := range [][]byte{nil, make([]byte, 32), make([]byte, 65)} {
+		old := model.UsageRecord{GrantHash: raw}
+		err := matchRegistration(old, model.UsageRecord{}, "controller", "1")
+		if !errors.Is(err, core.ErrInvalidGrantVerifier) {
+			t.Fatal("corrupt grant storage was treated as a registration replay", err)
+		}
+	}
+}
 
 func TestUsageRejectsInvalidRequestsBeforeOpeningTransactions(t *testing.T) {
 	s := newTestService(t, nil, Options{WriteEnabled: true})

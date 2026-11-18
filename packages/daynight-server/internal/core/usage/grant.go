@@ -38,8 +38,9 @@ func RegistrationBinding(r model.UsageRecord, instance, epoch string) ([32]byte,
 		r.AuthorityUserID, r.ParentCredentialID, r.Provider, r.NativeSessionID, r.AnchorStateID,
 		r.RegistrationID, r.ProfileID, r.ProviderVersion, instance, epoch,
 	})
-	if err != nil {
-		return [32]byte{}, err
+	var binding [32]byte
+	if err == nil {
+		binding = sha256.Sum256(raw)
 	}
-	return sha256.Sum256(raw), nil
+	return binding, err
 }

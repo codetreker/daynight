@@ -68,7 +68,7 @@ func batch(events ...model.UsageEvent) app.Batch {
 func requireCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var fault *model.UsageFault
-	if !errors.As(err, &fault) || fault.Code != code {
+	if !errors.As(err, &fault) || fault.Error() != code {
 		t.Fatalf("wanted %s; got %v", code, err)
 	}
 }
