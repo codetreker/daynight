@@ -531,11 +531,14 @@ configuration, browser authorization and connection verification. A normal HEAD
 returns the same headers without a body. Reading the manual does not authenticate
 or invoke business operations.
 
-Authenticated MCP clients use `resources/list` to discover twelve product manual
-Resources and `resources/read` to obtain a complete topic at its returned
-`daynight://manuals/<topic>.md` URI. The short server instructions route by
-operation. Steps, Thread, Session reads and messages, and attachment reads and
-writes have separate guides. Every write requires the common write-safety guide
+The handshake instructions introduce Daynight and direct clients to read
+`daynight://manuals/overview.md` with `resources/read` before using its tools;
+the URI can be read without first listing Resources. Authenticated MCP clients
+can also use `resources/list` to discover the overview and twelve topic manuals,
+and `resources/read` to obtain each complete Markdown document. The overview
+routes by operation and explains shared context and authorization rules. Steps,
+Thread, Session reads and messages, and attachment reads and writes have separate
+guides. Every write requires the common write-safety guide
 and its operation's conditions; related topics retain explicit reading prerequisites.
 The materials topic defines Goal-owned shared specifications, architecture,
 breakdowns, conclusions and overall progress, alongside each child Task's own

@@ -96,13 +96,37 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = session.Close() })
+		const overviewURI = "daynight://manuals/overview.md"
+		instructions := session.InitializeResult().Instructions
+		_, quoted, ok := strings.Cut(instructions, "`")
+		uriFromHandshake, _, closed := strings.Cut(quoted, "`")
+		if !ok || !closed || uriFromHandshake != overviewURI || !strings.Contains(instructions, "resources/read") {
+			t.Fatalf("handshake instructions = %q", instructions)
+		}
+		overview, err := session.ReadResource(f.context, &sdk.ReadResourceParams{URI: uriFromHandshake})
+		if err != nil || overview == nil || len(overview.Contents) != 1 || overview.Contents[0].URI != overviewURI || overview.Contents[0].MIMEType != "text/markdown" || !strings.Contains(overview.Contents[0].Text, "daynight://manuals/concepts.md") || !strings.Contains(overview.Contents[0].Text, "project_resolve") {
+			t.Fatalf("overview = %+v, error=%v", overview, err)
+		}
+		tools, err := session.ListTools(f.context, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundTools := map[string]bool{"project_resolve": false, "task_show": false}
+		for _, tool := range tools.Tools {
+			if _, ok := foundTools[tool.Name]; ok && tool.InputSchema != nil {
+				foundTools[tool.Name] = true
+			}
+		}
+		if !foundTools["project_resolve"] || !foundTools["task_show"] {
+			t.Fatalf("tool definitions missing: %+v", foundTools)
+		}
 		listing, err := session.ListResources(f.context, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		const (
 			uri                 = "daynight://manuals/concepts.md"
-			expectedManualCount = 12
+			expectedManualCount = 13
 		)
 		var manual *sdk.Resource
 		for _, resource := range listing.Resources {
