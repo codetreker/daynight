@@ -60,7 +60,13 @@ owner reads the actual index before deciding whether rollback is valid. An
 exact new inventory preserves the committed deletion; a confirmed old inventory
 permits restoration. Unknown or unexpected inventory preserves backups and
 reports a recovery error. A visible new index does not prove its directory sync
-succeeded; strict cleanup must still complete durable publication.
+succeeded and does not authorize destroying recovery backups. Cleanup reads and
+validates the actual index, then requires a successful content-root directory
+sync before deleting any registered backup. It performs this sync even with no
+cleanup entries, so a prior index rename that cleared the inventory cannot bypass
+durability on retry. Failure preserves backups and prevents strict retirement
+completion. Deletion-directory sync and final durable index publication remain
+required when consuming registered backups.
 
 Strict cleanup also detects remaining `.delete` entries in the resource and blob
 directories, even without an indexed cleanup inventory. A failed backup

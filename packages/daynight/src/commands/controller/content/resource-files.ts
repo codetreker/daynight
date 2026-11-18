@@ -145,6 +145,10 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   const retryCleanup = (): void => {
     assertWritable(); assertDirectories(); assertSessionManifest(root, sessionId);
     const index = readIndex(root)?.value;
+    // Visible inventory can follow a rename whose directory flush failed.
+    // Confirm its durability before destroying backups, including when a prior
+    // cleanup already published an empty inventory but could not confirm it.
+    syncDirectory(root);
     // The atomic resource inventory records only backups whose original
     // deletion committed. Never infer ownership by scanning leftover files.
     for (const relative of index?.cleanup ?? []) {

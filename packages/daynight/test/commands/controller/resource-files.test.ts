@@ -5,10 +5,13 @@ import { afterEach, expect, test, vi } from "vitest";
 import { openResourceFiles, retireLegacyTimelineReferences } from "../../../src/commands/controller/content/resource-files.js";
 import { parseSessionResource, parseStoredSessionResource } from "../../../src/session/protocol.js";
 
-const faults = vi.hoisted(() => ({ operation: "", target: "", publicationIndex: "", publicationFailed: false, rollbackAttempts: 0 }));
+const faults = vi.hoisted(() => ({ operation: "", target: "", publicationIndex: "", publicationFailed: false, rollbackAttempts: 0, rootSyncDenied: "", failClearPublication: false, clearPublicationFailed: false }));
 vi.mock("../../../src/platform/durable-json.js", async original => {
   const durable = await original<typeof import("../../../src/platform/durable-json.js")>();
-  return { ...durable, writeDurableJson: (file: string, value: unknown) => {
+  return { ...durable, syncDirectory: (directory: string) => {
+    if (directory === faults.rootSyncDenied) throw new Error("Controlled resource root flush failure");
+    durable.syncDirectory(directory);
+  }, writeDurableJson: (file: string, value: unknown) => {
     const inventory = value as { resources?: string[]; cleanup?: string[] };
     if (file === faults.publicationIndex && faults.publicationFailed && inventory.resources?.length) {
       faults.rollbackAttempts++; throw new Error("Controlled old inventory restoration failure");
@@ -16,6 +19,10 @@ vi.mock("../../../src/platform/durable-json.js", async original => {
     durable.writeDurableJson(file, value);
     if (file === faults.publicationIndex && !faults.publicationFailed && inventory.cleanup?.length) {
       faults.publicationFailed = true; throw new Error("Controlled index publication acknowledgement failure");
+    }
+    if (file === faults.publicationIndex && faults.publicationFailed && faults.failClearPublication && inventory.cleanup === undefined) {
+      faults.failClearPublication = false; faults.clearPublicationFailed = true; faults.rootSyncDenied = path.dirname(file);
+      throw new Error("Controlled cleared index publication flush failure");
     }
   } };
 });
@@ -38,7 +45,7 @@ vi.mock("node:fs", async original => {
   };
 });
 const roots: string[] = [];
-afterEach(async () => { faults.operation = ""; faults.target = ""; faults.publicationIndex = ""; faults.publicationFailed = false; faults.rollbackAttempts = 0; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { faults.operation = ""; faults.target = ""; faults.publicationIndex = ""; faults.publicationFailed = false; faults.rollbackAttempts = 0; faults.rootSyncDenied = ""; faults.failClearPublication = false; faults.clearPublicationFailed = false; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/resource-files-tests");
   await mkdir(base, { recursive: true });
@@ -47,6 +54,29 @@ const fixture = async () => {
 };
 const descriptor = (bytes: Buffer) => ({ resourceId: randomUUID(), status: "available" as const, name: "original.png", mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null });
 const filename = (id: string) => `${createHash("sha256").update(id).digest("hex")}.json`;
+
+test("strict retirement confirms root durability before deleting backups and after an empty cleanup publication", async () => {
+  const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId);
+  const bytes = Buffer.from("original tool bytes"), resource = descriptor(bytes);
+  files.writeResource(resource, bytes);
+  const indexPath = path.join(files.root, "index.json");
+  faults.publicationIndex = indexPath; faults.rootSyncDenied = files.root;
+  files.releaseResource(resource.resourceId);
+  expect(faults.publicationFailed).toBe(true); expect(files.resources.has(resource.resourceId)).toBe(false);
+  const index = JSON.parse(await readFile(indexPath, "utf8")); expect(index.cleanup).toHaveLength(2);
+  expect(() => files.retryCleanup()).toThrow("Controlled resource root flush failure");
+  for (const relative of index.cleanup) expect((await readFile(path.join(files.root, relative))).length).toBeGreaterThan(0);
+  faults.rootSyncDenied = ""; faults.failClearPublication = true;
+  expect(() => files.retryCleanup()).toThrow("Controlled cleared index publication flush failure");
+  expect(faults.clearPublicationFailed).toBe(true);
+  expect(JSON.parse(await readFile(indexPath, "utf8"))).toEqual({ entries: [], resources: [] });
+  for (const relative of index.cleanup) await expect(readFile(path.join(files.root, relative))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(() => files.retryCleanup()).toThrow("Controlled resource root flush failure");
+  faults.rootSyncDenied = "";
+  const reopened = openResourceFiles(journal, sessionId);
+  reopened.retryCleanup(); expect(reopened.resources.size).toBe(0);
+  expect(faults.rollbackAttempts).toBe(0);
+});
 
 test.each([false, true])("persists committed cleanup across reopen without rolling back published deletion or deleting unknown files (lost publication acknowledgement: %s)", async lostPublication => {
   const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId);
