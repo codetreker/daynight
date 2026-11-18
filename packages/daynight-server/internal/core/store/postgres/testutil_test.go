@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"testing"
@@ -35,6 +36,16 @@ func parallelRootDatabaseTest(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	const rootDatabaseEnv = "DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL"
+	if database := os.Getenv(rootDatabaseEnv); database != "" {
+		if err := os.Setenv("DAYNIGHT_TEST_DATABASE_URL", database); err != nil {
+			log.Fatal(err)
+		}
+		// Subprocesses inherit the selected URL and may supply their own fixture URL.
+		if err := os.Unsetenv(rootDatabaseEnv); err != nil {
+			log.Fatal(err)
+		}
+	}
 	code := m.Run()
 	if schemaManagement.pool != nil {
 		schemaManagement.pool.Close()

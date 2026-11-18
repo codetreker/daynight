@@ -1253,7 +1253,12 @@ docker rm --force --volumes daynight-server-redis-tests
 
 The module check builds and vets the Go module using its unit-test Web resource
 overlay, prepares the pinned UniAuth fixture, and runs module tests and coverage.
-Its optional `--coverage` argument selects the same check. The independent
+Its optional `--coverage` argument selects the same check. Module CI provisions
+a second database in its PostgreSQL service and passes its URL as
+`DAYNIGHT_TEST_STORE_ROOT_DATABASE_URL`. Only the PostgreSQL Store root test
+package consumes this optional URL. Local runs can set it to a second isolated
+database on the same instance to reproduce CI's migration-lock isolation.
+The independent
 startup/shutdown check runs the command tests with `-tags=startupshutdown` and
 the controlled Webhook Runner abrupt-recovery witness with its dedicated test
 transport build. Production builds use the real Web assets described under
