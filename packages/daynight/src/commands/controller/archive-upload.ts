@@ -13,7 +13,8 @@ import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journa
 import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../platform/sqlite-format.js";
 import { closeSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { openSessionContent } from "./content/session-content.js";
+import { openSessionContent, readSessionHistoryContentPolicy, retireStoppedOnlineContent } from "./content/session-content.js";
+import { TASK_BODY_HISTORY_VERSION_HEADER } from "../../session/archive.js";
 import type { ControlledResourceLease, ResourceFiles } from "./content/resource-files.js";
 import { writeDurableJson } from "../../platform/durable-json.js";
 import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
@@ -113,6 +114,7 @@ const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<voi
 
 export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
   const { ticket, journalPath } = options;
+  let bodyOnly = false;
   const fence = { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration };
   const identity = { fence, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId };
   const base = ticket.testExecutionId !== undefined ? `/api/v1/test-sessions/${ticket.sessionId}` : `/api/v1/projects/${ticket.projectId}/tasks/${ticket.taskId}/sessions/${ticket.sessionId}`;
@@ -123,7 +125,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     for (let retries = 0; ; retries++) {
       operationSignal.throwIfAborted();
       const signal = AbortSignal.any([operationSignal, AbortSignal.timeout(15_000)]);
-      const response = await request(`${ticket.serverOrigin}${base}/archive${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${options.serverToken}`, ...(body === undefined ? {} : { "Content-Type": typeof body === "string" ? "application/json" : "application/octet-stream" }), ...extra }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : Uint8Array.from(body) }), signal });
+      const response = await request(`${ticket.serverOrigin}${base}/archive${suffix}`, { method, redirect: "error", headers: { Authorization: `Bearer ${options.serverToken}`, ...(bodyOnly ? { [TASK_BODY_HISTORY_VERSION_HEADER]: "1" } : {}), ...(body === undefined ? {} : { "Content-Type": typeof body === "string" ? "application/json" : "application/octet-stream" }), ...extra }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : Uint8Array.from(body) }), signal });
+      if (bodyOnly && response.headers.get(TASK_BODY_HISTORY_VERSION_HEADER) !== "1") throw new Error("upgrade_required: The service does not support Task body archives.");
       if (response.ok) return response.json();
       const payload: unknown = await response.json().catch(() => undefined);
       const detail = payload && typeof payload === "object" && "error" in payload ? payload.error : undefined;
@@ -166,6 +169,8 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     return value!;
   };
   const receiptPath = `${journalPath}.archive-receipt-${ticket.executionGeneration}.json`;
+  bodyOnly = inspectOriginal(readSessionHistoryContentPolicy) === "task_body";
+  const retireOnline = () => { if (bodyOnly) local(db => retireStoppedOnlineContent(journalPath, ticket.sessionId, db)); };
   if (existsSync(receiptPath)) {
     const receipt = parseSessionArchiveStatus(JSON.parse(readFileSync(receiptPath, "utf8"))), current = await status();
     const sameRepresentation = current.sha256 === receipt.sha256 && current.byteLength === receipt.byteLength;
@@ -173,6 +178,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     if (receipt.state !== "ready" || current.state !== "ready" || current.schemaVersion !== 3 || !(receipt.schemaVersion === 3 ? sameRepresentation : migratedOriginal)) throw new Error("Server archive differs from the confirmed receipt.");
     inspectOriginal(() => undefined);
     if (receipt.schemaVersion === undefined) localFiles(() => writeDurableJson(receiptPath, current));
+    retireOnline();
     return current;
   }
   const admission = await probeStoppedControllerArchive({ journalPath, ticket, signal: roundSignal });
@@ -251,7 +257,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   const prepared = parseSessionArchivePreparation(await call("POST", "/prepare", true, JSON.stringify(identity)));
   if (prepared.recordId !== ticket.sessionId || prepared.phase === "failed" || prepared.sourceThrough !== frozen.source.sourceThrough || frozen.historyEpoch !== null && frozen.historyEpoch !== prepared.historyEpoch) throw new Error("Archive source differs from the original service checkpoint.");
   const timelineBytes = Buffer.from(JSON.stringify(frozen.timeline));
-  const historyBytes = Buffer.from(JSON.stringify({ historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
+  const historyBytes = Buffer.from(JSON.stringify({ ...(bodyOnly ? { contentPolicy: "task_body", onlineImageOccurrences: [] } : {}), historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
   const intent = localFiles((): ArchiveIntent => {
     let intent: ArchiveIntent;
     if (existsSync(intentPath)) {
@@ -312,7 +318,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   const sealed=parseSessionArchivePreparation(await call("POST","/seal",true));
   if (sealed.phase!=="sealed"||sealed.recordId!==ticket.sessionId||sealed.historyEpoch!==intent.historyEpoch||sealed.sourceThrough!==intent.sourceThrough) throw new Error("Archive seal was not confirmed.");
   const partial=frozen.refs.unavailable||frozen.resources.some(resource=>resource.status!=="available");
-  const manifest=parseSessionArchiveManifest({schemaVersion:3,contentKind:"native_timeline",recordId:ticket.sessionId,...identity,provider:ticket.provider,nativeSessionId:observed.nativeSessionId,timeline:intent.timeline,resources:sealed.resources,completeness:partial?"partial":"complete"});
+  const manifest=parseSessionArchiveManifest({schemaVersion:3,contentKind:"native_timeline",...(bodyOnly?{contentPolicy:"task_body"}:{}),recordId:ticket.sessionId,...identity,provider:ticket.provider,nativeSessionId:observed.nativeSessionId,timeline:intent.timeline,resources:sealed.resources,completeness:partial?"partial":"complete"});
   await transfer("timeline",intent.timeline,(offset,limit)=>timelineBytes.subarray(Number(offset),Number(offset)+limit));
   const body=JSON.stringify(manifest),hash=sha256(Buffer.from(body)),length=String(Buffer.byteLength(body));
   const matches=(value:SessionArchiveStatus)=>value.state==="ready"&&value.schemaVersion===3&&value.sha256===hash&&value.byteLength===length&&value.completeness===manifest.completeness;
@@ -325,5 +331,6 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   if(!matches(current))throw new Error("Session archive commit was not confirmed with matching integrity.");
   assertFrozen();
   localFiles(() => writeDurableJson(receiptPath,current));
+  retireOnline();
   return current;
 };

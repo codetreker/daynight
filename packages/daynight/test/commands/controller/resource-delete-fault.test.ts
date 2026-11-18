@@ -132,3 +132,24 @@ test("a late failure restores legacy timeline entries in the shared index", asyn
   expect(JSON.parse(await readFile(indexPath, "utf8"))).toEqual({ ...current, entries: [entry] });
   expect(openResourceFiles(f.journal, f.sessionId).resources.has(f.resource.resourceId)).toBe(true);
 });
+
+test("rollback backup cleanup preserves the complete restored inventory across retry", async () => {
+  const f = await fixture(), entry = `${"c".repeat(64)}.json`, timeline = path.join(f.files.root, "timeline");
+  await mkdir(timeline); await writeFile(path.join(timeline, entry), "{}");
+  const indexPath = path.join(f.files.root, "index.json"), current = JSON.parse(await readFile(indexPath, "utf8"));
+  const previousBackup = `${f.blob}.${randomUUID()}.delete`;
+  await link(f.blob, previousBackup);
+  const previousCleanup = `blobs/${path.basename(previousBackup)}`;
+  await writeFile(indexPath, JSON.stringify({ ...current, entries: [entry], cleanup: [previousCleanup] }));
+  faults.syncDir = path.dirname(f.blob); faults.syncCount = 2; faults.cleanup = true;
+  expect(() => f.files.releaseResource(f.resource.resourceId)).toThrow("rollback retained backups");
+  const restored = JSON.parse(await readFile(indexPath, "utf8"));
+  expect(restored).toMatchObject({ ...current, entries: [entry] });
+  expect(restored.cleanup).toHaveLength(3); expect(restored.cleanup).toContain(previousCleanup);
+  expect(await readFile(f.blob)).toEqual(f.bytes);
+  faults.cleanup = false;
+  openResourceFiles(f.journal, f.sessionId).retryCleanup();
+  expect(JSON.parse(await readFile(indexPath, "utf8"))).toEqual({ ...current, entries: [entry] });
+  expect(await readFile(f.blob)).toEqual(f.bytes);
+  expect(await readFile(path.join(timeline, entry), "utf8")).toBe("{}");
+});

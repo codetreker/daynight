@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, SessionHistoryError, canonicalHistoryJSON, decodeHistoryEntryCursor, decodeHistoryPageCursor, encodeHistoryEntryCursor, encodeHistoryPageCursor, type EntryChunk, type HistoryCoverage, type HistoryCursorIdentity, type InspectionPage, type InspectionResource, type SessionMessageItem } from "../../session/history.js";
 import { sessionArchiveReferences } from "../../session/archive.js";
-import type { TimelineEntry } from "../../session/protocol.js";
+import { parseTimelineEntry, type TimelineEntry } from "../../session/protocol.js";
 import type { SessionContent } from "./content/session-content.js";
 
 export type LocalInspectionQuery = { historyEpoch: string; cursor: string | null; limit: number; responseOverhead: number };
@@ -16,6 +16,10 @@ const byteDescription = (entry: TimelineEntry) => {
 // MCP embeds the result with Go's HTML-safe JSON encoder. Budget for its
 // escaping even though the Controller's WebSocket representation is smaller.
 const responseBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`));
+const admitsInline = (entry: TimelineEntry): boolean => {
+  try { parseTimelineEntry(entry); return true; }
+  catch { return false; }
+};
 
 export const createInspectionContent = (store: SessionContent, sessionId: string) => {
   const identity = (historyEpoch: string): HistoryCursorIdentity => ({ source: "live", sessionId, historyEpoch, sourceVersion: historyEpoch });
@@ -56,7 +60,9 @@ export const createInspectionContent = (store: SessionContent, sessionId: string
       const page = (): InspectionPage => ({ kind: "inspect_page", historyEpoch: query.historyEpoch, items, beforeCursor: items.length ? encodeHistoryPageCursor({ ...identity(query.historyEpoch), entrySeq: items[0]!.entrySeq }) : null, hasMoreBefore: items.length > 0 && store.timeline.hasBefore(items[0]!.entrySeq), coverage });
       for (const entry of selected) {
         items.unshift(itemFor(entry));
-        if (responseBytes(page()) + query.responseOverhead <= HISTORY_RESPONSE_BYTES) continue;
+        // Stored originals can exceed wire field or list limits even when the
+        // complete page fits. References preserve those originals for chunks.
+        if (admitsInline(entry) && responseBytes(page()) + query.responseOverhead <= HISTORY_RESPONSE_BYTES) continue;
         const { sha256, byteLength } = byteDescription(entry);
         const cursor = encodeHistoryEntryCursor({ ...identity(query.historyEpoch), entryId: entry.entryId, revision: entry.revision, sha256, byteLength, offset: "0" });
         items[0] = { ...items[0]!, body: null, truncated: true, contentRef: { cursor, sha256, byteLength } };

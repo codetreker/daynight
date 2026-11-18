@@ -1,5 +1,6 @@
 import type { ImageCaptureReceipt, ImageCaptureRequest, ImageError, ImageOccurrence, ImagePart, ImageUnavailablePart } from "../../../session/image-values.js";
 import { parseSourceEvent } from "../../../session/controller-protocol.js";
+import { parseStoredTimelineEntry } from "../../../session/protocol.js";
 import type { MarkdownTimelineMetadata, ProviderEntry } from "../providers/types.js";
 import type { MarkdownSourceStoreKind } from "./store.js";
 import { createMarkdownImageProjector, type MarkdownProjectedOccurrence, type MarkdownProjectionMetadata, type MarkdownProjectionPartInput, type MarkdownProjectionState } from "./projection.js";
@@ -9,7 +10,7 @@ type ProjectionStore = {
   put(kind: MarkdownSourceStoreKind, id: string, value: unknown): void;
   listIds(kind: MarkdownSourceStoreKind, page: { after?: string; limit: number }): string[];
 };
-type Journal = { markdownStore: ProjectionStore; getTimelineEntry?(entryId: string): ProviderEntry | undefined; publishMarkdownProjection(state: MarkdownProjectionState, entry: ProviderEntry): unknown; projectTimeline(entry: ProviderEntry): unknown; markProjectionGap?(reason: string): void };
+type Journal = { markdownStore: ProjectionStore; getHistoryContentPolicy?(): string; getTimelineEntry?(entryId: string): ProviderEntry | undefined; publishMarkdownProjection(state: MarkdownProjectionState, entry: ProviderEntry): unknown; projectTimeline(entry: ProviderEntry): unknown; markProjectionGap?(reason: string): void };
 type CaptureHooks<Context> = {
   contextKey(): string;
   contextFor(occurrence: ImageOccurrence): Context;
@@ -83,7 +84,8 @@ export function createMarkdownTimelinePipeline<Context>(options: {
     if (stopped || broken) return false;
     // Authoritative identities and interactions keep the existing fatal protocol
     // failure; they are not Markdown parse failures or private cache identities.
-    parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: entry });
+    if (journal.getHistoryContentPolicy?.() === "task_body") parseStoredTimelineEntry({ ...entry, entrySeq: "1" });
+    else parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload: entry });
     try {
       const previous = get(entry.entryId);
       if (!previous && (!metadata || metadata.format !== "markdown")) { journal.projectTimeline(entry); return true; }

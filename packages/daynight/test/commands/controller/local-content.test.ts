@@ -7,8 +7,8 @@ import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
 import { createLocalSessionContent } from "../../../src/commands/controller/local-content.js";
-import { canonicalHistoryJSON, encodeHistoryPageCursor } from "../../../src/session/history.js";
-import type { TimelineEntry } from "../../../src/session/protocol.js";
+import { canonicalHistoryJSON, encodeHistoryPageCursor, parseInspectionPage, parseEntryChunk } from "../../../src/session/history.js";
+import { parseTimelineEntry, type TimelineEntry } from "../../../src/session/protocol.js";
 
 const roots: string[] = [], connections: Database.Database[] = [];
 afterEach(() => {
@@ -16,12 +16,13 @@ afterEach(() => {
   for (const db of connections.splice(0)) if (db.open) db.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-const fixture = () => {
+const fixture = (taskBody = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/controller-tests"); mkdirSync(base, { recursive: true });
   const root = mkdtempSync(path.join(base, "sql-content-reads-")); roots.push(root);
   const file = path.join(root, "journal.sqlite"), db = new Database(file); connections.push(db);
   db.pragma("journal_mode = WAL");
   for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url))) db.exec(step.sql);
+  if (taskBody) db.prepare("INSERT INTO execution(id,ticket_hash,snapshot,history_content_policy) VALUES(1,'fixture','{}','task_body')").run();
   let writing = false;
   const transactions = {
     read: <T>(action: () => T): T => db.transaction(action).deferred(),
@@ -34,6 +35,27 @@ const fixture = () => {
 const reasoning = (entrySeq: string, text = "current SQL body", revision = "1", entryId: string = randomUUID()): TimelineEntry => ({ entryId, entrySeq, revision, kind: "reasoning", text });
 const interaction = (entrySeq: string, state: "pending" | "resolved" = "pending", title = "Approval"): TimelineEntry => ({ entryId: randomUUID(), entrySeq, revision: "1", kind: "interaction", interaction: { interactionId: randomUUID(), revision: "1", kind: "approval", state, title, detail: "Details", actions: ["allow_once", "reject"] } });
 const cursor = (sessionId: string, epoch: string, sequence: string) => Buffer.from(JSON.stringify([sessionId, epoch, sequence])).toString("base64url");
+
+it.each(["parts", "field"])("uses chunk references for stored tool %s exceeding wire limits within the page byte budget", variant => {
+  const f = fixture(true);
+  const original: TimelineEntry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "tool_call", callId: "tool", name: variant === "field" ? "n".repeat(2049) : "shell", input: "command", output: Array.from({ length: variant === "parts" ? 1001 : 1 }, (_, index) => ({ type: "text" as const, text: `part ${index} 😀` })), status: "completed", truncated: false };
+  expect(Buffer.byteLength(canonicalHistoryJSON(original))).toBeLessThan(100000);
+  expect(() => parseTimelineEntry(original)).toThrow();
+  f.write(() => f.content.onlineTimeline.save(original));
+  const page = parseInspectionPage(f.local.readInspection({ historyEpoch: f.epoch, cursor: null, limit: 1, responseOverhead: 4096 }));
+  const item = page.items[0]!; expect(item.body).toBeNull(); expect(item.contentRef).not.toBeNull();
+  let next = item.contentRef!.cursor, complete = "";
+  for (;;) {
+    const chunk = parseEntryChunk(f.local.readEntryChunk({ historyEpoch: f.epoch, cursor: next, limit: 1024 }));
+    complete += chunk.fragment;
+    if (chunk.eof) break;
+    next = chunk.nextCursor!;
+  }
+  expect(complete).toBe(canonicalHistoryJSON(original));
+  expect(createHash("sha256").update(complete).digest("hex")).toBe(item.contentRef!.sha256);
+  expect(String(Buffer.byteLength(complete))).toBe(item.contentRef!.byteLength);
+  expect(f.local.readInspection({ historyEpoch: f.epoch, cursor: null, limit: 1, responseOverhead: 4096 }).items[0]!.contentRef).toEqual(item.contentRef);
+});
 
 it("uses exclusive numeric int64 cursors for SQL timeline and inspection pages", () => {
   const f = fixture(), sequences = ["2", "16", "9007199254740993", "9007199254740995", "9223372036854775807"];

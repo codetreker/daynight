@@ -12,6 +12,7 @@ import { RELAY_LIMITS, parseControllerGrantResponse, parseRelayMessage, type Con
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerLifecycleStore, ControllerOperation } from "./lifecycle-store.js";
 import { CONTENT_READ_VERSION_HEADER, SessionHistoryError } from "../../session/history.js";
+import { TASK_BODY_HISTORY_VERSION_HEADER } from "../../session/archive.js";
 
 export const publicOperation = (ticket: ControllerLaunchTicket, operation: ControllerOperation): SessionOperation => ({ protocol: SESSION_PROTOCOL, ...sessionFence(ticket), executionGeneration: operation.executionGeneration ?? ticket.executionGeneration, operationId: operation.operationId, kind: operation.kind === "initial" || operation.kind === "cleanup" || operation.kind === "worker_input" ? "send_message" : operation.kind, state: operation.state, providerResult: (operation.result as { disposition?: "started" | "queued" | "handled" } | null)?.disposition ?? null, error: operation.error ? { code: "native_operation_error", message: operation.error } : null });
 export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promise<ControllerGrantResponse> => {
@@ -119,12 +120,14 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     try {
       const grant = await readControllerGrant(ticket); if (stopped) return; currentToken = grant.token;
       const url = new URL("/api/v1/controller-channel", ticket.serverOrigin); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1" }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
+      const bodyOnly = journal.getHistoryContentPolicy?.() === "task_body";
+      let supportsBodyHistory = false;
+      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1", ...(bodyOnly ? { [TASK_BODY_HISTORY_VERSION_HEADER]: "1" } : {}) }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
       supportsDirectCapture = false;
-      ws.on("upgrade", response => { if (socket === ws) supportsDirectCapture = response.headers["daynight-session-direct-upload-version"] === "1"; });
+      ws.on("upgrade", response => { if (socket === ws) { supportsDirectCapture = response.headers["daynight-session-direct-upload-version"] === "1"; supportsBodyHistory = response.headers[TASK_BODY_HISTORY_VERSION_HEADER.toLowerCase()] === "1"; } });
       ws.on("error", error => callbacks.onError(error.message));
       ws.on("close", () => { if (socket !== ws) return; socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
-      ws.on("open", () => { if (stopped || socket !== ws) return; send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
+      ws.on("open", () => { if (stopped || socket !== ws) return; if (bodyOnly && !supportsBodyHistory) { callbacks.onError(new Error("upgrade_required: The service does not support Task body history.")); ws.close(1008, "Task body history requires a compatible service"); return; } send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
       ws.on("message", data => {
         if (stopped || socket !== ws) return;
         try {
