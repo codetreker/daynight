@@ -8,6 +8,7 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 
 const mocks = vi.hoisted(() => ({
   status: vi.fn(), counts: vi.fn(), apps: vi.fn(), discover: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), save: vi.fn(), sync: vi.fn(), revalidate: vi.fn(),
+  accessStatus: 'ready' as 'ready' | 'error',
   role: 'admin' as 'admin' | 'member', teamRole: 'admin' as 'admin' | 'member' | null, owner: '00000000-0000-4000-8000-000000000004', ownerVersion: 7n,
 }));
 vi.mock('../src/api/github-integration', () => ({ getGitHubPullRequestCounts: mocks.counts }));
@@ -16,7 +17,7 @@ vi.mock('../src/features/projects/ProjectAccess', () => {
   const scope = { signal: new AbortController().signal, mismatchSignal: new AbortController().signal, isInvalidated: false, hasIdentityMismatch: false, isProjectSuspended: () => false, ready: async () => {}, principalMismatch: () => {}, subscribe: () => () => {} };
   const access = () => ({ effectiveRole: mocks.role, teamRole: mocks.teamRole, ownership: { teamId: mocks.owner, version: mocks.ownerVersion } });
   const session = { scope, waitForFreshAccess: async () => access(), revalidate: mocks.revalidate };
-  return { useProjectAccess: () => ({ session, ready: true, status: 'ready', access: access() }) };
+  return { useProjectAccess: () => ({ session, ready: mocks.accessStatus === 'ready', status: mocks.accessStatus, access: access() }) };
 });
 const id = '00000000-0000-4000-8000-000000000001';
 const userId = '00000000-0000-4000-8000-000000000003';
@@ -29,7 +30,7 @@ const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = n
 const render = createLocaleRender('en');
 const Subject = () => { const guard = useProjectManagementGuard(); return <ProjectGitHubConsumption projectId={id} userId={userId} repoUrl="https://github.com/owner/private" active onRoute guard={guard} />; };
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.role = 'admin'; mocks.teamRole = 'admin'; mocks.owner = '00000000-0000-4000-8000-000000000004'; mocks.ownerVersion = 7n;
+  vi.clearAllMocks(); mocks.accessStatus = 'ready'; mocks.role = 'admin'; mocks.teamRole = 'admin'; mocks.owner = '00000000-0000-4000-8000-000000000004'; mocks.ownerVersion = 7n;
   mocks.revalidate.mockImplementation(async () => ({ effectiveRole: mocks.role, teamRole: mocks.teamRole, ownership: { teamId: mocks.owner, version: mocks.ownerVersion } }));
   mocks.status.mockResolvedValue(base()); mocks.counts.mockResolvedValue({ projectId: id, revision: '4', total: '0', counts: { active: '0', closed: '0', merged: '0', all: '0' } });
   mocks.apps.mockResolvedValue({ items: [grant], nextCursor: null }); mocks.discover.mockResolvedValue(candidate);
@@ -69,6 +70,31 @@ describe('Project GitHub consumption', () => {
     mocks.status.mockResolvedValue({ ...base(), version: '9007199254740994', revision: '5', pollIntervalMinutes: 9 }); fireEvent.focus(window);
     await screen.findByText('The configuration changed while you were editing. Review the current value before using the latest version.');
     expect(input).toHaveValue(8); expect(input).toHaveFocus(); expect(screen.getByRole('button', { name: 'Save interval' })).toBeDisabled();
+  });
+
+  it('keeps the interval editor during a temporary access check failure', async () => {
+    const view = render(<Subject />);
+    const interval = await screen.findByRole('spinbutton', { name: 'Poll interval' });
+    interval.focus();
+    fireEvent.change(interval, { target: { value: '8' } });
+
+    mocks.accessStatus = 'error';
+    view.rerender(<Subject />);
+    expect(screen.getByRole('spinbutton', { name: 'Poll interval' })).toBe(interval);
+    expect(interval).toHaveFocus();
+    expect(interval).toHaveValue(8);
+    expect(screen.getByRole('button', { name: 'Save interval' })).toBeDisabled();
+    expect(screen.getByRole('switch')).toBeDisabled();
+
+    mocks.accessStatus = 'ready';
+    view.rerender(<Subject />);
+    expect(interval).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Save interval' })).toBeEnabled();
+
+    mocks.role = 'member';
+    view.rerender(<Subject />);
+    expect(screen.queryByRole('spinbutton', { name: 'Poll interval' })).toBeNull();
+    expect(mocks.save).not.toHaveBeenCalled();
   });
 
   it('reports an unknown write and does not replay it after observing current state', async () => {

@@ -92,7 +92,7 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
   activeRef.current = active;
   const presentationRef = useRef(presentationGeneration);
   presentationRef.current = presentationGeneration;
-  const role = access.status === 'ready' ? access.access?.effectiveRole : null;
+  const role = access.access?.effectiveRole ?? null;
   const admin = role === 'admin';
   const connectionAdmin = access.status === 'ready' && access.access?.teamRole === 'admin' && status?.canManageConnection === true;
   const accessRef = useRef(access.access); accessRef.current = access.access;
