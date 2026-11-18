@@ -14,8 +14,10 @@ be silently rewritten during a read or report.
 Report, configuration and detail require `Daynight-Worker-Tool-Paths: 2` and
 exchange Codex and Copilot in the Web context. Configuration protocols 1 and 2
 and the archive capability retain their separate responsibilities. List, Task
-and historical reads do not gain this gate. Old raw targets remain visible and
-unsupported; an explicit complete replacement removes old mode and tool fields.
+and historical reads do not gain this gate. Old raw targets remain visible;
+retired members follow the [unknown-member reception decision](../bug-fix/2026-11-18-worker-retired-configuration-members.md),
+while current known settings determine applicability. An explicit complete
+replacement removes old mode and tool fields.
 The archive column is projected independently and sudo retains its existing
 semantics. The service no longer adopts, validates or writes mode configuration
 or observations. Its historical observation decoder restores mode before the

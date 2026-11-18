@@ -42,10 +42,10 @@ describe("Worker configuration source documents", () => {
     expect(receiveWorkerDesired(source.replace('"kind":"auto"', '"kind":"auto","path":"/bin/x"')).known).toBeNull();
     expect(receiveWorkerDesired(source, false).known).toBeNull();
     const mode = desired.replace('"value":{', '"value":{"agentControlMode":"web",');
-    expect(receiveWorkerDesired(mode).known).toBeNull();
+    expect(receiveWorkerDesired(mode).known).toEqual(JSON.parse(desired));
     expect(receiveWorkerDesired(mode, false).json).toBe(mode);
     const oldTools = source.replace('"copilot":null', '"copilot":null,"herdr":{"kind":"auto"}');
-    expect(receiveWorkerDesired(oldTools)).toMatchObject({ json: oldTools, known: null });
+    expect(receiveWorkerDesired(oldTools)).toEqual({ ...result, json: oldTools });
   });
   it("retains unsupported stored values while validating authority and observation envelopes", () => {
     const raw = expanded.replace('"maxConcurrent":2', '"maxConcurrent":"future-value"');
@@ -76,6 +76,9 @@ describe("Worker configuration source documents", () => {
     const invalid = desired.replace('"toolPaths":{"codex":{"kind":"auto"},"copilot":{"kind":"auto"}}', '"toolPaths":{"future":true}');
     expect(receiveWorkerDesired(missing).known).toBeNull();
     expect(receiveWorkerDesired(invalid).known).toBeNull();
+    expect(receiveWorkerDesired(desired.replace(',"copilot":{"kind":"auto"}', "")).known).toBeNull();
+    expect(receiveWorkerDesired(desired.replace('"codex":{"kind":"auto"},', "")).known).toBeNull();
+    expect(receiveWorkerDesired(desired.replace('"value":{', '"value":{"archiveSessions":true,'), { controlMode: false, toolPaths: true, archiveSessions: false }).known).toBeNull();
     expect(receiveWorkerDesired(missing).json).toBe(missing);
   });
   it("retains remote unknown observation kinds without importing them into a local report", () => {
