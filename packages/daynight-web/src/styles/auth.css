@@ -409,9 +409,10 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .team-member-row:last-child { border-bottom: 0; }
 .team-member-row .person { grid-column: 1; grid-row: 1; }
 .team-member-role { grid-column: 2; grid-row: 1; min-width: 0; }
-.team-member-caption { grid-column: 2; grid-row: 2; min-width: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .team-member-actions { grid-column: 3; grid-row: 1; justify-self: end; }
 .team-member-actions .button { min-height: 32px; }
+.team-member-actions .button.quiet[aria-disabled="true"] { color: #9299a9; background: none; cursor: not-allowed; }
+.team-member-leave-tip { position: fixed; z-index: 45; width: max-content; max-width: min(320px, calc(100vw - 16px)); border: 1px solid #414b64; border-radius: 6px; padding: 8px 11px; background: #303a50; color: #fff; box-shadow: 0 5px 18px #17244722; font-size: 11px; line-height: 1.7; white-space: normal; overflow-wrap: anywhere; pointer-events: none; }
 @media (max-width: 600px) {
   .team-members-list { grid-template-columns: minmax(136px, 1fr) minmax(0, max-content); column-gap: 4px; }
   .team-member-row { padding: 16px; }
@@ -419,7 +420,6 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
   .team-member-role { grid-column: 1; grid-row: 2; }
   .team-member-actions { grid-column: 2; grid-row: 2; min-width: 0; max-width: 100%; }
   .team-member-actions .button { max-width: 100%; padding-inline: 3px; white-space: normal; overflow-wrap: anywhere; }
-  .team-member-caption { grid-column: 1 / -1; grid-row: 3; }
 }
 .team-member-row .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
