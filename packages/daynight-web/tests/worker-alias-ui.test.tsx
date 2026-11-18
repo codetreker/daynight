@@ -12,7 +12,7 @@ const receipt = (alias: WorkerAlias) => workerResponse({ workerId: workerId(1), 
 const rejection = (status: number, code: string) => workerResponse({ error: { code, message: 'Rejected', requestId: 'alias-test' } }, WORKER_USER, status);
 const Host = ({ enabled = true, worker = workerId(1), incoming = initial }: { readonly enabled?: boolean; readonly worker?: string; readonly incoming?: WorkerAlias }) => {
   const [resource, setResource] = useState<WorkerAlias | null>(null);
-  return <WorkerAliasEditor key={worker} workerId={worker} resource={resource ?? incoming} readEnabled={enabled} onSaved={setResource} />;
+  return <WorkerAliasEditor key={worker} workerId={worker} resource={resource ?? incoming} readEnabled={enabled} onSaved={setResource} header={trigger => <header><h1>Worker</h1>{trigger}</header>} />;
 };
 const render = (ui = <Host />) => renderWithLocale(ui, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const open = () => fireEvent.click(screen.getByRole('button', { name: /Set alias|Edit alias/ }));

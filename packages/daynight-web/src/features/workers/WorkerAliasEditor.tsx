@@ -1,11 +1,12 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { getWorkerAlias, normalizeWorkerAlias, saveWorkerAlias, type WorkerAlias } from '../../api/worker-alias';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 
-export const WorkerAliasEditor = ({ workerId, resource, readEnabled, onSaved }: {
+export const WorkerAliasEditor = ({ workerId, resource, readEnabled, onSaved, header }: {
   readonly workerId: string; readonly resource: WorkerAlias; readonly readEnabled: boolean; readonly onSaved: (alias: WorkerAlias) => void;
+  readonly header: (trigger: ReactNode) => ReactNode;
 }) => {
   const scope = useTaskCacheScope();
   const { messages: { workers: { alias: m } } } = useI18n();
@@ -82,12 +83,12 @@ export const WorkerAliasEditor = ({ workerId, resource, readEnabled, onSaved }: 
   };
   const normalized = draft === null ? null : normalizeWorkerAlias(draft.value);
   const blocked = pending || !readEnabled || scope.isInvalidated;
-  return <section className="worker-alias" aria-label={m.label}>
-    <button ref={opener} className="button secondary" type="button" hidden={draft !== null} disabled={!readEnabled} onClick={() => {
+  return <>
+    {header(<button ref={opener} className="button secondary worker-alias-trigger" type="button" hidden={draft !== null} disabled={!readEnabled} onClick={() => {
       setDraft({ value: resource.value ?? '', version: resource.version }); setError(needsCheck ? 'unknown' : null);
       queueMicrotask(() => input.current?.focus());
-    }}>{resource.value === null ? m.set : m.edit}</button>
-    {draft !== null && <form className="worker-alias-form" aria-busy={pending} onSubmit={event => {
+    }}>{resource.value === null ? m.set : m.edit}</button>)}
+    {draft !== null && <section className="worker-alias" aria-label={m.label}><form className="worker-alias-form" aria-busy={pending} onSubmit={event => {
       event.preventDefault();
       if (normalized !== null) void run(normalized);
     }} onKeyDown={event => {
@@ -106,6 +107,6 @@ export const WorkerAliasEditor = ({ workerId, resource, readEnabled, onSaved }: 
         {needsCheck && <button className="button secondary" type="button" disabled={blocked} onClick={() => void run(null, true)}>{m.check}</button>}
         <button className="button secondary" type="button" disabled={pending} onClick={close}>{m.cancel}</button>
       </div>
-    </form>}
-  </section>;
+    </form></section>}
+  </>;
 };
