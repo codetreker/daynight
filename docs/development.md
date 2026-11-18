@@ -191,6 +191,12 @@ trigger reporting before the periodic interval, so elapsed time is measured
 from that request's observed start. The
 [reporter deadline decision](../.agents/notes/implemented/testing/2026-11-10-worker-reconciliation-deadline.md)
 records the trigger, single-flight and cancellation checks.
+Worker startup integration holds the identity retry until the real instance
+lock and cache fences have been observed. The project-preparation case advances
+the configuration clock at the recorded deadline, while observing persistence
+and inventory with real asynchronous work. The
+[startup retry fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-startup-retry-clocks.md)
+owns both timing checks.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
