@@ -24,7 +24,9 @@ affected revisions while preserving claims, queues and schedules. The
 [storage design](../../../../docs/design/github-pr-storage.md) owns the exact
 fields and atomicity. The preparation build retains App PR reception, allowing
 state separation to be deployed before changing the traffic source. This
-extends the [App-scoped reception decision](2026-11-16-github-app-webhook.md).
+extends the [App-scoped reception decision](2026-11-16-github-app-webhook.md);
+the subsequent [reception cutover](2026-11-18-project-github-webhook-cutover.md)
+uses that preparation build for same-ledger rollback.
 
 ## Alternatives
 

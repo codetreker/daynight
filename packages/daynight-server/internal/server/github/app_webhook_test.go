@@ -57,18 +57,20 @@ func TestAppWebhookProtocolAndIdentity(t *testing.T) {
 		authErr, receiveErr error
 		status, receives    int
 	}{
-		{"PR", "pull_request", body, nil, nil, nil, 202, 1},
+		{"PR ignored", "pull_request", body, nil, nil, nil, 204, 0},
 		{"access", "installation", []byte(`{"installation":{"id":9}}`), nil, nil, nil, 202, 1},
+		{"repository access", "installation_repositories", []byte(`{"installation":{"id":9}}`), nil, nil, nil, 202, 1},
+		{"repository ignored", "repository", body, nil, nil, nil, 204, 0},
 		{"unrelated", "ping", []byte(`{}`), nil, nil, nil, 204, 0},
 		{"unrelated malformed", "new_event", []byte(`{`), nil, nil, nil, 204, 0},
 		{"missing event", "", body, nil, nil, nil, 400, 0},
 		{"duplicate event", "ping", body, func(r *http.Request) { r.Header.Add("X-GitHub-Event", "other") }, nil, nil, 400, 0},
-		{"invalid body", "pull_request", []byte(`{`), nil, nil, nil, 400, 0},
-		{"missing delivery", "pull_request", body, func(r *http.Request) { r.Header.Del("X-GitHub-Delivery") }, nil, nil, 400, 0},
+		{"invalid body", "installation", []byte(`{`), nil, nil, nil, 400, 0},
+		{"missing delivery", "installation", body, func(r *http.Request) { r.Header.Del("X-GitHub-Delivery") }, nil, nil, 400, 0},
 		{"unknown App", "pull_request", body, nil, model.ErrNotFound, nil, 404, 0},
 		{"invalid signature", "pull_request", body, nil, service.ErrAppWebhookUnauthenticated, nil, 401, 0},
 		{"read failure", "pull_request", body, nil, errors.New("private cause"), nil, 503, 0},
-		{"unconfirmed write", "pull_request", body, nil, nil, errors.New("unknown commit"), 503, 1},
+		{"unconfirmed write", "installation", body, nil, nil, errors.New("unknown commit"), 503, 1},
 		{"duplicate signature", "pull_request", body, func(r *http.Request) { r.Header.Add("X-Hub-Signature-256", "another") }, service.ErrAppWebhookUnauthenticated, nil, 401, 0},
 	}
 	for _, tc := range tests {
@@ -94,8 +96,8 @@ func TestAppWebhookProtocolAndIdentity(t *testing.T) {
 					if got != identity || event.DeliveryID != "delivery" || event.InstallationID != 9 {
 						t.Errorf("unexpected identity or event: %+v %+v", got, event)
 					}
-					if tc.event == "pull_request" && (event.Kind != "pull_request" || event.RepositoryID != 8 || event.Number != 7) {
-						t.Errorf("unexpected PR event: %+v", event)
+					if event.Kind != "access" {
+						t.Errorf("unexpected event: %+v", event)
 					}
 					return tc.receiveErr
 				},
@@ -202,9 +204,6 @@ func (s *appWebhookIntegrationStore) WriteGitHubAppSignals(ctx context.Context, 
 	s.writes++
 	return store.Completion{Outcome: store.TransactionCommitted}, f(s)
 }
-func (*appWebhookIntegrationStore) SignalPullRequest(context.Context, store.GitHubAppPRSignal) (int64, error) {
-	return 0, nil
-}
 func (*appWebhookIntegrationStore) SignalAccess(context.Context, store.GitHubAppAccessSignal) (int64, error) {
 	return 0, nil
 }
@@ -232,6 +231,14 @@ func TestAppWebhookRealSignature(t *testing.T) {
 	}
 	if s.writes != 1 {
 		t.Fatalf("writes=%d", s.writes)
+	}
+	pr := []byte(`{"installation":{"id":9},"repository":{"id":8},"number":7}`)
+	r := appWebhookRequest(appWebhookID, "pull_request", pr)
+	r.Header.Set("X-Hub-Signature-256", webhookSignature(pr))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent || s.writes != 1 {
+		t.Fatalf("ignored PR status=%d writes=%d", w.Code, s.writes)
 	}
 }
 

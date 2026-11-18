@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -195,19 +196,36 @@ func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
 	}
 }
 
-func b2Signal(t *testing.T, s *Store, signal store.GitHubAppPRSignal) int64 {
+// b2Hint seeds an existing queue entry for tests of downstream work processing.
+type b2Hint struct {
+	Number                    int64
+	RequestID, DeliveryID     string
+	ReceivedAt, NextAttemptAt time.Time
+}
+
+func b2SeedHint(t *testing.T, s *Store, hint b2Hint, projects ...string) {
 	t.Helper()
-	var count int64
-	ctx := t.Context()
-	completion, err := s.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
+	for _, project := range projects {
+		mustQueryExec(t, s, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at)
+			SELECT project_id,$2,generation,$3,$4,$5,$6 FROM project_github WHERE project_id=$1
+			ON CONFLICT(project_id,number) DO UPDATE SET generation=EXCLUDED.generation,request_id=EXCLUDED.request_id,delivery_id=EXCLUDED.delivery_id,received_at=EXCLUDED.received_at,next_attempt_at=EXCLUDED.next_attempt_at`, project, hint.Number, hint.RequestID, hint.DeliveryID, hint.ReceivedAt, hint.NextAttemptAt)
+		mustQueryExec(t, s, `UPDATE project_github SET last_webhook_received_at=$2,revision=revision+1 WHERE project_id=$1`, project, hint.ReceivedAt)
+	}
+}
+
+func b2EnableHook(t *testing.T, s *Store, project string) {
+	t.Helper()
+	mustQueryExec(t, s, `UPDATE project_github SET hook_version=1,hook_repository_id=repository_id,hook_enabled=true,hook_secret='secret' WHERE project_id=$1`, project)
+}
+
+func b2Receive(ctx context.Context, s *Store, project string, hint b2Hint) (coregithub.ProjectWebhookReceiptResult, store.Completion, error) {
+	var result coregithub.ProjectWebhookReceiptResult
+	completion, err := s.WriteProject(ctx, project, func(scope store.ProjectWriteScope) error {
 		var err error
-		count, err = w.SignalPullRequest(ctx, signal)
+		result, err = coregithub.RecordProjectWebhook(ctx, scope.(store.GitHubProjectWebhookReceiptScope).GitHubProjectWebhookReceiptDAO(), coregithub.ProjectWebhookIdentity{ProjectID: project, Version: 1, RepositoryID: 30}, coregithub.WebhookEvent{Kind: "pull_request", RepositoryID: 30, Number: hint.Number, DeliveryID: hint.DeliveryID}, hint.RequestID)
 		return err
 	})
-	if err != nil || completion.Outcome != store.TransactionCommitted {
-		t.Fatalf("signal: %+v %v", completion, err)
-	}
-	return count
+	return result, completion, err
 }
 
 func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
@@ -219,10 +237,8 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 	b2Configure(t, s, other.ID, 10, 20, 31)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	request1, request2 := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request1, DeliveryID: "delivery-1", ReceivedAt: now, NextAttemptAt: now}
-	if got := b2Signal(t, s, signal); got != 2 {
-		t.Fatalf("matched projects: %d", got)
-	}
+	signal := b2Hint{Number: 7, RequestID: request1, DeliveryID: "delivery-1", ReceivedAt: now, NextAttemptAt: now}
+	b2SeedHint(t, s, signal, a.ID, b.ID)
 	token := uuid.NewString()
 	lease := store.GitHubLease{Generation: 1, Token: token}
 	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
@@ -241,9 +257,7 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 		return nil
 	})
 	signal.RequestID, signal.DeliveryID = request2, "delivery-2"
-	if got := b2Signal(t, s, signal); got != 2 {
-		t.Fatalf("replacement matches: %d", got)
-	}
+	b2SeedHint(t, s, signal, a.ID, b.ID)
 	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		ok, err := dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(7, nil)})
 		if err != nil || !ok {
@@ -283,8 +297,10 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 
 	sentinel := errors.New("abort broadcast")
 	signal.Number, signal.RequestID = 8, uuid.NewString()
-	completion, err := s.WriteGitHubAppSignals(t.Context(), testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
-		if _, err := w.SignalPullRequest(t.Context(), signal); err != nil {
+	b2EnableHook(t, s, a.ID)
+	completion, err := s.WriteProject(t.Context(), a.ID, func(scope store.ProjectWriteScope) error {
+		_, err := coregithub.RecordProjectWebhook(t.Context(), scope.(store.GitHubProjectWebhookReceiptScope).GitHubProjectWebhookReceiptDAO(), coregithub.ProjectWebhookIdentity{ProjectID: a.ID, Version: 1, RepositoryID: 30}, coregithub.WebhookEvent{Kind: "pull_request", RepositoryID: 30, Number: signal.Number, DeliveryID: signal.DeliveryID}, signal.RequestID)
+		if err != nil {
 			return err
 		}
 		return sentinel
@@ -322,10 +338,8 @@ func TestGitHubCoordinationDeletionSerializesWithPublication(t *testing.T) {
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC()
-	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
-	if got := b2Signal(t, s, signal); got != 1 {
-		t.Fatalf("signal count: %d", got)
-	}
+	signal := b2Hint{Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
+	b2SeedHint(t, s, signal, project.ID)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	token := uuid.NewString()
@@ -392,9 +406,7 @@ func TestGitHubCoordinationDeletionSerializesWithPublication(t *testing.T) {
 	if c.Outcome != store.TransactionNotCommitted || !errors.Is(err, model.ErrNotFound) || called {
 		t.Fatalf("deleted Project write: %+v called=%t %v", c, called, err)
 	}
-	if got := b2Signal(t, s, signal); got != 0 {
-		t.Fatalf("deleted Project accepted signal: %d", got)
-	}
+
 	var enabled, syncEnabled bool
 	var claim *string
 	var next *time.Time
@@ -414,10 +426,8 @@ func TestGitHubCoordinationPublicationAndAckRollbackAndUnknown(t *testing.T) {
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC()
 	request, token := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request, DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
-	if n := b2Signal(t, s, signal); n != 1 {
-		t.Fatalf("signal count: %d", n)
-	}
+	signal := b2Hint{Number: 7, RequestID: request, DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
+	b2SeedHint(t, s, signal, project.ID)
 	lease := store.GitHubLease{Generation: 1, Token: token}
 	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		clock, err := dao.ObservedAt(ctx)
@@ -490,10 +500,8 @@ func TestGitHubCoordinationDisconnectInvalidatesLeaseAndPending(t *testing.T) {
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC()
-	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
-	if n := b2Signal(t, s, signal); n != 1 {
-		t.Fatalf("signal count: %d", n)
-	}
+	signal := b2Hint{Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
+	b2SeedHint(t, s, signal, project.ID)
 	token := uuid.NewString()
 	lease := store.GitHubLease{Generation: 1, Token: token}
 	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
@@ -524,8 +532,11 @@ func TestGitHubCoordinationDisconnectInvalidatesLeaseAndPending(t *testing.T) {
 		t.Fatalf("disconnected work: %+v %v", completion, err)
 	}
 
-	if n := b2Signal(t, s, signal); n != 0 {
-		t.Fatalf("disconnected signal: %d", n)
+	// A retained project hook may record receipt after disconnect, but cannot enqueue.
+	b2EnableHook(t, s, project.ID)
+	result, completion, err := b2Receive(t.Context(), s, project.ID, signal)
+	if err != nil || completion.Outcome != store.TransactionCommitted || result != coregithub.ProjectWebhookReceived {
+		t.Fatalf("disconnected receipt: %s %+v %v", result, completion, err)
 	}
 	var pending, retained int
 	var claim *string
@@ -539,6 +550,7 @@ func TestGitHubCoordinationSignalWaitsForDisconnect(t *testing.T) {
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
+	b2EnableHook(t, s, project.ID)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	locked := make(chan struct{})
@@ -572,20 +584,13 @@ func TestGitHubCoordinationSignalWaitsForDisconnect(t *testing.T) {
 	}
 	observed := make(chan error, 1)
 	go func() {
-		now := time.Now().UTC()
-		c, err := s.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
-			n, err := w.SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now})
-			if err != nil || n != 0 {
-				return fmt.Errorf("signal after disconnect: %d %v", n, err)
-			}
-			return nil
-		})
-		if err == nil && c.Outcome != store.TransactionCommitted {
-			err = fmt.Errorf("signal completion: %+v", c)
+		result, c, err := b2Receive(ctx, s, project.ID, b2Hint{Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery"})
+		if err == nil && (c.Outcome != store.TransactionCommitted || result != coregithub.ProjectWebhookReceived) {
+			err = fmt.Errorf("receipt after disconnect: %s %+v", result, c)
 		}
 		observed <- err
 	}()
-	waitForQueryLock(t, s, "SELECT github_app_id,credential_version FROM github_apps WHERE id=$1")
+	waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
 	close(release)
 	if err := receiveQueryResult(t, ctx, disconnected); err != nil {
 		t.Fatal(err)
@@ -607,10 +612,8 @@ func TestGitHubCoordinationDueProjects(t *testing.T) {
 		b2Configure(t, s, id, 10, 20, 30)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now.Add(-5 * time.Minute), NextAttemptAt: now.Add(-5 * time.Minute)}
-	if n := b2Signal(t, s, signal); n != 4 {
-		t.Fatalf("signal count: %d", n)
-	}
+	signal := b2Hint{Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now.Add(-5 * time.Minute), NextAttemptAt: now.Add(-5 * time.Minute)}
+	b2SeedHint(t, s, signal, a.ID, b.ID, c.ID, blocked.ID)
 	mustQueryExec(t, s, `UPDATE project_github SET next_access_check_at=$2, next_poll_at=$3 WHERE project_id=$1`, a.ID, now.Add(-time.Minute), now.Add(-3*time.Minute))
 	mustQueryExec(t, s, `UPDATE project_github SET next_poll_at=$2 WHERE project_id=$1`, b.ID, now.Add(-2*time.Minute))
 	mustQueryExec(t, s, `UPDATE project_github SET claim_token=$2, claim_kind='poll', claim_until=$3 WHERE project_id=$1`, blocked.ID, uuid.NewString(), now.Add(time.Minute))
@@ -642,9 +645,7 @@ func TestGitHubAccessHintRetryAndNewSignalWake(t *testing.T) {
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	initialHint, nextHint := uuid.NewString(), uuid.NewString()
-	if n := b2Signal(t, s, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}); n != 1 {
-		t.Fatalf("PR signal count: %d", n)
-	}
+	b2SeedHint(t, s, b2Hint{Number: 7, RequestID: uuid.NewString(), DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}, project.ID)
 	mustQueryExec(t, s, `UPDATE project_github SET access_hint_id=$2,next_access_check_at=$3,next_poll_at=$4 WHERE project_id=$1`, project.ID, initialHint, now.Add(time.Minute), now)
 	got, err := s.DueGitHubAppProjects(t.Context(), now, 10)
 	if err != nil || len(got) != 0 {
@@ -701,9 +702,7 @@ func TestGitHubCoordinationRuntimeAndConditionalRetries(t *testing.T) {
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("access signal: %+v %v", completion, err)
 	}
-	if n := b2Signal(t, s, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request, DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}); n != 1 {
-		t.Fatalf("PR signal count: %d", n)
-	}
+	b2SeedHint(t, s, b2Hint{Number: 7, RequestID: request, DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}, project.ID)
 	lease := store.GitHubLease{Generation: 1, Token: token}
 	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		clock, err := dao.ObservedAt(ctx)
@@ -785,10 +784,9 @@ func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) 
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			token := uuid.NewString()
 			lease := store.GitHubLease{Generation: 1, Token: token}
-			initial := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "initial", ReceivedAt: now, NextAttemptAt: now}
-			if n := b2Signal(t, s, initial); n != 2 {
-				t.Fatalf("initial signal: %d", n)
-			}
+			initial := b2Hint{Number: 7, RequestID: uuid.NewString(), DeliveryID: "initial", ReceivedAt: now, NextAttemptAt: now}
+			b2SeedHint(t, s, initial, project.ID, other.ID)
+			b2EnableHook(t, s, project.ID)
 			b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 				ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token, Kind: "poll", Until: now.Add(5 * time.Minute)})
 				if err != nil || !ok {
@@ -831,25 +829,33 @@ func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) 
 			}
 			signaled := make(chan error, 1)
 			go func() {
-				completion, err := second.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
-					var n int64
-					var err error
-					if signalKind == "pull request" {
-						n, err = w.SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 8, RequestID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second), NextAttemptAt: now})
-					} else {
-						n, err = w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second)})
+				var completion store.Completion
+				var err error
+				if signalKind == "pull request" {
+					var result coregithub.ProjectWebhookReceiptResult
+					result, completion, err = b2Receive(ctx, second, project.ID, b2Hint{Number: 8, RequestID: uuid.NewString(), DeliveryID: "later"})
+					if err == nil && result != coregithub.ProjectWebhookReceived {
+						err = fmt.Errorf("stopped receipt: %s", result)
 					}
-					if err != nil || n != 1 {
-						return fmt.Errorf("signal count: %d %v", n, err)
-					}
-					return nil
-				})
+				} else {
+					completion, err = second.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
+						n, e := w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second)})
+						if e != nil || n != 1 {
+							return fmt.Errorf("signal count: %d %v", n, e)
+						}
+						return nil
+					})
+				}
 				if err == nil && completion.Outcome != store.TransactionCommitted {
 					err = fmt.Errorf("signal completion: %+v", completion)
 				}
 				signaled <- err
 			}()
-			waitForQueryLock(t, s, "SELECT github_app_id,credential_version FROM github_apps WHERE id=$1")
+			if signalKind == "pull request" {
+				waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
+			} else {
+				waitForQueryLock(t, s, "SELECT github_app_id,credential_version FROM github_apps WHERE id=$1")
+			}
 			worker := make(chan error, 1)
 			go func() {
 				completion, err := second.WriteGitHubAppWork(ctx, project.ID, nil, func(store.GitHubAppWorkDAO) error {

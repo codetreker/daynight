@@ -18,4 +18,4 @@ Store the subscription on the existing project connection row with its own versi
 
 ## Consequences
 
-Projects can configure the same repository independently and change or disable a subscription without changing connection scheduling. The secret remains available to narrowly scoped verification and configuration operations, so its storage and diagnostic boundaries must be maintained. The independent adapter does not by itself enable production reception or routing.
+Projects can configure the same repository independently and change or disable a subscription without changing connection scheduling. The secret remains available to narrowly scoped verification and configuration operations, so its storage and diagnostic boundaries must be maintained. The [reception cutover](2026-11-18-project-github-webhook-cutover.md) mounts the management and receipt adapters together.

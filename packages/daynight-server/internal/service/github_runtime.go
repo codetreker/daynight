@@ -40,6 +40,7 @@ type githubAppStore interface {
 	store.GitHubAppWebhookStore
 	store.GitHubAppWorkReader
 	store.GitHubAppWorkWriter
+	store.GitHubProjectWebhookSecretReader
 	store.SnapshotReader
 }
 
@@ -49,6 +50,10 @@ func (a *App) assembleGitHub(db store.Transactions, logger *slog.Logger) error {
 		return errors.New("github App store unavailable")
 	}
 	receiver, err := githubservice.NewAppWebhookReceiver(backend, logger)
+	if err != nil {
+		return err
+	}
+	projectReceiver, err := githubservice.NewProjectWebhookReceiver(db, logger)
 	if err != nil {
 		return err
 	}
@@ -72,6 +77,9 @@ func (a *App) assembleGitHub(db store.Transactions, logger *slog.Logger) error {
 	a.GitHubGrants = githubservice.NewGrantManager(backend, backend)
 	a.GitHubProject = githubservice.NewProjectAppManager(backend, provider, logger)
 	a.GitHubWebhook = receiver
+	a.GitHubProjectWebhook = githubservice.NewProjectWebhookManager(db)
+	a.GitHubProjectReceipt = projectReceiver
+	a.GitHubProjectSecrets = backend
 	g := &githubRuntime{runner: runner, provider: provider, logger: logger}
 	a.githubRuntime = g
 	ready := a.Ready

@@ -120,9 +120,16 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	githubhttp.RegisterAppRoutes(mux, app.GitHubApps, auth, config.Server.PublicOrigin, logger, app.GitHubConfig)
 	githubhttp.RegisterAdminRoutes(mux, app.GitHubAdmins, auth, config.Server.PublicOrigin, logger)
 	githubhttp.RegisterGrantRoutes(mux, app.GitHubGrants, auth, logger)
-	githubhttp.RegisterProjectAppRoutes(mux, app.GitHubProject, auth, logger)
+	if app.GitHubProjectWebhook != nil {
+		githubhttp.RegisterProjectAppRoutesWithWebhook(mux, app.GitHubProject, app.GitHubProject, app.GitHubProjectWebhook, auth, config.Server.PublicOrigin, logger)
+	} else {
+		githubhttp.RegisterProjectAppRoutes(mux, app.GitHubProject, auth, logger)
+	}
 	if app.GitHubWebhook != nil {
 		githubhttp.RegisterAppWebhookRoute(mux, app.GitHubWebhook, logger)
+	}
+	if app.GitHubProjectReceipt != nil && app.GitHubProjectSecrets != nil {
+		githubhttp.RegisterProjectWebhookRoute(mux, app.GitHubProjectSecrets, app.GitHubProjectReceipt, logger)
 	}
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	teamhttp.RegisterDirectMemberRoutes(mux, app.DirectMembers, auth, logger)

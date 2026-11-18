@@ -17,12 +17,6 @@ type GitHubAppWebhookSnapshot struct {
 	Secret                         []byte
 }
 
-type GitHubAppPRSignal struct {
-	InstallationID, RepositoryID, Number int64
-	RequestID, DeliveryID                string
-	ReceivedAt, NextAttemptAt            time.Time
-}
-
 type GitHubAppAccessSignal struct {
 	InstallationID     int64
 	HintID, DeliveryID string
@@ -32,7 +26,6 @@ type GitHubAppAccessSignal struct {
 // GitHubAppSignalWriter is bound to the authenticated App transaction.
 // Matching connections are locked in Project order before pending rows.
 type GitHubAppSignalWriter interface {
-	SignalPullRequest(context.Context, GitHubAppPRSignal) (int64, error)
 	SignalAccess(context.Context, GitHubAppAccessSignal) (int64, error)
 }
 

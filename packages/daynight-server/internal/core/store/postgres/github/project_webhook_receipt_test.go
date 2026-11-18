@@ -122,6 +122,34 @@ func TestProjectWebhookReceiptRequiresLock(t *testing.T) {
 	}
 }
 
+func TestProjectWebhookReceiptDoesNotRegressTimestamps(t *testing.T) {
+	f := newProjectAppFixture(t)
+	ctx := t.Context()
+	if _, _, err := f.write(ctx, "connect", 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE project_github SET hook_version=1,hook_repository_id=8,hook_enabled=true,hook_secret='secret'::bytea,sync_enabled=true,access_state='available',hook_last_received_at=$2,last_webhook_received_at=$2 WHERE project_id=$1`, f.project, future); err != nil {
+		t.Fatal(err)
+	}
+	for _, enqueue := range []bool{false, true} {
+		completion, err := f.db.WriteProject(ctx, f.project, func(scope store.ProjectWriteScope) error {
+			dao := scope.(store.GitHubProjectWebhookReceiptScope).GitHubProjectWebhookReceiptDAO()
+			if _, err := dao.LockReceipt(ctx); err != nil {
+				return err
+			}
+			return dao.RecordReceipt(ctx, store.GitHubProjectWebhookReceiptWrite{Enqueue: enqueue, Number: 1, RequestID: uuid.NewString(), DeliveryID: "delivery"})
+		})
+		if err != nil || completion.Outcome != store.TransactionCommitted {
+			t.Fatalf("receipt: %+v %v", completion, err)
+		}
+		var hook, last time.Time
+		if err := f.db.Pool.QueryRow(ctx, `SELECT hook_last_received_at,last_webhook_received_at FROM project_github WHERE project_id=$1`, f.project).Scan(&hook, &last); err != nil || !hook.Equal(future) || !last.Equal(future) {
+			t.Fatalf("timestamps regressed: %v %v %v", hook, last, err)
+		}
+	}
+}
+
 func TestProjectWebhookReceiptLockFailures(t *testing.T) {
 	f := newProjectAppFixture(t)
 	ctx := t.Context()

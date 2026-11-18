@@ -36,7 +36,7 @@ func newAppSignalScopeFixture(t *testing.T) appSignalScopeFixture {
 }
 func scopeSignal(ctx context.Context, w store.GitHubAppSignalWriter) error {
 	now := time.Now().UTC()
-	_, err := w.SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now})
+	_, err := w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now})
 	return err
 }
 func TestAppSignalScopeCredentialRace(t *testing.T) {
@@ -75,9 +75,9 @@ func TestAppSignalScopeCredentialRace(t *testing.T) {
 			if err = receiveQueryResult(t, ctx, done); err != nil {
 				t.Fatal(err)
 			}
-			var count int
-			if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, f.project).Scan(&count); err != nil || count != 0 {
-				t.Fatalf("pending %d %v", count, err)
+			var hint *string
+			if err = f.db.Pool.QueryRow(ctx, `SELECT access_hint_id::text FROM project_github WHERE project_id=$1`, f.project).Scan(&hint); err != nil || hint != nil {
+				t.Fatalf("access hint %v %v", hint, err)
 			}
 		})
 	}
@@ -152,9 +152,9 @@ func TestAppSignalScopeLostCommitReceipt(t *testing.T) {
 	if !lost.Load() || calls != 1 || completion.Outcome != store.TransactionUnknown || err == nil {
 		t.Fatalf("lost=%t calls=%d completion=%+v error=%v", lost.Load(), calls, completion, err)
 	}
-	var count int
-	if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, f.project).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("actual committed hint %d %v", count, err)
+	var delivery *string
+	if err = f.db.Pool.QueryRow(ctx, `SELECT access_delivery_id FROM project_github WHERE project_id=$1`, f.project).Scan(&delivery); err != nil || delivery == nil || *delivery != "delivery" {
+		t.Fatalf("actual committed hint %v %v", delivery, err)
 	}
 }
 
@@ -179,7 +179,7 @@ func TestAppSignalScopeConcurrentGrantRevocation(t *testing.T) {
 			signal := func(hold bool) error {
 				c, err := f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(w store.GitHubAppSignalWriter) error {
 					now := time.Now().UTC()
-					n, e := w.SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "race", ReceivedAt: now, NextAttemptAt: now})
+					n, e := w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "race", ReceivedAt: now})
 					if e != nil {
 						return e
 					}
@@ -251,7 +251,7 @@ func TestAppSignalScopeConcurrentGrantRevocation(t *testing.T) {
 			}
 			var revoked, stopped bool
 			var count int
-			err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT revoked_at IS NOT NULL FROM github_app_team_grants WHERE id=$2),NOT enabled AND NOT sync_enabled AND app_resource_id IS NULL AND team_grant_id IS NULL,(SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1) FROM project_github WHERE project_id=$1`, f.project, f.grant).Scan(&revoked, &stopped, &count)
+			err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT revoked_at IS NOT NULL FROM github_app_team_grants WHERE id=$2),NOT enabled AND NOT sync_enabled AND app_resource_id IS NULL AND team_grant_id IS NULL AND access_hint_id IS NULL,(SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1) FROM project_github WHERE project_id=$1`, f.project, f.grant).Scan(&revoked, &stopped, &count)
 			if err != nil || !revoked || !stopped || count != 0 {
 				t.Fatalf("revoked=%t stopped=%t pending=%d err=%v", revoked, stopped, count, err)
 			}

@@ -16,11 +16,6 @@ func RecordAppWebhook(ctx context.Context, writer store.GitHubAppSignalWriter, e
 		return 0, errors.New("invalid github app webhook signal")
 	}
 	switch event.Kind {
-	case "pull_request":
-		if event.RepositoryID <= 0 || event.Number <= 0 {
-			return 0, errors.New("invalid github pull request signal")
-		}
-		return writer.SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: event.InstallationID, RepositoryID: event.RepositoryID, Number: event.Number, RequestID: hintID, DeliveryID: event.DeliveryID, ReceivedAt: now, NextAttemptAt: now})
 	case "access":
 		return writer.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: event.InstallationID, HintID: hintID, DeliveryID: event.DeliveryID, ReceivedAt: now})
 	default:

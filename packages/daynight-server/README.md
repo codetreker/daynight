@@ -932,9 +932,11 @@ GitHub Apps are registered as independent resources with their private key and
 webhook secret. Grant a Team use of an App and have its administrator connect
 the Project. Configure Pull requests read access, install the App on the target
 repository, and use the App's returned HTTPS webhook URL with its secret and
-pull request and installation lifecycle events. The reverse proxy must allow a
-26,214,400-byte request body. The receiver persists refresh hints before
-acknowledging relevant deliveries; polling repairs missed deliveries. The
+installation lifecycle and installation repository events. Configure a separate
+repository webhook for each Project with its Project URL and secret and the
+Pull requests event. The reverse proxy must pass both endpoints and allow a
+26,214,400-byte request body. The receivers persist eligible refresh hints before
+acknowledging deliveries; polling repairs missed deliveries. The
 [remote design](../../docs/design/github-app-remote.md) describes token handling.
 
 Each Project's PR synchronization defaults to off. Disabling it retains the
@@ -959,16 +961,41 @@ committed migrations remain applied. Restarting after success does not clear
 new PR diagnostics again. Older writers must not resume and recreate mixed
 diagnostics.
 
-This preparation build continues receiving App pull request deliveries while
-installation access rechecks maintain independent access state and rate-limit
-schedules. Project webhook reception remains disabled. Retain the preparation
-artifact, commit and complete ordered migration/checksum list for a later
-activation build. A same-database rollback requires identical complete ledgers
-and draining the active build first; otherwise restore a verified matching
-database backup and account for writes after that backup. The
-[runtime design](../../docs/design/github-connection-runtime.md) and
-[storage design](../../docs/design/github-pr-storage.md) describe the retained
-state and the diagnostic ownership.
+The preparation build receives App pull request deliveries while installation
+access rechecks maintain independent access state and rate-limit schedules. It
+does not mount Project webhook reception. The preparation source at commit
+`4e4f9f0ca131f295271635d03bd29c5a61fdb5c3` includes migration 085 and the
+preceding complete migration set. Retain the built preparation artifact and its
+commit and artifact digest alongside those of the activation candidate. Start
+each candidate against an isolated database and retain its complete ordered
+`SELECT version, checksum FROM schema_migrations ORDER BY version` result.
+Compare every version and checksum, including frozen Go transforms, rather than
+comparing only the latest version. A different ledger disqualifies same-database
+rollback, even if the latest migration number matches.
+
+Before activation, stop new traffic and drain the preparation service and its
+background writers. The activation build mounts Project subscription management
+and reception; App pull request deliveries return 204 and create no new hints.
+Existing hints retain their generation and claims, and unexpired claims recover
+after their normal deadline. Polling continues for Projects without a configured
+webhook. Keep App Pull requests subscriptions through the rollback window.
+
+For same-database rollback, drain the activation service first and start the
+verified preparation artifact with the identical complete ledger. Existing PRs,
+sync settings, activation-era data and Project subscription configuration remain
+in the database. Check that each App needing immediate updates still subscribes
+to Pull requests; its administrator restores the subscription if removed or
+configures it for an App added during activation. Polling continues where the
+App subscription is absent. The preparation build has no Project receiver:
+coordinate with repository administrators to pause Project hooks as needed and
+resume them using the retained configuration when activation returns. When the
+rollback window ends, App administrators may remove App Pull requests events.
+If the target ledger differs, use a verified matching database and file backup
+instead; inventory affected Project hooks and account for data written after the
+backup before restoring. Never remove ledger entries to force an older binary to
+start. The [runtime design](../../docs/design/github-connection-runtime.md) and
+[storage design](../../docs/design/github-pr-storage.md) describe retained state
+and diagnostic ownership.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII

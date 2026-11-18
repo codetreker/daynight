@@ -45,6 +45,9 @@ type App struct {
 	GitHubGrants         *githubservice.GrantManager
 	GitHubProject        *githubservice.ProjectAppManager
 	GitHubWebhook        *githubservice.AppWebhookReceiver
+	GitHubProjectWebhook *githubservice.ProjectWebhookManager
+	GitHubProjectReceipt *githubservice.ProjectWebhookReceiver
+	GitHubProjectSecrets store.GitHubProjectWebhookSecretReader
 	Metrics              *prometheus.Registry
 	Web                  *webresources.Resources
 	Ready                func(context.Context) error

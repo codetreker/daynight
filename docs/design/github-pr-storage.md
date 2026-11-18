@@ -22,7 +22,7 @@ Project 权限、连接状态、计数及列表或详情可在同一只读 Repea
 
 候选查询有界返回已连接、同步开启且到期的 Project，实际领取、续持、观测发布和完成均在 App-aware 工作事务内执行。各操作核对活 Project、App、凭据版本、原 grant、owner Team 与 ownership version；领取另校验连接、同步开关及已有期限，续持和发布另校验原 token、generation 与数据库时间。数据库只保存调用方指定的状态和时间，不决定重试或同步成功。完整轮询以 `seen_poll_id` 标记观测，并有界查询未见的 active 编号；缺席本身不会改变 PR 状态。
 
-Webhook 提示事务按活 App、当前授权及连接身份锁定并重新检查候选，不反向取得 Project 锁。关闭期间不积累提示或推进接收时间。PR 提示更新 PR Webhook 收件事实；安装访问提示保留 `not_before`，只改变访问提示及复查计划，不推进 PR 收件时间。访问复查的重试同时持久化访问期限和共享限流期限，候选与领取分别检查限流。项目连接、执行与清退的锁顺序和权限分别由[项目连接](github-app-project-connection.md)、[执行](github-app-execution.md)和[资源清退](github-app-resource-retirement.md)拥有。事务失败回滚全部操作，提交结果未知仍按未知处理。
+项目 Webhook 收件事务锁定活 Project 与连接后重新检查配置及授权；符合入队条件的 PR 提示更新 PR Webhook 收件事实，同步关闭期间只记录有效项目收件，不积累 PR 提示。App 安装访问提示按活 App、当前授权及连接身份锁定并重新检查候选，不反向取得 Project 锁；它保留 `not_before`，只改变访问提示及复查计划，不推进 PR 收件时间。访问复查的重试同时持久化访问期限和共享限流期限，候选与领取分别检查限流。项目收件、连接、执行与清退的锁顺序和权限分别由[项目订阅](github-project-webhook-subscription.md)、[项目连接](github-app-project-connection.md)、[执行](github-app-execution.md)和[资源清退](github-app-resource-retirement.md)拥有。事务失败回滚全部操作，提交结果未知仍按未知处理。
 
 ## 迁移
 

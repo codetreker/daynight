@@ -20,4 +20,4 @@ An authenticated delivery enters the Project write transaction, which locks the 
 
 ## Consequences
 
-Projects can record connectivity independently while unavailable or disabled PR synchronization does not enqueue work. Confirmed hints retain the existing runner's authorization and retry behavior. The independent HTTP adapter authenticates original bytes outside the transaction and honors the request deadline; it is not mounted on the production route. Its receipt log links the HTTP request ID to the distinct queue UUID used to fence acknowledgements.
+Projects can record connectivity independently while unavailable or disabled PR synchronization does not enqueue work. Confirmed hints retain the existing runner's authorization and retry behavior. The HTTP adapter authenticates original bytes outside the transaction and honors the request deadline; the [reception cutover](2026-11-18-project-github-webhook-cutover.md) mounts it on the production route. Its receipt log links the HTTP request ID to the distinct queue UUID used to fence acknowledgements.

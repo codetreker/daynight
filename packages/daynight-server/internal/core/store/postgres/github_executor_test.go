@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	syncgithub "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
@@ -208,10 +209,9 @@ func TestGitHubExecutorPersistsPollAndConcurrentHint(t *testing.T) {
 	nextSuccess = reopenedSuccess
 
 	request1, request2 := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: request1, DeliveryID: "one", ReceivedAt: now, NextAttemptAt: now}
-	if got := b2Signal(t, db, signal); got != 1 {
-		t.Fatalf("first signal: %d", got)
-	}
+	signal := b2Hint{Number: 1, RequestID: request1, DeliveryID: "one", ReceivedAt: now, NextAttemptAt: now}
+	b2SeedHint(t, db, signal, project.ID)
+	b2EnableHook(t, db, project.ID)
 	first.HeadSHA = "event-first"
 	upstream.pulls[1] = first
 	upstream.duringPull = func(ctx context.Context, n int64) error {
@@ -220,9 +220,9 @@ func TestGitHubExecutorPersistsPollAndConcurrentHint(t *testing.T) {
 		}
 		upstream.duringPull = nil
 		signal.RequestID, signal.DeliveryID = request2, "two"
-		completion, err := db.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error { _, err := w.SignalPullRequest(ctx, signal); return err })
-		if err != nil || completion.Outcome != store.TransactionCommitted {
-			return fmt.Errorf("replace signal: %+v %w", completion, err)
+		result, completion, err := b2Receive(ctx, db, project.ID, signal)
+		if err != nil || completion.Outcome != store.TransactionCommitted || result != coregithub.ProjectWebhookEnqueued {
+			return fmt.Errorf("replace signal: %s %+v %w", result, completion, err)
 		}
 		return nil
 	}

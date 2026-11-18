@@ -8,7 +8,7 @@ An independently managed GitHub App can serve multiple Teams, but a delivery mus
 
 ## Decision
 
-The App-scoped receiver authenticates the raw body with a live secret snapshot outside the transaction. A short signal transaction rechecks the credential version under the App lock, then locks current grants and candidate connections in the shared order and rechecks eligibility after waiting. Only a confirmed commit acknowledges a relevant event. The [design](../../../../docs/design/github-app-webhook.md) describes the HTTP and routing contract; the adapter is mounted on the production App-scoped route.
+The App-scoped receiver authenticates the raw body with a live secret snapshot outside the transaction. A short signal transaction rechecks the credential version under the App lock, then locks current grants and candidate connections in the shared order and rechecks eligibility after waiting. Only a confirmed commit acknowledges a relevant event. The [design](../../../../docs/design/github-app-webhook.md) describes the HTTP and routing contract; the adapter is mounted on the production App-scoped route. The later [reception cutover](2026-11-18-project-github-webhook-cutover.md) assigns PR deliveries to Project endpoints while retaining App installation signals.
 
 ## Alternatives
 

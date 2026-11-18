@@ -30,6 +30,7 @@ type unusedGitHubCapabilities struct {
 	store.GitHubAppCredentialReader
 	store.GitHubAppWebhookStore
 	store.GitHubAppWorkWriter
+	store.GitHubProjectWebhookSecretReader
 }
 
 func (unusedGitHubCapabilities) DueGitHubAppProjects(context.Context, time.Time, int) ([]string, error) {
@@ -71,7 +72,7 @@ func TestGitHubProductionAssemblyStartsAndDrains(t *testing.T) {
 	if err := app.assembleGitHub(db, logger); err != nil {
 		t.Fatal(err)
 	}
-	if app.GitHubApps == nil || app.GitHubConfig == nil || app.GitHubAdmins == nil || app.GitHubGrants == nil || app.GitHubProject == nil || app.GitHubWebhook == nil || app.githubRuntime == nil || app.githubRuntime.provider == nil {
+	if app.GitHubApps == nil || app.GitHubConfig == nil || app.GitHubAdmins == nil || app.GitHubGrants == nil || app.GitHubProject == nil || app.GitHubWebhook == nil || app.GitHubProjectWebhook == nil || app.GitHubProjectReceipt == nil || app.GitHubProjectSecrets == nil || app.githubRuntime == nil || app.githubRuntime.provider == nil {
 		t.Fatal("production dependencies not assembled")
 	}
 	_, err := app.GitHubAdmins.ListAdmins(context.Background(), model.Principal{}, "", coregithub.ListAppsInput{})

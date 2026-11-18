@@ -209,28 +209,50 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		}
 	}
 	waitTitle("Initial PR")
+	type hookState struct {
+		Version        *string    `json:"version"`
+		Enabled        bool       `json:"enabled"`
+		RepositoryID   *string    `json:"repositoryId"`
+		State          string     `json:"state"`
+		LastReceivedAt *time.Time `json:"lastReceivedAt"`
+	}
+	initialHook := requestJSON[struct {
+		ProjectWebhook hookState `json:"projectWebhook"`
+	}](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
+	if initialHook.ProjectWebhook.State != "unconfigured" || initialHook.ProjectWebhook.Version != nil {
+		t.Fatalf("initial webhook: %+v", initialHook.ProjectWebhook)
+	}
+	hook := requestJSON[hookState](t, f, http.MethodPatch, base+"/github/webhook", map[string]any{"expectedUserId": f.userID, "version": nil, "enabled": true, "repositoryId": "42", "secret": "project-integration-secret"}, http.StatusOK)
+	if !hook.Enabled || hook.Version == nil || hook.RepositoryID == nil || *hook.RepositoryID != "42" || hook.State != "waiting" {
+		t.Fatalf("configured webhook: %+v", hook)
+	}
 	change("Updated by webhook")
 	body := []byte(`{"installation":{"id":99},"repository":{"id":42},"number":1}`)
-	mac := hmac.New(sha256.New, []byte("integration-only-secret"))
-	_, _ = mac.Write(body)
-	request, err := http.NewRequestWithContext(f.context, http.MethodPost, f.origin+appBase+"/webhook", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+	send := func(path, secret string, expected int) {
+		t.Helper()
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write(body)
+		request, err := http.NewRequestWithContext(f.context, http.MethodPost, f.origin+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		request.Header.Set("X-GitHub-Event", "pull_request")
+		request.Header.Set("X-GitHub-Delivery", uuid.NewString())
+		response, err := f.client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, readErr := io.ReadAll(response.Body)
+		if closeErr := response.Body.Close(); readErr != nil || closeErr != nil {
+			t.Fatalf("webhook response read: %v %v", readErr, closeErr)
+		}
+		if response.StatusCode != expected {
+			t.Fatalf("webhook response: %d %s", response.StatusCode, data)
+		}
 	}
-	request.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	request.Header.Set("X-GitHub-Event", "pull_request")
-	request.Header.Set("X-GitHub-Delivery", uuid.NewString())
-	response, err := f.client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, readErr := io.ReadAll(response.Body)
-	if closeErr := response.Body.Close(); readErr != nil || closeErr != nil {
-		t.Fatalf("webhook response read: %v %v", readErr, closeErr)
-	}
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("webhook response: %d %s", response.StatusCode, data)
-	}
+	send(appBase+"/webhook", "integration-only-secret", http.StatusNoContent)
+	send("/api/v1/github/projects/"+project.ID+"/webhook", "project-integration-secret", http.StatusAccepted)
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -246,6 +268,12 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			t.Fatalf("webhook publication: status=%+v page=%+v", current, page)
 		case <-ticker.C:
 		}
+	}
+	receivedHook := requestJSON[struct {
+		ProjectWebhook hookState `json:"projectWebhook"`
+	}](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
+	if receivedHook.ProjectWebhook.State != "received" || receivedHook.ProjectWebhook.LastReceivedAt == nil || receivedHook.ProjectWebhook.Version == nil || *receivedHook.ProjectWebhook.Version != *hook.Version {
+		t.Fatalf("received webhook: %+v", receivedHook.ProjectWebhook)
 	}
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodPatch, base+"/github/sync", map[string]any{"version": status.Version, "syncEnabled": false}, http.StatusOK)

@@ -8,7 +8,7 @@ Projects need timely PR and installation updates even when deliveries are duplic
 
 ## Decision
 
-The signed GitHub App endpoint persists bounded PR or installation refresh hints before acknowledging relevant events. It uses a set-based transaction for matching enabled bindings. The executor reads current GitHub facts and conditionally acknowledges the captured hint; periodic polling repairs missed deliveries. The [runtime design](../../../../docs/design/github-connection-runtime.md) describes deployment and reception.
+The original signed GitHub App endpoint persisted bounded PR or installation refresh hints before acknowledging relevant events, using a set-based transaction for matching enabled bindings. The later [reception cutover](2026-11-18-project-github-webhook-cutover.md) assigns PR deliveries to Project endpoints and retains App installation signals. The executor reads current GitHub facts and conditionally acknowledges the captured hint; periodic polling repairs missed deliveries. The [runtime design](../../../../docs/design/github-connection-runtime.md) describes deployment and reception.
 
 ## Alternatives
 

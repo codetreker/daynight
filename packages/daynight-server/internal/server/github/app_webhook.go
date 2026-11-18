@@ -126,7 +126,7 @@ func appWebhookEvent(_ context.Context, event, delivery string, body []byte) (co
 	switch event {
 	case "":
 		return core.WebhookEvent{}, false, false
-	case "pull_request", "installation", "installation_repositories", "repository":
+	case "installation", "installation_repositories":
 		return webhookEvent(event, delivery, body)
 	default:
 		return core.WebhookEvent{}, false, true

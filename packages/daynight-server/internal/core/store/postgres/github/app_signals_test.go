@@ -46,18 +46,18 @@ func seedAppSignalFixture(t *testing.T, db *postgres.Store, appID int64) appSign
 	}
 	return f
 }
-func (f appSignalFixture) signal(ctx context.Context, signal store.GitHubAppPRSignal) (int64, store.Completion, error) {
+func (f appSignalFixture) signal(ctx context.Context, signal store.GitHubAppAccessSignal) (int64, store.Completion, error) {
 	var n int64
 	completion, err := f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(w store.GitHubAppSignalWriter) error {
 		var e error
-		n, e = w.SignalPullRequest(ctx, signal)
+		n, e = w.SignalAccess(ctx, signal)
 		return e
 	})
 	return n, completion, err
 }
-func signalInput() store.GitHubAppPRSignal {
+func signalInput() store.GitHubAppAccessSignal {
 	now := time.Now().UTC()
-	return store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
+	return store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now}
 }
 func TestAppWebhookSnapshot(t *testing.T) {
 	f := newAppSignalFixture(t)
@@ -95,7 +95,7 @@ func TestAppSignalCurrentBindingAndMerge(t *testing.T) {
 		{"old credential", `UPDATE project_github SET credential_version=2 WHERE project_id=$1`, 0},
 		{"other app id", `UPDATE project_github SET app_id=app_id+1 WHERE project_id=$1`, 0},
 		{"other installation", `UPDATE project_github SET installation_id=21 WHERE project_id=$1`, 0},
-		{"other repository", `UPDATE project_github SET repository_id=31 WHERE project_id=$1`, 0},
+		{"other repository", `UPDATE project_github SET repository_id=31 WHERE project_id=$1`, 1},
 	} {
 		if !t.Run(tc.name, func(t *testing.T) {
 			f := seedAppSignalFixture(t, db, 10+2*int64(index))
@@ -120,14 +120,12 @@ func TestAppSignalCurrentBindingAndMerge(t *testing.T) {
 			if err != nil || c.Outcome != store.TransactionCommitted || n != tc.want {
 				t.Fatalf("second signal: %d %+v %v", n, c, err)
 			}
-			var count int
 			var request, delivery *string
-			var generation *int64
-			if err = f.db.Pool.QueryRow(ctx, `SELECT count(*),max(request_id::text),max(delivery_id),max(generation) FROM project_github_pending_prs WHERE project_id=$1`, f.project).Scan(&count, &request, &delivery, &generation); err != nil {
+			if err = f.db.Pool.QueryRow(ctx, `SELECT access_hint_id::text,access_delivery_id FROM project_github WHERE project_id=$1`, f.project).Scan(&request, &delivery); err != nil {
 				t.Fatal(err)
 			}
-			if int64(count) != tc.want || (tc.want == 1 && (*request != second.RequestID || *delivery != "later" || *generation != 4)) {
-				t.Fatalf("pending: %d %v %v %v", count, request, delivery, generation)
+			if (tc.want == 0 && (request != nil || delivery != nil)) || (tc.want == 1 && (request == nil || delivery == nil || *request != second.HintID || *delivery != "later")) {
+				t.Fatalf("access hint: %v %v", request, delivery)
 			}
 		}) {
 			return
@@ -155,7 +153,7 @@ func TestAppSignalAccessAndRollback(t *testing.T) {
 	}
 	sentinel := errors.New("abort")
 	completion, err = f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(w store.GitHubAppSignalWriter) error {
-		if _, err := w.SignalPullRequest(ctx, signalInput()); err != nil {
+		if _, err := w.SignalAccess(ctx, signalInput()); err != nil {
 			return err
 		}
 		return sentinel
@@ -163,9 +161,8 @@ func TestAppSignalAccessAndRollback(t *testing.T) {
 	if completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, sentinel) {
 		t.Fatalf("rollback: %+v %v", completion, err)
 	}
-	var count int
-	if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, f.project).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("rollback pending %d %v", count, err)
+	if err = f.db.Pool.QueryRow(ctx, `SELECT access_hint_id::text FROM project_github WHERE project_id=$1`, f.project).Scan(&got); err != nil || got != hint {
+		t.Fatalf("rollback access hint %s %v", got, err)
 	}
 }
 
@@ -202,7 +199,7 @@ func TestAppSignalRechecksAfterConnectionWait(t *testing.T) {
 			writer := github.NewAppSignalWriter(signalTx, f.app, 10, 1)
 			done := make(chan error, 1)
 			go func() {
-				n, e := writer.SignalPullRequest(ctx, signalInput())
+				n, e := writer.SignalAccess(ctx, signalInput())
 				if e == nil && n != 0 {
 					e = fmt.Errorf("stale candidate accepted: %d", n)
 				}
@@ -223,9 +220,9 @@ func TestAppSignalRechecksAfterConnectionWait(t *testing.T) {
 			if err = signalTx.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			var count int
-			if err = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, f.project).Scan(&count); err != nil || count != 0 {
-				t.Fatalf("pending %d %v", count, err)
+			var hint *string
+			if err = f.db.Pool.QueryRow(ctx, `SELECT access_hint_id::text FROM project_github WHERE project_id=$1`, f.project).Scan(&hint); err != nil || hint != nil {
+				t.Fatalf("access hint %v %v", hint, err)
 			}
 		})
 	}
@@ -253,12 +250,9 @@ func TestAppWebhookOldUUIDDoesNotReviveAfterReregistration(t *testing.T) {
 func TestAppSignalDatabaseFailurePaths(t *testing.T) {
 	for _, tc := range []struct {
 		name, mutation string
-		access         bool
 	}{
-		{"PR connection query", `ALTER TABLE project_ownership RENAME TO unavailable_ownership`, false},
-		{"access connection query", `ALTER TABLE project_ownership RENAME TO unavailable_ownership`, true},
-		{"PR pending write", `ALTER TABLE project_github_pending_prs RENAME TO unavailable_pending`, false},
-		{"access hint write", `ALTER TABLE project_github RENAME COLUMN access_hint_id TO unavailable_hint`, true},
+		{"access connection query", `ALTER TABLE project_ownership RENAME TO unavailable_ownership`},
+		{"access hint write", `ALTER TABLE project_github RENAME COLUMN access_hint_id TO unavailable_hint`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newAppSignalFixture(t)
@@ -269,11 +263,7 @@ func TestAppSignalDatabaseFailurePaths(t *testing.T) {
 			var called bool
 			completion, err := f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(w store.GitHubAppSignalWriter) error {
 				called = true
-				if tc.access {
-					_, err := w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "access", ReceivedAt: time.Now().UTC()})
-					return err
-				}
-				_, err := w.SignalPullRequest(ctx, signalInput())
+				_, err := w.SignalAccess(ctx, signalInput())
 				return err
 			})
 			if !called || err == nil || completion.Outcome != store.TransactionNotCommitted {

@@ -1,6 +1,6 @@
 # 项目 GitHub Webhook 订阅管理
 
-项目订阅配置保存在 `project_github`，与 App 连接、PR 同步设置使用独立版本。首次配置要求当前仓库连接；断开、撤权和项目归属转移保留配置，项目实际删除在同一事务清除配置及 secret。订阅管理能力和 HTTP adapter 可独立使用；生产路由尚未挂载该接口。
+项目订阅配置保存在 `project_github`，与 App 连接、PR 同步设置使用独立版本。首次配置要求当前仓库连接；断开、撤权和项目归属转移保留配置，项目实际删除在同一事务清除配置及 secret。生产路由同时提供订阅管理及项目收件入口。
 
 ## 存储与事务
 
@@ -20,9 +20,9 @@
 
 `PATCH /api/v1/projects/{projectId}/github/webhook` 接受 `expectedUserId`、`version`、`enabled` 及可选的 `repositoryId`、`secret`，返回相同安全对象。`version` 必须存在，首次为 null，此后为规范的正 int64 十进制字符串；`repositoryId` 如提供则同样为规范的正 int64 十进制字符串。`enabled` 必须为布尔值，未知或重复字段以及无效 Unicode 会被拒绝。首次绑定及换库要求当前仓库 ID 和 secret；secret 是 1 至 4096 字节的有效 UTF-8。项目成员可读取安全状态，只有有效 Project 管理员可写。响应和日志不包含 secret。
 
-旧 GET 保持既有响应；生产路由接线由后续能力负责。项目连接和权限机制见[项目连接](github-app-project-connection.md)。
+生产 GET 在既有响应中追加该对象，旧客户端仍可读取原有字段。项目连接和权限机制见[项目连接](github-app-project-connection.md)。
 
-独立接收 adapter 提供 `POST /api/v1/github/projects/{projectId}/webhook`，读取项目窄凭据快照，以原始正文验证 `X-Hub-Signature-256`，再解析 `ping` 和 `pull_request` 并调用该项目的收件操作。正文上限为 25 MiB，请求预算为 8 秒。确认收件返回 202，已验签但无关或仓库不匹配返回 204；未配置或停用返回 404，签名失败返回 401，相关事件正文无效返回 400，超限返回 413，状态变化、期限到期或提交失败及未知返回 503。签名、secret 和正文不进入日志。生产路由尚未挂载接收入口。
+接收 adapter 提供 `POST /api/v1/github/projects/{projectId}/webhook`，读取项目窄凭据快照，以原始正文验证 `X-Hub-Signature-256`，再解析 `ping` 和 `pull_request` 并调用该项目的收件操作。正文上限为 25 MiB，请求预算为 8 秒。确认收件返回 202，已验签但无关或仓库不匹配返回 204；未配置或停用返回 404，签名失败返回 401，相关事件正文无效返回 400，超限返回 413，状态变化、期限到期或提交失败及未知返回 503。签名、secret 和正文不进入日志。部署和回退见[连接与同步运行时](github-connection-runtime.md)。
 
 ## 项目设置界面
 

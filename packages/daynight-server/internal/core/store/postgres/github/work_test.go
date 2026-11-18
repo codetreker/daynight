@@ -159,52 +159,6 @@ func bindSignalApp(t *testing.T, tx pgx.Tx, projects ...string) string {
 	return app
 }
 
-func TestGitHubAppSignalReceptionTime(t *testing.T) {
-	db, id := dbFixture(t)
-	ctx := t.Context()
-	tx := begin(t, db, pgx.TxOptions{})
-	other, deleted, different := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	for _, project := range []string{id, other, deleted, different} {
-		mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, project)
-	}
-	mustExec(t, tx, `UPDATE projects SET deleted_at=now() WHERE id=$1`, deleted)
-	for _, project := range []string{id, other, deleted} {
-		mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,true,true,10,20,30)`, project)
-	}
-	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,true,true,10,20,31)`, different)
-	app := bindSignalApp(t, tx, id, other, deleted, different)
-	r := github.NewReader(tx)
-	latest := time.Now().UTC().Truncate(time.Microsecond)
-	older := latest.Add(-time.Minute)
-	sig := github.NewAppSignalWriter(tx, app, 10, 1)
-	first, second := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 42, RequestID: first, DeliveryID: "newer", ReceivedAt: latest, NextAttemptAt: latest}
-	if n, err := sig.SignalPullRequest(ctx, signal); err != nil || n != 2 {
-		t.Fatalf("signal: %d %v", n, err)
-	}
-	signal.RequestID, signal.DeliveryID, signal.ReceivedAt, signal.NextAttemptAt = second, "older", older, older
-	if n, err := sig.SignalPullRequest(ctx, signal); err != nil || n != 2 {
-		t.Fatalf("older signal: %d %v", n, err)
-	}
-	c, err := r.Connection(ctx, id)
-	if err != nil || c.LastWebhookReceivedAt == nil || !c.LastWebhookReceivedAt.Equal(latest) {
-		t.Fatalf("reception regressed: %+v %v", c, err)
-	}
-	var gotID, delivery string
-	var received time.Time
-	if err = tx.QueryRow(ctx, `SELECT request_id::text,delivery_id,received_at FROM project_github_pending_prs WHERE project_id=$1 AND number=42`, id).Scan(&gotID, &delivery, &received); err != nil || gotID != second || delivery != "older" || !received.Equal(older) {
-		t.Fatalf("last committed hint: %s %s %v %v", gotID, delivery, received, err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	fresh := begin(t, db, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	c, err = github.NewReader(fresh).Connection(ctx, id)
-	if err != nil || !c.LastWebhookReceivedAt.Equal(latest) {
-		t.Fatalf("committed reception: %+v %v", c, err)
-	}
-}
-
 func TestGitHubWorkRefusalsAndCancellation(t *testing.T) {
 	db, id := dbFixture(t)
 	ctx := t.Context()
@@ -393,7 +347,8 @@ func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
 	setup := begin(t, db, pgx.TxOptions{})
 	mustExec(t, setup, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
 	mustExec(t, setup, `INSERT INTO project_github(project_id,generation,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,1,true,true,10,20,30)`, id)
-	app := bindSignalApp(t, setup, id)
+	bindSignalApp(t, setup, id)
+	mustExec(t, setup, `UPDATE project_github SET hook_version=1,hook_repository_id=30,hook_enabled=true,hook_secret='secret'::bytea,access_state='available' WHERE project_id=$1`, id)
 	if err := setup.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -408,9 +363,12 @@ func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := make(chan error, 1)
-	now := time.Now().UTC()
 	go func() {
-		_, err := github.NewAppSignalWriter(signal, app, 10, 1).SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: uuid.NewString(), DeliveryID: "signal", ReceivedAt: now, NextAttemptAt: now})
+		receipt := github.NewProjectWebhookReceipt(signal, id)
+		_, err := receipt.LockReceipt(ctx)
+		if err == nil {
+			err = receipt.RecordReceipt(ctx, store.GitHubProjectWebhookReceiptWrite{Enqueue: true, Number: 1, RequestID: uuid.NewString(), DeliveryID: "signal"})
+		}
 		result <- err
 	}()
 	waitForLock(t, db, pid)
@@ -429,7 +387,7 @@ func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 	check := begin(t, db, pgx.TxOptions{})
-	if due, err := boundWork(t, check, id).HasDuePending(ctx, now); err != nil || !due {
+	if due, err := boundWork(t, check, id).HasDuePending(ctx, time.Now().Add(time.Second)); err != nil || !due {
 		t.Fatalf("committed signal: due=%v error=%v", due, err)
 	}
 }

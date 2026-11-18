@@ -47,7 +47,6 @@ type appWebhookStore struct {
 	app      string
 	version  int64
 	writes   int
-	pr       *store.GitHubAppPRSignal
 	access   *store.GitHubAppAccessSignal
 }
 
@@ -63,10 +62,6 @@ func (s *appWebhookStore) WriteGitHubAppSignals(_ context.Context, app string, v
 		return store.Completion{Outcome: s.outcome}, s.writeErr
 	}
 	return store.Completion{Outcome: s.outcome}, f(s)
-}
-func (s *appWebhookStore) SignalPullRequest(_ context.Context, p store.GitHubAppPRSignal) (int64, error) {
-	s.pr = &p
-	return 2, nil
 }
 func (s *appWebhookStore) SignalAccess(_ context.Context, p store.GitHubAppAccessSignal) (int64, error) {
 	s.access = &p
@@ -104,13 +99,13 @@ func TestAppWebhookAuthenticationAndCommit(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	s.readErr = nil
-	event := core.WebhookEvent{Kind: "pull_request", DeliveryID: "delivery", InstallationID: 3, RepositoryID: 4, Number: 5}
+	event := core.WebhookEvent{Kind: "access", DeliveryID: "delivery", InstallationID: 3}
 	for _, outcome := range []store.TransactionOutcome{store.TransactionCommitted, store.TransactionNotCommitted, store.TransactionUnknown} {
 		s.outcome = outcome
 		s.writes = 0
-		s.pr = nil
+		s.access = nil
 		err := r.ReceiveAppWebhook(context.Background(), id, event)
-		if (err == nil) != (outcome == store.TransactionCommitted) || s.writes != 1 || s.app != "local" || s.version != 7 || s.pr == nil || s.pr.Number != 5 || s.pr.DeliveryID != "delivery" {
+		if (err == nil) != (outcome == store.TransactionCommitted) || s.writes != 1 || s.app != "local" || s.version != 7 || s.access == nil || s.access.InstallationID != 3 || s.access.DeliveryID != "delivery" {
 			t.Fatalf("outcome %s: %+v %v", outcome, s, err)
 		}
 		if outcome == store.TransactionUnknown && !errors.Is(err, errUnknown) {
@@ -120,8 +115,8 @@ func TestAppWebhookAuthenticationAndCommit(t *testing.T) {
 	s.outcome = store.TransactionNotCommitted
 	s.writeErr = store.ErrGitHubAppWebhookChanged
 	s.writes = 0
-	s.pr = nil
-	if err := r.ReceiveAppWebhook(context.Background(), id, event); !errors.Is(err, store.ErrGitHubAppWebhookChanged) || s.writes != 1 || s.pr != nil {
+	s.access = nil
+	if err := r.ReceiveAppWebhook(context.Background(), id, event); !errors.Is(err, store.ErrGitHubAppWebhookChanged) || s.writes != 1 || s.access != nil {
 		t.Fatalf("changed snapshot: %v", err)
 	}
 	s.writeErr = nil
