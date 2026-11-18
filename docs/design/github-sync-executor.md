@@ -18,4 +18,14 @@
 
 所有发布由同步开关、原 token、generation、有效期限、live Project 和捕获的 App、凭据、grant、owner Team 与 ownership version 约束。关闭同步、断开、撤权信号和接管阻止迟到响应。关闭提交后旧代次不能续租或发布；已发送或已越过检查点的远端请求可能完成，关闭回执不表示所有实例的请求已经退出。重新开启产生新代次并完整核对。
 
-远端和数据库调用不跨事务，错误保留原因链。日志携带 Project、领取、代次、安装与仓库身份、处理阶段和提示来源；独立 App 工作另带授权身份，不记录凭据或 PR 正文。数据库协调及保留模型见[存储设计](github-pr-storage.md)，远端认证和协议见[GitHub App 远端读取](github-app-remote.md)。
+远端和数据库调用不跨事务，错误保留原因链。数据库协调及保留模型见[存储设计](github-pr-storage.md)，远端认证和协议见[GitHub App 远端读取](github-app-remote.md)。
+
+## 结构化诊断
+
+确认领取后，执行日志以该轮捕获的 connection 提供稳定的 `repository_id`、`installation_id`，并保留 `project_id`、`sync_id`、`generation`、触发类型和独立 App 授权身份。身份不通过后续可变的 Project 绑定反查；未取得有效领取时不读取不存在的安装或仓库字段。`sync_id` 关联该轮 lease，GitHub 响应的 `github_request_id` 与提示的 `hint_id`、`delivery_id` 分别标识上游请求和已捕获提示。
+
+全状态发现以 `phase=discovery` 记录 `result=natural_end|truncated|failed`。直接失败的 `stage` 区分 `list`、候选资格 `selection`、`publish` 和穿插提示 `hint`。详情在实际核对边界以 `phase=detail`、`stage=initial|recheck`、`result=success|failed` 和 `number` 记录；详情失败由该记录表达，不再套一层列表失败。详情核对也用于 open、缺席项和提示，其阶段语义保持一致。
+
+发现汇总、发现中的详情与穿插提示携带该点的 `pages`、`candidates`、`published`。`pages` 只累计完成摘要仓库身份校验的页面；`candidates` 是已选中的适用未知编号数，包含当前失败的候选；`published` 是该发现流程已确认提交的 PR 数，后续续约失败不抹去已提交数量。提示发布不计入发现发布数。详情和提示继承调用边界的进度快照。穿插提示带 `source=hint` 及原提示标识；提示造成的发现中断记为 `stage=hint`，不解释为 GitHub 列表故障。
+
+失败记录只选择现有安全错误分类、数据库和事务阶段及结果、远端状态和请求标识，不写原始异常或响应正文，不包含令牌、私钥、Webhook secret、认证头或 PR Markdown 正文。日志不改变原错误对象、原因链、重试、限流、领取与成功时间语义。诊断归属的取舍见[同步诊断决策](../../.agents/notes/implemented/bug-fix/2026-11-19-github-sync-diagnostics.md)。
