@@ -30,24 +30,31 @@ export const usePRStatistics = (options: PRStatisticsOptions) => {
       onPrincipalMismatch: () => current.current.onPrincipalMismatch(), onAccessError: error => current.current.onAccessError(error) });
     // The statistics page has its own baseline. Rechecking an author directory
     // must not open the unrelated PR list or its connection-status reader.
-    const verifyBaseline = async (signal: AbortSignal): Promise<boolean> => {
+    const verifyBaseline = async (signal: AbortSignal, onFailure?: (error: ApiError) => void): Promise<boolean> => {
       if (!base.isAllowed()) return false;
       const token = base.capture(), input = current.current, author = state.snapshot.author?.id ?? null;
+      const applicable = () => permitted() && current.current.endDate === input.endDate && current.current.window === input.window && (state.snapshot.author?.id ?? null) === author;
       try {
         await base.request(signal, (s, dispatch) => getProject(projectId, s, { userId, onPrincipalMismatch: () => {} }, dispatch));
         await base.request(signal, (s, dispatch) => getPRStatistics(projectId, input.endDate, input.window, author, s, { userId, onPrincipalMismatch: () => {}, onDispatch: dispatch }));
-        return await base.accept(token, signal) && permitted() && current.current.endDate === input.endDate && current.current.window === input.window && (state.snapshot.author?.id ?? null) === author;
+        return await base.accept(token, signal) && applicable();
       } catch (cause) {
-        if (signal.aborted) return false;
-        if (cause instanceof ApiError && (cause.code === 'principal_mismatch' || cause.status === 401 || cause.kind === 'server' && (cause.status === 403 || cause.status === 404))) base.revoke(cause);
+        if (signal.aborted || !applicable()) return false;
+        try { if (!await base.accept(token, signal) || !applicable()) return false; } catch { return false; }
+        const error = cause instanceof ApiError ? cause : isAbortError(cause) ? new ApiError('network') : new ApiError('protocol', null, 'protocol', null, cause);
+        if (error.code === 'principal_mismatch' || error.status === 401 || error.kind === 'server' && (error.status === 403 || error.status === 404)) base.revoke(error);
+        else onFailure?.(error);
         return false;
       }
     };
     const recover = async (signal: AbortSignal) => {
       if (!permitted() || !base.isRevoked()) return false;
+      const input = current.current, generation = state.generation;
+      let failure: ApiError | null = null;
       base.resume();
-      const verified = await verifyBaseline(signal);
-      if (!verified && !signal.aborted && !base.isRevoked()) base.revoke();
+      const verified = await verifyBaseline(signal, error => { failure = error; });
+      if (!verified && !signal.aborted && !base.isRevoked() && permitted() && state.generation === generation &&
+          current.current.endDate === input.endDate && current.current.window === input.window) base.revoke(failure ?? new ApiError('network'));
       return verified;
     };
     return { ...base, verifyBaseline, recover } satisfies ReadSession;

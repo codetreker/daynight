@@ -29,8 +29,9 @@ browser supplies the intervals shared by both panels.
 
 ## Consequences
 
-The two panels can fail and recover independently. Exact PR counts remain
-integers through chart rendering. Hourly offset probing relies on the documented
+The two panels can fail and recover independently. A failed PR authorization
+recheck keeps a retryable error while preventing stale responses from restoring
+access. Exact PR counts remain integers through chart rendering. Hourly offset probing relies on the documented
 IANA transition spacing; future time-zone data with more than one transition in
 an hour requires revisiting this assumption. Older servers leave the PR panel
 with a recoverable protocol error while admitted task statistics remain usable.

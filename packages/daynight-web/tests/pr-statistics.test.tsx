@@ -1,9 +1,11 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
+import { getProject } from '../src/api/project-settings';
 import { parsePRStatistics, validateStatisticsWindow, type PRStatistics } from '../src/features/project-statistics/pr-statistics-api';
 import { usePRStatistics } from '../src/features/project-statistics/pr-statistics';
 
+vi.mock('../src/api/project-settings', async importOriginal => ({ ...await importOriginal<typeof import('../src/api/project-settings')>(), getProject: vi.fn() }));
 vi.mock('../src/features/project-statistics/pr-statistics-api', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/features/project-statistics/pr-statistics-api')>();
   return { ...actual, getPRStatistics: vi.fn() };
@@ -17,8 +19,9 @@ const dateWindow = '0@1770422400000,1@1770508800000,-@1770595200000';
 const data = (authorId: string | null = null): PRStatistics => ({ projectId, endDate, revision: '1', projectTotal: '9007199254740993', availability: 'ready', hasAuthors: true, daily: Array(30).fill('1'), authorId, author: authorId === null ? null : { id: authorId, login: 'renamed' }, authorDaily: authorId === null ? null : Array(30).fill('1') });
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 };
 afterEach(() => { vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
@@ -107,6 +110,66 @@ describe('PR statistics lifecycle', () => {
     expect(result.current.data).toBeNull();
     act(() => { result.current.refresh(); result.current.refresh(); });
     expect(getPRStatistics).toHaveBeenCalledTimes(2);
+  });
+  it('keeps a failed access recovery retryable and recovers after a later attempt', async () => {
+    vi.mocked(getProject).mockResolvedValue({} as Awaited<ReturnType<typeof getProject>>);
+    vi.mocked(getPRStatistics).mockRejectedValueOnce(new ApiError('server', 403, 'forbidden')).mockRejectedValueOnce(new ApiError('network')).mockResolvedValueOnce(data()).mockResolvedValueOnce(data());
+    const options = { userId, projectId, canRead: true, active: true, endDate, window: dateWindow, onPrincipalMismatch: vi.fn(), onAccessError: vi.fn() };
+    const { result } = renderHook(() => usePRStatistics(options));
+    await waitFor(() => expect(result.current.error?.status).toBe(403));
+    expect(options.onAccessError).toHaveBeenCalledTimes(1);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.error?.kind).toBe('network'));
+    expect(result.current.loading).toBe(false);
+    expect(options.onAccessError).toHaveBeenCalledTimes(1);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.data?.projectTotal).toBe('9007199254740993'));
+    expect(result.current.error).toBeNull();
+  });
+  it('retains a renewed access denial during recovery and permits a later retry', async () => {
+    vi.mocked(getProject).mockResolvedValue({} as Awaited<ReturnType<typeof getProject>>);
+    vi.mocked(getPRStatistics).mockRejectedValueOnce(new ApiError('server', 403, 'forbidden')).mockRejectedValueOnce(new ApiError('server', 404, 'not_found')).mockResolvedValueOnce(data()).mockResolvedValueOnce(data());
+    const options = { userId, projectId, canRead: true, active: true, endDate, window: dateWindow, onPrincipalMismatch: vi.fn(), onAccessError: vi.fn() };
+    const { result } = renderHook(() => usePRStatistics(options));
+    await waitFor(() => expect(result.current.error?.status).toBe(403));
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.error?.status).toBe(404));
+    expect(options.onAccessError).toHaveBeenCalledTimes(2);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.data?.projectTotal).toBe('9007199254740993'));
+  });
+  it('ignores an old identity denial after the account changes', async () => {
+    const old = deferred<PRStatistics>();
+    const otherUser = '00000000-0000-4000-8000-000000000201';
+    vi.mocked(getProject).mockResolvedValue({} as Awaited<ReturnType<typeof getProject>>);
+    vi.mocked(getPRStatistics).mockRejectedValueOnce(new ApiError('server', 403, 'forbidden')).mockReturnValueOnce(old.promise).mockResolvedValue(data());
+    const initial = { userId, projectId, canRead: true, active: true, endDate, window: dateWindow, onPrincipalMismatch: vi.fn(), onAccessError: vi.fn() };
+    const { result, rerender } = renderHook(props => usePRStatistics(props), { initialProps: initial });
+    await waitFor(() => expect(result.current.error?.status).toBe(403));
+    act(() => result.current.refresh());
+    await waitFor(() => expect(getPRStatistics).toHaveBeenCalledTimes(2));
+    rerender({ ...initial, userId: otherUser });
+    await waitFor(() => expect(result.current.data?.projectTotal).toBe('9007199254740993'));
+    await act(async () => { old.reject(new ApiError('server', 403, 'forbidden')); await old.promise.catch(() => {}); });
+    expect(result.current.data?.projectTotal).toBe('9007199254740993');
+    expect(result.current.error).toBeNull();
+    expect(initial.onAccessError).toHaveBeenCalledTimes(1);
+  });
+  it('ignores a stale recovery denial after the window changes', async () => {
+    const old = deferred<PRStatistics>();
+    vi.mocked(getProject).mockResolvedValue({} as Awaited<ReturnType<typeof getProject>>);
+    vi.mocked(getPRStatistics).mockRejectedValueOnce(new ApiError('server', 403, 'forbidden')).mockReturnValueOnce(old.promise).mockResolvedValue({ ...data(), endDate: '2026-03-09' });
+    const initial = { userId, projectId, canRead: true, active: true, endDate, window: dateWindow, onPrincipalMismatch: vi.fn(), onAccessError: vi.fn() };
+    const { result, rerender } = renderHook(props => usePRStatistics(props), { initialProps: initial });
+    await waitFor(() => expect(result.current.error?.status).toBe(403));
+    act(() => result.current.refresh());
+    await waitFor(() => expect(getPRStatistics).toHaveBeenCalledTimes(2));
+    rerender({ ...initial, endDate: '2026-03-09' });
+    await waitFor(() => expect(result.current.data?.endDate).toBe('2026-03-09'));
+    await act(async () => { old.reject(new ApiError('server', 403, 'forbidden')); await old.promise.catch(() => {}); });
+    expect(result.current.data?.endDate).toBe('2026-03-09');
+    expect(result.current.error).toBeNull();
+    expect(initial.onAccessError).toHaveBeenCalledTimes(1);
   });
   it('keeps an old-server protocol failure local and exposes a retry', async () => {
     vi.mocked(getPRStatistics).mockRejectedValueOnce(new ApiError('protocol', 404)).mockResolvedValueOnce(data());
