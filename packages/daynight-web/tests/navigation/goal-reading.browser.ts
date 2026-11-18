@@ -835,8 +835,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const card = page.locator(`[data-goal-id="${goalId}"]`);
   const toggle = card.locator('.goal-list-toggle');
   const count = card.locator('.task-pause-count');
-  await expect(count).toHaveText(zh ? '1 已暂停' : '1 paused');
-  await expect(toggle).toHaveAccessibleDescription(zh ? /1 已暂停/ : /1 paused/);
+  await expect(count).toHaveText(zh ? '1 受阻' : '1 blocked');
+  await expect(toggle).toHaveAccessibleDescription(zh ? /1 受阻/ : /1 blocked/);
   const layout = await card.evaluate(element => {
     const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
     const count = box('.task-pause-count'), progress = box('.goal-in-progress'), row = box('.goal-list-row');
@@ -855,7 +855,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await toggle.focus(); await page.keyboard.press('Enter');
   await expect(toggle).toBeFocused();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-  await expect(count).toHaveText(zh ? '1 已暂停' : '1 paused');
+  await expect(count).toHaveText(zh ? '1 受阻' : '1 blocked');
   await page.keyboard.press('Space');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expectHit(card.locator('.goal-list-detail'));
@@ -872,12 +872,12 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
   await card.locator('.goal-list-toggle').click();
-  await expect(card.locator('.task-paused-badge')).toHaveText(zh ? '已暂停' : 'Paused');
+  await expect(card.locator('.task-paused-badge')).toHaveText(zh ? '受阻' : 'Blocked');
   const opener = card.locator(`#project-goal-graph-${goalId}`);
   await opener.click();
   const graph = page.locator('.task-chain-dialog');
   const graphBadge = graph.locator('.task-node-paused .task-paused-badge');
-  await expect(graphBadge).toHaveText(zh ? '已暂停' : 'Paused');
+  await expect(graphBadge).toHaveText(zh ? '受阻' : 'Blocked');
   await expect(graphBadge).toHaveClass(/compact/);
   await expect(graphBadge).toBeVisible();
   expect(await graphBadge.evaluate(element => {
@@ -2237,8 +2237,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     }
     await expect(row).toHaveAttribute('data-task-status', goalStatus);
     await expect(annotation).toHaveText(indicator);
-    await expect(pausedCount).toHaveText(locale === 'en' ? '1 paused' : '1 已暂停');
-    await expect(toggle).toHaveAccessibleDescription(locale === 'en' ? /1 paused/ : /1 已暂停/);
+    await expect(pausedCount).toHaveText(locale === 'en' ? '1 blocked' : '1 受阻');
+    await expect(toggle).toHaveAccessibleDescription(locale === 'en' ? /1 blocked/ : /1 受阻/);
     await expect(row.locator('.root-status')).toContainText(labels[goalStatus]);
     await expect(row).toHaveCSS('background-color', roleColors[goalStatus][0]);
     await expect(annotation).toHaveCSS('color', indicator === 'working' ? 'rgb(40, 91, 159)' : 'rgb(128, 91, 39)');

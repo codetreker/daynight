@@ -43,16 +43,16 @@ describe('task pause contract', () => {
     const confirmed = vi.fn(); const fetcher = vi.fn().mockResolvedValue(response(changed)); vi.stubGlobal('fetch', fetcher);
     await expect(unpauseTask(project, taskId, version, signal(), { ...admission, onWriteConfirmed: confirmed })).resolves.toEqual(changed);
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tasks/${taskId}`, expect.objectContaining({
-      method: 'PATCH', credentials: 'same-origin', cache: 'no-store', redirect: 'error', body: '{"version":9007199254740993,"properties":{"paused":false}}',
+      method: 'PATCH', credentials: 'same-origin', cache: 'no-store', redirect: 'error', body: '{"version":9007199254740993,"properties":{"blocked":false}}',
     }));
     expect(confirmed).toHaveBeenCalledOnce();
   });
-  it('accepts a dual-key receipt while retaining the legacy write', async () => {
+  it('accepts a dual-key receipt after writing the canonical property', async () => {
     const confirmed = vi.fn();
     const fetcher = vi.fn().mockResolvedValue(response({ ...changed, properties: { ...changed.properties, blocked: false } }));
     vi.stubGlobal('fetch', fetcher);
     await expect(unpauseTask(project, taskId, version, signal(), { ...admission, onWriteConfirmed: confirmed })).resolves.toEqual(changed);
-    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tasks/${taskId}`, expect.objectContaining({ body: '{"version":9007199254740993,"properties":{"paused":false}}' }));
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tasks/${taskId}`, expect.objectContaining({ body: '{"version":9007199254740993,"properties":{"blocked":false}}' }));
     expect(confirmed).toHaveBeenCalledOnce();
   });
   it('accepts an exact-version no-op and retains a version conflict without retrying', async () => {

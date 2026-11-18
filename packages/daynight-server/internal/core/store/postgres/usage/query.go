@@ -185,7 +185,7 @@ func (d *DAO) Executions(ctx context.Context, f store.UsageFilter) ([]store.Usag
 )
  SELECT s.id::text,s.backend,s.task_id::text,s.current_generation,
  EXISTS(SELECT 1 FROM personal_access_tokens p JOIN users u ON u.id=p.user_id WHERE p.id=s.parent_credential_id AND p.user_id=s.owner_user_id AND (p.expires_at IS NULL OR p.expires_at>$` + strconv.Itoa(len(args)) + `)),
- CASE WHEN s.scope='test' THEN true ELSE EXISTS(SELECT 1 FROM task_resource_rows t JOIN (` + pg.ProjectAccessRelation + `) a ON a.project_id=t.project_id AND a.user_id=s.owner_user_id WHERE t.id=s.task_id AND t.project_id=s.project_id AND t.effective_deleted_at IS NULL AND t.allow_agents AND NOT EXISTS(SELECT 1 FROM task_properties p WHERE p.task_id=t.id AND p.name='paused' AND p.value='true')) END,
+ CASE WHEN s.scope='test' THEN true ELSE EXISTS(SELECT 1 FROM task_resource_rows t JOIN (` + pg.ProjectAccessRelation + `) a ON a.project_id=t.project_id AND a.user_id=s.owner_user_id WHERE t.id=s.task_id AND t.project_id=s.project_id AND t.effective_deleted_at IS NULL AND t.allow_agents AND NOT EXISTS(SELECT 1 FROM task_properties p WHERE p.task_id=t.id AND CASE WHEN p.name='blocked' THEN p.value::jsonb='true'::jsonb ELSE false END)) END,
  s.stopped,
  EXISTS(SELECT 1 FROM usage_records r WHERE r.session_id=s.id AND r.record_kind='measurement' AND r.disposition='active' AND r.aggregation_role='counted' AND (r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL OR r.cache_read_tokens IS NOT NULL OR r.cache_write_tokens IS NOT NULL OR r.reasoning_tokens IS NOT NULL OR r.total_tokens IS NOT NULL)),
  EXISTS(SELECT 1 FROM usage_records r WHERE r.session_id=s.id AND r.record_kind='measurement' AND r.disposition='active' AND r.aggregation_role='unattributed'),

@@ -117,7 +117,7 @@ func (d *projectDeletion) visitTaskWorkers(ctx context.Context, includeTitle boo
 	title, extras, joins := "''::text", "NULL::text,NULL::timestamptz", ""
 	if includeTitle {
 		title, extras = "t.title", "pp.value,w.last_seen_at"
-		joins = `LEFT JOIN task_properties pp ON pp.task_id=t.id AND pp.name='paused'
+		joins = `LEFT JOIN task_properties pp ON pp.task_id=t.id AND pp.name='blocked'
         LEFT JOIN workers w ON w.user_id=(wp.value::jsonb->>'userId')::uuid
           AND w.worker_id=(wp.value::jsonb->>'workerId')::uuid`
 	}

@@ -154,7 +154,7 @@ func (d *sourceTaskDAO) UpdateTask(_ context.Context, id string, values store.Ta
 
 func (d *sourceTaskDAO) CreateTask(_ context.Context, id string, values store.TaskWrite) (model.Task, error) {
 	d.t.Helper()
-	if !d.create || values.Title != "Source" || values.Status != model.TaskProposed || string(values.Properties["paused"]) != "true" {
+	if !d.create || values.Title != "Source" || values.Status != model.TaskProposed || string(values.Properties["blocked"]) != "true" {
 		d.t.Fatalf("unexpected source creation: %#v", values)
 	}
 	d.writes = append(d.writes, values)
@@ -355,10 +355,10 @@ func TestTaskStatusSourcesUseAuthoritativeRows(t *testing.T) {
 func TestTaskCreationCapturesCreatedPausedFactInSourceScope(t *testing.T) {
 	created := sourceTask(model.TaskProposed)
 	created.Version = 1
-	created.Properties = model.TaskProperties{"paused": []byte(`true`)}
+	created.Properties = model.TaskProperties{"blocked": []byte(`true`)}
 	db, record, ctx, calls := newSourceWrite(t, model.Task{}, created)
 	db.scope.tasks.create, db.scope.tasks.allowLookup = true, true
-	got, err := NewTasks(db, record).Create(ctx, sourcePrincipal(), sourceProjectID, taskcore.CreateTask{Title: "Source", Properties: model.TaskProperties{"paused": []byte(`true`)}})
+	got, err := NewTasks(db, record).Create(ctx, sourcePrincipal(), sourceProjectID, taskcore.CreateTask{Title: "Source", Properties: model.TaskProperties{"blocked": []byte(`true`)}})
 	if err != nil || len(record.facts) != 1 || !reflect.DeepEqual(*calls, []string{"create", "capture"}) {
 		t.Fatalf("creation capture: %#v %v, %v", record.facts, err, *calls)
 	}

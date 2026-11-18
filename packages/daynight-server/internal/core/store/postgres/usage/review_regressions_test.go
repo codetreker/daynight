@@ -321,7 +321,7 @@ func TestUsageStatePaginationBindsDerivedProjectionButNotObservationClock(t *tes
 			if err != nil || second.SnapshotToken != first.SnapshotToken {
 				t.Fatal("observation time alone invalidated cursor", second, err)
 			}
-			testutil.PutTaskProperty(t, f.db.Pool, f.task, "paused", []byte("true"))
+			testutil.PutTaskProperty(t, f.db.Pool, f.task, "blocked", []byte("true"))
 			second, err = reader.Records(ctx, f.actor, f.project, f.task, "", filter)
 			if kind == "measurement" {
 				if err != nil || second.SnapshotToken != first.SnapshotToken {

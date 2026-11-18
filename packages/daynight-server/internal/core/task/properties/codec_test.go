@@ -74,7 +74,7 @@ func TestCodecPreservesPropertiesAndPatchPresence(t *testing.T) {
 	if err != nil || !slices.Equal(pullRequestsValue(t, decoded), items) {
 		t.Fatalf("property content changed: %+v, %v", decoded, err)
 	}
-	for _, properties := range []model.TaskProperties{{}, {"pullRequests": json.RawMessage(`[]`)}, {"paused": json.RawMessage(`true`)}, {"paused": json.RawMessage(`false`)}} {
+	for _, properties := range []model.TaskProperties{{}, {"pullRequests": json.RawMessage(`[]`)}, {"blocked": json.RawMessage(`true`)}, {"blocked": json.RawMessage(`false`)}} {
 		decoded, err := taskproperty.Decode([]byte(encodedProperties(t, properties)))
 		if err != nil || !reflect.DeepEqual(decoded, properties) {
 			t.Fatalf("storage document changed presence: %+v, %v", decoded, err)

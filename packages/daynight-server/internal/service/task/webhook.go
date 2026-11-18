@@ -24,7 +24,7 @@ func capturer(optional []Capturer) Capturer {
 }
 
 func pausedProperty(properties model.TaskProperties) (bool, error) {
-	raw, exists := properties["paused"]
+	raw, exists := properties["blocked"]
 	if !exists {
 		return false, nil
 	}
@@ -41,7 +41,7 @@ func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fa
 	}
 	currentPaused, err := pausedProperty(current.Properties)
 	if err != nil {
-		return nil, fmt.Errorf("decode current paused property: %w", err)
+		return nil, fmt.Errorf("decode current blocked property: %w", err)
 	}
 	base := protocol.Fact{ProjectID: current.ProjectID, TaskID: current.ID, OccurredAt: current.UpdatedAt, TaskVersion: current.Version}
 	if mutationCreate {
@@ -50,7 +50,7 @@ func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fa
 	}
 	previousPaused, err := pausedProperty(previous.Properties)
 	if err != nil {
-		return nil, fmt.Errorf("decode previous paused property: %w", err)
+		return nil, fmt.Errorf("decode previous blocked property: %w", err)
 	}
 	facts := make([]protocol.Fact, 0, 2)
 	if previous.Status != current.Status {

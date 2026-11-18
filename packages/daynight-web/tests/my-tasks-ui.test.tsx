@@ -48,7 +48,7 @@ describe('personal task overview', () => {
     expect(within(screen.getByText('Task 2').closest('li')!).getByText('No machine record')).toBeInTheDocument();
     expect(screen.getByText('Session unavailable')).toBeInTheDocument();
     expect(screen.getByText('Session observation expired')).toBeInTheDocument();
-    expect(screen.getByText('Paused')).toBeInTheDocument();
+    expect(screen.getByText('Blocked')).toBeInTheDocument();
     view.setLocale('zh-CN');
     expect(screen.getByText('认领机器：<worker-one>')).toBeInTheDocument();
     expect(screen.getByText('认领机器：第二台机器')).toBeInTheDocument();
@@ -193,7 +193,7 @@ describe('personal task overview', () => {
     expect(screen.getByText('Session working')).toBeInTheDocument();
     expect(screen.getByText('Session unavailable')).toBeInTheDocument();
     expect(screen.getByText('Session needs a response · Needs attention')).toBeInTheDocument();
-    expect(screen.getByText('Paused')).toBeInTheDocument();
+    expect(screen.getByText('Blocked')).toBeInTheDocument();
     expect(screen.getByText('Duration unknown')).toBeInTheDocument();
     vi.mocked(performance.now).mockReturnValue(2_000);
     act(() => vi.advanceTimersByTime(2_000));

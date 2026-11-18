@@ -37,18 +37,18 @@ func TestStoredValueReadersAndCopies(t *testing.T) {
 
 func TestRawValuesAndValidationIdentity(t *testing.T) {
 	for _, input := range []string{"true", "false"} {
-		value, err := taskproperty.ParseInput("paused", input)
+		value, err := taskproperty.ParseInput("blocked", input)
 		if err != nil || string(value) != input {
 			t.Fatalf("valid paused %q: %s %v", input, value, err)
 		}
 	}
-	for _, tc := range []struct{ name, input string }{{"paused", "null"}, {"paused", "true false"}, {"missing", "true"}} {
+	for _, tc := range []struct{ name, input string }{{"blocked", "null"}, {"blocked", "true false"}, {"missing", "true"}} {
 		_, err := taskproperty.ParseInput(tc.name, tc.input)
 		var invalid *taskproperty.ValidationError
 		if !errors.As(err, &invalid) || invalid.Error() == "" {
 			t.Fatalf("validation identity: %v", err)
 		}
-		if tc.name == "paused" && errors.Unwrap(err) == nil {
+		if tc.name == "blocked" && errors.Unwrap(err) == nil {
 			t.Fatalf("validation cause: %v", err)
 		}
 	}

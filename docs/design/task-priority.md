@@ -71,7 +71,7 @@ MCP summary/full、同步 summary、搜索行、个人列表、图与 Goal 成�
 候选查询另需两个**内部派生列**，不新增业务表或公开可写字段：
 `automatic_execution_paused boolean NOT NULL DEFAULT false` 和
 `worker_claim_active boolean NOT NULL DEFAULT false`。
-它们分别投影 `properties.paused` 的有效 true 与 `properties.worker.state`
+它们分别投影 `properties.blocked` 的有效 true 与 `properties.worker.state`
 的 active；worker 属性存在但为 completed 时必须为 false。
 `taskproperty` 的既有 Go 解码器定义含义，core 在形成最终 TaskWrite 后统一
 计算二者，DAO 仅保存明确的布尔值，禁止通过 SQL JSON 提取、trigger 或 generated

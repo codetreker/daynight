@@ -16,7 +16,7 @@ the existing private `paused` representation for task details and summaries.
 Other properties and the absence of the pause property remain intact. Detail
 cache records are measured in their stored representation before decoding;
 an access-time touch retains the original body and byte count together.
-Web continues to send `paused` for the existing unpause action.
+Web sends `blocked:false` for the unblock action.
 
 ## Alternatives
 
@@ -27,5 +27,4 @@ and make same-version equality depend on which server produced a record.
 ## Consequences
 
 Existing cache schema and epoch remain usable across the representation change.
-Malformed or contradictory properties remain protocol errors. The service and
-the later UI and write-key transition have their own delivery boundaries.
+Malformed or contradictory properties remain protocol errors. The service projects both names during the compatibility period.

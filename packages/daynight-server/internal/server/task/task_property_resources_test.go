@@ -142,8 +142,9 @@ func TestTaskPropertyResourceSchemaAuthenticationAndMethods(t *testing.T) {
 	schema := decodeResponse[api.TaskPropertySchema](t, projectRequest(h, http.MethodGet, schemaPath, ""), http.StatusOK)
 	prs, hasPR := schema.Properties["pullRequests"]
 	paused, hasPaused := schema.Properties["paused"]
+	blocked, hasBlocked := schema.Properties["blocked"]
 	worker, hasWorker := schema.Properties["worker"]
-	if !hasPR || !hasPaused || !hasWorker || prs.ReadOnly || paused.ReadOnly || !worker.ReadOnly || string(paused.Schema) != `{"type":"boolean"}` || len(prs.Schema) == 0 || len(worker.Schema) == 0 {
+	if !hasPR || !hasPaused || !hasBlocked || blocked.ReadOnly || string(blocked.Schema) != string(paused.Schema) || !hasWorker || prs.ReadOnly || paused.ReadOnly || !worker.ReadOnly || string(paused.Schema) != `{"type":"boolean"}` || len(prs.Schema) == 0 || len(worker.Schema) == 0 {
 		t.Fatalf("invalid property catalogue: %#v", schema)
 	}
 	var workerSchema map[string]any
@@ -548,8 +549,8 @@ func TestTaskWriteAdmissionHTTP(t *testing.T) {
 					raw := input.Properties["pullRequests"]
 					var actual []api.PullRequestProperty
 					decodeErr := json.Unmarshal(raw, &actual)
-					if input.Version != tc.version || input.Title == nil || *input.Title != "Must roll back" || input.Properties == nil || len(raw) != 8193 || decodeErr != nil || !slices.Equal(actual, expected) || string(input.Properties["paused"]) != "true" {
-						t.Fatalf("property patch changed: version=%d property_bytes=%d items=%d paused=%s decode=%v", input.Version, len(raw), len(actual), input.Properties["paused"], decodeErr)
+					if input.Version != tc.version || input.Title == nil || *input.Title != "Must roll back" || input.Properties == nil || len(raw) != 8193 || decodeErr != nil || !slices.Equal(actual, expected) || string(input.Properties["blocked"]) != "true" {
+						t.Fatalf("property patch changed: version=%d property_bytes=%d items=%d paused=%s decode=%v", input.Version, len(raw), len(actual), input.Properties["blocked"], decodeErr)
 					}
 					return model.Task{}, fault
 				}

@@ -165,7 +165,7 @@ describe("task execution presentation", () => {
       expect(description).toBeTruthy();
       expect(document.getElementById(description)).toHaveTextContent(start);
       expect(row).toHaveAccessibleDescription(new RegExp(start.replaceAll(".", "\\.")));
-      expect(row.closest(".task-row")).toHaveTextContent("Paused");
+      expect(row.closest(".task-row")).toHaveTextContent("Blocked");
       fireEvent.click(row);
     }
     expect(select.mock.calls).toEqual([[item.id, first], [item.id, second]]);

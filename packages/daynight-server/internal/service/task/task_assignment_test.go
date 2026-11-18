@@ -399,7 +399,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 
 	before := after
 	v = taskcore.CurrentWrite(before)
-	v.Properties["paused"] = []byte("true")
+	v.Properties["blocked"] = []byte("true")
 	after = assignmentResult(before, v)
 	f = newAssignmentFixture(t, before, nil)
 	f.expectUpdate(v, after)
@@ -415,7 +415,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	}
 	before = after
 	v = taskcore.CurrentWrite(before)
-	delete(v.Properties, "paused")
+	delete(v.Properties, "blocked")
 	after = assignmentResult(before, v)
 	f = newAssignmentFixture(t, before, nil)
 	f.expectUpdate(v, after)
@@ -645,7 +645,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	t.Run("active properties", func(t *testing.T) {
 		f := workerMockWrite(t, active, owner)
 		v := taskcore.CurrentWrite(active)
-		v.Properties["paused"] = []byte("true")
+		v.Properties["blocked"] = []byte("true")
 		after := assignmentResult(active, v)
 		f.ExpectUpdate(v, after)
 		f.ExpectCapture([]protocol.Fact{{Type: protocol.Paused, ProjectID: active.ProjectID, TaskID: active.ID, TaskVersion: after.Version, OccurredAt: after.UpdatedAt, Paused: true}})
@@ -653,7 +653,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		assertReturned(t, got, after, err)
 		f = workerMockWrite(t, after, owner)
 		v = taskcore.CurrentWrite(after)
-		delete(v.Properties, "paused")
+		delete(v.Properties, "blocked")
 		removed := assignmentResult(after, v)
 		f.ExpectUpdate(v, removed)
 		got, err = f.Tasks.RemoveProperty(f.Context, owner, after.ProjectID, after.ID, "paused", after.Version)

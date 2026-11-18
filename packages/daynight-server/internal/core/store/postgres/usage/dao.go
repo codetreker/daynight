@@ -68,7 +68,7 @@ func (d *DAO) task(ctx context.Context, s store.UsageSession, lock bool) (store.
 	if err != nil {
 		return a, pg.QueryError("usage task", err)
 	}
-	rows, err := d.tx.Query(ctx, `SELECT name,value FROM task_properties WHERE task_id=$1 AND name IN ('worker','paused')`, s.TaskID)
+	rows, err := d.tx.Query(ctx, `SELECT name,value FROM task_properties WHERE task_id=$1 AND name IN ('worker','blocked')`, s.TaskID)
 	if err != nil {
 		return a, pg.QueryError("usage task properties", err)
 	}
@@ -96,7 +96,7 @@ func (d *DAO) task(ctx context.Context, s store.UsageSession, lock bool) (store.
 		a.ClaimActive = w.ClaimID == core.Value(s.ClaimID) && w.State == model.WorkerActive && w.UserID == s.OwnerID && w.AgentControlMode == model.AgentControlModeWeb
 		a.WorkerID = core.Ptr(w.WorkerID)
 	}
-	if raw, ok := properties["paused"]; ok {
+	if raw, ok := properties["blocked"]; ok {
 		if err = json.Unmarshal(raw, &a.Paused); err != nil {
 			return a, err
 		}
