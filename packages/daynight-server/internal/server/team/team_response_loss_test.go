@@ -2,7 +2,6 @@ package team
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,25 +9,18 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func TestTeamCommittedWritesSurviveLostHTTPResponses(t *testing.T) {
+func testTeamCommittedWritesSurviveLostHTTPResponses(t *testing.T, fixture teamIntegrationFixture) {
 	for _, short := range []bool{false, true} {
 		name := "failed"
 		if short {
 			name = "short"
 		}
 		t.Run(name, func(t *testing.T) {
-			h := authTestHarness(t)
-			logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-			mux := http.NewServeMux()
-			h.Auth.RegisterRoutes(mux)
-			RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
-			h.Handler = httpx.RequestLogging(logger, mux)
+			h := fixture.forCase(t)
 			admin, member := h.Login(t, "team-loss-admin"), h.Login(t, "team-loss-member")
 			adminID := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{admin}, nil, ""), 200).ID
 			memberID := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", []*http.Cookie{member}, nil, ""), 200).ID

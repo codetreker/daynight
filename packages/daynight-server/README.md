@@ -1816,6 +1816,27 @@ go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
 the grant read returns explicit failures to the real Manager.
 [GitHub App grant fixture decision](../../.agents/notes/implemented/testing/2026-11-18-github-grant-http-fixtures.md)
 
+### Team HTTP PostgreSQL fixture group
+
+`TestTeamHTTPPostgres` shares one isolated PostgreSQL schema, pool and test
+identity gateway among nine sequential scenarios. Each case constructs its
+own authentication adapter, mux and logs. A scenario suffix on login
+identities preserves account isolation and the original profile-source
+redaction check. The metadata limit scenario runs first to compare whole
+Team and membership tables before and after refused writes. The response-loss
+children retain separate pgx observers, and the last-admin case retains its
+concurrent role changes and removals.
+
+With `DAYNIGHT_TEST_DATABASE_URL` set to an isolated PostgreSQL database, run:
+
+```bash
+source scripts/env.sh
+go test -race -p=2 -count=1 -overlay=scripts/unit-overlay.json \
+  -run '^TestTeamHTTPPostgres$' ./internal/server/team
+```
+
+[Team HTTP fixture decision](../../.agents/notes/implemented/testing/2026-11-18-team-http-integration-fixtures.md)
+
 ### Team service tests
 
 The `internal/service/team` suite executes Team scope callbacks, completion
