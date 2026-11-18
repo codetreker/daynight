@@ -30,11 +30,14 @@ private definition fields, so deletion replies, detail and Worker inventory
 exercise the real redaction. The test also checks that request logging omits
 private Bot content.
 
-`TestListCursorPreservesWorkerScope` exercises actual Core cursor validation for
-the same owner across all-owner and Worker-specific queries. Bot deletion Core
-and service tests own input validation, intent replay and conflicts. The
-PostgreSQL `TestBotStorageDeletionAndScopedPagination` and integrated Bot
-deletion tests retain real persisted visibility, version and cleanup proofs.
+`TestListCursorPreservesWorkerScope` exercises Core cursor validation for the
+same owner across the global and Worker lists. The service test
+`TestBotListContinuesWithinItsScope` consumes cursors issued by the service,
+checks the exact continuation keyset sent to storage, and rejects a global
+cursor on the Worker list before opening a snapshot. Bot deletion Core and
+service tests own input validation, intent replay and conflicts. The PostgreSQL
+`TestBotStorageDeletionAndScopedPagination` and integrated Bot deletion tests
+retain persisted visibility, version and cleanup proofs.
 
 ## Alternatives
 
