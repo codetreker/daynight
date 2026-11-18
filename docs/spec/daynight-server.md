@@ -69,12 +69,23 @@ Project 包含以下字段：
 | `settings` | 必填对象；`version` 为初始 `1` 的正 int64，`executionWarningMinutes` 为初始 `60` 的正 int32 分钟数 |
 | `createdAt`、`updatedAt` | UTC 时间，HTTP 使用 RFC 3339 格式 |
 
-一个 project 关联一个 repo，多个 project 可以关联同一 repo。支持 HTTPS URL、
+一个 Project 关联一个 repo。同一普通或 Personal Team 对同一仓库身份最多拥有一个活跃 Project；
+不同 Team 可以分别拥有该仓库的 Project。软删除和成功转出释放原 Team 的占用，历史数据继续保留。
+仓库身份沿用 HTTPS、SSH URL 和 SCP 的现有等价规则，保留路径大小写，不访问远端推断别名。支持 HTTPS URL、
 SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；地址登记不验证实际访问权限。
 名称必须是无 NUL 的有效 UTF-8 文本，最多 256 个 Unicode code points 且最多 1024 个
 UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
-但不得包含密码；查询参数和 fragment 不属于仓库地址。无效或超限输入返回 `400 invalid_input`，
-不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
+但不得包含密码；查询参数和 fragment 不属于仓库地址。无效、超限或无法计算仓库身份的新输入返回
+`400 invalid_input`，不创建项目、管理员授权或仓库绑定；地址中 SSH 用户名不作为业务身份。
+服务保留地址原文，持久化内部仓库身份；创建和实际归属转移共享 Team 范围的强制检查。
+目标 Team 已有活跃同仓库项目时，HTTP 返回 `409 project_repository_conflict`，MCP 使用既有
+错误信封返回同名代码。拒绝不依赖冲突项目的可见性，不透露其 ID、名称、地址、成员或其他私有详情，
+也不留下新 Project、授权、归属变化或集成副作用。请求及成功回执格式保持不变。
+
+升级在开放业务流量前检查全部存量：同 Team 活跃等价仓库或重复的无法解析原文使迁移失败，
+报告 Team 与 Project ID 并回滚；不得自行合并、删除或转移。单个无法解析的历史地址保留原文与
+NULL 身份，并输出不含地址或凭据的诊断。它仍可读取、删除和向当前 Team 提交无变化转移；
+实际转入其他 Team 返回 `409 project_repository_identity_unavailable`。已知身份的其他仓库操作保持可用。
 
 MCP 握手的 `result.instructions` 简短介绍 Daynight，并指示客户端在使用工具前通过
 `resources/read` 直接读取 `daynight://manuals/overview.md`，无需先查询目录。认证客户端也可通过
@@ -95,7 +106,9 @@ Steps、Thread、附件读取、附件写入、Session 读取、Session 消息�
 MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调用者可见项目。唯一匹配返回普通 Project，
 其 ID 位于 `data.id`；零匹配返回 `not_found`，多个匹配返回 `resource_conflict`，非法或超限地址返回
 `invalid_input`。读取及快照完成故障不得伪装成无匹配。该操作不创建项目、改变默认绑定或访问宿主及远端仓库；
-后续操作仍检查当前权限。
+后续操作仍检查当前权限。MCP `project_create` 的既有可见项目查找也继续按完整可见范围
+复用唯一匹配，可能在创建事务之前返回其他 Team 的 Project；真正创建时仍受上述 Team 唯一性约束。
+跨 Team 的可见匹配可使独立仓库发现继续报告歧义。
 
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，

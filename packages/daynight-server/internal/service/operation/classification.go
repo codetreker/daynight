@@ -47,6 +47,8 @@ func KnownFault(err error) (*model.Fault, bool) {
 	var fault *model.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
+		case "project_repository_conflict", "project_repository_identity_unavailable":
+			return fault, true
 		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict":
 			return fault, true
 		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":

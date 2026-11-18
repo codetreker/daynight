@@ -18,7 +18,7 @@ func TestDeletedProjectIsExcludedFromAccessAndOwnership(t *testing.T) {
 	ctx := t.Context()
 	reader := project.NewReader(f.tx)
 	other := uuid.NewString()
-	if _, _, err := project.NewCreation(f.tx, f.owner).InsertProject(ctx, other, "Other", "host:other", f.personal); err != nil {
+	if _, _, err := project.NewCreation(f.tx, f.owner).InsertProject(ctx, other, "Other", "host:other", "scp://host:other", f.personal); err != nil {
 		t.Fatal(err)
 	}
 	hash := sha256.Sum256([]byte("invitation"))

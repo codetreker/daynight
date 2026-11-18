@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal/migration082"
+	"log/slog"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -14,6 +16,11 @@ type Store struct {
 }
 
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	return OpenWithLogger(ctx, databaseURL, slog.Default())
+}
+
+func OpenWithLogger(ctx context.Context, databaseURL string, logger *slog.Logger) (*Store, error) {
+	ctx = migration082.WithLogger(ctx, logger)
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, databaseFailure("configuration", err)

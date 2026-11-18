@@ -171,9 +171,14 @@ var ErrAppCleanupIncomplete = errors.New("application startup cleanup incomplete
 
 // OpenAppWithLogger uses the server's structured logger for owned background work.
 func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger) (*App, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return openApp(ctx, c, logger, appOpeners{
-		files:      func(root string) (appStorage, error) { return local.New(root) },
-		database:   openPostgres,
+		files: func(root string) (appStorage, error) { return local.New(root) },
+		database: func(ctx context.Context, databaseURL string) (persistenceBackend, error) {
+			return openPostgresWithLogger(ctx, databaseURL, logger)
+		},
 		monitoring: openMonitoring,
 	})
 }

@@ -334,6 +334,11 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 而非 owner Team admin 返回 `403 forbidden`。同一 owner 仍核对权限和双方版本，返回
 `changed:false` 且不更新任何时间或版本；实际转移使 ownership version 加一，保留 Project
 身份及所有 grant 和邀请。版本耗尽时真实转移返回 `409 version_exhausted`。
+实际转移还检查目标普通或 Personal Team 的活跃仓库占用；同仓库已存在时返回
+`409 project_repository_conflict`，历史地址无可用仓库身份时返回
+`409 project_repository_identity_unavailable`。拒绝不改变 ownership、Project 版本与时间、
+grant、邀请、Task 或 GitHub App 集成，也不泄露目标冲突项目的详情。成功转出释放来源 Team
+的占用；已在当前 Team 的无变化请求仍按上述权限及版本检查返回，不受历史 NULL 身份影响。
 
 成功回执 `{projectId,changed,sourceTeam,ownerTeam,ownership,actorAccess}` 只在确认提交后
 返回；`actorAccess:null` 表示操作者成功转移后失权。无法确认提交返回
@@ -386,8 +391,10 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 原操作的成功回执。Team 关系与 Project grant 独立，撤销一种来源不能撤销另一种来源。
 
 创建 Project 接受原文 `name`、`repoUrl`、可选 `teamId` 和必填 `expectedUserId`。目标 Team 的
-当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。Project、真实 ownership 与
-creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
+当前 member 或 admin 可创建；省略目标时使用调用者 Personal Team。服务在目标 Team 范围内
+强制活跃仓库身份唯一，规则由[Project 需求](daynight-server.md#project)拥有。占用冲突返回
+`409 project_repository_conflict`，不创建 Project、ownership 或 grant；不同 Team 可分别创建。
+Project、内部仓库身份、真实 ownership 与 creator direct admin 原子提交。身份不符在任何领域 SQL 前返回 409 `identity_mismatch`，非成员
 不可创建。客户端核对响应主体，不自动重放未知写入。成功返回 Project、ownership 和同一事务中
 新鲜的 access。CLI 未指定目标时使用当前身份的 Personal Team；Web 创建入口提交打开对话框时捕获的 Team。两者使用当前真实身份并保留有效名称与仓库地址原文。
 
