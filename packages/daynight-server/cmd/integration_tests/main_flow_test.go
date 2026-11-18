@@ -181,7 +181,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 		}
 		const (
 			uri                 = "daynight://manuals/concepts.md"
-			expectedManualCount = 15
+			expectedManualCount = 16
 		)
 		var manual *sdk.Resource
 		for _, resource := range listing.Resources {
