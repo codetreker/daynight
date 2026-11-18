@@ -259,7 +259,7 @@ export const createWebArchiveMaintenance = (options: {
         // Cleanup can become pending after the polling round requested maintenance.
         if (signal.aborted || shouldYield()) return;
         await backfillArchives(signal);
-        if (!signal.aborted && !shouldYield()) await backfillUsage(signal);
+        if (options.usage && !signal.aborted && !shouldYield()) await backfillUsage(signal);
         if (failureId !== undefined) { try { monitoring?.recover(failureId); } catch { /* Monitoring cannot change archival. */ } failureId = undefined; }
       }).catch(error => {
         if (isWorkerCancellation(error, signal)) return;
