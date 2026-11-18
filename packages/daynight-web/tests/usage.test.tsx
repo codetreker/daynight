@@ -11,7 +11,7 @@ const project = '10000000-0000-4000-8000-000000000001';
 const task = '20000000-0000-4000-8000-000000000001';
 const other = '20000000-0000-4000-8000-000000000002';
 const now = '2026-11-18T00:00:00Z';
-const admission = { userId: TEST_VIEWER_ID };
+const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn() };
 const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
 const summary = (completeness = 'partial') => ({ metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: key === 'outputTokens' ? '9007199254740993' : null, contributingRecords: key === 'outputTokens' ? '1' : '0', unknownRecords: key === 'outputTokens' ? '0' : '1' }])), scope: 'registered_web_executions', completeness, reasonCodes: ['native_recovery_gap'], coverage: { executions: '2', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '1', unavailableExecutions: '0', unregisteredExecutions: '0' }, measurementRecords: '1', lastMeasuredAt: now, observedAt: now, etag: 'etag' });
 const signal = () => new AbortController().signal;
@@ -136,7 +136,7 @@ it('preserves displayed records after a later page fails', async () => {
 });
 
 it('retains the native reset fault and sends a bounded records query', async () => {
-  const fetch = vi.fn(async () => reply({ error: { code: 'reset_required', requestId: 'usage.3' } }, 409));
+  const fetch = vi.fn(async (_url: string) => reply({ error: { code: 'reset_required', requestId: 'usage.3' } }, 409));
   vi.stubGlobal('fetch', fetch);
   await expect(getTaskUsageRecords(project, task, { kind: 'measurement', model: 'gpt a', cursor: 'old' }, signal(), admission)).rejects.toMatchObject({ code: 'reset_required' });
   expect(fetch.mock.calls[0]![0]).toContain('limit=50&kind=measurement&model=gpt+a&cursor=old');
