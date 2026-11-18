@@ -67,6 +67,39 @@ describe("worker protocol negotiation", () => {
 });
 
 describe("in-process worker task API", () => {
+  it("sends an applied filter digest with the claim and preserves deterministic refusals", async () => {
+    const bodies: unknown[] = [];
+    const key = "a".repeat(64);
+    const origin = await listen((_request, response, body) => {
+      bodies.push(body);
+      if (bodies.length === 1) respond(response, task(claim()));
+      else respond(response, { error: { code: "claim_conflict", message: "changed", requestId: "claim-test" } }, 409);
+    });
+    const client = api(origin);
+    const input = { ...descriptor, version: 1n, taskTagFilterKey: key };
+    await expect(client.claimWorkerTask(projectId, taskId, input)).resolves.toHaveProperty("properties.worker.claimId", claimId);
+    await expect(client.claimWorkerTask(projectId, taskId, input)).rejects.toMatchObject({ status: 409, code: "claim_conflict", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(bodies).toEqual([input, input]);
+  });
+
+  it("preserves the service's unsupported-filter refusal without retrying", async () => {
+    let count = 0;
+    const origin = await listen((_request, response) => {
+      count++;
+      respond(response, { error: { code: "worker_task_tag_filter_unsupported", message: "missing filter proof", requestId: "claim-test" } }, 409);
+    });
+    await expect(api(origin).claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).rejects.toMatchObject({ status: 409, code: "worker_task_tag_filter_unsupported", confirmedRefusal: true, outcomeUnconfirmed: false });
+    expect(count).toBe(1);
+  });
+
+  it.each([null, "", "A".repeat(64), "a".repeat(63), "g".repeat(64)])("rejects invalid claim digest %s before dispatch", (taskTagFilterKey) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, taskTagFilterKey } as never)).toThrow("taskTagFilterKey must be a lowercase SHA-256 digest.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("requires the exact startup report in a confirmed update receipt", async () => {
     const startupReport = { schemaVersion: 1 as const, source: "worker" as const, sessionId: taskId, claimId,
       executionGeneration: "1", controllerInstanceId: workerId, revision: "1", observedAt: time,
@@ -351,6 +384,19 @@ describe("in-process worker task API", () => {
 
     expect(() => client.listTasks(projectId, { workerId: invalidWorkerId } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
     expect(() => client.listTaskPage(projectId, { workerId: invalidWorkerId, limit: 1 } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("validates candidate worker identity and its query scope before dispatch", () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    for (const candidateWorkerId of ["invalid", null, false]) {
+      expect(() => client.listTaskPage(projectId, { limit: 1, automaticCandidate: true, candidateWorkerId } as never)).toThrow("Candidate worker ID filter must be a hyphenated UUID.");
+    }
+    expect(() => client.listTaskPage(projectId, { limit: 1, candidateWorkerId: workerId })).toThrow("Candidate worker ID requires automaticCandidate");
+    expect(() => client.listTaskPage(projectId, { limit: 1, automaticCandidate: true, workerId, candidateWorkerId: workerId })).toThrow("Candidate worker ID requires automaticCandidate");
     expect(fetch).not.toHaveBeenCalled();
   });
 

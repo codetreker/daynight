@@ -408,7 +408,7 @@ export type WorkerClaimDescriptor = {
   readonly agentControlMode: "web";
   readonly worktreeId: string;
 };
-export type ClaimWorkerTaskInput = WorkerClaimDescriptor & { readonly version: bigint };
+export type ClaimWorkerTaskInput = WorkerClaimDescriptor & { readonly version: bigint; readonly taskTagFilterKey?: string };
 export type UpdateWorkerClaimInput = {
   readonly version: bigint;
   readonly claimId: string;
@@ -433,8 +433,9 @@ export type TaskFilters = {
   readonly platformSpecific?: boolean;
   readonly automaticCandidate?: boolean;
   readonly workerId?: string;
+  readonly candidateWorkerId?: string;
 };
-export type TaskSearchInput = Omit<TaskFilters, "workerId" | "platformSpecific" | "automaticCandidate"> & { readonly query: string };
+export type TaskSearchInput = Omit<TaskFilters, "workerId" | "candidateWorkerId" | "platformSpecific" | "automaticCandidate"> & { readonly query: string };
 export type TaskSearchField = "id" | "title" | "description";
 export type TaskSearchItem = {
   readonly id: string;

@@ -650,9 +650,17 @@ export const createApiClient = (options: {
       if (parsed === null) throw new Error("Worker ID filter must be a hyphenated UUID.");
       workerId = parsed;
     }
+    let candidateWorkerId: string | undefined;
+    if (filters.candidateWorkerId !== undefined) {
+      if (typeof filters.candidateWorkerId !== "string") throw new Error("Candidate worker ID filter must be a hyphenated UUID.");
+      const parsed = canonicalId(filters.candidateWorkerId);
+      if (parsed === null) throw new Error("Candidate worker ID filter must be a hyphenated UUID.");
+      if (filters.automaticCandidate !== true || workerId !== undefined) throw new Error("Candidate worker ID requires automaticCandidate and cannot be combined with workerId.");
+      candidateWorkerId = parsed;
+    }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
     const tags = normalizeTaskTagFilter(filters);
-    return { ...(tags.tagIds === undefined ? {} : { tagIds: tags.tagIds.join(",") }), ...(tags.tagMatch === undefined ? {} : { tagMatch: tags.tagMatch }), ...(tags.untagged === undefined ? {} : { untagged: String(tags.untagged) }), ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(tags.tagIds === undefined ? {} : { tagIds: tags.tagIds.join(",") }), ...(tags.tagMatch === undefined ? {} : { tagMatch: tags.tagMatch }), ...(tags.untagged === undefined ? {} : { untagged: String(tags.untagged) }), ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }), ...(candidateWorkerId === undefined ? {} : { candidateWorkerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
@@ -696,6 +704,7 @@ export const createApiClient = (options: {
   const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim | undefined) => boolean, sameValue = false): Promise<Task> => {
     if (Object.hasOwn(input, "continuityConfirmed")) throw new Error("continuityConfirmed is no longer accepted. New executions require fresh claim and worktree IDs.");
     if (action === "worker.claim" && (!("agentControlMode" in input) || input.agentControlMode !== "web")) throw new Error("New worker claims require Web control mode.");
+    if (action === "worker.claim" && "taskTagFilterKey" in input && input.taskTagFilterKey !== undefined && (typeof input.taskTagFilterKey !== "string" || !/^[0-9a-f]{64}$/.test(input.taskTagFilterKey))) throw new Error("taskTagFilterKey must be a lowercase SHA-256 digest.");
     if ((action === "worker.claim" || action === "worker.update") && Object.hasOwn(input, "herdr")) throw new Error("herdr is no longer accepted in worker claim requests.");
     const project = resourceId(projectId), task = resourceId(taskId);
     taskVersion(input.version);

@@ -485,6 +485,35 @@ describe("worker remote API", () => {
     expect(queries.every(query => query.get("compatiblePlatform") === "macos" && query.get("assignedTo") === "me")).toBe(true);
   });
 
+  it("keeps the candidate worker identity on each page and propagates stale cursor errors", async () => {
+    const queries: URLSearchParams[] = [];
+    const serverUrl = await listen((request, response) => {
+      const query = new URL(request.url!, "http://localhost").searchParams; queries.push(query);
+      if (query.get("cursor") === "last") respond(response, { error: { code: "invalid_input", message: "Cursor is invalid for this list.", requestId: "stale-cursor" } }, 400);
+      else respond(response, { items: [{ ...task(query.has("cursor") ? uuid(9) : taskId), assignedTo: worker.userId }], nextCursor: query.has("cursor") ? "last" : "next" });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    const candidates = remote.candidates(projectId, "linux", signal(), false, workerId);
+    await expect(candidates.next()).resolves.toMatchObject({ value: { id: taskId }, done: false });
+    await expect(candidates.next()).resolves.toMatchObject({ value: { id: uuid(9) }, done: false });
+    await expect(candidates.next()).rejects.toMatchObject({ status: 400, code: "invalid_input", serverMessage: "Cursor is invalid for this list." });
+    expect(queries.map(query => query.get("candidateWorkerId"))).toEqual([workerId, workerId, workerId]);
+    expect(queries.map(query => query.get("automaticCandidate"))).toEqual(["true", "true", "true"]);
+    expect(queries.map(query => query.get("platformSpecific"))).toEqual(["false", "false", "false"]);
+    expect(queries.every(query => !query.has("workerId"))).toBe(true);
+  });
+
+  it("sends the captured filter digest with the version-bound claim", async () => {
+    const bodies: unknown[] = [];
+    const serverUrl = await listen((_request, response, body) => {
+      bodies.push(body);
+      respond(response, { ...task(taskId, worker), version: 2n });
+    });
+    const key = "b".repeat(64);
+    await expect((await verifiedRemote(serverUrl)).claim(task(), descriptor, signal(), key)).resolves.toHaveProperty("properties.worker.claimId", descriptor.claimId);
+    expect(bodies).toEqual([{ ...descriptor, version: 1n, taskTagFilterKey: key }]);
+  });
+
   it("rejects an active candidate as a protocol error", async () => {
     const serverUrl = await listen((_request, response) => respond(response, { items: [{ ...task(taskId, worker), assignedTo: worker.userId }], nextCursor: null }));
     await expect(Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()))).rejects.toMatchObject({ phase: "protocol", cause: expect.objectContaining({ message: "Task does not match the requested filters." }) });

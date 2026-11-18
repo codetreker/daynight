@@ -1559,3 +1559,125 @@ it("does not create a Web execution from an active index when Git inventory is i
     expect(f.remote.claim).not.toHaveBeenCalled();
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
+
+describe("worker task tag filter admission", () => {
+  const key = "a".repeat(64);
+  const apiError = (status: number, code: string, message: string, confirmedRefusal = true) => new ApiError(
+    { operation: "test" }, "response", { cause: new Error(message), status, serverError: { code, message, requestId: "request" }, confirmedRefusal, outcomeUnconfirmed: !confirmedRefusal },
+  );
+
+  it("keeps inventory active while proof is unavailable and sends proof after application", async () => {
+    const f = await fixture();
+    const runner = createWorkerCoordinator({ ...f.options, taskTagFilterKey: null });
+    await runner.tick();
+    expect(f.remote.ownInventory).toHaveBeenCalled();
+    expect(f.remote.candidates).not.toHaveBeenCalled();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    runner.updateConfiguration({ ...f.options, taskTagFilterKey: key });
+    await runner.tick();
+    expect(f.remote.candidates).toHaveBeenCalledWith(f.project.projectId, "linux", expect.any(AbortSignal), undefined, workerId);
+    expect(f.remote.claim).toHaveBeenCalledWith(f.candidates[0], expect.any(Object), expect.any(AbortSignal), key);
+  });
+
+  it.each(["equivalent", "changed", "restored", "unavailable"] as const)("fences unsent claims across %s proof updates", async mode => {
+    const f = await fixture(); f.candidates.splice(1);
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const verify = vi.fn(async () => { if (verify.mock.calls.length === 1) await waiting; });
+    const current = { ...f.options, taskTagFilterKey: key };
+    const runner = createWorkerCoordinator({ ...current, verifyWebServer: verify });
+    const ticking = runner.tick();
+    try {
+      await eventually(() => expect(verify).toHaveBeenCalledOnce());
+      runner.updateConfiguration({ ...current, taskTagFilterKey: mode === "equivalent" ? key : mode === "unavailable" ? null : "b".repeat(64) });
+      if (mode === "restored") runner.updateConfiguration(current);
+      release(); await ticking;
+      expect(f.remote.claim).toHaveBeenCalledTimes(mode === "equivalent" ? 1 : 0);
+      if (mode !== "equivalent" && mode !== "unavailable") {
+        await runner.tick();
+        expect(f.remote.claim).toHaveBeenCalledWith(f.candidates[0], expect.any(Object), expect.any(AbortSignal), mode === "changed" ? "b".repeat(64) : key);
+      }
+    } finally { release(); await ticking; }
+  });
+
+  it("retains a granted in-flight claim with the captured proof after configuration changes", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await waiting; return f.grant(candidate, descriptor); });
+    const current = { ...f.options, taskTagFilterKey: key };
+    const runner = createWorkerCoordinator(current);
+    const ticking = runner.tick();
+    try {
+      await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+      runner.updateConfiguration({ ...current, taskTagFilterKey: null });
+      release(); await ticking;
+      expect(f.remote.claim).toHaveBeenCalledWith(f.candidates[0], expect.any(Object), expect.any(AbortSignal), key);
+      expect(f.store.listTasks()).toHaveLength(1);
+      await runner.tick();
+      expect(f.remote.claim).toHaveBeenCalledOnce();
+    } finally { release(); await ticking; }
+  });
+
+  it("reconciles an unknown claim result through inventory even when proof becomes unavailable", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    const stale = vi.fn();
+    let claimedId = "";
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => {
+      claimedId = descriptor.claimId;
+      f.grant(candidate, descriptor);
+      throw new Error("response lost");
+    });
+    const current = { ...f.options, taskTagFilterKey: key, onConfigurationStale: stale };
+    const runner = createWorkerCoordinator(current);
+    await runner.tick();
+    expect(f.store.listTasks()).toEqual([]);
+    expect(stale).not.toHaveBeenCalled();
+    runner.updateConfiguration({ ...current, taskTagFilterKey: null });
+    await runner.tick();
+    expect(f.remote.ownInventory).toHaveBeenCalledTimes(2);
+    expect(f.store.listTasks()).toEqual([expect.objectContaining({ claimId: claimedId, taskId: f.candidates[0]!.id })]);
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+  });
+
+  it("continues an existing claim while new claims are suspended", async () => {
+    const f = await fixture(); f.candidates.splice(1);
+    const descriptor = { claimId: uuid(9911), worktreeId: uuid(9912), workerId, machine: f.options.machine, platform: "linux" as const, agent: "codex" as const, agentControlMode: "web" as const };
+    const granted = f.grant(f.candidates[0]!, descriptor);
+    const row = f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: descriptor.claimId, agent: "codex", agentControlMode: "web", nativeConfiguration: configuration });
+    const advance = vi.fn(async (record: WebTask) => record);
+    const runner = createWorkerCoordinator({ ...f.options, taskTagFilterKey: null, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance, cleanup: async record => ({ task: record, complete: true }) } });
+    await runner.tick();
+    await eventually(() => expect(advance).toHaveBeenCalledOnce());
+    expect(f.store.getTask(row)?.status).toBe("active");
+    expect(f.remote.claim).not.toHaveBeenCalled();
+  });
+
+  it.each(["claim_conflict", "version_conflict", "worker_task_tag_filter_unsupported"])("signals a filtered deterministic %s refusal", async code => {
+    const f = await fixture(); const stale = vi.fn();
+    vi.mocked(f.remote.claim).mockRejectedValueOnce(apiError(409, code, "refused"));
+    const runner = createWorkerCoordinator({ ...f.options, taskTagFilterKey: key, onConfigurationStale: stale });
+    await runner.tick();
+    expect(stale).toHaveBeenCalledOnce();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+  });
+
+  it.each(["legacy", "unknown"] as const)("does not signal or replay a %s claim failure", async mode => {
+    const f = await fixture(); const stale = vi.fn();
+    vi.mocked(f.remote.claim).mockRejectedValueOnce(mode === "legacy" ? apiError(409, "claim_conflict", "refused") : new Error("connection lost"));
+    const runner = createWorkerCoordinator({ ...f.options, ...(mode === "legacy" ? {} : { taskTagFilterKey: key }), onConfigurationStale: stale });
+    await runner.tick();
+    expect(stale).not.toHaveBeenCalled();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(f.remote.ownInventory).toHaveBeenCalledOnce();
+  });
+
+  it("signals a filtered cursor-scope refusal and ends the scan", async () => {
+    const f = await fixture(); const stale = vi.fn();
+    vi.mocked(f.remote.candidates).mockImplementationOnce(async function* () { throw apiError(400, "invalid_input", "Cursor is invalid for this list."); });
+    const runner = createWorkerCoordinator({ ...f.options, taskTagFilterKey: key, onConfigurationStale: stale });
+    await expect(runner.tick()).rejects.toMatchObject({ code: "invalid_input" });
+    expect(stale).toHaveBeenCalledOnce();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+  });
+});
