@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -263,7 +264,24 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	waitTitle("Updated while off")
 	// With every old process drained, restore the version 76 schema, ledger
 	// and a real legacy binding before restarting Server.
+	origin, callback := f.origin, f.callbackURL
 	f.restart(func() {
+		if f.origin != origin || f.callbackURL != callback || callback != origin+"/api/v1/auth/callback" {
+			t.Fatal("public origin or gateway callback changed during restart")
+		}
+		listener, err := net.Listen("tcp", strings.TrimPrefix(origin, "http://"))
+		if err == nil {
+			listener.Close()
+			t.Fatal("public listener was released during restart")
+		}
+		response, err := f.client.Get(origin + "/readyz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("restart routed to old backend: %d", response.StatusCode)
+		}
 		db, err := pgxpool.New(f.context, f.databaseURL)
 		if err != nil {
 			t.Fatal(err)
@@ -293,6 +311,9 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	if f.origin != origin || f.callbackURL != callback {
+		t.Fatal("public origin or gateway callback changed after restart")
+	}
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
 	if !status.SyncEnabled || status.Connection != "not_connected" || status.App != nil || status.Repository == nil || status.Repository.ID != "42" {
 		t.Fatalf("upgraded state: %+v", status)

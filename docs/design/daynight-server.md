@@ -136,6 +136,8 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 `SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Tag、Session、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。Project 领域规则由 `core/project` 处理，`service/project` 选择快照、创建或已有项目写作用域并处理完成结果，`server/project` 负责 HTTP 和可复用投影；它声明实际消费的 `ProjectOperations`、`MembershipOperations` 业务接口，以及 `RouteAuthentication` 和需要 Origin 的 `MembershipAuthentication` 认证能力，生产 service 与真实请求认证组件满足这些能力，HTTP 单元测试直接控制业务结果并实际执行协议机制。创建先锁用户和目标 Team，再原子写入 Project、ownership 与 creator admin grant；已有 Project 写在 callback 前锁项目，Project、Task、Tag、Task 标签关联与 Session DAO 共享该事务。`ProjectScope` 仍是列表查询值。Worker 领域规则由 `core/worker` 处理，`service/worker` 组织账号观测、Task inventory 与配置事务，`server/worker` 负责 HTTP。Worker 写作用域保留独立 Read Committed 事务及完成结果。`postgres` 根包组装各领域 DAO，内部共享查询和扫描由 `postgres/internal` 持有。`service/persistence.go` 选择后端并提供事务、readiness 和关闭能力。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
 
+`ProjectWriteScope` 还提供绑定同一事务的 `WorkerClaimAdmissionDAO`，以窄读取保留 Worker 权威目标及其锁生命周期。[Worker 配置设计](daynight-worker-configuration.md#项目事务内的目标读取资源)拥有 Raw 投影、缺行准入锁、锁序和错误合同；该存储资源不独立提交。
+
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有
 客户端的 review 命令。`cmd/` 与 `internal/` 的职责遵循
 [Go 服务项目布局建议](https://go.dev/doc/modules/layout#server-project)。
@@ -348,7 +350,7 @@ Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHead
 
 确定的正文超限和读取超时共用传输拒绝输出：关闭未读连接，保留业务 context 的取消，以保留 request ID 等值的独立 context 和真实 socket 写入期限，在最多一秒内尝试发送并 flush `413 payload_too_large` 或 `408 request_timeout`。关闭超限 chunked body 也可能因剩余 chunk framing 或 trailer 读取遇到已过期的读取期限而取消原 context；不能仅为 408 独立发送。完整正文已消费且连接可复用时，拒绝响应成功 flush 后清除本次写入期限，后续 keepalive 不继承它。独立 context 只用于这个终止响应，不传给业务处理或重新执行操作。附件实际字节超限由共享 reader 的 `ContentOverflowError` 标识并保留领域 Fault；分类器检查错误树中的每个发布结果均为 `not_published`、事务仅为未尝试提交且清理成功的 operation 拒绝，才将其映射为终止 413。一般 `payload_too_large` Fault 不授予独立响应资格。普通业务错误、客户端取消和无法确定未提交的写入仍保留原取消及完成事实；响应设置、写入或 flush 失败按真实传输失败记录，生产 HTTP/1 writer 设置写入期限发生实际错误时中止连接。
 
-MCP 产品手册以 Go embed 和固定十三项目录随服务发布，包括总览和十二篇专题。`productManualManifest` 是生产目录的
+MCP 产品手册以 Go embed 和固定十五项目录随服务发布，包括总览和十四篇专题。`productManualManifest` 是生产目录的
 唯一所有者，注册、正文加载和引用校验使用同一组声明；路径、Name 和 URI 保持一致，Title、
 Description、MIMEType 和严格 UTF-8 byte Size 随正文同步。Entry 在注册前校验完整目录、非空有效
 UTF-8 正文、大小及 instructions 与正文中的绝对内部 URI 引用，构造失败保留错误链。
@@ -357,14 +359,16 @@ SDK 原生 Resources 提供目录和每篇手册的完整原文。独立 instruc
 
 总览按操作选择必读和条件性增读的主题，集中解释结果信封和示意符号；仍适用的已读正文可复用。
 公共 write-safety 拥有授权、精确版本、冲突及写入完成分类；各资源拥有其分页、身份、完整性、
-失败和恢复的具体条件。Task 的读取和生命周期、依赖的读取和替换、Session 的观察和历史分别
-由各自完整专题提供。Session 发送、Steps、Thread 和附件读取与写入各有独立专题。
+失败和恢复的具体条件。Task 读取与生命周期写入分别由 tasks 和 task-writes 提供；纯依赖修改
+使用 dependencies、dependency-writes 和 write-safety，创建时附带依赖或混合修改还需 task-writes。
+依赖图读取和替换分别由 dependencies 和 dependency-writes 提供；Session 的观察和历史仍由完整专题提供。Session 发送、Steps、Thread 和附件读取与写入各有独立专题。
 正式材料的归属、用途与充分性由 materials 拥有。
 内部链接直接指向当前目录的 `daynight://manuals/...` URI，不在运行时聚合文稿或转换链接。
 客户端在服务更新后重新发现目录；移除的混合主题 URI 沿用未知 URI 的协议错误。
 [主题决策](../../.agents/notes/implemented/architecture/2026-11-11-mcp-topic-manuals.md)记录划分理由，
 [总览决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-overview-entry.md)记录握手入口的取舍，
-[共享规则决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-shared-guidance.md)记录集中约定的理由。
+[共享规则决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-shared-guidance.md)记录集中约定的理由，
+[Task 专题拆分决策](../../.agents/notes/implemented/architecture/2026-11-18-mcp-task-read-write.md)记录读取与写入的边界。
 
 静态 Resources capability 不承诺订阅或变更通知。每次读取创建独立结果，并在构造前非阻塞取得
 共享 Control 名额，直到 handler 与 HTTP 交付均结束才释放。饱和返回顶层协议内部错误；该限制

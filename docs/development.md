@@ -181,6 +181,12 @@ boundary. The strict compiled fixture retains unhandled-rejection, teardown-RPC
 and owned-process-exit checks. The
 [startup deadline decision](../.agents/notes/implemented/testing/2026-11-05-native-startup-test-deadlines.md)
 owns this timing boundary.
+The compiled Copilot bridge route-timeout fixture holds the observer's timer
+inside the helper. It releases the timer after the native endpoint request and
+a concurrent text acknowledgement. The SDK, transport, and process joins
+remain real; observer tests check the production deadline separately. The
+[bridge route clock decision](../.agents/notes/implemented/testing/2026-11-18-copilot-bridge-route-clock.md)
+owns this boundary.
 Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
@@ -191,6 +197,12 @@ trigger reporting before the periodic interval, so elapsed time is measured
 from that request's observed start. The
 [reporter deadline decision](../.agents/notes/implemented/testing/2026-11-10-worker-reconciliation-deadline.md)
 records the trigger, single-flight and cancellation checks.
+Worker startup integration holds the identity retry until the real instance
+lock and cache fences have been observed. The project-preparation case advances
+the configuration clock at the recorded deadline, while observing persistence
+and inventory with real asynchronous work. The
+[startup retry fixture decision](../.agents/notes/implemented/testing/2026-11-18-worker-startup-retry-clocks.md)
+owns both timing checks.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)

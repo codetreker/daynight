@@ -12,17 +12,16 @@ whose actual provenance cannot be inferred from the current target.
 
 ## Decision
 
-The configuration manager accepts only an adopted Web target for new
-configuration work. An explicit Herdr target remains unchanged in raw authority
-and is reported as unsupported. A null or unadopted mode has no execution
-qualification. The existing public capability and three-tool wire remain, with a
-real `controlModeBootstrap:web`. The original schema 9 decision omitted mode
-application items to avoid inventing success merely from the desired value.
-The [mode adoption decision](2026-11-18-worker-web-mode-adoption.md) replaces
-that omission with a persisted, independently applied Web confirmation. The
-service still accepts partial observations; omitted mode evidence remains unknown.
-An omitted local mode produces a Web bootstrap candidate; an explicit local
+The configuration manager applies current targets through the Web execution
+path. An explicit Herdr target remains unchanged in raw authority and is
+reported as unsupported. An omitted local mode uses Web; an explicit local
 Herdr candidate is rejected with a correction, without rewriting the file.
+The original schema 9 decision omitted mode application items to avoid inventing
+success merely from the desired value. The later [mode adoption decision](2026-11-18-worker-web-mode-adoption.md)
+introduced a persisted confirmation for the then-current public mode field.
+The [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md) retires
+that public field and its bootstrap and observation; ordinary current targets
+do not produce a mode application item.
 
 GET and report receipts can carry a structurally valid raw target whose known
 field type or value this Worker cannot decode. The complete source and validated
@@ -56,8 +55,8 @@ existing removal responsibility and exact receipt/failure fencing remain. Projec
 removal operates on Web responsibility and does not take over old Herdr resources.
 
 This decision replaces the Worker application and proof portions of the
-[cloud control mode decision](2026-11-10-worker-cloud-control-mode.md), while its
-negotiated service contract remains. It extends the independent
+[cloud control mode decision](2026-11-10-worker-cloud-control-mode.md); the
+two-tool protocol later retires its negotiated public mode contract. It extends the independent
 [stored decoder](2026-11-17-worker-stored-configuration-decoder.md) and
 [configuration fact separation](2026-11-12-worker-configuration-fact-separation.md)
 without discarding their raw-source or provenance guarantees.
@@ -79,10 +78,9 @@ partial observations without that fiction.
 
 The current Worker can synchronize and preserve an unsupported target while
 closing admission, and its Web qualification does not depend on Herdr tool
-availability. The schema 10 successor retains that boundary and restores mode feedback from
-actual adoption. Older binaries cannot consume the new checkpoint; atomic migration and
-strict historical reader preserve facts without granting rollback compatibility.
-The public mode and tool fields remain until their actual consumers and protocol
-are retired. The [Worker design](../../../../docs/design/daynight-worker.md#云端接收与本机提交)
+availability. Schema 10 retains that boundary and its historical layout; the
+current protocol no longer publishes mode feedback. Older binaries cannot consume
+the new checkpoint; atomic migration and strict historical readers preserve facts
+without granting rollback compatibility. The [Worker design](../../../../docs/design/daynight-worker.md#云端接收与本机提交)
 and [configuration contract](../../../../docs/spec/daynight-worker-configuration.md)
 own the detailed mechanisms and observable behavior.

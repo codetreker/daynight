@@ -2827,3 +2827,8 @@ func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, t
 	mock.need("RepositoryOccupied", mock.RepositoryOccupiedFn != nil)
 	return mock.RepositoryOccupiedFn(ctx, team, identity)
 }
+
+func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", false)
+	return nil
+}

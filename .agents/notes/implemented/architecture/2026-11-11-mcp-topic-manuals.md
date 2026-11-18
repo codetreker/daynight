@@ -24,6 +24,10 @@ Material organization keeps information ownership and sufficiency separate from
 Step, Thread and transfer protocols.
 The [shared guidance decision](2026-11-18-mcp-shared-guidance.md) further
 concentrates result and example conventions and clarifies reading prerequisites.
+The [Task read/write decision](2026-11-18-mcp-task-read-write.md) separates Task
+read projections from lifecycle writes without removing the Task read URI.
+The [dependency read/write decision](2026-11-18-mcp-dependency-read-write.md)
+separates graph reads from relationship writes.
 
 The fixed `productManualManifest` owns production paths, public metadata and
 strict content sizes. Loading and registration use that inventory; tests assert

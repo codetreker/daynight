@@ -1127,3 +1127,8 @@ func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, t
 	mock.need("RepositoryOccupied", false)
 	panic("unreachable")
 }
+
+func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", false)
+	return nil
+}

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import timers from "node:timers";
 import { canonicalImageJson } from "../../../session/image-values.js";
 
 /** Native-declared configuration only; neither outbound traffic nor qualification evidence. */
@@ -56,7 +57,7 @@ export class CopilotRouteObserver {
       // The SDK offers no cancellation for this RPC. Retain one pending read
       // after timeout instead of accumulating native waiters on each refresh.
       const pending = read().finally(() => { this.reading = false; });
-      return await Promise.race([pending, new Promise<null>(resolve => { timer = setTimeout(() => { this.invalidate(); resolve(null); }, 5000); })]);
-    } finally { if (timer) clearTimeout(timer); }
+      return await Promise.race([pending, new Promise<null>(resolve => { timer = timers.setTimeout(() => { this.invalidate(); resolve(null); }, 5000); })]);
+    } finally { if (timer) timers.clearTimeout(timer); }
   }
 }

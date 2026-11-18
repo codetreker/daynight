@@ -26,6 +26,9 @@ func (r sessionWorkerTransport) RoundTrip(request *http.Request) (*http.Response
 }
 
 func TestServerAPISessionNormalFlow(t *testing.T) {
+	if !t.Run("public_listener", testPublicProxy) || !t.Run("backend_readiness", testBackendReadiness) {
+		t.Fatal("public listener fixture failed")
+	}
 	f := newFixtureWithDecoder(t, true)
 	client := *f.client
 	client.Transport = sessionWorkerTransport{next: client.Transport}

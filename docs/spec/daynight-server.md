@@ -89,13 +89,14 @@ NULL 身份，并输出不含地址或凭据的诊断。它仍可读取、删除
 
 MCP 握手的 `result.instructions` 简短介绍 Daynight，并指示客户端在使用工具前通过
 `resources/read` 直接读取 `daynight://manuals/overview.md`，无需先查询目录。认证客户端也可通过
-`resources/list` 发现总览和十二篇英文专题手册，并按其 `daynight://manuals/<主题>.md` URI
-读取完整 Markdown。总览按操作导航至对象与 Project 上下文、Task、依赖、写入安全、正式材料、
+`resources/list` 发现总览和十四篇英文专题手册，并按其 `daynight://manuals/<主题>.md` URI
+读取完整 Markdown。总览按操作导航至对象与 Project 上下文、Task 读取、Task 写入、依赖、写入安全、正式材料、
 Steps、Thread、附件读取、附件写入、Session 读取、Session 消息和 Worker assignment 专题。
 总览说明工具发现、结果信封和示意符号、目标 Project、完整内容与授权的基本规则，并区分必读
 与按条件增读的专题。客户端可复用仍适用的完整正文；每个专题说明必要的额外读取条件，写入需
-取得完整公共写入安全规则及操作自身的约束。Task 专题包含读取与生命周期操作，依赖专题包含
-读取与替换，Session 读取专题包含观察与历史读取。精确目录由服务源码拥有。
+取得完整公共写入安全规则及操作自身的约束。Task 读取与生命周期写入分别由 tasks 和 task-writes
+提供；纯依赖修改读取 dependencies、dependency-writes 和 write-safety，创建时附带依赖或混合修改还需 task-writes。
+依赖读取与写入分别由 dependencies 和 dependency-writes 提供；Session 读取专题包含观察与历史读取。精确目录由服务源码拥有。
 
 无 Project 的有效账户也可读取。手册不修改业务数据，不建立 Worker assignment 或操作授权。
 文稿随服务版本发布，内部主题引用指向可读取的绝对 URI。更新服务后，客户端重新发现目录并请求

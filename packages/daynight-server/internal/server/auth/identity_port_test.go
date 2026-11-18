@@ -17,13 +17,18 @@ import (
 )
 
 type strictIdentity struct {
-	t            *testing.T
-	callback     func() string
-	authenticate func(context.Context, model.CredentialKind, string) (model.Principal, error)
-	user         func(context.Context, model.Principal) (model.User, error)
-	patchUser    func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
-	createPAT    func(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
-	revokePAT    func(context.Context, model.Principal, string) error
+	t             *testing.T
+	callback      func() string
+	validateLogin func(string, string) error
+	startLogin    func(context.Context, string, string, string) (identitycore.LoginStart, error)
+	completeLogin func(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
+	authenticate  func(context.Context, model.CredentialKind, string) (model.Principal, error)
+	user          func(context.Context, model.Principal) (model.User, error)
+	patchUser     func(context.Context, model.Principal, model.UserProfilePatch) (model.User, error)
+	createPAT     func(context.Context, model.Principal, identitycore.CreatePAT) (identitycore.MintedPAT, error)
+	listPATs      func(context.Context, model.Principal) ([]model.PersonalAccessToken, error)
+	revokePAT     func(context.Context, model.Principal, string) error
+	updatePAT     func(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error)
 }
 
 var _ identityOperations = (*strictIdentity)(nil)
@@ -47,12 +52,23 @@ func (m *strictIdentity) Authenticate(ctx context.Context, kind model.Credential
 	}
 	return m.authenticate(ctx, kind, credential)
 }
-func (m *strictIdentity) ValidateLogin(string, string) error { return m.unexpected("ValidateLogin") }
-func (m *strictIdentity) StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error) {
-	return identitycore.LoginStart{}, m.unexpected("StartLogin")
+func (m *strictIdentity) ValidateLogin(provider, returnPath string) error {
+	if m.validateLogin == nil {
+		return m.unexpected("ValidateLogin")
+	}
+	return m.validateLogin(provider, returnPath)
 }
-func (m *strictIdentity) CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error) {
-	return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
+func (m *strictIdentity) StartLogin(ctx context.Context, provider, returnPath, browserScope string) (identitycore.LoginStart, error) {
+	if m.startLogin == nil {
+		return identitycore.LoginStart{}, m.unexpected("StartLogin")
+	}
+	return m.startLogin(ctx, provider, returnPath, browserScope)
+}
+func (m *strictIdentity) CompleteLogin(ctx context.Context, query url.Values, binding string) (identitycore.LoginCompletion, error) {
+	if m.completeLogin == nil {
+		return identitycore.LoginCompletion{}, m.unexpected("CompleteLogin")
+	}
+	return m.completeLogin(ctx, query, binding)
 }
 func (m *strictIdentity) User(ctx context.Context, principal model.Principal) (model.User, error) {
 	if m.user == nil {
@@ -75,8 +91,11 @@ func (m *strictIdentity) CreatePAT(ctx context.Context, principal model.Principa
 	}
 	return m.createPAT(ctx, principal, input)
 }
-func (m *strictIdentity) ListPATs(context.Context, model.Principal) ([]model.PersonalAccessToken, error) {
-	return nil, m.unexpected("ListPATs")
+func (m *strictIdentity) ListPATs(ctx context.Context, principal model.Principal) ([]model.PersonalAccessToken, error) {
+	if m.listPATs == nil {
+		return nil, m.unexpected("ListPATs")
+	}
+	return m.listPATs(ctx, principal)
 }
 func (m *strictIdentity) RevokePAT(ctx context.Context, principal model.Principal, tokenID string) error {
 	if m.revokePAT == nil {
@@ -84,8 +103,11 @@ func (m *strictIdentity) RevokePAT(ctx context.Context, principal model.Principa
 	}
 	return m.revokePAT(ctx, principal, tokenID)
 }
-func (m *strictIdentity) UpdatePATExpiry(context.Context, model.Principal, string, identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error) {
-	return model.PersonalAccessToken{}, m.unexpected("UpdatePATExpiry")
+func (m *strictIdentity) UpdatePATExpiry(ctx context.Context, principal model.Principal, tokenID string, input identitycore.UpdatePATExpiry) (model.PersonalAccessToken, error) {
+	if m.updatePAT == nil {
+		return model.PersonalAccessToken{}, m.unexpected("UpdatePATExpiry")
+	}
+	return m.updatePAT(ctx, principal, tokenID, input)
 }
 func (m *strictIdentity) Providers(context.Context) ([]string, error) {
 	return nil, m.unexpected("Providers")

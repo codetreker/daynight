@@ -267,10 +267,8 @@ func TestIdentityHTTPCallbackFailures(t *testing.T) {
 }
 
 func TestIdentityHTTPDefaultLoginDestination(t *testing.T) {
-	h := authTestHarness(t)
-	state, binding := h.Start(t, "")
-	result := h.Request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"default-destination"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if result.Code != http.StatusSeeOther || result.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects" {
+	response := completeStrictLogin(t, "", "/projects", "default-destination")
+	if response.Header().Get("Location") != "/auth/complete?callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback&returnPath=%2Fprojects" {
 		t.Fatal("login without a destination did not enter the project workspace")
 	}
 }
@@ -297,37 +295,79 @@ func TestIdentityHTTPSessionCreationFailureRetainsDestination(t *testing.T) {
 }
 
 func TestIdentityHTTPInputAndOperationalFailures(t *testing.T) {
-	h := authTestHarness(t)
-	cookie := h.Login(t, "input-user")
+	h := newStrictAuthHTTP(t)
+	actor, _ := authRequestAccount(1)
+	cookie := h.cookie(authAliceCookie)
 	cookies := []*http.Cookie{cookie}
+	admit := expectAuthentication(actor, cookie.Value)
 	for _, body := range []string{`{}`, `{"name":null}`, `{"name":""}`, `{"name":"ok","days":null}`, `{"name":"ok","days":"30"}`, `{"name":"ok","days":0}`, `{"name":"ok","days":366}`, `{"name":"ok","unknown":true}`, `invalid`} {
-		testsupport.AssertProjectError(t, h.Request("POST", "/api/v1/me/tokens", body, cookies, nil, h.Origin), 400, "invalid_input")
+		response := h.request("POST", "/api/v1/me/tokens", body, cookies, nil, authRequestOrigin, admit)
+		testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
-	testsupport.AssertProjectError(t, h.Request("DELETE", "/api/v1/me/tokens/invalid", "", cookies, nil, h.Origin), 400, "invalid_input")
-	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/login?provider=unknown", "/api/v1/auth/login?provider=github&returnPath=https://foreign.test", "/api/v1/auth/login?provider=github&returnPath=//foreign.test", "/api/v1/auth/login?provider=github&returnPath=%2Fapi%2Fv1%2Fauth%2Flogin", "/api/v1/auth/login?provider=github&returnPath=%2Flogin", "/api/v1/auth/login?provider=github&returnPath=%2Flogin%3FreturnPath%3D%2Fprojects", "/api/v1/auth/login?provider=github&unexpected=x"} {
-		testsupport.AssertProjectError(t, h.Request("GET", path, "", nil, nil, ""), 400, "invalid_input")
+	invalid := &model.Fault{Code: "invalid_input", Message: "Invalid token input."}
+	response := h.request("POST", "/api/v1/me/tokens", `{"name":"","expiresAt":null}`, cookies, nil, authRequestOrigin, admit,
+		authRequestCall{name: "CreatePAT", args: []any{actor, identitycore.CreatePAT{Name: ""}}, err: invalid})
+	testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+	response = h.request("DELETE", "/api/v1/me/tokens/invalid", "", cookies, nil, authRequestOrigin, admit,
+		authRequestCall{name: "RevokePAT", args: []any{actor, "invalid"}, err: invalid})
+	testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
+
+	invalidLogin := &model.Fault{Code: "invalid_input", Message: "Invalid login input."}
+	for _, test := range []struct {
+		path, provider, returnPath string
+	}{
+		{"/api/v1/auth/login", "", ""},
+		{"/api/v1/auth/login?provider=unknown", "unknown", ""},
+		{"/api/v1/auth/login?provider=github&returnPath=https://foreign.test", "github", "https://foreign.test"},
+		{"/api/v1/auth/login?provider=github&returnPath=//foreign.test", "github", "//foreign.test"},
+		{"/api/v1/auth/login?provider=github&returnPath=%2Fapi%2Fv1%2Fauth%2Flogin", "github", "/api/v1/auth/login"},
+		{"/api/v1/auth/login?provider=github&returnPath=%2Flogin", "github", "/login"},
+		{"/api/v1/auth/login?provider=github&returnPath=%2Flogin%3FreturnPath%3D%2Fprojects", "github", "/login?returnPath=/projects"},
+	} {
+		response := h.request("GET", test.path, "", nil, nil, "",
+			authRequestCall{name: "ValidateLogin", args: []any{test.provider, test.returnPath}, err: invalidLogin})
+		testsupport.AssertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
+	testsupport.AssertProjectError(t, h.request("GET", "/api/v1/auth/login?provider=github&unexpected=x", "", nil, nil, ""), http.StatusBadRequest, "invalid_input")
 	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/callback"} {
-		if got := h.Request("HEAD", path, "", nil, nil, ""); got.Code != 405 {
-			t.Fatal("HEAD consumed login")
+		response := h.request("HEAD", path, "", nil, nil, "")
+		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET" {
+			t.Fatalf("HEAD %s: status=%d Allow=%q", path, response.Code, response.Header().Get("Allow"))
 		}
 	}
-	testsupport.AssertProjectError(t, h.Request("PUT", "/api/v1/me", "", nil, nil, ""), http.StatusUnauthorized, "unauthenticated")
-	if got := h.Request("PUT", "/api/v1/me", "", cookies, nil, h.Origin); got.Code != 405 {
-		t.Fatal("method routing")
+	testsupport.AssertProjectError(t, h.request("PUT", "/api/v1/me", "", nil, nil, ""), http.StatusUnauthorized, "unauthenticated")
+	response = h.request("PUT", "/api/v1/me", "", cookies, nil, authRequestOrigin, admit)
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD, PATCH" ||
+		response.Header().Get("Daynight-User-ID") != actor.UserID {
+		t.Fatalf("authenticated method fallback: status=%d headers=%v", response.Code, response.Header())
 	}
-	if _, err := h.Database.Pool.Exec(context.Background(), `DROP TABLE personal_access_tokens`); err != nil {
-		t.Fatal(err)
-	}
-	testsupport.AssertProjectError(t, h.Request("GET", "/api/v1/me/tokens", "", cookies, nil, ""), 500, "internal_error")
-	testsupport.AssertProjectError(t, h.Request("POST", "/api/v1/me/tokens", `{"name":"fails","expiresAt":null}`, cookies, nil, h.Origin), 500, "internal_error")
-	testsupport.AssertProjectError(t, h.Request("DELETE", "/api/v1/me/tokens/00000000-0000-0000-0000-000000000001", "", cookies, nil, h.Origin), 500, "internal_error")
-	if _, err := h.Database.Pool.Exec(context.Background(), `ALTER TABLE users RENAME TO unavailable_users`); err != nil {
-		t.Fatal(err)
-	}
-	testsupport.AssertProjectError(t, h.Request("GET", "/api/v1/me", "", cookies, nil, ""), 500, "internal_error")
-	if !strings.Contains(h.Logs.String(), `"cause":"database"`) {
-		t.Fatal("database fault not classified")
+
+	const tokenID = "00000000-0000-0000-0000-000000000001"
+	for _, test := range []struct {
+		method, path, body, origin string
+		pending                    []authRequestCall
+		admitted                   string
+	}{
+		{"GET", "/api/v1/me/tokens", "", "", []authRequestCall{admit, {name: "ListPATs", args: []any{actor}, err: authMissingRelation("list tokens")}}, actor.UserID},
+		{"POST", "/api/v1/me/tokens", `{"name":"fails","expiresAt":null}`, authRequestOrigin, []authRequestCall{
+			admit, {name: "CreatePAT", args: []any{actor, identitycore.CreatePAT{Name: "fails"}}, err: authMissingRelation("create token")},
+		}, actor.UserID},
+		{"DELETE", "/api/v1/me/tokens/" + tokenID, "", authRequestOrigin, []authRequestCall{
+			admit, {name: "RevokePAT", args: []any{actor, tokenID}, err: authMissingRelation("revoke token")},
+		}, actor.UserID},
+		{"GET", "/api/v1/me", "", "", []authRequestCall{
+			{name: "Authenticate", args: []any{model.SessionCredential, cookie.Value}, err: authMissingRelation("authenticate")},
+		}, ""},
+	} {
+		h.logs.Reset()
+		response := h.request(test.method, test.path, test.body, cookies, nil, test.origin, test.pending...)
+		testsupport.AssertProjectError(t, response, http.StatusInternalServerError, "internal_error")
+		if response.Header().Get("Daynight-User-ID") != test.admitted || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s %s failure has incorrect admission or cache headers: %v", test.method, test.path, response.Header())
+		}
+		if !strings.Contains(h.logs.String(), `"cause":"database"`) {
+			t.Fatalf("%s %s lost operational error classification", test.method, test.path)
+		}
 	}
 }
 
@@ -346,21 +386,10 @@ func TestIdentityHTTPUserDisappearsAfterCredentialAdmission(t *testing.T) {
 }
 
 func TestIdentityHTTPLoginReturnsToTestSessionDeepLink(t *testing.T) {
-	h := authTestHarness(t)
-	destination := "/test-sessions/10000000-0000-0000-0000-000000000001"
-	state, binding := h.Start(t, destination)
-	response := h.Request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"test-session-owner"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/auth/complete?"+(url.Values{"returnPath": {destination}, "callbackPath": {"/api/v1/auth/callback"}}).Encode() {
+	const destination = "/test-sessions/10000000-0000-4000-8000-000000000001"
+	response := completeStrictLogin(t, destination, destination, "test-session-owner")
+	if response.Header().Get("Location") != "/auth/complete?"+(url.Values{"returnPath": {destination}, "callbackPath": {"/api/v1/auth/callback"}}).Encode() {
 		t.Fatalf("login lost Test Session destination: %d %s", response.Code, response.Header().Get("Location"))
-	}
-	found := false
-	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == h.Auth.SessionCookieName() {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("successful callback omitted login session")
 	}
 }
 

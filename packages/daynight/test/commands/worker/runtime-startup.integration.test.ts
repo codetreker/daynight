@@ -6,6 +6,8 @@ import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/w
 import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import Database from "better-sqlite3";
@@ -30,6 +32,10 @@ import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const reportSample = { ...workerTelemetry, taskInventory: null };
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null }));
+vi.mock("node:timers/promises", async original => {
+  const actual = await original<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
+});
 vi.mock("node:crypto", async original => {
   const actual = await original<typeof import("node:crypto")>();
   return { ...actual, randomUUID: (options?: Parameters<typeof actual.randomUUID>[0]) => mocks.nextUUID === null ? actual.randomUUID(options) : mocks.nextUUID() };
@@ -111,6 +117,15 @@ const start = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters
   const running = runWorker({ ...f, signal: cancellation.signal, ...extra }); executions.add(running);
   void running.catch(() => {});
   return { cancellation, running };
+};
+// Poll real I/O without advancing the configuration manager's retry clock.
+const eventuallyWithoutAdvancingTime = async (check: () => void): Promise<void> => {
+  const deadline = performance.now() + 5_000;
+  for (;;) {
+    try { check(); return; }
+    catch (error) { if (performance.now() >= deadline) throw error; }
+    await delay(10);
+  }
 };
 const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoordinatorOptions) => void = () => {}, canInspect: (options: WorkerCoordinatorOptions) => boolean = () => true) => {
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
@@ -620,20 +635,39 @@ describe("worker cloud-first startup", () => {
     let release!: () => void, verified = false;
     const secondIdentity = new Promise<void>(resolve => { release = resolve; });
     remote.currentUserId.mockRejectedValueOnce(failure).mockImplementation(async () => { await secondIdentity; verified = true; return uuid(6); });
+    const backoff = Promise.withResolvers<void>();
+    const retryArmed = vi.fn();
+    vi.mocked(delay).mockImplementationOnce(async (milliseconds, value, options) => {
+      expect(milliseconds).toBe(5_000);
+      const signal = options?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      const abort = () => backoff.reject(signal!.reason);
+      signal!.throwIfAborted();
+      signal!.addEventListener("abort", abort, { once: true });
+      retryArmed();
+      try { await backoff.promise; signal!.throwIfAborted(); return value; }
+      finally { signal!.removeEventListener("abort", abort); }
+    });
     const cacheRead = vi.spyOn(configurationCache, "readConfigurationCache");
     const { cancellation, running } = start(f);
     try {
-      await vi.waitFor(() => expect(remote.currentUserId).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(retryArmed).toHaveBeenCalledOnce());
       expect(cacheRead).not.toHaveBeenCalled(); expect(remote.configuration).not.toHaveBeenCalled();
       expect(mocks.reporter).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled();
       const competing = await tryAcquireWorkerInstanceLock(f.paths);
       try { expect(competing).toBeNull(); } finally { await competing?.release(); }
-      await vi.waitFor(() => expect(remote.currentUserId).toHaveBeenCalledTimes(2), { timeout: 6500, interval: 20 });
+      expect(remote.currentUserId).toHaveBeenCalledOnce();
+      backoff.resolve();
+      await vi.waitFor(() => expect(remote.currentUserId).toHaveBeenCalledTimes(2));
       expect(verified).toBe(false); expect(cacheRead).not.toHaveBeenCalled();
       release();
       await vi.waitFor(() => expect(mocks.reporter).toHaveBeenCalledOnce());
       expect(verified).toBe(true); expect(remote.configuration).toHaveBeenCalledOnce();
-    } finally { release(); cancellation.abort(); await running; cacheRead.mockRestore(); }
+    } finally {
+      release(); cancellation.abort(); backoff.resolve();
+      try { await running; }
+      finally { cacheRead.mockRestore(); vi.mocked(delay).mockReset(); }
+    }
   }, 12_000);
 
   it.each([401, 403])("preserves a definite startup identity refusal with HTTP %s", async status => {
@@ -743,27 +777,44 @@ describe("worker cloud-first startup", () => {
     const reported = reporter(); let channel!: ReporterOptions["configuration"];
     mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration!; return reported; });
     const inventory = { observedAt: "2026-11-04T00:00:00Z", claims: [] };
+    const lookupCount = () => remote.project.mock.calls.filter(([id]: [string]) => id === uuid(2)).length;
+    const preparation = () => channel!.capture(reportSample).observation?.items.find(item => item.key.kind === "projectPreparation" && item.key.projectId === uuid(2));
     let assertionFailure: unknown;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
       const operation = createOperation();
       try {
-        await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        await eventuallyWithoutAdvancingTime(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull());
         const captured = channel!.capture(reportSample);
         await channel!.accept(captured, receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false }), operation);
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
-        await vi.waitFor(() => expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(2)}\"`) && event.message.includes('"state":"error"'))).toBe(true), { timeout: 5000, interval: 10 });
+        await eventuallyWithoutAdvancingTime(() => {
+          expect(preparation()?.state).toBe("error");
+          expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(2)}\"`) && event.message.includes('"state":"error"'))).toBe(true);
+        });
+        const failed = preparation()!;
+        const retryAt = Date.parse(failed.nextAttemptAt!);
+        expect(retryAt - Date.parse(failed.error!.occurredAt)).toBe(5_000);
+        expect(lookupCount()).toBe(1);
         secondAvailable = true;
         await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false }), operation);
-        // An unchanged known target preserves the failed preparation's five-second retry deadline.
-        await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 9000, interval: 10 });
-        expect(remote.project.mock.calls.filter(([id]: [string]) => id === uuid(2)).length).toBeGreaterThanOrEqual(2);
-        await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
+        expect(preparation()?.nextAttemptAt).toBe(failed.nextAttemptAt);
+        await vi.advanceTimersByTimeAsync(retryAt - Date.now() - 1);
+        expect(lookupCount()).toBe(1);
+        expect(options.store.getProject({ projectId: uuid(2) })).toBeNull();
+        options.onInventory!(inventory);
+        expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
+        await vi.advanceTimersByTimeAsync(1);
+        await eventuallyWithoutAdvancingTime(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull());
+        expect(lookupCount()).toBe(2);
+        await eventuallyWithoutAdvancingTime(() => expect(options.configurationComplete!()).toBe(true));
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
       } catch (error) { assertionFailure = error; } finally { operation.dispose(); controller.abort(); }
     }));
-    await runWorker({ ...f, signal: controller.signal });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try { await runWorker({ ...f, signal: controller.signal }); }
+    finally { vi.useRealTimers(); }
     if (assertionFailure !== undefined) throw assertionFailure;
   }, 16_000);
 

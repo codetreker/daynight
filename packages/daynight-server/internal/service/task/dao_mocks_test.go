@@ -947,3 +947,8 @@ func (mock *projectWriterMock) RepositoryOccupied(ctx context.Context, team, ide
 	mock.need("RepositoryOccupied", mock.RepositoryOccupiedFn != nil)
 	return mock.RepositoryOccupiedFn(ctx, team, identity)
 }
+
+func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	mock.need("WorkerClaimAdmissionDAO", false)
+	return nil
+}

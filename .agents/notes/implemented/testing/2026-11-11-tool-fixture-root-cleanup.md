@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-A Windows tool-selection test can finish its selected executable and file reads,
+A Windows native-tool fixture can finish its selected executable and file reads,
 then fail while removing the fixture's copied executable with `EBUSY`. The
 reported deletion failure does not identify the holder. Immediate rejection
 makes a short-lived sharing denial fail the fixture, while ignoring deletion
@@ -13,8 +13,13 @@ errors would hide a persistent holder and abandon owned resources.
 ## Decision
 
 `test/helpers/tool-fixture-cleanup.ts` owns the root-removal function shared by
-`tool-executables.test.ts` and `tool-launchers.test.ts`. Both suites execute
-copied native tools and await this cleanup after disposing their operations.
+the platform suites `tool-executables.test.ts` and `tool-launchers.test.ts`,
+`commands/worker/tool-selection.test.ts`, and
+`commands/controller/copilot-owned-process.test.ts`. The platform suites dispose
+their operations before cleanup. On success, the Worker selection fixture
+awaits its selection manager close before removing the root. The Copilot
+fixture first awaits runtime close and then the child close event under its
+existing five-second deadline; root removal follows in `afterEach`.
 Each attempt calls `rm` with `recursive: true`, `force: true`, and `maxRetries: 0`. Only `EBUSY`
 permits another attempt: at most three retries wait 100, 200, and 300 milliseconds.
 Other failures and the last exhausted error are thrown unchanged. The 600

@@ -565,12 +565,15 @@ or invoke business operations.
 The handshake instructions introduce Daynight and direct clients to read
 `daynight://manuals/overview.md` with `resources/read` before using its tools;
 the URI can be read without first listing Resources. Authenticated MCP clients
-can also use `resources/list` to discover the overview and twelve topic manuals,
+can also use `resources/list` to discover the overview and thirteen topic manuals,
 and `resources/read` to obtain each complete Markdown document. The overview
 routes by operation, distinguishes required and conditional topics, and explains
 result envelopes and schematic examples. Clients can reuse complete guidance
-while it remains applicable. Task reads and lifecycle, dependency reads and
-replacement, and Session observations and history each share a complete topic.
+while it remains applicable. Task reads and lifecycle writes have separate topics;
+dependency graph reads and writes also have separate topics. Session observations
+and history share a complete topic. Dependency-only writes require dependencies,
+dependency-writes and write-safety;
+creation with dependencies or mixed updates also require task-writes.
 Steps, Thread, Session messages, and attachment reads and writes have separate
 guides. Every write requires the common write-safety guide and its operation's
 conditions; related topics retain explicit reading prerequisites. The materials
@@ -2083,7 +2086,13 @@ The explicit `integration` build tag keeps these flows outside ordinary unit
 test discovery. The runner selects `TestServerAPINormalFlows`,
 `TestServerAPISessionNormalFlow` and `TestServerAPICredentialUsageNormalFlow`;
 each test owns its real Server process, UniAuth gateway, login, PAT and isolated
-resources. Task groups run sequentially with separate projects: lifecycle,
+resources. The fixture holds its public loopback listener before starting the
+gateway and proxies it to the Server's ephemeral listener only after direct
+readiness succeeds. The public origin and gateway callback remain stable across
+Server restarts; the proxy withdraws the old backend before shutdown and keeps
+the listener until fixture cleanup. The
+[fixture decision](../../.agents/notes/implemented/testing/2026-11-18-api-integration-public-listener.md)
+records the trade-offs. Task groups run sequentially with separate projects: lifecycle,
 search pagination and dependency graph, property and Sync readback, Step
 operations, Thread replies, Attachment bytes, personal Worker prompt
 synchronization, and Worker claim/Agent discussion.
@@ -2224,6 +2233,20 @@ profile cache tests use the real HTTP adapter over controlled identity results.
 Actual credential issuance, expiry, revocation, and persisted profile reads
 remain covered by the PostgreSQL tests. The
 [Auth request and profile cache decision](../../.agents/notes/implemented/testing/2026-11-18-auth-request-cache-fixtures.md)
+records the proof boundary.
+
+PAT request and failure tests exercise the real HTTP adapter with controlled
+identity operations. They retain adapter input validation, delegated argument
+checks, error mappings and normalized time fields. The real credential and
+Store tests cover issuance, expiry, revocation and persisted metadata. The
+[PAT response decision](../../.agents/notes/implemented/testing/2026-11-18-pat-http-error-fixtures.md)
+records that split.
+
+Login HTTP tests use controlled admission and completion results for input
+limits, secure cookies, redirects and capacity responses. Real identity and
+Store tests retain return-path validation, one-time consumption, persisted
+login state and capacity at the database lock. The
+[login route fixture decision](../../.agents/notes/implemented/testing/2026-11-18-login-route-fixtures.md)
 records the proof boundary.
 
 Native HTTP/TCP, MCP SDK, WebSocket, Session Engine, files and runtime lifecycle
@@ -2761,6 +2784,15 @@ reads batch-filter those references by current project membership and
 undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
+
+`ProjectWriteScope.WorkerClaimAdmissionDAO()` exposes a narrow desired-target read
+bound to the enclosing Project transaction. It retains an existing Worker row lock
+until transaction completion. A missing row is reread under the report's shared
+account admission lock, preventing first-report insertion through the same boundary.
+Only Raw, revision and update time are projected; absent or uninitialized targets
+return nil, while query and cancellation errors remain errors. The
+[configuration design](../../docs/design/daynight-worker-configuration.md#项目事务内的目标读取资源)
+owns the resource's lock ordering and interpretation boundaries.
 
 The shared `model.Project` and `model.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and

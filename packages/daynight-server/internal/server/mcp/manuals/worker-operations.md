@@ -1,6 +1,6 @@
 # Worker assignments and handoff
 
-Read this topic when handing off selected work, interpreting an explicit Worker assignment or completing its original claim. Every write also requires [Write safety](daynight://manuals/write-safety.md). [Tasks](daynight://manuals/tasks.md) owns general lifecycle and fields; [Concepts](daynight://manuals/concepts.md) owns Account/Project identity.
+Read this topic when handing off selected work, interpreting an explicit Worker assignment or completing its original claim. Every write also requires [Write safety](daynight://manuals/write-safety.md). Read [Task writes](daynight://manuals/task-writes.md) when changing Task fields or ordinary status, including handoff updates; it owns general lifecycle and field changes. [Concepts](daynight://manuals/concepts.md) owns Account/Project identity.
 
 ## Handoff is not execution
 

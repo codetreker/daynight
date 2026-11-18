@@ -11,8 +11,10 @@ execution work.
 
 ## Decision
 
-New claims require an explicit Web mode for each supported provider. Execution
-updates accept only Web claims. The [claim DTO decision](2026-11-18-web-claim-dto.md)
+New claims require an explicit Web mode for each supported provider. A Herdr
+mode is rejected with an explicit unsupported and client-upgrade diagnostic;
+other invalid modes retain their existing validation. Execution updates accept
+only Web claims. The [claim DTO decision](2026-11-18-web-claim-dto.md)
 removes the former `herdr:null` request slot. Stored claims retain their original modes
 and resources; manual release and withdrawal remain available. Historical
 migration and stored decoding retain their broader format. The

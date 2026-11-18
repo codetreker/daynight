@@ -358,3 +358,7 @@ func (d *writeWitnessProjectDAO) RepositoryIdentity(context.Context) (*string, e
 func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, string) (bool, error) {
 	panic(d.f.unexpected("ProjectWriteDAO.RepositoryOccupied"))
 }
+
+func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	panic(s.f.unexpected("WorkerClaimAdmissionDAO"))
+}

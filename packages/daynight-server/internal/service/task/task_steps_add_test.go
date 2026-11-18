@@ -618,3 +618,8 @@ func (p *strictWriteProject) RepositoryOccupied(context.Context, string, string)
 	p.f.unexpected("RepositoryOccupied")
 	return false, nil
 }
+
+func (f *strictStepWrite) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
+	f.t.Fatal("unexpected WorkerClaimAdmissionDAO call")
+	return nil
+}

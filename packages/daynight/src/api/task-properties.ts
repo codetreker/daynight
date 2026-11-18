@@ -1,4 +1,3 @@
-import { validateWorkerAgentMode } from "./worker-mode.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "../session/startup.js";
 import { array, fields, id, malformed, record, resourceVersion, text, timestamp } from "./validation.js";
 import type { JsonValue, PullRequestProperty, TaskProperties, TaskPropertyResource, TaskPropertySchema, TaskPlatform, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
@@ -43,8 +42,7 @@ export const readWorkerClaim = (properties: TaskProperties): WorkerClaim | undef
   const machine = fields(data.machine, ["id", "name"]);
   const platform: TaskPlatform = data.platform === "windows" || data.platform === "linux" || data.platform === "macos" ? data.platform : malformed();
   const agentControlMode = data.agentControlMode === "herdr" || data.agentControlMode === "web" ? data.agentControlMode : malformed();
-  let agent;
-  try { agent = validateWorkerAgentMode(data.agent, agentControlMode); } catch { return malformed(); }
+  const agent = data.agent === "codex" || data.agent === "copilot" || data.agent === "claude" ? data.agent : malformed();
   if (agentControlMode === "web" && data.herdr !== null && data.herdr !== undefined) return malformed();
   return {
     claimId: id(data.claimId), state: data.state === "active" || data.state === "completed" ? data.state : malformed(),

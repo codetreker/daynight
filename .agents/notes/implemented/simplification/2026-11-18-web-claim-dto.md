@@ -10,8 +10,9 @@ new execution requests have a single unambiguous format.
 
 ## Decision
 
-Claim POST and PATCH reject the `herdr` member, including null. New Web claim
-properties omit it. Stored Web records accept both the former null and omission;
+Claim POST and PATCH reject the `herdr` member, including null, with an explicit
+unsupported and client-upgrade diagnostic. Other unknown fields remain invalid.
+New Web claim properties omit it. Stored Web records accept both the former null and omission;
 historical Herdr records retain their mode and resource on encoding and reading.
 CLI and Web readers accept both Web forms. Worker-Protocol:2 and claim ownership
 checks remain unchanged. The [claim design](../../../../docs/design/daynight-worker-claims.md)
