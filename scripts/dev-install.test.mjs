@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, readFile, realpath, symlink, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, realpath, rename, symlink, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,11 @@ const writePackage = async (directory, metadata, code) => {
   await mkdir(directory, { recursive: true });
   await writeFile(path.join(directory, "package.json"), JSON.stringify({ version: "1.0.0", main: "index.js", ...metadata }));
   await writeFile(path.join(directory, "index.js"), code);
+};
+const linkPackage = async (directory, name, target) => {
+  const link = path.join(directory, "node_modules", name);
+  await mkdir(path.dirname(link), { recursive: true });
+  await symlink(target, link);
 };
 // These fixtures exercise subprocess validation and publication, not native binaries.
 const nativeFixtures = {
@@ -157,4 +162,74 @@ installTest("a snapshot that cannot load does not replace the previous working e
   await assert.rejects(install(options), /cannot load dependency/);
   assert.equal(await realpath(path.join(f.binDirectory, "daynight-dev")), first.executable);
   assert.equal(JSON.parse(run(first.executable)).value, "original");
+});
+
+for (const name of Object.keys(nativeFixtures)) {
+  installTest(`a ${name} validation failure preserves the previous snapshot and launcher`, async (t) => {
+    const install = await loadInstaller();
+    const f = await fixture(t);
+    const options = { sourceDirectory: f.source, binDirectory: f.binDirectory, build: false, metadata: { commit: "abc123", dirty: false } };
+    const first = await install(options);
+    const filename = path.join(f.packageDirectory, "node_modules", name, "index.js");
+    const failure = name === "sharp"
+      ? 'module.exports = () => ({ png: () => ({ toBuffer: async () => { throw new Error("native operation failed"); } }) });'
+      : name === "better-sqlite3"
+        ? 'module.exports = class { prepare() { throw new Error("native operation failed"); } close() {} };'
+        : 'throw new Error("native operation failed");';
+    await writeFile(filename, failure);
+    // The CLI version path never imports these modules and still succeeds.
+    assert.equal(run(process.execPath, [path.join(f.packageDirectory, "dist/main.js"), "--version"]).trim(), "0.27.0");
+    await assert.rejects(install(options), (error) => {
+      assert.match(error.message, /snapshot dependency validation failed/);
+      assert.ok(error.message.includes(name));
+      assert.match(error.message, /native operation failed/);
+      return true;
+    });
+    assert.equal(await realpath(path.join(f.binDirectory, "daynight-dev")), first.executable);
+    assert.equal(JSON.parse(run(first.executable)).value, "original");
+    assert.deepEqual(await readdir(path.join(f.source, ".tmp/dev-builds")), [path.basename(first.info.snapshotDirectory)]);
+  });
+}
+
+installTest("keeps named native siblings and isolated peer resolutions without source links", async (t) => {
+  const install = await loadInstaller();
+  const f = await fixture(t);
+  const make = async (identity, metadata, code) => {
+    const directory = path.join(f.source, "node_modules/.pnpm", identity, "node_modules", metadata.name);
+    await writePackage(directory, metadata, code);
+    return directory;
+  };
+  const consumers = [];
+  for (const version of ["1.0.0", "2.0.0"]) {
+    const peer = await make(`peer@${version}`, { name: "peer", version }, `module.exports = ${JSON.stringify(version)};`);
+    const consumer = await make(`consumer_peer@${version}`, { name: "@scope/consumer", peerDependencies: { peer: "*", absentPeer: "*" }, optionalDependencies: { absent: "*" }, peerDependenciesMeta: { absentPeer: { optional: true } } }, 'module.exports = require("peer");');
+    await linkPackage(consumer, "peer", peer);
+    consumers.push(consumer);
+  }
+  const library = await make("library", { name: "@img/sharp-libvips-linux-x64" }, 'module.exports = {};');
+  await mkdir(path.join(library, "lib"));
+  await writeFile(path.join(library, "lib/value"), "native sibling");
+  const native = await make("native", { name: "@img/sharp-linux-x64", optionalDependencies: { "@img/sharp-libvips-linux-x64": "*" }, main: "lib/index.js" }, '');
+  await mkdir(path.join(native, "lib"));
+  await writeFile(path.join(native, "lib/index.js"), 'module.exports = require("node:fs").readFileSync(require("node:path").join(__dirname, "../../sharp-libvips-linux-x64/lib/value"), "utf8");');
+  await linkPackage(native, "@img/sharp-libvips-linux-x64", library);
+  await writeFile(path.join(f.dependency, "package.json"), JSON.stringify({ name: "dependency", version: "1.0.0", dependencies: { left: "*", right: "*", "@img/sharp-linux-x64": "*" } }));
+  await writeFile(path.join(f.dependency, "index.js"), 'module.exports = [require("left"), require("right"), require("@img/sharp-linux-x64")];');
+  await linkPackage(f.dependency, "left", consumers[0]);
+  await linkPackage(f.dependency, "right", consumers[1]);
+  await linkPackage(f.dependency, "@img/sharp-linux-x64", native);
+  const result = await install({ sourceDirectory: f.source, binDirectory: f.binDirectory, build: false, metadata: { commit: "abc123", dirty: true } });
+  await rename(path.join(f.source, "node_modules"), path.join(f.root, "unavailable-source-dependencies"));
+  await rename(path.join(f.packageDirectory, "node_modules"), path.join(f.root, "unavailable-package-dependencies"));
+  assert.deepEqual(JSON.parse(run(result.executable)).value, ["1.0.0", "2.0.0", "native sibling"]);
+  const checkLinks = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const filename = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        const relative = path.relative(result.info.snapshotDirectory, await realpath(filename));
+        assert.ok(relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative), filename);
+      } else if (entry.isDirectory()) await checkLinks(filename);
+    }
+  };
+  await checkLinks(result.info.snapshotDirectory);
 });

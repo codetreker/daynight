@@ -13,8 +13,10 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell and Markdown reading surfaces use the semantic roles
-at all viewport widths. Markdown code and tables use the interface role; Bot
+baseline. The shared shell, selection controls, task filters, and Markdown
+reading surfaces use the semantic roles at all viewport widths. Selection text
+retains the existing touch conditions and a 16 CSS px minimum; count badges use
+the metadata role. Markdown code and tables use the interface role; Bot
 first-paragraph emphasis retains its weight without a separate size.
 The [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses
 and sizes. Fixed geometry that depended on the former 14px root is independent
@@ -34,7 +36,7 @@ and makes changing a reading size require edits across consumers.
 ## Consequences
 
 The shell, Markdown reading surfaces, and inherited interface baseline respond
-to browser font preferences; fixed layouts retain their intended geometry. Existing feature-specific font
-sizes remain until those consumers migrate, so the shared definitions alone do
+to browser font preferences; fixed layouts retain their intended geometry.
+Existing feature-specific font sizes remain until those consumers migrate, so the shared definitions alone do
 not establish whole-site consistency. Narrow layouts must accommodate text
 without reducing its role size.

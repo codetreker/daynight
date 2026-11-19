@@ -237,11 +237,11 @@ it("commits an exhausted recovery pause and preserves it across reopen and shutd
   expect(reopened.beginRecovery(claim, 15).recovery.count).toBe(2);
 });
 
-it("atomically consumes an explicit retry for the same unsubmitted intent across reopen", () => {
+it.each(["birth", "linux:v1:876b21c9-30d7-48c0-a2ab-287291e903a7:9007199254740993"])("atomically consumes an explicit retry for the same unsubmitted intent across reopen (%s)", startedAt => {
   const { file, store, project, claim } = fixture();
   store.register({ ...claim, project, configuration: { toolLaunch: frozenToolLaunch(), agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 0 }, userId: id(6) }, 1);
   let original = store.initializeWebExecution(claim, 2);
-  const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) };
+  const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt, commandHash: "a".repeat(64) };
   original = store.updateWebExecution(original, { sessionId: id(8), controllerProcess, initialPrompt: "original assignment", launchSubmission: "acknowledged" }, 3);
   original = store.bindNativeSession(original, { source: "controller", sessionId: id(7) }, 4);
   const execution = original.webExecution!;
