@@ -207,6 +207,8 @@ func (op *ArchiveOperation) prepareHistoryLedger(ctx context.Context, writer Act
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	op.historyWriter = &writer
 	err = op.execution.archiveAccess(ctx, op.principal, op.project, op.task, op.id, true, func(tx *operationTx, r *record, t task) error {
 		if err := op.validateHistoryWriter(r, t); err != nil {
@@ -246,6 +248,8 @@ func (op *ArchiveOperation) HistoryLedgerStatus(ctx context.Context, writer Acti
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	op.historyWriter = &writer
 	err = op.bundleAccess(ctx, func(_ *operationTx, _ *record, dao store.SessionArchiveDAO, bundle store.ArchiveBundle) error {
 		if bundle.Phase != "active" {

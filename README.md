@@ -339,8 +339,8 @@ SQLite SQL directories with the compiled dist tree; the
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` and
-`bash scripts/startup-shutdown.sh` with `DAYNIGHT_TEST_DATABASE_URL` pointing to
-an isolated database. The first validates module tests; the second owns command
+`bash scripts/startup-shutdown.sh` with `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_REDIS_URL` pointing to isolated PostgreSQL and Redis instances. The first validates module tests; the second owns command
 startup, shutdown, migration and recovery tests. Each production-code partition
 requires statement coverage strictly greater than 90%. Task HTTP, complete
 Session core and Webhook service unit suites run independently without

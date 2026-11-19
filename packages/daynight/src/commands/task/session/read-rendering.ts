@@ -2,6 +2,7 @@ import type { TaskSessionCurrent, TaskSessionDirectory, TaskSessionEntryChunk, T
 import { terminalText } from "../../../platform/terminal.js";
 import type { MessagePart, TimelineEntry } from "../../../session/protocol.js";
 import { renderSessionObservation } from "../observation-rendering.js";
+import type { TaskSessionHistoryDirectory } from "../../../api/task-session-history-directory.js";
 
 const lines = (value: string): string => value.split("\n").map(terminalText).join("\n");
 const argument = (value: string): string => `'${terminalText(value).replaceAll("'", "'\\''")}'`;
@@ -44,6 +45,22 @@ export const renderTaskSessionDirectory = (value: TaskSessionDirectory, projectI
   ]),
   ...(value.items.length === 0 ? ["No Sessions in this page."] : []),
   ...(value.nextCursor === null ? [] : [`More Sessions: daynight task session list ${taskId} --project ${projectId} --limit ${limit} --cursor ${argument(value.nextCursor)}`]), "",
+].join("\n");
+export const renderTaskSessionHistoryDirectory = (value: TaskSessionHistoryDirectory, projectId: string, taskId: string, limit: number): string => [
+  `Directory version: ${value.version}; graph version: ${value.graphVersion}; observed: ${value.observedAt}`,
+  ...value.items.flatMap(item => [
+    `Session: ${item.sessionId}; current binding: ${item.currentBinding}`,
+    `Claim: ${item.claimId}; generation: ${item.executionGeneration}; mode: ${item.agentControlMode}; content: ${item.contentKind}`,
+    `Created: ${item.createdAt}; ended: ${item.endedAt ?? "unknown"}`,
+    `Archive: ${item.archiveState}; completeness: ${item.completeness === null ? "unknown" : terminalText(item.completeness)}`,
+    `Retention: ${item.retentionState}; reason: ${terminalText(item.reason)}`,
+    `Scope ended: ${item.scopeEndedAt ?? "unknown"}; first archived: ${item.firstArchivedAt ?? "unknown"}; legacy grace started: ${item.legacyGraceStartedAt ?? "unknown"}`,
+    `Expires: ${item.expiresAt ?? "unknown"}; expired: ${item.expiredAt ?? "none"}`,
+    ...(item.archiveState === "expired" ? ["Session history has expired; the original Session remains in the directory."] : item.archiveState === "pending" ? ["History is pending archival."] : []),
+    `Inspect: daynight task session show ${taskId} ${item.sessionId} --project ${projectId}`, "",
+  ]),
+  ...(value.items.length === 0 ? ["No Sessions in this page."] : []),
+  ...(value.nextCursor === null ? [] : [`More Sessions: daynight task session list ${taskId} --project ${projectId} --directory-version 1 --limit ${limit} --cursor ${argument(value.nextCursor)}`]), "",
 ].join("\n");
 const messageLines = (value: TaskSessionMessage, projectId: string, taskId: string, sessionId: string): readonly string[] => [
   "", `Entry: ${value.entryId}; sequence: ${value.entrySeq}; revision: ${value.revision}; kind: ${value.kind}`,
