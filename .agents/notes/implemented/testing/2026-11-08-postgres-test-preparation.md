@@ -147,6 +147,12 @@ and Team records. Each case corrupts only its own Team membership, performs a
 profile write, and refuses the transaction after observing the corrupted
 membership facts. A fresh read confirms that the saved profile is unchanged.
 
+The [Profile Patch validation matrix](../../../../packages/daynight-server/internal/core/store/postgres/user_profile_mechanism_test.go)
+shares one Store across independent users, Sessions, and Personal Teams.
+Each case seeds its own missing owner or stored profile limit violation,
+calls the real Profile Patch operation, and verifies that the entire saved
+user row matches its original state after the refusal.
+
 The [Webhook management fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/webhook/management_contract_test.go)
 shares one fixture with distinct case identifiers. Real WriteWebhook
 transactions see the missing names, missing policy row, or insert trigger.
