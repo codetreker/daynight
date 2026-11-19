@@ -131,3 +131,17 @@ func TestRepositorySaveLogsTransactionCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestRepositoryLoggerDefaultsWhenUnset(t *testing.T) {
+	var logs bytes.Buffer
+	s := &AppProjects{}
+	custom := slog.New(slog.NewJSONHandler(&logs, nil))
+	s.SetRepositoryLogger(custom)
+	if s.repositoryLogger != custom {
+		t.Fatal("configured repository logger was not retained")
+	}
+	s.SetRepositoryLogger(nil)
+	if s.repositoryLogger != slog.Default() {
+		t.Fatal("nil logger did not restore the default")
+	}
+}
