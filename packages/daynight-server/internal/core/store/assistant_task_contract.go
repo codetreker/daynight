@@ -81,6 +81,7 @@ type AssistantTaskDAO interface {
 	InsertItem(context.Context, model.AssistantTaskItem) (bool, error)
 	SaveItem(context.Context, model.AssistantTaskItem, int64) (bool, error)
 	TransferOpenItems(context.Context, string, string, *string) error
+	InsertItemClosure(context.Context, model.AssistantTaskItemClosure) error
 	Record(context.Context, string, string, string) (model.AssistantTaskRecord, error)
 	Records(context.Context, AssistantTaskQuery) ([]model.AssistantTaskRecord, error)
 	// InsertRecord obtains a real monotonically increasing database timestamp,

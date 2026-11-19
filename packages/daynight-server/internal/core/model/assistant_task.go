@@ -79,6 +79,19 @@ type AssistantTaskItem struct {
 	FollowerBotID                                                     *string
 	AppState                                                          json.RawMessage
 	CreatedAt, UpdatedAt                                              time.Time
+	// OpenedAt is the start of the current open period and ClosedAt the most
+	// recent close. Both are nil for items that predate lifecycle tracking.
+	OpenedAt, ClosedAt *time.Time
+}
+
+// AssistantTaskItemClosure is an append-only record of one open-to-closed
+// transition. OpenedAt is nil when the closed period began before lifecycle
+// tracking existed, so its duration is unknown.
+type AssistantTaskItemClosure struct {
+	ID, OwnerUserID, TaskID, ItemID string
+	Episode                         int64
+	OpenedAt                        *time.Time
+	ClosedAt                        time.Time
 }
 
 type AssistantTaskRecord struct {

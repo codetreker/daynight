@@ -45,6 +45,9 @@ func TestClosedTransactionRetainsDriverCauseAcrossAccessPatterns(t *testing.T) {
 		{"appendices", func() error { _, e := d.Appendices(ctx, q); return e }},
 		{"proposals", func() error { _, e := d.Proposals(ctx, q); return e }},
 		{"items", func() error { _, e := d.Items(ctx, q); return e }},
+		{"item_closure", func() error {
+			return d.InsertItemClosure(ctx, model.AssistantTaskItemClosure{ID: id, OwnerUserID: f.owner, TaskID: f.task.ID, ItemID: id})
+		}},
 		{"records", func() error { _, e := d.Records(ctx, q); return e }},
 		{"events", func() error { _, e := d.Events(ctx, q); return e }},
 		{"inquiries", func() error { _, e := d.Inquiries(ctx, q); return e }},
