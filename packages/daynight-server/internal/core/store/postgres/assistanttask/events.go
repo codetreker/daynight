@@ -39,6 +39,9 @@ func (d *DAO) SaveEvent(ctx context.Context, v model.AssistantTaskEvent, state s
 	// of a task-scoped acknowledgement using an earlier event snapshot.
 	return d.changed(ctx, "save assistant event", `UPDATE assistant_task_events SET target_bot_id=$4,type=$5,state=$6,request_fingerprint=$7,payload=$8,attention=$9,created_at=$10,delivered_at=$11,ack_operation_id=$12,ack_fingerprint=$13 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND state=$14`, v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.AckOperationID, v.AckFingerprint, state)
 }
+func (d *DAO) RetargetPendingInbound(ctx context.Context, owner, task, target string) error {
+	return d.execute(ctx, "retarget assistant inbound events", `UPDATE assistant_task_events SET target_bot_id=$3 WHERE owner_user_id=$1 AND task_id=$2 AND type='inbound' AND state='pending' AND target_bot_id<>$3::uuid`, owner, task, target)
+}
 func (d *DAO) MarkAttentionSeen(ctx context.Context, owner, target string, at time.Time, exceptTypes []string) error {
 	if exceptTypes == nil {
 		exceptTypes = []string{}

@@ -103,6 +103,10 @@ func (mock *taskSnapshotScopeMock) UserCandidateDAO() store.UserCandidateReader 
 	return mock.UserCandidateDAOFn()
 }
 
+func (mock *taskSnapshotScopeMock) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (mock *taskSnapshotScopeMock) CredentialDAO() store.CredentialReader {
 	mock.need("CredentialDAO", mock.CredentialDAOFn != nil)
 	return mock.CredentialDAOFn()
@@ -165,6 +169,10 @@ type taskProjectScopeMock struct {
 func (mock *taskProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
 	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
 	return mock.ProjectGoalDependencyDAOFn()
+}
+
+func (mock *taskProjectScopeMock) GoalRelationDAO() store.GoalRelationEditor {
+	panic("unexpected GoalRelationDAO access")
 }
 
 func (mock *taskProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {
@@ -975,4 +983,8 @@ func (mock *projectWriterMock) RepositoryOccupied(ctx context.Context, team, ide
 func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	mock.need("WorkerClaimAdmissionDAO", mock.WorkerClaimAdmissionDAOFn != nil)
 	return mock.WorkerClaimAdmissionDAOFn()
+}
+
+func (*workerReaderMock) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
 }

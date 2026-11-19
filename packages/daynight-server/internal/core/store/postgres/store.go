@@ -32,6 +32,10 @@ func OpenWithLogger(ctx context.Context, databaseURL string, logger *slog.Logger
 	}
 	if err := initializeSchema(ctx, pool, schemaMigrations, currentSchemaSnapshot); err != nil {
 		pool.Close()
+		var identity *githubRepositoryIdentityMigrationError
+		if errors.As(err, &identity) {
+			return nil, databaseFailure(identity.Error(), err)
+		}
 		var cause *pgconn.PgError
 		if errors.As(err, &cause) && cause.Code == "P1047" {
 			return nil, databaseFailure("migration requires active login transactions to be consumed or expired", err)

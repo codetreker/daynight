@@ -208,7 +208,9 @@ func (s *Execution) GetUpload(ctx context.Context, p model.Principal, project, t
 		if e != nil {
 			return out, e
 		}
-		err = s.cleanupUploadStorage(ctx, project, id, uploadID, access, func(ctx context.Context) error {
+		gateCtx, cancelGate := filestorage.GateContext(ctx, gate)
+		defer cancelGate()
+		err = s.cleanupUploadStorage(gateCtx, project, id, uploadID, access, func(ctx context.Context) error {
 			return s.releaseControllerPreparationWithAccess(ctx, id, uploadID, access)
 		})
 		err = errors.Join(err, gate.Close())
@@ -245,6 +247,9 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 			return out, err
 		}
 		defer func() { result = errors.Join(result, gate.Close()) }()
+		var cancelGate context.CancelFunc
+		ctx, cancelGate = filestorage.GateContext(ctx, gate)
+		defer cancelGate()
 	}
 	lease := uuid.NewString()
 	ioContext, finishIO, ioErr := s.beginImageIO(ctx, id, lease)
@@ -470,7 +475,7 @@ func (s *Execution) publishImageBytes(ctx context.Context, path string, input io
 	reader := &imageSourceReader{reader: input}
 	info, err := s.files.Put(ctx, sessionresource.Bucket, path, io.TeeReader(io.LimitReader(reader, size+1), h))
 	if err != nil {
-		if reader.err == nil && filestorage.PublicationOutcome(err) == filestorage.NotPublished && singleImageCause(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		if reader.err == nil && filestorage.PublicationOutcome(err) == filestorage.NotPublished && singleImageCause(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, filestorage.ErrGateLost) {
 			return &definiteImageError{image: sp.ImageError{Code: "storage_unavailable", Message: "Image storage could not publish the original."}, cause: err}
 		}
 		return err
@@ -506,6 +511,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		return out, e
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
+	settlementCtx := ctx
 	settlementReady := false
 	// Settle only after transfer cleanup while the original upload gate still
 	// excludes a concurrent writer. A later gate-close failure is reconciled
@@ -518,7 +526,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		if imageError == nil {
 			return
 		}
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		cleanupParent, cancelCleanupGate := filestorage.GateCleanupContext(settlementCtx)
+		defer cancelCleanupGate()
+		cleanup, cancel := context.WithTimeout(cleanupParent, 5*time.Second)
 		defer cancel()
 		var settled *store.SessionUploadRecord
 		e := s.browser(cleanup, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
@@ -837,6 +847,8 @@ func (s *Execution) ReleaseUpload(ctx context.Context, p model.Principal, projec
 		return out, e
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	err := s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
@@ -899,6 +911,8 @@ func (s *Execution) DirectUpload(ctx context.Context, p model.Principal, project
 	if err != nil {
 		return sp.ImageUploadReceipt{}, false, err
 	}
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	_, created, err := s.prepareUploadIdentityWithFirst(ctx, p, project, task, id, input.Spec, true, &input)
 	var out sp.ImageUploadReceipt
 	if err == nil {

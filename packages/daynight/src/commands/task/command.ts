@@ -69,6 +69,11 @@ export const runTaskCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.path[2] === "goal-dependencies") {
+    const { runGoalDependenciesCommand } = await import("./goal-dependencies.js");
+    await runGoalDependenciesCommand(command, context, dependencies);
+    return;
+  }
   if (command.path[2] === "tag") {
     const { runTaskTagCommand } = await import("./tag.js");
     await runTaskTagCommand(command, context, dependencies);

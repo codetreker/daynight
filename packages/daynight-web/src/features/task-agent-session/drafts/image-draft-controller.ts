@@ -726,7 +726,7 @@ export class ImageDraftController {
       if (!upload) continue;
       if (!upload.releaseIntent && !observe && (!this.canPrepare() || upload.receipt?.state === 'complete' || upload.outcomeUnknown || upload.pendingAction)) continue;
       if (!upload.releaseIntent && upload.receipt && ['failed', 'expired', 'released'].includes(upload.receipt.state)) continue;
-      if (upload.releaseIntent && upload.receipt?.state === 'released') continue;
+      if (upload.releaseIntent && (upload.receipt?.state === 'released' || upload.releaseRetained)) continue;
       const uploader = new DraftUploader({ store: this.store, locks: this.locks, resources: c.resources, signal: this.network.signal, isCurrent: () => this.current(epoch) && !!this.options.getContext()?.canEdit, canPrepare: () => this.canPrepare(), changed: async () => { if (!this.current(epoch)) return; if (!this.dirty && !this.conflict) this.error = null; await this.reload(); } });
       const run = uploader.run(this.saved.owner, upload.uploadId, this.blobs.get(upload.blobId) ?? null, observe, retryPrepareId === upload.uploadId).catch(error => { if (this.current(epoch)) this.fail(error); });
       this.uploadFlights.set(upload.uploadId, run);

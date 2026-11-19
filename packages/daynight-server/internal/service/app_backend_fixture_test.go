@@ -572,6 +572,10 @@ type unexpectedAppTransactions struct{ backend *appBackend }
 
 var _ store.Transactions = unexpectedAppTransactions{}
 
+func (s unexpectedAppTransactions) ReadHistoryDirectory(context.Context, func(store.HistoryDirectoryScope) error) error {
+	return s.backend.unexpected("ReadHistoryDirectory")
+}
+
 func (s unexpectedAppTransactions) ReadUsage(context.Context, func(store.UsageScope) error) error {
 	return s.backend.unexpected("ReadUsage")
 }

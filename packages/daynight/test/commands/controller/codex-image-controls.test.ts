@@ -23,6 +23,24 @@ test("the native image profile rejects unverified executable versions and platfo
   expect(profile?.qualification).toBeNull(); expect(profile?.geometry.known).toBe(false);
 });
 
+test("macOS Codex 0.170.0 is recognized exactly and stays unqualified without a registry row", async () => {
+  const native = { userAgent: "daynight/0.170.0 (Mac OS 27.2.0; arm64) dumb (daynight; 0.67.0)", platformOs: "macos" };
+  expect(supportsCodexImageProfile(native, "darwin")).toBe(true);
+  for (const version of ["0.170.1", "0.171.0", "0.17.0", "1.170.0"]) expect(supportsCodexImageProfile({ ...native, userAgent: native.userAgent.replace("0.170.0", version) }, "darwin"), version).toBe(false);
+  expect(supportsCodexImageProfile(native, "win32")).toBe(false);
+  expect(supportsCodexImageProfile(native, "linux")).toBe(false);
+  expect(supportsCodexImageProfile({ ...native, platformOs: "windows" }, "win32")).toBe(false);
+  expect(supportsCodexImageProfile({ userAgent: "daynight/0.170.0 (Windows; x86_64)", platformOs: "windows" }, "win32")).toBe(false);
+  const root = await mkdtemp(join(tmpdir(), "codex-image-controls-"));
+  const controls = new CodexControls({ request: async method => method === "model/list" ? { data: [{ model: "gpt-6-astra", inputModalities: ["text", "image"] }], nextCursor: null } : method === "skills/list" ? { data: [] } : { requirements: null } }, () => "thread", () => null, root, root, () => {});
+  try {
+    controls.seed({ model: "gpt-6-astra", modelProvider: "copilot_gateway" }); await controls.refresh();
+    const profile = codexImageProfile(native, { model: "gpt-6-astra", modelProvider: "copilot_gateway" }, "darwin", "a".repeat(64), { kind: "native_declared_config_v1", nativeSessionId: "thread", model: "gpt-6-astra", modelProvider: "copilot_gateway", backendIdentity: "b".repeat(64), generation: 1 });
+    expect(profile).toMatchObject({ modelId: "gpt-6-astra", qualification: null, geometry: { known: false } });
+    expect(controls.imageCapabilities(profile)).toMatchObject({ send: "unknown", steer: "unknown", reasonCode: "capability_unknown" });
+  } finally { controls.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("an image modality without exact backend geometry stays unknown and satisfies the public capability protocol", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-image-controls-"));
   const controls = new CodexControls({ request: async method => method === "model/list" ? { data: [{ model: "gpt-6-astra", inputModalities: ["text", "image"] }], nextCursor: null } : method === "skills/list" ? { data: [] } : { requirements: null } }, () => "thread", () => null, root, root, () => {});

@@ -133,7 +133,7 @@ func retainSessionRead(ctx context.Context, entry *Entry, lease io.Closer) {
 		}
 	}
 	if scope, ok := ctx.Value(scopeKey{}).(*requestScope); ok {
-		scope.hold(release)
+		scope.holdHistory(lease, release)
 	} else {
 		release()
 	}

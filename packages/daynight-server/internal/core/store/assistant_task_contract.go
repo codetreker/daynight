@@ -86,6 +86,9 @@ type AssistantTaskDAO interface {
 	InsertItem(context.Context, model.AssistantTaskItem) (bool, error)
 	SaveItem(context.Context, model.AssistantTaskItem, int64) (bool, error)
 	TransferOpenItems(context.Context, string, string, *string) error
+	// RetargetPendingInbound moves the task's pending inbound events that target
+	// another Bot to the given responsible Bot; other event types are unchanged.
+	RetargetPendingInbound(context.Context, string, string, string) error
 	Record(context.Context, string, string, string) (model.AssistantTaskRecord, error)
 	Records(context.Context, AssistantTaskQuery) ([]model.AssistantTaskRecord, error)
 	// InsertRecord obtains a real monotonically increasing database timestamp,

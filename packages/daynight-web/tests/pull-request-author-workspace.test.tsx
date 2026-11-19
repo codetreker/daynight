@@ -5,6 +5,8 @@ import { PullRequestWorkspace } from '../src/features/pull-requests/PullRequestW
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { prPage, prProjectId, prResponse, prStatus, prUserId } from './pull-requests-fixtures';
 
+const sources = { repositories: [{ repositoryId: '4', fullName: 'o/r' }], currentRepositoryId: '4', repositoryId: '4', setRepositoryId: vi.fn(), sourceLoading: false, sourceLoaded: true, sourceError: null, retrySources: vi.fn() };
+
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it('reports an empty combination and clears only the author while preserving status and query', async () => {
@@ -13,12 +15,12 @@ it('reports an empty combination and clears only the author while preserving sta
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'https://test'); requests.push(url);
     if (url.pathname.endsWith('/github')) return prResponse(prStatus());
-    if (url.pathname.endsWith('/pull-request-authors')) return prResponse({ projectId: prProjectId, revision: '1', items: [{ id: '42', login: 'author', loginAmbiguous: false }], nextCursor: null });
+    if (url.pathname.endsWith('/pull-request-authors')) return prResponse({ projectId: prProjectId, revision: '1', repository: { repositoryId: '4', fullName: 'o/r' }, items: [{ id: '42', login: 'author', loginAmbiguous: false }], nextCursor: null });
     const authorId = url.searchParams.get('authorId');
     const selected = authorId !== null;
     return prResponse({ ...prPage(url.searchParams.get('q') ? [] : ['42']), counts: selected ? { active: '3', merged: '2', closed: '1', all: '6' } : { active: '5', merged: '4', closed: '2', all: '11' }, ...(selected ? { authorId, projectTotal: '11' } : {}) });
   }));
-  renderWithLocale(<PullRequestWorkspace userId={prUserId} projectId={prProjectId} active canRead onPrincipalMismatch={vi.fn()} />, { locale: 'en' });
+  renderWithLocale(<PullRequestWorkspace {...sources} userId={prUserId} projectId={prProjectId} active canRead onPrincipalMismatch={vi.fn()} />, { locale: 'en' });
   await screen.findByRole('button', { name: '#42 PR 42, Open' });
   fireEvent.change(screen.getByRole('combobox', { name: 'Pull request status' }), { target: { value: 'merged' } });
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search pull request title or number' }), { target: { value: 'needle' } });
@@ -43,7 +45,7 @@ it('disables status and search after a trusted denial while retaining retry', as
     if (deny) return prResponse({ error: { code: 'forbidden', message: 'Forbidden', requestId: 'test' } }, 403);
     return prResponse(prPage());
   }));
-  renderWithLocale(<PullRequestWorkspace userId={prUserId} projectId={prProjectId} active canRead onPrincipalMismatch={vi.fn()} onAccessError={vi.fn()} />, { locale: 'en' });
+  renderWithLocale(<PullRequestWorkspace {...sources} userId={prUserId} projectId={prProjectId} active canRead onPrincipalMismatch={vi.fn()} onAccessError={vi.fn()} />, { locale: 'en' });
   await screen.findByRole('button', { name: '#42 PR 42, Open' });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
   deny = true;
@@ -64,7 +66,7 @@ it('offers recovery after an authentication generation change without an API err
     if (checking && url.pathname.endsWith('/github')) { checkingDispatched = true; return pending.promise; }
     return prResponse(url.pathname.endsWith('/github') ? prStatus() : prPage());
   }));
-  renderWithLocale(<PullRequestWorkspace userId={prUserId} projectId={prProjectId} active canRead onPrincipalMismatch={vi.fn()} />, { locale: 'en' });
+  renderWithLocale(<PullRequestWorkspace {...sources} userId={prUserId} projectId={prProjectId} active canRead onPrincipalMismatch={vi.fn()} />, { locale: 'en' });
   await screen.findByRole('button', { name: '#42 PR 42, Open' });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
   checking = true; fireEvent.focus(window);

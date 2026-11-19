@@ -1,3 +1,4 @@
+import { parseRoute } from './router';
 import { readMyTasksHistory, type PageHistoryState } from './page-history';
 
 export type BrowserLocation = { readonly pathname: string; readonly search: string; readonly hash: string; readonly entryId: string | null; readonly view: unknown };
@@ -53,6 +54,7 @@ export class BrowserNavigation {
   private session = crypto.randomUUID();
   // Browser history state is serialized; exact URL checks stay in this window's memory.
   private readonly urls = new Map<number, { readonly url: string; readonly entryId: string }>();
+  private nonProjectScrollRestoration: ScrollRestoration;
   private accepted: Entry;
   private observed: Entry;
   private location: BrowserLocation;
@@ -65,6 +67,10 @@ export class BrowserNavigation {
   private readonly decisions = new Set<() => void>();
   constructor(private readonly browser: Window) {
     const url = new URL(browser.location.href);
+    // A reloaded project or settings entry retains its own manual mode, not
+    // the default mode for routes outside those pages.
+    const ownedMode = parseRoute(url.pathname, url.search).kind === 'project' || /^\/projects\/[^/]+\/settings(?:\/|$)/.test(url.pathname);
+    this.nonProjectScrollRestoration = ownedMode ? 'auto' : browser.history.scrollRestoration;
     const restored = restoredOverviewView(url, browser.history.state?.[namespace]);
     this.writeState('replaceState', url, 0, crypto.randomUUID(), restored);
     this.accepted = this.observed = this.readEntry();
@@ -92,9 +98,19 @@ export class BrowserNavigation {
   }
   private writeState(method: 'pushState' | 'replaceState', url: URL, index: number, entryId: string, view?: unknown): void {
     const state: unknown = this.browser.history.state;
+    const source = new URL(this.browser.location.href);
+    const sourceProject = parseRoute(source.pathname, source.search).kind === 'project';
+    const targetProject = parseRoute(url.pathname, url.search).kind === 'project';
+    const sourceSettings = /^\/projects\/[^/]+\/settings(?:\/|$)/.test(source.pathname);
+    const targetSettings = /^\/projects\/[^/]+\/settings(?:\/|$)/.test(url.pathname);
+    // Settings owns a temporary manual mode of its own; its cleanup restores
+    // the mode that preceded it, so do not adopt the temporary value.
+    if (!sourceProject && !sourceSettings) this.nonProjectScrollRestoration = this.browser.history.scrollRestoration;
     this.browser.history[method]({ ...(typeof state === 'object' && state !== null ? state : {}),
       [namespace]: { session: this.session, index, entryId, ...(view === undefined ? {} : { view }), ...(overviewView(url, view) ? { resumeUrl: url.href } : {}) } }, '', url.href);
     this.urls.set(index, { url: url.href, entryId });
+    if (targetProject) this.browser.history.scrollRestoration = 'manual';
+    else if (sourceProject || sourceSettings && !targetSettings) this.browser.history.scrollRestoration = this.nonProjectScrollRestoration;
   }
   private replaceNativeState(url: URL): void {
     let state: unknown = this.browser.history.state;
@@ -256,6 +272,8 @@ export class BrowserNavigation {
   }
   private traversed = (event: Event): void => {
     const entry = this.readEntry();
+    if (parseRoute(entry.url.pathname, entry.url.search).kind === 'project') this.browser.history.scrollRestoration = 'manual';
+    else if (!/^\/projects\/[^/]+\/settings(?:\/|$)/.test(entry.url.pathname)) this.nonProjectScrollRestoration = this.browser.history.scrollRestoration;
     if (entry.url.href === this.observed.url.href && entry.index === this.observed.index && entry.entryId === this.observed.entryId && sameValue(entry.view, this.observed.view)) {
       // Unindexed native entries have no stable identity, even when their URLs match.
       if (entry.index === null && event.type === 'popstate') this.adopt(entry, true);

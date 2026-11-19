@@ -22,7 +22,7 @@ type writer struct {
 func NewReader(tx pgx.Tx) store.GitHubReadDAO { return &reader{tx: tx} }
 
 const connectionFields = `project_id::text, version, generation, revision, enabled, sync_enabled,
- app_id, installation_id, repository_id, installation_account_login, repository_full_name, repository_private,
+ app_id, installation_id, repository_id, legacy_repository_id, installation_account_login, repository_full_name, repository_private,
  poll_interval_minutes, access_state, access_reason, access_checked_at, next_access_check_at,
  access_hint_id::text, access_delivery_id, next_poll_at, not_before, last_poll_attempt_at,
  last_full_success_at, last_full_generation, poll_error_code, poll_error_message, poll_error_at,
@@ -35,7 +35,7 @@ type rowScanner interface{ Scan(...any) error }
 func scanConnection(row rowScanner) (githubpr.Connection, error) {
 	var c githubpr.Connection
 	err := row.Scan(&c.ProjectID, &c.Version, &c.Generation, &c.Revision, &c.Enabled, &c.SyncEnabled,
-		&c.AppID, &c.InstallationID, &c.RepositoryID, &c.InstallationAccountLogin, &c.RepositoryFullName, &c.RepositoryPrivate,
+		&c.AppID, &c.InstallationID, &c.RepositoryID, &c.LegacyRepositoryID, &c.InstallationAccountLogin, &c.RepositoryFullName, &c.RepositoryPrivate,
 		&c.PollIntervalMinutes, &c.AccessState, &c.AccessReason, &c.AccessCheckedAt, &c.NextAccessCheckAt,
 		&c.AccessHintID, &c.AccessDeliveryID, &c.NextPollAt, &c.NotBefore, &c.LastPollAttemptAt,
 		&c.LastFullSuccessAt, &c.LastFullGeneration, &c.PollErrorCode, &c.PollErrorMessage, &c.PollErrorAt,
@@ -111,6 +111,17 @@ func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurat
 	if result.RowsAffected() != 1 {
 		return false, nil
 	}
+	// A verified identity fixes the legacy source once and refreshes the source
+	// directory within the same transaction as the connection change.
+	if c.RepositoryID != nil && *c.RepositoryID > 0 && c.RepositoryFullName != nil && strings.TrimSpace(*c.RepositoryFullName) != "" {
+		if _, err := w.tx.Exec(ctx, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,$2,$3)
+ ON CONFLICT(project_id,repository_id) DO UPDATE SET full_name=EXCLUDED.full_name`, w.projectID, *c.RepositoryID, *c.RepositoryFullName); err != nil {
+			return false, pg.QueryError("save github repository source", err)
+		}
+		if _, err := w.tx.Exec(ctx, `UPDATE project_github SET legacy_repository_id=COALESCE(legacy_repository_id,$2) WHERE project_id=$1`, w.projectID, *c.RepositoryID); err != nil {
+			return false, pg.QueryError("save legacy github repository", err)
+		}
+	}
 	oldCoverage := previous.SyncEnabled && previous.RepositoryID != nil
 	newCoverage := c.SyncEnabled && c.RepositoryID != nil
 	sameRepository := oldCoverage && newCoverage && *previous.RepositoryID == *c.RepositoryID
@@ -140,17 +151,32 @@ func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurat
 
 const summaryFields = `project_id::text, number, github_id, url, title, author_id, author_login,
  state, draft, base_ref, head_repository_id, head_repository_full_name, head_ref, head_sha,
- github_created_at, github_updated_at, github_closed_at, github_merged_at, observed_at, revision, seen_poll_id::text`
+ github_created_at, github_updated_at, github_closed_at, github_merged_at, observed_at, revision, seen_poll_id::text,
+ repository_id, (SELECT full_name FROM project_github_repositories gr WHERE gr.project_id=project_pull_requests.project_id AND gr.repository_id=project_pull_requests.repository_id)`
 
 func summaryTargets(p *githubpr.PullRequestSummary) []any {
 	return []any{&p.ProjectID, &p.Number, &p.GitHubID, &p.URL, &p.Title, &p.AuthorID, &p.AuthorLogin,
 		&p.State, &p.Draft, &p.BaseRef, &p.HeadRepositoryID, &p.HeadRepositoryFullName, &p.HeadRef, &p.HeadSHA,
-		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID}
+		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID, &p.RepositoryID, &p.RepositoryFullName}
 }
-func (r *reader) PullRequest(ctx context.Context, id string, number int64) (githubpr.PullRequest, error) {
+func (r *reader) PullRequest(ctx context.Context, id string, number int64, repositoryID *int64) (githubpr.PullRequest, error) {
+	if repositoryID != nil {
+		return r.pullRequest(ctx, id, *repositoryID, number)
+	}
+	err := r.tx.QueryRow(ctx, `SELECT legacy_repository_id FROM project_github WHERE project_id=$1`, id).Scan(&repositoryID)
+	if err != nil {
+		return githubpr.PullRequest{}, pg.QueryError("read github pull request", err)
+	}
+	if repositoryID == nil {
+		return githubpr.PullRequest{}, pg.QueryError("read github pull request", pgx.ErrNoRows)
+	}
+	return r.pullRequest(ctx, id, *repositoryID, number)
+}
+
+func (r *reader) pullRequest(ctx context.Context, id string, repositoryID, number int64) (githubpr.PullRequest, error) {
 	var p githubpr.PullRequest
 	targets := append(summaryTargets(&p.PullRequestSummary), &p.Description)
-	err := r.tx.QueryRow(ctx, `SELECT `+summaryFields+`, description FROM project_pull_requests WHERE project_id=$1 AND number=$2`, id, number).Scan(targets...)
+	err := r.tx.QueryRow(ctx, `SELECT `+summaryFields+`, description FROM project_pull_requests WHERE project_id=$1 AND repository_id=$2 AND number=$3`, id, repositoryID, number).Scan(targets...)
 	if err != nil {
 		return githubpr.PullRequest{}, pg.QueryError("read github pull request", err)
 	}
@@ -158,8 +184,7 @@ func (r *reader) PullRequest(ctx context.Context, id string, number int64) (gith
 }
 
 // Search uses position rather than SQL LIKE, so wildcard characters are literal.
-const filter = `project_id=$1 AND ($2='all' OR state=CASE WHEN $2='active' THEN 'open' ELSE $2 END)
- AND ($3='' OR strpos(lower(title), lower($3))>0 OR ($4<>'' AND strpos(number::text,$4)>0))`
+const filter = `project_id=$1 AND ($3='' OR strpos(lower(title), lower($3))>0 OR ($4<>'' AND strpos(number::text,$4)>0))`
 
 func numericSearch(q string) string {
 	n := strings.TrimPrefix(q, "#")
@@ -182,18 +207,22 @@ func (r *reader) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store
 		// A direct equality keeps the partial author index usable with a generic plan.
 		authorFilter = ` AND author_id=$5::bigint`
 	}
-	where := filter + authorFilter
+	stateFilter := ` AND $2::text='all'`
+	if q.State != "all" {
+		stateFilter = ` AND state=CASE WHEN $2='active' THEN 'open' ELSE $2 END`
+	}
+	where := filter + stateFilter + authorFilter
 	// Total covers the entire matching collection, independently of page and upper bound.
-	if err := r.tx.QueryRow(ctx, `SELECT count(*) FROM project_pull_requests WHERE `+where, q.ProjectID, q.State, q.Query, numeric, q.AuthorID).Scan(&page.Total); err != nil {
+	if err := r.tx.QueryRow(ctx, `SELECT count(*) FROM project_pull_requests WHERE `+where+repositoryFilter(q.RepositoryID, 6), q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.RepositoryID).Scan(&page.Total); err != nil {
 		return store.GitHubPRPage{}, pg.QueryError("count github pull requests", err)
 	}
 	order, comparison := "DESC", "<"
 	if q.Previous {
 		order, comparison = "ASC", ">"
 	}
-	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+` FROM project_pull_requests WHERE `+where+
+	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+` FROM project_pull_requests WHERE `+where+repositoryFilter(q.RepositoryID, 9)+
 		` AND ($6::bigint IS NULL OR number <= $6) AND ($7::bigint IS NULL OR number `+comparison+` $7)
-		 ORDER BY number `+order+` LIMIT $8`, q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.UpperNumber, q.AnchorNumber, q.Limit+1)
+		 ORDER BY number `+order+` LIMIT $8`, q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.UpperNumber, q.AnchorNumber, q.Limit+1, q.RepositoryID)
 	if err != nil {
 		return store.GitHubPRPage{}, pg.QueryError("list github pull requests", err)
 	}
@@ -230,7 +259,7 @@ func (r *reader) PullRequestCounts(ctx context.Context, q store.GitHubPRCountsQu
 	 count(*) FILTER (WHERE ($2::bigint IS NULL OR author_id=$2) AND state='closed'),
 	 count(*) FILTER (WHERE ($2::bigint IS NULL OR author_id=$2) AND state='merged'),
 	 count(*) FILTER (WHERE $2::bigint IS NULL OR author_id=$2), count(*)
-	 FROM project_pull_requests WHERE project_id=$1`, q.ProjectID, q.AuthorID).
+	 FROM project_pull_requests WHERE project_id=$1`+repositoryFilter(q.RepositoryID, 3), q.ProjectID, q.AuthorID, q.RepositoryID).
 		Scan(&counts.Active, &counts.Closed, &counts.Merged, &counts.All, &counts.ProjectTotal)
 	if err != nil {
 		return store.GitHubPRCounts{}, pg.QueryError("count github pull request states", err)
