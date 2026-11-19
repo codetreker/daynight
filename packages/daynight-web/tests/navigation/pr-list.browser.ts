@@ -77,8 +77,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 3
     expect([geometry.listBorder, geometry.listOverflow]).toEqual(['0px', 'visible']);
     expect([geometry.padding, geometry.rowGap]).toEqual(compact ? ['9px 11px', '6px'] : ['10px 15px', '12px']);
     expect([geometry.border, geometry.radius, geometry.background]).toEqual(['1px solid rgb(213, 220, 229)', '8px', 'rgb(250, 251, 252)']);
-    expect(geometry.title).toEqual(['13px', '650', '19.5px', 'rgb(23, 33, 50)']);
-    expect(geometry.meta).toEqual(['11px', '16.5px', '2px', '3px', '8px', 'rgb(85, 97, 118)']);
+    expect(geometry.title).toEqual(['14px', '650', '21px', 'rgb(23, 33, 50)']);
+    expect(geometry.meta).toEqual(['14px', '21px', '2px', '3px', '8px', 'rgb(85, 97, 118)']);
     expect(geometry.content.every(Boolean)).toBe(true);
     const badge = page.locator('.pr-row-badge.draft').first();
     await expect(badge).toHaveCSS('color', 'rgb(85, 97, 118)');

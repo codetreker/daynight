@@ -36,6 +36,8 @@ in the shared definitions with its reason.
 
 The shared definitions are loaded by the Web entry stylesheet. Existing feature
 styles are migrated separately; until migrated they retain their existing sizes.
+Public landing and Setup pages, standalone login, invitations and authorization
+pages use these roles, including the first-party landing demonstrations.
 Verify consumers with browser font preferences, desktop and 320px layouts,
 long content and applicable interaction states.
 

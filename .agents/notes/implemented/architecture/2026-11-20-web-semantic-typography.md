@@ -13,29 +13,40 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell, selection controls, task filters, task rows,
-personal task groups, Goal summaries, task search, Markdown reading surfaces,
-dependency graphs, project overview, statistics, Worker pages and configuration,
-Worker Prompt editors, usage panels, project settings, and Session controls and
-timeline details use semantic roles at all viewport widths. Selection text retains
-the existing touch conditions and a 16 CSS px minimum; count badges use the
-metadata role. Markdown code and tables use the interface role; Bot first-paragraph
-emphasis retains its weight without a separate size. The
-[UI standard](../../../../docs/ui-design.md#web-typography) owns role uses and
-sizes. Touch fields use the shared `--text-touch-field` size to preserve a 16 CSS
-px minimum while responding to larger browser font preferences. Terminal recordings
-use a shared `--text-terminal` base, multiplied by their independent zoom scale;
-reading-role changes do not affect terminal output.
+baseline. The shared shell, selection controls, task filters and rows, personal
+task groups, Goal summaries, task search, Markdown reading surfaces, dependency
+graphs, project overview, statistics, Worker pages and configuration, Worker
+Prompt editors, usage panels, project settings, teams, GitHub integration, pull
+requests, Webhooks, and Session controls and timeline details use semantic roles
+at all viewport widths. Selection text retains the existing touch conditions and
+a 16 CSS px minimum; count badges use the metadata role. Markdown code and tables
+use the interface role; Bot first-paragraph emphasis retains its weight without a
+separate size. The [UI standard](../../../../docs/ui-design.md#web-typography)
+owns role uses and sizes. Touch fields use the shared `--text-touch-field` size
+to preserve a 16 CSS px minimum while responding to larger browser font preferences.
+Terminal recordings use a shared `--text-terminal` base, multiplied by their
+independent zoom scale; reading-role changes do not affect terminal output.
 
 Business states, errors, controls, tool paths, and code use the interface role;
 IDs, times, versions, and secondary counts use metadata. Feature-owned form
 rules and explicit project dialog classes override the remaining shared legacy
 form sizes, including Portal states, without changing unrelated consumers.
 Narrow layouts wrap and rearrange controls, while dense panels retain local
-scrolling where needed. Graph layout coordinates grow with the root font size so
-fixed node boxes accommodate text independently of graph zoom. Overview progress
-rows rearrange at narrow widths; chart axes preserve horizontal scrolling and
-provide room for enlarged labels.
+scrolling where needed. Webhook detail tabs wrap within the available panel width
+so increased browser fonts do not hide navigation. Graph layout coordinates grow
+with the root font size so fixed node boxes accommodate text independently of
+graph zoom. Overview progress rows rearrange at narrow widths; chart axes preserve
+horizontal scrolling and provide room for enlarged labels.
+
+Public landing and Setup pages, and standalone login, invitation, device
+authorization and OAuth consent pages, use the semantic roles at all viewport
+widths. Public reading copy and demo prose use the reading role; commands,
+status, errors and actions use the interface role. Authorization codes use the
+detail heading role, with the input using the section heading role. Account
+actions and command copying reflow to accommodate larger text. The public header
+remains sticky only while it occupies at most half the viewport; larger headers
+scroll with the document. Anchor clearance uses the measured sticky height and
+responds to header content, font and viewport changes.
 
 Fixed geometry that depended on the former 14px root is independent of that root;
 text-related spacing remains relative. The earlier
@@ -54,6 +65,12 @@ node geometry costs canvas space and can reduce the initial zoom on narrow scree
 
 **Define sizes in each component.** This permits equal semantic roles to drift
 and makes changing a reading size require edits across consumers.
+
+**Keep fixed public-header offsets.** Locale, identity notices and browser font
+preferences can change header height independently of width breakpoints. A fixed
+clearance can hide anchor targets, and a header taller than the viewport can
+prevent access to the page. Measuring the header preserves semantic text sizes
+while leaving room for content.
 
 ## Consequences
 

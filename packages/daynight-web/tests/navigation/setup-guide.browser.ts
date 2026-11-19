@@ -3,6 +3,8 @@ import { expectCopyButtonSkin, expectDisabledCopyHover } from './copy-button-ass
 
 const origin = `https://${'a'.repeat(55)}.${'b'.repeat(55)}.example.test:4443`;
 
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'wait' }); });
+
 test('production setup guide remains public and usable across clients, languages and widths', async ({ page }, testInfo) => {
   const requests: string[] = [];
   const errors: string[] = [];
@@ -67,7 +69,7 @@ test('production setup guide remains public and usable across clients, languages
         }));
         expect(geometry.width, `${locale}/${value}/${width}`).toBeLessThanOrEqual(width);
         for (const bounds of geometry.controls) { expect(bounds.left).toBeGreaterThanOrEqual(0); expect(bounds.right).toBeLessThanOrEqual(width); }
-        for (const [control, height, fontSize] of [[client, 38, '12px'], [language, 32, '11px']] as const) {
+        for (const [control, height] of [[client, 38], [language, 32]] as const) {
           const skin = await control.evaluate(element => {
             const wrapper = element.closest('.native-select')!;
             const arrow = wrapper.querySelector('.native-select__arrow')!;
@@ -75,7 +77,7 @@ test('production setup guide remains public and usable across clients, languages
             const style = getComputedStyle(element);
             return { height: box.height, fontSize: style.fontSize, appearance: style.appearance, paddingEnd: parseFloat(style.paddingInlineEnd), arrowWidth: arrowBox.width, arrowHeight: arrowBox.height, endGap: box.right - arrowBox.right, centerOffset: Math.abs(box.top + box.height / 2 - arrowBox.top - arrowBox.height / 2), pointerEvents: getComputedStyle(arrow).pointerEvents };
           });
-          expect(skin).toMatchObject({ height, fontSize, appearance: 'none', arrowWidth: 10, arrowHeight: 10, pointerEvents: 'none' });
+          expect(skin).toMatchObject({ height, fontSize: '14px', appearance: 'none', arrowWidth: 10, arrowHeight: 10, pointerEvents: 'none' });
           expect(skin.paddingEnd).toBeGreaterThanOrEqual(30);
           expect(Math.abs(skin.endGap - 12)).toBeLessThanOrEqual(1);
           expect(skin.centerOffset).toBeLessThanOrEqual(1);

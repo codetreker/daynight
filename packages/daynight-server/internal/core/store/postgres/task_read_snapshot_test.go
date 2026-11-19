@@ -9,6 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 )
 
 func taskSnapshotPeople(t *testing.T, facts []model.TaskAssigneeFact) map[string]model.TaskAssigneeFact {
@@ -104,12 +105,13 @@ func TestTaskObservationKeepsEpochAndTaskInOneSnapshot(t *testing.T) {
 
 func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, resolve := range []bool{false, true} {
-		t.Run(fmt.Sprintf("resolve=%t", resolve), func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			userID := storeAssigneeUser(t, database, project.ID, 101, true)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	database := isolatedStore(t)
+	for index, resolve := range []bool{false, true} {
+		if !t.Run(fmt.Sprintf("resolve=%t", resolve), func(t *testing.T) {
+			offset := index * 1000
+			project := queryProject(t, database, offset+1)
+			userID := storeAssigneeUser(t, database, project.ID, offset+101, true)
+			target := queryTask(t, database, project.ID, offset+11, model.TaskTodo)
 			oldName, newName := "Before snapshot", "After snapshot"
 			mustQueryExec(t, database, `UPDATE users SET name=$2 WHERE id=$1`, userID, oldName)
 			mustQueryExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, target.ID, userID)
@@ -153,18 +155,22 @@ func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 			if after := snapshotTask(t, database, project.ID, target.ID); !reflect.DeepEqual(after, before) {
 				t.Fatalf("directory read changed assigned Task: before=%#v after=%#v", before, after)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, database.Pool)
 	}
 }
 
 func TestTaskAssigneesReadOneAssignmentSnapshot(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, resolve := range []bool{false, true} {
-		t.Run(fmt.Sprintf("resolve=%t", resolve), func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			former := storeAssigneeUser(t, database, project.ID, 101, false)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	database := isolatedStore(t)
+	for index, resolve := range []bool{false, true} {
+		if !t.Run(fmt.Sprintf("resolve=%t", resolve), func(t *testing.T) {
+			offset := index * 1000
+			project := queryProject(t, database, offset+1)
+			former := storeAssigneeUser(t, database, project.ID, offset+101, false)
+			target := queryTask(t, database, project.ID, offset+11, model.TaskTodo)
 			mustQueryExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, target.ID, former)
 			before := snapshotTask(t, database, project.ID, target.ID)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -204,7 +210,10 @@ func TestTaskAssigneesReadOneAssignmentSnapshot(t *testing.T) {
 			if changed.AssignedTo != nil || changed.Version != before.Version+1 || !reflect.DeepEqual(snapshotTask(t, database, project.ID, target.ID), changed) {
 				t.Fatalf("assignment replacement not preserved: before=%#v after=%#v", before, changed)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, database.Pool)
 	}
 }
 
