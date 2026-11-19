@@ -14,24 +14,30 @@ exercise this dependency.
 
 ## Decision
 
-The installer copies each physical source package into its own
-`.dev-store/<id>/node_modules/<package-name>/` directory and connects its resolved
-dependencies within that package's resolution scope. Package names remain
-available to native relative library lookup, while separate physical packages
-retain independent versions and peer resolutions. All dependency links stay
-inside the snapshot; copied package files do not depend on mutable source links.
+The adopted [native dependency requirements](../../../../docs/spec/development-snapshot-native-layout.md)
+require each physical source package to have its own
+`.dev-store/<id>/node_modules/<package-name>/` directory and resolved dependencies
+within its package scope. Named paths must support native relative library
+lookup while keeping different versions and peer resolutions separate. All
+dependency links must remain inside the snapshot, and copied package files must
+not depend on mutable source links.
 
-Before publishing the development entry, independent Node processes load and
-exercise sharp with an in-memory image, query an in-memory better-sqlite3
-database, and load Koffi. A failing check identifies its module and prevents
-replacement of the existing development entry. Separate processes avoid a
-previously loaded native library masking a broken snapshot dependency path.
+The requirements also mandate separate, bounded Node processes that exercise
+sharp with an in-memory image, query an in-memory better-sqlite3 database, and
+load Koffi before publishing the development entry. Native failures must identify
+the module and preserve the existing entry. Separate processes prevent an
+already loaded source library from masking broken snapshot paths.
+
+The implemented artifact is the requirements contract. The installer still uses
+numbered package roots and checks only the version before publication; it does
+not yet enforce the named layout or native validation requirements. A native
+load failure can therefore remain undetected until after the entry is replaced.
 
 This refines the dependency closure established by the
 [original development CLI decision](../../archived/architecture/2026-10-29-local-development-cli.md),
 whose independent snapshots protected running processes from mutable build
 outputs. The [development guide](../../../../docs/development.md#local-development-cli-channel)
-owns the installation and snapshot lifetime contract.
+owns the current installation and snapshot lifetime behavior.
 
 ## Alternatives
 
@@ -53,12 +59,14 @@ production native modules that failed during Controller startup.
 
 ## Consequences
 
-Development installation performs additional bounded child-process checks and
-retains the existing atomic publication boundary. A failed new snapshot cannot
-replace a usable old entry. Existing running processes still require their
-original snapshots and fixed Node executable to remain available.
+The requirements establish native readiness as a condition of successful
+installation. Enforcing them requires additional child-process checks before
+the existing atomic publication boundary. Version-only success cannot establish
+that the current snapshot meets this condition or protects an old entry from a
+native loading defect.
 
-The checks cover representative native runtime dependencies, not every command
-or Provider lifecycle. Controller acceptance remains a separate runtime check.
-The installer retains macOS/Linux support and does not add Windows launchers or
-change the npm package.
+Representative native checks cannot establish every command or Provider
+lifecycle. Controller acceptance requires an actual bounded conversation,
+normal stop and archive. Existing running processes still require their original
+snapshots and fixed Node executable to remain available. The requirements retain
+macOS/Linux support without adding Windows launchers or changing the npm package.
