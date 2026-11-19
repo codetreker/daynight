@@ -1,4 +1,4 @@
--- Schema snapshot version: 91
+-- Schema snapshot version: 92
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -726,7 +726,9 @@ CREATE TABLE "session_archive_retention" (
     "expired_at" timestamp with time zone,
     "reason" "text" DEFAULT 'pending'::"text" NOT NULL,
     "version" bigint DEFAULT 1 NOT NULL,
-    "members" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL
+    "members" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "cleaned_at" timestamp with time zone,
+    CONSTRAINT "archive_cleanup_requires_expiration" CHECK ((("cleaned_at" IS NULL) OR ("expired_at" IS NOT NULL)))
 );
 
 CREATE TABLE "session_archives" (
@@ -2078,6 +2080,8 @@ CREATE INDEX "projects_created_id" ON "projects" USING "btree" ("created_at", "i
 CREATE INDEX "projects_live_created_id_idx" ON "projects" USING "btree" ("created_at", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE UNIQUE INDEX "session_archive_one_receiving_file" ON "session_archive_files" USING "btree" ("session_id") WHERE ("state" = 'receiving'::"text");
+
+CREATE INDEX "session_archive_retention_cleanup" ON "session_archive_retention" USING "btree" ("session_id") WHERE ("cleaned_at" IS NULL);
 
 CREATE UNIQUE INDEX "session_image_capture_attempt" ON "session_image_captures" USING "btree" ("session_id", (("receipt" ->> 'attemptId'::"text")));
 

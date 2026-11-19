@@ -63,6 +63,9 @@ func (s *Service) taskContentRead(ctx context.Context, p model.Principal, projec
 		if err = s.historyOps.bindRead(op, a, task, project, taskID); err != nil {
 			return err
 		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+			return err
+		}
 		return work(a)
 	})
 }
@@ -73,6 +76,9 @@ func (s *Service) taskArchiveRead(ctx context.Context, p model.Principal, projec
 			return err
 		}
 		if err = s.historyOps.bindArchive(op, a, task, p, project, taskID, false); err != nil {
+			return err
+		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
 			return err
 		}
 		return work(a)

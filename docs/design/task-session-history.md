@@ -42,13 +42,19 @@ schema3 manifest 的文件与资源布局保持不变，正文变体新增 `cont
 
 正文保存能力的生产入口按条目类型形成持久投影，后续同步、容量统计和归档消费同一投影。消息正文及其资源闭包保留；独立工具详情继续供在线显示，但不进入正文归档。传输确认水位、待确认事件和执行控制由各自账本持有，不能因投影排除工具而丢失确认或后续正文。旧格式归档保留原工具内容与读取校验，策略有意排除的工具不作为正文覆盖缺口。
 
-期限计算与持久化由 `core/session`、`core/store` 和 PostgreSQL 的 `session_archive_retention` 共同提供，规则见[七天期限合同](../spec/task-session-history.md#七天期限与任务链目录)。每份普通 Web Task 归档在原成功发布事务内通过 `RecordSessionArchiveSuccess` 写入服务端首次成功时间；重复成功和旧格式转换保留原记录。Bot、Test Session 与 Herdr 不进入此期限表。迁移对既有 ready 归档保存明确的 `grace_until`，为迁移时刻加七天；历史首次时间保持 null，不能从 `updated_at` 推断。
+期限计算与持久化由 `core/session`、`core/store` 和 PostgreSQL 的 `session_archive_retention` 共同提供，规则见[七天期限合同](../spec/task-session-history.md#七天期限与任务链目录)。每份普通 Web Task 归档在原成功发布事务内通过 `RecordSessionArchiveSuccess` 写入服务端首次成功时间；重复成功和旧格式转换保留原记录。Bot、Test Session 与 Herdr 不进入此期限表。期限迁移对既有 ready 归档保存明确的 `grace_until`，历史首次时间保持 null，不能从 `updated_at` 推断。清理启用迁移对当时仍未过期的 ready 旧格式普通 Web Task 归档，将宽限下限一次性抬到启用时刻加 7×24 小时，保留已有更晚宽限及真实首次成功时间，清空旧候选期限并推进版本。该规则也覆盖期限迁移之后成功发布的旧格式归档；schema3 的正文策略由持久 bundle ledger 的 `ContentPolicy=task_body` 区分，不能单凭 schema3 排除旧格式。已过期记录不复活，重新启动或重跑迁移不刷新宽限。
 
 目录与清理消费者对已有成功归档，必须在 `WriteArchiveRetention` 的 callback 内调用 `RefreshArchiveRetention`。该事务先以共享模式锁 Project，与任务状态及依赖写入的 Project 排他锁互斥，再锁指定 Session、归档和期限记录。DAO 读取当前双向普通依赖连通分量，排除外部依赖、Goal 成员关系及已删除成员；core 选择 done 的 `completed_at` 或 cancelled 的 `cancelled_at`，取所有成员的最大终态时间。期限为其与首次成功时间的较晚值加 7×24 小时，再受升级宽限下界约束。成员未结束时清空期限；必需终态时间未知时保持未知。旧首次成功时间未知但存在明确升级宽限时，以已知终态时间和宽限计算，同时保留未知事实。尚无首次成功记录的 pending／failed 归档由原状态读取入口表达，不因查询期限创建成功记录。
 
-`SaveArchiveRetention` 按原期限版本保存候选期限、原因和全部成员版本，并在同一事务推进版本。每次使用前重新计算，因此重开、连链和拆链后不会沿用缓存期限。已标记过期的记录不复活。保存的成员版本是该次决策的证据，不是目录分页图版本，也不是事务外删除许可。目录仍须在自己的授权和一致图版本下组装链、成员与原 Session；清理须在撤销读取资格的同一事务内重新核对资源引用及提交状态，随后等待在途句柄释放才回收独占字节。当前期限 scope 只暴露期限 DAO；后继清理必须为同一事务补充资源引用与读取准入能力。期限事务不能嵌入已经持有 Task／Session 锁的归档事务，以免反转 Project 到 Session 的锁顺序。
+`SaveArchiveRetention` 按原期限版本保存候选期限、原因和全部成员版本，并在同一事务推进版本。每次使用前重新计算，因此重开、连链和拆链后不会沿用缓存期限。已标记过期的记录不复活。保存的成员版本是该次决策的证据，不是目录分页图版本，也不是事务外删除许可。目录仍须在自己的授权和一致图版本下组装链、成员与原 Session。`WriteArchiveCleanup` 在相同的 Project 到 Session 锁序下提供期限与资源 DAO；core 的 `ExpireArchive` 刷新期限后，DAO 按观察版本、到期时间与 ready 提交状态原子写入 `expired_at`。期限事务不能嵌入已经持有 Task／Session 锁的归档事务，以免反转 Project 到 Session 的锁顺序。
 
-这些内部能力不声明 `taskHistoryDirectoryVersion=1`，也不启动到期清理；归档文件 schema、正文策略能力和目录能力分别版本化，旧 `view=inspection` 响应保持原形状。目录和清理实现分别拥有授权、稳定分页、过期准入和文件回收证据。取舍见[期限持久化决策](../../.agents/notes/implemented/architecture/2026-11-19-task-archive-retention.md)。
+过期事务解除归档引用，以及通过 committed capture 的 image ID 和 resource ID 证明属于该历史的 message 引用。未知 message 引用、upload、operation 和 native_resume 引用继续保留；只有最后引用消失的资源进入 `gc_pending`。普通 Task 内容读取、图片读取、Controller 内容操作和归档上传在授权及 Session 锁定后检查过期屏障；摘要查询和操作回执保持独立读取用途。旧入口返回既有 `history_unavailable` 并说明历史已过期，不伪造空页，也不改变归档状态枚举。
+
+service 的后台清理器在应用启动后扫描每页最多 32 个原 Session，按 UUID 推进游标，每分钟处理一页并在末页重置；没有缓存期限的归档也会重新计算。单个目标最多处理十秒，整页最多一分钟。长时间未结束的链不会阻挡游标后面的候选。事务确认过期后，清理器在数据库作用域之外取得原 owner 的归档驻留许可，并逐一取得持久化媒体租约对应的文件锁。许可仍占用时保留责任，下一轮继续。只有原读写退出后才删除 typed archive namespace 中的正文、暂存及迁移旧文件，并按可信 namespace 删除 `gc_pending` 图片的精确 blob；Task 附件和 Bot 目录不在这些地址范围内。
+
+全部文件释放与资源记录回收确认后写入 `cleaned_at`，清除归档 bundle、文件、分块、迁移明细与旧内联时间线，保留原 Session、轻量归档和期限摘要及独立操作回执。物理删除失败或事务完成未知均保留过期屏障与未完成责任，重启后继续；已经过期的责任在 Task 或 Project 软删除后仍可完成。应用停止时先取消并排空清理器，再关闭其借用的文件存储与数据库。资源仍被独立引用时，其字节继续保留，不因归档过期删除。
+
+这些内部能力不声明 `taskHistoryDirectoryVersion=1`；归档文件 schema、正文策略能力和目录能力分别版本化，旧 `view=inspection` 响应保持原形状。期限摘要保存 `reason`、成员版本和时间，归档摘要保留原提交字节数；目录统计须区分逻辑内容量与实际文件占用。取舍见[期限持久化决策](../../.agents/notes/implemented/architecture/2026-11-19-task-archive-retention.md)及[清理决策](../../.agents/notes/implemented/architecture/2026-11-19-task-archive-cleanup.md)。
 
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 

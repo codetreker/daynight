@@ -2970,10 +2970,17 @@ and Session UUID directories. Task Web and historical Herdr objects use
 independent Test/Bot objects use
 `session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
 PostgreSQL retains the object path, length, digest and archive status or receipt.
-Readers continue to open the persisted `object_path` and apply the existing
-length/digest/structure checks. Existing files and metadata stay in place;
-historical read behavior and public URLs remain unchanged. Web archive uploads retain
-their existing retry semantics.
+Readers open the persisted `object_path` and apply length, digest and structure
+checks while the archive remains readable. Ordinary Web Task archives expire
+under the [seven-day retention design](../../docs/design/task-session-history.md#归档与权限生命周期).
+The background cleanup worker rechecks current chain facts, commits expiration,
+then waits for original readers and writers before removing exclusive bytes.
+Failed cleanup resumes from its durable expiration record, including after
+restart. Task attachments, Bot caches and independently referenced image bytes
+remain retained. Existing content endpoints report `history_unavailable` for
+expired history; lightweight Session and retention summaries remain available.
+Backup verification excludes expired archive files and unreferenced reclamation
+objects while continuing to verify independently retained resources.
 Archive uploads and content reads acquire one nonblocking slot per application
 instance and one per original owner across instances sharing a storage root.
 The lease spans body reading, validation, storage readback, encoding and response

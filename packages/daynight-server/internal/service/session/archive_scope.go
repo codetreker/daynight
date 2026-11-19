@@ -41,6 +41,9 @@ func (s *Service) archive(ctx context.Context, principal model.Principal, projec
 				return err
 			}
 		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+			return err
+		}
 		return work(access)
 	})
 }

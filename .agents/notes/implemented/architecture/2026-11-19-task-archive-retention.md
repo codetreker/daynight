@@ -20,7 +20,10 @@ Each ordinary Web Task Session has separate retention metadata. The archive's
 existing publication transaction inserts the first server success time once.
 Migration records an explicit seven-day grace deadline for existing ready
 archives while leaving their original success time unknown. Duplicate receipts
-and conversion preserve both facts.
+and conversion preserve both facts. Because retention metadata can be installed
+before reclamation is enabled, the [cleanup migration](2026-11-19-task-archive-cleanup.md)
+establishes the required enablement grace floor without changing first success
+facts or reviving expired archives.
 
 A dedicated transaction acquires the Project lock before Session and archive
 locks. It shares the existing Task writers' Project serialization boundary,
@@ -56,6 +59,7 @@ its membership and holds the Project shared lock until persistence finishes.
 The dedicated scope preserves existing lock order instead of upgrading locks
 inside an archive publication transaction.
 
-This module supplies calculation and persistence. Versioned directories,
-read-admission revocation and physical reclamation remain separate consumers;
-no HTTP capability or deletion loop is enabled by storing these records.
+This module supplies calculation and persistence. The
+[cleanup consumer](2026-11-19-task-archive-cleanup.md) owns read-admission
+revocation and physical reclamation. Versioned directories remain a separate
+consumer; storing retention records does not declare their HTTP capability.

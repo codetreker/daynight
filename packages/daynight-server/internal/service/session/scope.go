@@ -126,6 +126,11 @@ func (s *Service) browserFor(ctx context.Context, principal model.Principal, pro
 		if err = op.BindTaskPurpose(ctx, access, task, principal, project, taskID, purpose); err != nil {
 			return err
 		}
+		if purpose != sessioncore.TaskReceiptAccess {
+			if err = requireArchiveReadable(ctx, scope.SessionDAO(), id); err != nil {
+				return err
+			}
+		}
 		return work(access)
 	})
 }
@@ -169,6 +174,9 @@ func (s *Service) controller(ctx context.Context, fence sp.ControllerFence, work
 			}
 		}
 		if err = op.BindController(access, task, fence); err != nil {
+			return err
+		}
+		if err = requireArchiveReadable(ctx, scope.SessionDAO(), fence.SessionID); err != nil {
 			return err
 		}
 		return work(access)
