@@ -329,7 +329,7 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 
 `POST /api/v1/projects/{projectId}/transfer` 接收必填
 `{ownership:{teamId,version},targetTeam:{id,version},expectedUserId}`。主体核对先于领域 SQL；
-提交前重新检查当前 owner Team admin、归属身份和版本、目标存在和元数据版本。过期观察返回
+REST 以唯一 header 值 `Daynight-Confirm-Goal-Dependency-Removal: true` 表达永久清理确认；省略代表未确认，其他字面值、空值、重复值或逗号列表均返回 `400 invalid_input`。请求体、预览与成功回执保持原结构，header 由 CORS allow-list 允许浏览器跨源提交。提交前重新检查当前 owner Team admin、归属身份和版本、目标存在和元数据版本。过期观察返回
 `409 version_conflict`，不可见项目或不存在目标返回 `404 not_found`，仅有 Project admin
 而非 owner Team admin 返回 `403 forbidden`。同一 owner 仍核对权限和双方版本，返回
 `changed:false` 且不更新任何时间或版本；实际转移使 ownership version 加一，保留 Project
