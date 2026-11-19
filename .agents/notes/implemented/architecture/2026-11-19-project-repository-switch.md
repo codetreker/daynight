@@ -28,6 +28,18 @@ switch. Noninteractive use requires explicit flags for confirmation and that
 choice. A validated receipt establishes success; stale previews require a new
 confirmation and unknown outcomes require observation without replay.
 
+The Web editor binds confirmation to the exact preview and keeps the decimal
+versions as strings. Repository writes join the existing Project management
+guard. Its unknown result remains guarded after readback because current state
+cannot identify the original operation. Account- and Project-bound change
+notifications refresh the affected readers through their existing controllers,
+which preserves independent settings and Worker drafts. Settings refresh intent
+survives read failure and cancellation until an authorized read merges the
+resource, so recovery cannot discard a draft or replace its concurrency version.
+Access revocation still clears private state. The
+[settings design](../../../../docs/design/project-settings.md#仓库改址) owns
+Web presentation and read ownership.
+
 Repository operation diagnostics record the Project, phase, classification and
 transaction outcome without repository addresses or credentials. Worker row
 counts are recorded as committed only when transaction completion confirms it;
@@ -43,6 +55,10 @@ old bindings or only a subset of Workers updated.
 transport forms would unnecessarily stop synchronization and remove selections.
 An explicit choice is required when the available evidence cannot establish
 identity.
+
+**Refresh the whole page after saving.** Reloading would discard independent
+settings drafts and reading context. Targeted notifications retain those owners
+and invalidate the GitHub installation proof that belongs to the old address.
 
 ## Consequences
 

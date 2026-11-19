@@ -3,6 +3,7 @@ package measure
 
 import (
 	"bufio"
+	"bytes"
 	"encoding"
 	"encoding/json"
 	"fmt"
@@ -113,6 +114,7 @@ func raw(w io.Writer, b []byte) error {
 				replacement = "\\u003e"
 			case '&':
 				replacement = "\\u0026"
+			case '"', '\\':
 			case 0xe2:
 				if i+2 < len(b) && b[i+1] == 0x80 {
 					switch b[i+2] {
@@ -122,6 +124,12 @@ func raw(w io.Writer, b []byte) error {
 						replacement, size = "\\u2029", 3
 					}
 				}
+			default:
+				// The current byte is ordinary and valid JSON guarantees a later
+				// closing quote. Preserve raw bytes (including invalid UTF-8), then
+				// let the next iteration handle the event at its byte offset.
+				i += bytes.IndexAny(b[i:], "\"\\<>&\u2028\u2029") - 1
+				continue
 			}
 		}
 		if replacement != "" {

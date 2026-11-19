@@ -1,3 +1,4 @@
+import { subscribeRepositoryChanges } from '../projects/repository-changes';
 import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
@@ -183,6 +184,14 @@ export const ProjectGitHubConsumption = ({ projectId, userId, repoUrl, active, o
     const timer = window.setInterval(refresh, 30_000);
     return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); window.clearInterval(timer); readAbort.current?.abort(); ++sequence.current; };
   }, [active, onRoute, access.status, load]);
+
+  useEffect(() => subscribeRepositoryChanges(change => {
+    if (change.userId !== userId || change.projectId !== projectId) return;
+    ++discoverySequence.current; proof.current = null; grantOwner.current = null;
+    setCandidate(null); setGrants([]); setSelectedGrant(''); retireDialog();
+    setStatus(null); statusRef.current = null; setCounts(null); setNeedsRead(true);
+    if (active && onRoute) void load();
+  }), [projectId, userId, active, onRoute, load]);
 
   const connectionDenied = () => {
     ++discoverySequence.current; proof.current = null; grantOwner.current = null; setCandidate(null); setGrants([]); setSelectedGrant(''); setDiscovering(false); setGrantLoading(false); retireDialog(); setFeedback('accessChanged');
