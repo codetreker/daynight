@@ -177,15 +177,18 @@ export const useGraphDirection = (projectId: string, rootId: string) => {
 const scrollExtent = () => Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
 
 // A single position belongs to the project page, not to an individual panel.
-export const useProjectScroll = (projectId: string, userId: string, section: ProjectSection, ready: boolean, explicitTarget: boolean) => {
+export const useProjectScroll = (projectId: string, userId: string, section: ProjectSection, ready: boolean, explicitTarget: boolean, view: TaskView) => {
   const key = `daynight:project-scroll:${JSON.stringify([projectId, userId])}`;
   const load = () => {
     const initial = readPreference(key, scrollPreference);
-    return { key, initial, initialSection: section, pending: initial.value !== undefined && !explicitTarget, position: initial.value, lastY: window.scrollY, extent: scrollExtent(), lockedScroll: false, layoutChanged: false };
+    return { key, initial, initialSection: section, initialView: view, pending: initial.value !== undefined && !explicitTarget, position: initial.value, lastY: window.scrollY, extent: scrollExtent(), lockedScroll: false, layoutChanged: false };
   };
   const state = useRef<ReturnType<typeof load> | null>(null);
   if (state.current === null || state.current.key !== key) state.current = load();
-  if (section !== state.current.initialSection || explicitTarget) state.current.pending = false;
+  useLayoutEffect(() => {
+    const current = state.current!;
+    if (section !== current.initialSection || section === "tasks" && view !== current.initialView || explicitTarget) current.pending = false;
+  }, [key, section, view, explicitTarget]);
   const context = useRef({ ready, projectId });
   context.current = { ready, projectId };
   const [write, setWrite] = useState<{ key: string; issue: PreferenceIssue | null }>({ key, issue: null });

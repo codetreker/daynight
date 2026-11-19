@@ -209,7 +209,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     ? snapshotReady && currentSnapshot !== null && currentSnapshot.receivedAt !== null && graph.error === null && (section !== "tasks" || !searchActive || !search.busy && search.error === null && search.total !== null)
     : panelReadiness[section];
   const explicitTarget = location.hash !== "" || new URLSearchParams(location.search).has("chain") || new URLSearchParams(location.search).has("goalGraph");
-  const { savePosition, cancelRestore, issue: scrollIssue } = useProjectScroll(projectId, viewer.userId, section, projectReady && sectionReady, explicitTarget);
+  const { savePosition, cancelRestore, issue: scrollIssue } = useProjectScroll(projectId, viewer.userId, section, projectReady && sectionReady, explicitTarget, activeView);
   useLayoutEffect(() => {
     if (!snapshotReady) setTasksMounted(false);
     else if (section === "tasks") setTasksMounted(true);

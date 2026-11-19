@@ -330,6 +330,37 @@ test('explicit overview location takes precedence over the shared position', asy
   await expect(located).toBeFocused();
 });
 
+for (const navigation of ['category', 'history'] as const) test(`cached task preview cancels a pending scroll restore on ${navigation} navigation`, async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  const standalone = Array.from({ length: 20 }, (_, i) => row(300 + i, `Standalone ${i}`));
+  const state = await install(page, [...chains, ...standalone]);
+  const key = `daynight:project-scroll:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    await expect(page.getByRole('tab', { name: 'Task chains', exact: true })).toBeVisible();
+    if (navigation === 'history') {
+      await select(page, 'Standalone tasks');
+      await page.locator('.project-navigation a[href="/projects"]').click();
+      await expect(page).toHaveURL(/\/projects$/);
+    }
+    await page.evaluate(name => { scrollTo(0, 0); localStorage.setItem(name, '320'); }, key);
+    state.graphMode = 'pending';
+    if (navigation === 'history') await page.goBack();
+    else await page.reload();
+    await expect(page.getByRole('tab', { name: navigation === 'history' ? 'Standalone tasks' : 'Task chains', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(await position(page)).toBe(0);
+    if (navigation === 'history') await page.goBack();
+    else await select(page, 'Standalone tasks');
+    await expect(page.getByRole('tab', { name: navigation === 'history' ? 'Task chains' : 'Standalone tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(await position(page)).toBe(0);
+    const completed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
+    state.releaseGraph();
+    await completed;
+    await expect(page.locator('.snapshot-time time')).toBeVisible();
+    expect(await position(page)).toBe(0);
+  } finally { state.releaseGraph(); }
+});
+
 test('project history restores native mode when leaving for other routes', async ({ page }) => {
   await install(page, [row(10, 'Task')]);
   await page.goto(`/projects/${projectId}/settings`);

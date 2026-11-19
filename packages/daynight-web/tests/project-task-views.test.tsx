@@ -830,7 +830,7 @@ const newPreferences = [
 
 describe('project scroll persistence boundaries', () => {
   const ScrollOwner = ({ user, projectId = project, ready = true }: { user: string; projectId?: string; ready?: boolean }) => {
-    useProjectScroll(projectId, user, 'overview', ready, false);
+    useProjectScroll(projectId, user, 'overview', ready, false, 'chains');
     return null;
   };
 
