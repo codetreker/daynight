@@ -2,7 +2,7 @@
   margin-bottom: 5px;
   background: transparent;
   color: #a7b0c2;
-  font-size: 13px;
+  font-size: var(--text-interface);
 }
 
 .auth-shell .nav-button[aria-current="page"],
@@ -30,7 +30,7 @@
   border: 0;
   background: none;
   padding: 4px;
-  font-size: 12px;
+  font-size: var(--text-interface);
   white-space: nowrap;
   min-width: 0;
 }
@@ -40,16 +40,16 @@
 .account-button { color: inherit; cursor: pointer; }
 .account-button:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; border-radius: 6px; }
 .account-menu { position: fixed; z-index: 50; width: 174px; max-width: calc(100vw - 16px); padding: 5px; background: #fff; border: 1px solid #e1e4ed; border-radius: 7px; box-shadow: 0 8px 24px #17244726; color: #637087; }
-.account-menu-item { display: block; width: 100%; min-height: 44px; border: 0; border-radius: 4px; padding: 10px 11px; background: none; color: inherit; font: inherit; font-size: 12px; text-align: left; text-decoration: none; cursor: pointer; }
+.account-menu-item { display: block; width: 100%; min-height: 44px; border: 0; border-radius: 4px; padding: 10px 11px; background: none; color: inherit; font: inherit; font-size: var(--text-interface); text-align: left; text-decoration: none; cursor: pointer; }
 .account-menu-item:hover, .account-menu-item:focus-visible { background: #f2f2fd; outline: 2px solid #8c8cf0; outline-offset: -2px; }
 .account-menu-separator { height: 1px; margin: 4px 5px; background: #e1e4ed; }
 .account-menu-sign-out { color: #b42332; }
 .account-menu-sign-out:hover, .account-menu-sign-out:focus-visible { background: #fff1f2; }
 .account-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .account-actions > .locale-preference { max-width: 380px; }
-.setup-guide-link { display: inline-flex; gap: 6px; align-items: center; color: #6d778b; font-size: 12px; padding: 5px 0; white-space: nowrap; }
+.setup-guide-link { display: inline-flex; gap: 6px; align-items: center; color: #6d778b; font-size: var(--text-interface); padding: 5px 0; white-space: nowrap; }
 .setup-guide-link:hover, .setup-guide-link[aria-current="page"] { color: var(--indigo); }
-.avatar { width: 30px; height: 30px; border-radius: 50%; background: #eaeafa; color: #6664ad; display: inline-flex; align-items: center; justify-content: center; flex: none; font-size: 11px; font-weight: 650; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; background: #eaeafa; color: #6664ad; display: inline-flex; align-items: center; justify-content: center; flex: none; font-size: var(--text-metadata); font-weight: 650; }
 .management-avatar { overflow: hidden; }
 .management-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .account-avatar { position: relative; overflow: hidden; }
@@ -59,13 +59,13 @@
 .avatar.green { background: #e6f3ee; color: #3e806a; }
 .avatar.amber { background: #fbefdf; color: #987244; }
 .actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.badge { display: inline-flex; align-items: center; font-size: 10px; padding: 3px 7px; border-radius: 4px; background: #f0f1f6; color: #707b8d; white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; font-size: var(--text-interface); padding: 3px 7px; border-radius: 4px; background: #f0f1f6; color: #707b8d; white-space: nowrap; }
 .badge.admin { background: #efeffd; color: #6361b0; }
 .badge.success { background: #eaf5ef; color: #398567; }
 .badge.warning { background: #fff5e5; color: #916a2e; }
 .badge.danger { background: #fceff0; color: #ad4b57; }
 .muted { color: var(--muted); }
-.small { font-size: 11px; }
+.small { font-size: var(--text-metadata); }
 .break { overflow-wrap: anywhere; }
 
 :where(.auth-shell, .auth-page, .invite-page, .auth-dialog) .button.primary:hover:not(:disabled) { background: #5050cd; }
@@ -75,18 +75,18 @@
 .button.quiet { border-color: transparent; box-shadow: none; background: none; color: #6c7290; }
 .button.quiet:hover:not(:disabled) { background: #f5f5fd; }
 .button.quiet:disabled { color: #9299a9; background: none; }
-.inline-link { border: 0; background: none; padding: 0; color: #5c5ce0; font-size: 11px; }
+.inline-link { border: 0; background: none; padding: 0; color: #5c5ce0; font-size: var(--text-interface); }
 .inline-link:hover:not(:disabled) { color: #4444b4; text-decoration: underline; text-underline-offset: 3px; }
 .inline-link:disabled { color: #9299a9; }
 .spinner.inline { width: 14px; height: 14px; border-color: #ffffff50; border-top-color: #fff; }
 
-.notice { border: 1px solid #dddff3; background: #f0f1fc; border-radius: 7px; padding: 12px 15px; color: #646d96; font-size: 12px; margin-bottom: 22px; overflow-wrap: anywhere; }
+.notice { border: 1px solid #dddff3; background: #f0f1fc; border-radius: 7px; padding: 12px 15px; color: #646d96; font-size: var(--text-interface); margin-bottom: 22px; overflow-wrap: anywhere; }
 .notice.error { border-color: #ecd4d8; background: #fff6f7; color: #9b4651; }
 .notice.warning { border-color: #e7d7c2; background: #fffaf1; color: #79623d; }
 .notice.success { border-color: #cde4d8; background: #f0f8f3; color: #398567; }
 .notice p + p { margin-top: 5px; }
 .notice p + button { margin-top: 11px; }
-.notice .request-id { margin-top: 5px; font-size: 11px; }
+.notice .request-id { margin-top: 5px; font-size: var(--text-metadata); }
 .notice > .button { margin-left: 7px; }
 .standalone-task-route { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
 .standalone-task-route > .auth-shell { flex: 1; min-height: 0; }
@@ -122,14 +122,14 @@
 .panel { border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: var(--shadow); overflow: hidden; margin-bottom: 24px; min-width: 0; }
 .panel-heading { padding: 20px 23px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--line); }
 .panel-heading > div { min-width: 0; }
-.panel-heading h2 { font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
-.panel-heading p { color: var(--muted); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
+.panel-heading h2 { font-size: var(--text-section-heading); font-weight: 650; overflow-wrap: anywhere; }
+.panel-heading p { color: var(--muted); font-size: var(--text-interface); margin-top: 4px; overflow-wrap: anywhere; }
 .panel-heading:last-child { border-bottom: 0; }
 .panel-body { padding: 23px; }
 .team-delete > summary { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 44px; padding: 20px 23px; cursor: pointer; list-style: none; }
 .team-delete > summary::-webkit-details-marker { display: none; }
 .team-delete > summary:focus-visible { outline: 3px solid #344054; outline-offset: -3px; }
-.team-delete > summary h2 { min-width: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.team-delete > summary h2 { min-width: 0; font-size: var(--text-section-heading); font-weight: 650; overflow-wrap: anywhere; }
 .team-delete-chevron { width: 9px; height: 9px; flex: none; border-right: 2px solid #556176; border-bottom: 2px solid #556176; transform: rotate(45deg); margin: 0 3px 4px; }
 .team-delete[open] .team-delete-chevron { transform: rotate(225deg); margin: 4px 3px 0; }
 .team-delete > .panel-body { border-top: 1px solid var(--line); }
@@ -350,13 +350,13 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 
 @media (max-width: 600px) {
   .auth-shell .content { padding-bottom: 80px; }
-  .account-button { font-size: 11px; gap: 6px; }
+  .account-button { gap: 6px; }
   .account-actions { width: 100%; justify-content: flex-start; gap: 10px; }
   .account-actions > .locale-preference { max-width: 100%; }
   .account-actions > .locale-preference:has(.locale-notice) { flex-basis: 100%; }
-  .account-button .avatar { width: 26px; height: 26px; font-size: 10px; }
+  .account-button .avatar { width: 26px; height: 26px; }
   .account-name { display: none; }
-  .notice { font-size: 11px; padding: 11px 13px; }
+  .notice { padding: 11px 13px; }
   .notice > .button { margin: 8px 0 0; }
   .row { display: flex; flex-wrap: wrap; gap: 12px; padding: 17px; }
   .row.head { display: none; }
@@ -367,8 +367,6 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
   .token-row > .row-detail { flex: 1 1 100%; }
   .role-legend { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .panel-heading { padding: 17px; align-items: flex-start; }
-  .panel-heading h2 { font-size: 14px; }
-  .panel-heading p { font-size: 10px; }
   .panel-heading > .button { flex: none; }
   .panel-body { padding: 18px; }
   .profile-info h2 { font-size: 16px; }
@@ -424,7 +422,7 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .team-member-row .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 .members-project-name { overflow-wrap: anywhere; min-height: 1.5em; }
-.members-project-name-placeholder { display: inline-block; width: min(22rem, 100%); height: 1em; border-radius: 3px; background: var(--line); vertical-align: middle; }
+.members-project-name-placeholder { display: inline-block; width: min(308px, 100%); height: 1em; border-radius: 3px; background: var(--line); vertical-align: middle; }
 .members-page-heading > .button { flex-shrink: 0; }
 
 .consent-card .subtitle { text-align: center; line-height: 1.8; }
@@ -482,8 +480,8 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
   .grant-status-notice { margin-inline: 14px; }
 }
 
-.project-deletion-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .5rem 1rem; padding: 1rem; border: 1px solid var(--border, #e1e4ea); border-radius: .5rem; background: var(--surface-muted, #f8f9fb); }
+.project-deletion-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 14px; padding: 14px; border: 1px solid var(--border, #e1e4ea); border-radius: 7px; background: var(--surface-muted, #f8f9fb); }
 .project-deletion-details dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .project-deletion-details dt { font-weight: 600; }
-@media (max-width: 480px) { .project-deletion-details { grid-template-columns: minmax(0, 1fr); gap: .25rem; } }
+@media (max-width: 480px) { .project-deletion-details { grid-template-columns: minmax(0, 1fr); gap: 3.5px; } }
 .project-deletion-challenge { overflow-wrap: anywhere; white-space: pre-wrap; font-weight: 600; }
