@@ -45,6 +45,7 @@ export const browserConfigs = [
   'identity-cache-playwright.config.ts',
   'locale-continuity-playwright.config.ts',
   'landing-header-playwright.config.ts',
+  'public-auth-typography-playwright.config.ts',
   'setup-guide-playwright.config.ts',
   'native-select-playwright.config.ts',
   'bar-chart-playwright.config.ts',
