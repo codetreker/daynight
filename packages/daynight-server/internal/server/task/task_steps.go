@@ -39,16 +39,16 @@ func (h *taskStepsHandler) decodeObject(w http.ResponseWriter, request *http.Req
 func TaskStepsRoutes(mux *http.ServeMux, steps StepService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := newTaskStepsHandler(steps, logger)
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/steps"
-	mux.HandleFunc("POST "+path, auth.Require(handler.add))
+	mux.HandleFunc("POST "+path, auth.Require(declaredBot(logger, stepBotRefusal, handler.add)))
 	mux.HandleFunc("GET "+path, auth.Require(handler.get))
 	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("GET "+path+"/{stepId}", auth.Require(handler.get))
-	mux.HandleFunc("PATCH "+path+"/{stepId}", auth.Require(handler.change))
-	mux.HandleFunc("DELETE "+path+"/{stepId}", auth.Require(handler.delete))
+	mux.HandleFunc("PATCH "+path+"/{stepId}", auth.Require(declaredBot(logger, stepBotRefusal, handler.change)))
+	mux.HandleFunc("DELETE "+path+"/{stepId}", auth.Require(declaredBot(logger, stepBotRefusal, handler.delete)))
 	mux.HandleFunc(path+"/{stepId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
-	mux.HandleFunc("PUT "+path+"/{stepId}/status", auth.Require(handler.change))
+	mux.HandleFunc("PUT "+path+"/{stepId}/status", auth.Require(declaredBot(logger, stepBotRefusal, handler.change)))
 	mux.HandleFunc(path+"/{stepId}/status", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
-	mux.HandleFunc("PUT "+path+"/{stepId}/position", auth.Require(handler.move))
+	mux.HandleFunc("PUT "+path+"/{stepId}/position", auth.Require(declaredBot(logger, stepBotRefusal, handler.move)))
 	mux.HandleFunc(path+"/{stepId}/position", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
 }
 
@@ -240,6 +240,8 @@ func stepsErrorResponse(err error) (int, api.Error) {
 			status = http.StatusUnauthorized
 		case "invalid_input":
 			status = http.StatusBadRequest
+		case "forbidden":
+			status = http.StatusForbidden
 		case "not_found":
 			status = http.StatusNotFound
 		case "task_deleted":
@@ -290,6 +292,8 @@ func stepsDiagnostic(code string) string {
 		return "Authentication is required."
 	case "invalid_input":
 		return "Step input is invalid."
+	case "forbidden":
+		return "Declared Bot is unavailable."
 	case "not_found":
 		return "Requested resource is unavailable."
 	case "task_deleted":

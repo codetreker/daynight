@@ -36,6 +36,18 @@ func (op *Operation) lockOAuthCredential(ctx context.Context, scope store.Sessio
 	return err
 }
 
+// TaskBotSessionRefusal is the result of addressing a Bot-bound Session
+// through a Task route. Bot-bound Sessions are always independent Test
+// Sessions, which every Task binding rejects; Task Message access reports the
+// same forbidden result as BindTaskPurpose and other purposes report the
+// identity conflict of the Task bindings.
+func TaskBotSessionRefusal(purpose BrowserPurpose) error {
+	if purpose == TaskMessageAccess {
+		return denied()
+	}
+	return conflict()
+}
+
 // LoadTaskReceipt reads durable identity without attaching or discarding live state.
 func (op *Operation) LoadTaskReceipt(ctx context.Context, scope store.SessionScope, project, taskID, id string) (*Access, error) {
 	_, tx := op.scoped(scope)
