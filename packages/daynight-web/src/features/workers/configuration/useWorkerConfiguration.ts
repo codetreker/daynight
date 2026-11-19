@@ -1,3 +1,4 @@
+import { subscribeRepositoryChanges } from '../../projects/repository-changes';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../../api/client';
 import { getWorkerConfiguration, saveWorkerConfiguration, workerConfigurationBaseline, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
@@ -397,12 +398,13 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       const protectedDraft = old.protectedDraft;
       return { ...old, draft, error: old.errorSource === 'write' ? null : old.error, errorSource: old.errorSource === 'write' ? null : old.errorSource, notice: old.notice === 'conflict' ? 'conflict' : null, abandoned: false, protectedDraft };
     }), refresh: () => { void requestRead(true, true); }, loadLatest: replaceDraft, abandon: abandonDraft, save: saveDraft };
+    const unsubscribeRepository = subscribeRepositoryChanges(change => { if (change.userId === scope.userId) void requestRead(); });
     const unsubscribePause = subscribeAuthPause(() => { write?.abort(); read?.abort(); });
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
     startReads();
     return () => {
-      active = false; ++generation; read?.abort(); write?.abort(); publication?.abort(); unsubscribePause();
+      active = false; ++generation; read?.abort(); write?.abort(); publication?.abort(); unsubscribePause(); unsubscribeRepository();
       if (polling !== null) clearInterval(polling);
       document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate);
       const last = currentState();

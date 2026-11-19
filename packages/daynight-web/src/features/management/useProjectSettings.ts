@@ -1,3 +1,4 @@
+import { subscribeRepositoryChanges } from "../projects/repository-changes";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useProjectAccess } from "../projects/ProjectAccess";
 import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from "../../api/client";
@@ -191,7 +192,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     reconciliationNotice.current = null; rejectedDraft.current = false; setReconciliationRequired(false); setWriteError(null);
     releaseResolvedRetention();
   };
-  const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null) => {
+  const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null, retainDraft = false) => {
     if (access.session.scope.hasIdentityMismatch) return;
     readController.current?.abort();
     const read = new AbortController(); readController.current = read;
@@ -205,7 +206,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     // A return read may replace a submitted draft after confirmation or under
     // the existing conflict/unknown reconciliation rules, not after other rejections.
     const returning = returnRead.current;
-    const preserveDraft = (returning && submitting.current && admission.current?.confirmed === false && reconciliationNotice.current === null && !uncertainRef.current)
+    const preserveDraft = retainDraft || (returning && submitting.current && admission.current?.confirmed === false && reconciliationNotice.current === null && !uncertainRef.current)
       || (!submitting.current && (returning || confirmedNeedsRead.current || reconciliationNotice.current !== null || uncertainRef.current));
     const preserveError = returning || confirmedNeedsRead.current || reconciliationNotice.current !== null;
     const originalDraft = draftGeneration.current;
@@ -301,6 +302,9 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     clearPrivateDraft(); setUnavailableState(true); setLoading(false); setError(null);
     releaseResolvedRetention();
   }), [projectId, access.session]);
+  useEffect(() => subscribeRepositoryChanges(change => {
+    if (change.projectId === projectId && change.userId === userId && controller.current !== null) void load(controller.current.signal, null, true);
+  }), [projectId, userId, access.session]);
   useEffect(() => {
     const active = new AbortController(); controller.current = active;
     void load(active.signal);
