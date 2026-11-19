@@ -1,19 +1,116 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 )
+
+func TestBackupInventoryExpiredArchiveRetainsIndependentResources(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := t.Context()
+	files, err := local.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := files.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	id, owner, project, task := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$1,$4,$1,'{}','{}')`, id, project, task, owner)
+	digest := strings.Repeat("a", 64)
+	exec(`INSERT INTO session_archives(session_id,state,sha256,byte_length,object_path) VALUES($1,'ready',$2,7,'retired-manifest')`, id, digest)
+	file := uuid.NewString()
+	exec(`INSERT INTO session_archive_files(session_id,file_id,purpose,sha256,byte_length,accepted_offset,state,object_path) VALUES($1,$2,'timeline',$3,7,7,'complete','retired-timeline')`, id, file, digest)
+	exec(`INSERT INTO session_archive_chunks(session_id,file_id,chunk_offset,byte_length,sha256,object_path) VALUES($1,$2,0,7,$3,'retired-chunk')`, id, file, digest)
+	exec(`INSERT INTO session_archive_migrations(session_id,migration_id,source_path,source_hash,source_byte_length,phase) VALUES($1,$2,'retired-source',$3,7,'files_durable')`, id, uuid.NewString(), digest)
+	data := []byte("retained original")
+	hash := sha256.Sum256(data)
+	resourceHash, length, mediaType := hex.EncodeToString(hash[:]), "17", "text/plain"
+	var sharedID, sharedPath string
+	for _, shared := range []bool{false, true} {
+		resource := uuid.NewString()
+		path, err := sessioncore.BlobAddress(project, owner, id, resource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor, err := json.Marshal(sp.Resource{ResourceID: resource, Name: "original", Status: "available", MediaType: &mediaType, ByteLength: &length, SHA256: &resourceHash})
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(`INSERT INTO session_resources(session_id,resource_id,descriptor,blob_id,blob_path,gc_pending) VALUES($1,$2,$3,$2,$4,true)`, id, resource, descriptor, path)
+		if _, err := files.Put(ctx, sessionresource.Bucket, path, bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+		if shared {
+			sharedID, sharedPath = resource, path
+			exec(`INSERT INTO session_resource_references(session_id,resource_id,kind,reference_id) VALUES($1,$2,'native_resume','independent-owner')`, id, resource)
+		} else if err := files.Delete(ctx, sessionresource.Bucket, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// GC state by itself does not weaken verification of a readable archive.
+	if err := database.VerifyStorageInventory(ctx, func(v store.StorageInventory) error {
+		if v.Archive == nil || v.Migration == nil || len(v.Resources) != 2 || len(v.Objects) != 2 {
+			t.Fatalf("live storage closure omitted: %+v", v)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exec(`INSERT INTO session_archive_retention(session_id,expired_at,reason) VALUES($1,now(),'expired')`, id)
+	verify := func() error {
+		return database.VerifyStorageInventory(ctx, func(v store.StorageInventory) error {
+			if v.Archive != nil || v.Migration != nil || len(v.Objects) != 0 || len(v.Resources) != 1 || v.Resources[0].Resource.ResourceID != sharedID {
+				t.Fatalf("expired storage closure: %+v", v)
+			}
+			return sessioncore.VerifyStorageBackup(ctx, files, v)
+		})
+	}
+	// Physical bytes are already gone but the durable cleanup receipt is pending.
+	if err := verify(); err != nil {
+		t.Fatalf("pending cleanup backup: %v", err)
+	}
+	exec(`UPDATE session_archive_retention SET cleaned_at=now() WHERE session_id=$1`, id)
+	if err := verify(); err != nil {
+		t.Fatalf("completed cleanup backup: %v", err)
+	}
+	if err := files.Delete(ctx, sessionresource.Bucket, sharedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing independent original ignored: %v", err)
+	}
+	if _, err := files.Put(ctx, sessionresource.Bucket, sharedPath, bytes.NewReader([]byte("corrupt"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(); err == nil {
+		t.Fatal("corrupt independent original ignored")
+	}
+}
 
 func TestBackupReaderRequiresCurrentMigrationChainAndRemainsReadOnly(t *testing.T) {
 	url := scopedDatabaseURL(t)

@@ -26,6 +26,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	usageapp "github.com/codetreker/daynight/packages/daynight-server/internal/service/usage"
@@ -52,6 +53,7 @@ type App struct {
 	Webhooks             *webhook.Service
 	webhookRuntime       *webhookRuntime
 	githubRuntime        *githubRuntime
+	archiveCleanup       *sessionservice.ArchiveCleanupRunner
 	OAuthProfile         *OAuthProfile
 	OAuthError           error
 	PreviewSSOError      error
@@ -299,6 +301,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		return failOpen(err)
 	}
 	if err := app.assembleGitHub(database.Transactions, logger); err != nil {
+		return failOpen(err)
+	}
+	if err := app.assembleArchiveCleanup(database.Transactions, files, logger); err != nil {
 		return failOpen(err)
 	}
 	if app.ImageValidationError != nil {

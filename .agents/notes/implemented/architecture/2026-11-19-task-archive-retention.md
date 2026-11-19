@@ -56,6 +56,7 @@ its membership and holds the Project shared lock until persistence finishes.
 The dedicated scope preserves existing lock order instead of upgrading locks
 inside an archive publication transaction.
 
-This module supplies calculation and persistence. Versioned directories,
-read-admission revocation and physical reclamation remain separate consumers;
-no HTTP capability or deletion loop is enabled by storing these records.
+This module supplies calculation and persistence. The
+[cleanup consumer](2026-11-19-task-archive-cleanup.md) owns read-admission
+revocation and physical reclamation. Versioned directories remain a separate
+consumer; storing retention records does not declare their HTTP capability.

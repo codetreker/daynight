@@ -268,6 +268,9 @@ var githubCoverageSQL string
 //go:embed schema/migrations/089_session_archive_retention.sql
 var sessionArchiveRetentionSQL string
 
+//go:embed schema/migrations/090_session_archive_cleanup.sql
+var sessionArchiveCleanupSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -363,6 +366,7 @@ var schemaMigrations = []migration{
 	{version: 87, sql: taskBlockedSQL},
 	{version: 88, sql: githubCoverageSQL},
 	{version: 89, sql: sessionArchiveRetentionSQL},
+	{version: 90, sql: sessionArchiveCleanupSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
