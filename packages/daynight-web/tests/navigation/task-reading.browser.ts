@@ -1,7 +1,8 @@
 import { expectTextContrast, roleColors } from './color-roles';
 import { expectCopyButtonSkin } from './copy-button-assertions';
 import type { TaskDetail } from '../../src/api/types';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { usageMetricKeys } from '../../src/api/usage';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -796,22 +797,262 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   });
 }
 
-test('service-unsupported usage precedes the status in the narrow standalone row', async ({ page }) => {
-  await install(page, false, false, 'A long task title '.repeat(12));
-  await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ status: 404, body: 'not found' }));
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('tab', { name: 'Standalone tasks' }).click();
-  const row = page.locator('.task-row').filter({ hasText: 'A long task title' });
-  const hint = row.locator('.task-row-usage-unsupported');
-  await expect(hint).toHaveText('No LLM usage');
-  await expect(row.locator('.task-usage-summary')).toHaveCount(0);
-  expect(await hint.evaluate(element => {
-    const group = element.parentElement!, status = element.nextElementSibling!;
-    const hintBox = element.getBoundingClientRect(), groupBox = group.getBoundingClientRect(), statusBox = status.getBoundingClientRect();
-    return getComputedStyle(group).flexDirection === 'row' && status.classList.contains('root-status') &&
-      Math.abs(hintBox.left - groupBox.left) < 1 && hintBox.right <= statusBox.left &&
-      document.documentElement.scrollWidth <= innerWidth;
-  })).toBe(true);
+type RowUsageMode = 'loading' | 'no_data' | 'unknown' | 'unsupported' | 'failed' | 'zero' | 'partial' | 'large';
+const rowUsageSummary = (mode: RowUsageMode) => {
+  const values: Partial<Record<typeof usageMetricKeys[number], string>> = mode === 'zero' ? { totalTokens: '0' }
+    : mode === 'partial' ? { inputTokens: '84', outputTokens: '42' }
+      : mode === 'large' ? { totalTokens: '9007199254740993', outputTokens: '42' }
+        : mode === 'unknown' ? { cacheReadTokens: '123' } : {};
+  return {
+    metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: values[key] ?? null, contributingRecords: values[key] === undefined ? '0' : '1', unknownRecords: '0' }])),
+    scope: 'registered_web_executions', completeness: mode === 'no_data' ? 'no_data' : mode === 'zero' ? 'complete' : 'partial', reasonCodes: [],
+    coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+    measurementRecords: mode === 'no_data' ? '0' : '1', lastMeasuredAt: null, observedAt: time, etag: 'row-usage',
+  };
+};
+
+for (const kind of ['standalone', 'goal'] as const) for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`ordinary ${kind} usage shows only numeric readings at ${width}px in ${locale}`, async ({ page }) => {
+    const goalId = '00000000-0000-4000-8000-000000000060';
+    const title = (locale === 'en' ? 'A long task title for numeric usage layout ' : '用于检查数字用量布局的很长任务标题').repeat(8);
+    const details = [detailFixture(projectId, taskId, { version: 5n, title, ...(kind === 'goal' ? { parentId: goalId } : {}) }),
+      ...(kind === 'goal' ? [detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'Usage Goal' })] : [])];
+    const fixture = await install(page, false, false, title, details);
+    const usage = { mode: 'loading' as RowUsageMode, completed: 0, pending: false };
+    const gate = Promise.withResolvers<void>();
+    const send = (route: Route, body: unknown, status = 200) => route.fulfill({ status, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    await page.route('**/api/usage/v1/capabilities', async route => {
+      if (usage.mode === 'unsupported') { await route.fulfill({ status: 404, body: 'not found' }); usage.completed++; return; }
+      await send(route, { protocol: 'daynight.usage.v1' });
+    });
+    await page.route('**/api/projects/*/usage/v1/task-summaries', async route => {
+      if (usage.mode === 'loading') { usage.pending = true; await gate.promise; }
+      const ids = (route.request().postDataJSON() as { taskIds: string[] }).taskIds;
+      if (usage.mode === 'failed') await send(route, { error: { code: 'unavailable', requestId: 'row-usage-failure' } }, 503);
+      else await send(route, { items: ids.map(taskId => ({ taskId, summary: rowUsageSummary(usage.mode) })) });
+      usage.completed++;
+    });
+    await page.route('**/api/projects/*/tasks/*/usage/v1/records?*', route => send(route, { error: { code: 'unavailable', requestId: 'record-usage-failure' } }, 503));
+    await page.clock.install();
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: kind === 'goal' ? locale === 'en' ? 'Goals' : 'Goal' : locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
+    if (kind === 'goal') await page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`).click();
+    const row = page.locator('.task-row').filter({ hasText: title });
+    await expect(row.locator('.task-row-title')).toHaveText(title);
+    await expect.poll(() => usage.pending).toBe(true);
+    const assertEmpty = async () => {
+      await expect(row.locator('.task-usage-summary, .usage-error, .task-row-usage-unsupported')).toHaveCount(0);
+      expect(await row.locator('.task-row-content').evaluate(element => [...element.children].map(child => child.className))).toEqual(['task-row-heading', 'task-row-meta']);
+    };
+    const assertLayout = async () => {
+      expect(await row.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const parts = ['.task-row-title', '.task-row-status', '.task-usage-summary'].flatMap(selector => [...element.querySelectorAll(selector)].map(part => part.getBoundingClientRect()));
+        const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+        return parts.every((part, index) => part.width > 0 && part.height > 0 && part.left >= bounds.left - 1 && part.right <= bounds.right + 1 && part.top >= bounds.top - 1 && part.bottom <= bounds.bottom + 1 && parts.slice(index + 1).every(other => separate(part, other))) && document.documentElement.scrollWidth <= innerWidth;
+      })).toBe(true);
+    };
+    const refresh = async (mode: RowUsageMode) => {
+      const before = usage.completed; usage.mode = mode;
+      await page.clock.fastForward(15_001);
+      await expect.poll(() => usage.completed).toBeGreaterThan(before);
+    };
+    await assertEmpty(); await assertLayout();
+    const loadingHeight = await row.evaluate(element => element.getBoundingClientRect().height);
+    usage.mode = 'failed'; gate.resolve();
+    await expect.poll(() => usage.completed).toBeGreaterThan(0);
+    await assertEmpty();
+    for (const mode of ['no_data', 'unknown', 'unsupported'] as const) {
+      await refresh(mode); await assertEmpty(); await assertLayout();
+      expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBeCloseTo(loadingHeight, 0);
+    }
+    await refresh('zero');
+    await expect(row.locator('.usage-summary strong')).toHaveText('0');
+    await assertLayout();
+    await refresh('partial');
+    await expect(row.locator('.usage-summary')).toContainText(locale === 'en' ? 'Known Output: 42' : '已知输出: 42');
+    await expect(row.locator('.usage-summary')).toContainText(locale === 'en' ? 'Partial' : '部分');
+    await assertLayout();
+    await refresh('large');
+    await expect(row.locator('.usage-summary strong')).toHaveText('9,007,199,254,740,993');
+    await assertLayout();
+    await refresh('failed');
+    await expect(row.locator('.usage-summary strong')).toHaveText('9,007,199,254,740,993');
+    await expect(row.locator('.usage-error')).toHaveCount(0);
+    const link = row.locator('.usage-summary-link');
+    await link.focus(); await expect(link).toBeFocused(); await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}\\?tab=usage`));
+    await expect(page.locator('.usage-panel')).toBeVisible();
+    await expect(page.locator('.usage-panel .task-usage-summary .usage-error')).toContainText(locale === 'en' ? 'Usage unavailable' : '用量暂不可用');
+    await expect(page.locator('.usage-panel .task-usage-summary').getByRole('button', { name: locale === 'en' ? 'Retry' : '重试', exact: true })).toBeVisible();
+    expect(fixture.writes).toEqual([]);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`usage detail stays usable in each surface at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    const metrics = Object.fromEntries(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens', 'providerTotalTokens'].map(key => [key, '9007199254740993']));
+    const summaryMetrics = Object.fromEntries(Object.keys(metrics).filter(key => key !== 'providerTotalTokens').map(key => [key, { known: '9007199254740993', contributingRecords: '1', unknownRecords: '0' }]));
+    const summary = { metrics: summaryMetrics, scope: 'registered_web_executions', completeness: 'partial', reasonCodes: [], coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' }, measurementRecords: '1', lastMeasuredAt: time, observedAt: time, etag: 'etag' };
+    const requests: string[] = [];
+    await page.route('**/api/**/usage/v1/**', async route => {
+      const url = new URL(route.request().url()); requests.push(url.pathname + url.search);
+      const send = (body: unknown) => route.fulfill({ json: body, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      if (url.pathname.endsWith('/capabilities')) return send({ protocol: 'daynight.usage.v1' });
+      if (url.pathname.endsWith('/task-summaries')) return send({ items: [{ taskId, summary }], observedAt: time, etag: 'batch' });
+      if (url.pathname.endsWith('/records')) {
+        const kind = url.searchParams.get('kind');
+        return send({ items: Array.from({ length: 8 }, (_, i) => ({ id: `20000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`, recordKind: kind, sessionId: taskId, stateId: null, executionGeneration: '1', provider: 'provider-with-a-very-long-name', model: 'model-with-a-very-long-name-that-must-wrap-on-narrow-screens', sourceKey: kind === 'measurement' ? 'a-very-long-source-key-that-must-wrap-on-narrow-screens' : null, profileId: 'test-profile', providerVersion: '1', collectionState: 'complete', aggregationRole: 'counted', finality: 'final', disposition: 'active', metrics, reasonCodes: [], observedAt: time, updatedAt: time })), nextCursor: 'next', snapshotToken: 'snapshot', observedAt: time });
+      }
+      return route.abort();
+    });
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+    const dialog = page.locator('.task-detail-dialog');
+    await dialog.getByRole('tab', { name: locale === 'en' ? 'Usage' : '用量', exact: true }).click();
+    const check = async (surface: Locator) => {
+      const panel = surface.locator('.task-detail-panel-usage');
+      await expect(panel.locator('.usage-record')).toHaveCount(8);
+      expect(await panel.evaluate(el => { el.scrollTop = el.scrollHeight; return el.scrollTop > 0 && el.scrollWidth <= el.clientWidth && document.documentElement.scrollWidth <= innerWidth; })).toBe(true);
+      expect(await panel.locator('.usage-filters').evaluate((el, narrow) => {
+        const fields = [...el.querySelectorAll<HTMLElement>('label')];
+        const controls = [...el.querySelectorAll<HTMLElement>('input, select, button')];
+        const boxes = fields.map(field => field.getBoundingClientRect());
+        return narrow ? controls.every(control => control.getBoundingClientRect().height >= 44) : boxes.every(box => Math.abs(box.bottom - boxes[0]!.bottom) < 2);
+      }, width === 320)).toBe(true);
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Next page' : '下一页' })).toBeVisible();
+      const provider = panel.getByLabel('Provider'); await provider.fill('provider');
+      const filtered = page.waitForResponse(response => response.url().includes('/records?') && response.url().includes('provider=provider'));
+      await provider.press('Enter'); await filtered;
+      const measurement = page.waitForResponse(response => response.url().includes('/records?') && response.url().includes('kind=measurement'));
+      await panel.getByLabel(locale === 'en' ? 'View' : '查看').selectOption('measurement'); await measurement;
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' })).toBeEnabled();
+      await expect(panel.getByText('9,007,199,254,740,993').first()).toBeVisible();
+      const details = panel.locator('details').first();
+      if (await details.getAttribute('open') === null) await details.locator('summary').click();
+      await expect(panel.locator('details[open] code').first()).toBeVisible();
+      await panel.getByRole('button', { name: locale === 'en' ? 'Next page' : '下一页' }).click();
+      await expect.poll(() => requests.some(value => value.includes('cursor=next'))).toBe(true);
+      await panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' }).focus();
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' })).toBeFocused();
+    };
+    await check(dialog);
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+    await check(dialog);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+    await check(page.locator('.task-detail-page'));
+  });
+}
+
+test('unsupported service shows one neutral usage explanation without a records request', async ({ page }) => {
+  await install(page);
+  let records = 0;
+  await page.route('**/api/**/usage/v1/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/records')) records++;
+    return route.fulfill({ status: 404, json: { error: { code: 'not_found', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+  const surface = page.locator('.task-detail-page');
+  await expect(surface.getByText('This service does not support usage')).toHaveCount(1);
+  await expect(surface.locator('.usage-filters, .usage-pagination, .usage-error')).toHaveCount(0);
+  expect(records).toBe(0);
+  await surface.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await expect(surface.locator('.task-detail-heading').getByText('This service does not support usage')).toHaveCount(0);
 });
+for (const entry of ['dialog', 'page'] as const) for (const width of [320, 1280]) {
+  test(`task detail keeps usage inside its tab in ${entry} at ${width}px`, async ({ page }, info) => {
+    const zh = width === 320;
+    const labels = {
+      usage: zh ? '用量' : 'Usage', overview: zh ? '概览' : 'Overview',
+      loading: zh ? '读取用量…' : 'Loading usage…',
+      empty: zh ? '暂无计量记录；未知不代表零。' : 'No measurements; unknown does not mean zero.',
+      error: zh ? '用量暂不可用' : 'Usage unavailable',
+      unsupported: zh ? '此服务不支持用量查询' : 'This service does not support usage',
+    };
+    type UsageState = 'loading' | 'data' | 'empty' | 'error' | 'unsupported';
+    let usageState: UsageState = 'loading';
+    const loading = Promise.withResolvers<void>();
+    await install(page);
+    await page.route(/\/api\/(usage\/v1\/capabilities|projects\/.*\/usage\/v1\/)/, async route => {
+      const request = route.request(), path = new URL(request.url()).pathname;
+      const state = usageState;
+      const send = (body: unknown, status = 200) => route.fulfill({ status, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+      if (state === 'loading') await loading.promise;
+      if (path.endsWith('/capabilities')) return state === 'unsupported' ? send({}, 404) : send({ protocol: 'daynight.usage.v1' });
+      if (state === 'error') return send({ error: { code: 'internal_error', requestId: 'usage-detail' } }, 503);
+      if (state === 'unsupported') return send({ error: { code: 'usage_unsupported', requestId: 'usage-detail' } }, 404);
+      if (path.endsWith('/task-summaries')) {
+        const { taskIds } = request.postDataJSON() as { taskIds: string[] };
+        const summary = {
+          metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: state === 'empty' ? null : '12345', contributingRecords: state === 'empty' ? '0' : '1', unknownRecords: '0' }])),
+          scope: 'registered_web_executions', completeness: state === 'empty' ? 'no_data' : 'complete', reasonCodes: [],
+          coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '1', partialExecutions: '0', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+          measurementRecords: state === 'empty' ? '0' : '1', lastMeasuredAt: state === 'empty' ? null : time, observedAt: time, etag: 'detail-usage',
+        };
+        return send({ items: taskIds.map(id => ({ taskId: id, summary })) });
+      }
+      if (path.endsWith('/records')) return send({ items: [], nextCursor: null, snapshotToken: 'detail-usage', observedAt: time });
+      throw new Error(`Unexpected usage request ${request.method()} ${path}`);
+    });
+    await page.setViewportSize({ width, height: 900 });
+    const surface = page.locator(entry === 'dialog' ? '.task-detail-dialog' : '.task-detail-page');
+    const heading = surface.locator('.task-detail-heading');
+    const usage = surface.getByRole('tab', { name: labels.usage, exact: true });
+    const overview = surface.getByRole('tab', { name: labels.overview, exact: true });
+    const panel = surface.locator('.task-detail-panel-usage');
+    const open = async (deepLink: boolean) => {
+      if (entry === 'page') await page.goto(`/projects/${projectId}/tasks/${taskId}${deepLink ? '?tab=usage' : ''}`);
+      else {
+        await page.goto(`/projects/${projectId}`);
+        await page.locator('#project-section-tab-tasks').click();
+        await page.getByRole('tab', { name: zh ? '独立任务' : 'Standalone tasks' }).click();
+        await page.locator(`#standalone-task-${taskId}`).click();
+      }
+      await expect(heading.locator('.task-detail-status-row')).toBeVisible();
+      await expect(heading.locator('.task-usage-summary, .usage-summary, .usage-error')).toHaveCount(0);
+      await expect(heading.locator(':scope > *')).toHaveCount(1);
+      if (deepLink && entry === 'page') await expect(usage).toHaveAttribute('aria-selected', 'true');
+      await overview.click();
+      await usage.click();
+      await expect(panel).toBeVisible();
+      await usage.press('Home');
+      await expect(overview).toBeFocused();
+      await overview.press('End');
+      await expect(usage).toBeFocused();
+      await expect(usage).toHaveAttribute('aria-selected', 'true');
+    };
+    const layout = () => heading.evaluate(element => {
+      const status = element.querySelector('.task-detail-status-row')!.getBoundingClientRect();
+      const box = element.getBoundingClientRect();
+      const tabs = element.parentElement!.querySelector('.task-detail-tabs')!.getBoundingClientRect();
+      return { headerHeight: box.height, belowControls: Math.abs(box.bottom - status.bottom) < 1, tabsBelow: tabs.top >= box.bottom, controlsInside: status.left >= box.left && status.right <= box.right, noPageOverflow: document.documentElement.scrollWidth <= innerWidth };
+    });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(zh ? 'zh-CN' : 'en');
+    try {
+      await open(false);
+      await expect(panel.getByText(labels.loading, { exact: true }).first()).toBeVisible();
+      const initial = await layout();
+      expect(initial).toMatchObject({ belowControls: true, tabsBelow: true, controlsInside: true, noPageOverflow: true });
+      usageState = 'data'; loading.resolve();
+      await expect(panel.locator('.usage-metrics dd').first()).toHaveText('12,345');
+      for (const state of ['data', 'empty', 'error', 'unsupported'] as const) {
+        usageState = state;
+        await open(entry === 'page');
+        if (state === 'data') await expect(panel.locator('.usage-metrics dd').first()).toHaveText('12,345');
+        else await expect(panel.getByText(labels[state], { exact: true }).first()).toBeVisible();
+        expect(await layout()).toEqual(initial);
+        await page.screenshot({ path: info.outputPath(`${entry}-${width}-${state}.png`) });
+      }
+    } finally { loading.resolve(); }
+  });
+}

@@ -24,19 +24,22 @@ same distinction for a previous failure.
 
 ## Decision
 
-The two test oracles share a bounded command runner that retains process
-lifecycle events and incremental script checkpoints. The PowerShell script
-marks entry before its work and brackets the ACL and CIM operations separately.
-Command identity, elapsed time, the last observed phases, partial output and
-exit/close observations remain available when a command fails. Output retained
-for diagnostics is bounded. The unused command input is closed explicitly.
+The bounded command runner retains process lifecycle events and incremental
+script checkpoints. The original ACL and CIM PowerShell scripts marked entry
+before their work and bracketed their respective operations. Command identity,
+elapsed time, the last observed phases, partial output and exit/close observations
+remain available when a command fails. Output retained for diagnostics is bounded.
+The unused command input is closed explicitly.
 
-The ACL command retains its 30-second allowance and the CIM command retains
-60 seconds. A timeout is a failure, with process termination and closure joined;
-there are no retries or substituted oracle results. The protected single-user
-DACL observation, real public ACE grant and rejection, native self/parent proof,
-running-state inspection, complete Unicode CIM comparison and handle/fixture
-cleanup retain their original responsibilities.
+After a later ACL timeout without script entry, the
+[native ACL observer decision](2026-11-19-native-windows-acl-observer.md)
+replaces only private ACL readback with an independent test helper. The real
+icacls public ACE grant retains its 30-second allowance and the CIM command
+retains 60 seconds with script checkpoints. A timeout is a failure, with process
+termination and closure joined; there are no retries or substituted oracle
+results. The protected single-user DACL observation, real public ACE grant and
+rejection, native self/parent proof, running-state inspection, complete Unicode
+CIM comparison and handle/fixture cleanup retain their original responsibilities.
 
 The confirmed defect addressed here is missing failure-stage evidence. The
 historical stalls' inner cause remains unknown; a successful later run cannot

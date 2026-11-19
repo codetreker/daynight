@@ -139,10 +139,15 @@ rolls back to its savepoint before reading defaults. The tested version gates
 and preference results do not depend on the absolute Bot creation sequence.
 
 Team deletion, Project creation and ownership transfer matrices reuse one
-Store per parent with independent case Teams and Projects. Each case observes
-the actual blocking backend and checks committed ownership or its absence.
-The parent verifies pool reuse after the case joins its waiters. Failure stops
-fixture reuse.
+Store per parent. Contention cases use independent Teams and Projects, observe
+the actual blocking backend and check committed ownership or its absence. The
+parent verifies pool reuse after the case joins its waiters.
+
+The [Project creation Personal Team matrix](../../../../packages/daynight-server/internal/core/store/postgres/project/ownership_contract_test.go)
+uses a fresh owner and Personal Team for each committed membership defect. A
+separate query transaction reads the exact Team and its member and owner counts
+in both lock modes. Each transaction rolls back before the next case. The
+parent schema owns the retained rows, and a failed case stops reuse.
 
 Preview SSO retry and redemption refusal matrices own one Store each.
 Each case uses a separate login ID, Session, credential and set of token
@@ -165,20 +170,27 @@ matrix owns its own schema so the all-table empty check still detects any
 escaped registration write. Rotation and aggregate cases retain their real
 committed operations and scoped results. A failed case stops reuse.
 
-The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
-and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
-matrices each use one Store. Signal cases hold installation and repository
-identifiers constant across distinct Apps and read committed pending rows
-by Project. Project retirement cases keep separate App, grant, and Project
+The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go),
+[retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go),
+and [Work stop](../../../../packages/daynight-server/internal/core/store/postgres/github/app_work_test.go)
+matrices each use one Store per matrix. Signal cases hold installation and
+repository identifiers constant across distinct Apps and read committed pending
+rows by Project. Project retirement cases keep separate App, grant, and Project
 identities. The retirement trigger raises its PostgreSQL exception, and state
 is read back after rollback. The trigger and function are removed and checked
 in the catalog before reuse.
 
-The pre-canceled retirement matrix also uses one Store, with a new transaction
-and fresh identifiers for each DAO call. Each call receives a canceled context
-after its transaction has already begun. The transaction is rolled back with a
-live context, the pool is checked for reuse, and the fixture remains empty.
-A failed case stops either retirement matrix.
+Each pre-canceled retirement case begins a new transaction and uses fresh
+identifiers. The DAO call receives a canceled context. The transaction is
+rolled back with a live context, the pool is checked for reuse, and the fixture
+remains empty.
+
+Work stop cases share one committed connection, coverage interval, and pending
+request. The connection is unbound once before the unbound retirement cases.
+Each case injects its catalog fault inside its own transaction and checks the
+driver SQLSTATE and operation phase. After rollback, a fresh pool read checks
+the committed rows and the original catalog identities. A failed retirement
+or Work stop case stops reuse.
 
 [Task write competition](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
 uses distinct Project and Task IDs inside each matrix's store. Actual lock
