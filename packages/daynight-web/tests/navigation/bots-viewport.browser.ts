@@ -740,3 +740,27 @@ for (const locale of ['en', 'zh-CN']) for (const width of [1440, 320]) {
     await expect(botDetailsOpener(page, bot.name)).toBeFocused();
   });
 }
+
+for (const width of [320, 390, 740, 741, 1360]) {
+  test(`keeps the assistant shell and navigation reachable at ${width}px`, async ({ page }, info) => {
+    await install(page); await page.setViewportSize({ width, height: 640 });
+    await page.goto(`/bots/${botId(1)}`);
+    await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled();
+    const workspace = page.locator('.workspace');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    if (width <= 740) {
+      expect(await workspace.evaluate(element => [element.getBoundingClientRect().x, element.getBoundingClientRect().width])).toEqual([0, width]);
+      const opener = page.getByRole('button', { name: 'Open navigation', exact: true });
+      await expect(opener).toBeInViewport();
+      await page.locator(`${visiblePane} .session-timeline`).evaluate(element => { element.scrollTop = 0; });
+      await expect(opener).toBeInViewport();
+      await opener.click();
+      const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
+      await expect(drawer).toBeVisible(); await expect(workspace).toHaveAttribute('inert', '');
+      await drawer.getByRole('button', { name: 'Close navigation', exact: true }).click();
+      await expect(opener).toBeFocused(); await expect(workspace).not.toHaveAttribute('inert');
+      await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeEnabled();
+    } else await expect(page.getByRole('button', { name: 'Collapse sidebar', exact: true })).toBeVisible();
+    await page.screenshot({ path: info.outputPath('navigation-shell.png') });
+  });
+}

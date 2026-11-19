@@ -16,6 +16,7 @@ import (
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskwork "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
@@ -194,7 +195,7 @@ func (f *borrowedFiles) Close() error {
 
 type assemblyCapturer struct{ t *testing.T }
 
-func (c *assemblyCapturer) CaptureBatch(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error {
+func (c *assemblyCapturer) CaptureBatch(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error {
 	c.t.Error("assembly invoked webhook capture")
 	return errAssemblyResourceCall
 }

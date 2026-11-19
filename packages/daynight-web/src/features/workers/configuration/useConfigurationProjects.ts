@@ -1,3 +1,4 @@
+import { subscribeRepositoryChanges } from '../../projects/repository-changes';
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError } from '../../../api/client';
 import type { Project } from '../../../api/types';
@@ -95,11 +96,12 @@ export const useConfigurationProjects = (readEnabled: boolean) => {
       });
       if (!(event.error instanceof TaskCacheError) && (cancelRequest || controller === null)) void load();
     });
+    const unsubscribeRepository = subscribeRepositoryChanges(change => { if (change.userId === scope.userId) void load(); });
     refreshAction.current = () => { void load(); };
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
     void load();
-    return () => { active = false; ++generation; controller?.abort(); refreshAction.current = () => {}; document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); unsubscribe(); };
+    return () => { active = false; ++generation; controller?.abort(); refreshAction.current = () => {}; document.removeEventListener('visibilitychange', visibility); scope.signal.removeEventListener('abort', invalidate); unsubscribe(); unsubscribeRepository(); };
   }, [scope, readEnabled]);
   const current = state.scope === scope && !scope.isInvalidated ? state : { items: [], loading: true, error: null };
   return { items: current.items, loading: current.loading, error: current.error, refresh };

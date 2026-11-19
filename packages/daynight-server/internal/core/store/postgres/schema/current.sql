@@ -632,6 +632,15 @@ CREATE TABLE "project_ownership" (
     CONSTRAINT "project_ownership_version_check" CHECK (("version" > 0))
 );
 
+CREATE TABLE "project_pr_review_assignments" (
+    "user_id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "github_pr_id" bigint NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "assigned_at" timestamp with time zone NOT NULL
+);
+
 CREATE TABLE "project_pull_requests" (
     "project_id" "uuid" NOT NULL,
     "number" bigint NOT NULL,
@@ -682,6 +691,7 @@ CREATE TABLE "projects" (
     "deleted_at" timestamp with time zone,
     "tag_catalog_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "repository_identity" "text" COLLATE "pg_catalog"."C",
+    "repository_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "projects_execution_warning_minutes_check" CHECK (("execution_warning_minutes" > 0)),
     CONSTRAINT "projects_name_check" CHECK (("btrim"("name") <> ''::"text")),
     CONSTRAINT "projects_repo_url_check" CHECK (("btrim"("repo_url") <> ''::"text")),
@@ -1448,6 +1458,9 @@ CREATE TABLE "webhook_events" (
     "fact_sha256" "bytea" NOT NULL,
     "original_fact_bytes" integer NOT NULL,
     "fact_removed_at" timestamp with time zone,
+    "actor_kind" "text",
+    "actor_user_id" "uuid",
+    "actor_bot_id" "uuid",
     CONSTRAINT "webhook_events_check" CHECK (("source" = ('urn:daynight:project:'::"text" || ("project_id")::"text"))),
     CONSTRAINT "webhook_events_check1" CHECK (((("event_type" = 'task.thread_posted'::"text") AND ("task_version" IS NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NOT NULL) AND ("subject" = ((('tasks/'::"text" || ("task_id")::"text") || '/thread/'::"text") || ("message_id")::"text"))) OR (("event_type" = 'task.step_updated'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND (("step_id" >= 0) AND ("step_id" <= '4294967295'::bigint)) AND ("step_id" IS NOT NULL) AND ("message_id" IS NULL) AND ("subject" = (('tasks/'::"text" || ("task_id")::"text") || '/steps'::"text"))) OR (("event_type" = 'task.deleted'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NOT NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))) OR (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text"])) AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))))),
     CONSTRAINT "webhook_events_check2" CHECK (((("fact_bytes" IS NOT NULL) AND ("fact_removed_at" IS NULL) AND ("octet_length"("fact_bytes") = "original_fact_bytes") AND ("sha256"("fact_bytes") = "fact_sha256")) OR (("fact_bytes" IS NULL) AND ("fact_removed_at" IS NOT NULL)))),
@@ -1770,6 +1783,9 @@ ALTER TABLE ONLY "project_invitations"
 
 ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
+
+ALTER TABLE ONLY "project_pr_review_assignments"
+    ADD CONSTRAINT "project_pr_review_assignments_pkey" PRIMARY KEY ("user_id", "project_id", "repository_id", "github_pr_id");
 
 ALTER TABLE ONLY "project_pull_requests"
     ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "repository_id", "number");
@@ -2238,6 +2254,8 @@ CREATE INDEX "webhook_subscriptions_acl" ON "webhook_subscriptions" USING "btree
 CREATE INDEX "webhook_subscriptions_deleted" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
 
 CREATE INDEX "webhook_subscriptions_endpoint" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "id") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "workers_review_participants" ON "workers" USING "btree" ("user_id", "worker_id") WHERE "review_enabled";
 
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
 

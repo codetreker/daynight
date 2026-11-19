@@ -18,6 +18,8 @@ type TaskResult struct {
 type PageInput struct {
 	Limit                              int
 	Cursor, State, ItemID, TargetBotID string
+	// Type keeps one event type and ExcludeType removes one; event pages only.
+	Type, ExcludeType string
 }
 type CreateInput struct {
 	ID, Name, Purpose, Scope, Kind, Takeover, Application string

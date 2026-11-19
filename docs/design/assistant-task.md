@@ -25,7 +25,7 @@
 | `assistant_task_appendix_validations` | 附录验证登记：结果记录 ID、结果取值、登记 Bot 与时间；主键 `(appendix_id, outcome_record_id)` 保证同一结果记录对同一附录只登记一次 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
 | `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本 |
-| `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `094_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
+| `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `098_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
 | `assistant_task_events` | 目标 Bot、负载、投递与关注状态、确认操作身份 |
 | `assistant_task_inquiries` | 双方 Bot、问题与回答、状态和固定截止时间 |
 
@@ -45,7 +45,7 @@
 
 ## 认领与完成结果
 
-认领、转交、绑定、续约及释放全部由 core 生成候选和回执，DAO 在同一事务保存。首次认领或接手推进 generation 并绑定调用 Bot 的预存令牌；转交推进 generation、指定目标并清空旧凭据，进入 pending。绑定仅写入目标自己的摘要和绑定操作 ID；续约仅延长期限。转交与接手在同事务中更新打开事项的 follower，保留应用状态和既有操作身份。
+认领、转交、绑定、续约及释放全部由 core 生成候选和回执，DAO 在同一事务保存。首次认领或接手推进 generation 并绑定调用 Bot 的预存令牌；转交推进 generation、指定目标并清空旧凭据，进入 pending。绑定仅写入目标自己的摘要和绑定操作 ID；续约仅延长期限。转交与接手在同事务中更新打开事项的 follower，并把仍为 pending 的 `inbound` 事件改投新的负责 Bot，保留应用状态和既有操作身份；其他类型的事件保持原目标。
 
 DAO 的认领预期条件包括版本、holder、generation、摘要和需要时的活租约。权限与 Bot 删除屏障覆盖整个事务；最终租约复核失败使材料和成功回执一起回滚。返回结果把不可变的 `operation` 和独立的 `currentClaim` 分开，回放不重复修改或延长租约。
 
@@ -78,10 +78,14 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `proposals, proposals/{id}/decision` | GET 列表；POST 负责 Bot 提案；POST 用户决定，带任务 `ifVersion` |
 | `items, items/{id}` | GET 列表/详情；POST/PATCH 负责 Bot 写入，更新另带事项 `ifVersion` |
 | `records` | GET 可按事项分页；POST 有明确作者的追加记录。`outcome` 记录另带 `outcome` 与 `actionRecordId`，其他类型提交任一键被拒绝；响应只在结果记录中包含这两个键，使只认识原记录结构的客户端仍可读取没有结果记录的任务 |
-| `events, events/{id}/ack` | GET 可按目标和状态分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
+| `events, events/{id}/ack` | GET 可按目标、状态和事件类型分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
 | `inquiries, inquiries/{id}/answer` | GET 列表；POST Bot 提问；POST 负责目标 Bot 回答 |
 
-跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。
+跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。
+
+两种事件拉取都接受一个类型筛选：`type` 只保留该类型，`excludeType` 排除该类型，二者不能同时出现，取值须为已知事件类型，其他资源拒绝这两个参数。`type=inbound` 时，服务端在同一条数据库查询中排除暂停任务的事件；这些事件保持 pending，任务恢复后重新可选，Worker 不需要逐个读取再跳过。分页游标绑定所选筛选，换用不同筛选续读会被拒绝。
+
+所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。
 
 ## 验证责任
 

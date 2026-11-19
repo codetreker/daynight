@@ -425,13 +425,14 @@ Product E2E owns an independent Linux job that builds and runs the complete
 system with its own database and auth. Final `checks` reject failures and
 cancellations and explicitly require selected Go module, Go server startup &
 shutdown, API, Web quality and product E2E jobs to succeed. A newer PR run cancels
-its older run. Each main run has an independent concurrency group, including
-repeated runs of the same commit, so later runs do not replace or cancel it;
-runner availability still controls when jobs start.
+its older run. Each workflow has its own main concurrency group: a running main
+run continues, while a newly queued run replaces any older pending run. This can
+skip validation of intermediate commits; runner availability controls job start.
+Manual shell/browser runs on main share that workflow's main group.
 
 The independent [`shell and browser acceptance` workflow](.github/workflows/shell-browser.yml)
-runs real shell completion and the frontend assistant browser suite on every
-`main` push and through `workflow_dispatch`. Ordinary module commands and the
+is triggered by `main` pushes and `workflow_dispatch` to run real shell completion
+and the frontend assistant browser suite. Ordinary module commands and the
 PR `checks` gate do not invoke or depend on these two jobs. Both retain their
 complete suites, fresh source checkout, toolchains and evidence. Product E2E
 keeps its own Chromium installation, path selection and required result. The

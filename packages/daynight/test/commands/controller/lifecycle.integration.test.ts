@@ -9,7 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readLaunchTicket, writeLaunchTicket, parseLaunchTicket, controllerPayloadHash, controllerExecutionDirectory, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { validateControllerLocalRequest } from "../../../src/commands/controller/local-client.js";
-import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, readCurrentControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import type { TimelineEntry } from "../../../src/session/protocol.js";
@@ -37,6 +37,21 @@ const fixture = async () => {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "worker-managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   return { home, ticket };
 };
+it.each(["Thu Nov 19 19:43:08 2026", "linux:v1:876b21c9-30d7-48c0-a2ab-287291e903a7:9007199254740993"])("retains process birth evidence unchanged when the Controller journal reopens (%s)", async startedAt => {
+  const { home, ticket } = await fixture(), file = path.join(home, "state.sqlite");
+  const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt, commandHash: "a".repeat(64) };
+  const store = openControllerLifecycleStore(file, ticket);
+  let original: ReturnType<typeof store.getSnapshot>;
+  try {
+    store.patchSnapshot({ controllerProcess, nativeProcesses: [{ ...controllerProcess, pid: 124, parentPid: 123 }] });
+    original = store.getSnapshot();
+  } finally { store.close(); }
+  const observed = readCurrentControllerSnapshot(file, ticket);
+  expect(observed).toEqual(original);
+  expect(observed.controllerProcess).toEqual(controllerProcess);
+  expect(observed.nativeProcesses[0]?.startedAt).toBe(startedAt);
+});
+
 it("keeps explicit body-history writes independent of pending operations and source acknowledgements", async () => {
   const { home, ticket } = await fixture(), file = path.join(home, "state.sqlite");
   let store = openControllerLifecycleStore(file, ticket);

@@ -1,3 +1,4 @@
+import { ProjectRepository } from "../project-repository/ProjectRepository";
 import type { BrowserLocation } from "../../../app/navigation";
 import type { TransferNavigationContext } from "../transfer-navigation";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
@@ -50,19 +51,23 @@ const ProjectSettingsContent = ({ projectId, user, selection = { kind: "tab", ta
   }, [capture, selected, projectId]);
   const survives = useCallback((url: URL) => { const route = parseAuthRoute(url.pathname, url.search); return route.kind === 'settings' && route.projectId === projectId; }, [projectId]);
   const guard = useProjectManagementGuard();
-  const state = useProjectSettings(projectId, user.id, onRoute, active, onSettingsRetentionChange, guard);
+  const retainedSettings = useRef({ settings: false, repository: false });
+  const settingsRetention = useCallback((retain: boolean) => { retainedSettings.current.settings = retain; onSettingsRetentionChange?.(retain || retainedSettings.current.repository); }, [onSettingsRetentionChange]);
+  const repositoryRetention = useCallback((retain: boolean) => { retainedSettings.current.repository = retain; onSettingsRetentionChange?.(retain || retainedSettings.current.settings); }, [onSettingsRetentionChange]);
+  const state = useProjectSettings(projectId, user.id, onRoute, active, settingsRetention, guard);
   const prompt = useWorkerPrompt({ scope: 'project', projectId }, { readEnabled: sectionActive('prompts') });
   const promptNavigation = usePromptNavigation({ scope: 'project', projectId }, prompt, { survives, visible: sectionActive('prompts'), onContinueEditing: () => select('prompts') });
   useLayoutEffect(() => { onPromptRetentionChange?.(prompt.pending || prompt.confirmed || prompt.uncertain); }, [onPromptRetentionChange, prompt.pending, prompt.confirmed, prompt.uncertain]);
   const empty = { dirty: false, pending: false, needsAttention: false };
-  const [observed, setObserved] = useState<{ github: ProjectSettingsSectionState; members: ProjectSettingsSectionState; transfer: ProjectSettingsSectionState; delete: ProjectSettingsSectionState }>({ github: empty, members: empty, transfer: empty, delete: empty });
-  const update = useCallback((owner: 'github' | 'members' | 'transfer' | 'delete', value: ProjectSettingsSectionState) => setObserved(previous => {
+  const [observed, setObserved] = useState<{ github: ProjectSettingsSectionState; members: ProjectSettingsSectionState; repository: ProjectSettingsSectionState; transfer: ProjectSettingsSectionState; delete: ProjectSettingsSectionState }>({ github: empty, members: empty, repository: empty, transfer: empty, delete: empty });
+  const update = useCallback((owner: 'github' | 'members' | 'repository' | 'transfer' | 'delete', value: ProjectSettingsSectionState) => setObserved(previous => {
     const old = previous[owner];
     return old.dirty === value.dirty && old.pending === value.pending && old.needsAttention === value.needsAttention ? previous : { ...previous, [owner]: value };
   }), []);
   const githubState = useCallback((value: ProjectSettingsSectionState) => update('github', value), [update]);
   const membersState = useCallback((value: ProjectSettingsSectionState) => update('members', value), [update]);
   const [memberResultHost, setMemberResultHost] = useState<HTMLDivElement | null>(null);
+  const repositoryState = useCallback((value: ProjectSettingsSectionState) => update('repository', value), [update]);
   const transferState = useCallback((value: ProjectSettingsSectionState) => update('transfer', value), [update]);
   const deletionState = useCallback((value: ProjectSettingsSectionState) => update('delete', value), [update]);
   const states: Record<ProjectSettingsTab, ProjectSettingsSectionState> = {
@@ -70,7 +75,7 @@ const ProjectSettingsContent = ({ projectId, user, selection = { kind: "tab", ta
     prompts: { dirty: prompt.dirty, pending: prompt.pending || prompt.confirmed, needsAttention: prompt.readError !== null || prompt.writeError !== null || prompt.conflict || prompt.uncertain || prompt.invalid || prompt.tooLarge },
     github: observed.github,
     members: observed.members,
-    management: { dirty: observed.transfer.dirty || observed.delete.dirty, pending: observed.transfer.pending || observed.delete.pending, needsAttention: observed.transfer.needsAttention || observed.delete.needsAttention },
+    management: { dirty: observed.repository.dirty || observed.transfer.dirty || observed.delete.dirty, pending: observed.repository.pending || observed.transfer.pending || observed.delete.pending, needsAttention: observed.repository.needsAttention || observed.transfer.needsAttention || observed.delete.needsAttention },
   };
   const showUnavailable = state.unavailable && unavailableView !== undefined && !guard.isBlocked("delete");
   return <div ref={promptNavigation.owner} onFocusCapture={promptNavigation.rememberFocus}>
@@ -88,7 +93,7 @@ const ProjectSettingsContent = ({ projectId, user, selection = { kind: "tab", ta
     <section id={`project-settings-${projectId}-section-prompts`} role="region" aria-labelledby={`project-settings-${projectId}-tab-prompts`} hidden={selected !== 'prompts'} inert={selected !== 'prompts'}><WorkerPromptEditor state={prompt} scope="project" /></section>
     <section id={`project-settings-${projectId}-section-github`} role="region" aria-labelledby={`project-settings-${projectId}-tab-github`} hidden={selected !== 'github'} inert={selected !== 'github'}><ProjectGitHubConsumption projectId={projectId} userId={user.id} repoUrl={state.project?.repoUrl ?? null} active={sectionActive('github')} onRoute={onRoute} guard={guard} onRetentionChange={onGitHubRetentionChange} onStateChange={githubState} presentationGeneration={generations.current.github} /></section>
     <section id={`project-settings-${projectId}-section-members`} role="region" aria-labelledby={`project-settings-${projectId}-tab-members`} hidden={selected !== 'members'} inert={selected !== 'members'}><MembersPanel projectId={projectId} user={user} projectName={state.project?.name ?? null} active={sectionActive('members') && !showUnavailable} onRoute={onRoute} onGuardChange={onMemberRetentionChange} onStateChange={membersState} resultHost={memberResultHost} presentationGeneration={generations.current.members} onRemoved={onMemberRemoved ?? (() => {})} onUnavailable={onMemberUnavailable} onMembershipChange={onMembershipChange} /></section>
-    <section id={`project-settings-${projectId}-section-management`} role="region" aria-labelledby={`project-settings-${projectId}-tab-management`} hidden={selected !== 'management'} inert={selected !== 'management'}><ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} guard={guard} onStateChange={transferState} presentationGeneration={generations.current.management} />
+    <section id={`project-settings-${projectId}-section-management`} role="region" aria-labelledby={`project-settings-${projectId}-tab-management`} hidden={selected !== 'management'} inert={selected !== 'management'}><ProjectRepository projectId={projectId} repoUrl={state.project?.repoUrl ?? null} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} guard={guard} onRetentionChange={repositoryRetention} onStateChange={repositoryState} /><ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} guard={guard} onStateChange={transferState} presentationGeneration={generations.current.management} />
     <ProjectDeletion projectId={projectId} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onDeletionRetentionChange} guard={guard} onDeleted={onDeleted} onOutcome={onDeletionOutcome} onStateChange={deletionState} presentationGeneration={generations.current.management} /></section>
     </div></div>
     </div>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/webhook"
@@ -24,9 +25,11 @@ func (tx *ThreadTx) CredentialDAO() ThreadCredentialDAO { return task.NewThreadD
 func (tx *ThreadTx) ProjectDAO() ThreadProjectDAO       { return project.NewThreadDAO(tx.tx) }
 func (tx *ThreadTx) ThreadDAO() ThreadDAO               { return task.NewThreadDAO(tx.tx) }
 func (tx *ThreadTx) CaptureDAO() WebhookCaptureDAO      { return webhook.New(tx.tx) }
+func (tx *ThreadTx) BotBarrierDAO() BotBarrierDAO       { return bot.NewBarrier(tx.tx) }
 
 // WriteThread takes no Project lock. Callers acquire Task, credential, Project
-// authorization and head locks in that order. A lost commit response is unknown.
+// authorization, declared Bot and head locks in that order. A lost commit
+// response is unknown.
 func (s *Store) WriteThread(ctx context.Context, operation func(ThreadScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
