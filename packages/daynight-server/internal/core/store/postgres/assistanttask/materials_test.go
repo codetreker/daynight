@@ -3,13 +3,10 @@ package assistanttask_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"reflect"
-	"slices"
 	"testing"
 	"time"
 
-	rules "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
@@ -215,111 +212,5 @@ func TestConcurrentDuplicateValidationWaitsAndIsRefused(t *testing.T) {
 	var outcomeValue string
 	if err := f.db.Pool.QueryRow(ctx, `SELECT outcome FROM assistant_task_appendix_validations WHERE appendix_id=$1`, appendix).Scan(&outcomeValue); err != nil || outcomeValue != "effective" {
 		t.Fatalf("committed validation changed: %s %v", outcomeValue, err)
-	}
-}
-
-func TestRelatedAppendicesRankScopeMatchesInTheDatabase(t *testing.T) {
-	f := setup(t)
-	f.create(t)
-	ctx := t.Context()
-	project := uuid.NewString()
-	t1, t2, t3 := f.task.CreatedAt.Add(time.Minute), f.task.CreatedAt.Add(2*time.Minute), f.task.CreatedAt.Add(3*time.Minute)
-	// Fixed IDs make the final ID tie-break observable.
-	id := func(n int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012d", n) }
-	scoped := func(n int, scope model.AssistantTaskAppendixScope, validated *time.Time) model.AssistantTaskAppendix {
-		v := appendixFixture(f)
-		v.ID = id(n)
-		for _, set := range []*[]string{&scope.ProjectIDs, &scope.EventTypes, &scope.ItemCategories} {
-			if *set == nil {
-				*set = []string{}
-			}
-		}
-		v.Scope, v.LastValidatedAt = scope, validated
-		if validated != nil {
-			v.SuccessCount = 1
-		}
-		return v
-	}
-	full := scoped(1, model.AssistantTaskAppendixScope{ProjectIDs: []string{project}, EventTypes: []string{"report"}, ItemCategories: []string{"build"}}, nil)
-	eventOld := scoped(2, model.AssistantTaskAppendixScope{EventTypes: []string{"escalation", "report"}}, &t2)
-	eventTie := scoped(3, model.AssistantTaskAppendixScope{ItemCategories: []string{"deploy", "build"}}, &t2)
-	eventNew := scoped(4, model.AssistantTaskAppendixScope{ProjectIDs: []string{project}}, &t3)
-	open := scoped(5, model.AssistantTaskAppendixScope{}, &t1)
-	edited := scoped(6, model.AssistantTaskAppendixScope{}, nil)
-	edited.State = "edited"
-	unvalidated := scoped(7, model.AssistantTaskAppendixScope{}, nil)
-	// Each of these declares a dimension that the full context does not match.
-	mismatched := []model.AssistantTaskAppendix{
-		scoped(10, model.AssistantTaskAppendixScope{ProjectIDs: []string{uuid.NewString()}}, &t3),
-		scoped(11, model.AssistantTaskAppendixScope{EventTypes: []string{"report"}, ItemCategories: []string{" build "}}, &t3),
-		scoped(12, model.AssistantTaskAppendixScope{EventTypes: []string{"escalation"}}, &t3),
-	}
-	deleted := scoped(13, model.AssistantTaskAppendixScope{}, &t3)
-	deleted.State = "deleted"
-	otherTask := scoped(14, model.AssistantTaskAppendixScope{}, &t3)
-	otherTask.TaskID = uuid.NewString()
-	otherOwner := scoped(15, model.AssistantTaskAppendixScope{}, &t3)
-	otherOwner.OwnerUserID = uuid.NewString()
-	inserted := append([]model.AssistantTaskAppendix{unvalidated, open, eventTie, full, edited, eventNew, eventOld, deleted, otherTask, otherOwner}, mismatched...)
-	f.write(t, func(d store.AssistantTaskDAO) error {
-		for _, v := range inserted {
-			if ok, err := d.InsertAppendix(ctx, v); err != nil || !ok {
-				t.Fatalf("insert %s: %v %v", v.ID, ok, err)
-			}
-		}
-		return nil
-	})
-	// ruleOrder applies the module's related experience rule to this task's
-	// non-deleted fixtures, so each expected order below is shown to be both
-	// the rule's decision and the query's actual result.
-	ruleOrder := func(q store.AssistantTaskRelatedQuery) []string {
-		input := rules.RelatedAppendixInput{ProjectID: q.ProjectID, EventType: q.EventType, ItemCategory: q.ItemCategory}
-		var matched []model.AssistantTaskAppendix
-		for _, v := range inserted {
-			if _, ok := rules.RelatedAppendixMatch(v.Scope, input); ok && v.OwnerUserID == f.owner && v.TaskID == f.task.ID && v.State != "deleted" {
-				matched = append(matched, v)
-			}
-		}
-		slices.SortFunc(matched, func(a, b model.AssistantTaskAppendix) int { return rules.CompareRelatedAppendices(a, b, input) })
-		var ids []string
-		for _, v := range matched[:min(len(matched), q.Limit)] {
-			ids = append(ids, v.ID)
-		}
-		return ids
-	}
-	related := func(q store.AssistantTaskRelatedQuery, want []string) []string {
-		t.Helper()
-		if rule := ruleOrder(q); !reflect.DeepEqual(rule, want) {
-			t.Fatalf("rule order %v, want %v", rule, want)
-		}
-		q.OwnerUserID, q.TaskID = f.owner, f.task.ID
-		var ids []string
-		f.write(t, func(d store.AssistantTaskDAO) error {
-			rows, err := d.RelatedAppendices(ctx, q)
-			for _, row := range rows {
-				ids = append(ids, row.ID)
-			}
-			return err
-		})
-		return ids
-	}
-	query := store.AssistantTaskRelatedQuery{ProjectID: project, EventType: "report", ItemCategory: "build", Limit: 10}
-	want := []string{full.ID, eventNew.ID, eventTie.ID, eventOld.ID, open.ID, unvalidated.ID, edited.ID}
-	if got := related(query, want); !reflect.DeepEqual(got, want) {
-		t.Fatalf("related order %v, want %v", got, want)
-	}
-	query.Limit = 5
-	if got := related(query, want[:5]); !reflect.DeepEqual(got, want[:5]) {
-		t.Fatalf("bounded related order %v, want %v", got, want[:5])
-	}
-	// Omitted dimensions are neutral: scoped appendices stay visible and the
-	// order falls back to the remaining declared matches and validation time.
-	want = []string{mismatched[2].ID, mismatched[1].ID, mismatched[0].ID, eventNew.ID, eventTie.ID, eventOld.ID, open.ID, unvalidated.ID, edited.ID, full.ID}
-	if got := related(store.AssistantTaskRelatedQuery{Limit: 10}, want); !reflect.DeepEqual(got, want) {
-		t.Fatalf("unrestricted related order %v, want %v", got, want)
-	}
-	want = []string{mismatched[2].ID, eventOld.ID, mismatched[0].ID, eventNew.ID, eventTie.ID, open.ID, unvalidated.ID, edited.ID}
-	if got := related(store.AssistantTaskRelatedQuery{EventType: "escalation", Limit: 10}, want); !reflect.DeepEqual(got, want) {
-		t.Fatalf("event-only related order %v, want %v", got, want)
 	}
 }

@@ -190,13 +190,6 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	if value := expectID(t, appendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != appendix.Text || !reflect.DeepEqual(value.SourceRecords, []string{record.ID}) || !reflect.DeepEqual(value.Scope, appendix.Scope) || !reflect.DeepEqual(value.Validation, validated.Validation) {
 		t.Fatalf("appendix readback differs: %+v", value)
 	}
-	related := requestJSON[api.AssistantTaskRelatedAppendices](t, firstClient, http.MethodGet, base+"/appendix/related?eventType=report&itemCategory=notes", nil, http.StatusOK)
-	if len(related.Items) != 1 || !reflect.DeepEqual(related.Items[0].Validation, validated.Validation) || related.Items[0].ID != appendix.ID {
-		t.Fatalf("related appendix differs: %+v", related)
-	}
-	if mismatched := requestJSON[api.AssistantTaskRelatedAppendices](t, firstClient, http.MethodGet, base+"/appendix/related?itemCategory=archive", nil, http.StatusOK); len(mismatched.Items) != 0 {
-		t.Fatalf("declared category mismatch was related: %+v", mismatched)
-	}
 	attentionFixture := *f
 	attentionClient := *f.client
 	attentionClient.Transport = botAttentionTransport{next: attentionClient.Transport}
@@ -318,9 +311,6 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	}, http.StatusOK)
 	if deletedAppendix.ID != appendix.ID || deletedAppendix.State != "deleted" || deletedAppendix.Text != "" || len(deletedAppendix.SourceRecords) != 0 || deletedAppendix.Version != editedAppendix.Version+1 || deletedAppendix.Scope != nil || deletedAppendix.Validation != nil {
 		t.Fatalf("appendix deletion differs: %+v", deletedAppendix)
-	}
-	if afterDelete := requestJSON[api.AssistantTaskRelatedAppendices](t, f, http.MethodGet, base+"/appendix/related", nil, http.StatusOK); len(afterDelete.Items) != 0 {
-		t.Fatalf("deleted appendix was related: %+v", afterDelete)
 	}
 	deletedAppendices := requestJSON[api.AssistantTaskPage[api.AssistantTaskAppendix]](t, f, http.MethodGet, base+"/appendix?state=deleted", nil, http.StatusOK)
 	if value := expectID(t, deletedAppendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != "" || len(value.SourceRecords) != 0 || value.Version != deletedAppendix.Version {

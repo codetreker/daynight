@@ -125,13 +125,6 @@ export const parseAssistantTaskInquiry = (value: unknown, taskId: string, expect
   if ((result.state === "answered") !== (result.answeredAt !== null) || (result.state === "answered") !== (result.answerBotId !== null)) return malformed();
   return result;
 };
-// Related experience is complete for its query: at most five distinct
-// non-deleted appendices of the task and no continuation.
-export const parseAssistantTaskRelatedAppendices = (value: unknown, taskId: string): T.AssistantTaskRelatedAppendices => {
-  const d = fields(value, ["items", "observedAt"]), items = array(d.items, v => parseAssistantTaskAppendix(v, taskId));
-  if (items.length > 5 || items.some(v => v.state === "deleted") || new Set(items.map(v => v.id)).size !== items.length) return malformed();
-  return { items, observedAt: timestamp(d.observedAt) };
-};
 export const parseAssistantTaskPage = <V>(value: unknown, parse: (value: unknown) => V): T.AssistantTaskPage<V> => {
   const d = fields(value, ["items", "nextCursor", "observedAt"]), items = array(d.items, parse);
   if (items.length > 200) return malformed();

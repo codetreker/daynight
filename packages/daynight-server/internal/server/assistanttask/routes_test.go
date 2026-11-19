@@ -188,8 +188,6 @@ func TestReadRoutesPreserveScopeAndPagination(t *testing.T) {
 		{taskPath + "/items/" + testID, "GetItem", []any{testTask, testID}, true},
 		{taskPath + "/manual/versions?limit=2&cursor=opaque", "ListManuals", []any{testTask, core.PageInput{Limit: 2, Cursor: "opaque"}}, false},
 		{taskPath + "/appendix?state=active", "ListAppendix", []any{testTask, core.PageInput{Limit: 50, State: "active"}}, false},
-		{taskPath + "/appendix/related", "RelatedAppendix", []any{testTask, core.RelatedAppendixInput{}}, false},
-		{taskPath + "/appendix/related?projectId=" + testTarget + "&eventType=report&itemCategory=%20build%20", "RelatedAppendix", []any{testTask, core.RelatedAppendixInput{ProjectID: testTarget, EventType: "report", ItemCategory: " build "}}, true},
 		{taskPath + "/proposals?state=pending", "ListProposals", []any{testTask, core.PageInput{Limit: 50, State: "pending"}}, false},
 		{taskPath + "/items?state=open", "ListItems", []any{testTask, core.PageInput{Limit: 50, State: "open"}}, false},
 		{taskPath + "/records?itemId=" + testID, "ListRecords", []any{testTask, core.PageInput{Limit: 50, ItemID: testID}}, false},
@@ -211,7 +209,7 @@ func TestReadRoutesPreserveScopeAndPagination(t *testing.T) {
 			if response.Code != 200 || calls != 1 || response.Header().Get("Cache-Control") != "no-store" {
 				t.Fatalf("response=%s calls=%d", response.Body, calls)
 			}
-			if (strings.HasPrefix(test.name, "List") || test.name == "RelatedAppendix") && !strings.Contains(response.Body.String(), `"items":[]`) {
+			if strings.HasPrefix(test.name, "List") && !strings.Contains(response.Body.String(), `"items":[]`) {
 				t.Fatal("empty list was not an array")
 			}
 			calls = 0
@@ -240,9 +238,6 @@ func TestProtocolRefusalsNeverCallOperations(t *testing.T) {
 		{"GET", "/api/v1/assistant-tasks/bad", "", false},
 		{"GET", taskPath + "/items/bad", "", false},
 		{"GET", taskPath + "/manual/versions/01", "", false},
-		{"GET", taskPath + "/appendix/related?eventType=report&eventType=update", "", true},
-		{"GET", taskPath + "/appendix/related?itemCategory=", "", true},
-		{"GET", taskPath + "/appendix/related?limit=5", "", true},
 		{"GET", taskPath + "/manual/versions/0", "", false},
 		{"GET", taskPath + "/records?itemId=bad", "", false},
 		{"GET", taskPath + "/events?targetBotId=bad", "", false},

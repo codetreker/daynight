@@ -68,27 +68,6 @@ func (d *DAO) DeleteAppendixValidations(ctx context.Context, owner, task, append
 	return d.execute(ctx, "delete assistant appendix validations", `DELETE FROM assistant_task_appendix_validations WHERE owner_user_id=$1 AND task_id=$2 AND appendix_id=$3`, owner, task, appendix)
 }
 
-// relatedAppendixSQL executes the assistanttask module's
-// RelatedAppendixMatch filter and score and its CompareRelatedAppendices order:
-// an empty query value is neutral, an empty stored set is unrestricted and
-// neutral, and a nonempty set either contains the queried value (one point) or
-// excludes the appendix. Canonical UUID text order equals uuid order, so the
-// final ID tie-break agrees with the module's string comparison.
-const relatedAppendixSQL = `SELECT ` + appendixColumns + ` FROM assistant_task_appendix
-WHERE owner_user_id=$1 AND task_id=$2 AND state<>'deleted'
- AND ($3='' OR scope_project_ids='[]'::jsonb OR scope_project_ids @> jsonb_build_array($3::text))
- AND ($4='' OR scope_event_types='[]'::jsonb OR scope_event_types @> jsonb_build_array($4::text))
- AND ($5='' OR scope_item_categories='[]'::jsonb OR scope_item_categories @> jsonb_build_array($5::text))
-ORDER BY (CASE WHEN $3<>'' AND scope_project_ids @> jsonb_build_array($3::text) THEN 1 ELSE 0 END
- + CASE WHEN $4<>'' AND scope_event_types @> jsonb_build_array($4::text) THEN 1 ELSE 0 END
- + CASE WHEN $5<>'' AND scope_item_categories @> jsonb_build_array($5::text) THEN 1 ELSE 0 END) DESC,
- last_validated_at DESC NULLS LAST, id DESC
-LIMIT $6`
-
-func (d *DAO) RelatedAppendices(ctx context.Context, q store.AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error) {
-	return many(ctx, d.tx, "list related assistant appendices", relatedAppendixSQL, scanAppendix, q.OwnerUserID, q.TaskID, q.ProjectID, q.EventType, q.ItemCategory, q.Limit)
-}
-
 const proposalColumns = `id::text,owner_user_id::text,task_id::text,body,reason,status,decision_note,request_fingerprint,base_version,rules,evidence_records,author_bot_id::text,widens,created_at,decided_at`
 
 func scanProposal(row pgx.Row) (model.AssistantTaskProposal, error) {

@@ -123,8 +123,6 @@ describe("assistant-task command reads and user writes", () => {
     { args: ["manual", "show", task, "--version", version], method: "getManual", expected: [task, version] },
     { args: ["manual", "list", task], method: "listManuals", expected: [task, {}] },
     { args: ["appendix", "list", task], method: "listAppendix", expected: [task, {}] },
-    { args: ["appendix", "related", task], method: "relatedAppendix", expected: [task, {}] },
-    { args: ["appendix", "related", task, "--project", target, "--event-type", "report", "--category", " build "], method: "relatedAppendix", expected: [task, { projectId: target, eventType: "report", itemCategory: " build " }] },
     { args: ["proposal", "list", task], method: "listProposals", expected: [task, {}] },
     { args: ["item", "show", task, resource], method: "getItem", expected: [task, resource] },
     { args: ["record", "list", task, "--item", resource], method: "listRecords", expected: [task, { itemId: resource }] },
@@ -182,21 +180,6 @@ describe("assistant-task command reads and user writes", () => {
     const response = await fixture({ listAppendix }).run(["appendix", "list", task]);
     expect(response.exit).toBe(0);
     for (const text of ['"eventTypes": [', '"report"', '"successCount": "3"', '"failureCount": "1"']) expect(response.out).toContain(text);
-  });
-  it("reads related appendices from a Bot without a claim credential", async () => {
-    const related = { items: [result], observedAt: "2026-11-13T10:00:00Z" };
-    const relatedAppendix = vi.fn(async () => related) as unknown as AssistantTaskClient["relatedAppendix"];
-    const f = fixture({ relatedAppendix }, { DAYNIGHT_BOT_ID: bot });
-    const response = await f.run(["appendix", "related", task, "--event-type", "escalation", "--json"]);
-    expect(response.exit).toBe(0);
-    expect(JSON.parse(response.out)).toEqual(related);
-    expect(relatedAppendix).toHaveBeenCalledExactlyOnceWith(task, { eventType: "escalation" });
-    expect(f.readClaimCredential).not.toHaveBeenCalled();
-  });
-  it("refuses a noncanonical related project before dispatch", async () => {
-    const f = fixture({});
-    expect((await f.run(["appendix", "related", task, "--project", "bad"])).exit).toBe(2);
-    expect(f.runServerCommand).not.toHaveBeenCalled();
   });
   it("submits edited proposal text and rules only with the explicit decision", async () => {
     const decide = vi.fn(async () => result) as unknown as AssistantTaskClient["decide"];

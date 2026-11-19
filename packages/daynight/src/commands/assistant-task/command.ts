@@ -31,8 +31,8 @@ const defaults: AssistantTaskCommandDependencies = {
 const userActions = new Set(["create", "update", "pause", "resume", "delete", "manual rollback", "appendix update", "appendix delete", "proposal decide", "events clear-attention"]);
 const botActions = new Set(["claim", "bind", "renew", "appendix add", "appendix validate", "propose", "record add", "item add", "item update", "ask", "answer", "events add", "events ack"]);
 const claimActions = new Set(["claim", "bind", "renew", "release", "transfer"]);
-const readActions = new Set(["list", "show", "claim-operation show", "manual show", "manual list", "appendix list", "appendix related", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull"]);
-const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record", "--action-record", "--scope-project", "--outcome-record", "--project"]);
+const readActions = new Set(["list", "show", "claim-operation show", "manual show", "manual list", "appendix list", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull"]);
+const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record", "--action-record", "--scope-project", "--outcome-record"]);
 const integerOptions = new Set(["--if-version", "--base-version", "--manual-version", "--version", "--episode", "--expected-generation"]);
 const jsonOptions = new Set(["--rules", "--trigger", "--app-state", "--refs", "--payload"]);
 const output = (value: unknown, json: boolean): string => json ? `${JSON.stringify(value)}\n` : `${terminalText(JSON.stringify(value, null, 2))}\n`;
@@ -112,7 +112,6 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
           case "manual list": return api.listManuals(taskId!, query);
           case "manual rollback": return api.rollback(taskId!, { ifVersion: option("--if-version")!, manualVersion: option("--manual-version")! });
           case "appendix list": return api.listAppendix(taskId!, query);
-          case "appendix related": return api.relatedAppendix(taskId!, { ...(option("--project") === undefined ? {} : { projectId: option("--project")! }), ...(option("--event-type") === undefined ? {} : { eventType: option("--event-type")! }), ...(option("--category") === undefined ? {} : { itemCategory: option("--category")! }) });
           case "appendix add": return api.addAppendix(taskId!, { ...await credential(), id: operationId!, text: option("--text")!, sourceRecords: repeated("--source-record"), ...appendixScope });
           case "appendix update": return api.updateAppendix(taskId!, resourceId!, { ifVersion: option("--if-version")!, text: option("--text")!, ...(command.options.has("--source-record") || command.options.has("--clear-source-records") ? { sourceRecords: repeated("--source-record") } : {}), ...appendixScope });
           case "appendix validate": return api.validateAppendix(taskId!, resourceId!, { ...await credential(), outcomeRecordId: option("--outcome-record")! });

@@ -47,13 +47,6 @@ func appendixResponse(value model.AssistantTaskAppendix) api.AssistantTaskAppend
 	}
 	return result
 }
-func relatedAppendicesResponse(value model.AssistantTaskRelatedAppendices) api.AssistantTaskRelatedAppendices {
-	result := api.AssistantTaskRelatedAppendices{Items: make([]api.AssistantTaskAppendix, 0, len(value.Items)), ObservedAt: value.ObservedAt.UTC()}
-	for _, item := range value.Items {
-		result.Items = append(result.Items, appendixResponse(item))
-	}
-	return result
-}
 func proposalResponse(value model.AssistantTaskProposal) api.AssistantTaskProposal {
 	return api.AssistantTaskProposal{ID: value.ID, TaskID: value.TaskID, BaseVersion: value.BaseVersion, Body: value.Body, Rules: value.Rules, Reason: value.Reason,
 		EvidenceRecords: append([]string{}, value.EvidenceRecords...), AuthorBotID: value.AuthorBotID, Widens: value.Widens, Status: value.Status, DecisionNote: value.DecisionNote, CreatedAt: value.CreatedAt.UTC(), DecidedAt: utc(value.DecidedAt)}

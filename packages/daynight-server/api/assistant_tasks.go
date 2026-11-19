@@ -94,13 +94,6 @@ type AssistantTaskAppendixValidation struct {
 	LastValidatedAt time.Time `json:"lastValidatedAt"`
 }
 
-// AssistantTaskRelatedAppendices lists at most five non-deleted appendices in
-// relevance order. It is complete for its query and has no continuation.
-type AssistantTaskRelatedAppendices struct {
-	Items      []AssistantTaskAppendix `json:"items"`
-	ObservedAt time.Time               `json:"observedAt"`
-}
-
 type AssistantTaskProposal struct {
 	ID              string          `json:"id"`
 	TaskID          string          `json:"taskId"`

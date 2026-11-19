@@ -2,7 +2,6 @@ package assistanttask
 
 import (
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -50,19 +49,6 @@ func TestPagesAndProposalMatchesProjectAllRows(t *testing.T) {
 	data, err := json.Marshal(proposalResultResponse(core.ProposalResult{Proposal: model.AssistantTaskProposal{ID: testID}, RejectedMatches: []model.AssistantTaskProposal{{ID: testOperation, Status: "rejected"}}}))
 	if err != nil || !strings.Contains(string(data), `"rejectedMatches":[{`) || !strings.Contains(string(data), testOperation) {
 		t.Fatalf("matches=%s err=%v", data, err)
-	}
-}
-
-func TestRelatedAppendicesResponseListsItemsWithoutContinuation(t *testing.T) {
-	at := time.Date(2026, 11, 19, 8, 0, 0, 0, time.FixedZone("east", 8*3600))
-	data, err := json.Marshal(relatedAppendicesResponse(model.AssistantTaskRelatedAppendices{ObservedAt: at}))
-	if err != nil || string(data) != `{"items":[],"observedAt":"2026-11-19T00:00:00Z"}` {
-		t.Fatalf("empty related response: %s %v", data, err)
-	}
-	item := model.AssistantTaskAppendix{ID: testID, TaskID: testTask, Text: "Restart", State: "edited", Version: 3, CreatedAt: at, UpdatedAt: at, LastValidatedAt: &at, SuccessCount: 2}
-	response := relatedAppendicesResponse(model.AssistantTaskRelatedAppendices{Items: []model.AssistantTaskAppendix{item}, ObservedAt: at})
-	if len(response.Items) != 1 || !reflect.DeepEqual(response.Items[0], appendixResponse(item)) {
-		t.Fatalf("related items not projected as appendices: %#v", response.Items)
 	}
 }
 
