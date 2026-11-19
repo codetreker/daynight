@@ -1,0 +1,44 @@
+[
+  {
+    "name": "goal_dependencies_show",
+    "description": "Read a Goal's acceptance prerequisites and direct successors. An unfinished prerequisite blocks Goal completion but does not stop child work. Hidden prerequisites have a null target; editors receive an opaque edgeId and revision. Successors are filtered by access and paginated; cursor and limit apply only to successors (default 20, maximum 50).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {"type": "string", "format": "uuid"},
+        "goalId": {"type": "string", "format": "uuid"},
+        "cursor": {"type": "string"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}
+      },
+      "required": ["projectId", "goalId"],
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "goal_dependencies_edit",
+    "description": "Edit Goal acceptance prerequisites using the exact positive int64 decimal revision from goal_dependencies_show. In edit mode add readable Goals by projectId and goalId or remove edgeIds, including hidden edges. In replace mode specify the entire prerequisite set, retaining existing edges by edgeId or adding readable Goals; an empty prerequisites array clears the set. Relationships must stay within the same owner Team. Read first; never automatically replay a conflict or an unknown write outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {"type": "string", "format": "uuid"},
+        "goalId": {"type": "string", "format": "uuid"},
+        "ifRevision": {"type": "string", "pattern": "^[1-9][0-9]*$", "description": "Exact canonical positive int64 decimal revision."},
+        "mode": {"type": "string", "enum": ["edit", "replace"]},
+        "add": {"type": "array", "maxItems": 30, "items": {"type": "object", "properties": {"projectId": {"type": "string", "format": "uuid"}, "goalId": {"type": "string", "format": "uuid"}}, "required": ["projectId", "goalId"], "additionalProperties": false}},
+        "remove": {"type": "array", "maxItems": 30, "items": {"type": "string", "format": "uuid"}},
+        "prerequisites": {"type": "array", "maxItems": 30, "items": {"oneOf": [
+          {"type": "object", "properties": {"edgeId": {"type": "string", "format": "uuid"}}, "required": ["edgeId"], "additionalProperties": false},
+          {"type": "object", "properties": {"projectId": {"type": "string", "format": "uuid"}, "goalId": {"type": "string", "format": "uuid"}}, "required": ["projectId", "goalId"], "additionalProperties": false}
+        ]}}
+      },
+      "required": ["projectId", "goalId", "ifRevision", "mode"],
+      "oneOf": [
+        {"properties": {"mode": {"const": "edit"}}, "anyOf": [{"required": ["add"], "properties": {"add": {"minItems": 1}}}, {"required": ["remove"], "properties": {"remove": {"minItems": 1}}}], "not": {"required": ["prerequisites"]}},
+        {"properties": {"mode": {"const": "replace"}}, "required": ["prerequisites"], "not": {"anyOf": [{"required": ["add"]}, {"required": ["remove"]}]}}
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
+  }
+]

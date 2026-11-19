@@ -54,4 +54,5 @@ func serverAPIGoalDependenciesNormalFlow(t *testing.T, f *fixture) {
 	if !cleared.Changed || cleared.Revision != "3" || final.Revision == nil || *final.Revision != cleared.Revision || len(final.Prerequisites) != 0 || final.CompletionBlocked {
 		t.Fatalf("cleared relationship: receipt=%+v read=%+v", cleared, final)
 	}
+	serverAPIMCPGoalDependenciesNormalFlow(t, f, project, upstream, downstream, cleared.Revision)
 }
