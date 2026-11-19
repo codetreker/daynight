@@ -1,9 +1,12 @@
 package project
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -51,6 +54,8 @@ func repositoryState(t *testing.T, db *postgres.Store, p string) string {
 
 func TestRepositoryChangeTransactionAndConflicts(t *testing.T) {
 	s, db, actor, p := repositoryChangeFixture(t)
+	var logs bytes.Buffer
+	s.SetRepositoryLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
 	ctx := t.Context()
 	other := uuid.NewString()
 	workerA, workerB := uuid.NewString(), uuid.NewString()
@@ -110,10 +115,32 @@ func TestRepositoryChangeTransactionAndConflicts(t *testing.T) {
 	if after := repositoryState(t, db, p.ID); after != before {
 		t.Fatal("unconfirmed switch changed state")
 	}
+	wrongTarget := input
+	wrongTarget.TreatUnverifiedAsSwitch = true
+	wrongID := int64(31)
+	wrongTarget.TargetGitHubRepositoryID = &wrongID
+	_, err = s.SetRepository(ctx, actor, p.ID, wrongTarget)
+	transferFault(t, err, "version_conflict")
+	if after := repositoryState(t, db, p.ID); after != before {
+		t.Fatal("mismatched target identity changed state")
+	}
 	input.TreatUnverifiedAsSwitch = true
 	receipt, err = s.SetRepository(ctx, actor, p.ID, input)
 	if err != nil || !receipt.Changed || !receipt.BindingsInvalidated || receipt.RepositoryVersion != 3 {
 		t.Fatalf("switch: %+v %v", receipt, err)
+	}
+	var sawSwitch bool
+	for _, line := range bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["phase"] == "save" && record["classification"] == "unverified" && record["commit_outcome"] == "committed" {
+			sawSwitch = record["project_id"] == p.ID && record["affected_worker_configuration_rows"] == float64(2)
+		}
+	}
+	if !sawSwitch || strings.Contains(logs.String(), p.RepoURL) || strings.Contains(logs.String(), input.RepoURL) || strings.Contains(logs.String(), workerA) || strings.Contains(logs.String(), workerB) {
+		t.Fatalf("repository diagnostics missing or disclose private values: %s", logs.String())
 	}
 	rows, err := db.Pool.Query(ctx, `SELECT configuration_revision,configuration_observation_revision,configuration_observation,archive_sessions,desired_configuration FROM workers ORDER BY configuration_revision`)
 	if err != nil {

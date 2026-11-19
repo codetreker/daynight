@@ -301,7 +301,7 @@ func (e *githubRepositoryIdentityMigrationError) Error() string {
 }
 func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
 
-//go:embed schema/migrations/097_assistant_task_outcomes.sql
+//go:embed schema/migrations/098_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
 //go:embed schema/migrations/100_assistant_task_item_lifecycle.sql
@@ -412,7 +412,7 @@ var schemaMigrations = []migration{
 	{version: 94, sql: workerReviewParticipationSQL},
 	{version: 95, sql: projectRepositoryVersionSQL},
 	{version: 96, sql: prReviewAssignmentSQL},
-	{version: 97, sql: assistantTaskOutcomesSQL},
+	{version: 98, sql: assistantTaskOutcomesSQL},
 	{version: 100, sql: assistantTaskItemLifecycleSQL},
 	{version: 101, sql: assistantTaskRetrospectivesSQL},
 }

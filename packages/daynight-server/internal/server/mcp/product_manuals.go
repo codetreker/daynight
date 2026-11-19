@@ -41,7 +41,7 @@ type manualManifestEntry struct {
 // The manifest is explicit: public identifiers and metadata do not derive from
 // a request URI or the contents of the embedded directory.
 var productManualManifest = []manualManifestEntry{
-	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Account, Team and Project context", Description: "Establish Account, Team and Project context and resolve a repository.", MIMEType: "text/markdown", Size: 8814}},
+	{"manuals/concepts.md", sdk.Resource{URI: "daynight://manuals/concepts.md", Name: "concepts", Title: "Account, Team and Project context", Description: "Establish Account, Team and Project context and manage a Project repository.", MIMEType: "text/markdown", Size: 11178}},
 	{"manuals/tasks.md", sdk.Resource{URI: "daynight://manuals/tasks.md", Name: "tasks", Title: "Task and Goal reads", Description: "Inspect Task and Goal definitions, projections, readiness, inventories and properties.", MIMEType: "text/markdown", Size: 8321}},
 	{"manuals/task-writes.md", sdk.Resource{URI: "daynight://manuals/task-writes.md", Name: "task-writes", Title: "Task and Goal writes", Description: "Create, modify or delete Tasks and Goals alongside write-safety; consult dependency-writes when changing relationships.", MIMEType: "text/markdown", Size: 8410}},
 	{"manuals/dependencies.md", sdk.Resource{URI: "daynight://manuals/dependencies.md", Name: "dependencies", Title: "Dependency graphs and Goal relationships", Description: "Interpret ordinary Task graphs and Goal acceptance relationships.", MIMEType: "text/markdown", Size: 5069}},
@@ -56,7 +56,7 @@ var productManualManifest = []manualManifestEntry{
 	{"manuals/session-history.md", sdk.Resource{URI: "daynight://manuals/session-history.md", Name: "session-history", Title: "Session history and complete entries", Description: "Read bounded history pages and complete entries for an exact retained Session.", MIMEType: "text/markdown", Size: 4046}},
 	{"manuals/session-messages.md", sdk.Resource{URI: "daynight://manuals/session-messages.md", Name: "session-messages", Title: "Session messages and original operation recovery", Description: "Send with retained Session/execution identity and intent or query the original operation alongside write-safety; use session-reads when target identity is unknown.", MIMEType: "text/markdown", Size: 4603}},
 	{"manuals/worker-operations.md", sdk.Resource{URI: "daynight://manuals/worker-operations.md", Name: "worker-operations", Title: "Worker assignment and claim completion", Description: "Distinguish handoff, explicit assignment, owned claim completion and host process control; complete claims alongside write-safety.", MIMEType: "text/markdown", Size: 5555}},
-	{"manuals/overview.md", sdk.Resource{URI: "daynight://manuals/overview.md", Name: "overview", Title: "Daynight MCP overview", Description: "Find operation guides, shared conventions and required reading sets.", MIMEType: "text/markdown", Size: 4665}},
+	{"manuals/overview.md", sdk.Resource{URI: "daynight://manuals/overview.md", Name: "overview", Title: "Daynight MCP overview", Description: "Find operation guides, shared conventions and required reading sets.", MIMEType: "text/markdown", Size: 4683}},
 }
 
 var manualURIReference = regexp.MustCompile(`daynight://manuals/[^\s\]\[()<>"` + "`" + `]+`)
