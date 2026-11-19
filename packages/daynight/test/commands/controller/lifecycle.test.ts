@@ -160,7 +160,7 @@ it("test tickets and journals omit task identity and preserve no-input initializ
   await expect(writeLaunchTicket(home, { ...ticket, claimId: randomUUID() } as never)).rejects.toThrow();
 });
 
-it.each(["codex", "claude"] as const)("%s Bot recovery bindings are preserved only on matching independent tickets", async provider => {
+it.each(["codex", "claude", "copilot"] as const)("%s Bot recovery bindings are preserved only on matching independent tickets", async provider => {
   const { home, ticket: task } = await fixture();
   const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
   const binding = { botId: randomUUID(), directory: path.join(home, "bot-recovery") };

@@ -26,6 +26,7 @@ type LaunchCommon = {
   readonly instructions?: string;
   readonly codexBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly claudeBotRecovery?: { readonly botId: string; readonly directory: string };
+  readonly copilotBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly resumeNativeSessionId: string | null;
   readonly credentialFile: string; readonly ipcEndpoint: string; readonly ipcSecret: string;
   readonly createdAt: string;
@@ -49,12 +50,18 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...["codexBotRecovery", "claudeBotRecovery"].filter(key => Object.hasOwn(data, key)), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
+  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...["codexBotRecovery", "claudeBotRecovery", "copilotBotRecovery"].filter(key => Object.hasOwn(data, key)), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
   if (data.schemaVersion !== 1 || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
   if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller ticket server origin is invalid.");
   if (data.provider !== "codex" && data.provider !== "claude" && data.provider !== "copilot") throw new Error("Controller ticket provider is invalid.");
+  if (Object.hasOwn(data, "copilotBotRecovery")) {
+    const recovery = data.copilotBotRecovery as Record<string, unknown> | null;
+    if (!test || data.provider !== "copilot" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
+      || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Copilot Bot recovery binding is invalid.");
+    uuid(recovery.botId);
+  }
   if (Object.hasOwn(data, "codexBotRecovery")) {
     const recovery = data.codexBotRecovery as Record<string, unknown> | null;
     if (!test || data.provider !== "codex" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
