@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -58,6 +59,9 @@ func TestProjectRepositoryOccupancyAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("committed repository visibility", func(t *testing.T) {
+		assertCommittedRepositoryVisibility(t, s, actor, first.ID, target.ID, second.ID, other.ID)
+	})
 	var before string
 	if err := s.Pool.QueryRow(ctx, `SELECT (to_jsonb(p)||jsonb_build_object('ownership',to_jsonb(o)))::text FROM projects p JOIN project_ownership o ON o.project_id=p.id WHERE p.id=$1`, second.ID).Scan(&before); err != nil {
 		t.Fatal(err)
@@ -101,6 +105,85 @@ func TestProjectRepositoryOccupancyAndRelease(t *testing.T) {
 	}
 	if receipt, err := projectservice.NewProjects(s).Delete(ctx, actor, legacy.ID); err != nil || !receipt.Deleted {
 		t.Fatalf("delete legacy Project: %+v %v", receipt, err)
+	}
+}
+
+func assertCommittedRepositoryVisibility(t *testing.T, s *Store, actor model.Principal, firstID, firstTeam, secondID, secondTeam string) {
+	t.Helper()
+	ctx := t.Context()
+	otherUser, otherActor, _ := testutil.AuthRecords(t, s)
+	type repository struct {
+		id, team, address, identity string
+		personalUser                string
+	}
+	const identity = "github.com/Org/Repo"
+	firstRepo := repository{id: firstID, team: firstTeam, address: "https://GitHub.com/Org/Repo.git/", identity: identity}
+	secondRepo := repository{id: secondID, team: secondTeam, address: "git@github.com:Org/Repo", identity: identity}
+	ipv6 := repository{id: uuid.NewString(), team: firstRepo.team, address: "ssh://git@::1:22/repo", identity: "[::1]/repo"}
+	private := repository{id: uuid.NewString(), team: otherUser.PersonalTeam.ID, address: "git@github.com:Org/Repo.git", identity: identity, personalUser: otherUser.ID}
+	for _, spec := range []struct {
+		repo  repository
+		owner model.Principal
+		name  string
+	}{
+		{ipv6, actor, "IPv6"},
+		{private, otherActor, "Private"},
+	} {
+		c, err := s.WriteProjectCreation(ctx, spec.owner.UserID, func(dao ProjectCreationDAO) error {
+			_, _, err := dao.InsertProject(ctx, spec.repo.id, spec.name, spec.repo.address, spec.repo.identity, spec.repo.team)
+			return err
+		})
+		if err != nil || c.Outcome != TransactionCommitted {
+			t.Fatalf("commit %s repository: completion=%+v error=%v", spec.name, c, err)
+		}
+	}
+
+	for _, want := range []repository{firstRepo, secondRepo, ipv6, private} {
+		var got repository
+		err := s.Pool.QueryRow(ctx, `SELECT p.id::text, o.team_id::text, p.repo_url, p.repository_identity, COALESCE(t.personal_user_id::text, '')
+FROM projects p JOIN project_ownership o ON o.project_id=p.id JOIN teams t ON t.id=o.team_id WHERE p.id=$1`, want.id).
+			Scan(&got.id, &got.team, &got.address, &got.identity, &got.personalUser)
+		if err != nil || got != want {
+			t.Fatalf("committed repository row = %+v, want %+v: %v", got, want, err)
+		}
+	}
+
+	err := s.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		dao := scope.ProjectDAO()
+		for _, want := range []repository{firstRepo, secondRepo, ipv6} {
+			matches, err := dao.FindVisibleRepositoryForCreation(ctx, actor, want.team, want.identity)
+			if err != nil {
+				return err
+			}
+			if len(matches) != 1 || matches[0].ID != want.id || matches[0].Ownership.TeamID != want.team {
+				return fmt.Errorf("repository %q in Team %s = %+v, want only %s", want.identity, want.team, matches, want.id)
+			}
+		}
+		matches, err := dao.FindVisibleRepositoryForCreation(ctx, actor, private.team, private.identity)
+		if err != nil {
+			return err
+		}
+		if len(matches) != 0 {
+			return fmt.Errorf("private repository visible in Team %s: %+v", private.team, matches)
+		}
+		all, err := dao.ScopedProjects(ctx, actor, ProjectScope{Kind: ProjectScopeAll}, Page{Limit: 100})
+		if err != nil {
+			return err
+		}
+		wantIDs := map[string]bool{firstID: true, secondID: true, ipv6.id: true}
+		for _, item := range all.Items {
+			if !wantIDs[item.ID] {
+				return fmt.Errorf("unexpected visible Project %s", item.ID)
+			}
+			delete(wantIDs, item.ID)
+		}
+		if all.HasMore || len(wantIDs) != 0 {
+			return fmt.Errorf("incomplete visible Project set: missing=%v hasMore=%t", wantIDs, all.HasMore)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
