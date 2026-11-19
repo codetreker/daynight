@@ -207,43 +207,6 @@ func TestDirectMemberScopeRechecksRevocationAfterCompleteTarget(t *testing.T) {
 	}
 }
 
-// Reserve the other actors' connections before the test-only expiry window begins.
-func armMemberCredentialExpiry(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, id string, connections int) time.Time {
-	t.Helper()
-	var conn *pgxpool.Conn
-	for range connections {
-		acquired, err := pool.Acquire(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer acquired.Release()
-		conn = acquired
-	}
-	var expires time.Time
-	if err := conn.QueryRow(ctx, `UPDATE `+table+` SET expires_at=clock_timestamp()+interval '750 milliseconds' WHERE id=$1 RETURNING expires_at`, id).Scan(&expires); err != nil {
-		t.Fatal(err)
-	}
-	return expires
-}
-
-func waitForMemberCredentialExpiry(t *testing.T, ctx context.Context, pool *pgxpool.Pool, expires time.Time) {
-	t.Helper()
-	var expired bool
-	const observedExpiry = `SELECT clock_timestamp()>=$1::timestamptz`
-	if err := pool.QueryRow(ctx, observedExpiry, expires).Scan(&expired); err != nil {
-		t.Fatal(err)
-	}
-	if expired {
-		t.Fatal("credential expired before the lock observations completed")
-	}
-	if _, err := pool.Exec(ctx, `SELECT pg_sleep_until($1::timestamptz)`, expires); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, observedExpiry, expires).Scan(&expired); err != nil || !expired {
-		t.Fatalf("credential still valid at the release barrier: expired=%t error=%v", expired, err)
-	}
-}
-
 func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential, model.OAuthCredential} {
@@ -267,7 +230,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			table := map[model.CredentialKind]string{model.SessionCredential: "sessions", model.PATCredential: "personal_access_tokens", model.OAuthCredential: "oauth_access_tokens"}[kind]
 			// The row holder already occupies one connection. Warm one each for
 			// the member operation, revocation, and compatible reader/observer.
-			expires := armMemberCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)
+			expires := armCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)
 			done := make(chan error, 1)
 			go func() {
 				_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
@@ -292,7 +255,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			if err != nil || c.Outcome != store.TransactionCommitted {
 				t.Fatalf("compatible Session credential reader blocked behind revocation: %#v %v", c, err)
 			}
-			waitForMemberCredentialExpiry(t, ctx, db.Pool, expires)
+			waitForCredentialExpiry(t, ctx, db.Pool, expires)
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -388,8 +351,6 @@ func TestDirectMemberScopeExpiryDuringEligibilityWaitRollsBackNewMembership(t *t
 	mustQueryExec(t, db, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, project, team.ID)
 	mustQueryExec(t, db, `INSERT INTO webhook_subscriptions(id,endpoint_id,project_id,owner_kind,owner_id,authorization_state,authorization_epoch,created_at,updated_at) VALUES($1,$2,$3,'personal',$4,'confirmation_required',1,now(),now())`, subscription, uuid.NewString(), project, target.ID)
 	before := authorizationReceiverRow(t, ctx, db, "webhook_subscriptions", "id", subscription)
-	expires := time.Now().UTC().Add(2 * time.Second)
-	mustQueryExec(t, db, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, actor.CredentialID, expires)
 	holder, err := db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -398,28 +359,11 @@ func TestDirectMemberScopeExpiryDuringEligibilityWaitRollsBackNewMembership(t *t
 	if _, err := holder.Exec(ctx, `SELECT id FROM webhook_subscriptions WHERE id=$1 FOR UPDATE`, subscription); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
-		done <- err
-	}()
-	testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT s.id::text,s.project_id::text", holder.Conn().PgConn().PID())
-	for {
-		var expired bool
-		if err := db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired); err != nil {
-			t.Fatal(err)
-		}
-		if expired {
-			break
-		}
-		if err := testutil.WaitThreadClock(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := holder.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	err = testutil.ReceiveQueryResult(t, ctx, done)
+	err = expireCredentialDuringRowWait(t, ctx, db.Pool, holder, "oauth_access_tokens", actor.CredentialID,
+		"SELECT s.id::text,s.project_id::text", func(ctx context.Context) error {
+			_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
+			return err
+		})
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
 		t.Fatalf("expiry during eligibility wait admitted: %v", err)

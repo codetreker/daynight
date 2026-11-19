@@ -223,16 +223,17 @@ retains the locked, cached token expiry. Deadline probes retain connection
 preparation and actual query observation. The large search fixture keeps its
 complete description but constructs its expected snippet independently.
 
-The [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go)
-and [Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go)
-expiry cases acquire the row holder and prepare the other connections before
-setting the credential expiry from the PostgreSQL clock. The observer verifies
-the intended lock and a still-valid credential before waiting with
-`pg_sleep_until`. It confirms expiry through the database clock before the
-holder commits. The Direct Member case also observes a queued revocation and
-commits a compatible Session credential read before expiry. The test-local
-window has to accommodate these observations under the configured root
-concurrency.
+[Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go),
+[Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go),
+and [Profile Patch](../../../../packages/daynight-server/internal/core/store/postgres/user_profile_mechanism_test.go)
+use a short window based on the PostgreSQL clock after the holder takes the
+target row lock and the waiter and observer connections are warm. The observer
+identifies the intended SQL and its blocking backend while the credential is
+valid. It waits with `pg_sleep_until` and verifies expiry on the database clock
+before the holder commits. The Direct Member target-membership case also
+observes a queued revocation and commits a compatible Session credential read
+within the window. The eligibility and Profile Patch cases join the worker
+before checking that the membership or profile changes were rolled back.
 
 [Session/PAT deletion storage proofs](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go)
 use a stable stored expiry and explicit caller times on either side of it. The
