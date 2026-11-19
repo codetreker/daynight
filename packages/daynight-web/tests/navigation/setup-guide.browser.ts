@@ -108,5 +108,6 @@ for (const testOrigin of ['https://daynight.example', 'https://daynight.example:
     await page.goto(`${testOrigin}/setup`);
     await expect(page.locator('#mcp .setup-command code').first()).toHaveText(`${testOrigin}/mcp`);
     expect(requests).toEqual([`${testOrigin}/api/v1/me`]);
+    await page.unrouteAll({ behavior: 'wait' });
   });
 }
