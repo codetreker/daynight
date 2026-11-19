@@ -313,7 +313,7 @@ and Test sessions. Webhooks starts at
 `/webhooks?owner=personal` and retains its independent owner selection and catalog
 gate. The expanded selector displays an avatar, a single-line name and an arrow,
 with no type row or reserved blank line; its accessible name and title retain the
-full name and known type. Its 24px avatar and centered SVG arrow fit a 36px trigger on wide fine-pointer displays; narrow or coarse-pointer layouts use a 44px minimum touch target. The rail hides the name and arrow. Project list headings and document titles use
+full name and known type. Its 24px avatar and centered SVG arrow fit a 36px trigger on wide fine-pointer displays; narrow or coarse-pointer layouts use a 44px minimum touch target. The desktop rail hides the name and arrow. Project list headings and document titles use
 Projects, with the confirmed scope in the eyebrow. Direct project breadcrumbs do
 not infer ownership from the sidebar Team. The Team trigger
 opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
@@ -388,17 +388,35 @@ retain the browser's appearance choice. Read, invalid-value and write failures
 have localized visible feedback while the current in-memory choice remains
 usable. Retry saves that choice, and only a successful write clears the issue.
 
-At 740px and below, navigation uses a 60px rail and a 220px modal overlay. Its
-open state is temporary and never overwrites the desktop choice. The overlay
-contains keyboard focus, isolates the background and shares the reference-counted
-body scroll lock with the graph and task detail. Escape and backdrop dismissal
-restore the opener; route changes use the existing content focus behavior.
-Route changes, the desktop breakpoint, actual identity loss and unmount close
-the overlay and release its isolation and lock. Account-change waiting keeps it
-open with its focus containment and scroll lock.
+At 740px and below, workspace content occupies the first and only grid column;
+closed navigation has no rail, layout allocation or reachable links. One
+`WorkspaceNavigation` serves desktop and the 220px modal drawer without mounting
+another data consumer. A dedicated 44×44px hamburger button precedes the
+breadcrumbs in the authenticated topbar, with the sidebar's dark background,
+white icon, 8px corners and a light shadow. It exposes localized Open navigation,
+`aria-controls` and `aria-expanded`. The narrow document topbar stays sticky;
+assistant and Test session pages retain their existing visible header within
+their independent scrolling shell. The button, breadcrumbs and account/language
+actions remain reachable without overlap on narrow and short viewports.
+
+Workspace owns `useWorkspaceDrawer` and passes temporary drawer state, the opener
+reference and close reasons to `WorkspaceSidebar` independently of the stored desktop choice. The
+drawer header has a 44×44px Close navigation icon button. Opening moves focus
+inside; the drawer contains Tab focus, isolates the background and shares the
+reference-counted body scroll lock with the graph and task detail. Close-button,
+Escape and backdrop dismissal restore the visible opener after background inert
+is released. Ordinary navigation closes the drawer and uses target content
+focus; modified clicks and new tabs retain native link behavior. The Team
+popover handles Escape first and retains its creation-dialog focus handoff.
+Route changes, crossing the breakpoint, actual identity blocking or account
+changes, and unmount release the drawer's isolation and lock without focusing
+hidden controls. Returning to desktop recovers its saved width. Account-change
+waiting and unchanged-account background checks keep the drawer open with its
+focus containment and scroll lock.
 Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
-[sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries; the
+[sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries;
+the [mobile navigation button decision](../../.agents/notes/implemented/feature/2026-11-19-mobile-navigation-button.md) owns the narrow-screen entry and focus ordering; the
 [account menu decision](../../.agents/notes/archived/feature/2026-11-04-topbar-account-menu.md) records the rationale for account entry placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
