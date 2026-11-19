@@ -17,7 +17,8 @@
 .task-row-goal:hover { text-decoration: underline; }
 .task-row-goal:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 2px; }
 .task-row-execution { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.task-row .task-row-status { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.task-row .task-row-status { display: flex; flex-direction: row; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.task-row-usage-unsupported { color: var(--task-helper); font-size: 11px; line-height: 1.5; }
 .task-row-status .project-session-status { position: static; }
 .goal-task-list > .task-row-item + .task-row-item { border-top: 0; }
 .goal-task-list .task-row { padding-inline-start: calc(var(--task-row-inline-padding) + var(--member-content-indent)); border-radius: 0; }
