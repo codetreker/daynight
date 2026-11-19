@@ -1,3 +1,4 @@
+import { isProcessBirth } from "./linux-process-proof.js";
 import { uploadStoppedControllerArchive } from "./archive-upload.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -86,7 +87,7 @@ const savedCleanupSnapshot = (snapshot: ControllerSnapshot, ticket: ControllerLa
     && Number.isSafeInteger(value.pid) && value.pid > 0 && value.pid <= 2_147_483_647
     && Number.isSafeInteger(value.parentPid) && value.parentPid >= 0
     && (value.processGroupId === null || Number.isSafeInteger(value.processGroupId) && value.processGroupId > 0)
-    && typeof value.startedAt === "string" && value.startedAt.trim() !== ""
+    && isProcessBirth(value.startedAt)
     && typeof value.commandHash === "string" && /^[a-f0-9]{64}$/.test(value.commandHash)
     && (value.jobObjectName === undefined || typeof value.jobObjectName === "string" && value.jobObjectName.trim() !== "" && !value.jobObjectName.includes("\0"));
   const same = (left: ProcessProof, right: ProcessProof): boolean => left.pid === right.pid && left.parentPid === right.parentPid

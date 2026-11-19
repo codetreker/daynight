@@ -23,8 +23,9 @@ scheduling must make the tested revision and remaining PR guarantees clear.
 
 The `shell and browser acceptance` workflow in
 [`.github/workflows/shell-browser.yml`](../../../../.github/workflows/shell-browser.yml)
-runs `verify-completion` and `verify-web-browser` on every `main` push and through
-`workflow_dispatch`. Neither job depends on module selection or the other job.
+is triggered by `main` pushes and `workflow_dispatch` to run `verify-completion`
+and `verify-web-browser`. The [main concurrency policy](../process/2026-11-19-bounded-main-ci-runs.md)
+can replace a pending run before either job starts. Neither job depends on module selection or the other job.
 Each validates its event checkout with its own pinned actions, Node.js, pnpm and
 locked workspace dependencies. They retain their original job timeouts,
 failure propagation, owned-resource cleanup and evidence uploads.

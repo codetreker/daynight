@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -54,7 +55,7 @@ type assignmentCapture struct {
 	fn func(context.Context, []protocol.Fact) error
 }
 
-func (c *assignmentCapture) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (c *assignmentCapture) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, _ wm.Actor, facts []protocol.Fact) error {
 	c.t.Helper()
 	if c.fn == nil {
 		c.t.Fatal("unexpected source capture")

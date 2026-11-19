@@ -1,3 +1,4 @@
+import { isProcessBirth } from "../../controller/linux-process-proof.js";
 import path from "node:path";
 import { resolveBotControllerStateDirectory } from "./paths.js";
 import { randomUUID } from "node:crypto";
@@ -33,7 +34,7 @@ const checkProcess = (proof: ProcessProof): void => {
   if (proof === null || typeof proof !== "object" || !Number.isSafeInteger(proof.pid) || proof.pid < 1 || proof.pid > 2_147_483_647
     || !Number.isSafeInteger(proof.parentPid) || proof.parentPid < 0 || proof.parentPid > 2_147_483_647
     || !(proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0)
-    || typeof proof.startedAt !== "string" || proof.startedAt.trim() === "" || !proof.startedAt.isWellFormed()
+    || !isProcessBirth(proof.startedAt)
     || typeof proof.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(proof.commandHash)
     || proof.jobObjectName !== undefined && (typeof proof.jobObjectName !== "string" || proof.jobObjectName.trim() === "" || /\0/.test(proof.jobObjectName))) {
     throw new Error("Bot controller process evidence is invalid.");

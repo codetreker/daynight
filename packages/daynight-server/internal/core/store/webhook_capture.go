@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -33,6 +34,28 @@ type WebhookCapturedEvent struct {
 	MessageID, OriginRequestID                        *string
 	OccurredAt, RecordedAt                            time.Time
 	FactBytes, FactSHA256                             []byte
+	// Actor is written by SaveCapture and read back only by
+	// CapturedEventProvenance; delivery and history reads leave it unknown
+	// because outbound rendering never uses it.
+	Actor webhook.Actor
+}
+
+var ErrWebhookCapturedEventMissing = errors.New("webhook captured event missing")
+
+// WebhookCapturedEventReader reads server-side facts of one captured event by
+// its ID. A missing event returns ErrWebhookCapturedEventMissing.
+type WebhookCapturedEventReader interface {
+	CapturedEventProvenance(context.Context, string) (WebhookCapturedEventProvenance, error)
+}
+
+// WebhookCapturedEventProvenance carries the stored actor and the original
+// fact digest. FactRemovedAt is set once retention reclaimed the fact bytes;
+// the digest remains available after removal.
+type WebhookCapturedEventProvenance struct {
+	EventID       string
+	Actor         webhook.Actor
+	FactSHA256    []byte
+	FactRemovedAt *time.Time
 }
 
 type WebhookCapturedMatch struct {
