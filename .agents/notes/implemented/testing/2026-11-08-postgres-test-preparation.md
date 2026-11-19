@@ -58,6 +58,12 @@ while scheduler slots are occupied by other parents awaiting permits. The shared
 management pool remains protected by `sync.Once` and closes only after every
 test cleanup completes.
 
+The Goal write-deadline tests use the same two PostgreSQL permits as other
+isolated root tests. The Team lock case observes only its own schema's
+PostgreSQL workers. Each pool wait case owns its one-connection pool. These
+boundaries allow the production deadlines to overlap with independent
+fixtures while preserving the original timeout and cleanup assertions.
+
 Historical prefix migrations and schema-control tests retain their serial
 scheduling. Explicit migration-lock holders remain serial because every ordinary
 fixture initialization also needs that database-level lock. Snapshot regeneration
