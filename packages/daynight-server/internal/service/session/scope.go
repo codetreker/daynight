@@ -58,6 +58,33 @@ func loadSession(ctx context.Context, op sessionAccessOperation, scope store.Ses
 	return op.Load(ctx, scope, id, bot)
 }
 
+// loadTaskSession loads a Session addressed through a Task route that already
+// holds its Task lock. It rejects a Bot-bound Session before acquiring the Bot:
+// a Task, Step or Thread write that declares a Bot holds that Bot's deletion
+// barrier before it locks its Task, so taking the Bot after the Task here would
+// invert that order and let the two transactions deadlock. Every Task binding
+// rejects such a Session anyway because Bot-bound Sessions are always
+// independent Test Sessions.
+func loadTaskSession(ctx context.Context, op sessionAccessOperation, scope store.SessionScope, id string, purpose sessioncore.BrowserPurpose) (*sessioncore.Access, error) {
+	botID, err := scope.SessionDAO().SessionBotID(ctx, id)
+	if err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			op.MissingSession(id)
+		}
+		return nil, err
+	}
+	if botID != nil {
+		return nil, sessioncore.TaskBotSessionRefusal(purpose)
+	}
+	return op.Load(ctx, scope, id, nil)
+}
+
+// loadTaskReadSession is loadTaskSession for Task routes that only read or
+// archive a Session.
+func loadTaskReadSession(ctx context.Context, op sessionAccessOperation, scope store.SessionScope, id string) (*sessioncore.Access, error) {
+	return loadTaskSession(ctx, op, scope, id, sessioncore.BrowserAccess)
+}
+
 func authorizeTest(ctx context.Context, op browserOperation, scope store.SessionScope, p model.Principal, access *sessioncore.Access) error {
 	if err := op.LockCredential(ctx, scope, p); err != nil {
 		return err
@@ -118,7 +145,7 @@ func (s *Service) browserFor(ctx context.Context, principal model.Principal, pro
 		if purpose == sessioncore.TaskReceiptAccess {
 			access, err = op.LoadTaskReceipt(ctx, scope, project, taskID, id)
 		} else {
-			access, err = loadSession(ctx, op, scope, id)
+			access, err = loadTaskSession(ctx, op, scope, id, purpose)
 		}
 		if err != nil {
 			return err

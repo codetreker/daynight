@@ -2884,6 +2884,11 @@ func (mock *taskHTTPProjectWriterMock) RepositoryOccupied(ctx context.Context, t
 	return mock.RepositoryOccupiedFn(ctx, team, identity)
 }
 
+func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", false)
+	return nil
+}
+
 func (mock *taskHTTPProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	mock.need("WorkerClaimAdmissionDAO", false)
 	return nil

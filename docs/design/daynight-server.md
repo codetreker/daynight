@@ -198,6 +198,8 @@ Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
 `070_task_tags.sql` 为 Project 增加独立的 `tag_catalog_epoch`，并建立标签库 `project_tags` 与关联表 `task_tags`。标签名称键按 `C` 排序，同一 Project 内由唯一索引保证唯一；关联以 `(project_id, task_id, tag_id)` 为主键，反向索引支持标签到条目的集合操作。两表不复制名称，也不引入外键或触发器。旧 Task 自然拥有空关联。标签目录在同一读取快照按名称键和 ID 分页、按字面子串查询及批量解析；使用计数通过有效删除视图统计可见 Task 和 Goal，包含终态。项目写事务提供原始版本条件写、关联集合替换、关联条目版本与时间的集合 touch，以及包含已删除保留条目的关联清理。独立 epoch 旋转不修改 Project 元数据或 `task_cache_epoch`。`core/tag` 拥有名称、版本与标签库规则；`service/tag` 在同一项目写作用域核验权限、原始版本并协调关联 touch 与删除，读取在同一快照核验权限和计数；`server/tag` 负责 REST 解析、认证接入、编码与错误映射。创建、实际改名、改色和删除旋转标签目录 epoch；改名、改色和删除集合 touch 关联条目，删除清除包括已删除保留条目的全部关联，不读取所有条目正文或失效任务缓存。目录 cursor 绑定项目、principal、查询、limit、epoch 和排序位置；名称引用批量解析以实际编码限制输出并拒绝任何失效 ID。设计取舍见[标签存储决策](../../.agents/notes/implemented/architecture/2026-11-13-project-tag-storage.md)与[标签目录决策](../../.agents/notes/implemented/feature/2026-11-13-project-tag-catalog.md)。
 
+标签重名只在精确唯一索引标记和可靠的操作阶段回滚同时成立时映射为 409 `tag_name_conflict`。REST 检查完整错误树：标记分支只允许一个数据库错误；包围该标记、同样报告 SQLSTATE 23505 的存储包装描述同一故障，不重复计数。附加错误分支、清理失败、提交尝试及未知结果仍保留各自失败语义。
+
 `074_tag_color.sql` 为 Tag 增加非空大写 `#RRGGBB` 色值，既有和省略颜色的新 Tag 均为 `#9AA3B2`。服务在项目写锁内先校验原始版本，再原子更新名称和颜色；实际改色与改名一样 touch 关联 Task/Goal 并旋转目录 epoch，同值不写入。颜色批量读取在同一授权快照校验可选 epoch，并按规范化去重后的 ID 返回精确版本和颜色或明确缺失。REST 创建和更新接受颜色，并通过独立的颜色 resolve 投影按实际编码限制返回完整结果；旧 REST Tag 及 REST/MCP Task 标签引用不包含颜色，也不扩大既有回执预算；MCP Tag 结果包含颜色。设计取舍见[颜色存储决策](../../.agents/notes/implemented/architecture/2026-11-15-tag-color-storage.md)。
 
 `core/task` 规范化并排序标签集合。创建省略或提交空集合时无关联；项目锁内校验候选及全部标签后，在原创建事务写入 Task/Goal 和关联，重新加载实际引用并核对集合，响应准入失败回滚全部写入。创建不 touch 条目，保留原始版本和数据库时间。更新省略标签保留、空集合清除，即使无变化也检查原始版本。`service/task` 的独立关联操作在项目锁内检查成员、有效 Task/Goal 和全部本项目标签；实际变化替换关联并使用锁后数据库时间 touch 一次，不改变执行归属或冻结 Session。PATCH 仅提交 `tagIds` 时使用独立关联操作；混合 metadata 时在原写事务校验最终集合，关联替换与 metadata 写入、响应准入共同提交或回滚，最多推进一次版本。单资源读取及完整写回执在同一事务加载真实标签引用；列表、ready、搜索和同步在截取选定页后批量加载引用，与任务行共享快照。关联变化不旋转任务缓存 epoch。
@@ -274,6 +276,14 @@ DAO 使用独立 Read Committed 语句，通过 `project_ownership` 与 `project
 和适用阶段，不记录地址原文或凭据。既有事务完成和清理失败优先级保持，未知提交不重放。
 [唯一性决策](../../.agents/notes/implemented/architecture/2026-11-18-team-project-repository-uniqueness.md)
 记录锁、存储和查询方案的取舍。
+
+### 项目仓库改址
+
+`projects.repository_version` 区分真实地址变更及 A→B→A，原样保存不推进版本。预览在只读快照取得项目、有效授权和 GitHub 连接事实，在事务外使用现有安装凭据读取旧稳定 ID；候选路径读取还要求 owner Team 管理权限与有效 grant。分类优先使用可用的稳定 ID，相同地址文本不发起外部观察。写入重新观察并比较预览分类和目标 ID，再在 Read Committed 事务按 Project、归属、owner Team、授权、App、grant、连接顺序锁定，重新核对版本及证明依赖。Team 锁后的新语句排除本项目检查占用。
+
+真实换仓在同一事务关闭旧仓库覆盖区间、推进 GitHub 世代、清除项目侧连接及旧工作，并按一次快照的 Worker 列表以用户和 Worker ID 顺序锁行。锁后基于最新原始配置只移除目标项目，保留其他配置和观测，仅推进实际受影响的目标版本。外部观察和数据库提交的结果独立，未知提交不能重放。旧来源读取见 [PR 来源](github-pr-reading.md)，连接恢复由管理员手工执行。
+
+改址日志关联请求、主体和 Project，记录阶段、分类及事务完成状态，不记录仓库地址或凭据。Worker 配置行数仅在确认提交时表示实际影响；提交未知时记录事务内拟变更数，回滚时记录零。
 
 ## 状态与依赖不变量
 
@@ -429,6 +439,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
 | `GET, PUT /api/v1/me/workers/{workerId}/configuration` | 独立于任务状态的目标 CAS 与实际应用观测，查询不续活 |
 | `GET, PUT /api/v1/me/workers/{workerId}/review-participation` | 独立的账号级参与设置及版本 CAS，默认关闭；[设计](worker-review-participation.md)拥有字段和写入边界 |
+| `GET /api/v1/projects/{projectId}/pull-requests/{number}/review-assignment` | 查询当前账号的长期 Reviewer 归属及 Worker 状态；[设计](pr-review-assignment.md)拥有资格、对账和并发规则 |
 
 创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
 目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。

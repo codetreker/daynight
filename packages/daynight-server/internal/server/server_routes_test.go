@@ -1795,7 +1795,7 @@ func mcpPATClientWithOrigin(t *testing.T, address, token, origin string) *sdk.Cl
 func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 	t.Helper()
 	want := map[string]bool{
-		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
+		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_preview_repository": true, "project_set_repository": true, "project_list": true, "project_resolve": true, "project_show": true,
 		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true,
 		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true,
 		"team_member_set_role": true, "team_member_remove": true,

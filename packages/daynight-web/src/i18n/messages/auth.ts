@@ -7,6 +7,7 @@ export type AuthMessages = {
   readonly roles: Readonly<Record<ProjectRole, string>>;
   readonly shell: {
     readonly sidebar: {
+      readonly open: string;
       readonly expand: string;
       readonly collapse: string;
       readonly close: string;

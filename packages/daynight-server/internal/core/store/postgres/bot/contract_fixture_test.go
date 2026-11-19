@@ -53,7 +53,7 @@ func commitPreferenceBot(t *testing.T, database *postgres.Store, botID string) {
 	t.Helper()
 	testutil.CommitPreferenceBot(t, database, botID)
 }
-func runtimeBotWriteAfterLock(t *testing.T, database *postgres.Store, candidate model.Bot, principal model.Principal, credential func(context.Context, BotWriteDAO, pgx.Tx, model.Principal) error, expired bool, operation func(context.Context, BotWriteDAO, pgx.Tx) error) error {
+func runtimeBotWriteAfterLock(t *testing.T, database *postgres.Store, candidate model.Bot, principal model.Principal, credential testutil.RuntimeBotCredential, expired bool, operation func(context.Context, BotWriteDAO, pgx.Tx) error) error {
 	t.Helper()
 	return testutil.RuntimeBotWriteAfterLock(t, database.Pool, candidate, principal,
 		func(ctx context.Context, op func(BotWriteDAO, pgx.Tx) error) error {
@@ -80,11 +80,10 @@ func writeBotWithSessionTest(database *postgres.Store, ctx context.Context, oper
 	return tx.Commit(ctx)
 }
 
-func runtimeSessionCredential(ctx context.Context, _ BotWriteDAO, raw pgx.Tx, principal model.Principal) error {
-	return sessionpg.New(raw).LockCredential(ctx, principal, time.Now().UTC())
-}
-func runtimeDefinitionCredential(ctx context.Context, dao BotWriteDAO, _ pgx.Tx, principal model.Principal) error {
-	return dao.Credential(ctx, principal)
+var runtimeSessionCredential = testutil.RuntimeBotCredential{
+	Check: func(ctx context.Context, _ BotWriteDAO, raw pgx.Tx, principal model.Principal, at time.Time) error {
+		return sessionpg.New(raw).LockCredential(ctx, principal, at)
+	},
 }
 
 func isolatedStore(t *testing.T) *postgres.Store {

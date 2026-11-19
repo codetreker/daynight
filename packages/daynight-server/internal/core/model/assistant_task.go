@@ -84,8 +84,11 @@ type AssistantTaskItem struct {
 type AssistantTaskRecord struct {
 	ID, OwnerUserID, TaskID, Author, Kind, Text, RequestFingerprint string
 	ItemID, AuthorBotID                                             *string
-	Refs                                                            json.RawMessage
-	CreatedAt                                                       time.Time
+	// Outcome and ActionRecordID are set only on outcome records, which
+	// evaluate one action record of the same task.
+	Outcome, ActionRecordID *string
+	Refs                    json.RawMessage
+	CreatedAt               time.Time
 }
 
 type AssistantTaskEvent struct {

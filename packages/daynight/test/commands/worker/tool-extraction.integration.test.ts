@@ -25,7 +25,12 @@ test.skipIf(!supported)("extraction gate persists proof before native work and c
   try {
     await runToolExtraction({ node: process.execPath, cwd: root, proofPath, preparationId, file: process.execPath,
       args: ["-e", "require('node:fs').writeFileSync(process.argv[1],'started')", marker], environment: process.env,
-      commit: async proof => { original = proof; expect(await readExtractionProof(proofPath, preparationId)).toEqual(proof); await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" }); },
+      commit: async proof => {
+        original = proof;
+        expect(await readExtractionProof(proofPath, preparationId)).toEqual(proof);
+        if (process.platform === "linux") expect(proof.startedAt).toMatch(/^linux:v1:[0-9a-f-]{36}:[0-9]+$/);
+        await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      },
     }, operation);
     expect(await readFile(marker, "utf8")).toBe("started"); expect(await inspectProcessProof(original!)).not.toBe("running");
   } finally { operation.dispose(); if (original) await stopExtraction(original); await rm(root, { recursive: true, force: true }); }

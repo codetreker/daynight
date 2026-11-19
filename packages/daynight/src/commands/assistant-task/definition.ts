@@ -61,7 +61,7 @@ export const assistantTaskDefinition: CommandDefinition = {
     ]),
     group("record", "Read and append immutable work records", [
       leaf("list", "Read one page of records", [...page, item, ...common]),
-      leaf("add", "Append a Bot work record", [item, option("--kind", "Record kind", true, ["fact", "guess", "action", "unknown", "question", "answer", "note"]), option("--text", "Complete record text", true), option("--refs", "Reference JSON"), ...write], [task], "The holder uses its saved credential. Another Bot may append only action or note records without a claim."),
+      leaf("add", "Append a Bot work record", [item, option("--kind", "Record kind", true, ["fact", "guess", "action", "unknown", "question", "answer", "note", "outcome"]), option("--text", "Complete record text", true), option("--outcome", "Observed result of the evaluated action; required for and only accepted by outcome records", false, ["effective", "ineffective", "inconclusive"]), option("--action-record", "Evaluated action record UUID of this task; required for and only accepted by outcome records"), option("--refs", "Reference JSON"), ...write], [task], "The holder uses its saved credential. Another Bot may append only action or note records without a claim. An outcome record evaluates one earlier action record and leaves it unchanged; later observations append further outcome records."),
     ]),
     group("item", "Read and maintain application items", [
       leaf("list", "Read one page of items", [...page, state(["open", "closed"]), ...common]),

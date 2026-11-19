@@ -58,9 +58,9 @@ func (d *projectAppRuleDAO) AdvanceImpact(_ context.Context, id string) error {
 }
 func appRuleFixture() (*projectAppRuleDAO, model.Principal, ProjectAppConnect, InstallationCandidate) {
 	role := model.ProjectAdmin
-	d := &projectAppRuleDAO{f: store.GitHubProjectAppFacts{Project: model.Project{RepoURL: "https://github.com/o/r", Ownership: model.ProjectOwnership{TeamID: "team", Version: 1}}, Access: model.ProjectAccess{Role: role, TeamRole: &role}, Connection: githubpr.DefaultConnection("project")}, a: store.GitHubProjectApp{ID: "11111111-1111-4111-8111-111111111111", Name: "Safe App", GitHubSlug: "safe", GitHubAppID: 9, Version: 1, CredentialVersion: 1}}
+	d := &projectAppRuleDAO{f: store.GitHubProjectAppFacts{Project: model.Project{RepoURL: "https://github.com/o/r", Ownership: model.ProjectOwnership{TeamID: "team", Version: 1}}, RepositoryVersion: 1, Access: model.ProjectAccess{Role: role, TeamRole: &role}, Connection: githubpr.DefaultConnection("project")}, a: store.GitHubProjectApp{ID: "11111111-1111-4111-8111-111111111111", Name: "Safe App", GitHubSlug: "safe", GitHubAppID: 9, Version: 1, CredentialVersion: 1}}
 	p := model.Principal{Kind: model.SessionCredential, UserID: "22222222-2222-4222-8222-222222222222", CredentialID: "33333333-3333-4333-8333-333333333333"}
-	in := ProjectAppConnect{ProjectAppSelection: ProjectAppSelection{AppResourceID: d.a.ID, GrantID: "44444444-4444-4444-8444-444444444444", AppVersion: 1, OwnershipVersion: 1}, Version: 1, InstallationID: 7}
+	in := ProjectAppConnect{ProjectAppSelection: ProjectAppSelection{AppResourceID: d.a.ID, GrantID: "44444444-4444-4444-8444-444444444444", AppVersion: 1, OwnershipVersion: 1}, Version: 1, InstallationID: 7, RepositoryVersion: 1}
 	proof := InstallationCandidate{Installation: githubpr.InstallationObservation{ID: 7, AccountLogin: "o"}, Repository: githubpr.RepositoryObservation{ID: 8, FullName: "o/r"}}
 	return d, p, in, proof
 }
@@ -160,6 +160,7 @@ func TestProjectAppRuleRejections(t *testing.T) {
 		{"changed repo URL", "connect", "github_repository_mismatch", func(d *projectAppRuleDAO, _ *ProjectAppConnect, _ *InstallationCandidate) {
 			d.f.Project.RepoURL = "changed"
 		}},
+		{"repository changed away and back", "connect", "github_repository_mismatch", func(d *projectAppRuleDAO, _ *ProjectAppConnect, _ *InstallationCandidate) { d.f.RepositoryVersion += 2 }},
 		{"bad proof", "connect", "invalid_input", func(_ *projectAppRuleDAO, _ *ProjectAppConnect, c *InstallationCandidate) { c.Installation.ID++ }},
 		{"clock", "connect", "internal", func(d *projectAppRuleDAO, _ *ProjectAppConnect, _ *InstallationCandidate) { d.clockErr = cause }},
 		{"save", "connect", "internal", func(d *projectAppRuleDAO, _ *ProjectAppConnect, _ *InstallationCandidate) { d.saveErr = cause }},

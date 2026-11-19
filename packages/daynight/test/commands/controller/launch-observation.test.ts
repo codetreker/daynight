@@ -219,7 +219,9 @@ it("classifies a changed birth without stopping the real live process at that PI
   const f = await fixture();
   const current = f.proof;
   // Model PID reuse by changing only the birth evidence in its native format.
-  const startedAt = process.platform === "win32" ? "2000-01-01T00:00:00.0000000Z" : "Sat Jan 1 00:00:00 2000";
+  const startedAt = process.platform === "linux"
+    ? current.startedAt.replace(/:[0-9]+$/, ticks => `:${BigInt(ticks.slice(1)) + 1n}`)
+    : process.platform === "win32" ? "2000-01-01T00:00:00.0000000Z" : "Sat Jan 1 00:00:00 2000";
   expect(current.startedAt).not.toBe(startedAt);
   const original = { ...current, startedAt };
   const observation = await reconcileSubmittedControllerLaunch({ journalFile: f.journalFile, ticket: f.ticket, spawnProof: original, signal: new AbortController().signal });

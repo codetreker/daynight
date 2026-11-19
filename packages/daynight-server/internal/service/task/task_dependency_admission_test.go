@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
@@ -52,7 +53,7 @@ func TestTaskDependencyAdmissionPrecedesGraphAndWrites(t *testing.T) {
 	}
 	captureDAO := &captureDAOMock{taskMockBase: f.database.taskMockBase.withLabel("capture")}
 	f.scope.CaptureDAOFn = func() store.WebhookCaptureDAO { return captureDAO }
-	capture := taskDeletionCapture(func(actual context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+	capture := taskDeletionCapture(func(actual context.Context, dao store.WebhookCaptureDAO, _ wm.Actor, facts []protocol.Fact) error {
 		if actual != ctx || dao != captureDAO || len(facts) != 1 || facts[0].Type != protocol.Created || facts[0].TaskID != created.ID {
 			t.Fatalf("wrong admitted task source: %#v", facts)
 		}

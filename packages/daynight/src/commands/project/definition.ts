@@ -8,6 +8,18 @@ export const projectDefinition: CommandDefinition = {
   description: "Manage projects on the configured server",
   commands: [
     {
+      name: "set-repository",
+      description: "Change a project's repository address",
+      options: [
+        { names: ["--project"], description: "Project UUID (defaults to the current repository)", value: { name: "project-id", kind: "text" } },
+        { names: ["--repo"], description: "New repository address", value: { name: "repo", kind: "text" }, required: true },
+        { names: ["--confirm"], description: "Confirm the preview without prompting" },
+        { names: ["--allow-unverified-switch"], description: "Explicitly treat an unverified identity as a repository switch" },
+        { names: ["--json"], description: "Print only the confirmed receipt as JSON" }, helpOption,
+      ],
+      details: "Preview the current and new addresses and their effects on stderr.\nA switch disconnects the GitHub App and removes existing Worker cloud selections; applying the change takes time and may stop existing executions.\nInteractive use asks for confirmation. Noninteractive use requires --confirm; an unverified identity also requires --allow-unverified-switch.\nA conflict requires a new preview and confirmation. An unknown write outcome must be checked without automatically repeating the write.\nThis command requires a server that supports project repository changes.",
+    },
+    {
       name: "create",
       description: "Create a project unless its repository is already registered in the target Team",
       arguments: [{ name: "name", description: "Project name" }],

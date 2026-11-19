@@ -847,7 +847,7 @@ func TestRangeScriptDistinguishesMissingFromEmptyValue(t *testing.T) {
 
 func TestLegacyFrameExpiresWithoutRenewalBeforeV2Write(t *testing.T) {
 	s, id, k := fixture(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	legacy, c := legacyV1Fixture(t)
 	observation, err := monitoring.ParseObservation(c.Body)
 	if err != nil {
@@ -857,8 +857,7 @@ func TestLegacyFrameExpiresWithoutRenewalBeforeV2Write(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Use a short fixture TTL to exercise natural expiry; TTL above is asserted
-	// independently as the production 3600-second constant.
+	// Leave time for the refusal and nonrenewal checks before arming expiry.
 	if err := s.client.Set(ctx, k, legacy, 2*time.Second).Err(); err != nil {
 		t.Fatal(err)
 	}
@@ -879,14 +878,28 @@ func TestLegacyFrameExpiresWithoutRenewalBeforeV2Write(t *testing.T) {
 	if err != nil || after <= 0 || after > before {
 		t.Fatalf("rejected operations renewed TTL: before=%v after=%v err=%v", before, after, err)
 	}
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
+	expiryContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	const shortTTL = 200 * time.Millisecond
+	if after > shortTTL {
+		updated, err := s.client.PExpire(expiryContext, k, shortTTL).Result()
+		if err != nil || !updated {
+			t.Fatalf("shorten legacy fixture TTL: updated=%t error=%v", updated, err)
+		}
+	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
-	for s.client.Exists(ctx, k).Val() != 0 {
+	for {
+		count, err := s.client.Exists(expiryContext, k).Result()
+		if err != nil {
+			t.Fatalf("observe legacy fixture expiry: %v", err)
+		}
+		if count == 0 {
+			break
+		}
 		select {
-		case <-deadline.C:
-			t.Fatal("legacy fixture did not expire")
+		case <-expiryContext.Done():
+			t.Fatalf("legacy fixture did not expire: %v", expiryContext.Err())
 		case <-ticker.C:
 		}
 	}
