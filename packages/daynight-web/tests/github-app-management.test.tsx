@@ -127,7 +127,7 @@ describe('GitHub App management', () => {
     fireEvent.change(within(dialog).getByLabelText('App ID'), { target: { value: '23' } }); fireEvent.change(within(dialog).getByLabelText('Registration name'), { target: { value: 'New App' } });
     fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: 'private' } }); fireEvent.change(within(dialog).getByLabelText('Webhook secret'), { target: { value: 'secret' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Verify and register' })); await within(dialog).findByText(/result is unknown/i);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' })); await within(dialog).findByText(/current state was read/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' })); await within(dialog).findByText(/cannot confirm the original operation/i);
     expect(mocks.get.mock.calls.at(-1)![0]).toBe(mocks.create.mock.calls[0]![0].id); expect(mocks.create).toHaveBeenCalledOnce();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish review and decide again' })); expect(screen.queryByRole('dialog')).toBeNull(); expect(mocks.create).toHaveBeenCalledOnce();
   });
@@ -144,7 +144,7 @@ describe('GitHub App management', () => {
       const check = within(dialog).getByRole('button', { name: 'Check current state' });
       fireEvent.click(check); await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(1));
       const oldSignal = mocks.get.mock.calls[0]![1] as AbortSignal;
-      fireEvent.click(check); await within(dialog).findByText(/current state was read/i); expect(oldSignal.aborted).toBe(true);
+      fireEvent.click(check); await within(dialog).findByText(/cannot confirm the original operation/i); expect(oldSignal.aborted).toBe(true);
       fireEvent.click(within(dialog).getByRole('button', { name: 'Finish review and decide again' }));
       fireEvent.click(screen.getByRole('button', { name: 'Register GitHub App' })); dialog = screen.getByRole('dialog');
       const name = within(dialog).getByLabelText('Registration name'), secret = within(dialog).getByLabelText('Webhook secret');
@@ -284,7 +284,7 @@ describe('GitHub App management', () => {
     view.rerender(subject({ appId: null })); fireEvent.click(submit); await within(dialog).findByText(/result is unknown/i);
     const check = within(dialog).getByRole('button', { name: 'Check current state' }); check.focus(); view.rerender(subject({ appId: null, admissionBlocked: true }));
     expect(check).toHaveFocus(); expect(check).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(check); expect(mocks.get).not.toHaveBeenCalled(); expect(mocks.create).toHaveBeenCalledOnce();
-    view.rerender(subject({ appId: null })); fireEvent.click(check); await within(dialog).findByText(/current state was read/i);
+    view.rerender(subject({ appId: null })); fireEvent.click(check); await within(dialog).findByText(/cannot confirm the original operation/i);
     expect(mocks.get).toHaveBeenCalledOnce(); expect(mocks.create).toHaveBeenCalledOnce();
   });
 
