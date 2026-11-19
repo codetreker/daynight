@@ -51,9 +51,10 @@ func (r *run) discover(ctx context.Context, owner, name string) error {
 	order := []int64{}
 	progress := discoveryProgress{}
 	listStage := "list"
-	truncated, err := r.remote.ListAll(ctx, *r.connection.InstallationID, owner, name, func(page []remote.PullSummary) error {
+	repositoryID := *r.connection.RepositoryID
+	truncated, err := r.remote.ListAll(ctx, *r.connection.InstallationID, repositoryID, owner, name, func(page []remote.PullSummary) error {
 		for _, s := range page {
-			if s.RepositoryID != *r.connection.RepositoryID {
+			if s.RepositoryID != repositoryID {
 				return errors.New("github pull request base repository mismatch")
 			}
 			if _, ok := byNumber[s.Number]; !ok {

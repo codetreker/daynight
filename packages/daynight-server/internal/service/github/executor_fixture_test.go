@@ -129,7 +129,7 @@ type executorRemote struct {
 	verify       func(context.Context, int64, string, string) (githubpr.RepositoryObservation, error)
 	resolve      func(context.Context, int64, int64) (githubpr.RepositoryObservation, error)
 	list         func(context.Context, int64, string, string, func([]githubpr.Observation) error) error
-	listAll      func(context.Context, int64, string, string, func([]remote.PullSummary) error) (bool, error)
+	listAll      func(context.Context, int64, int64, string, string, func([]remote.PullSummary) error) (bool, error)
 	pull         func(context.Context, int64, string, string, int64) (githubpr.Observation, error)
 }
 
@@ -150,9 +150,9 @@ func (r executorRemote) PullRequest(c context.Context, i int64, o, repo string, 
 	return r.pull(c, i, o, repo, n)
 }
 
-func (r executorRemote) ListAll(c context.Context, i int64, o, n string, visit func([]remote.PullSummary) error) (bool, error) {
+func (r executorRemote) ListAll(c context.Context, i, repositoryID int64, o, n string, visit func([]remote.PullSummary) error) (bool, error) {
 	if r.listAll == nil {
 		return false, nil
 	}
-	return r.listAll(c, i, o, n, visit)
+	return r.listAll(c, i, repositoryID, o, n, visit)
 }

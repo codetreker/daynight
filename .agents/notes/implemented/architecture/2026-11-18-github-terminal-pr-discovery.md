@@ -4,13 +4,13 @@ Status: implemented
 
 ## Problem
 
-A pull request can open and close between complete open-list polls while both webhook deliveries are missed. Its current terminal state is then absent from the Project's retained list, even though synchronization was enabled when it ended. Backfilling all historical pull requests would also publish facts from periods when the Project had not requested synchronization.
+A pull request can open and close between complete open-list polls while both webhook deliveries are missed. Its current terminal state is then absent from the Project's retained list, even though synchronization was enabled when it ended. Backfilling all historical pull requests would also publish facts from periods when the Project had not requested synchronization. GitHub can switch from a named repository path to a numeric repository path in its next-page link, so a path check that requires the initial request path can abort the entire poll.
 
 ## Decision
 
 Track second-aligned coverage intervals per Project and stable repository identity. An unknown terminal pull request is first published only when its current terminal time belongs to a retained interval; an already saved record remains eligible for updates. Polling and webhook hints share this rule under the existing authorization and lease fence. A disable immediately invalidates old claims independently of the timestamp boundary.
 
-Each full poll reads at most ten 20-item pages of the all-state list from its head, aggregates duplicate numbers, and confirms applicable unknown candidates by current detail. It still traverses the complete open list and confirms absent active entries. The [executor](../../../../docs/design/github-sync-executor.md), [storage](../../../../docs/design/github-pr-storage.md), and [remote](../../../../docs/design/github-app-remote.md) designs own the operation and deployment contracts. This extends the [executor decision](2026-11-13-github-sync-executor.md), [storage decision](2026-11-13-project-github-pr-storage.md), and [synchronization setting decision](2026-11-14-project-github-sync-setting.md).
+Each full poll reads at most ten 20-item pages of the all-state list from its head, aggregates duplicate numbers, and confirms applicable unknown candidates by current detail. A next-page link can identify the admitted repository by its request path or its stable numeric ID. The poll then traverses the complete open list and confirms absent active entries. The [executor](../../../../docs/design/github-sync-executor.md), [storage](../../../../docs/design/github-pr-storage.md), and [remote](../../../../docs/design/github-app-remote.md) designs own the operation and deployment contracts. This extends the [executor decision](2026-11-13-github-sync-executor.md), [storage decision](2026-11-13-project-github-pr-storage.md), and [synchronization setting decision](2026-11-14-project-github-sync-setting.md).
 
 ## Alternatives
 

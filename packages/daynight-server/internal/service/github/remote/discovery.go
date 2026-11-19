@@ -43,7 +43,7 @@ func decodePullSummary(data json.RawMessage) (PullSummary, error) {
 
 // ListAll scans at most ten 20-item pages from the list head on every call.
 // A true result denotes an intentional truncation, not a failed traversal.
-func (c *Client) ListAll(ctx context.Context, installationID int64, owner, repo string, visit func([]PullSummary) error) (bool, error) {
+func (c *Client) ListAll(ctx context.Context, installationID, repositoryID int64, owner, repo string, visit func([]PullSummary) error) (bool, error) {
 	if visit == nil {
 		return false, errors.New("missing page visitor")
 	}
@@ -51,7 +51,9 @@ func (c *Client) ListAll(ctx context.Context, installationID int64, owner, repo 
 	if err != nil {
 		return false, err
 	}
-	target := c.endpoint(p + "/pulls")
+	namedPath := p + "/pulls"
+	numericPath := "/repositories/" + strconv.FormatInt(repositoryID, 10) + "/pulls"
+	target := c.endpoint(namedPath)
 	target.RawQuery = "state=all&sort=created&direction=desc&per_page=20"
 	seen := map[string]bool{}
 	refreshed := false
@@ -75,7 +77,7 @@ func (c *Client) ListAll(ctx context.Context, installationID int64, owner, repo 
 			return false, err
 		}
 		if next != nil {
-			if err = validateDiscoveryNext(next, p+"/pulls", page+1); err != nil || seen[next.String()] {
+			if err = validateDiscoveryNext(next, namedPath, numericPath, page+1); err != nil || seen[next.String()] {
 				resp.Body.Close()
 				return false, errors.New("invalid github discovery next link")
 			}
@@ -106,8 +108,8 @@ func (c *Client) ListAll(ctx context.Context, installationID int64, owner, repo 
 	return false, nil
 }
 
-func validateDiscoveryNext(next *url.URL, path string, page int) error {
-	if next.Path != path || next.RawPath != "" {
+func validateDiscoveryNext(next *url.URL, namedPath, numericPath string, page int) error {
+	if next.RawPath != "" || (next.Path != namedPath && next.Path != numericPath) {
 		return errors.New("invalid discovery path")
 	}
 	q, err := url.ParseQuery(next.RawQuery)
