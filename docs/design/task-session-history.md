@@ -72,7 +72,7 @@ service 的后台清理器在应用启动后扫描每页最多 32 个原 Session
 
 Session 页用同快照的当前完整链及首次归档、宽限和实际过期事实调用 `CalculateArchiveRetention`，不更新数据库或沿用缓存期限。`archiveState` 为 `pending|failed|ready|partial|expired`，`completeness` 保留缺口标记。`retentionState` 为 `waiting|unknown|scheduled|expired`，`reason` 区分未结束、时间缺失、待归档及已过期。`scopeEndedAt`、`firstArchivedAt`、`legacyGraceStartedAt`、`expiresAt` 和 `expiredAt` 保留真实时间或 null；宽限起点由持久化宽限下限减七天得到。只有 `expired_at` 已提交才显示 expired，超过候选期限不伪造删除完成。Herdr 保留终端录像类型，期限原因是 `not_applicable`，不套用 Web TTL。内容继续由原 Session 的既有读取入口授权并提供，此目录不搬运正文。
 
-组查询计算当前连通分量；成员及期限查询只遍历目标链。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
+组查询计算当前连通分量；成员及期限查询只遍历目标链。Session 查询只投影执行代次和末次终止时间，不返回完整快照或终端运行记录。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
 
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 

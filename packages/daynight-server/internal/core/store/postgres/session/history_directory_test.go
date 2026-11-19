@@ -163,7 +163,7 @@ func TestHistoryDirectoryGraphPagesAndOriginalClaims(t *testing.T) {
 	})
 	terminalID := uuid.NewString()
 	mustQueryExec(t, db, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,backend,terminal_state)
- SELECT $2,project_id,task_id,$2,owner_user_id,$2,registration,NULL,'herdr','{"Envelope":{"executionGeneration":"1"},"Runs":[]}' FROM task_sessions WHERE id=$1`, sessionID, terminalID)
+ SELECT $2,project_id,task_id,$2,owner_user_id,$2,registration,NULL,'herdr','{"Envelope":{"executionGeneration":"7"},"Runs":[{"stoppedAt":"2026-10-31T00:00:00Z"},{"stoppedAt":"2026-11-01T00:00:00Z"}]}' FROM task_sessions WHERE id=$1`, sessionID, terminalID)
 	read(func(dao store.HistoryDirectoryDAO) error {
 		value, err := dao.Fence(t.Context(), task.ProjectID)
 		if err == nil && value == firstFence {
@@ -172,13 +172,38 @@ func TestHistoryDirectoryGraphPagesAndOriginalClaims(t *testing.T) {
 		firstFence = value
 		return err
 	})
-	mustQueryExec(t, db, `UPDATE task_sessions SET terminal_state=terminal_state||jsonb_build_object('UnrelatedRecordingDetail',repeat('x',16384)) WHERE id=$1`, terminalID)
+	mustQueryExec(t, db, `UPDATE task_sessions SET terminal_state=terminal_state||jsonb_build_object('Recording',
+ (SELECT jsonb_object_agg(('00000000-0000-4000-8000-'||lpad(i::text,12,'0')),jsonb_build_object('ObservedContent',true)) FROM generate_series(1,512)i)) WHERE id=$1`, terminalID)
+	mustQueryExec(t, db, `UPDATE task_sessions SET snapshot=snapshot||jsonb_build_object('cleanupInteractionIds',
+ (SELECT jsonb_agg('00000000-0000-4000-8000-'||lpad(i::text,12,'0')) FROM generate_series(1,512)i)) WHERE id=$1`, sessionID)
 	read(func(dao store.HistoryDirectoryDAO) error {
 		value, err := dao.Fence(t.Context(), task.ProjectID)
 		if err == nil && value != firstFence {
 			t.Fatal("unrelated terminal detail invalidated directory")
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		rows, err := dao.Sessions(t.Context(), task.ProjectID, task.ID, nil, 10)
+		if err != nil {
+			return err
+		}
+		if len(rows) != 3 {
+			t.Fatalf("projected sessions: %d", len(rows))
+		}
+		for _, row := range rows {
+			if len(row.Snapshot) != 0 || len(row.Terminal) != 0 {
+				t.Fatal("directory loaded full Session JSON")
+			}
+			if row.ID == terminalID {
+				if row.ExecutionGeneration != "7" || row.EndedAt == nil || *row.EndedAt != "2026-11-01T00:00:00Z" {
+					t.Fatalf("terminal directory projection: %+v", row)
+				}
+			} else if row.ExecutionGeneration != "1" || row.EndedAt != nil {
+				t.Fatalf("web directory projection: %+v", row)
+			}
+		}
+		return nil
 	})
 	mustQueryExec(t, db, `UPDATE tasks SET version=version+1 WHERE id=$1`, member.ID)
 	read(func(dao store.HistoryDirectoryDAO) error {

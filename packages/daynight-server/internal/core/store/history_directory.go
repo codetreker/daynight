@@ -34,8 +34,12 @@ type HistoryDirectoryMember struct {
 }
 
 type HistoryDirectorySession struct {
+	// Snapshot and Terminal remain empty: directory reads project only the
+	// execution generation and final stopped time from potentially large JSON.
 	TerminalHistoryRow
-	Retention *ArchiveRetention
+	ExecutionGeneration string
+	EndedAt             *string
+	Retention           *ArchiveRetention
 }
 
 // Limits are the exact row count, including any caller-requested lookahead.

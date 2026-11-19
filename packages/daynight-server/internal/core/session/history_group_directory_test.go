@@ -225,7 +225,7 @@ func TestHistoryDirectorySessionPageNeverRebindsOldClaim(t *testing.T) {
 	state := "ready"
 	oldClaim := "old-claim"
 	newClaim := directoryProject
-	old := store.HistoryDirectorySession{TerminalHistoryRow: store.TerminalHistoryRow{ID: directoryOther, Claim: oldClaim, Backend: "web", Created: at, Snapshot: []byte(`{"executionGeneration":"7"}`), State: &state}, Retention: &store.ArchiveRetention{FirstSucceededAt: &at}}
+	old := store.HistoryDirectorySession{TerminalHistoryRow: store.TerminalHistoryRow{ID: directoryOther, Claim: oldClaim, Backend: "web", Created: at, State: &state}, ExecutionGeneration: "7", Retention: &store.ArchiveRetention{FirstSucceededAt: &at}}
 	current := old
 	current.ID = directoryTask
 	current.Claim = newClaim
@@ -327,7 +327,7 @@ func TestHistoryDirectoryStopsAtFailedRead(t *testing.T) {
 					if stage == "sessions" {
 						return nil, cause
 					}
-					return []store.HistoryDirectorySession{{TerminalHistoryRow: store.TerminalHistoryRow{Backend: "web", Snapshot: []byte("{")}}}, nil
+					return []store.HistoryDirectorySession{{TerminalHistoryRow: store.TerminalHistoryRow{Backend: "web"}, ExecutionGeneration: "invalid"}}, nil
 				}
 			}
 			scope.dao = dao
@@ -337,9 +337,7 @@ func TestHistoryDirectoryStopsAtFailedRead(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else if stage == "projection" {
-				if err == nil {
-					t.Fatal("invalid snapshot accepted")
-				}
+				directoryFault(t, err, "source_corrupt")
 			} else if !errors.Is(err, cause) {
 				t.Fatalf("lost cause %v", err)
 			}
@@ -383,7 +381,7 @@ func TestHistoryDirectoryArchiveStatesAndCurrentRetentionFacts(t *testing.T) {
 		}, deadline: &stale, first: &at},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			r := store.HistoryDirectorySession{TerminalHistoryRow: store.TerminalHistoryRow{ID: directoryOther, Claim: "original-claim", Backend: "web", Created: at, Snapshot: []byte(`{"executionGeneration":"5"}`), State: &ready}, Retention: &store.ArchiveRetention{SessionID: directoryOther, FirstSucceededAt: &at, ExpiresAt: &stale}}
+			r := store.HistoryDirectorySession{TerminalHistoryRow: store.TerminalHistoryRow{ID: directoryOther, Claim: "original-claim", Backend: "web", Created: at, State: &ready}, ExecutionGeneration: "5", Retention: &store.ArchiveRetention{SessionID: directoryOther, FirstSucceededAt: &at, ExpiresAt: &stale}}
 			chain := append([]store.ArchiveRetentionMember(nil), members...)
 			if test.change != nil {
 				test.change(&r, chain)
@@ -409,23 +407,33 @@ func TestHistoryDirectoryArchiveStatesAndCurrentRetentionFacts(t *testing.T) {
 }
 
 func TestHistoryDirectoryPreservesTerminalRecordingAndCorruptDataFailures(t *testing.T) {
-	row := store.HistoryDirectorySession{TerminalHistoryRow: store.TerminalHistoryRow{ID: directoryTask, Claim: "original", Backend: "herdr", Terminal: []byte(`{"Envelope":{"executionGeneration":"3"},"Runs":[{"stoppedAt":"2026-11-01T00:00:00Z"}]}`)}}
+	endedAt := "2026-11-01T00:00:00Z"
+	row := store.HistoryDirectorySession{TerminalHistoryRow: store.TerminalHistoryRow{ID: directoryTask, Claim: "original", Backend: "herdr"}, ExecutionGeneration: "3", EndedAt: &endedAt}
 	out, err := projectHistorySession(row, nil, &model.WorkerClaim{ClaimID: "original", AgentControlMode: model.AgentControlModeHerdr})
 	if err != nil || out.ContentKind != "terminal_recording" || out.ExecutionGeneration != "3" || out.EndedAt == nil || *out.EndedAt != "2026-11-01T00:00:00Z" || !out.CurrentBinding || out.RetentionReason != "not_applicable" {
 		t.Fatalf("terminal %#v %v", out, err)
 	}
-	row.Terminal = []byte(`{"Envelope":{"executionGeneration":"3"}}`)
+	row.EndedAt = nil
 	out, err = projectHistorySession(row, nil, nil)
 	if err != nil || out.EndedAt != nil {
 		t.Fatalf("unknown terminal end %#v %v", out, err)
 	}
-	row.Terminal = []byte("{")
-	if _, err := projectHistorySession(row, nil, nil); err == nil {
-		t.Fatal("corrupt terminal state accepted")
+	for _, backend := range []string{"web", "herdr"} {
+		row.Backend = backend
+		for _, generation := range []string{"", "0", "-1", "01", "+1", "1.0", "9223372036854775808", "invalid"} {
+			row.ExecutionGeneration = generation
+			_, err := projectHistorySession(row, nil, nil)
+			directoryFault(t, err, "source_corrupt")
+		}
+		row.ExecutionGeneration = "9223372036854775807"
+		out, err := projectHistorySession(row, nil, nil)
+		if err != nil || out.ExecutionGeneration != row.ExecutionGeneration {
+			t.Fatalf("int64 generation lost precision: %#v %v", out, err)
+		}
 	}
 	ready := "ready"
 	row.Backend = "web"
-	row.Snapshot = []byte(`{"executionGeneration":"1"}`)
+	row.ExecutionGeneration = "1"
 	row.State = &ready
 	if _, err := projectHistorySession(row, nil, nil); err == nil {
 		t.Fatal("ready archive without chain accepted")

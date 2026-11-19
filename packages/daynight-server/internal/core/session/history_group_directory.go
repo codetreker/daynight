@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -228,26 +229,14 @@ func historyMemberTime(m store.ArchiveRetentionMember) (*time.Time, string) {
 }
 
 func projectHistorySession(row store.HistoryDirectorySession, members []store.ArchiveRetentionMember, worker *model.WorkerClaim) (HistoryDirectorySession, error) {
-	out := HistoryDirectorySession{SessionID: row.ID, ClaimID: row.Claim, AgentControlMode: row.Backend, ContentKind: "native_timeline", CreatedAt: row.Created.UTC(), ArchiveState: "pending", Completeness: row.Completeness, RetentionReason: "archive_unavailable", RetentionState: "unknown"}
+	out := HistoryDirectorySession{SessionID: row.ID, ClaimID: row.Claim, ExecutionGeneration: row.ExecutionGeneration, EndedAt: row.EndedAt, AgentControlMode: row.Backend, ContentKind: "native_timeline", CreatedAt: row.Created.UTC(), ArchiveState: "pending", Completeness: row.Completeness, RetentionReason: "archive_unavailable", RetentionState: "unknown"}
+	generation, err := strconv.ParseInt(row.ExecutionGeneration, 10, 64)
+	if err != nil || generation <= 0 || strconv.FormatInt(generation, 10) != row.ExecutionGeneration {
+		return out, fault("source_corrupt", "The Session directory has an invalid execution generation.")
+	}
 	out.CurrentBinding = worker != nil && worker.ClaimID == row.Claim && string(worker.AgentControlMode) == row.Backend
 	if row.Backend == "herdr" {
 		out.ContentKind, out.RetentionReason = "terminal_recording", "not_applicable"
-		record, err := decodeTerminalArchiveRecord(row.Terminal)
-		if err != nil {
-			return out, err
-		}
-		out.ExecutionGeneration = record.Envelope.ExecutionGeneration
-		if len(record.Runs) > 0 {
-			out.EndedAt = record.Runs[len(record.Runs)-1].StoppedAt
-		}
-	} else {
-		var snapshot struct {
-			ExecutionGeneration string `json:"executionGeneration"`
-		}
-		if err := json.Unmarshal(row.Snapshot, &snapshot); err != nil {
-			return out, err
-		}
-		out.ExecutionGeneration = snapshot.ExecutionGeneration
 	}
 	storedState := "unavailable"
 	if row.State != nil {

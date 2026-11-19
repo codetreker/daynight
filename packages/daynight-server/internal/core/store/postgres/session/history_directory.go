@@ -152,7 +152,10 @@ func (d *historyDirectory) Sessions(ctx context.Context, project, task string, a
 	if after != nil {
 		afterID, afterTime = after.ID, after.CreatedAt
 	}
-	rows, err := d.tx.Query(ctx, `SELECT s.id::text,s.claim_id::text,s.backend,s.created_at,s.snapshot,s.terminal_state,a.state,a.sha256,a.byte_length::text,a.completeness,r.session_id::text,r.first_succeeded_at,r.grace_until,r.expires_at,r.expired_at,COALESCE(r.reason,''),COALESCE(r.version,0)
+	rows, err := d.tx.Query(ctx, `SELECT s.id::text,s.claim_id::text,s.backend,s.created_at,
+ COALESCE(CASE WHEN s.backend='herdr' THEN s.terminal_state->'Envelope'->>'executionGeneration' ELSE s.snapshot->>'executionGeneration' END,''),
+ CASE WHEN s.backend='herdr' THEN s.terminal_state->'Runs'->-1->>'stoppedAt' END,
+ a.state,a.sha256,a.byte_length::text,a.completeness,r.session_id::text,r.first_succeeded_at,r.grace_until,r.expires_at,r.expired_at,COALESCE(r.reason,''),COALESCE(r.version,0)
  FROM task_sessions s JOIN task_resource_rows t ON t.id=s.task_id AND t.project_id=s.project_id
  LEFT JOIN session_archives a ON a.session_id=s.id LEFT JOIN session_archive_retention r ON r.session_id=s.id
  WHERE s.project_id=$1 AND s.task_id=$2 AND s.scope='task' AND t.type='task' AND t.effective_deleted_at IS NULL
@@ -166,7 +169,7 @@ func (d *historyDirectory) Sessions(ctx context.Context, project, task string, a
 		var v store.HistoryDirectorySession
 		var r store.ArchiveRetention
 		var id *string
-		if err := rows.Scan(&v.ID, &v.Claim, &v.Backend, &v.Created, &v.Snapshot, &v.Terminal, &v.State, &v.Hash, &v.Size, &v.Completeness, &id, &r.FirstSucceededAt, &r.GraceUntil, &r.ExpiresAt, &r.ExpiredAt, &r.Reason, &r.Version); err != nil {
+		if err := rows.Scan(&v.ID, &v.Claim, &v.Backend, &v.Created, &v.ExecutionGeneration, &v.EndedAt, &v.State, &v.Hash, &v.Size, &v.Completeness, &id, &r.FirstSucceededAt, &r.GraceUntil, &r.ExpiresAt, &r.ExpiredAt, &r.Reason, &r.Version); err != nil {
 			return nil, pg.QueryError("scan history directory session", err)
 		}
 		if id != nil {

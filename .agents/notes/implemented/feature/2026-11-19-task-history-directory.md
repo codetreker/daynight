@@ -45,5 +45,7 @@ The fact digest scans Project history metadata, and derived connected components
 cost more than a simple indexed Task list. Paging bounds returned rows rather
 than graph computation. A directory-visible change elsewhere in the Project can
 invalidate a cursor; this conservative restart avoids mixed directory snapshots.
+Session rows project only generation and end time from execution JSON, keeping
+unrelated snapshot and terminal-run metadata outside the directory result.
 Content bytes still use existing original-Session read admission and lifetime
 management.
