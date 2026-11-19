@@ -8,6 +8,8 @@ import { parseSessionSnapshot, SESSION_PROTOCOL, sessionFence, type SessionSnaps
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
 import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotDeleted, type BotOwner, type BotRecord } from "./types.js";
 import type { BotReconciliation } from "./reconciliation.js";
+import type { BotRecoveryBinding } from "./recovery-protocol.js";
+import { readMigratedBotRecoveryBinding } from "./migration.js";
 
 export type BotRecoveryProof = { generation: string; instanceId: string; recordId: string; stoppedAt: string };
 export type BotDeletionStop = {
@@ -23,7 +25,7 @@ export type BotStartupResult = { state: "ready" | "failed"; code?: string | null
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
 
 /** Lifecycle writes preserve the original registration and never retry an uncertain POST. */
-export const createBotSessionApi = (options: { owner: BotOwner; serverToken: string; recovery?: BotReconciliation }) => {
+export const createBotSessionApi = (options: { owner: BotOwner; serverToken: string; recovery?: BotReconciliation; stateDirectory?: string }) => {
   const owner = Object.freeze(parseBotOwner(options.owner));
   const token = validateServerToken(options.serverToken);
   validateTokenTransport(owner.serverOrigin);
@@ -106,6 +108,21 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
     const response = parseRegistrationResponse(await request(`/api/v1/test-sessions/${sessionId}`, operation));
     return checkedSnapshot(response.session, record, sessionId, response.session.executionGeneration === previous?.generation ? previous : undefined);
   };
+  const recoveryBinding = (record: BotRecord): BotRecoveryBinding => {
+    const bot = active(record), intent = intentOf(record), sessionId = intent.sessionId ?? bot.sessionId;
+    if (sessionId === null || bot.sessionId !== sessionId || bot.testExecutionId !== intent.executionId) throw new Error("Bot recovery requires its original bound Session and execution.");
+    if (record.migration !== undefined) {
+      if (options.stateDirectory === undefined) throw new Error("Bot migration recovery requires its committed local storage.");
+      const binding = readMigratedBotRecoveryBinding({ stateDirectory: options.stateDirectory, owner: record.owner, botId: record.botId });
+      if (binding.sessionId !== sessionId || binding.testExecutionId !== intent.executionId
+        || intent.nativeSessionId !== null && binding.nativeSessionId !== intent.nativeSessionId) throw new Error("Bot migration recovery differs from its original execution binding.");
+      return binding;
+    }
+    // The locked durable intent and authenticated Controller observation supply
+    // the binding. Recovery validates it under the current PAT without first
+    // requiring ordinary Session access through a possibly revoked parent PAT.
+    return { sessionId, testExecutionId: intent.executionId, nativeSessionId: intent.nativeSessionId };
+  };
   return {
     /** Submit the persisted receipt unchanged; the caller observes after any uncertain result. */
     completeDeletion: (record: BotRecord, receipt: BotDeletionReceipt, signal: AbortSignal): Promise<BotDeleted> => run(signal, async operation => {
@@ -158,8 +175,8 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       return { bot: registered, snapshot: checkedSnapshot(result.session, record, registered.sessionId, { generation: "1", instanceId: intent.registration.controllerInstanceId }) };
     }),
     readSession: (record: BotRecord, signal: AbortSignal): Promise<SessionSnapshot> => run(signal, operation => read(record, operation)),
-    registerRecovery: (record: BotRecord, signal: AbortSignal): Promise<void> => run(signal, async operation => {
-      if (options.recovery?.applicable(record)) await options.recovery.register(record, await read(record, operation), signal);
+    registerRecovery: (record: BotRecord, signal: AbortSignal): Promise<void> => run(signal, async () => {
+      if (options.recovery?.applicable(record)) await options.recovery.register(record, recoveryBinding(record), signal);
     }),
     grant: (record: BotRecord, signal: AbortSignal, previous?: BotRecoveryProof): Promise<ControllerGrantResponse> => run(signal, async operation => {
       const bot = active(record), intent = intentOf(record);
@@ -173,8 +190,8 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
           || typeof previous.stoppedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(previous.stoppedAt)
           || !Number.isFinite(Date.parse(previous.stoppedAt)) || Date.parse(previous.stoppedAt) > Date.now() + 1000) throw new Error("Bot recovery proof does not identify the exact stopped predecessor generation.");
       }
+      if (options.recovery?.applicable(record)) return options.recovery.grant(record, recoveryBinding(record), signal, previous);
       const snapshot = await read(record, operation, previous);
-      if (options.recovery?.applicable(record)) return options.recovery.grant(record, snapshot, signal, previous);
       // A lost response may have already advanced the service. Observe the
       // persisted target before choosing recovery or a same-generation grant.
       const recovering = previous !== undefined && snapshot.executionGeneration === previous.generation;

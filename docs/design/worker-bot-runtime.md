@@ -26,7 +26,7 @@ Web Codex/Copilot 的 intent 同时冻结完整 `toolLaunch` 和同 recipe 的 `
 
 `BotAdmissionBlockedError` 表示新执行仍需等待，发现循环不将它报告为环境启动失败。已冻结但从未派发的初次 launch 仍检查门禁；已经提交、未知提交或带有原 native identity 的恢复继续核对原 ticket、journal 和 frozen configuration，不因为新的准入状态创建空白替代执行或撤销输入/停止权限。准备资源释放与未知清理沿原 handle 归属处理。
 
-`bots/session-api.ts` 用 Worker 当前 PAT 建立首次 Bot Session，并为专属存储的 Bot 登记恢复身份；此后的 grant/report 使用独立恢复接口，未迁移的共享存储保留旧生命周期接口。响应必须携带相同账号，字节数与请求时间有界。首次 Session 注册传递冻结的 `botVersion`，恢复登记与 report 使用当前观察版本。HTTP 客户端不自动重复变更请求；恢复操作按下述持久原请求查询，不能用 GET 管理定义代替回执。ready 报告前读取服务端 Session，核对完整 fence、同步状态和 native identity。删除回执使用固定 `deletionId` 和原执行 stopProof，不读取已被删除屏障禁止访问的 Session 历史。
+`bots/session-api.ts` 用 Worker 当前 PAT 建立首次 Bot Session，并为专属存储的 Bot 登记恢复身份；此后的 grant/report 使用独立恢复接口，未迁移的共享存储保留旧生命周期接口。响应必须携带相同账号，字节数与请求时间有界。首次 Session 注册传递冻结的 `botVersion`，恢复登记与 report 使用当前观察版本。恢复登记和授信从已验证的持久 intent、原 Controller 观察及停证构造 Session/native/execution 绑定，不以前置普通 Session GET 取得该绑定：旧 parent PAT 失效时，普通读取仍应拒绝，而专用恢复接口使用当前有效 PAT 和恢复证明重新授权。客户端不伪造完整 `SessionSnapshot`；授信成功后才通过普通读取核对服务端同步状态。HTTP 客户端不自动重复变更请求；恢复操作按下述持久原请求查询，不能用 GET 管理定义代替回执。ready 报告前读取服务端 Session，核对完整 fence、同步状态和 native identity。删除回执使用固定 `deletionId` 和原执行 stopProof，不读取已被删除屏障禁止访问的 Session 历史。
 
 ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，为独立 Session，不含 Task/claim/worktree，角色与初始输入分别编码。Controller 自身仍负责 Provider 适配与原生权限。准备出的环境和别名责任保留到原执行停止；提交前失败可以释放当前准备资源，提交后未知结果不能清理仍可能使用的目录。
 
@@ -39,6 +39,8 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 `bots/recovery-store.ts` 在 `bots/<botId>/recovery.json` 保存恢复证明、原登记、当前承载回执与待核对操作。存储操作要求 Bot 锁仍被持有，校验服务、账号、Bot 和原 Session。请求包含固定 operation ID；grant/takeover 的随机 token 也在 HTTP 派发前耐久保存。保存意图后即使尚未发出 HTTP，中断恢复也只查询原操作，不自动重新提交。回执核对 Worker、Session、Controller、代次与 token 摘要；回执落盘和待核对状态结束分开记录，文件发布失败不推断回滚。
 
 `bots/reconciliation.ts` 协调[恢复 v1 协议](assistant.md#服务端恢复-v1-协议)。登记沿原 Worker 路径，接管与后续 grant 使用当前承载 Worker 路径；`operations/<operationId>` 虽使用 POST，只读取原操作。已确认但 `current=false` 的历史授权不可写入 Controller credential；原操作结果解决后，续期或当前认证改变可申请独立的新 grant。未解决的请求不得分配替代 operation。
+
+新 Worker 在收到服务端对自身机器身份报告的成功回执之前，不准备或提交新的恢复登记、grant 或 takeover；本地配置可用、报告开始发送和新执行准入都不能代替该回执。门禁位于持久化 pending 意图之前，防止服务端因尚无机器身份而在保存回执前拒绝请求，留下只能查询不存在回执的操作。配置协议的 `reportConfiguration` 和普通报告路径都以真实服务回执确认；其后的本地配置应用失败不抹去已经确认的远端机器事实。已有 pending 和历史回执仍可查询，不受新操作门禁阻断。
 
 接回先由 process 验证原 Controller 的认证 IPC 与进程身份，再取得当前承载授权并更新其 credential。存活 Controller 保持 execution generation；需要新进程时仍执行原有完整停证、Provider 材料与恢复预算校验。承载 generation 独立于 Controller generation，未知命令和助手业务 claim 都保留原身份。当前运行实例必须实际确认原授权仍有效，磁盘上的历史 `current` 值不能直接开放助手任务维护或通知。服务端 grant 撤销旧连接资格，只有当前 Session 重新同步、在线且允许发送时才开放输入。接管回执、缓存或旧 ready 记录不能代替同步。
 

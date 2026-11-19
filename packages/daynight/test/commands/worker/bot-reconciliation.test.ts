@@ -8,6 +8,7 @@ import { openLocalBotStores } from "../../../src/commands/worker/bots/local-stor
 import { openBotRecoveryStore } from "../../../src/commands/worker/bots/recovery-store.js";
 import { createBotRecoveryApi } from "../../../src/commands/worker/bots/recovery-api.js";
 import { createBotReconciliation } from "../../../src/commands/worker/bots/reconciliation.js";
+import { createBotSessionApi } from "../../../src/commands/worker/bots/session-api.js";
 import type { BotRecoveryGrant, BotRecoveryReceipt, BotRecoveryRegistration } from "../../../src/commands/worker/bots/recovery-protocol.js";
 import type { SessionSnapshot } from "../../../src/session/protocol.js";
 import { definition, id } from "./bot-execution-store.fixtures.js";
@@ -20,12 +21,18 @@ type Request = { action: string; workerId: string; body: BotRecoveryRegistration
 const fixture = async () => {
   const requests: Request[] = [], operations = new Map<string, { receipt: BotRecoveryReceipt; auth: string }>();
   let hostingWorker = id(2), hostingGeneration = "1", botVersion = "2", selected: string | null = null;
-  const fault: { drop: string | null; refuse: string | null; missingQueries: boolean; expired: boolean } = { drop: null, refuse: null, missingQueries: false, expired: false };
+  const fault: { drop: string | null; refuse: string | null; missingQueries: boolean; expired: boolean; parentRevoked: boolean; canSubmit: boolean } = { drop: null, refuse: null, missingQueries: false, expired: false, parentRevoked: false, canSubmit: true };
+  const ordinaryReads: string[] = [];
   let record!: ReturnType<ReturnType<typeof openLocalBotStores>["store"]["get"]>;
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json"); res.setHeader("Daynight-User-ID", id(1));
     let raw = ""; req.setEncoding("utf8"); req.on("data", chunk => { raw += chunk; });
     req.on("end", () => {
+      if (req.method === "GET") {
+        ordinaryReads.push(req.url!);
+        if (fault.parentRevoked) { res.statusCode = 403; res.end(JSON.stringify({ error: { code: "forbidden", message: "Original parent PAT was revoked", requestId: id(90) } })); return; }
+        res.end(JSON.stringify({ session: snapshot })); return;
+      }
       const route = req.url!.split("/"), workerId = route[5]!, action = route[10]!;
       const body = JSON.parse(raw) as BotRecoveryRegistration | BotRecoveryGrant;
       const auth = req.headers.authorization!; requests.push({ action, workerId, body, auth });
@@ -46,6 +53,10 @@ const fixture = async () => {
       if (action === "register") botVersion = (BigInt(botVersion) + 1n).toString();
       if (action === "takeover") { hostingGeneration = (BigInt(hostingGeneration) + 1n).toString(); hostingWorker = workerId; botVersion = (BigInt(botVersion) + 1n).toString(); }
       const grant = action === "register" ? null : (body as BotRecoveryGrant).grant;
+      if (grant !== null) {
+        fault.parentRevoked = false;
+        snapshot = { ...snapshot, executionGeneration: grant.executionGeneration, identity: { ...snapshot.identity, controllerInstanceId: grant.controllerInstanceId } };
+      }
       const receipt: BotRecoveryReceipt = { botRecoveryVersion: 1, operationId: body.operationId, kind: action, workerId,
         hostingGeneration, botVersion, sessionId: body.sessionId, testExecutionId: body.testExecutionId, nativeSessionId: body.nativeSessionId,
         executionGeneration: grant?.executionGeneration ?? record!.intent!.executionGeneration,
@@ -71,40 +82,119 @@ const fixture = async () => {
     cleanups.push(local.close);
     const store = openBotRecoveryStore({ owner: current, stateDirectory, assertLocked: local.assertLocked });
     const api = createBotRecoveryApi({ owner: current, serverToken: token });
-    return { local, store, api, reconciliation: createBotReconciliation({ owner: current, store, api }) };
+    const reconciliation = createBotReconciliation({ owner: current, store, api, canSubmit: () => fault.canSubmit });
+    return { local, store, api, reconciliation, sessionApi: createBotSessionApi({ owner: current, serverToken: token, recovery: reconciliation }) };
   };
   let active = open(owner.workerId, "first-current-token");
   active.local.store.observe(owner, definition(), 1);
   active.local.store.prepare(owner, id(3), { homeDirectory: home, recoveryLimit: 3 });
   const intent = active.local.store.get(owner, id(3))!.intent!;
   record = active.local.store.observe(owner, { ...definition(), version: "2", sessionId: id(4), testExecutionId: intent.executionId }, 2);
-  const snapshot: SessionSnapshot = { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, sessionId: id(4), testExecutionId: intent.executionId,
+  let snapshot: SessionSnapshot = { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, sessionId: id(4), testExecutionId: intent.executionId,
     executionGeneration: "1", connectionEpoch: "1", identity: { ownerUserId: id(1), controllerId: intent.registration.controllerId, controllerInstanceId: intent.controllerInstanceId, agentControlMode: "web", provider: "codex", nativeSessionId: id(11) },
     sessionRevision: "1", historyEpoch: id(12), lastEventSeq: "0", lastTimelineSeq: "0", initialInputState: "not_required", synchronized: false,
     lifecycle: "active", connectionState: "disconnected", activity: "unknown", currentTurnId: null,
     capabilities: { send: true, steer: false, cancel: false, respond: false }, operations: { canSend: false, canCancel: false, canRespond: false } };
-  return { requests, operations, fault, snapshot, owner, record: record!,
+  record = { ...record!, intent: { ...record!.intent!, nativeSessionId: id(11) } };
+  const binding = { sessionId: snapshot.sessionId, testExecutionId: snapshot.testExecutionId, nativeSessionId: snapshot.identity.nativeSessionId };
+  return { requests, operations, fault, get snapshot() { return snapshot; }, setSnapshot: (value: SessionSnapshot) => { snapshot = value; }, binding, ordinaryReads, owner, record: record!,
     get active() { return active; },
     restart: (workerId = owner.workerId, token = "first-current-token") => { active.local.close(); active = open(workerId, token); expect(active.local.scan().records[0]!.owner).toEqual(owner); return active; },
   };
 };
 
 describe("Bot hosting reconciliation with durable storage and HTTP", () => {
+  it("registers and restores a revoked parent through the production Session API before ordinary reads", async () => {
+    const f = await fixture(); f.fault.parentRevoked = true;
+    await expect(f.active.sessionApi.readSession(f.record, signal())).rejects.toMatchObject({ code: "forbidden" });
+    f.ordinaryReads.length = 0;
+    await f.active.sessionApi.registerRecovery(f.record, signal());
+    expect(f.fault.parentRevoked).toBe(true);
+    const grant = await f.active.sessionApi.grant(f.record, signal());
+    expect(f.ordinaryReads).toEqual([]);
+    expect(f.requests.map(request => request.action)).toEqual(["register", "grant"]);
+    expect(f.requests.every(request => request.body.sessionId === f.binding.sessionId && request.body.nativeSessionId === f.binding.nativeSessionId)).toBe(true);
+    expect(grant).toMatchObject({ sessionId: f.binding.sessionId, testExecutionId: f.binding.testExecutionId });
+    await expect(f.active.sessionApi.readSession(f.record, signal())).resolves.toEqual(f.snapshot);
+    await expect(f.active.sessionApi.report(f.record, { state: "ready" }, signal())).rejects.toThrow("synchronized active Session");
+    f.setSnapshot({ ...f.snapshot, synchronized: true, connectionState: "connected", activity: "idle" });
+    await expect(f.active.sessionApi.report(f.record, { state: "ready" }, signal())).resolves.toMatchObject({ startupResult: { state: "ready" } });
+  });
+
+  it("renews through the production Session API with a replacement PAT while ordinary access is denied", async () => {
+    const f = await fixture(); const initial = await f.active.sessionApi.grant(f.record, signal());
+    f.fault.parentRevoked = true;
+    const renewed = f.restart(id(2), "replacement-current-token");
+    const grant = await renewed.sessionApi.grant(f.record, signal());
+    expect(f.ordinaryReads).toEqual([]);
+    expect(f.requests.map(request => request.action)).toEqual(["register", "grant", "operations", "grant"]);
+    expect(grant.token).not.toBe(initial.token);
+    expect(f.requests.at(-1)!.auth).toBe("Bearer replacement-current-token");
+    await expect(renewed.sessionApi.readSession(f.record, signal())).resolves.toEqual(f.snapshot);
+  });
+
+  it("queries a lost generation grant before renewing with its exact predecessor proof under a replacement PAT", async () => {
+    const f = await fixture(); await f.active.sessionApi.grant(f.record, signal());
+    const previous = { generation: "1", instanceId: f.record.intent!.controllerInstanceId, recordId: id(50), stoppedAt: "2026-01-01T00:00:00Z" };
+    const next = { ...f.record, intent: { ...f.record.intent!, executionGeneration: "2", controllerInstanceId: id(51) } };
+    f.fault.drop = "grant";
+    await expect(f.active.sessionApi.grant(next, signal(), previous)).rejects.toThrow();
+    const pending = f.active.store.read(next)!.pending!;
+    f.fault.parentRevoked = true;
+    const renewed = f.restart(id(2), "replacement-current-token");
+    const start = f.requests.length;
+    const grant = await renewed.sessionApi.grant(next, signal(), previous);
+    expect(f.ordinaryReads).toEqual([]);
+    expect(f.requests.slice(start).map(request => request.action)).toEqual(["operations", "operations", "grant"]);
+    expect(f.requests.at(-1)!.body).toMatchObject({ grant: { previousGeneration: "1", executionGeneration: "2", stopProof: { recordId: previous.recordId, previousControllerInstanceId: previous.instanceId, stoppedAt: previous.stoppedAt } } });
+    expect(f.requests.filter(request => request.action === "grant" && request.body.operationId === pending.body.operationId)).toHaveLength(1);
+    expect(grant.executionGeneration).toBe("2");
+  });
+
+  it.each(["register", "grant", "takeover"] as const)("does not prepare %s until the Worker machine report is confirmed", async action => {
+    const f = await fixture();
+    if (action === "grant") await f.active.reconciliation.register(f.record, f.binding, signal());
+    if (action === "takeover") { await f.active.reconciliation.grant(f.record, f.binding, signal()); f.restart(id(20)); }
+    f.fault.canSubmit = false;
+    const before = f.requests.length;
+    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toThrow("confirmed Worker machine identity report");
+    expect(f.active.store.read(f.record)!.pending).toBeNull();
+    expect(f.requests.slice(before).every(request => request.action === "operations")).toBe(true);
+    f.fault.canSubmit = true;
+    await expect(f.active.sessionApi.grant(f.record, signal())).resolves.toMatchObject({ sessionId: f.binding.sessionId });
+    expect(f.requests.at(-1)!.action).toBe(action === "register" ? "grant" : action);
+  });
+
+  it("queries an unknown operation with the report gate closed without preparing a replacement", async () => {
+    const f = await fixture(); f.fault.drop = "grant";
+    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toThrow();
+    const pending = f.active.store.read(f.record)!.pending!;
+    f.fault.canSubmit = false; f.fault.missingQueries = true;
+    const rebuilt = f.restart();
+    await expect(rebuilt.sessionApi.grant(f.record, signal())).rejects.toMatchObject({ code: "not_found" });
+    expect(rebuilt.store.read(f.record)!.pending).toEqual(pending);
+    expect(f.requests.map(request => request.action)).toEqual(["register", "grant", "operations"]);
+    f.fault.missingQueries = false;
+    await expect(rebuilt.sessionApi.grant(f.record, signal())).resolves.toMatchObject({ token: (pending.body as BotRecoveryGrant).controllerToken });
+    expect(rebuilt.store.read(f.record)!.pending).toBeNull();
+    expect(f.requests.filter(request => request.action === "grant")).toHaveLength(1);
+  });
+
   it("registers before granting, then reuses only a queried current grant", async () => {
     const f = await fixture();
-    const granted = await f.active.reconciliation.grant(f.record, f.snapshot, signal());
+    const granted = await f.active.reconciliation.grant(f.record, f.binding, signal());
     expect(f.requests.map(request => request.action)).toEqual(["register", "grant"]);
     expect(f.active.store.read(f.record)).toMatchObject({ pending: null, current: { receipt: { workerId: id(2), hostingGeneration: "1" } } });
-    const second = await f.restart().reconciliation.grant(f.record, f.snapshot, signal());
+    const second = await f.restart().reconciliation.grant(f.record, f.binding, signal());
     expect(second).toEqual(granted); expect(f.requests.map(request => request.action)).toEqual(["register", "grant", "operations"]);
   });
 
   it.each(["register", "grant"])("queries a committed %s after response loss and restart without another POST of its intent", async action => {
     const f = await fixture(); f.fault.drop = action;
-    await expect(f.active.reconciliation.grant(f.record, f.snapshot, signal())).rejects.toThrow();
+    await expect(f.active.reconciliation.grant(f.record, f.binding, signal())).rejects.toThrow();
     const pending = f.active.store.read(f.record)!.pending!;
     const restored = f.restart();
-    const grant = await restored.reconciliation.grant(f.record, f.snapshot, signal());
+    const grant = await restored.reconciliation.grant(f.record, f.binding, signal());
     expect(grant.sessionId).toBe(f.snapshot.sessionId);
     expect(f.requests.filter(request => request.action === action)).toHaveLength(1);
     expect(f.requests.filter(request => request.action === "operations").length).toBeGreaterThan(0);
@@ -114,19 +204,19 @@ describe("Bot hosting reconciliation with durable storage and HTTP", () => {
 
   it("keeps a missing original receipt pending without a replacement registration", async () => {
     const f = await fixture(); f.fault.drop = "register";
-    await expect(f.active.reconciliation.grant(f.record, f.snapshot, signal())).rejects.toThrow();
+    await expect(f.active.reconciliation.grant(f.record, f.binding, signal())).rejects.toThrow();
     const pending = f.active.store.read(f.record)!.pending!; f.fault.missingQueries = true;
     const restored = f.restart();
-    await expect(restored.reconciliation.grant(f.record, f.snapshot, signal())).rejects.toMatchObject({ code: "not_found" });
+    await expect(restored.reconciliation.grant(f.record, f.binding, signal())).rejects.toMatchObject({ code: "not_found" });
     expect(restored.store.read(f.record)!.pending).toEqual(pending);
     expect(restored.reconciliation.ready(f.record)).toBe(false);
     expect(f.requests.map(request => request.action)).toEqual(["register", "operations"]);
   });
 
   it("takes over a Bot using only its dedicated data when the Worker identity changes", async () => {
-    const f = await fixture(); const initial = await f.active.reconciliation.grant(f.record, f.snapshot, signal());
+    const f = await fixture(); const initial = await f.active.reconciliation.grant(f.record, f.binding, signal());
     const rebuilt = f.restart(id(20));
-    const grant = await rebuilt.reconciliation.grant(f.record, f.snapshot, signal());
+    const grant = await rebuilt.reconciliation.grant(f.record, f.binding, signal());
     expect(f.requests.map(request => request.action)).toEqual(["register", "grant", "operations", "takeover"]);
     const takeover = f.requests.at(-1)!;
     expect(takeover.workerId).toBe(id(20)); expect((takeover.body as BotRecoveryGrant).expectedHostingGeneration).toBe("1");
@@ -137,10 +227,10 @@ describe("Bot hosting reconciliation with durable storage and HTTP", () => {
   });
 
   it("uses a new operation and token under a new PAT without reviving the old grant", async () => {
-    const f = await fixture(); const initial = await f.active.reconciliation.grant(f.record, f.snapshot, signal());
+    const f = await fixture(); const initial = await f.active.reconciliation.grant(f.record, f.binding, signal());
     const oldOperation = f.active.store.read(f.record)!.currentOperation!;
     const renewed = f.restart(id(2), "replacement-current-token");
-    const grant = await renewed.reconciliation.grant(f.record, f.snapshot, signal());
+    const grant = await renewed.reconciliation.grant(f.record, f.binding, signal());
     expect(grant.token).not.toBe(initial.token);
     expect(renewed.store.read(f.record)!.currentOperation!.body.operationId).not.toBe(oldOperation.body.operationId);
     expect(f.requests.map(request => request.action)).toEqual(["register", "grant", "operations", "grant"]);
@@ -149,18 +239,18 @@ describe("Bot hosting reconciliation with durable storage and HTTP", () => {
   });
 
   it("retains a rejected takeover as pending and does not report ready", async () => {
-    const f = await fixture(); await f.active.reconciliation.grant(f.record, f.snapshot, signal());
+    const f = await fixture(); await f.active.reconciliation.grant(f.record, f.binding, signal());
     const rebuilt = f.restart(id(20)); f.fault.refuse = "takeover";
-    await expect(rebuilt.reconciliation.grant(f.record, f.snapshot, signal())).rejects.toMatchObject({ code: "forbidden" });
+    await expect(rebuilt.reconciliation.grant(f.record, f.binding, signal())).rejects.toMatchObject({ code: "forbidden" });
     expect(rebuilt.reconciliation.ready(f.record)).toBe(false);
     expect(rebuilt.store.read(f.record)!.pending!.kind).toBe("takeover");
     expect(f.requests.filter(request => request.action === "takeover")).toHaveLength(1);
   });
 
   it("reports startup through the confirmed current hosting while preserving original DTO identity", async () => {
-    const f = await fixture(); await f.active.reconciliation.grant(f.record, f.snapshot, signal());
-    const rebuilt = f.restart(id(20)); await rebuilt.reconciliation.grant(f.record, f.snapshot, signal());
-    const report = { botVersion: "4", fence: { sessionId: f.snapshot.sessionId, testExecutionId: f.snapshot.testExecutionId, executionGeneration: "1", connectionEpoch: "2" },
+    const f = await fixture(); await f.active.reconciliation.grant(f.record, f.binding, signal());
+    const rebuilt = f.restart(id(20)); await rebuilt.reconciliation.grant(f.record, f.binding, signal());
+    const report = { botVersion: "4", fence: { sessionId: f.snapshot.sessionId, testExecutionId: f.binding.testExecutionId, executionGeneration: "1", connectionEpoch: "2" },
       controllerId: f.snapshot.identity.controllerId, controllerInstanceId: f.snapshot.identity.controllerInstanceId, nativeSessionId: id(11), result: { state: "ready" as const, code: null } };
     const bot = await rebuilt.reconciliation.report(f.record, report, signal());
     expect(bot.startupResult.state).toBe("ready"); expect(bot.workerId).toBe(id(2));
@@ -168,10 +258,10 @@ describe("Bot hosting reconciliation with durable storage and HTTP", () => {
   });
 
   it("withdraws local eligibility when a retained grant expires", async () => {
-    const f = await fixture(); await f.active.reconciliation.grant(f.record, f.snapshot, signal());
+    const f = await fixture(); await f.active.reconciliation.grant(f.record, f.binding, signal());
     let now = Date.parse("2098-12-31T00:00:00Z");
-    const expired = createBotReconciliation({ owner: f.owner, store: f.active.store, api: f.active.api, now: () => now });
-    await expired.grant(f.record, f.snapshot, signal());
+    const expired = createBotReconciliation({ owner: f.owner, store: f.active.store, api: f.active.api, now: () => now, canSubmit: () => true });
+    await expired.grant(f.record, f.binding, signal());
     expect(expired.ready(f.record)).toBe(true);
     now = Date.parse("2099-01-01T00:00:00Z");
     expect(expired.ready(f.record)).toBe(false);
@@ -181,17 +271,17 @@ describe("Bot hosting reconciliation with durable storage and HTTP", () => {
 
   it("requires a fresh receipt query after restart and withdraws eligibility after a query refusal", async () => {
     const f = await fixture();
-    await f.active.reconciliation.grant(f.record, f.snapshot, signal());
+    await f.active.reconciliation.grant(f.record, f.binding, signal());
     const durable = f.active.store.read(f.record)!;
     expect(durable.current).toMatchObject({ current: true, receipt: { grantExpiresAt: "2099-01-01T00:00:00Z" } });
     expect(f.active.reconciliation.ready(f.record)).toBe(true);
     const rebuilt = f.restart();
     expect(rebuilt.store.read(f.record)).toEqual(durable);
     expect(rebuilt.reconciliation.ready(f.record)).toBe(false);
-    await rebuilt.reconciliation.grant(f.record, f.snapshot, signal());
+    await rebuilt.reconciliation.grant(f.record, f.binding, signal());
     expect(rebuilt.reconciliation.ready(f.record)).toBe(true);
     f.fault.refuse = "operations";
-    await expect(rebuilt.reconciliation.grant(f.record, f.snapshot, signal())).rejects.toMatchObject({ code: "forbidden" });
+    await expect(rebuilt.reconciliation.grant(f.record, f.binding, signal())).rejects.toMatchObject({ code: "forbidden" });
     expect(rebuilt.reconciliation.ready(f.record)).toBe(false);
     expect(rebuilt.store.read(f.record)).toEqual(durable);
     expect(f.requests.map(request => request.action)).toEqual(["register", "grant", "operations", "operations"]);

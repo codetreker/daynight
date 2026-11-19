@@ -30,7 +30,22 @@ remain separate; a new grant requires its own operation and token after the
 previous result has been resolved.
 
 The Session API registers recovery for an existing platform Session and switches
-grant and report requests to the versioned recovery API. The process manager
+grant and report requests to the versioned recovery API. Recovery binding comes
+from verified durable intent and original Controller observation or stopping
+evidence. An ordinary Session read cannot precede recovery authorization: it
+requires the old parent credential, which a valid same-account replacement PAT
+must be able to supersede. Recovery retains its dedicated proof checks; ordinary
+Session access and synchronized input retain their existing authorization.
+
+New recovery operations wait until the service acknowledges the current Worker's
+machine report. Both configuration-protocol and ordinary report paths establish
+that fact from a successful service receipt. The gate precedes durable request
+preparation, because a Worker without a reported machine is rejected before the
+service saves an operation receipt. Existing operation queries remain available
+while this prerequisite is pending. A later local configuration-application
+failure does not erase the already acknowledged remote machine identity.
+
+The process manager
 authenticates and reconnects a live original Controller before considering a new
 process. Only the existing complete stopping and native recovery checks permit
 another Controller generation. A hosting change does not replay user input or
@@ -59,6 +74,17 @@ make the original private records unreachable.
 committed and revoked the old connection already. Retaining the original request
 and querying its receipt preserves the distinction between a missing response
 and a rejected operation, at the cost of retaining unresolved state.
+
+**Read the ordinary Session before requesting recovery.** Its parent-credential
+check prevents a new PAT from reaching the operation that replaces an expired
+parent. Local binding evidence plus the dedicated recovery authorization avoids
+that dependency without relaxing ordinary Session access.
+
+**Start takeover as soon as local configuration permits execution.** A live
+Controller can be discovered before the new Worker's first report is accepted.
+Preparing the operation at that point consumes its sole submission opportunity
+without ensuring the service can identify the machine. Waiting for the actual
+report receipt preserves query-only reconciliation after genuinely unknown writes.
 
 **Remove the legacy migration fence after registration.** Registration proves
 remote recovery identity, not the completeness of Provider files or the safety

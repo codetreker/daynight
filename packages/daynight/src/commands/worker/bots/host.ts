@@ -46,11 +46,13 @@ export const createWorkerBotHost = (options: {
   const local = openLocalBotStores({ stateDirectory: options.paths.stateDirectory, legacyDatabaseFile: options.paths.databaseFile, owner: options.owner, ...migration });
   const { store, executions } = local;
   try {
+    let machineReportConfirmed = false;
     const remote = createBotRemote({ owner: options.owner, serverToken: options.serverToken });
     const recovery = createBotReconciliation({ owner: options.owner,
       store: openBotRecoveryStore({ stateDirectory: options.paths.stateDirectory, owner: options.owner, assertLocked: local.assertLocked }),
-      api: createBotRecoveryApi({ owner: options.owner, serverToken: options.serverToken }), applicable: local.isDedicated });
-    const sessionApi = createBotSessionApi({ owner: options.owner, serverToken: options.serverToken, recovery });
+      api: createBotRecoveryApi({ owner: options.owner, serverToken: options.serverToken }), applicable: local.isDedicated,
+      canSubmit: () => machineReportConfirmed });
+    const sessionApi = createBotSessionApi({ owner: options.owner, serverToken: options.serverToken, recovery, stateDirectory: options.paths.stateDirectory });
     const botProcess = createBotProcess({ ...options, store, executions, sessionApi, reconcileHosting: local.isDedicated, canControl: recovery.ownsHosting, recoveryLimit: () => {
       const value = options.recoveryLimit();
       if (value === null) throw new Error("Worker recovery configuration has not been applied; Bot initialization is waiting.");
@@ -122,6 +124,7 @@ export const createWorkerBotHost = (options: {
     };
     return {
       run: runtime.run,
+      confirmMachineReport: (): void => { if (!closed) machineReportConfirmed = true; },
       shutdown,
       registerApplication: assistantTasks.registerApplication,
       requiresCopilot: (): boolean => store.list(options.owner).some(record => record.observed.deletion === null && record.definition?.resolvedConfiguration.provider === "copilot"),

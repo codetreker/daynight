@@ -1,9 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
-import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../session/protocol.js";
+import { SESSION_PROTOCOL } from "../../../session/protocol.js";
 import type { ControllerGrantResponse } from "../../../session/controller-protocol.js";
 import type { BotRecoveryApi } from "./recovery-api.js";
-import type { BotRecoveryGrant, BotRecoveryIdentity, BotRecoveryReport, BotRecoveryResult } from "./recovery-protocol.js";
+import type { BotRecoveryBinding, BotRecoveryGrant, BotRecoveryIdentity, BotRecoveryReport, BotRecoveryResult } from "./recovery-protocol.js";
 import type { BotRecoveryOperation, BotRecoveryState, openBotRecoveryStore } from "./recovery-store.js";
 import type { BotRecoveryProof } from "./session-api.js";
 import type { BotOwner, BotRecord } from "./types.js";
@@ -11,6 +11,7 @@ import type { BotOwner, BotRecord } from "./types.js";
 /** Hosting changes retain the original execution, operation identities and native input. */
 export const createBotReconciliation = (options: {
   owner: BotOwner; store: ReturnType<typeof openBotRecoveryStore>; api: BotRecoveryApi; now?: () => number; applicable?(record: BotRecord): boolean;
+  canSubmit(): boolean;
 }) => {
   const now = options.now ?? Date.now;
   const verified = new Map<string, string>();
@@ -25,6 +26,7 @@ export const createBotReconciliation = (options: {
     return options.store.finishOperation(record, pending.body.operationId);
   };
   const submit = async (record: BotRecord, operation: Omit<BotRecoveryOperation, "result">, signal: AbortSignal): Promise<BotRecoveryState> => {
+    if (!options.canSubmit()) throw new Error("Bot recovery requires a confirmed Worker machine identity report before preparing an operation.");
     options.store.prepare(record, operation);
     signal.throwIfAborted();
     let result: BotRecoveryResult;
@@ -33,18 +35,18 @@ export const createBotReconciliation = (options: {
     options.store.recordResult(record, operation.body.operationId, result);
     return options.store.finishOperation(record, operation.body.operationId);
   };
-  const register = async (record: BotRecord, snapshot: SessionSnapshot, signal: AbortSignal): Promise<BotRecoveryState> => {
+  const register = async (record: BotRecord, binding: BotRecoveryBinding, signal: AbortSignal): Promise<BotRecoveryState> => {
     let state = await settle(record, options.store.ensureIdentity(record), signal);
     if (state.registration !== null) return state;
     state = await submit(record, { kind: "register", workerId: record.owner.workerId, body: {
       ...identity(state), operationId: randomUUID(), botVersion: record.observed.version,
-      sessionId: snapshot.sessionId, testExecutionId: record.intent!.executionId, nativeSessionId: snapshot.identity.nativeSessionId,
+      ...binding,
     } }, signal);
     return state;
   };
-  const grant = async (record: BotRecord, snapshot: SessionSnapshot, signal: AbortSignal, previous?: BotRecoveryProof): Promise<ControllerGrantResponse> => {
+  const grant = async (record: BotRecord, binding: BotRecoveryBinding, signal: AbortSignal, previous?: BotRecoveryProof): Promise<ControllerGrantResponse> => {
     verified.delete(record.botId);
-    let state = await register(record, snapshot, signal);
+    let state = await register(record, binding, signal);
     const intent = record.intent!;
     let original = state.currentOperation;
     if (original !== null && original.kind !== "register") {
@@ -63,10 +65,12 @@ export const createBotReconciliation = (options: {
     }
     const receipt = state.current?.receipt ?? state.registration!.receipt;
     const kind = receipt.workerId === options.owner.workerId ? "grant" : "takeover";
-    const recovering = previous !== undefined && snapshot.executionGeneration === previous.generation;
+    // The service accepts only the exact predecessor proof, including when a
+    // queried operation already advanced to this Controller generation.
+    const recovering = previous !== undefined;
     state = await submit(record, { kind, workerId: options.owner.workerId, body: {
       ...identity(state), operationId: randomUUID(), expectedHostingGeneration: receipt.hostingGeneration,
-      sessionId: snapshot.sessionId, testExecutionId: intent.executionId, nativeSessionId: snapshot.identity.nativeSessionId,
+      ...binding,
       controllerToken: `dncontroller_${randomBytes(32).toString("base64url")}`,
       grant: { protocol: SESSION_PROTOCOL, testExecutionId: intent.executionId, controllerId: intent.registration.controllerId,
         controllerInstanceId: intent.controllerInstanceId, executionGeneration: intent.executionGeneration, kind: "reconnect",

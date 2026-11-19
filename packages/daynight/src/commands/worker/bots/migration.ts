@@ -21,6 +21,7 @@ import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js"
 import { botUUID, parseBot, parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
 import { assertMigrationPhysicalPath, botMigrationAliases, botMigrationHash, botMigrationManifestPath, migrationDestination, readBotMigrationManifest, type BotMigrationManifest, type BotMigrationPhase } from "./migration-state.js";
 import { copyMigrationFile, copyMigrationTree, saveMigrationManifest, verifyMigrationFiles, verifyMigrationSources } from "./migration-files.js";
+import type { BotRecoveryBinding } from "./recovery-protocol.js";
 
 export type { BotMigrationManifest, BotMigrationPhase } from "./migration-state.js";
 type Target = { stateDirectory: string; owner: BotOwner; botId: string };
@@ -218,6 +219,42 @@ export const migrateLegacyBot = async (options: BotMigrationOptions): Promise<Bo
     manifest = { ...manifest, phase: "committed" }; saveMigrationManifest(botMigrationManifestPath(options.stateDirectory, botId), manifest); options.onPhase?.("committed");
     return manifest;
   } finally { db?.close(); controllerPermit?.release(); lock.release(); }
+};
+
+/** Recover only the original binding; copied history never requires a live Session read. */
+export const readMigratedBotRecoveryBinding = (options: Target): BotRecoveryBinding => {
+  const manifest = readBotMigrationManifest(options.stateDirectory, options.owner, options.botId);
+  if (manifest?.phase !== "committed") throw new Error("Bot recovery binding requires its committed migration authority.");
+  verifyMigrationFiles(options.stateDirectory, manifest);
+  const record = manifest.original.record, intent = record.intent, execution = manifest.original.execution;
+  if (intent === null || intent.sessionId === null || record.definition === null
+    || record.definition.sessionId !== intent.sessionId || record.definition.testExecutionId !== intent.executionId
+    || intent.registration.testExecutionId !== intent.executionId) throw new Error("Migrated Bot recovery requires its original registered Session binding.");
+  parseBot(record.observed, options.owner); parseBot(record.definition, options.owner);
+  botUUID(intent.sessionId, "Migrated Bot Session"); botUUID(intent.executionId, "Migrated Bot execution");
+  if (execution !== null && (execution.launchId !== intent.launchId || execution.executionId !== intent.executionId
+    || execution.executionGeneration !== intent.executionGeneration)) throw new Error("Migrated Bot execution differs from its original launch intent.");
+  let ticket: ControllerLaunchTicket | null = null;
+  if (manifest.ticket !== null) {
+    if (!manifest.files.some(file => file.destination === manifest.ticket && file.source === intent.ticketPath && file.kind === "file")) throw new Error("Migrated Bot ticket has no verified copy mapping.");
+    const copiedTicket = parseLaunchTicket(JSON.parse(readFileSync(migrationDestination(options.stateDirectory, options.botId, manifest.ticket), "utf8")));
+    verifyTicket(record, copiedTicket);
+    ticket = copiedTicket;
+  }
+  if (manifest.journal === null) {
+    if (execution === null || execution.launchSubmission !== "not-submitted" || execution.controllerProcess !== null || execution.snapshot !== null
+      || intent.nativeSessionId !== null || intent.executionGeneration !== "1") throw new Error("Migrated Bot without a journal has no proven unsubmitted execution.");
+    return { sessionId: intent.sessionId, testExecutionId: intent.executionId, nativeSessionId: null };
+  }
+  if (ticket === null || !manifest.files.some(file => file.destination === manifest.journal && file.source === intent.journalPath && file.kind === "sqlite")) throw new Error("Migrated Bot journal has no verified original ticket or copy mapping.");
+  const snapshot = readCurrentControllerSnapshot(migrationDestination(options.stateDirectory, options.botId, manifest.journal), ticket);
+  validateBotExecutionSnapshot(record, snapshot);
+  if (execution === null || execution.launchSubmission === "not-submitted" || snapshot.lifecycle !== "stopped" || !snapshot.nativeStopped
+    || snapshot.stoppedAt === null || snapshot.controllerProcess === null || execution.controllerProcess === null
+    || !preservesControllerProcessProof(execution.controllerProcess, snapshot.controllerProcess, intent.launchId)
+    || !preservesNativeProcessPrefix(execution.snapshot?.nativeProcesses ?? [], snapshot.nativeProcesses)
+    || execution.snapshot?.nativeSessionId != null && execution.snapshot.nativeSessionId !== snapshot.nativeSessionId) throw new Error("Migrated Bot recovery binding conflicts with its original stopped execution.");
+  return { sessionId: intent.sessionId, testExecutionId: intent.executionId, nativeSessionId: snapshot.nativeSessionId };
 };
 
 /** Read the protected copy without starting a Controller, obtaining a grant or touching native history. */

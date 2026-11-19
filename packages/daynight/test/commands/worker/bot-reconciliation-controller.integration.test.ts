@@ -144,7 +144,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   };
   const local = openLocalBotStores({ stateDirectory: state, legacyDatabaseFile: paths.databaseFile, owner, onMigration: () => {} });
   local.store.observe(owner, bot, Date.now());
-  const recovery = createBotReconciliation({ owner, store: openBotRecoveryStore({ stateDirectory: state, owner, assertLocked: local.assertLocked }), api: createBotRecoveryApi({ owner, serverToken: "fixture-parent-token" }) });
+  const recovery = createBotReconciliation({ owner, store: openBotRecoveryStore({ stateDirectory: state, owner, assertLocked: local.assertLocked }), api: createBotRecoveryApi({ owner, serverToken: "fixture-parent-token" }), canSubmit: () => true });
   const sessionApi = createBotSessionApi({ owner, serverToken: "fixture-parent-token", recovery });
   const original = createBotProcess({ homeDirectory: home, packageDirectory, store: local.store, executions: local.executions, sessionApi,
     recoveryLimit: 3, canAdmitNewExecution: () => true, selectToolLaunch, dependencies: { prepareEnvironment } });
@@ -169,7 +169,14 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       serverToken: "fixture-parent-token", canAdmitNewExecution: () => true, selectToolLaunch,
       configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }), recoveryLimit: () => 3,
       pollIntervalMs: () => 200, emit: event => { if (event.kind === "bot-unavailable") errors.push(event.message); } });
+    const machineReportPending = "Bot recovery requires a confirmed Worker machine identity report before preparing an operation.";
     running = host.run(cancellation.signal); void running.catch(error => errors.push(String(error)));
+    await vi.waitFor(() => expect(errors.some(error => error.includes(machineReportPending))).toBe(true), { timeout: 15_000, interval: 100 });
+    expect(calls.filter(call => call.endsWith("/takeover"))).toHaveLength(0);
+    const waiting = JSON.parse(await readFile(path.join(state, "bots", botId, "recovery.json"), "utf8"));
+    expect(waiting).toMatchObject({ pending: null, current: { receipt: { workerId: owner.workerId, hostingGeneration: "1" } } });
+    expect(await inspectProcessProof(first.controllerProcess!)).toBe("running");
+    host.confirmMachineReport();
     await vi.waitFor(() => expect(bot.startupResult.state, errors.join("\n")).toBe("ready"), { timeout: 40_000, interval: 100 });
     const current = readControllerSnapshot(intent!.journalPath)!;
     expect(current.controllerProcess).toEqual(first.controllerProcess);
@@ -185,7 +192,7 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     expect(bot.workerId).toBe(owner.workerId); expect(bot.resolvedConfiguration.workerId).toBe(owner.workerId);
     const persisted = JSON.parse(await readFile(path.join(state, "bots", botId, "recovery.json"), "utf8"));
     expect(persisted).toMatchObject({ pending: null, current: { receipt: { workerId: newWorker, hostingGeneration: "2" } } });
-    expect(errors.filter(error => !error.includes("requires a synchronized active Session"))).toEqual([]);
+    expect(errors.filter(error => !error.includes("requires a synchronized active Session") && !error.includes(machineReportPending))).toEqual([]);
   } catch (error) {
     testFailed = true;
     console.error(JSON.stringify({ errors, calls: [...new Set(calls)], synchronized, observedNative, hostingGeneration }));

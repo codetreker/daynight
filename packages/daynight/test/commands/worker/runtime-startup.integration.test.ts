@@ -15,6 +15,7 @@ import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import * as cloudConfiguration from "../../../src/commands/worker/configuration.js";
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
+import * as botReconciliation from "../../../src/commands/worker/bots/reconciliation.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
@@ -167,6 +168,47 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it.each(["configuration", "telemetry"] as const)("keeps Bot recovery closed until a matching machine %s report is confirmed", async channel => {
+    const f = await fixture(), remote = mocks.remote(); mocks.remote.mockClear();
+    let options: ReporterOptions | undefined, canSubmit: (() => boolean) | undefined;
+    const createReconciliation = botReconciliation.createBotReconciliation;
+    const observation = vi.spyOn(botReconciliation, "createBotReconciliation").mockImplementation(value => {
+      canSubmit = value.canSubmit; return createReconciliation(value);
+    });
+    mocks.reporter.mockImplementation((value: ReporterOptions) => { options = value; return reporter(); });
+    const { cancellation, running } = start(f);
+    const operation = createOperation();
+    try {
+      await vi.waitFor(() => { expect(options).toBeDefined(); expect(mocks.coordinator).toHaveBeenCalled(); });
+      expect(mocks.bots.mock.results[0]!.value.run).toHaveBeenCalled();
+      expect(canSubmit?.()).toBe(false);
+      const machine = (mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).machine;
+      const report = { ...reportSample, machine };
+      const captured = await prepareConfiguration(options!);
+      const receipt = { observedAt: report.sampledAt, lastReportedAt: report.sampledAt,
+        configuration: receivedReceipt({ desired: desired(), observationRevision: "0", observationAccepted: false }) };
+      const send = channel === "configuration" ? remote.reportConfiguration : remote.report;
+      const submit = (input = report) => channel === "configuration"
+        ? options!.configuration!.send(input, captured, operation)
+        : options!.send(input, operation);
+      send.mockResolvedValueOnce(receipt);
+      await submit({ ...report, machine: { ...machine, id: uuid(999) } });
+      expect(canSubmit?.()).toBe(false);
+      const unknown = new ApiError({ operation: "worker.configuration.report" }, "request", { cause: new Error("Report acknowledgement was lost") });
+      send.mockRejectedValueOnce(unknown);
+      await expect(submit()).rejects.toBe(unknown);
+      expect(canSubmit?.()).toBe(false);
+      const acknowledgement = Promise.withResolvers<typeof receipt>();
+      send.mockImplementationOnce(() => acknowledgement.promise);
+      const pending = submit();
+      expect(canSubmit?.()).toBe(false);
+      acknowledgement.resolve(receipt);
+      await pending;
+      // The remote acknowledgement suffices before any local configuration accept.
+      expect(canSubmit?.()).toBe(true);
+    } finally { operation.dispose(); cancellation.abort(); try { await running; } finally { observation.mockRestore(); } }
+  });
+
   it("continues retained-project reconciliation with bounded observations and after restart", async () => {
     const f = await fixture(true, false), target = { ...desired([]), revision: "2" }, ids = [uuid(10_000), uuid(10_001)];
     for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
