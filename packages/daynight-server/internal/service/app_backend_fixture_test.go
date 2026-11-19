@@ -44,6 +44,20 @@ type appBackend struct {
 	collector                                                                         *appTestCollector
 }
 
+func (b *appBackend) ListArchiveCleanup(ctx context.Context, cursor string, limit int) ([]store.ArchiveCleanupTarget, error) {
+	if err := b.check(ctx); err != nil {
+		return nil, err
+	}
+	if cursor != "" || limit != 32 {
+		return nil, b.unexpected("ListArchiveCleanup arguments")
+	}
+	return nil, b.record("ListArchiveCleanup", 1)
+}
+
+func (b *appBackend) WriteArchiveCleanup(context.Context, store.ArchiveCleanupTarget, func(store.ArchiveCleanupScope) error) (store.Completion, error) {
+	return store.Completion{Outcome: store.TransactionNotCommitted}, b.unexpected("WriteArchiveCleanup")
+}
+
 func newAppBackend(t *testing.T) *appBackend {
 	t.Helper()
 	b := &appBackend{t: t, expectedPolicies: 1, expectedReferences: 1, oauthCompletion: store.Completion{Outcome: store.TransactionCommitted}, authorizationCompletion: store.Completion{Outcome: store.TransactionCommitted}, credentialCompletion: store.Completion{Outcome: store.TransactionCommitted}, privateCompletion: store.Completion{Outcome: store.TransactionCommitted}, policies: []wm.Policy{{Version: 1, MaxAutomaticAttempts: 10, AutomaticWindowSeconds: 259200,
