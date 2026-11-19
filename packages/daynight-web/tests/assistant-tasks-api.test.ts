@@ -120,6 +120,8 @@ describe('assistant task response contracts', () => {
     expect(() => api.parseAssistantTaskRecord({ ...record(), author: 'system' }, taskId)).toThrow();
     expect(() => api.parseAssistantTaskItem({ ...item(), episode: 2 }, taskId)).toThrow();
     expect(() => api.parseAssistantTaskEvent({ ...event(), type: 'invented' }, taskId)).toThrow();
+    const retrospective = { ...event(), type: 'retrospective', payload: { reason: 'item_closed', itemId: botId(84), episode: 1 }, attention: false };
+    expect(api.parseAssistantTaskEvent(retrospective, taskId)).toEqual(retrospective);
     expect(() => api.parseAssistantTaskManual({ ...manual(), rules: { limit: Number.MAX_SAFE_INTEGER + 1 } }, taskId)).toThrow();
     expect(api.parseAssistantTaskManual({ ...manual(), rules: { value: 'embedded\0text' } }, taskId).rules).toEqual({ value: 'embedded\0text' });
     expect(() => api.parseAssistantTaskAppendix({ ...appendix(), state: 'deleted' }, taskId)).toThrow();

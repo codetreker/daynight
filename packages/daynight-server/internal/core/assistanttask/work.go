@@ -82,6 +82,11 @@ func (m *Module) SaveItem(ctx context.Context, dao store.AssistantTaskDAO, actor
 			if err = dao.InsertItemClosure(ctx, closure); err != nil {
 				return result, err
 			}
+			// Item writes require the live holder of an active task, so the
+			// retrospective always targets that holder and never a paused task.
+			if _, err = m.systemEvent(ctx, dao, task, *task.HolderBotID, "retrospective", map[string]any{"reason": "item_closed", "itemId": result.ID, "episode": result.Episode}, now); err != nil {
+				return result, err
+			}
 		}
 	} else {
 		if input.ItemVersion != nil {

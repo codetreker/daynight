@@ -222,7 +222,7 @@ func (m *Module) ListEvents(ctx context.Context, dao store.AssistantTaskDAO, act
 	if err != nil {
 		return result, err
 	}
-	if err := m.expireInquiries(ctx, dao, actor, taskID, input.TargetBotID); err != nil {
+	if err := m.maintain(ctx, dao, actor, taskID, input.TargetBotID, true); err != nil {
 		return result, err
 	}
 	if taskID != "" {

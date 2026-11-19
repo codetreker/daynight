@@ -283,6 +283,9 @@ var assistantTaskOutcomesSQL string
 //go:embed schema/migrations/096_assistant_task_item_lifecycle.sql
 var assistantTaskItemLifecycleSQL string
 
+//go:embed schema/migrations/097_assistant_task_retrospectives.sql
+var assistantTaskRetrospectivesSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -383,6 +386,7 @@ var schemaMigrations = []migration{
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 94, sql: assistantTaskOutcomesSQL},
 	{version: 96, sql: assistantTaskItemLifecycleSQL},
+	{version: 97, sql: assistantTaskRetrospectivesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

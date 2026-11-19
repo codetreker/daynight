@@ -15,7 +15,7 @@ func eventAttention(kind string) (bool, error) {
 	switch kind {
 	case "report", "escalation", "result_unknown", "proposal_pending", "inquiry_timed_out", "takeover", "claim_lost":
 		return true, nil
-	case "update", "resolved", "direct_success", "proposal_decided", "appendix_added", "inquiry", "answer", "transfer", "intervention", "trigger":
+	case "update", "resolved", "direct_success", "proposal_decided", "appendix_added", "inquiry", "answer", "transfer", "intervention", "trigger", "retrospective":
 		return false, nil
 	default:
 		return false, invalid("Event type is invalid.")
