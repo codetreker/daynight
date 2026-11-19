@@ -213,3 +213,76 @@ func TestProjectSelectionWaitsForConcurrentConfiguration(t *testing.T) {
 		t.Fatalf("revision=%d configuration=%v", revision, value)
 	}
 }
+
+func TestProjectSelectionMissingAndUninitializedTargets(t *testing.T) {
+	tx := workerTransaction(t)
+	dao := worker.NewWriter(tx)
+	user, id := uuid.NewString(), uuid.NewString()
+	if _, err := dao.UpsertWorker(t.Context(), snapshot(user, id, time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []store.WorkerSelectionID{{UserID: user, WorkerID: id}, {UserID: user, WorkerID: uuid.NewString()}} {
+		got, err := dao.LockProjectSelection(t.Context(), target)
+		if err != nil || got != nil {
+			t.Fatalf("missing or uninitialized target: %+v %v", got, err)
+		}
+	}
+}
+
+func TestProjectSelectionErrorsPreserveStoredConfiguration(t *testing.T) {
+	db := workerStorage(t)
+	ctx := t.Context()
+	user, id, project := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.NewWriter(tx).UpsertWorker(ctx, snapshot(user, id, time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"projects":[{"projectId":"` + project + `"}]}`
+	if _, err := tx.Exec(ctx, `UPDATE workers SET configuration_revision=1,configuration_updated_at=statement_timestamp(),desired_configuration=$3 WHERE user_id=$1 AND worker_id=$2`, user, id, raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A failed JSONB write must not change the stored target or its version.
+	tx, err = db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = worker.NewWriter(tx).SaveProjectSelection(ctx, store.WorkerSelectionID{UserID: user, WorkerID: id}, 2, json.RawMessage(`{`))
+	if err == nil {
+		t.Fatal("invalid JSONB was accepted")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var revision int64
+	var same bool
+	if err := db.Pool.QueryRow(ctx, `SELECT configuration_revision,desired_configuration=$3::jsonb FROM workers WHERE user_id=$1 AND worker_id=$2`, user, id, raw).Scan(&revision, &same); err != nil || revision != 1 || !same {
+		t.Fatalf("failed save changed target: %d %v %v", revision, same, err)
+	}
+
+	for _, name := range []string{"candidates", "lock"} {
+		t.Run(name, func(t *testing.T) {
+			tx, err := db.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.Background())
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			if name == "candidates" {
+				_, err = worker.NewWriter(tx).ProjectSelectionCandidates(cancelled, project)
+			} else {
+				_, err = worker.NewWriter(tx).LockProjectSelection(cancelled, store.WorkerSelectionID{UserID: user, WorkerID: id})
+			}
+			if err == nil || !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled %s: %v", name, err)
+			}
+		})
+	}
+}
