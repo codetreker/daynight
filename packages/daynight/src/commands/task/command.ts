@@ -10,10 +10,12 @@ import { isTerminalTaskStatus } from "../../task/status.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { CliCancelledError } from "../../cli/cancellation.js";
 import { parseParent } from "./parent.js";
+import { botIdentity } from "../../api/bot-identity.js";
 
 export type TaskCommandDependencies = {
   runServerCommand: typeof runServerCommand;
   resolveProject: typeof resolveProject;
+  environment?: NodeJS.ProcessEnv;
 };
 
 const defaultDependencies: TaskCommandDependencies = {
@@ -59,16 +61,30 @@ const compileDependencies = async (
   return { dependsOn: [...ordinaryIds, ...externalIds].toSorted(), externalDependsOn: externalIds.toSorted() };
 };
 
+// An assistant environment identifies its Bot so the service can record it as
+// the operator of Task, Step and Thread writes. A malformed value is a broken
+// environment; reject it instead of sending or silently dropping the header.
+const withBotIdentity = (dependencies: TaskCommandDependencies, help: string): TaskCommandDependencies => {
+  const raw = (dependencies.environment ?? process.env).DAYNIGHT_BOT_ID;
+  if (raw === undefined) return dependencies;
+  let botId: string;
+  try { botId = botIdentity(raw); }
+  catch { throw new UsageError("DAYNIGHT_BOT_ID must be a nonzero canonical lowercase UUID. Run task commands from the assigned Bot environment or unset it.", help); }
+  const run = dependencies.runServerCommand;
+  return { ...dependencies, runServerCommand: (context, command, options = {}) => run(context, command, { ...options, botId }) };
+};
+
 export const runTaskCommand = async (
   args: readonly string[],
   context: CliContext,
-  dependencies: TaskCommandDependencies = defaultDependencies,
+  injected: TaskCommandDependencies = defaultDependencies,
 ): Promise<void> => {
   const command = parseCommand(taskDefinition, args, ["daynight", "task"], "daynight task --help");
   if (command.kind !== "run") {
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  const dependencies = withBotIdentity(injected, `${command.path.join(" ")} --help`);
   if (command.path[2] === "tag") {
     const { runTaskTagCommand } = await import("./tag.js");
     await runTaskTagCommand(command, context, dependencies);
