@@ -84,9 +84,9 @@ type BotSessionStop struct {
 }
 
 type TestSessionListItem struct {
-	Snapshot             sp.Snapshot
-	CreatedAt, UpdatedAt time.Time
-	LastSeen, DrainUntil *time.Time
+	Snapshot                               sp.Snapshot
+	CreatedAt, UpdatedAt                   time.Time
+	LastSeen, DrainUntil, ConnectionExpiry *time.Time
 }
 
 type SessionTask struct {

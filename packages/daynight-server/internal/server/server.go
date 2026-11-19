@@ -159,6 +159,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	assistanttaskhttp.RegisterRoutes(mux, app.AssistantTasks, auth, logger)
 	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
+	bothttp.RegisterRecoveryRoutes(mux, sessions, auth, relay, logger)
 	relay.RegisterRoutes(mux)
 	healthRoutes(mux, app.Ready, logger)
 	web.RegisterRoutes(mux, logger)

@@ -17,10 +17,11 @@ import (
 )
 
 func TestArchiveCleanupDatabaseFailuresPreserveOriginalOwnership(t *testing.T) {
-	for _, stage := range []string{"expire", "retire", "mark", "complete", "metadata"} {
-		t.Run(stage, func(t *testing.T) {
-			db := isolatedStore(t)
-			target, at := cleanupFixture(t, db)
+	db := isolatedStore(t)
+	for i, stage := range []string{"expire", "retire", "mark", "complete", "metadata"} {
+		if !t.Run(stage, func(t *testing.T) {
+			task, id := prepareArchiveSessionForProject(t, db, i+1)
+			target, at := prepareCleanupArchive(t, db, task, id, "archive/"+id)
 			ctx := t.Context()
 			finishing := stage == "complete" || stage == "metadata"
 			resource := uuid.NewString()
@@ -31,18 +32,31 @@ func TestArchiveCleanupDatabaseFailuresPreserveOriginalOwnership(t *testing.T) {
 				mustQueryExec(t, db, `INSERT INTO session_resource_references(session_id,resource_id,kind,reference_id) VALUES($1,$2,'archive','original')`, target.SessionID, resource)
 			}
 			mustQueryExec(t, db, `CREATE FUNCTION refuse_cleanup_fixture() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'cleanup storage refused'; END$$`)
-			trigger := "BEFORE UPDATE ON session_archive_retention FOR EACH ROW WHEN (NEW.expired_at IS NOT NULL AND OLD.expired_at IS NULL)"
+			event, table, tail := "BEFORE UPDATE", "session_archive_retention", "FOR EACH ROW WHEN (NEW.expired_at IS NOT NULL AND OLD.expired_at IS NULL)"
 			switch stage {
 			case "retire":
-				trigger = "BEFORE DELETE ON session_resource_references FOR EACH ROW"
+				event, table, tail = "BEFORE DELETE", "session_resource_references", "FOR EACH ROW"
 			case "mark":
-				trigger = "BEFORE UPDATE ON session_resources FOR EACH ROW WHEN (NEW.gc_pending)"
+				table, tail = "session_resources", "FOR EACH ROW WHEN (NEW.gc_pending)"
 			case "complete":
-				trigger = "BEFORE UPDATE ON session_archive_retention FOR EACH ROW WHEN (NEW.cleaned_at IS NOT NULL)"
+				tail = "FOR EACH ROW WHEN (NEW.cleaned_at IS NOT NULL)"
 			case "metadata":
-				trigger = "BEFORE DELETE ON session_archive_chunks FOR EACH STATEMENT"
+				event, table, tail = "BEFORE DELETE", "session_archive_chunks", "FOR EACH STATEMENT"
 			}
-			mustQueryExec(t, db, "CREATE TRIGGER refuse_cleanup_fixture "+trigger+" EXECUTE FUNCTION refuse_cleanup_fixture()")
+			mustQueryExec(t, db, "CREATE TRIGGER refuse_cleanup_fixture "+event+" ON "+table+" "+tail+" EXECUTE FUNCTION refuse_cleanup_fixture()")
+			t.Cleanup(func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if _, err := db.Pool.Exec(cleanup, `DROP TRIGGER refuse_cleanup_fixture ON `+table+`; DROP FUNCTION refuse_cleanup_fixture()`); err != nil {
+					t.Fatal(err)
+				}
+				var removed bool
+				err := db.Pool.QueryRow(cleanup, `SELECT to_regprocedure('refuse_cleanup_fixture()') IS NULL
+ AND NOT EXISTS(SELECT FROM pg_trigger WHERE tgrelid=$1::regclass AND tgname='refuse_cleanup_fixture')`, table).Scan(&removed)
+				if err != nil || !removed {
+					t.Fatalf("Archive Cleanup fault objects retained: removed=%t error=%v", removed, err)
+				}
+			})
 			// Caller-supplied lifecycle hints are not trusted scope facts.
 			claimed := target
 			claimed.ExpiredAt, claimed.CleanedAt = &at, &at
@@ -79,17 +93,24 @@ func TestArchiveCleanupDatabaseFailuresPreserveOriginalOwnership(t *testing.T) {
 			if expired != finishing || cleaned || pending || references != wantReferences {
 				t.Fatalf("failed cleanup changed durable ownership: expired=%v cleaned=%v pending=%v refs=%d", expired, cleaned, pending, references)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
 func cleanupFixture(t *testing.T, db *postgres.Store) (store.ArchiveCleanupTarget, time.Time) {
 	t.Helper()
 	task, id := prepareArchiveSession(t, db)
+	return prepareCleanupArchive(t, db, task, id, "archive/path")
+}
+
+func prepareCleanupArchive(t *testing.T, db *postgres.Store, task model.Task, id, archivePath string) (store.ArchiveCleanupTarget, time.Time) {
+	t.Helper()
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	mustQueryExec(t, db, `UPDATE tasks SET completed_at=$2 WHERE id=$1`, task.ID, at)
 	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
-		if err := d.SetSessionArchiveReady(t.Context(), id, archiveHashOf("archive"), 7, "archive/path"); err != nil {
+		if err := d.SetSessionArchiveReady(t.Context(), id, archiveHashOf("archive"), 7, archivePath); err != nil {
 			return err
 		}
 		return d.(store.SessionArchiveRetentionDAO).RecordSessionArchiveSuccess(t.Context(), id, at)

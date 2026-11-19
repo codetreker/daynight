@@ -613,72 +613,64 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 
 func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, scenario := range []struct {
+	database := isolatedStore(t)
+	for index, scenario := range []struct {
 		sourceKind    string
 		removeDepends bool
 	}{{"existing source", true}, {"new source", true}, {"new source", false}} {
-		t.Run(fmt.Sprintf("%s_remove=%t", scenario.sourceKind, scenario.removeDepends), func(t *testing.T) {
-			database := isolatedStore(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			project := queryProject(t, database, 1)
-			target := queryTask(t, database, project.ID, 11, model.TaskTodo)
+		if !t.Run(fmt.Sprintf("%s_remove=%t", scenario.sourceKind, scenario.removeDepends), func(t *testing.T) {
+			ctx := t.Context()
+			offset := index * 100
+			project := queryProject(t, database, offset+1)
+			target := queryTask(t, database, project.ID, offset+11, model.TaskTodo)
+			sourceNumber := offset + 12
 			var source model.Task
 			if scenario.sourceKind == "existing source" {
-				source = queryTask(t, database, project.ID, 12, model.TaskTodo, target.ID)
+				source = queryTask(t, database, project.ID, sourceNumber, model.TaskTodo, target.ID)
 			}
 			refused := errors.New("preceding source/deletion changed the visible facts")
-			results := make(chan error, 2)
-			if err := writeProjectForTest(database, ctx, project.ID, func(ProjectWriteScope) error {
-				go func() {
-					results <- writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						if !scenario.removeDepends {
-							incoming, err := scope.TaskDAO().DependentIDs(ctx, target.ID)
-							if err != nil {
-								return err
-							}
-							if len(incoming) > 0 {
-								return refused
-							}
-						}
-						_, err := scope.TaskDAO().DeleteTask(ctx, target.ID, scenario.removeDepends)
-						return err
-					})
-				}()
-				go func() {
-					results <- writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
-						if scenario.sourceKind == "existing source" {
-							current, err := scope.TaskDAO().Task(ctx, source.ID)
-							if err != nil {
-								return err
-							}
-							if current.Version != source.Version {
-								return refused
-							}
-							values := taskMutationValues(current)
-							values.Title = "Changed"
-							_, err = scope.TaskDAO().UpdateTask(ctx, current.ID, values)
-							return err
-						}
-						prerequisites, err := scope.TaskDAO().TasksByID(ctx, []string{target.ID})
+			results := taskMutationRace(t, database, project.ID,
+				func(ctx context.Context, scope ProjectWriteScope) error {
+					if !scenario.removeDepends {
+						incoming, err := scope.TaskDAO().DependentIDs(ctx, target.ID)
 						if err != nil {
 							return err
 						}
-						if len(prerequisites) == 0 {
+						if len(incoming) > 0 {
 							return refused
 						}
-						_, err = scope.TaskDAO().CreateTask(ctx, queryID(12), TaskWrite{Title: "New source", Status: model.TaskTodo, DependsOn: []string{target.ID}})
+					}
+					_, err := scope.TaskDAO().DeleteTask(ctx, target.ID, scenario.removeDepends)
+					return err
+				},
+				func(ctx context.Context, scope ProjectWriteScope) error {
+					if scenario.sourceKind == "existing source" {
+						current, err := scope.TaskDAO().Task(ctx, source.ID)
+						if err != nil {
+							return err
+						}
+						if current.Version != source.Version {
+							return refused
+						}
+						values := taskMutationValues(current)
+						values.Title = "Changed"
+						_, err = scope.TaskDAO().UpdateTask(ctx, current.ID, values)
 						return err
-					})
-				}()
-				taskMutationWaitForWriters(t, ctx, database, 2)
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
+					}
+					prerequisites, err := scope.TaskDAO().TasksByID(ctx, []string{target.ID})
+					if err != nil {
+						return err
+					}
+					if len(prerequisites) == 0 {
+						return refused
+					}
+					_, err = scope.TaskDAO().CreateTask(ctx, queryID(sourceNumber), TaskWrite{Title: "New source", Status: model.TaskTodo, DependsOn: []string{target.ID}})
+					return err
+				},
+			)
+			testutil.AssertPoolReusable(t, database.Pool)
 			success := 0
-			for range 2 {
-				err := receiveQueryResult(t, ctx, results)
+			for _, err := range results {
 				if err == nil {
 					success++
 				} else if !errors.Is(err, refused) {
@@ -709,12 +701,14 @@ func TestTaskDeletionSerializesWithIncomingSourceWrites(t *testing.T) {
 					t.Fatalf("serialized existing source lost CAS or removal version: %#v success=%d", current, success)
 				}
 			} else if success == 2 {
-				current := snapshotTask(t, database, project.ID, queryID(12))
+				current := snapshotTask(t, database, project.ID, queryID(sourceNumber))
 				if current.Version != 2 || len(current.DependsOn) != 0 || !current.Ready {
 					t.Fatalf("new source committed before deletion retained a dangling edge: %#v", current)
 				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 

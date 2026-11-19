@@ -23,6 +23,7 @@ type DeleteBot struct {
 
 type BotWriteDAO interface {
 	BotCreationReader
+	BotRecoveryDAO
 	Credential(context.Context, model.Principal) error
 	Worker(context.Context, string, string) error
 	LockCreation(context.Context, string) error
