@@ -294,6 +294,9 @@ var prReviewAssignmentSQL string
 //go:embed schema/migrations/099_assistant_task_inboxes.sql
 var assistantTaskInboxesSQL string
 
+//go:embed schema/migrations/100_bot_recovery.sql
+var botRecoverySQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -415,6 +418,7 @@ var schemaMigrations = []migration{
 	{version: 97, sql: webhookEventActorSQL},
 	{version: 98, sql: assistantTaskOutcomesSQL},
 	{version: 99, sql: assistantTaskInboxesSQL},
+	{version: 100, sql: botRecoverySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

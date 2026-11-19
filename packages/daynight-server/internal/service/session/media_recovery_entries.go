@@ -13,12 +13,31 @@ type archivePreflightOperation func(*sessioncore.Operation, context.Context, sto
 
 type grantOperation func(context.Context, model.Principal, string, string, string, sp.Grant) (sessioncore.GrantResult, error)
 type botGrantOperation func(context.Context, model.Principal, string, string, sessioncore.BotGrant) (sessioncore.GrantResult, error)
+type botRecoveryGrantOperation func(context.Context, model.Principal, string, string, sessioncore.BotRecoveryGrant) (sessioncore.BotRecoveryResult, error)
 
 func (s *Service) Grant(ctx context.Context, p model.Principal, project, taskID, id string, g sp.Grant) (sessioncore.GrantResult, error) {
 	return s.grantWithMediaRecovery(ctx, p, project, taskID, id, g, s.recoverMediaLeases, s.Execution.Grant)
 }
 func (s *Service) GrantBot(ctx context.Context, p model.Principal, workerID, id string, g sessioncore.BotGrant) (sessioncore.GrantResult, error) {
 	return s.botGrantWithMediaRecovery(ctx, p, workerID, id, g, s.recoverMediaLeases, s.Execution.GrantBot)
+}
+func (s *Service) TakeoverBot(ctx context.Context, p model.Principal, workerID, id string, g sessioncore.BotRecoveryGrant) (sessioncore.BotRecoveryResult, error) {
+	return s.botRecoveryGrantWithMediaRecovery(ctx, p, workerID, id, g, s.recoverMediaLeases, s.Recovery.TakeoverBot)
+}
+func (s *Service) GrantBotRecovery(ctx context.Context, p model.Principal, workerID, id string, g sessioncore.BotRecoveryGrant) (sessioncore.BotRecoveryResult, error) {
+	return s.botRecoveryGrantWithMediaRecovery(ctx, p, workerID, id, g, s.recoverMediaLeases, s.Recovery.GrantBotRecovery)
+}
+
+func (s *Service) botRecoveryGrantWithMediaRecovery(ctx context.Context, p model.Principal, workerID, id string, g sessioncore.BotRecoveryGrant, recover func(context.Context) error, run botRecoveryGrantOperation) (out sessioncore.BotRecoveryResult, err error) {
+	if g.Grant.PreviousGeneration == nil {
+		return run(ctx, p, workerID, id, g)
+	}
+	err = s.afterMediaRecovery(ctx, recover, func(ctx context.Context) error {
+		var e error
+		out, e = run(ctx, p, workerID, id, g)
+		return e
+	})
+	return out, err
 }
 
 func (s *Service) grantWithMediaRecovery(ctx context.Context, p model.Principal, project, taskID, id string, g sp.Grant, recover func(context.Context) error, run grantOperation) (out sessioncore.GrantResult, err error) {

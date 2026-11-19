@@ -545,6 +545,7 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 	synchronizing.created, synchronizing.connection = now.Add(-time.Hour+time.Second), "synchronizing"
 	insertSessionListFilterRow(t, database, connected)
 	insertSessionListFilterRow(t, database, synchronizing)
+	expectedLeases := map[string]*time.Time{connected.id: connected.expiry, synchronizing.id: synchronizing.expiry}
 	cases := []struct {
 		name   string
 		change func(*sessionListFilterRow)
@@ -564,11 +565,15 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 		r := row(queryID(310 + index))
 		test.change(&r)
 		insertSessionListFilterRow(t, database, r)
+		expectedLeases[r.id] = r.expiry
 	}
 	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
 		items, err := dao.ListTestSessions(t.Context(), actor.UserID, now, 1, true, floor, nil, "")
 		if err != nil || len(items) != 2 || items[0].Snapshot.SessionID != synchronizing.id || items[1].Snapshot.SessionID != connected.id {
 			t.Fatalf("online filters, heartbeat edge and lookahead: %+v %v", items, err)
+		}
+		if items[0].ConnectionExpiry == nil || !items[0].ConnectionExpiry.Equal(*synchronizing.expiry) || items[1].ConnectionExpiry == nil || !items[1].ConnectionExpiry.Equal(*connected.expiry) {
+			t.Fatal("online query lost actual connection leases")
 		}
 		cursor := items[0].UpdatedAt
 		items, err = dao.ListTestSessions(t.Context(), actor.UserID, now, 1, true, floor, &cursor, synchronizing.id)
@@ -586,6 +591,12 @@ func testSessionListOnlineFiltersBeforePagination(t *testing.T, db *postgres.Sto
 		items, err = dao.ListTestSessions(t.Context(), actor.UserID, now, 100, false, floor, nil, "")
 		if err != nil || len(items) != len(cases)+2 {
 			t.Fatalf("connection revocation removed readable history: count=%d error=%v", len(items), err)
+		}
+		for _, item := range items {
+			want := expectedLeases[item.Snapshot.SessionID]
+			if (item.ConnectionExpiry == nil) != (want == nil) || want != nil && !item.ConnectionExpiry.Equal(*want) {
+				t.Fatalf("connection lease mapping for %s: got=%v want=%v", item.Snapshot.SessionID, item.ConnectionExpiry, want)
+			}
 		}
 		return nil
 	})

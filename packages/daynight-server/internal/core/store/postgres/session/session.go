@@ -571,7 +571,7 @@ func (tx *DAO) SetSessionArchiveReady(ctx context.Context, id, digest string, si
 }
 
 func (tx *DAO) ListTestSessions(ctx context.Context, owner string, now time.Time, limit int, online bool, heartbeatFloor time.Time, after *time.Time, afterID string) ([]store.TestSessionListItem, error) {
-	query := `SELECT ts.snapshot,ts.created_at,recent.updated_at,ts.last_seen,ts.draining_until
+	query := `SELECT ts.snapshot,ts.created_at,recent.updated_at,ts.last_seen,ts.draining_until,ts.connection_expires_at
  FROM task_sessions ts
  CROSS JOIN LATERAL (SELECT GREATEST(ts.created_at,COALESCE(ts.last_seen,ts.created_at)) AS updated_at) recent
  WHERE ts.scope='test' AND ts.bot_id IS NULL AND ts.owner_user_id=$1
@@ -595,7 +595,7 @@ func (tx *DAO) ListTestSessions(ctx context.Context, owner string, now time.Time
 	for rows.Next() {
 		var item store.TestSessionListItem
 		var raw []byte
-		if err := rows.Scan(&raw, &item.CreatedAt, &item.UpdatedAt, &item.LastSeen, &item.DrainUntil); err != nil {
+		if err := rows.Scan(&raw, &item.CreatedAt, &item.UpdatedAt, &item.LastSeen, &item.DrainUntil, &item.ConnectionExpiry); err != nil {
 			return nil, pginternal.QueryError("read test sessions", err)
 		}
 		if err := json.Unmarshal(raw, &item.Snapshot); err != nil {

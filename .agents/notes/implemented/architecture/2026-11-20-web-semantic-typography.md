@@ -14,11 +14,13 @@ The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
 baseline. The shared shell, selection controls, task filters and rows, personal
-task groups, Goal summaries, task search, Worker pages and configuration, Worker
-Prompt editors, usage panels, project settings, teams, GitHub integration, pull
-requests, and Webhooks use semantic roles at all viewport widths. Selection text
-retains the existing touch conditions and a 16 CSS px minimum; count badges use
-the metadata role. The [UI standard](../../../../docs/ui-design.md#web-typography)
+task groups, Goal summaries, task search, Markdown reading surfaces, Worker pages
+and configuration, Worker Prompt editors, usage panels, project settings, teams,
+GitHub integration, pull requests, and Webhooks use semantic roles at all
+viewport widths. Selection text retains the existing touch conditions and a
+16 CSS px minimum; count badges use the metadata role. Markdown code and tables
+use the interface role; Bot first-paragraph emphasis retains its weight without
+a separate size. The [UI standard](../../../../docs/ui-design.md#web-typography)
 owns role uses and sizes. Touch fields use the shared `--text-touch-field` size
 to preserve a 16 CSS px minimum while responding to larger browser font preferences.
 
