@@ -275,6 +275,12 @@ DAO 使用独立 Read Committed 语句，通过 `project_ownership` 与 `project
 [唯一性决策](../../.agents/notes/implemented/architecture/2026-11-18-team-project-repository-uniqueness.md)
 记录锁、存储和查询方案的取舍。
 
+### 项目仓库改址
+
+`projects.repository_version` 区分真实地址变更及 A→B→A，原样保存不推进版本。预览在只读快照取得项目、有效授权和 GitHub 连接事实，在事务外使用现有安装凭据读取旧稳定 ID；候选路径读取还要求 owner Team 管理权限与有效 grant。分类优先使用可用的稳定 ID，相同地址文本不发起外部观察。写入重新观察并比较预览分类和目标 ID，再在 Read Committed 事务按 Project、归属、owner Team、授权、App、grant、连接顺序锁定，重新核对版本及证明依赖。Team 锁后的新语句排除本项目检查占用。
+
+真实换仓在同一事务关闭旧仓库覆盖区间、推进 GitHub 世代、清除项目侧连接及旧工作，并按一次快照的 Worker 列表以用户和 Worker ID 顺序锁行。锁后基于最新原始配置只移除目标项目，保留其他配置和观测，仅推进实际受影响的目标版本。外部观察和数据库提交的结果独立，未知提交不能重放。旧来源读取见 [PR 来源](github-pr-reading.md)，连接恢复由管理员手工执行。
+
 ## 状态与依赖不变量
 
 普通 Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。Goal 使用四态及独立的状态时间和负责人策略，详见 [Goal 需求](../spec/daynight-goals.md)。

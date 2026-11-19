@@ -17,6 +17,8 @@ type ProjectAppSelection struct {
 type ProjectAppConnect struct {
 	ProjectAppSelection
 	Version, InstallationID int64
+	// RepositoryVersion identifies the Project state used for remote proof.
+	RepositoryVersion int64
 }
 type ProjectAppDisconnect struct{ Version, OwnershipVersion int64 }
 type ProjectAppRef struct {
