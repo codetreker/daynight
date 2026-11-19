@@ -16,12 +16,14 @@ single reset strategy cannot safely replace all isolated fixtures.
 
 ## Decision
 
-Three sequential parent tests own separate real Stores for schema-stable Session,
-archive and image cases. Each selected child borrows the parent Store; a reset
+Sequential parent tests own separate real Stores for schema-stable Session,
+archive, image, and OAuth credential-lock matrices. Each selected child borrows the parent Store; a reset
 occurs only between original fixture boundaries, preserving stateful subtests and
 transaction order within a case. The parent checks connection and transaction
 quiescence and the complete preserved seed contents after every child, including
-the last. Failure stops reuse. No case enters parallel scheduling.
+the last. A failed case or OAuth profile stops reuse. OAuth lock cases cancel
+and join their waiters before releasing the transactions those waiters use.
+No case enters parallel scheduling.
 
 The [shared table reset](../../../../packages/daynight-server/internal/core/store/postgres/testdata/testutil/fixture_reset.go)
 probes the complete mutable table inventory for actual rows. It

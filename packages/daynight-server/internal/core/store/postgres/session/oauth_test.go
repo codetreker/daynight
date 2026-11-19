@@ -58,15 +58,17 @@ func testTaskOAuthCredentialRechecksGrantAndToken(t *testing.T, db *postgres.Sto
 }
 
 func TestTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T) {
+	suite := newSessionStoreSuite(t)
 	for _, profile := range []string{"mcp", "api"} {
-		t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t, profile) })
+		if !t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t, suite, profile) }) {
+			return
+		}
 	}
 }
 
-func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T, profile string) {
+func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, queuedRevoker := range []bool{false, true} {
-		t.Run(map[bool]string{false: "two actors", true: "queued revocation"}[queuedRevoker], func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, map[bool]string{false: "two actors", true: "queued revocation"}[queuedRevoker], func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
@@ -85,53 +87,50 @@ func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer submit.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, submit)
 			dispatch, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer dispatch.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, dispatch)
 			revoker, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer revoker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, revoker)
 			if err := pgsession.New(submit).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := pgsession.New(dispatch).LockSession(ctx, id); err != nil {
 				t.Fatal(err)
 			}
+			submitPID := submit.Conn().PgConn().PID()
 			waiting, finished := make(chan error, 1), make(chan struct{})
-			go func() { defer close(finished); _, err := pgsession.New(submit).LockSession(ctx, id); waiting <- err }()
+			var revocationFinished chan struct{}
+			go func() {
+				defer close(finished)
+				_, err := pgsession.New(submit).LockSession(ctx, id)
+				waiting <- err
+			}()
 			defer func() {
 				cancel()
-				_ = dispatch.Rollback(context.Background())
-				select {
-				case <-finished:
-				case <-time.After(time.Second):
-					t.Error("submit waiter did not drain")
+				rollbackSessionTestTransaction(t, dispatch)
+				<-finished
+				rollbackSessionTestTransaction(t, submit)
+				if revocationFinished != nil {
+					<-revocationFinished
 				}
 			}()
 			testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT bot_id::text,server_instance", dispatch.Conn().PgConn().PID())
-			revoked, revocationFinished := make(chan error, 1), make(chan struct{})
+			revoked := make(chan error, 1)
 			if queuedRevoker {
+				revocationFinished = make(chan struct{})
 				go func() {
 					defer close(revocationFinished)
 					_, err := pgoauth.NewDAO(revoker).RevokeFamily(ctx, grant.ID, time.Now())
 					revoked <- err
 				}()
-				defer func() {
-					cancel()
-					_ = submit.Rollback(context.Background())
-					_ = dispatch.Rollback(context.Background())
-					select {
-					case <-revocationFinished:
-					case <-time.After(time.Second):
-						t.Error("revoker did not drain")
-					}
-				}()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submit.Conn().PgConn().PID())
+				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", submitPID)
 			}
 			readCtx, readCancel := context.WithTimeout(ctx, time.Second)
 			defer readCancel()
@@ -141,14 +140,14 @@ func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 			if err := dispatch.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if err := <-waiting; err != nil {
+			if err := testutil.ReceiveQueryResult(t, ctx, waiting); err != nil {
 				t.Fatal(err)
 			}
 			if err := submit.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if queuedRevoker {
-				if err := <-revoked; err != nil {
+				if err := testutil.ReceiveQueryResult(t, ctx, revoked); err != nil {
 					t.Fatal(err)
 				}
 				if err := revoker.Commit(ctx); err != nil {
@@ -160,15 +159,19 @@ func testTaskOAuthCredentialLocksRemainCompatibleAcrossSessionOrder(t *testing.T
 }
 
 func TestTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T) {
+	suite := newSessionStoreSuite(t)
 	for _, profile := range []string{"mcp", "api"} {
-		t.Run(profile, func(t *testing.T) { testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t, profile) })
+		if !t.Run(profile, func(t *testing.T) {
+			testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t, suite, profile)
+		}) {
+			return
+		}
 	}
 }
 
-func testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T, profile string) {
+func testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, mode := range []string{"revocation", "expiry"} {
-		t.Run(mode, func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, mode, func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
@@ -181,32 +184,47 @@ func testTaskOAuthRevocationWaitsForAdmissionAndExpiryIsRecheckedAfterWait(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, blocker)
 			waiter, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer waiter.Rollback(context.Background())
-			done := make(chan error, 1)
+			defer rollbackSessionTestTransaction(t, waiter)
+			var wait func() error
+			var query string
 			if mode == "revocation" {
 				if err := pgsession.New(blocker).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now()); err != nil {
 					t.Fatal(err)
 				}
-				go func() { _, err := pgoauth.NewDAO(waiter).RevokeFamily(ctx, grant.ID, time.Now()); done <- err }()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text,user_id::text,client_id", blocker.Conn().PgConn().PID())
+				wait = func() error {
+					_, err := pgoauth.NewDAO(waiter).RevokeFamily(ctx, grant.ID, time.Now())
+					return err
+				}
+				query = "SELECT id::text,user_id::text,client_id"
 			} else {
 				if _, err := blocker.Exec(ctx, `UPDATE oauth_access_tokens SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, actor.CredentialID); err != nil {
 					t.Fatal(err)
 				}
-				go func() {
-					done <- pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now())
-				}()
-				testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT id::text FROM oauth_access_tokens", blocker.Conn().PgConn().PID())
+				wait = func() error {
+					return pgsession.New(waiter).LockOAuthCredential(ctx, actor, sessionOAuthBindings(grant), time.Now())
+				}
+				query = "SELECT id::text FROM oauth_access_tokens"
 			}
+			done, finished := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(finished)
+				done <- wait()
+			}()
+			defer func() {
+				cancel()
+				rollbackSessionTestTransaction(t, blocker)
+				<-finished
+			}()
+			testutil.WaitTransferTeamLock(t, ctx, db.Pool, query, blocker.Conn().PgConn().PID())
 			if err := blocker.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			result := <-done
+			result := testutil.ReceiveQueryResult(t, ctx, done)
 			if mode == "revocation" {
 				if result != nil {
 					t.Fatal(result)
@@ -282,15 +300,17 @@ func testTaskOAuthCredentialReadDoesNotWaitBehindQueuedRevocation(t *testing.T, 
 }
 
 func TestTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T) {
+	suite := newSessionStoreSuite(t)
 	for _, profile := range []string{"mcp", "api"} {
-		t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialRechecksGrantAfterWait(t, profile) })
+		if !t.Run(profile, func(t *testing.T) { testTaskOAuthCredentialRechecksGrantAfterWait(t, suite, profile) }) {
+			return
+		}
 	}
 }
 
-func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, profile string) {
+func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, suite *sessionStoreSuite, profile string) {
 	for _, change := range []string{"scope", "expiry", "revocation"} {
-		t.Run(change, func(t *testing.T) {
-			db := isolatedStore(t)
+		suite.run(t, change, func(t *testing.T, db *postgres.Store) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			_, owner, _ := testAuthRecords(t, db)
@@ -303,12 +323,12 @@ func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, profile string)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer blocker.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, blocker)
 			waiter, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer waiter.Rollback(context.Background())
+			defer rollbackSessionTestTransaction(t, waiter)
 			switch change {
 			case "scope":
 				_, err = blocker.Exec(ctx, `UPDATE oauth_grants SET scope='changed' WHERE id=$1`, grant.ID)
@@ -327,12 +347,8 @@ func testTaskOAuthCredentialRechecksGrantAfterWait(t *testing.T, profile string)
 			}()
 			defer func() {
 				cancel()
-				_ = blocker.Rollback(context.Background())
-				select {
-				case <-finished:
-				case <-time.After(time.Second):
-					t.Error("credential waiter did not drain")
-				}
+				rollbackSessionTestTransaction(t, blocker)
+				<-finished
 			}()
 			testutil.WaitTransferTeamLock(t, ctx, db.Pool, "SELECT g.id::text FROM oauth_grants", blocker.Conn().PgConn().PID())
 			if err := blocker.Commit(ctx); err != nil {
