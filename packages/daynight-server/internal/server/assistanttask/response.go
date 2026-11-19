@@ -61,6 +61,16 @@ func itemResponse(value model.AssistantTaskItem) api.AssistantTaskItem {
 func recordResponse(value model.AssistantTaskRecord) api.AssistantTaskRecord {
 	return api.AssistantTaskRecord{ID: value.ID, TaskID: value.TaskID, ItemID: value.ItemID, Author: value.Author, AuthorBotID: value.AuthorBotID, Kind: value.Kind, Text: value.Text, Outcome: value.Outcome, ActionRecordID: value.ActionRecordID, Refs: value.Refs, CreatedAt: value.CreatedAt.UTC()}
 }
+func metricsResponse(value model.AssistantTaskMetrics) api.AssistantTaskMetrics {
+	result := api.AssistantTaskMetrics{ObservedAt: value.ObservedAt.UTC(), WindowStart: value.WindowStart.UTC(), WindowEnd: value.WindowEnd.UTC(), ActionCount: value.ActionCount,
+		Outcomes:        api.AssistantTaskOutcomeMetrics{Effective: value.EffectiveCount, Ineffective: value.IneffectiveCount, Inconclusive: value.InconclusiveCount},
+		EscalationCount: value.EscalationCount, ResultUnknownCount: value.ResultUnknownCount, ClosureCount: value.ClosureCount, UntimedClosureCount: value.UntimedClosureCount, RecurringItemCount: value.RecurringItemCount}
+	if value.AverageResolution != nil {
+		average := value.AverageResolution.Milliseconds()
+		result.AverageResolutionMs = &average
+	}
+	return result
+}
 func eventResponse(value model.AssistantTaskEvent) api.AssistantTaskEvent {
 	return api.AssistantTaskEvent{ID: value.ID, TaskID: value.TaskID, TargetBotID: value.TargetBotID, Type: value.Type, Payload: value.Payload, State: value.State,
 		Attention: value.Attention, CreatedAt: value.CreatedAt.UTC(), DeliveredAt: utc(value.DeliveredAt), SeenAt: utc(value.SeenAt), AckOperationID: value.AckOperationID}

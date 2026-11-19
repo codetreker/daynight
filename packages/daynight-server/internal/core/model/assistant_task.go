@@ -120,6 +120,19 @@ type AssistantTaskInquiry struct {
 	AnsweredAt                                                                               *time.Time
 }
 
+// AssistantTaskMetrics aggregates one task's capability window from a single
+// database snapshot. WindowEnd equals ObservedAt. AverageResolution covers only
+// closures whose open time is known; nil means no such closure in the window.
+// UntimedClosureCount counts closures excluded from that average.
+type AssistantTaskMetrics struct {
+	ObservedAt, WindowStart, WindowEnd                    time.Time
+	ActionCount                                           int64
+	EffectiveCount, IneffectiveCount, InconclusiveCount   int64
+	EscalationCount, ResultUnknownCount                   int64
+	ClosureCount, UntimedClosureCount, RecurringItemCount int64
+	AverageResolution                                     *time.Duration
+}
+
 type AssistantTaskPage[T any] struct {
 	Items      []T
 	NextCursor *string
