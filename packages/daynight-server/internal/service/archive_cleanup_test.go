@@ -38,12 +38,14 @@ func TestArchiveCleanupApplicationLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	t.Cleanup(func() {
+		cleanup, finish := context.WithTimeout(context.Background(), 5*time.Second)
+		defer finish()
 		select {
 		case <-db.release:
 		default:
 			close(db.release)
 		}
-		if err := app.Close(ctx); err != nil {
+		if err := app.Close(cleanup); err != nil {
 			t.Error(err)
 		}
 	})
