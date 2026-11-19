@@ -60,6 +60,24 @@ type AssistantTaskAppendix struct {
 	AuthorBotID                                              *string
 	Version                                                  int64
 	CreatedAt, UpdatedAt                                     time.Time
+	// Scope narrows where the experience applies; an empty set leaves that
+	// dimension unrestricted.
+	Scope AssistantTaskAppendixScope
+	// SuccessCount, FailureCount and LastValidatedAt summarize the registered
+	// validations and change only with them, never with the appendix Version.
+	SuccessCount, FailureCount int64
+	LastValidatedAt            *time.Time
+}
+
+type AssistantTaskAppendixScope struct {
+	ProjectIDs, EventTypes, ItemCategories []string
+}
+
+// AssistantTaskAppendixValidation registers one outcome record as evidence for
+// one appendix; the pair is unique.
+type AssistantTaskAppendixValidation struct {
+	OwnerUserID, TaskID, AppendixID, OutcomeRecordID, Outcome, ValidatorBotID string
+	CreatedAt                                                                 time.Time
 }
 
 type AssistantTaskProposal struct {

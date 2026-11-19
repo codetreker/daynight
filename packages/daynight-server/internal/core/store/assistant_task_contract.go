@@ -72,6 +72,10 @@ type AssistantTaskDAO interface {
 	Appendices(context.Context, AssistantTaskQuery) ([]model.AssistantTaskAppendix, error)
 	InsertAppendix(context.Context, model.AssistantTaskAppendix) (bool, error)
 	SaveAppendix(context.Context, model.AssistantTaskAppendix, int64) (bool, error)
+	// InsertAppendixValidation reports false when the outcome record already
+	// validates the appendix, so concurrent duplicates cannot both count.
+	InsertAppendixValidation(context.Context, model.AssistantTaskAppendixValidation) (bool, error)
+	DeleteAppendixValidations(context.Context, string, string, string) error
 	Proposal(context.Context, string, string, string) (model.AssistantTaskProposal, error)
 	Proposals(context.Context, AssistantTaskQuery) ([]model.AssistantTaskProposal, error)
 	InsertProposal(context.Context, model.AssistantTaskProposal) (bool, error)

@@ -46,6 +46,13 @@ type AppendixInput struct {
 	Text          string
 	SourceRecords []string
 	State         string
+	// Scope is nil when the request does not declare one; an add then stores
+	// an unrestricted scope and an update keeps the current scope.
+	Scope *model.AssistantTaskAppendixScope
+}
+type AppendixValidationInput struct {
+	Mutation
+	OutcomeRecordID string
 }
 type ProposalInput struct {
 	Mutation
