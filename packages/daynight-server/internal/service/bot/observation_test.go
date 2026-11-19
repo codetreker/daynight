@@ -265,6 +265,17 @@ func TestObservationRefusalsAndReadFailuresDoNotPublish(t *testing.T) {
 }
 
 func TestObservationSampleErrorAndCancellationSuppressResults(t *testing.T) {
+	t.Run("sample unavailable", func(t *testing.T) {
+		f := newObservationTestFixture(t)
+		f.liveError = &model.Fault{Code: "service_unavailable", Message: "private detail"}
+		f.wantEvents = append(observationReadEvents(0), "live")
+		out, err := f.service.Observation(f.ctx, f.principal, f.id)
+		requireFault(t, err, "capability_error")
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Message != "Bot observations are unavailable." || !errors.Is(err, f.liveError) || !reflect.DeepEqual(out, botcore.Observation{}) {
+			t.Fatalf("sample unavailable result: %+v %v", out, err)
+		}
+	})
 	t.Run("sample error", func(t *testing.T) {
 		f := newObservationTestFixture(t)
 		f.liveError = errors.New("sample unavailable")
@@ -322,7 +333,7 @@ func TestObservationAdmissionDoesNotReadOrSample(t *testing.T) {
 				t.Fatalf("invalid admission: %+v %v", out, err)
 			}
 			if invalid == "observer" {
-				requireFault(t, err, "service_unavailable")
+				requireFault(t, err, "capability_error")
 			}
 		})
 	}

@@ -262,7 +262,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusGatewayTimeout
 		case "payload_too_large", "limit_exceeded":
 			status = http.StatusRequestEntityTooLarge
-		case "capability_error", "cleanup_unknown", "io_error", "offline", "controller_offline", "relay_instance_unavailable", "service_unavailable":
+		case "capability_error", "cleanup_unknown", "io_error", "offline", "controller_offline", "relay_instance_unavailable":
 			status = http.StatusServiceUnavailable
 		case "unsupported", "upgrade_required":
 			status = http.StatusNotImplemented

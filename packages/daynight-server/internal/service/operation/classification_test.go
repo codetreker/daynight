@@ -131,7 +131,7 @@ func TestKnownFaultSuppressesJoinedDatabaseFailure(t *testing.T) {
 }
 
 func TestNativeSelectionFaultsRequireReliableCompletion(t *testing.T) {
-	for _, code := range []string{"unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path", "service_unavailable"} {
+	for _, code := range []string{"unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path"} {
 		t.Run(code, func(t *testing.T) {
 			fault := &model.Fault{Code: code, Message: "Native selection refused"}
 			for _, safe := range []error{fault, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}} {

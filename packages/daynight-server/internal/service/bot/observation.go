@@ -59,7 +59,7 @@ func (s *Bots) Observation(ctx context.Context, principal model.Principal, id st
 		return botcore.Observation{}, err
 	}
 	if s.observer == nil {
-		return botcore.Observation{}, &model.Fault{Code: "service_unavailable", Message: "Bot observations are unavailable."}
+		return botcore.Observation{}, &model.Fault{Code: "capability_error", Message: "Bot observations are unavailable."}
 	}
 	before, err := s.readObservation(ctx, principal, id)
 	if err != nil {
@@ -67,6 +67,11 @@ func (s *Bots) Observation(ctx context.Context, principal model.Principal, id st
 	}
 	live, err := s.observer.ObserveBotSession(ctx, before.source.Session)
 	if err != nil {
+		// Session admission faults are internal. Publish only this capability's
+		// fixed message while retaining the original cause for diagnostics.
+		if fault, ok := err.(*model.Fault); ok && fault.Code == "service_unavailable" {
+			err = &model.Fault{Code: "capability_error", Message: "Bot observations are unavailable.", Cause: err}
+		}
 		return botcore.Observation{}, err
 	}
 	// Live state and PostgreSQL cannot share one snapshot. Reauthorize and read

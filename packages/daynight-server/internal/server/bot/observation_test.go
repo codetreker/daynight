@@ -116,8 +116,15 @@ func TestBotObservationHTTPRefusals(t *testing.T) {
 	for _, test := range []struct {
 		code   string
 		status int
-	}{{"not_found", 404}, {"forbidden", 403}, {"service_unavailable", 503}, {"resource_conflict", 409}} {
+	}{{"not_found", 404}, {"forbidden", 403}, {"capability_error", 503}, {"resource_conflict", 409}} {
 		assertProjectError(t, f.request(http.MethodGet, botObservationPath, "", &botDefinitionCall{method: "Observation", id: botDefinitionsID, err: &model.Fault{Code: test.code, Message: "Observation refused."}}), test.status, test.code)
+	}
+	response = f.request(http.MethodGet, botObservationPath, "", &botDefinitionCall{method: "Observation", id: botDefinitionsID, err: &model.Fault{
+		Code: "capability_error", Message: "Bot observations are unavailable.", Cause: &model.Fault{Code: "service_unavailable", Message: "private detail"},
+	}})
+	assertProjectError(t, response, http.StatusServiceUnavailable, "capability_error")
+	if strings.Contains(response.Body.String(), "private detail") || !strings.Contains(response.Body.String(), "Bot observations are unavailable.") {
+		t.Fatalf("unsafe unavailable response: %s", response.Body)
 	}
 }
 
@@ -163,7 +170,7 @@ func TestBotObservationHTTPUnavailableImplementation(t *testing.T) {
 	r.Header.Set("X-Request-ID", "project-test")
 	w := httptest.NewRecorder()
 	f.handler.ServeHTTP(w, r)
-	assertProjectError(t, w, http.StatusServiceUnavailable, "service_unavailable")
+	assertProjectError(t, w, http.StatusServiceUnavailable, "capability_error")
 	if f.authCalls != 1 {
 		t.Fatalf("credential calls: %d", f.authCalls)
 	}

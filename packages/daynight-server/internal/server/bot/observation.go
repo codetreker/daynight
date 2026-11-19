@@ -22,7 +22,7 @@ func (h *botsHandler) observation(w http.ResponseWriter, request *http.Request, 
 	var result botcore.Observation
 	if err == nil {
 		if h.observations == nil {
-			err = &model.Fault{Code: "service_unavailable", Message: "Bot observation is unavailable."}
+			err = &model.Fault{Code: "capability_error", Message: "Bot observation is unavailable."}
 		} else {
 			result, err = h.observations.Observation(request.Context(), principal, id)
 		}
