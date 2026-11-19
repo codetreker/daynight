@@ -628,3 +628,10 @@ func (s configurationReadScope) TagDAO() store.TagReader {
 }
 
 func (s configurationReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (*configurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*configurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}

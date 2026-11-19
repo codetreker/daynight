@@ -30,7 +30,7 @@ func eventValues(v model.AssistantTaskEvent) []any {
 	return []any{v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.SeenAt, v.AckOperationID, v.AckFingerprint}
 }
 func (d *DAO) InsertEvent(ctx context.Context, v model.AssistantTaskEvent) (bool, error) {
-	return d.changed(ctx, "insert assistant event", `INSERT INTO assistant_task_events(id,owner_user_id,task_id,target_bot_id,type,state,request_fingerprint,payload,attention,created_at,delivered_at,seen_at,ack_operation_id,ack_fingerprint,settled_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,CASE WHEN $6='pending' THEN NULL ELSE COALESCE($11,$10) END) ON CONFLICT DO NOTHING`, eventValues(v)...)
+	return d.changed(ctx, "insert assistant event", `INSERT INTO assistant_task_events(id,owner_user_id,task_id,target_bot_id,type,state,request_fingerprint,payload,attention,created_at,delivered_at,seen_at,ack_operation_id,ack_fingerprint,settled_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,CASE WHEN $6='pending' THEN NULL ELSE COALESCE($11::timestamptz,$10::timestamptz) END) ON CONFLICT DO NOTHING`, eventValues(v)...)
 }
 func (d *DAO) SaveEvent(ctx context.Context, v model.AssistantTaskEvent, state string) (bool, error) {
 	// SeenAt is advanced only by MarkAttentionSeen, which can commit independently
