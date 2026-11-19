@@ -131,7 +131,13 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
     })();
     return () => controller.abort();
   }, [reading, inboxUrl, matchKey, retired, serviceOrigin, scope, revision]);
-  const data = directory?.url === matchKey ? directory.value : null;
+  // A confirmed create is adopted immediately so a slow or failed directory refresh cannot reopen the create branch
+  // and produce a second independent endpoint.
+  const [created, setCreated] = useState<{ readonly url: string; readonly endpointId: string; readonly endpoint: WebhookActiveEndpoint | null } | null>(null);
+  const adopted = created?.url === matchKey ? created : null;
+  const loaded = directory?.url === matchKey ? directory.value : null;
+  const data = loaded === null || adopted?.endpoint == null || loaded.personal.some(item => item.id === adopted.endpointId) ? loaded : { ...loaded, personal: [...loaded.personal, adopted.endpoint] };
+  const awaitingCreated = adopted !== null && !(data?.personal.some(item => item.id === adopted.endpointId) ?? false);
 
   const controller = useMemo(() => selfSubscribe && !scope.isInvalidated ? new WebhookIntentController({ serviceOrigin, owner: { kind: 'personal', id: scope.userId }, admission: webhookAdmission(scope), signal: scope.signal }) : null, [selfSubscribe, serviceOrigin, scope]);
   useEffect(() => () => controller?.dispose(), [controller]);
@@ -144,14 +150,22 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
     try {
       const state = await controller.submit(input);
       if (state.phase === 'rejected') { setFailure(state.error); return false; }
-      if (state.phase === 'confirmed') { setRevision(value => value + 1); return true; }
+      if (state.phase === 'confirmed') {
+        if (input.kind === 'endpoint.create' && state.result !== null && matchKey !== null) {
+          const endpoint = state.result.endpoint?.lifecycle === 'active' ? state.result.endpoint : null;
+          setCreated({ url: matchKey, endpointId: state.result.operation.endpointId, endpoint });
+        }
+        setRevision(value => value + 1); return true;
+      }
       return false;
     } catch (error) { setFailure(error); return false; }
-  }, [controller]);
+  }, [controller, matchKey]);
   const reconcile = async () => { if ((await controller?.reconcile())?.phase === 'confirmed') setRevision(value => value + 1); };
 
   const primary = data?.personal.find(endpoint => endpoint.enabled) ?? data?.personal[0] ?? null;
   const [draft, setDraft] = useState<{ readonly projects: readonly string[]; readonly events: readonly WebhookEventType[] } | null>(null);
+  // The event choices show the union over projects. Saving applies only the events the user added or removed to each
+  // existing project, so per-project selections made on the Webhook page survive an unchanged save.
   const baseline = useMemo(() => ({ projects: primary?.subscriptions.map(item => item.projectId) ?? [], events: EVENT_TYPES.filter(event => primary?.subscriptions.some(item => item.eventTypes.includes(event))) }), [primary]);
   // An edit in progress survives background reloads; a confirmed save adopts the service's configuration again.
   const lastRevision = useRef(revision);
@@ -163,9 +177,14 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
     setDraft(old => { const current = old ?? baseline, list = current[key] as readonly string[]; return { ...current, [key]: checked ? [...list, value] : list.filter(item => item !== value) }; });
   };
   const save = async () => {
-    if (inboxUrl === null) return;
-    if (selection.projects.length === 0 || selection.events.length === 0) { setInvalid(true); return; }
-    const subscriptions = selection.projects.map(projectId => ({ id: primary?.subscriptions.find(item => item.projectId === projectId)?.id ?? null, projectId, eventTypes: EVENT_TYPES.filter(event => selection.events.includes(event)) }));
+    if (inboxUrl === null || primary === null && awaitingCreated) return;
+    const added = selection.events.filter(event => !baseline.events.includes(event)), removed = baseline.events.filter(event => !selection.events.includes(event));
+    const subscriptions = selection.projects.map(projectId => {
+      const existing = primary?.subscriptions.find(item => item.projectId === projectId);
+      const eventTypes = existing === undefined ? EVENT_TYPES.filter(event => selection.events.includes(event)) : [...existing.eventTypes.filter(event => !removed.includes(event)), ...added.filter(event => !existing.eventTypes.includes(event))];
+      return { id: existing?.id ?? null, projectId, eventTypes };
+    }).filter(item => item.eventTypes.length > 0);
+    if (selection.events.length === 0 || subscriptions.length === 0) { setInvalid(true); return; }
     await submit(primary === null
       ? { kind: 'endpoint.create', body: { name: `${m.endpointName} · ${task.name}`.slice(0, 100), enabled: true, destination: { kind: 'http', adapterVersion: '1', configuration: { url: inboxUrl } }, subscriptions } }
       : { kind: 'endpoint.patch', endpointId: primary.id, ifVersion: primary.configVersion, destinationRevision: primary.destinationRevision, body: { subscriptions, ...(primary.enabled ? {} : { enabled: true }) } });
@@ -194,7 +213,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
           {EVENT_TYPES.map(event => <label key={event}><input type="checkbox" checked={selection.events.includes(event)} onChange={changed => toggle('events', event, changed.target.checked)} /><span>{wm.eventDescriptions[event]}</span></label>)}
         </div></fieldset>
         {invalid ? <p className="notice error" role="alert">{m.invalid}</p> : null}
-        <div className="assistant-task-actions"><button className="button primary" type="submit" disabled={busy || primary !== null && !primary.capabilities.manage}>{primary === null ? m.create : m.save}</button></div>
+        <div className="assistant-task-actions"><button className="button primary" type="submit" disabled={busy || (primary === null ? awaitingCreated : !primary.capabilities.manage)}>{primary === null ? m.create : m.save}</button></div>
       </form> : null}
       <h4>{m.linked}</h4>
       {data.personal.length + data.team.length === 0 ? <p className="assistant-task-meta">{m.none}</p> : <ul className="assistant-task-subscription-endpoints">

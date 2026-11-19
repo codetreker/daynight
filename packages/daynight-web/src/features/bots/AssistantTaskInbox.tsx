@@ -52,7 +52,12 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged, service
   const read = useBotRead(`assistant-task-inbox:${taskId}`, enabled, load);
   const reload = async () => { read.refresh(); await onChanged(); };
   const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation);
-  const [token, setToken] = useState<string | null>(null), [dialog, setDialog] = useState<'rotate' | 'disable' | null>(null);
+  // The issued token is kept with the identity scope that received it, independent of tab visibility: a write that
+  // completes after the user switched tabs reports failure to its caller but still issued the only copy of the token.
+  const [issuedToken, setIssuedToken] = useState<{ readonly scope: TaskCacheScope; readonly value: string } | null>(null);
+  const token = issuedToken !== null && issuedToken.scope === scope && !scope.isInvalidated ? issuedToken.value : null;
+  const setToken = (value: string | null) => setIssuedToken(value === null ? null : { scope, value });
+  const [dialog, setDialog] = useState<'rotate' | 'disable' | null>(null);
   // A disabled inbox no longer reports its id. The id disabled by this mount narrows the cleanup list to that inbox;
   // otherwise the subscription panel lists every personal endpoint aimed at an inbox of this site.
   const [retiredInboxId, setRetiredInboxId] = useState<string | null>(null);
@@ -62,7 +67,7 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged, service
   const issue = async (operation: (signal: AbortSignal, admission: ReturnType<typeof assistantTaskAdmission>) => Promise<{ readonly token: string | null }>) => {
     let issued: string | null = null;
     const ok = await mutation.run(async signal => { issued = (await operation(signal, admission)).token; });
-    if (ok) setToken(issued);
+    if (issued !== null || ok) setToken(issued);
     return ok;
   };
   return <section className="assistant-task-panel assistant-task-inbox" aria-labelledby={heading}>

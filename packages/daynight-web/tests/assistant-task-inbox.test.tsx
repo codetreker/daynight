@@ -71,6 +71,24 @@ it('enables the inbox, shows the token once and the token-free URL with copy act
   expect(screen.queryByText(token)).toBeNull();
 });
 
+it('keeps a token issued while the inbox tab was hidden for the same mounted panel', async () => {
+  const s = server(off), scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const view = (enabled: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskInbox task={task} enabled={enabled} disabled={false} onChanged={vi.fn(async () => undefined)} /></TaskCacheProvider>;
+  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementationOnce(async (url, options) => { await gate; return original(url, options); });
+  fireEvent.click(enable);
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, options]) => options?.method === 'POST')).toBe(true));
+  rerender(view(false));
+  release();
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  rerender(view(true));
+  expect(within(await screen.findByRole('group', { name: 'New token' })).getByText(token)).toBeVisible();
+});
+
 it('rotates with overlap by default and only immediately while an overlap token is still valid', async () => {
   const s = server(on); mount();
   fireEvent.click(await screen.findByRole('button', { name: 'Rotate token' }));

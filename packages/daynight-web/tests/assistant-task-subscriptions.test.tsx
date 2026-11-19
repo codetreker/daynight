@@ -126,6 +126,46 @@ it('updates the linked personal endpoint and warns about Team endpoints targetin
   expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
 });
 
+it('preserves per-project event selections and applies only the changed events', async () => {
+  const linked = endpoint(personalId, inboxUrl, [
+    { id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' },
+    { id: botId(84), projectId: beta, projectName: 'Beta', eventTypes: ['task.deleted'], eligibility: 'eligible' },
+  ]);
+  const s = server({ personal: [linked] }); mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]!.body.subscriptions).toEqual([
+    { id: subscriptionId, projectId: alpha, eventTypes: ['task.created'] },
+    { id: botId(84), projectId: beta, eventTypes: ['task.deleted'] },
+  ]);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save subscription' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task created' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(2));
+  expect(s.writes[1]!.body.subscriptions).toEqual([
+    { id: subscriptionId, projectId: alpha, eventTypes: ['task.paused'] },
+    { id: botId(84), projectId: beta, eventTypes: ['task.deleted', 'task.paused'] },
+  ]);
+});
+
+it('adopts a created endpoint while the directory refresh fails', async () => {
+  const s = server(); mount();
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  const original = s.fetch.getMockImplementation()!;
+  s.fetch.mockImplementation(async (url, options) => (options?.method ?? 'GET') === 'GET' && String(url).startsWith('/api/v1/me/webhooks') ? botError(500, 'internal') : original(url, options));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task created' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  expect(await screen.findByText('Could not load Webhook subscriptions.')).toBeVisible();
+  expect(s.writes).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Create subscription' })).toBeNull();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(2));
+  expect(s.writes[1]).toMatchObject({ method: 'PATCH', path: `/api/v1/me/webhooks/${botId(80)}`, body: { ifVersion: '1' } });
+});
+
 it('prompts to pause or delete endpoints that still target a disabled inbox', async () => {
   const s = server({ personal: [endpoint(personalId, inboxUrl, []), endpoint(otherId, inboxUrl, [], false)] });
   mount({ inboxEnabled: false });
