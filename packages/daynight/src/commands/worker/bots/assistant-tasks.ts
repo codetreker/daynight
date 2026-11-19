@@ -9,6 +9,7 @@ import { AssistantTaskSessionError } from "./assistant-task-session.js";
 import { withAssistantRuntimeState } from "./assistant-task-state.js";
 import { assistantTaskPages } from "./assistant-task-pages.js";
 import { INBOUND_EVENT_TYPE } from "./assistant-task-inbound.js";
+import { relatedExperience } from "./assistant-task-experience.js";
 import { createNotificationBatch } from "./assistant-task-notification.js";
 import { assistantTriggerId, assistantTriggerOccurrence } from "./assistant-task-trigger.js";
 import type { BotOwner, BotRecord } from "./types.js";
@@ -192,7 +193,7 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       }
       if (!delivery) {
         if (!await healthy(bot, signal) || !await options.idle(bot, signal)) return;
-        const notification = createNotificationBatch(), batch = notification.events;
+        const notification = createNotificationBatch(), batch = notification.events, admitted: AssistantTaskEvent[] = [];
         // Non-inbound events are selected first, so an inbound backlog never
         // blocks other assistant task notifications. Inbound events are then
         // paged separately until the inbound budget or the batch limit; the
@@ -200,22 +201,28 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
         // any per-event skip request.
         let full = false;
         for await (const event of pendingEvents(bot, signal, { excludeType: INBOUND_EVENT_TYPE })) {
-          if (notification.add(event) === "added") continue;
+          if (notification.add(event) === "added") { admitted.push(event); continue; }
           if (!batch.length) throw new Error("Assistant notification exceeds its bounded Session input size.");
           full = true; break;
         }
         if (!full) {
           for await (const event of pendingEvents(bot, signal, { type: INBOUND_EVENT_TYPE })) {
             const admission = notification.add(event);
-            if (admission === "added") continue;
+            if (admission === "added") { admitted.push(event); continue; }
             if (admission === "full" && !batch.length) throw new Error("Assistant notification exceeds its bounded Session input size.");
             break;
           }
         }
         if (!batch.length) return;
+        // Experience reads finish before the journal is saved, so a replayed
+        // Session command carries the same summaries.
+        const experience = await relatedExperience(admitted, {
+          itemCategory: (taskId, itemId) => options.withApi(bot.botId, signal, async api => (await api.getItem(taskId, itemId)).category),
+          related: (taskId, query) => options.withApi(bot.botId, signal, async api => (await api.relatedAppendix(taskId, query)).items),
+        }, notification.remaining(), signal);
         const intent = bot.intent!;
         const command: SessionCommand = { protocol: SESSION_PROTOCOL, sessionId: intent.sessionId!, testExecutionId: intent.executionId, executionGeneration: intent.executionGeneration,
-          requestId: randomUUID(), operationId: randomUUID(), kind: "send_message", payload: { content: [{ type: "text", text: notification.text() }], expectedTurnId: null, origin: "daynight" } };
+          requestId: randomUUID(), operationId: randomUUID(), kind: "send_message", payload: { content: [{ type: "text", text: notification.text(experience) }], expectedTurnId: null, origin: "daynight" } };
         delivery = { command, events: batch, confirmed: false };
         await save(delivery);
         try {

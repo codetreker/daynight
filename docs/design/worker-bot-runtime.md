@@ -102,6 +102,8 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 `inbound` 事件与其他事件在同一批次中选择与确认，按[助手任务收件箱设计](assistant-task-inbox.md#worker-通知渲染)渲染：负载严格解码，无法解读时只给出读取原事件的命令；同一项目 Task 的 `daynight` 事件合并为一段，`external` 正文只投递围栏内的 4 KiB 预览；入站正文每批最多 32 KiB，超出的 `inbound` 事件按原顺序留在 pending，不阻塞同批其他事件。每批末尾按助手任务给出读取当前手册和附录的命令。
 
+批次选定后、持久化命令前，Worker 按[经验沉淀设计](assistant-task-learning.md#附录验证与相关经验)查询相关经验：按事件顺序为每个不同的任务、事件类型、项目和事项类别组合调用一次相关经验查询，每批至多 10 个组合。项目取自 `daynight` 入站负载或事件负载中的规范 `projectId`，事项类别通过负载中的 `itemId` 读取事项得到。每个组合至多列出 5 项，每项为折叠空白后不超过 1 KiB 的 UTF-8 安全预览，并附带读取完整附录的 `daynight assistant-task appendix related` 命令。事项或经验读取失败时该组合不附摘要，批次照常投递；只有取消会中止投递。放不进批次剩余字节预算的组合整段省略。摘要写入持久化命令，因此重放和查询原操作不会再次查询。
+
 每批先持久化完整 Session 命令、固定 operation ID 和事件集合，再发送一次。accepted/offered/dispatching、unknown、运输中断及重启后都只查询原操作。只有 provider_accepted/confirmed 才确认事件；确认时只扫描目标 Bot 的 pending 事件，逐项确认该批引用，找齐即停止，不要求重新读取 delivered 历史；每次 ACK 使用独立有界操作。部分 ACK 成功或响应丢失不会再次发送 Session 输入。仅当没有 providerResult，且回执为服务端派发前的 rejected/permission_or_state_changed，或没有 error 的 expired 时，才清除该批意图并在下一空闲轮重新选择事件；该固定拒绝证明仅由服务端派发前的授权检查持久生成，普通 Controller 错误仍不落库；历史拒绝缺少证明时不补造证明。原生错误、failed 及其他未证明没有派发的终态保留原操作供核对。历史 generation 的结果仍沿原 Session 和操作身份读取。
 
 通知与触发 journal 位于 Bot 私有状态内，按 origin 和 owner 隔离。manifest 以原子替换指向带 SHA-256 校验的分块内容；两组交替写入的分块各自最多 4 MiB，只有新组完整落盘后才切换。中途失败保留原完整意图，每个 journal 的内容存储上限为两组，不随每轮替换无限增长。Bot 删除时连同其他私有状态精确清理。

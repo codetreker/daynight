@@ -63,7 +63,9 @@ const fixture = async (botNumber = 3) => {
   });
   const ackEvent = vi.fn<AssistantTaskClient["ackEvent"]>(async (_taskId, eventId, input) => { const event = events.find(event => event.id === eventId)!; return { ...event, state: "delivered", ackOperationId: input.operationId }; });
   const addEvent = vi.fn<AssistantTaskClient["addEvent"]>(async (taskId, input) => ({ id: input.id, taskId, targetBotId: input.targetBotId, type: input.type, payload: input.payload ?? null, state: "pending", attention: false, createdAt: new Date(clock.now()).toISOString(), deliveredAt: null, seenAt: null, ackOperationId: null }));
-  const api = { listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent } as unknown as AssistantTaskClient;
+  const relatedAppendix = vi.fn<AssistantTaskClient["relatedAppendix"]>(async () => ({ items: [], observedAt: new Date(clock.now()).toISOString() }));
+  const getItem = vi.fn<AssistantTaskClient["getItem"]>(async () => { throw new Error("Unexpected item read"); });
+  const api = { listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent, relatedAppendix, getItem } as unknown as AssistantTaskClient;
   const sessionResult = (command: SessionCommand): SessionOperation => ({ protocol: SESSION_PROTOCOL, sessionId: command.sessionId, testExecutionId: command.testExecutionId!, executionGeneration: command.executionGeneration, operationId: command.operationId, kind: "send_message", state: "confirmed", providerResult: "started", error: null });
   const send = vi.fn(async (_bot: BotRecord, command: SessionCommand, _signal: AbortSignal) => sessionResult(command));
   const readOperation = vi.fn(async (_bot: BotRecord, command: SessionCommand, _signal: AbortSignal) => sessionResult(command));
@@ -71,7 +73,7 @@ const fixture = async (botNumber = 3) => {
   const options: AssistantTaskRuntimeOptions = { owner, bots: () => [bot], stateDirectory: async () => stateDirectory, healthy, idle, withApi: async (_botId, _signal, action) => action(api), sessions: { send, readOperation }, onError, clock };
   const create = () => { const runtime = createAssistantTaskRuntime(options); runtimes.push(runtime); return runtime; };
   const event = (n: number): AssistantTaskEvent => ({ id: id(n), taskId: task.id, targetBotId: botId, type: "trigger", payload: { fact: `Event ${n}` }, state: "pending", attention: false, createdAt: new Date(start).toISOString(), deliveredAt: null, seenAt: null, ackOperationId: null });
-  return { owner, bot, scope, clock, create, options, event, claimResult, api, listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent, send, readOperation, healthy, idle, onError, get task() { return task; }, set task(value) { task = value; }, get events() { return events; }, set events(value) { events = value; } };
+  return { owner, bot, scope, clock, create, options, event, claimResult, api, relatedAppendix, getItem, listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent, send, readOperation, healthy, idle, onError, get task() { return task; }, set task(value) { task = value; }, get events() { return events; }, set events(value) { events = value; } };
 };
 const application = (runtime: AssistantTaskRuntime) => {
   const started = deferred<AssistantApplicationContext>(), stopped = deferred();
@@ -511,6 +513,34 @@ describe("assistant-task managed loops", () => {
     expect(text).toContain("否则没有过期租约空档");
     expect(text).toContain("不能证明助手实际停止工作的时间");
     expect(text).toContain("不用当前认领时间替代历史事件时间");
+  });
+
+  it("attaches related experience for the delivered events and replays the same command without querying again", async () => {
+    const f = await fixture(), item = id(60);
+    f.events = [{ ...f.event(51), type: "retrospective", payload: { reason: "item_closed", itemId: item, episode: "1" } }, f.event(52)];
+    f.getItem.mockResolvedValue({ id: item, taskId: f.task.id, key: "k", episode: "1", state: "closed", category: "billing", followerBotId: null, appState: null, version: "2", createdAt: new Date(start).toISOString(), updatedAt: new Date(start).toISOString() });
+    f.relatedAppendix.mockImplementation(async (_taskId, query) => ({ items: query?.eventType === "retrospective" ? [{ id: id(70), taskId: f.task.id, text: `Retry ${"汉".repeat(800)}`, sourceRecords: [], authorBotId: null, state: "active", version: "1", createdAt: new Date(start).toISOString(), updatedAt: new Date(start).toISOString() }] : [], observedAt: new Date(start).toISOString() }));
+    f.send.mockRejectedValueOnce(new AssistantTaskSessionError(true, "request_failed"));
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.relatedAppendix.mock.calls).toEqual([[f.task.id, { eventType: "retrospective", itemCategory: "billing" }], [f.task.id, { eventType: "trigger" }]]);
+    const original = f.send.mock.calls[0]![1];
+    if (original.kind !== "send_message") throw new Error("Wrong notification kind");
+    const text = original.payload.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+    const line = text.split("\n").find(value => value.startsWith(`- 附录 ${id(70)}：`))!;
+    expect(Buffer.byteLength(line.slice(line.indexOf("：") + 1))).toBeLessThanOrEqual(1024);
+    expect(text).toContain(`完整附录：daynight assistant-task appendix related ${f.task.id} --event-type retrospective --category billing`);
+    expect(text.indexOf("相关经验")).toBeLessThan(text.indexOf("处理以上事件前"));
+    await f.create().tick("delivery", signal());
+    expect(f.relatedAppendix).toHaveBeenCalledTimes(2); expect(f.readOperation).toHaveBeenCalledWith(f.bot, original, expect.any(AbortSignal));
+    expect(f.ackEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("delivers and acknowledges the batch without experience when the related query fails", async () => {
+    const f = await fixture(), runtime = f.create(); f.events = [f.event(51)];
+    f.relatedAppendix.mockRejectedValue(new AssistantTaskApiError(false, "server_error", 503));
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent).toHaveBeenCalledOnce(); expect(f.onError).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain("相关经验");
   });
 
   it("only queries a durable unknown Session submission after runtime reconstruction", async () => {
