@@ -43,6 +43,7 @@ export type NativeImageRuntime = {
   acquireIndexLease(owner?: ProcessProof): { release(): void };
 };
 export type ProviderOptions = {
+  copilotBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
   claudeBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
   codexBotRecovery?: { directory: string; identity: { serverOrigin: string; ownerUserId: string; botId: string; sessionId: string } };
   usageRuntime?: {

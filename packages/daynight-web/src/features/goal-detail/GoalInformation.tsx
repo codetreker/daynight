@@ -6,10 +6,11 @@ import { TaskCopyButton } from '../task-detail/TaskCopyButton';
 import { completionProgress } from '../task-graph/completion-progress';
 import type { TaskScope } from '../task-graph/scope';
 
-export const GoalInformation = ({ detail, tags, tagsEditor, scope, graphError, onRefreshGraph }: {
+export const GoalInformation = ({ detail, tags, tagsEditor, dependencies, scope, graphError, onRefreshGraph }: {
   readonly detail: Pick<TaskDetail, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'tags'>;
   readonly tags?: readonly TaskTag[];
   readonly tagsEditor?: ReactNode;
+  readonly dependencies?: ReactNode;
   readonly scope: TaskScope | null;
   readonly graphError?: unknown;
   readonly onRefreshGraph: () => void;
@@ -18,6 +19,7 @@ export const GoalInformation = ({ detail, tags, tagsEditor, scope, graphError, o
   const zh = locale === 'zh-CN';
   const progress = scope === null ? null : completionProgress(scope.progress);
   return <aside className="goal-information" aria-label={zh ? 'Goal 信息' : 'Goal information'}>
+    {dependencies}
     <section className="goal-information-section">
       <h3>{zh ? '常规信息' : 'General information'}</h3>
       <dl className="goal-information-general">

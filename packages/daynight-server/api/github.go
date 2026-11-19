@@ -55,6 +55,7 @@ type PullRequestDirectoryAuthor struct {
 	LoginAmbiguous bool   `json:"loginAmbiguous"`
 }
 type PullRequestAuthorPage struct {
+	Repository *PullRequestRepository       `json:"repository,omitempty"`
 	ProjectID  string                       `json:"projectId"`
 	Revision   string                       `json:"revision"`
 	Items      []PullRequestDirectoryAuthor `json:"items"`
@@ -63,16 +64,17 @@ type PullRequestAuthorPage struct {
 
 // PullRequestStatistics describes retained project PRs in a caller-supplied date window.
 type PullRequestStatistics struct {
-	ProjectID    string             `json:"projectId"`
-	EndDate      string             `json:"endDate"`
-	Revision     string             `json:"revision"`
-	ProjectTotal string             `json:"projectTotal"`
-	Availability string             `json:"availability"`
-	HasAuthors   bool               `json:"hasAuthors"`
-	Daily        [30]string         `json:"daily"`
-	AuthorID     *string            `json:"authorId"`
-	Author       *PullRequestAuthor `json:"author"`
-	AuthorDaily  *[30]string        `json:"authorDaily"`
+	Repository   *PullRequestRepository `json:"repository,omitempty"`
+	ProjectID    string                 `json:"projectId"`
+	EndDate      string                 `json:"endDate"`
+	Revision     string                 `json:"revision"`
+	ProjectTotal string                 `json:"projectTotal"`
+	Availability string                 `json:"availability"`
+	HasAuthors   bool                   `json:"hasAuthors"`
+	Daily        [30]string             `json:"daily"`
+	AuthorID     *string                `json:"authorId"`
+	Author       *PullRequestAuthor     `json:"author"`
+	AuthorDaily  *[30]string            `json:"authorDaily"`
 }
 type PullRequestBase struct {
 	RepositoryID       string `json:"repositoryId"`
@@ -113,15 +115,27 @@ type PullRequestCounts struct {
 	All    string `json:"all"`
 }
 type PullRequestPage struct {
-	AuthorID       *string              `json:"authorId,omitempty"`
-	ProjectTotal   *string              `json:"projectTotal,omitempty"`
-	ProjectID      string               `json:"projectId"`
-	Revision       string               `json:"revision"`
-	Items          []PullRequestSummary `json:"items"`
-	Total          string               `json:"total"`
-	Counts         PullRequestCounts    `json:"counts"`
-	NextCursor     *string              `json:"nextCursor"`
-	PreviousCursor *string              `json:"previousCursor"`
+	Repository     *PullRequestRepository `json:"repository,omitempty"`
+	AuthorID       *string                `json:"authorId,omitempty"`
+	ProjectTotal   *string                `json:"projectTotal,omitempty"`
+	ProjectID      string                 `json:"projectId"`
+	Revision       string                 `json:"revision"`
+	Items          []PullRequestSummary   `json:"items"`
+	Total          string                 `json:"total"`
+	Counts         PullRequestCounts      `json:"counts"`
+	NextCursor     *string                `json:"nextCursor"`
+	PreviousCursor *string                `json:"previousCursor"`
+}
+
+type PullRequestRepository struct {
+	RepositoryID string `json:"repositoryId"`
+	FullName     string `json:"fullName"`
+}
+
+type PullRequestRepositoryPage struct {
+	CurrentRepositoryID *string                 `json:"currentRepositoryId"`
+	Items               []PullRequestRepository `json:"items"`
+	NextCursor          *string                 `json:"nextCursor"`
 }
 
 // GitHubInstallationCandidate is a verified installation and repository.
