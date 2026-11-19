@@ -21,16 +21,19 @@ const json = async <T>(args: string[]): Promise<T> => JSON.parse((await cli([...
 export const verifyAssistantInbox = async (input: { workerId: string; root: string; events(): Promise<PeerEvent[]> }): Promise<void> => {
   const cwd = path.join(input.root, "assistant");
   await mkdir(cwd);
-  const botId = randomUUID();
-  await cli(["bot", "create", "--name", "Inbox assistant", "--worker", input.workerId, "--agent", "codex", "--cwd", cwd, "--request-id", botId, "--json"]);
-  await expect.poll(async () => (await json<Bot>(["bot", "show", botId])).startupResult.state, { timeout: 120_000, intervals: [1_000] }).toBe("ready");
-
+  // Enable the inbox before any Bot exists: an auto-takeover claim saves the
+  // task, so a ready Bot could advance its version between creation and the
+  // version-guarded enablement.
   const created = await json<AssistantTask>(["assistant-task", "create", "--name", "Inbox product flow", "--takeover", "auto",
     "--body", "Read inbound notifications and record what they report."]);
   const enabled = await json<InboxEnable>(["assistant-task", "inbox", "enable", created.id, "--if-version", created.version]);
   expect(enabled.inbox.enabled).toBe(true);
   const token = enabled.token;
   if (token === null) throw new Error("Inbox enablement did not return its token.");
+
+  const botId = randomUUID();
+  await cli(["bot", "create", "--name", "Inbox assistant", "--worker", input.workerId, "--agent", "codex", "--cwd", cwd, "--request-id", botId, "--json"]);
+  await expect.poll(async () => (await json<Bot>(["bot", "show", botId])).startupResult.state, { timeout: 120_000, intervals: [1_000] }).toBe("ready");
   await expect.poll(async () => {
     const task = await json<AssistantTask>(["assistant-task", "show", created.id]);
     return task.holderBotId === botId && task.claimState === "active";
