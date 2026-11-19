@@ -8,13 +8,19 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 )
 
 type Capturer interface {
-	CaptureBatch(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error
+	CaptureBatch(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error
 }
+
+// sourceActor records the authenticated credential owner of a Task, Step or
+// Thread write. Bot attribution requires the source transaction to verify the
+// Bot first and then supply wm.BotActor instead.
+func sourceActor(principal model.Principal) wm.Actor { return wm.UserActor(principal.UserID) }
 
 func capturer(optional []Capturer) Capturer {
 	if len(optional) != 0 && optional[0] != nil {
@@ -66,7 +72,7 @@ func taskFacts(mutationCreate bool, previous, current model.Task) ([]protocol.Fa
 	return facts, nil
 }
 
-func (s *TaskSteps) captureStep(ctx context.Context, tx store.ProjectWriteScope, projectID, taskID, stepID, action string, observed time.Time, from, to *int64, before, after *model.TaskStep) error {
+func (s *TaskSteps) captureStep(ctx context.Context, tx store.ProjectWriteScope, actor wm.Actor, projectID, taskID, stepID, action string, observed time.Time, from, to *int64, before, after *model.TaskStep) error {
 	header, err := tx.TaskDAO().TaskHeader(ctx, taskID)
 	if err != nil {
 		return err
@@ -85,5 +91,5 @@ func (s *TaskSteps) captureStep(ctx context.Context, tx store.ProjectWriteScope,
 			f.Status = string(after.Status)
 		}
 	}
-	return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
+	return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, []protocol.Fact{f})
 }

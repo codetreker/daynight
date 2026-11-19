@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	"github.com/google/uuid"
 )
@@ -27,7 +28,7 @@ func TestCapturePreservesFrozenMatchesAndTargetSnapshot(t *testing.T) {
 	destination := bytes.Clone(first.Endpoint.DestinationConfiguration)
 	dao := captureSuccessfulDAO(t, audience, 1)
 	c := &Capturer{Random: &captureEntropy{}}
-	if err := c.CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
+	if err := c.CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 1 || len(dao.writes[0].deliveries) != 1 {
@@ -64,7 +65,7 @@ func TestCaptureSixFactsAndRecordedMetadata(t *testing.T) {
 			fact := captureFact(kind)
 			dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, kind)}, 1)
 			c := &Capturer{Random: &captureEntropy{}}
-			if err := c.CaptureBatch(t.Context(), dao, []protocol.Fact{fact}); err != nil {
+			if err := c.CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{fact}); err != nil {
 				t.Fatal(err)
 			}
 			if dao.project != captureProjectID || !slices.Equal(dao.types, []string{kind}) || len(dao.writes) != 1 || len(dao.writes[0].deliveries) != 1 {
@@ -179,7 +180,7 @@ func TestCaptureTwoFactsOneFreezeAndProof(t *testing.T) {
 	audience := []store.WebhookAudience{captureAudience(t, protocol.StatusChanged), captureAudience(t, protocol.Paused)}
 	dao := captureSuccessfulDAO(t, audience, 2)
 	c := &Capturer{Random: &captureEntropy{}}
-	if err := c.CaptureBatch(t.Context(), dao, facts); err != nil {
+	if err := c.CaptureBatch(t.Context(), dao, captureActor, facts); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(dao.types, []string{protocol.StatusChanged, protocol.Paused}) || len(dao.writes) != 2 {
@@ -206,7 +207,7 @@ func TestCaptureTwoFactsOneFreezeAndProof(t *testing.T) {
 func TestCaptureBatchOnlyPreparesMatchingFacts(t *testing.T) {
 	facts := []protocol.Fact{captureFact(protocol.StatusChanged), captureFact(protocol.Paused)}
 	dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.StatusChanged)}, 1)
-	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, facts); err != nil {
+	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, facts); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 1 || dao.writes[0].event.EventType != protocol.StatusChanged {
@@ -214,33 +215,50 @@ func TestCaptureBatchOnlyPreparesMatchingFacts(t *testing.T) {
 	}
 }
 
+// The stored actor never enters the wire: every actor kind yields the
+// published vector bytes for the same fact and event ID.
 func TestCapturePassesPublishedVectorBytes(t *testing.T) {
-	at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
-	fact := captureFact(protocol.Paused)
-	fact.OccurredAt = at
-	dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.Paused)}, 1)
-	eventID := uuid.MustParse("a0be4d96-fb33-41ba-a7bd-7885c1e94247")
-	c := &Capturer{Random: io.MultiReader(bytes.NewReader(eventID[:]), &captureEntropy{})}
-	if err := c.CaptureBatch(context.Background(), dao, []protocol.Fact{fact}); err != nil {
-		t.Fatal(err)
-	}
-	if len(dao.writes) != 1 || len(dao.writes[0].deliveries) != 1 {
-		t.Fatalf("vector writes = %+v", dao.writes)
-	}
 	want, err := os.ReadFile("../../core/webhook/protocol/testdata/event.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(want)
-	event, delivery := dao.writes[0].event, dao.writes[0].deliveries[0]
-	if len(want) != 433 || event.ID != eventID.String() || !bytes.Equal(event.FactBytes, want) || !bytes.Equal(delivery.Body, want) || !bytes.Equal(event.FactSHA256, digest[:]) || !bytes.Equal(delivery.BodySHA256, digest[:]) {
-		t.Fatal("prepared vector bytes or digest differ")
+	actors := []wm.Actor{captureActor, wm.BotActor(captureOwnerID, captureEndpointID), wm.SystemActor()}
+	for _, actor := range actors {
+		at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
+		fact := captureFact(protocol.Paused)
+		fact.OccurredAt = at
+		dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.Paused)}, 1)
+		eventID := uuid.MustParse("a0be4d96-fb33-41ba-a7bd-7885c1e94247")
+		c := &Capturer{Random: io.MultiReader(bytes.NewReader(eventID[:]), &captureEntropy{})}
+		if err := c.CaptureBatch(context.Background(), dao, actor, []protocol.Fact{fact}); err != nil {
+			t.Fatal(err)
+		}
+		if len(dao.writes) != 1 || len(dao.writes[0].deliveries) != 1 {
+			t.Fatalf("vector writes = %+v", dao.writes)
+		}
+		event, delivery := dao.writes[0].event, dao.writes[0].deliveries[0]
+		if len(want) != 433 || event.ID != eventID.String() || !bytes.Equal(event.FactBytes, want) || !bytes.Equal(delivery.Body, want) || !bytes.Equal(event.FactSHA256, digest[:]) || !bytes.Equal(delivery.BodySHA256, digest[:]) || !bytes.Equal(delivery.DeterministicHeadersJSON, []byte("[]")) {
+			t.Fatalf("actor %+v changed prepared vector bytes or digest", actor)
+		}
+		if event.Actor != actor {
+			t.Fatalf("stored actor = %+v, want %+v", event.Actor, actor)
+		}
+	}
+}
+
+func TestCaptureRejectsInvalidActorBeforeStorage(t *testing.T) {
+	for _, actor := range []wm.Actor{{}, {Kind: wm.ActorUser}, {Kind: "worker", UserID: captureOwnerID}} {
+		dao := newCaptureDAOMock(t)
+		if err := (&Capturer{}).CaptureBatch(t.Context(), dao, actor, []protocol.Fact{captureFact(protocol.Created)}); err == nil {
+			t.Fatalf("actor %+v accepted", actor)
+		}
 	}
 }
 
 func TestCaptureDefaultEntropyKeepsIndependentIdentities(t *testing.T) {
 	dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.Created)}, 1)
-	if err := (&Capturer{}).CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
+	if err := (&Capturer{}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 1 || len(dao.writes[0].deliveries) != 1 {
@@ -256,7 +274,7 @@ func TestCaptureKeepsFinalInt64Revision(t *testing.T) {
 	fact := captureFact(protocol.StatusChanged)
 	fact.TaskVersion = math.MaxInt64
 	dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, fact.Type)}, 1)
-	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{fact}); err != nil {
+	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{fact}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 1 {

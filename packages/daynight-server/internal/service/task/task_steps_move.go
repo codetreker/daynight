@@ -68,7 +68,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 			return err
 		}
 		from, to := int64(mutation.From), int64(mutation.To)
-		return s.captureStep(ctx, tx, projectID, taskID, stepID, "moved", observed, &from, &to, nil, nil)
+		return s.captureStep(ctx, tx, sourceActor(principal), projectID, taskID, stepID, "moved", observed, &from, &to, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

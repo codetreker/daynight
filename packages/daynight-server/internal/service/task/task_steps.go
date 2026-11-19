@@ -326,7 +326,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
 			return err
 		}
-		return s.captureStep(ctx, tx, projectID, taskID, step.ID, "created", observed, nil, nil, nil, nil)
+		return s.captureStep(ctx, tx, sourceActor(principal), projectID, taskID, step.ID, "created", observed, nil, nil, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

@@ -307,3 +307,97 @@ func TestCaptureAudienceAndPersistence(t *testing.T) {
 	}
 	_ = tx4.Rollback(ctx)
 }
+
+func testCapturedEventProvenanceRoundTripsActorAndFactState(t *testing.T, conn *pgx.Conn) {
+	f := newDeliveryFailureFixture(t, conn)
+	ctx := t.Context()
+	read := func(id string) (store.WebhookCapturedEventProvenance, error) {
+		t.Helper()
+		tx, err := f.conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		return New(tx).CapturedEventProvenance(ctx, id)
+	}
+	var legacy string
+	if err := f.conn.QueryRow(ctx, `SELECT event_id::text FROM webhook_deliveries WHERE id=$1`, f.delivery).Scan(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture event has no actor, like rows captured before migration 93.
+	got, err := read(legacy)
+	if err != nil || got.EventID != legacy || got.Actor != (model.Actor{}) || len(got.FactSHA256) != 32 || got.FactRemovedAt != nil {
+		t.Fatalf("legacy provenance = %+v err=%v", got, err)
+	}
+	bot := uuid.NewString()
+	saved := map[string]model.Actor{}
+	for _, actor := range []model.Actor{model.UserActor(f.user), model.BotActor(f.user, bot), model.SystemActor()} {
+		tx, err := f.conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, delivery := captureBoundaryRecords(t, ctx, tx, f.delivery, 2)
+		event.ID, event.Actor = uuid.NewString(), actor
+		if err = NewProjectCapture(tx, f.project).SaveCapture(ctx, event, []store.WebhookCapturedDelivery{delivery}); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		saved[event.ID] = actor
+		got, err := read(event.ID)
+		if err != nil || got.EventID != event.ID || got.Actor != actor || !bytes.Equal(got.FactSHA256, event.FactSHA256) || got.FactRemovedAt != nil {
+			t.Fatalf("provenance for %+v = %+v err=%v", actor, got, err)
+		}
+	}
+	// A source rollback discards the event together with its actor.
+	tx, err := f.conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, delivery := captureBoundaryRecords(t, ctx, tx, f.delivery, 2)
+	event.ID, event.Actor = uuid.NewString(), model.UserActor(f.user)
+	if err = New(tx).SaveCapture(ctx, event, []store.WebhookCapturedDelivery{delivery}); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = read(event.ID); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
+		t.Fatalf("rolled back event provenance err=%v", err)
+	}
+	var removed string
+	for id, actor := range saved {
+		if actor.Kind == model.ActorSystem {
+			removed = id
+		}
+	}
+	if _, err = f.conn.Exec(ctx, `UPDATE webhook_events SET fact_bytes=NULL,fact_removed_at=statement_timestamp() WHERE id=$1`, removed); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = read(removed); err != nil || got.FactRemovedAt == nil || len(got.FactSHA256) != 32 || got.Actor != model.SystemActor() {
+		t.Fatalf("removed fact provenance = %+v err=%v", got, err)
+	}
+	for _, invalid := range []string{
+		`UPDATE webhook_events SET actor_kind=NULL,actor_user_id=$2,actor_bot_id=NULL WHERE id=$1`,
+		`UPDATE webhook_events SET actor_kind='bot',actor_user_id=$2,actor_bot_id=NULL WHERE id=$1`,
+		`UPDATE webhook_events SET actor_kind='worker',actor_user_id=$2,actor_bot_id=NULL WHERE id=$1`,
+	} {
+		if _, err = f.conn.Exec(ctx, invalid, legacy, f.user); err != nil {
+			t.Fatal(err)
+		}
+		if got, err = read(legacy); err == nil {
+			t.Fatalf("invalid stored actor read as %+v", got)
+		}
+	}
+	tx, err = f.conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err = New(tx).CapturedEventProvenance(cancelled, legacy); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled provenance read err=%v", err)
+	}
+}

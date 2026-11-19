@@ -53,7 +53,7 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
 			return err
 		}
-		return s.captureStep(ctx, tx, projectID, taskID, stepID, "deleted", observed, nil, nil, nil, nil)
+		return s.captureStep(ctx, tx, sourceActor(principal), projectID, taskID, stepID, "deleted", observed, nil, nil, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

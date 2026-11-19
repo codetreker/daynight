@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 )
 
@@ -33,10 +34,13 @@ type sourceCapture struct {
 	cause error
 }
 
-func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
 	c.t.Helper()
 	if ctx.Value(sourceContextKey{}) != c || dao != c.dao {
 		c.t.Fatal("source capture escaped its context or transaction DAO")
+	}
+	if actor != wm.UserActor(sourceUserID) {
+		c.t.Fatalf("source capture actor = %+v, want the credential user", actor)
 	}
 	c.calls = append(c.calls, "capture")
 	*c.trace = append(*c.trace, "capture")

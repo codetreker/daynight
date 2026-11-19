@@ -183,7 +183,7 @@ func (f *strictStepWrite) TouchTask(ctx context.Context, id string, at time.Time
 	}
 	return nil
 }
-func (f *strictStepWrite) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (f *strictStepWrite) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, _ webhook.Actor, facts []protocol.Fact) error {
 	f.scoped("capture")
 	if ctx != f.ctx || dao != f.captureDAO || len(facts) != 1 || !reflect.DeepEqual(facts[0], f.expectedFact) {
 		f.t.Fatalf("capture: %+v want %+v", facts, f.expectedFact)
