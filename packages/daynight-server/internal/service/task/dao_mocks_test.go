@@ -984,3 +984,7 @@ func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdm
 	mock.need("WorkerClaimAdmissionDAO", mock.WorkerClaimAdmissionDAOFn != nil)
 	return mock.WorkerClaimAdmissionDAOFn()
 }
+
+func (*workerReaderMock) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
