@@ -22,6 +22,10 @@ core 先比较原关系修订，再建立最终边集合。新增目标必须可
 
 编辑继承调用方取消并有有界事务预算，涵盖连接池和锁等待。只在确认 committed 后返回 goalId、revision、changed。拒绝、已确认未提交和提交未知保留各自语义；未知结果不能推断回滚或重放。后续读取仅证明当前状态，不能恢复丢失的写回执。
 
+## 协议适配
+
+独立 `GoalDependencyRoutes` 注册 GET/PATCH 及认证的方法拒绝，使用窄的读取／编辑服务接口。`internal/protocol/goaldependencies` 通过共享纯函数解析 edit/replace 的字段存在性、嵌套引用和精确修订，并映射显式 DTO。HTTP 只负责请求预算、query、认证、调用和错误／回执编码，不在 handler 重做图准入。现有错误分类器只有在事务结果可靠时才公开领域拒绝，提交未知继续由共享写入分类处理。完整字段和错误码归[REST 协议](../spec/goal-dependencies.md)。
+
 ## 验证归属
 
 core 测试拥有编辑规则和隐藏投影，service 测试拥有 scope、授权快照调用及 completion 处理。真实 PostgreSQL 测试证明 ACL 过滤先于 LIMIT、修订持久化、无远端行锁的图串行化、跨项目闭环、完成与新增竞争，以及撤权和项目移入交错。项目转出再转回及边集恢复原样后，旧修订仍须拒绝；隐藏边可单独移除并保留其他关系。普通 Task detail、sync、图及 ready 继续由各自协议与存储测试保护。

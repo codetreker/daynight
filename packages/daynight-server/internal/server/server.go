@@ -135,6 +135,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
 	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, app.TaskObservations, auth, logger)
+	taskhttp.GoalDependencyRoutes(mux, app.Tasks, auth, logger)
 	usagehttp.RegisterRoutes(mux, app.Usage, auth, logger)
 	taskhttp.PersonalTaskRoutes(mux, app.TaskObservations.PersonalTasks, auth, logger)
 	sessionhttp.RegisterInspectionRoutes(mux, app.TaskInspection, auth, logger)
