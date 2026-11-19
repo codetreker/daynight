@@ -58,12 +58,20 @@ export const UsageError = ({ error, retry }: { readonly error: unknown; readonly
   const { locale } = useI18n(), m = usageWords(locale === 'zh-CN');
   return <div className="usage-error" role="alert"><span>{error instanceof ApiError && error.code === 'usage_unsupported' ? m.unsupported : m.error}</span> <button type="button" className="button" onClick={retry}>{m.retry}</button></div>;
 };
-export const TaskUsageSummary = ({ projectId, taskId, compact = false, active = true, onOpen, href }: { readonly projectId: string; readonly taskId: string; readonly compact?: boolean; readonly active?: boolean; readonly href?: string; readonly onOpen?: (trigger: HTMLElement) => void }) => {
-  const state = useTaskUsage(projectId, taskId, active), { locale } = useI18n(), m = usageWords(locale === 'zh-CN');
-  if (state.error instanceof ApiError && state.error.code === 'usage_unsupported') return <section className="task-usage-summary" aria-label={m.title}><span>{m.unsupported}</span></section>;
+export const isUsageUnsupported = (error: unknown): boolean => error instanceof ApiError && error.code === 'usage_unsupported';
+
+type TaskUsageSummaryProps = { readonly compact?: boolean; readonly href?: string; readonly onOpen?: (trigger: HTMLElement) => void };
+export const TaskUsageSummaryContent = ({ state, compact = false, onOpen, href }: TaskUsageSummaryProps & { readonly state: ReturnType<typeof useTaskUsage> }) => {
+  const { locale } = useI18n(), m = usageWords(locale === 'zh-CN');
+  if (isUsageUnsupported(state.error)) return <section className="task-usage-summary" aria-label={m.title}><span>{m.unsupported}</span></section>;
   const content = state.summary !== null ? <UsageSummaryView summary={state.summary} compact={compact} /> : <span>{state.pending ? m.loading : m.unknown}</span>;
   return <section className="task-usage-summary" aria-label={m.title} data-task-row-selectable>
     {href === undefined ? content : <a className="usage-summary-link" href={href} onClick={event => { if (onOpen !== undefined && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) { event.preventDefault(); onOpen(event.currentTarget); } }}>{content}</a>}
     {state.error !== null && <UsageError error={state.error} retry={state.retry} />}
   </section>;
+};
+
+export const TaskUsageSummary = ({ projectId, taskId, active = true, ...props }: TaskUsageSummaryProps & { readonly projectId: string; readonly taskId: string; readonly active?: boolean }) => {
+  const state = useTaskUsage(projectId, taskId, active);
+  return <TaskUsageSummaryContent state={state} {...props} />;
 };

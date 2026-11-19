@@ -795,3 +795,23 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     expect(state.writes).toEqual([]); await reader.close();
   });
 }
+
+test('service-unsupported usage precedes the status in the narrow standalone row', async ({ page }) => {
+  await install(page, false, false, 'A long task title '.repeat(12));
+  await page.route('**/api/usage/v1/capabilities', route => route.fulfill({ status: 404, body: 'not found' }));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks' }).click();
+  const row = page.locator('.task-row').filter({ hasText: 'A long task title' });
+  const hint = row.locator('.task-row-usage-unsupported');
+  await expect(hint).toHaveText('No LLM usage');
+  await expect(row.locator('.task-usage-summary')).toHaveCount(0);
+  expect(await hint.evaluate(element => {
+    const group = element.parentElement!, status = element.nextElementSibling!;
+    const hintBox = element.getBoundingClientRect(), groupBox = group.getBoundingClientRect(), statusBox = status.getBoundingClientRect();
+    return getComputedStyle(group).flexDirection === 'row' && status.classList.contains('root-status') &&
+      Math.abs(hintBox.left - groupBox.left) < 1 && hintBox.right <= statusBox.left &&
+      document.documentElement.scrollWidth <= innerWidth;
+  })).toBe(true);
+});

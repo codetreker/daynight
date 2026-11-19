@@ -5,7 +5,7 @@ import { ClockInputProvider } from '../src/features/task-execution/TaskExecution
 import { TaskRow, type TaskRowModel } from '../src/features/task-row/TaskRow';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
-vi.mock('../src/features/usage/UsageSummaryView', async original => ({ ...await original<typeof import('../src/features/usage/UsageSummaryView')>(), TaskUsageSummary: () => null }));
+vi.mock('../src/features/usage/useTaskUsage', () => ({ useTaskUsage: () => ({ summary: null, error: null, pending: true, retry: vi.fn() }) }));
 
 const colors = vi.hoisted(() => ({ value: { items: new Map(), loading: false, error: null as unknown, retry: vi.fn() }, listeners: new Set<() => void>() }));
 vi.mock('../src/features/task-tags/useTagColors', () => ({ useTagColors: () => useSyncExternalStore(

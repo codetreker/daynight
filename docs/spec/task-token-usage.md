@@ -206,7 +206,10 @@ generation 停止和 grant 自然到期；不能只比较 usage 行版本。
 
 ## Task 用量界面
 
-Task 卡片提供紧凑摘要并链接到 Detail 的用量页签；Detail 顶部保留相同入口。
+普通 Task 行提供紧凑摘要并链接到 Detail 的用量页签；Detail 顶部保留相同入口。
+服务返回 `usage_unsupported` 时，普通 Task 行不显示原摘要容器，而在状态组的
+生命周期状态前显示中性的「无LLM用量」（英文 `No LLM usage`）。这一提示不代表已测得零；
+Provider 级 `unsupported` 数据、无记录和其他错误仍按各自状态展示。
 卡片的批量摘要独立于 Task 同步和缓存，最多一百项一批，不能每张卡片发一次请求，
 也不能依赖 Task.version 或 updatedAt 推断用量是否更新。
 
