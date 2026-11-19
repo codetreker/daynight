@@ -382,8 +382,9 @@ func writeMutationError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 	writeError(w, r, logger, phase, err)
 }
 
-// The DAO marks only the specific unique index. A second error or unreliable
-// completion must not be hidden behind that marker.
+// The DAO marks only the specific unique index. Store wrappers above that
+// marker summarize the same failure; the marked branch must contain exactly
+// one database error. Additional branches and unreliable completion are unsafe.
 func safeNameConflict(err error) bool {
 	var transactions, databases, markers int
 	valid := true
@@ -404,7 +405,9 @@ func safeNameConflict(err error) bool {
 		case *store.ThreadTransactionError:
 			valid = false
 		case *store.Error:
-			databases++
+			if !errors.Is(e.Cause, store.ErrTagNameConflict) {
+				databases++
+			}
 			if !e.DatabaseFailure || e.SQLState != "23505" {
 				valid = false
 			}
