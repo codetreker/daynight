@@ -203,24 +203,25 @@ func TestAssistantTaskInboundRejectsBacklogAndReclaims(t *testing.T) {
 	}
 }
 
-// The receive scope binds the webhook and project readers to its own
-// transaction: an unknown captured event and an unknown project report their
-// documented absence instead of an error that would abort the receive.
-func TestAssistantTaskInboundScopeBindsVerificationReaders(t *testing.T) {
+// The inbound scope exposes the webhook source and project access readers on
+// the receive transaction, so a missing event or project surfaces each
+// reader's documented absence error instead of a generic query failure.
+func TestAssistantTaskInboundScopeExposesSourceReaders(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	database := isolatedStore(t)
-	ctx := t.Context()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 	completion, err := database.WriteAssistantTaskInbound(ctx, func(scope store.AssistantTaskInboundScope) error {
 		sources := scope.WebhookInboundSources()
 		if _, err := sources.CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
-			return errors.Join(errors.New("unknown captured event was not missing"), err)
+			return errors.Join(errors.New("missing captured event"), err)
 		}
 		destinations, err := sources.PersonalDeliveryDestinations(ctx, uuid.NewString(), uuid.NewString(), "https://daynight.example", "", 1)
 		if err != nil || len(destinations) != 0 {
 			return errors.Join(errors.New("unknown event had delivery destinations"), err)
 		}
 		if _, err := scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: uuid.NewString()}, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
-			return errors.Join(errors.New("unknown project was not reported missing"), err)
+			return errors.Join(errors.New("missing project"), err)
 		}
 		return nil
 	})

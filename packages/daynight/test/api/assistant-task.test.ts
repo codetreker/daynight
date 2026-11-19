@@ -246,3 +246,30 @@ describe("assistant task request JSON numbers", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("assistant task outcome records", () => {
+  const outcome = { id: operationId, taskId, itemId: null, author: "bot", authorBotId: botId, kind: "outcome", text: "The retry cleared the failure", outcome: "effective", actionRecordId: other, refs: { eventIds: [operationId] }, createdAt: now };
+  const credential = { claimToken, claimGeneration: "1" };
+  const input = { ...credential, id: operationId, kind: "outcome", text: outcome.text, outcome: "effective", actionRecordId: other, refs: outcome.refs } as const;
+  it("accepts the evaluation only on outcome records", () => {
+    expect(parseAssistantTaskRecord(outcome, taskId)).toEqual(outcome);
+    for (const value of ["effective", "ineffective", "inconclusive"]) expect(parseAssistantTaskRecord({ ...outcome, outcome: value }, taskId).outcome).toBe(value);
+    expect(parseAssistantTaskRecord(record, taskId)).not.toHaveProperty("outcome");
+    const { outcome: _value, ...withoutValue } = outcome, { actionRecordId: _action, ...withoutAction } = outcome;
+    for (const malformed of [withoutValue, withoutAction, { ...outcome, outcome: null }, { ...outcome, outcome: "resolved" }, { ...outcome, actionRecordId: null }, { ...outcome, actionRecordId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" }, { ...record, outcome: "effective" }, { ...record, actionRecordId: other }, { ...record, kind: "action", outcome: "effective", actionRecordId: other }]) expect(() => parseAssistantTaskRecord(malformed, taskId)).toThrow(ProtocolError);
+  });
+  it("sends the evaluation and confirms the server stored the same one", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(outcome));
+    expect(await setup(fetch).addRecord(taskId, input)).toEqual(outcome);
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual(input);
+    for (const stored of [{ ...outcome, outcome: "ineffective" }, { ...outcome, actionRecordId: owner }]) {
+      const mismatch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(stored));
+      await expect(setup(mismatch).addRecord(taskId, input)).rejects.toMatchObject({ code: "invalid_response" });
+    }
+  });
+  it("reads outcome records beside records without an evaluation", async () => {
+    const page = { items: [record, { ...outcome, id: other, actionRecordId: operationId }], nextCursor: null, observedAt: now };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(page));
+    expect(await setup(fetch).listRecords(taskId)).toEqual(page);
+  });
+});

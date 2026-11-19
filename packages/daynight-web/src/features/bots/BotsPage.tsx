@@ -47,7 +47,7 @@ const follow = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault(); navigate(event.currentTarget.pathname + event.currentTarget.search);
 };
-export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual", recordId, eventId }: { readonly botId: string | null; readonly readEnabled: boolean; readonly taskId?: string | null; readonly taskTab?: "manual" | "records" | "proposals"; readonly recordId?: string; readonly eventId?: string }) {
+export function BotsPage({ botId, readEnabled, taskId = null, taskTab = "manual", recordId, eventId }: { readonly botId: string | null; readonly readEnabled: boolean; readonly taskId?: string | null; readonly taskTab?: "manual" | "records" | "proposals" | "inbox"; readonly recordId?: string; readonly eventId?: string }) {
   const tm = useAssistantTaskMessages();
   const assistantTasks = useBotRead("assistant-tasks", readEnabled, loadAssistantTasks);
   const [taskCreating, setTaskCreating] = useState<"ordinary" | "watchdog" | null>(null);

@@ -136,3 +136,66 @@ func TestRawValidationPrecedesBudgetAndWriterAccess(t *testing.T) {
 		t.Fatalf("raw validation ordering changed: counted=%d calls=%d error=%v", n, calls, err)
 	}
 }
+
+func TestRawScanMatchesEncoderAcrossStringStates(t *testing.T) {
+	type rawCase struct {
+		name string
+		raw  json.RawMessage
+	}
+	cases := []rawCase{
+		{"long spaces", json.RawMessage(`"` + strings.Repeat(" x ", 4096) + `"`)},
+		{"mixed UTF8", json.RawMessage(`"` + strings.Repeat("é😀", 1200) + string([]byte{0xff, 0xe2, 0x80}) + "<&\u2028\u2029" + `"`)},
+		{"dense escapes", json.RawMessage(`"` + strings.Repeat("<>&\u2028\u2029", 1500) + `"`)},
+		{"short strings and structures", json.RawMessage(" \t\r\n" + `[ "", "a", { " ": [ "b", "<", "\\\"", true, null, 1 ] }, "c" ]` + " \t\r\n")},
+		{"sparse escapes", json.RawMessage(`"` + strings.Repeat("x", 9000) + `<` + strings.Repeat("y", 9000) + "\u2028" + strings.Repeat("z", 9000) + `"`)},
+	}
+	for pairs := 0; pairs < 5; pairs++ {
+		backslashes := strings.Repeat(`\`, 2*pairs)
+		cases = append(cases,
+			rawCase{fmt.Sprintf("escaped quote after %d pairs", pairs), json.RawMessage(`"` + backslashes + `\"<&` + "\u2028" + `"`)},
+			rawCase{fmt.Sprintf("closing quote after %d pairs", pairs), json.RawMessage(`["` + backslashes + `", "<` + "\u2029" + `"]`)})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := json.Marshal(tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var actual rawRecordingWriter
+			n, err := JSON(&actual, "raw", int64(len(want)), tc.raw, false)
+			if err != nil || n != int64(len(want)) || !bytes.Equal(actual.Bytes(), want) || actual.maxWrite > 4096 {
+				t.Fatalf("counted=%d written=%d expected=%d largest=%d error=%v", n, actual.Len(), len(want), actual.maxWrite, err)
+			}
+		})
+	}
+}
+
+func TestRawScanCountsPartialWritesWithErrors(t *testing.T) {
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`"` + strings.Repeat("x", 9000) + `<"`),
+		json.RawMessage(`"` + strings.Repeat("<&\u2028", 1500) + `"`),
+	} {
+		want, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sentinel := errors.New("partial raw write")
+		var accepted bytes.Buffer
+		calls := 0
+		writer := rawControlledWriter{write: func(p []byte) (int, error) {
+			calls++
+			if len(p) > 4096 {
+				t.Fatalf("unbounded raw write: %d", len(p))
+			}
+			if calls == 2 {
+				n, _ := accepted.Write(p[:len(p)/2])
+				return n, sentinel
+			}
+			return accepted.Write(p)
+		}}
+		n, err := JSON(writer, "raw", int64(len(want)), raw, false)
+		if !errors.Is(err, sentinel) || calls != 2 || n != int64(accepted.Len()) || !bytes.HasPrefix(want, accepted.Bytes()) {
+			t.Fatalf("counted=%d accepted=%d calls=%d error=%v", n, accepted.Len(), calls, err)
+		}
+	}
+}

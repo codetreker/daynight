@@ -11,8 +11,8 @@ import (
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -94,39 +94,6 @@ func (f backupInventoryFixture) requireCleanInventory(t *testing.T, ctx context.
 	}
 }
 
-func (f backupInventoryFixture) hideRelation(t *testing.T, ctx context.Context, relation string) func(context.Context) {
-	t.Helper()
-	hidden := "missing_" + relation
-	relationOIDs := func(ctx context.Context) (uint32, uint32) {
-		var original, renamed uint32
-		if err := f.database.Pool.QueryRow(ctx, `SELECT COALESCE(to_regclass($1)::oid,0::oid),COALESCE(to_regclass($2)::oid,0::oid)`, relation, hidden).Scan(&original, &renamed); err != nil {
-			t.Fatal(err)
-		}
-		return original, renamed
-	}
-	original, renamed := relationOIDs(ctx)
-	if original == 0 || renamed != 0 {
-		t.Fatalf("unexpected catalog before hiding %s: original=%d renamed=%d", relation, original, renamed)
-	}
-	sourceName, hiddenName := pgx.Identifier{relation}.Sanitize(), pgx.Identifier{hidden}.Sanitize()
-	if _, err := f.database.Pool.Exec(ctx, "ALTER TABLE "+sourceName+" RENAME TO "+hiddenName); err != nil {
-		t.Fatal(err)
-	}
-	if source, target := relationOIDs(ctx); source != 0 || target != original {
-		t.Fatalf("unexpected catalog after hiding %s: original=%d renamed=%d, want (0,%d)", relation, source, target, original)
-	}
-	f.database.Pool.Reset()
-	return func(ctx context.Context) {
-		if _, err := f.database.Pool.Exec(ctx, "ALTER TABLE "+hiddenName+" RENAME TO "+sourceName); err != nil {
-			t.Fatal(err)
-		}
-		if source, target := relationOIDs(ctx); source != original || target != 0 {
-			t.Fatalf("unexpected catalog after restoring %s: original=%d renamed=%d, want (%d,0)", relation, source, target, original)
-		}
-		f.database.Pool.Reset()
-	}
-}
-
 func TestBackupInventoryRejectsCorruptRestoredMetadataAndMissingRelations(t *testing.T) {
 	parallelRootDatabaseTest(t)
 	shared := newBackupInventoryFixture(t)
@@ -173,7 +140,7 @@ func TestBackupInventoryRejectsCorruptRestoredMetadataAndMissingRelations(t *tes
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
 			default:
-				restore = f.hideRelation(t, ctx, test.relation)
+				restore = testutil.HideRelation(t, ctx, f.database.Pool, test.relation)
 			}
 			calls := 0
 			err := f.database.VerifyStorageInventory(ctx, func(store.StorageInventory) error { calls++; return nil })
