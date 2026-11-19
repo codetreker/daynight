@@ -115,6 +115,14 @@ Cleanup restores the original OIDs, removes temporary objects and compares the
 recovered snapshot with its baseline. Assignee cases retain both the catalogue
 and explicit-user reads for the same fault.
 
+The [Task Assignee snapshot matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_read_snapshot_test.go)
+share one Store per parent and give each read mode its own Project, Task,
+and user records. Each case establishes a repeatable-read snapshot before
+the intervening changes commit through another connection. Reads in the
+original and fresh snapshots distinguish the old and current access,
+profile, and assignment facts. The parent checks that the pool is reusable
+between cases.
+
 [Project App root failures](../../../../packages/daynight-server/internal/core/store/postgres/github_project_app_scope_test.go)
 share one Store for missing ownership or Team rows and the three catalog
 faults. The write scope sees each committed fault. After restoring the
