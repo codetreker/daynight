@@ -26,6 +26,15 @@ server for single-origin delivery. The [localhost deployment](../../deployment/l
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
 provides an isolated instance of the same production build.
 
+Goal detail shows read-only acceptance dependencies before its general information.
+Prerequisites retain the service's hidden-target projection; dependent Goals use
+cursor pages, and external links open the actual Project/Goal resource with draft
+protection and return focus. Visible descriptions reconcile relationships
+independently of Task versions. Transient refresh failures retain admitted data;
+permission loss withdraws it. Old services without the relationship route retain
+Goal detail and show capability unavailable. The [relationship design](../../docs/design/goal-dependencies.md#web-只读关系)
+owns request admission and pagination.
+
 The [requirements](../../docs/spec/daynight-web.md) own visible behavior and the
 [architecture](../../docs/design/daynight-web.md) owns graph projection, request
 lifecycles and delivery. The [task property requirements](../../docs/spec/daynight-task-properties.md)

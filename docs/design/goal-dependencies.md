@@ -26,6 +26,16 @@ core 先比较原关系修订，再建立最终边集合。新增目标必须可
 
 独立 `GoalDependencyRoutes` 注册 GET/PATCH 及认证的方法拒绝，使用窄的读取／编辑服务接口。`internal/protocol/goaldependencies` 通过共享纯函数解析 edit/replace 的字段存在性、嵌套引用和精确修订，并映射显式 DTO。HTTP 只负责请求预算、query、认证、调用和错误／回执编码，不在 handler 重做图准入。现有错误分类器只有在事务结果可靠时才公开领域拒绝，提交未知继续由共享写入分类处理。完整字段和错误码归[REST 协议](../spec/goal-dependencies.md)。
 
+## Web 只读关系
+
+`GoalInformation` 的首节使用 `GoalDependencies` 展示服务投影，桌面位于描述右侧，窄屏跟随描述堆叠。可读条目使用真实 Project/Goal URL 和四态标签，外部条目显示 Project；隐藏前置仅显示无法访问，阻塞直接使用 `completionBlocked`，不从可见条目推断。关系只读，原有 Goal 状态操作独立提交，依赖拒绝后刷新关系并在右栏反馈。
+
+独立内存读取与普通 Task detail、sync、图和元数据版本分开。描述页可见时使用现有同步轮询节奏读取，隐藏时取消，保留仍获准的页和内容。下游的上一页／下一页保存游标路径，每次只读取当前页；每页重新授权。瞬时刷新失败保留已准入内容及重试入口，首次失败与空集合分别表达。
+
+请求绑定当前账号、源项目 history generation、源详情资格及 AbortSignal；发布前重新检查准入。项目权限事件撤回失权目标并作废先前响应，源失权退役关系读取，较旧响应不能恢复身份和状态。账号检查等待保持已有界面，实际身份切换清理旧范围。响应主体仅在 principal 验证后准入；旧服务 router 的无 `Daynight-User-ID` JSON 404 在关系解析前识别为能力不可用，保留已获准源详情。有 principal 的领域级 403/404/410 沿用源权限观察。
+
+普通关联点击经过 `BrowserNavigation` 的草稿保护，修改键保留原生链接行为。返回焦点只保存当前身份、源 history entry 与关联入口的运行期引用，恢复来源后聚焦仍可见的关联链接；入口消失时回退 Goal 标题，不持久保存关系资料。取舍见[Web Goal 依赖决策](../../.agents/notes/implemented/feature/2026-11-19-web-goal-dependencies.md)。
+
 ## 验证归属
 
 core 测试拥有编辑规则和隐藏投影，service 测试拥有 scope、授权快照调用及 completion 处理。真实 PostgreSQL 测试证明 ACL 过滤先于 LIMIT、修订持久化、无远端行锁的图串行化、跨项目闭环、完成与新增竞争，以及撤权和项目移入交错。项目转出再转回及边集恢复原样后，旧修订仍须拒绝；隐藏边可单独移除并保留其他关系。普通 Task detail、sync、图及 ready 继续由各自协议与存储测试保护。
