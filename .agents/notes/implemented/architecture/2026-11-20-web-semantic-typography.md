@@ -13,28 +13,29 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell, selection controls, task filter presentation, public
-landing and Setup pages, standalone login, invitation, device authorization and
-OAuth consent pages, Worker pages and configuration, Worker Prompt editors,
-usage panels, and project settings use semantic roles at all viewport widths.
+baseline. The shared shell, selection controls, task filters, task rows,
+personal task groups, Goal summaries, task search, Worker pages and
+configuration, Worker Prompt editors, usage panels, and project settings use
+semantic roles at all viewport widths. Selection text retains the existing
+touch conditions and a 16 CSS px minimum; count badges use the metadata role.
 The [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses
-and sizes.
+and sizes. Touch fields use the shared `--text-touch-field` size to preserve a
+16 CSS px minimum while responding to larger browser font preferences.
 
-Selection text retains the existing touch conditions and a 16 CSS px minimum;
-count badges use the metadata role. Touch fields use the shared
-`--text-touch-field` size to preserve a 16 CSS px minimum while responding to
-larger browser font preferences.
+Business states, errors, controls, tool paths, and code use the interface role;
+IDs, times, versions, and secondary counts use metadata. Feature-owned form
+rules and explicit project dialog classes override the remaining shared legacy
+form sizes, including Portal states, without changing unrelated consumers.
+Narrow layouts wrap and rearrange controls, while dense panels retain local
+scrolling where needed. Graph node usage text belongs to the graph layout and
+retains that consumer's independent migration boundary.
 
-Public reading copy and demo prose use the reading role. Business states,
-errors, controls, commands, tool paths, and code use the interface role; IDs,
-times, versions, and secondary counts use metadata. Authorization codes use the
-detail heading role, with the input using the section heading role.
-Feature-owned form rules and explicit project dialog classes override the
-remaining shared legacy form sizes, including Portal states, without changing
-unrelated consumers. Narrow layouts wrap and rearrange controls, including
-account actions and command copying, while dense panels retain local scrolling
-where needed. Graph node usage text belongs to the graph layout and retains
-that consumer's independent migration boundary.
+Public landing and Setup pages, and standalone login, invitation, device
+authorization and OAuth consent pages, use the semantic roles at all viewport
+widths. Public reading copy and demo prose use the reading role; commands,
+status, errors and actions use the interface role. Authorization codes use the
+detail heading role, with the input using the section heading role. Account
+actions and command copying reflow to accommodate larger text.
 
 Fixed geometry that depended on the former 14px root is independent of that root;
 text-related spacing remains relative. The earlier
