@@ -18,7 +18,9 @@ writer. A span scan removes whitespace outside strings, preserves existing JSON
 escapes and raw byte semantics, and emits constant escapes for literal HTML
 characters and U+2028/U+2029. Output passes through a buffer capped at 4096 bytes;
 small inputs use a smaller buffer, and ordinary spans are explicitly split at
-the same cap. No complete escaped output is constructed in memory.
+the same cap. No complete escaped output is constructed in memory. The
+[string span scanning decision](../bug-fix/2026-11-19-raw-json-string-span-scanning.md)
+owns the event search that skips ordinary string bytes before output batching.
 
 The existing bounded Writer retains its byte-budget contract. A violation names
 the first rejected size, Max+1, as a lower bound; it does not measure the rest of
