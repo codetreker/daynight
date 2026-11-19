@@ -33,8 +33,10 @@ with explicit evidence and original-input limits. A catalog can narrow those
 limits but cannot grant qualification. Missing or ambiguous identity, unavailable
 evidence and changed qualification fail closed. Qualification identity participates
 in Provider capability revision even when the published numeric limits are equal.
-The production qualification registry is empty; this mechanism grants no existing
-experimental combination production support.
+The production qualification registry holds only the two exact Codex 0.170.0
+macOS arm64 combinations described in the
+[Codex macOS runtime decision](2026-11-19-codex-macos-image-runtime.md); this
+mechanism grants no other experimental combination production support.
 
 [Copilot runtime observation](2026-11-16-copilot-image-runtime-observation.md)
 supplies a private executable and native-declared route identity where supported.
@@ -91,9 +93,9 @@ unchanged complete acceptance requirements.
 
 Qualification maintenance requires versioned evidence, exact observed identities
 and runtime invalidation. Backend identity cannot be guessed from a display name,
-and no configuration override can manufacture support. A later registry entry
-requires its real product and native evidence; the empty registry makes that
-remaining work visible without weakening the admission mechanism.
+and no configuration override can manufacture support. Each registry entry
+requires its real product and native evidence; combinations without an entry
+keep that remaining work visible without weakening the admission mechanism.
 
 Original uploads and native-produced transformed images remain separate immutable
 sources when both are published. Existing correlation, source ownership, pin
