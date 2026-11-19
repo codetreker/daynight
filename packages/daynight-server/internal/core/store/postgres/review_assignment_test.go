@@ -308,3 +308,52 @@ func TestReviewAssignmentUnknownCommitReadbackPreservesOwner(t *testing.T) {
 		t.Fatalf("re-observation %+v %v", completion, err)
 	}
 }
+
+func TestReviewAssignmentWriteAdmissionFailures(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	db := isolatedStore(t)
+	ctx := t.Context()
+	project := queryProject(t, db, 1).ID
+	deleted := queryProject(t, db, 2).ID
+	mustQueryExec(t, db, `UPDATE projects SET deleted_at=statement_timestamp() WHERE id=$1`, deleted)
+
+	for _, tc := range []struct {
+		name    string
+		project string
+	}{
+		{"missing", queryID(999)},
+		{"deleted", deleted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			completion, err := db.WriteReviewAssignment(ctx, tc.project, func(store.ReviewAssignmentWrite) error {
+				called = true
+				return nil
+			})
+			if called || completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("called=%v completion=%+v err=%v", called, completion, err)
+			}
+		})
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	called := false
+	completion, err := db.WriteReviewAssignment(cancelled, project, func(store.ReviewAssignmentWrite) error {
+		called = true
+		return nil
+	})
+	if called || completion.Outcome != store.TransactionNotCommitted || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled begin: called=%v completion=%+v err=%v", called, completion, err)
+	}
+
+	closed := closedStore(t)
+	completion, err = closed.WriteReviewAssignment(ctx, project, func(store.ReviewAssignmentWrite) error {
+		called = true
+		return nil
+	})
+	var failure *store.Error
+	if called || completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &failure) || failure.Phase != "begin review assignment" {
+		t.Fatalf("closed pool begin: called=%v completion=%+v err=%v", called, completion, err)
+	}
+}
