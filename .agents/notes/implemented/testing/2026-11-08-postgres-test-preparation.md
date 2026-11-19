@@ -135,6 +135,12 @@ then exercises a different real insert fault. The global empty-state check
 detects partial identity or replayable login rows. The fault trigger and
 function are removed and checked in the catalog before reuse.
 
+The [Webhook management fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/webhook/management_contract_test.go)
+shares one fixture with distinct case identifiers. Real WriteWebhook
+transactions see the missing names, missing policy row, or insert trigger.
+Each case restores the original catalog and policy row, verifies that no
+endpoint or signing key survived, and stops reuse on failure.
+
 [Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_boundaries_test.go)
 share one committed Session for the descriptor, missing relations and canceled
 read. The read-only inventory transaction observes committed faults. Cleanup
