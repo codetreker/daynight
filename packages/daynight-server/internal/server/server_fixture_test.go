@@ -2301,6 +2301,31 @@ func (d sessionHTTPRejectedBotDAO) BotCreationWorker(context.Context, string, st
 
 var _ store.BotWriteDAO = sessionHTTPRejectedBotDAO{}
 
+func (d sessionHTTPRejectedBotDAO) RecoveryWorker(context.Context, string, string) (model.WorkerMachine, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.RecoveryWorker")
+	panic("unconfigured BotDAO.RecoveryWorker")
+}
+func (d sessionHTTPRejectedBotDAO) RegisterBotRecovery(context.Context, string, int64, model.BotRecovery) (model.Bot, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.RegisterBotRecovery")
+	panic("unconfigured BotDAO.RegisterBotRecovery")
+}
+func (d sessionHTTPRejectedBotDAO) AdvanceBotRecovery(context.Context, string, int64, int64, string, model.WorkerMachine) (model.Bot, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.AdvanceBotRecovery")
+	panic("unconfigured BotDAO.AdvanceBotRecovery")
+}
+func (d sessionHTTPRejectedBotDAO) BotRecoveryOperation(context.Context, string, string) (store.BotRecoveryOperation, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.BotRecoveryOperation")
+	panic("unconfigured BotDAO.BotRecoveryOperation")
+}
+func (d sessionHTTPRejectedBotDAO) SaveBotRecoveryOperation(context.Context, string, store.BotRecoveryOperation) error {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.SaveBotRecoveryOperation")
+	panic("unconfigured BotDAO.SaveBotRecoveryOperation")
+}
+func (d sessionHTTPRejectedBotDAO) BotRecoveryTokenUsed(context.Context, string, string) (bool, error) {
+	unexpectedHTTPCall(d.t, "SessionScope.BotDAO.BotRecoveryTokenUsed")
+	panic("unconfigured BotDAO.BotRecoveryTokenUsed")
+}
+
 func startupBody(f *sessionHTTPFixture) map[string]any {
 	return map[string]any{
 		"schemaVersion": 1, "source": "worker", "sessionId": f.snapshot.SessionID, "claimId": f.snapshot.ClaimID,

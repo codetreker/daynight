@@ -252,6 +252,10 @@ func (s *Execution) Grant(ctx context.Context, p model.Principal, project, taskI
 }
 
 func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant) (GrantResult, error) {
+	return s.grantRecordWithToken(ctx, tx, p, r, t, g, "")
+}
+
+func (s *Execution) grantRecordWithToken(ctx context.Context, tx *operationTx, p model.Principal, r *record, t task, g sp.Grant, token string) (GrantResult, error) {
 	var out GrantResult
 	id := r.Snapshot.SessionID
 	v := &r.Snapshot
@@ -295,7 +299,10 @@ func (s *Execution) grantRecord(ctx context.Context, tx *operationTx, p model.Pr
 	if g.Kind == "bootstrap" {
 		ttl = 120 * time.Second
 	}
-	out = GrantResult{TestExecutionID: v.TestExecutionID, Token: "dncontroller_" + rand.Text(), ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
+	if token == "" {
+		token = "dncontroller_" + rand.Text()
+	}
+	out = GrantResult{TestExecutionID: v.TestExecutionID, Token: token, ExpiresAt: s.now().Add(ttl).UTC(), SessionID: id, ClaimID: v.ClaimID, ExecutionGeneration: v.ExecutionGeneration, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID}
 	h := sha256.Sum256([]byte(out.Token))
 	err := tx.dao.SetSessionGrant(ctx, store.SessionGrant{SessionID: id, Hash: h[:], ExpiresAt: out.ExpiresAt, Kind: g.Kind, ParentCredentialID: p.CredentialID})
 	if err != nil {

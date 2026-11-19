@@ -2518,6 +2518,7 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		"sessionhttp.NewRoutes":                    1,
 		"bothttp.RegisterRoutes":                   3,
 		"bothttp.RegisterRuntimeRoutes":            3,
+		"bothttp.RegisterRecoveryRoutes":           2,
 	}
 	seen := make(map[string]int)
 	constructors, authRoutes, authBindings := 0, 0, 0
