@@ -77,16 +77,25 @@ func options(rawURL string) (*redisclient.Options, error) {
 	return opts, nil
 }
 
-// ValidateURL validates a nonempty monitoring Redis URL without connecting.
+// ValidateURL validates a nonempty Daynight Redis URL without connecting.
 func ValidateURL(rawURL string) error { _, err := options(rawURL); return err }
 
-// New creates a monitoring-only connection; availability is checked by operations.
-func New(rawURL string) (*Store, error) {
+// NewClient creates a Redis client with bounded operations and no automatic retries.
+func NewClient(rawURL string) (*redisclient.Client, error) {
 	opts, err := options(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{client: redisclient.NewClient(opts), ttl: TTL}, nil
+	return redisclient.NewClient(opts), nil
+}
+
+// New creates a monitoring connection; availability is checked by operations.
+func New(rawURL string) (*Store, error) {
+	client, err := NewClient(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{client: client, ttl: TTL}, nil
 }
 
 func (s *Store) Close() error { return s.client.Close() }

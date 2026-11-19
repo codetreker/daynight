@@ -62,7 +62,7 @@ func TestGrantLifecycleAndAtomicStop(t *testing.T) {
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,1,3,$2,'delivery',now(),now())`, project, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, project); err != nil {
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,10,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, project); err != nil {
 		t.Fatal(err)
 	}
 	revoke := func(impact int64, extra error) (store.Completion, error) {

@@ -142,6 +142,8 @@ export const createBotProcess = (options: {
     const { toolLaunch, toolObservation, ...configuration } = ticket.configuration;
     if (ticket.codexBotRecovery !== undefined && (ticket.codexBotRecovery.botId !== record.botId
       || ticket.codexBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory)) throw new Error("Bot Codex recovery location conflicts with its original ownership.");
+    if (ticket.claudeBotRecovery !== undefined && (ticket.claudeBotRecovery.botId !== record.botId
+      || ticket.claudeBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).claudeRecoveryDirectory)) throw new Error("Bot Claude recovery location conflicts with its original ownership.");
     if (toolLaunch !== undefined && (intent.toolLaunch === undefined || controllerPayloadHash(toolLaunch) !== controllerPayloadHash(intent.toolLaunch))
       || toolObservation !== undefined && (intent.toolObservation === undefined || controllerPayloadHash(toolObservation) !== controllerPayloadHash(intent.toolObservation))) throw new Error("Bot ticket tool selection differs from the original frozen intent.");
     if (config.selection !== undefined) {
@@ -331,6 +333,8 @@ export const createBotProcess = (options: {
             ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
           ...(config.provider === "codex" && (previousTicket?.codexBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
             ? { codexBotRecovery: previousTicket?.codexBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory } } : {}),
+          ...(config.provider === "claude" && (previousTicket?.claudeBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { claudeBotRecovery: previousTicket?.claudeBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).claudeRecoveryDirectory } } : {}),
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
         await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));

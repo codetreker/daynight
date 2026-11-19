@@ -30,7 +30,7 @@ Controller 每次连接发送 `X-Daynight-Content-Read-Version: 1`。服务端�
 
 页与块生产方计入完整编码响应预算。HTTP 传入换行开销；MCP 计入实际请求 ID、协议版本、批次边界与 meta 等包络开销。此专用 256 KiB 预算不会恢复普通资源读取的通用预算。MCP 成功结果使用普通 JSON 编码；工具发现省略 `outputSchema`，协议测试直接断言实际结构化结果。
 
-MCP 在 SDK 执行前拒绝包含历史读取的多调用 batch 和无法容纳的请求 ID，避免其他结果或 ID 回显突破历史响应预算。独立读取及单调用 legacy batch 使用最多 256 KiB 的专用响应缓冲；完整编码后才提交，分次写入或错误包络超限时统一返回有界 `resource_limit_exceeded`。其他工具保留既有编码路径。归档许可持续持有到缓冲结果最终写出或取消。
+MCP 在 SDK 执行前拒绝包含历史读取的多调用 batch 和无法容纳的请求 ID，避免其他结果或 ID 回显突破历史响应预算。独立读取及单调用 legacy batch 使用最多 256 KiB 的专用响应缓冲；完整编码后才提交，分次写入或错误包络超限时统一返回有界 `resource_limit_exceeded`。其他工具保留既有编码路径。HTTP 与 MCP 的归档历史响应保留许可到交付结束。租约失效时，传输层停止发布尚未写出的成功响应，并通过实际写入期限中断阻塞的发送。
 
 ## 归档与权限生命周期
 
@@ -50,7 +50,7 @@ schema3 manifest 的文件与资源布局保持不变，正文变体新增 `cont
 
 过期事务解除归档引用，以及通过 committed capture 的 image ID 和 resource ID 证明属于该历史的 message 引用。未知 message 引用、upload、operation 和 native_resume 引用继续保留；只有最后引用消失的资源进入 `gc_pending`。普通 Task 内容读取、图片读取、Controller 内容操作和归档上传在授权及 Session 锁定后检查过期屏障；摘要查询和操作回执保持独立读取用途。旧入口返回既有 `history_unavailable` 并说明历史已过期，不伪造空页，也不改变归档状态枚举。
 
-service 的后台清理器在应用启动后扫描每页最多 32 个原 Session，按 UUID 推进游标，每分钟处理一页并在末页重置；没有缓存期限的归档也会重新计算。单个目标最多处理十秒，整页最多一分钟。长时间未结束的链不会阻挡游标后面的候选。事务确认过期后，清理器在数据库作用域之外取得原 owner 的归档驻留许可，并逐一取得持久化媒体租约对应的文件锁。许可仍占用时保留责任，下一轮继续。只有原读写退出后才删除 typed archive namespace 中的正文、暂存及迁移旧文件，并按可信 namespace 删除 `gc_pending` 图片的精确 blob；Task 附件和 Bot 目录不在这些地址范围内。
+service 的后台清理器在应用启动后扫描每页最多 32 个原 Session，按 UUID 推进游标，每分钟处理一页并在末页重置；没有缓存期限的归档也会重新计算。单个目标最多处理十秒，整页最多一分钟。长时间未结束的链不会阻挡游标后面的候选。事务确认过期后，清理器在数据库作用域之外取得原 owner 的归档驻留许可，并逐一取得持久化媒体记录对应的精确键许可。任何许可仍占用时保留责任，下一轮继续。配置 Redis 时，这些[存储租约](daynight-task-attachments.md#storage-接口与本地实现)随清理操作持有和续租。确认失去租约时停止后续清理，文件操作前复核所有已取得的令牌。清理覆盖 typed archive namespace 中的正文、暂存及迁移旧文件，并按可信 namespace 删除 `gc_pending` 图片的精确 blob。Task 附件和 Bot 目录不在这些地址范围内。
 
 全部文件释放与资源记录回收确认后写入 `cleaned_at`，清除归档 bundle、文件、分块、迁移明细与旧内联时间线，保留原 Session、轻量归档和期限摘要及独立操作回执。物理删除失败或事务完成未知均保留过期屏障与未完成责任，重启后继续；已经过期的责任在 Task 或 Project 软删除后仍可完成。应用停止时先取消并排空清理器，再关闭其借用的文件存储与数据库。资源仍被独立引用时，其字节继续保留，不因归档过期删除。
 
@@ -73,6 +73,8 @@ service 的后台清理器在应用启动后扫描每页最多 32 个原 Session
 Session 页用同快照的当前完整链及首次归档、宽限和实际过期事实调用 `CalculateArchiveRetention`，不更新数据库或沿用缓存期限。`archiveState` 为 `pending|unavailable|failed|ready|partial|expired`，`completeness` 保留缺口标记。`retentionState` 为 `waiting|unknown|scheduled|expired`，`reason` 区分未结束、时间缺失、待归档及已过期。`scopeEndedAt`、`firstArchivedAt`、`legacyGraceStartedAt`、`expiresAt` 和 `expiredAt` 保留真实时间或 null；宽限起点由持久化宽限下限减七天得到。只有 `expired_at` 已提交才显示 expired，超过候选期限不伪造删除完成。Herdr 保留终端录像类型，不套用 Web TTL；没有归档记录时保持 `pending`，已持久化的不可用回执显示 `unavailable`，`reason` 优先保留回执的真实原因，缺少时兼容持久化 `error_code`（如 `recording_not_enabled`、`ended_before_first_sample`），缺少原因时为 `archive_unavailable`。其它 Herdr 状态的期限原因是 `not_applicable`。内容继续由原 Session 的既有读取入口授权并提供，此目录不搬运正文。
 
 组查询计算当前连通分量；成员及期限查询只遍历目标链。Session 查询只投影执行代次和末次终止时间，不返回完整快照或终端运行记录。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
+
+CLI 的 `list --directory-version 1` 消费独立的 Task Session 页，GET 成功响应必须同时具有 `Daynight-Task-History-Directory-Version: 1` 与正文 `version: 1`。独立 DTO 解码器验证原 Task、Session 唯一性、模式与内容类型、分页上限及字段类型，并拒绝未知字段；`graphVersion` 保持十进制字符串。新版目录时间保留有效 RFC3339 的 `Z` 或数值时区偏移，并分别校验日历时间和偏移范围，以兼容 PostgreSQL 返回非 UTC 时区的归档时间。默认 `list` 仍消费旧 inspection 目录，不混入新增字段。版本化续页命令携带相同版本选项，失败保留服务端拒绝，不自动切换入口或重试。正文与 `show` 继续走原 Session 入口；正文 `history_unavailable` 的已知过期原因映射为固定诊断，其他不可用原因不被误判为过期。
 
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 

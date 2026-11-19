@@ -16,7 +16,7 @@ func (r *reader) Authors(ctx context.Context, q store.GitHubAuthorQuery) (store.
 	 SELECT DISTINCT ON (author_id) author_id, author_login,
 	        lower(author_login COLLATE "C") AS name_key
 	 FROM project_pull_requests
-	 WHERE project_id=$1 AND author_id IS NOT NULL
+	 WHERE project_id=$1`+repositoryFilter(q.RepositoryID, 6)+` AND author_id IS NOT NULL
 	 ORDER BY author_id, observed_at DESC, revision DESC, number DESC
 	), named AS (
 	 SELECT author_id, author_login, name_key,
@@ -27,7 +27,7 @@ func (r *reader) Authors(ctx context.Context, q store.GitHubAuthorQuery) (store.
 	WHERE author_login IS NULL OR
 	 (strpos(name_key, lower($2::text COLLATE "C")) > 0
 	  AND ($3::text IS NULL OR (name_key COLLATE "C", author_id) > ($3::text COLLATE "C", $4::bigint)))
-	ORDER BY name_key COLLATE "C" NULLS FIRST, author_id LIMIT $5`, q.ProjectID, q.Query, q.AnchorNameKey, q.AnchorAuthorID, q.Limit+1)
+	ORDER BY name_key COLLATE "C" NULLS FIRST, author_id LIMIT $5`, q.ProjectID, q.Query, q.AnchorNameKey, q.AnchorAuthorID, q.Limit+1, q.RepositoryID)
 	if err != nil {
 		return store.GitHubAuthorPage{}, pg.QueryError("list github pull request authors", err)
 	}

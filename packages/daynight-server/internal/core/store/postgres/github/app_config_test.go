@@ -33,7 +33,7 @@ func TestAppConfigPersistenceFenceAndRemoval(t *testing.T) {
 		{`INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,app_id,installation_id,repository_id,repository_full_name,app_resource_id,team_grant_id,credential_version,claim_token,claim_until,claim_kind,access_hint_id,access_delivery_id,next_poll_at) VALUES($1,2,3,4,true,true,123,9,10,'owner/repo',$2,$3,1,$4,now()+interval '1 hour','poll',$5,'delivery',now()),($6,2,3,4,true,false,123,9,10,'owner/repo',$2,$3,1,NULL,NULL,NULL,NULL,NULL,NULL)`, []any{project, app, grant, uuid.NewString(), uuid.NewString(), disabled}},
 		{`INSERT INTO project_github(project_id,app_resource_id,credential_version,generation,revision) VALUES($1,$2,7,8,9)`, []any{unrelated, uuid.NewString()}},
 		{`INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,1,3,$2,'delivery',now(),now())`, []any{project, uuid.NewString()}},
-		{`INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, []any{project}},
+		{`INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,10,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, []any{project}},
 	} {
 		if _, err := db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)

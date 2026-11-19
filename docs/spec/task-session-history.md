@@ -8,6 +8,8 @@ CLI 与 MCP 可在明确的 Project、Task 和 Session 范围内查询当前关�
 
 当前关联没有注册时返回 `not_registered`，没有适用执行时返回 `not_applicable`，不以最近历史代替当前。指定 Session 始终绑定其原始执行；Task 的新 claim 不能改变请求目标。目录明确标记 `currentBinding` 和归档事实，默认每页 20 项，最多 200 项。
 
+CLI 默认 `task session list` 保留旧目录入口与 JSON 字段；`--directory-version 1` 明确选择包含归档期限的独立 Session 目录，并要求服务端确认版本 1。新版 JSON 保留精确字符串 `graphVersion`、观察时间、原 Session／claim、归档和期限状态及可空时间。续页必须沿用该版本选项与原游标，目录事实变化后从无游标首屏重读。旧服务、不支持的版本、协议错误或无权限不得触发自动回退，也不得把新版游标交给旧入口。指定旧 Session 的正文过期时保留 `history_unavailable` 和明确的过期提示，不返回空对话或改投新 Session。
+
 ## 历史页与完整条目
 
 消息读取默认选择最近 20 条 timeline entries，允许 1–200 条。旧格式包含工具与交互事件；正文归档只包含其保存策略允许的条目。每页按旧到新排列，`beforeCursor` 继续向前读取。并发追加不改变先前页的边界；`conversation` 只过滤已选页，不追溯补齐数量。过滤后为空仍保留原页游标。
