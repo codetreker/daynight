@@ -76,6 +76,11 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   const paths = resolveConfigurationPaths(homeDirectory);
   const protectedPaths = record.definition === null ? [] : [{ directory: record.definition.resolvedConfiguration.cwd, label: "working directory" }];
   const targets = [await capture(botStateDirectory(paths, record.botId), "directory", signal)];
+  // Preparation can create shims before its launch intent is committed. This
+  // private root belongs to the Bot even when no individual alias was recorded.
+  const botAliasRoot = path.join(resolveBotPaths(paths.stateDirectory, record.botId).directory, "agent-cli-aliases");
+  const botAliases = await capture(botAliasRoot, "directory", signal);
+  if (!botAliases.completed) targets.push(botAliases);
   if (intent === null) {
     if (execution !== null) throw new Error("Bot private execution has lost its original launch intent.");
     await protectDirectories(targets, protectedPaths, signal);
@@ -87,7 +92,7 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
     || intent.journalPath !== path.join(directory, "journal.sqlite") || intent.credentialFile !== path.join(directory, "credential.json")) throw new Error("Bot private paths differ from the original derived execution paths.");
   if (execution !== null && (execution.executionId !== intent.executionId || execution.launchId !== intent.launchId || execution.executionGeneration !== intent.executionGeneration)) throw new Error("Bot private execution identity differs from the original launch intent.");
   const { stateDirectory } = paths;
-  const aliasRoots = [path.join(resolveBotPaths(stateDirectory, record.botId).directory, "agent-cli-aliases"),
+  const aliasRoots = [botAliasRoot,
     ...(storage === undefined ? [path.join(stateDirectory, "agent-cli-aliases")] : [])];
   const aliases = [...new Set([...(execution?.retainedAliasDirectories ?? []), ...(execution?.aliasDirectory == null ? [] : [execution.aliasDirectory])])];
   for (const alias of aliases) {
@@ -106,7 +111,7 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
       targets.push(await capture(target, "socket", signal));
     }
   }
-  for (const alias of aliases) targets.push(await capture(alias, "directory", signal));
+  for (const alias of aliases) if (path.dirname(alias) !== botAliasRoot) targets.push(await capture(alias, "directory", signal));
   for (const launch of launches) {
     const file = controllerTicketPath(homeDirectory, launch, storage), target = await capture(file, "file", signal);
     if (!target.completed) {

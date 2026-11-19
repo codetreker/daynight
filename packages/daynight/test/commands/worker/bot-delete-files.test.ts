@@ -168,6 +168,19 @@ describe("Bot private file deletion", () => {
     expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
   });
 
+  it("cleans Bot aliases left by interrupted preparation before launch intent persistence", async () => {
+    const f = await fixture();
+    f.record.intent = null;
+    const aliasRoot = path.join(resolveBotPaths(path.join(f.home, "state"), f.record.botId).directory, "agent-cli-aliases");
+    const alias = path.join(aliasRoot, "execution-interrupted", "daynight");
+    await mkdir(path.dirname(alias), { recursive: true }); await writeFile(alias, "private shim");
+    const targets = await captureBotDeletionFiles(f.home, f.record, null, signal());
+    expect(targets.map(target => target.path)).toEqual([f.state, aliasRoot]);
+    for (const target of targets) await removeBotDeletionFile(target, signal());
+    await expect(lstat(aliasRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
+  });
+
   it.each(["state", "bot root"])("rejects symbolic %s during private state capture", async kind => {
     const f = await fixture();
     const target = kind === "state" ? f.state : path.dirname(f.state);
