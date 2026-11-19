@@ -150,10 +150,31 @@ it('submits the confirmed task version and requires a new confirmation after the
   expect(s.writes).toEqual([]);
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
   mounted.rerender({ task: { ...task, version: '8' }, enabled: true });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate token' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'Rotate token' }));
   mounted.rerender({ task: { ...task, version: '8' }, enabled: true });
   fireEvent.click(within(screen.getByRole('dialog', { name: 'Rotate inbox token' })).getByRole('button', { name: 'Confirm' }));
   await waitFor(() => expect(s.writes.at(-1)?.input).toEqual({ operationId: expect.any(String), ifVersion: '8', mode: 'overlap' }));
+});
+
+it('pairs the submitted version with the displayed inbox instead of a newer independently loaded task version', async () => {
+  const s = server(on); mount();
+  await screen.findByRole('button', { name: 'Disable inbox' });
+  const replacement = botId(93);
+  let respond!: () => void;
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementationOnce((url, options) => new Promise(resolve => { respond = () => resolve(original(url, options)); }));
+  s.state.inbox = { ...on, inboxId: replacement };
+  mounted.rerender({ task: { ...task, version: '9' }, enabled: true });
+  expect(screen.getByText(assistantTaskInboxUrl(inboxId))).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Disable inbox' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Rotate token' })).toBeDisabled();
+  await waitFor(() => expect(respond).toBeDefined());
+  respond();
+  expect(await screen.findByText(assistantTaskInboxUrl(replacement))).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Disable inbox' }));
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Disable inbox' })).getByRole('button', { name: 'Disable inbox' }));
+  await waitFor(() => expect(s.writes.at(-1)?.input).toEqual({ operationId: expect.any(String), ifVersion: '9' }));
 });
 
 it('keeps a token issued while the inbox tab was hidden', async () => {
