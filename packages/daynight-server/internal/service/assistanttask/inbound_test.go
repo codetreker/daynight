@@ -21,6 +21,7 @@ const (
 	inOwner   = "11111111-1111-4111-8111-111111111111"
 	inTask    = "22222222-2222-4222-8222-222222222222"
 	inBot     = "44444444-4444-4444-8444-444444444444"
+	inPeer    = "55555555-5555-4555-8555-555555555555"
 	inInbox   = "77777777-7777-4777-8777-777777777777"
 	inProject = "88888888-8888-4888-8888-888888888888"
 	inSubject = "66666666-6666-4666-8666-666666666666"
@@ -53,6 +54,10 @@ type inboundDAO struct {
 	projectPrincipal                                      model.Principal
 	projectID                                             string
 	destinationOwner, destinationOrigin, destinationEvent string
+	woke, countRejected                                   bool
+	wakeBot, wakeSubject                                  string
+	wakeSince                                             time.Time
+	suppressedCount                                       int
 }
 
 func (d *inboundDAO) step(name string) error {
@@ -117,6 +122,25 @@ func (d *inboundDAO) PendingInboundEvents(_ context.Context, owner, task, bot st
 		d.t.Fatalf("pending scope %s %s %s %d", owner, task, bot, limit)
 	}
 	return d.pending, d.step("pending")
+}
+
+func (d *inboundDAO) ReceivedInbound(_ context.Context, owner, bot, subject string, since time.Time) (bool, error) {
+	if owner != inOwner {
+		d.t.Fatalf("wake owner %s", owner)
+	}
+	d.wakeBot, d.wakeSubject, d.wakeSince = bot, subject, since
+	return d.woke, d.step("wake")
+}
+
+func (d *inboundDAO) AddInboxSuppressed(_ context.Context, owner, task, inbox string) (bool, error) {
+	if owner != inOwner || task != inTask || inbox != inInbox {
+		d.t.Fatalf("suppressed count scope %s %s %s", owner, task, inbox)
+	}
+	if err := d.step("count-suppressed"); err != nil {
+		return false, err
+	}
+	d.suppressedCount++
+	return !d.countRejected, nil
 }
 
 func (d *inboundDAO) InsertEvent(_ context.Context, event model.AssistantTaskEvent) (bool, error) {
@@ -229,7 +253,8 @@ func inboundDestination(url string) []byte {
 }
 
 // newInbound returns a fixture whose inbox is enabled with token, whose task
-// is actively held by inBot, and whose Daynight sources verify inboundEventBody.
+// is actively held by inBot, and whose Daynight sources verify inboundEventBody
+// written by inPeer, another Bot of the owner that received no related event.
 func newInbound(t *testing.T) (*Inbox, *inboundWriter, *inboundDAO, string) {
 	t.Helper()
 	token, digest, err := core.NewInboxToken()
@@ -242,7 +267,7 @@ func newInbound(t *testing.T) (*Inbox, *inboundWriter, *inboundDAO, string) {
 	task := model.AssistantTask{ID: inTask, OwnerUserID: inOwner, State: "active", Version: 3, HolderBotID: ptrString(inBot), ClaimTokenHash: &hash, LeaseUntil: &lease}
 	d := &inboundDAO{t: t, identity: inbox, locked: inbox, task: task}
 	sum := sha256.Sum256(inboundEventBody(t))
-	d.sources = &inboundSources{dao: d, provenance: store.WebhookCapturedEventProvenance{EventID: inEvent, Actor: wm.BotActor(inOwner, inBot), FactSHA256: sum[:]}, destinations: [][]byte{inboundDestination("https://other.example/hook"), inboundDestination(inOrigin + core.InboxPathPrefix + inInbox)}}
+	d.sources = &inboundSources{dao: d, provenance: store.WebhookCapturedEventProvenance{EventID: inEvent, Actor: wm.BotActor(inOwner, inPeer), FactSHA256: sum[:]}, destinations: [][]byte{inboundDestination("https://other.example/hook"), inboundDestination(inOrigin + core.InboxPathPrefix + inInbox)}}
 	w := &inboundWriter{d: d}
 	s := NewInbox(w, inOrigin)
 	s.newID = func() string { return inNewID }
@@ -330,7 +355,7 @@ func TestReceiveVerifiedDaynightEventWithoutToken(t *testing.T) {
 			Kind, UserID, BotID string
 		} `json:"actor"`
 	}
-	if err := json.Unmarshal(d.events[0].Payload, &payload); err != nil || payload.Classification != core.InboundDaynight || payload.Actor.Kind != "bot" || payload.Actor.BotID != inBot || payload.Actor.UserID != inOwner {
+	if err := json.Unmarshal(d.events[0].Payload, &payload); err != nil || payload.Classification != core.InboundDaynight || payload.Actor.Kind != "bot" || payload.Actor.BotID != inPeer || payload.Actor.UserID != inOwner {
 		t.Fatalf("%s %v", d.events[0].Payload, err)
 	}
 }
@@ -529,5 +554,99 @@ func TestReceiveReportsTransactionCompletion(t *testing.T) {
 	w.outcome, w.err = store.TransactionNotCommitted, errors.New("rollback")
 	if _, err := s.Receive(context.Background(), externalInput(token)); !errors.Is(err, inFailure) {
 		t.Fatal("callback failure lost", err)
+	}
+}
+
+func TestReceiveSuppressesSelfLoopWithoutEvent(t *testing.T) {
+	for name, setup := range map[string]func(*inboundDAO){
+		"holder":        func(d *inboundDAO) { d.sources.provenance.Actor = wm.BotActor(inOwner, inBot) },
+		"reacting peer": func(d *inboundDAO) { d.woke = true },
+		"pending holder": func(d *inboundDAO) {
+			d.task.ClaimTokenHash = nil
+			d.sources.provenance.Actor = wm.BotActor(inOwner, inBot)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, d, _ := newInbound(t)
+			setup(d)
+			result, err := s.Receive(context.Background(), daynightInput(t))
+			if err != nil || !result.Suppressed || result.Duplicate || result.EventID != nil || result.Classification != core.InboundDaynight {
+				t.Fatal(err, result)
+			}
+			if len(d.events) != 0 || d.suppressedCount != 1 || len(d.receipts) != 1 {
+				t.Fatalf("events=%v count=%d receipts=%v", d.events, d.suppressedCount, d.receipts)
+			}
+			sum := sha256.Sum256(inboundEventBody(t))
+			r := d.receipts[0]
+			if !r.Suppressed || r.EventID != nil || r.IdempotencyKey != inEvent || r.TargetBotID != inBot || r.SubjectTaskID == nil || *r.SubjectTaskID != inSubject || r.BodySHA256 != hex.EncodeToString(sum[:]) || !r.ReceivedAt.Equal(inEpoch) || !r.ExpiresAt.Equal(inEpoch.Add(8*24*time.Hour)) {
+				t.Fatalf("%+v", r)
+			}
+			if d.reclaimedReceipts != 1 || d.reclaimedEvents != 1 {
+				t.Fatalf("reclamation %d %d", d.reclaimedReceipts, d.reclaimedEvents)
+			}
+			if strings.Contains(strings.Join(d.calls, ","), "pending") {
+				t.Fatalf("backlog read for a suppressed request: %v", d.calls)
+			}
+		})
+	}
+}
+
+func TestReceiveReplaysSuppressedReceipt(t *testing.T) {
+	s, _, d, _ := newInbound(t)
+	sum := sha256.Sum256(inboundEventBody(t))
+	d.receipt = &model.AssistantTaskInboxReceipt{IdempotencyKey: inEvent, BodySHA256: hex.EncodeToString(sum[:]), Suppressed: true}
+	result, err := s.Receive(context.Background(), daynightInput(t))
+	if err != nil || !result.Suppressed || !result.Duplicate || result.EventID != nil || d.suppressedCount != 0 || len(d.receipts) != 0 {
+		t.Fatal(err, result, d.suppressedCount)
+	}
+}
+
+func TestReceiveDeliversPeerOutsideReactionWindow(t *testing.T) {
+	s, _, d, _ := newInbound(t)
+	result, err := s.Receive(context.Background(), daynightInput(t))
+	if err != nil || result.Suppressed || result.EventID == nil || len(d.events) != 1 || d.suppressedCount != 0 {
+		t.Fatal(err, result, d.suppressedCount)
+	}
+	if d.wakeBot != inPeer || d.wakeSubject != inSubject || !d.wakeSince.Equal(inEpoch.Add(-10*time.Minute)) {
+		t.Fatalf("wake query %s %s %v", d.wakeBot, d.wakeSubject, d.wakeSince)
+	}
+	if d.receipts[0].Suppressed {
+		t.Fatalf("%+v", d.receipts[0])
+	}
+}
+
+func TestReceiveExternalIsNeverSuppressed(t *testing.T) {
+	s, _, d, token := newInbound(t)
+	d.woke = true
+	in := daynightInput(t)
+	in.Token = &token
+	d.sources.missing = true
+	d.sources.provenance.Actor = wm.BotActor(inOwner, inBot)
+	result, err := s.Receive(context.Background(), in)
+	if err != nil || result.Suppressed || result.Classification != core.InboundExternal || len(d.events) != 1 || strings.Contains(strings.Join(d.calls, ","), "wake") {
+		t.Fatal(err, result, d.calls)
+	}
+}
+
+func TestReceiveSuppressionFailuresAbort(t *testing.T) {
+	for _, step := range []string{"wake", "count-suppressed", "insert-receipt", "reclaim-receipts"} {
+		t.Run(step, func(t *testing.T) {
+			s, _, d, _ := newInbound(t)
+			d.woke, d.fail = true, step
+			_, err := s.Receive(context.Background(), daynightInput(t))
+			if !errors.Is(err, inFailure) || len(d.events) != 0 {
+				t.Fatal(err, d.events)
+			}
+		})
+	}
+	s, _, d, _ := newInbound(t)
+	d.woke, d.countRejected = true, true
+	if _, err := s.Receive(context.Background(), daynightInput(t)); err == nil || !strings.Contains(err.Error(), "enabled state") || len(d.receipts) != 0 {
+		t.Fatal(err, d.receipts)
+	}
+	s, _, d, _ = newInbound(t)
+	d.woke, d.receiptRejected = true, true
+	if _, err := s.Receive(context.Background(), daynightInput(t)); err == nil || !strings.Contains(err.Error(), "under the task lock") {
+		t.Fatal(err)
 	}
 }
