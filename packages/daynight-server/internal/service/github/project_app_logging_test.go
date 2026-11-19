@@ -128,7 +128,7 @@ func TestProjectAppTransactionLogging(t *testing.T) {
 			if tc.action != "connect" {
 				selection.AppResourceID, selection.GrantID = "", ""
 			}
-			input := core.ProjectAppConnect{ProjectAppSelection: selection, Version: 7, InstallationID: 99}
+			input := core.ProjectAppConnect{ProjectAppSelection: selection, Version: 7, InstallationID: 99, RepositoryVersion: initial.RepositoryVersion}
 			candidate := core.InstallationCandidate{}
 			candidate.Installation.ID, candidate.Installation.AccountLogin = 99, "owner"
 			candidate.Repository.ID, candidate.Repository.FullName = 42, "owner/repo"

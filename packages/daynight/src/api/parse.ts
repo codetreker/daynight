@@ -2,7 +2,7 @@ import { isText } from "../platform/text.js";
 import type { ErrorDetails, TagReference, TaskSearchField, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 import { parseTagName } from "./tags.js";
 
-export { canonicalId, ProtocolError } from "./validation.js";
+export { canonicalId, nonzeroCanonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
 import { parseTaskProperties, readWorkerClaim } from "./task-properties.js";
 import { isTaskStatus, isTerminalTaskStatus, requiresSatisfiedPrerequisites } from "../task/status.js";

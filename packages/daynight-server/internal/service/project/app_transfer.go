@@ -16,14 +16,17 @@ import (
 // transfer and deletion coordinators for the application composition root.
 type AppProjects struct {
 	*Projects
-	lifecycle store.GitHubProjectLifecycleStore
+	lifecycle          store.GitHubProjectLifecycleStore
+	repositoryStore    store.ProjectRepositoryStore
+	repositoryObserver RepositoryObserver
 }
 
 func NewAppProjects(db interface {
 	database
 	store.GitHubProjectLifecycleStore
 }, engines ...*session.Engine) *AppProjects {
-	return &AppProjects{Projects: NewProjects(db, engines...), lifecycle: db}
+	repositories, _ := any(db).(store.ProjectRepositoryStore)
+	return &AppProjects{Projects: NewProjects(db, engines...), lifecycle: db, repositoryStore: repositories}
 }
 
 func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string, input core.TransferInput) (core.TransferReceipt, error) {

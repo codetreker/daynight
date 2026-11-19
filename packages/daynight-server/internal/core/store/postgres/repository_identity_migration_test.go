@@ -64,7 +64,7 @@ func TestRepositoryIdentityMigrationPreservesHistoricalFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var after, identity, raw string
-	if err := pool.QueryRow(t.Context(), `SELECT jsonb_agg(to_jsonb(p)-'repository_identity' ORDER BY id)::text FROM projects p`).Scan(&after); err != nil || after != before {
+	if err := pool.QueryRow(t.Context(), `SELECT jsonb_agg(to_jsonb(p)-'repository_identity'-'repository_version' ORDER BY id)::text FROM projects p`).Scan(&after); err != nil || after != before {
 		t.Fatalf("historical facts changed: equal=%t err=%v", before == after, err)
 	}
 	if err := pool.QueryRow(t.Context(), `SELECT repo_url,repository_identity FROM projects WHERE id=$1`, first).Scan(&raw, &identity); err != nil || raw != address || identity != "github.com/Org/Repo" {

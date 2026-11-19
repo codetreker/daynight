@@ -285,6 +285,9 @@ var githubRepositorySourcesSQL string
 //go:embed schema/migrations/094_worker_review_participation.sql
 var workerReviewParticipationSQL string
 
+//go:embed schema/migrations/095_project_repository_version.sql
+var projectRepositoryVersionSQL string
+
 //go:embed schema/migrations/098_assistant_task_inboxes.sql
 var assistantTaskInboxesSQL string
 
@@ -398,6 +401,7 @@ var schemaMigrations = []migration{
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
 	{version: 94, sql: workerReviewParticipationSQL},
+	{version: 95, sql: projectRepositoryVersionSQL},
 	{version: 98, sql: assistantTaskInboxesSQL},
 }
 

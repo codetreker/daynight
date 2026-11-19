@@ -64,6 +64,14 @@ func TestPresetResumesAndTransfersAtomically(t *testing.T) {
 				transferred++
 				return nil
 			}
+			retargeted := 0
+			d.retargetInbound = func(_ context.Context, owner, id, bot string) error {
+				if owner != ownerID || id != taskID || bot != target || transferred != 1 {
+					t.Fatal("wrong inbound retarget")
+				}
+				retargeted++
+				return nil
+			}
 			d.insertEvent = func(_ context.Context, e model.AssistantTaskEvent) (bool, error) {
 				events = append(events, e.Type)
 				return true, nil
@@ -73,11 +81,11 @@ func TestPresetResumesAndTransfersAtomically(t *testing.T) {
 				t.Fatalf("result %#v %v", got, err)
 			}
 			if name == "paused" {
-				if transferred != 0 || len(events) != 0 || saved.ClaimGeneration != task.ClaimGeneration {
+				if transferred != 0 || retargeted != 0 || len(events) != 0 || saved.ClaimGeneration != task.ClaimGeneration {
 					t.Fatal("resume changed ownership")
 				}
 			} else {
-				if transferred != 1 || saved.ClaimGeneration != task.ClaimGeneration+1 || got.Claim.State != "pending" || saved.ClaimTokenHash != nil || saved.CredentialOperationID != nil || !saved.LeaseUntil.Equal(epoch.Add(LeaseDuration)) {
+				if transferred != 1 || retargeted != 1 || saved.ClaimGeneration != task.ClaimGeneration+1 || got.Claim.State != "pending" || saved.ClaimTokenHash != nil || saved.CredentialOperationID != nil || !saved.LeaseUntil.Equal(epoch.Add(LeaseDuration)) {
 					t.Fatalf("assignment %#v", saved)
 				}
 				if len(events) == 0 || events[0] != "transfer" {
@@ -134,7 +142,7 @@ func TestPresetCreatesManualAndRecoversConcurrentSingleton(t *testing.T) {
 	}
 }
 func TestPresetFailurePaths(t *testing.T) {
-	for _, step := range []string{"bot actor", "invalid id", "auth", "target", "application", "create", "missing winner", "locked read", "clock", "generation", "save", "items", "event", "lost event", "final auth"} {
+	for _, step := range []string{"bot actor", "invalid id", "auth", "target", "application", "create", "missing winner", "locked read", "clock", "generation", "save", "items", "inbound", "event", "lost event", "final auth"} {
 		t.Run(step, func(t *testing.T) {
 			task := baseTask()
 			task.State = "paused"
@@ -146,6 +154,7 @@ func TestPresetFailurePaths(t *testing.T) {
 				return true, nil
 			}
 			d.transferOpenItems = func(context.Context, string, string, *string) error { return nil }
+			d.retargetInbound = func(context.Context, string, string, string) error { return nil }
 			d.insertEvent = func(context.Context, model.AssistantTaskEvent) (bool, error) { return true, nil }
 			switch step {
 			case "bot actor":
@@ -185,6 +194,8 @@ func TestPresetFailurePaths(t *testing.T) {
 				}
 			case "items":
 				d.transferOpenItems = func(context.Context, string, string, *string) error { return sentinel }
+			case "inbound":
+				d.retargetInbound = func(context.Context, string, string, string) error { return sentinel }
 			case "event", "lost event":
 				d.insertEvent = func(_ context.Context, e model.AssistantTaskEvent) (bool, error) {
 					if step == "event" || e.Type == "claim_lost" {

@@ -1,11 +1,7 @@
 import type { JsonValue } from "../../api/assistant-task-types.js";
-import { canonicalId } from "../../api/parse.js";
+import { nonzeroCanonicalId } from "../../api/parse.js";
 
-export const assistantTaskId = (value: string): string => {
-  const parsed = canonicalId(value);
-  if (parsed === null || parsed !== value || value === "00000000-0000-0000-0000-000000000000") throw new Error("Expected a nonzero canonical lowercase UUID.");
-  return value;
-};
+export const assistantTaskId = nonzeroCanonicalId;
 export const assistantTaskInteger = (value: string, zero = false): string => {
   if (!/^(0|[1-9][0-9]*)$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n || !zero && value === "0") throw new Error("Expected an exact decimal int64 string.");
   return value;
