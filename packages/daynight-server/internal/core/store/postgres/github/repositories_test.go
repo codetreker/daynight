@@ -1,6 +1,7 @@
 package github_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -87,5 +88,29 @@ func TestRepositoryReadsKeepSourcesAndProjectsSeparate(t *testing.T) {
 		if err != nil || total != test.total || statistics.Author == nil || statistics.Author.ID != test.author || statistics.Author.Login != test.login {
 			t.Fatalf("statistics: %+v %v", statistics, err)
 		}
+	}
+}
+
+func TestRepositoryReadErrorsRemainVisible(t *testing.T) {
+	db, project := dbFixture(t)
+	tx := begin(t, db, pgx.TxOptions{})
+	reader := github.NewReader(tx)
+	if err := tx.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.Repository(t.Context(), project, 30); err == nil || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("closed source read: %v", err)
+	}
+	if _, err := reader.Repositories(t.Context(), store.GitHubRepositoriesQuery{ProjectID: project, Limit: 100}); err == nil {
+		t.Fatal("closed directory read succeeded")
+	}
+	fresh := github.NewReader(begin(t, db, pgx.TxOptions{}))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := fresh.Repository(ctx, project, 30); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled source read: %v", err)
+	}
+	if _, err := fresh.Repositories(ctx, store.GitHubRepositoriesQuery{ProjectID: project, Limit: 100}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled directory read: %v", err)
 	}
 }
