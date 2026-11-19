@@ -1911,6 +1911,16 @@ permits recovery. Missing native identity or uncertain stopping remains an error
 without creating a blank replacement or resending a previous request. Bots use Web sessions and do not consume task
 `maxConcurrent` slots; their processes still consume machine resources.
 
+New Claude Bots with dedicated storage mirror their native root transcript in
+`bots/<botId>/native/claude/recovery.sqlite`, while retaining the original
+account configuration directory. Recovery requires the verified SDK 0.3.247 /
+CLI 2.1.247 combination, an intact protected turn and proof that the original
+execution stopped. Missing or conflicting records and unknown operation results
+fail explicitly. This profile rejects image input and overlapping turns;
+compaction and additional native resource dependencies are not verified.
+Claude's temporary support suspension remains in effect. See the
+[recovery design](../../docs/design/worker-bot-runtime.md#claude-原生恢复点).
+
 The assistant receives additional native role instructions and uses the normal
 Daynight CLI for queries and authorized operations. Its capabilities follow CLI
 permissions, without an assistant-specific action allowlist. A query needs no
