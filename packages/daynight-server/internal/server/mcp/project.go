@@ -82,6 +82,12 @@ func RegisterProjectTools(e *Entry, projects projectOperations, identity persona
 	if err := RegisterTypedTool(e, byName["project_transfer"], BudgetControl, h.transfer, "projectId", "toTeam", "ifVersion", "ifTargetVersion"); err != nil {
 		return err
 	}
+	if err := registerTypedReadTool(e, byName["project_preview_repository"], BudgetLarge, h.previewRepository, "projectId", "repoUrl"); err != nil {
+		return err
+	}
+	if err := RegisterTypedTool(e, byName["project_set_repository"], BudgetLarge, h.setRepository, "projectId", "repoUrl", "repositoryVersion", "ownershipVersion", "classification", "targetGitHubRepositoryId"); err != nil {
+		return err
+	}
 	if err := registerTypedReadTool(e, byName["project_list"], BudgetLarge, h.list, "cursor"); err != nil {
 		return err
 	}

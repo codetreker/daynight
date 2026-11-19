@@ -33,6 +33,11 @@ Access revocation still clears private state. The
 [settings design](../../../../docs/design/project-settings.md#仓库改址) owns
 Web presentation and read ownership.
 
+Repository operation diagnostics record the Project, phase, classification and
+transaction outcome without repository addresses or credentials. Worker row
+counts are recorded as committed only when transaction completion confirms it;
+an unknown commit reports the transaction's provisional count instead.
+
 ## Alternatives
 
 **Disconnect and update Worker configuration after saving the address.** A

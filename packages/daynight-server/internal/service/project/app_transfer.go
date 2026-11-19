@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"log/slog"
 
 	github "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -19,6 +20,7 @@ type AppProjects struct {
 	lifecycle          store.GitHubProjectLifecycleStore
 	repositoryStore    store.ProjectRepositoryStore
 	repositoryObserver RepositoryObserver
+	repositoryLogger   *slog.Logger
 }
 
 func NewAppProjects(db interface {
@@ -26,7 +28,7 @@ func NewAppProjects(db interface {
 	store.GitHubProjectLifecycleStore
 }, engines ...*session.Engine) *AppProjects {
 	repositories, _ := any(db).(store.ProjectRepositoryStore)
-	return &AppProjects{Projects: NewProjects(db, engines...), lifecycle: db, repositoryStore: repositories}
+	return &AppProjects{Projects: NewProjects(db, engines...), lifecycle: db, repositoryStore: repositories, repositoryLogger: slog.Default()}
 }
 
 func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string, input core.TransferInput) (core.TransferReceipt, error) {
