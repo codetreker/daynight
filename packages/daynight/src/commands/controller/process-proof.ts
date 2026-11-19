@@ -146,14 +146,26 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
   if (controller.processGroupId !== controller.pid) throw new Error("Refusing a process group not owned by the original controller.");
   const signal = async (value: NodeJS.Signals): Promise<boolean> => {
     if ((await groupMembers(controller.pid, deadline)).length === 0) return false;
-    let attributable = false;
+    let attributable = false, originalsStopped = true;
     for (const proof of [controller, ...native]) {
       if (proof.processGroupId !== controller.pid) continue;
       const state = await bounded(deadline, () => inspectProcessProof(proof, remaining(deadline)));
       remaining(deadline);
       if (state === "running") attributable = true;
+      if (state !== "stopped") originalsStopped = false;
     }
-    if (!attributable) throw new Error("The remaining process group has no original process-instance proof; resources are retained.");
+    if (!attributable) {
+      // Original Linux instances can finish before their descendants. Once all
+      // originals stopped, wait without signaling; conflicts never admit this wait.
+      if (process.platform === "linux") {
+        while ((await groupMembers(controller.pid, deadline)).length > 0) {
+          if (!originalsStopped) throw new Error("The remaining process group has no original process-instance proof; resources are retained.");
+          await new Promise(resolve => setTimeout(resolve, Math.min(25, remaining(deadline))));
+        }
+        return false;
+      }
+      throw new Error("The remaining process group has no original process-instance proof; resources are retained.");
+    }
     remaining(deadline);
     try { process.kill(-controller.pid, value); return true; }
     catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return false; throw error; }

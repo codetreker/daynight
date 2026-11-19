@@ -175,8 +175,11 @@ it.each([0, 1, 2] as const)("recognizes only the original exited PID when exit o
 
   observeExit(exitBeforePs, { liveMember: true });
   expect(await confirmControllerProcessesStopped(proof, [])).toBe(false);
+  vi.useFakeTimers();
   observeExit(exitBeforePs, { liveMember: true });
-  await expect(stopControllerProcesses(proof, [], Date.now() + 5000)).rejects.toThrow(/no original/);
+  const pending = stopControllerProcesses(proof, [], Date.now() + 100).catch(error => error);
+  await vi.advanceTimersByTimeAsync(100);
+  expect((await pending).message).toMatch(/deadline/);
   expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
 
@@ -280,6 +283,77 @@ it("does not send a stop signal to a process that remains in kernel exit until t
   const pending = stopControllerProcesses(proof, [], Date.now() + 100).catch(error => error);
   await vi.advanceTimersByTimeAsync(100);
   expect((await pending).message).toMatch(/deadline/);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each([false, true])("refreshes group membership after its only original process exits while being inspected (unattributed survivor=%s)", async survivor => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  flags = "4";
+  let inventories = 0;
+  const execute = io.exec.getMockImplementation()!;
+  io.exec.mockImplementation((file: string, args: string[], options: unknown, callback: (error: Error | null, output: string) => void) => {
+    if (args.includes("-A")) {
+      inventories++;
+      callback(null, inventories === 1 ? `${pid} ${pid} S\n` : survivor ? `4202 ${pid} S\n` : "");
+      return;
+    }
+    return execute(file, args, options, callback);
+  });
+  const started = Date.now();
+  let settled = false;
+  const pending = stopControllerProcesses(proof, [], started + 100).then(() => { settled = true; return { stopped: true }; }, error => { settled = true; return { error }; });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(inventories).toBe(1);
+  state = "Z"; command = "[node] <defunct>";
+  await vi.advanceTimersByTimeAsync(25);
+  if (survivor) {
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(75);
+    expect(Date.now() - started).toBe(100);
+  }
+  const result = await pending;
+  if (survivor) {
+    expect(result).toHaveProperty("error");
+    if ("error" in result) expect(result.error.message).toMatch(/deadline/);
+    expect(inventories).toBeGreaterThan(2);
+  } else expect(result).toEqual({ stopped: true });
+  if (!survivor) expect(inventories).toBe(2);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it("lets remaining group members exit naturally after every recorded original stopped", async () => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  state = "Z"; command = "[node] <defunct>";
+  let survivor = true, inventories = 0, settled = false;
+  const execute = io.exec.getMockImplementation()!;
+  io.exec.mockImplementation((file: string, args: string[], options: unknown, callback: (error: Error | null, output: string) => void) => {
+    if (args.includes("-A")) { inventories++; callback(null, survivor ? `4202 ${pid} S\n` : ""); return; }
+    return execute(file, args, options, callback);
+  });
+  const pending = stopControllerProcesses(proof, [], Date.now() + 100).then(() => { settled = true; return { stopped: true }; }, error => { settled = true; return { error }; });
+  await vi.advanceTimersByTimeAsync(25);
+  expect(settled).toBe(false);
+  survivor = false;
+  await vi.advanceTimersByTimeAsync(25);
+  expect(await pending).toEqual({ stopped: true });
+  expect(inventories).toBeGreaterThan(2);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each(["birth", "command"] as const)("refuses unproven survivors immediately when an original has conflicting %s evidence", async conflict => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  if (conflict === "birth") ticks = "26140756";
+  else command = "node replacement.js";
+  const started = performance.now();
+  let settled = false;
+  const pending = stopControllerProcesses(proof, [], Date.now() + 100).catch(error => { settled = true; return error; });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(settled).toBe(true);
+  expect((await pending).message).toMatch(/no original/);
+  expect(performance.now()).toBe(started);
   expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
 

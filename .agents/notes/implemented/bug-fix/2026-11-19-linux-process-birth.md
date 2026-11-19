@@ -48,6 +48,13 @@ callers reject this observation as a running proof. Inspection waits at most
 deadline across waits and reads. The flag itself proves neither stopped nor
 permission to signal: only a later matching zombie or authoritative ESRCH
 confirms the single PID stopped. Unconfirmed expiry retains responsibility.
+The wait can outlive an earlier group inventory. If no original instance remains
+to authorize a signal, Linux reads the group again within the same deadline.
+Only when every inspected original group instance is explicitly stopped may it
+wait for descendants to finish naturally. The wait sends no signal, creates no
+new grace period and retains unconfirmed survivors at expiry; replacements and
+identity conflicts cannot enter it. An empty group still requires the caller's
+final original-instance and group confirmation.
 The kernel sets this flag before address-space teardown, as documented in the
 [Session design](../../../../docs/design/task-session-protocol.md#linux-稳定出生身份确定方案);
 ordinary command conflicts do not receive this waiting exception.
