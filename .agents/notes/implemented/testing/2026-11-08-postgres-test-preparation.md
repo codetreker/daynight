@@ -174,7 +174,11 @@ and preference results do not depend on the absolute Bot creation sequence.
 Team deletion, Project creation and ownership transfer matrices reuse one
 Store per parent. Contention cases use independent Teams and Projects, observe
 the actual blocking backend and check committed ownership or its absence. The
-parent verifies pool reuse after the case joins its waiters.
+[repository occupancy race](../../../../packages/daynight-server/internal/core/store/postgres/project_repository_test.go)
+retains the same repository identity across destination Teams and verifies
+the only occupant is the committed winner. It checks rollback or absence for
+the losing Project. The parent verifies pool reuse after the case joins its
+waiters.
 
 The [Project creation Personal Team matrix](../../../../packages/daynight-server/internal/core/store/postgres/project/ownership_contract_test.go)
 uses a fresh owner and Personal Team for each committed membership defect. A
