@@ -20,7 +20,7 @@ type Remote interface {
 	VerifyAccess(context.Context, int64, string, string) (githubpr.RepositoryObservation, error)
 	ResolveRepository(context.Context, int64, int64) (githubpr.RepositoryObservation, error)
 	ListOpen(context.Context, int64, string, string, func([]githubpr.Observation) error) error
-	ListAll(context.Context, int64, string, string, func([]remote.PullSummary) error) (bool, error)
+	ListAll(ctx context.Context, installationID, repositoryID int64, owner, repo string, visit func([]remote.PullSummary) error) (bool, error)
 	PullRequest(context.Context, int64, string, string, int64) (githubpr.Observation, error)
 }
 

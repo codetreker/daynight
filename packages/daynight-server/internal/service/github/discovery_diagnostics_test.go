@@ -82,7 +82,7 @@ func TestDiscoveryDiagnosticsNormalAndTruncated(t *testing.T) {
 			if truncated {
 				pages, result = 10, "truncated"
 			}
-			client.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+			client.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 				for range pages {
 					if err := visit([]remote.PullSummary{{Number: 5, RepositoryID: 30, State: "open", UpdatedAt: f.now}}); err != nil {
 						return false, err
@@ -119,7 +119,7 @@ func TestDiscoveryDiagnosticsListAndDetailFailures(t *testing.T) {
 			}
 			cause := fmt.Errorf("%s: %w", diagnosticPrivateContent, &remote.Error{Code: "unavailable", Status: 500, RequestID: "request-500"})
 			client := f.remote()
-			client.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+			client.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 				if err := visit([]remote.PullSummary{{Number: 5, RepositoryID: 30, State: "open", UpdatedAt: f.now}, {Number: 6, RepositoryID: 30, State: "closed", UpdatedAt: f.now, ClosedAt: &f.now}}); err != nil {
 					return false, err
 				}
@@ -167,7 +167,7 @@ func TestDiscoveryDiagnosticsInterleavedHintFailureRetainsSource(t *testing.T) {
 	f.hints = []store.GitHubPendingPR{hintFor(4, "hint-request")}
 	cause := &remote.Error{Code: "rate_limited", Status: 429, RequestID: "hint-upstream"}
 	client := f.remote()
-	client.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+	client.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 		return false, visit(nil)
 	}
 	client.pull = func(_ context.Context, _ int64, _, _ string, n int64) (githubpr.Observation, error) {
@@ -198,7 +198,7 @@ func TestDiscoveryDiagnosticsCountsCommittedPublicationBeforeRenewalFailure(t *t
 	f.unknownRenewAt = 1
 	f.facts = func(int64, *time.Time) store.GitHubPublicationFacts { return store.GitHubPublicationFacts{} }
 	client := f.remote()
-	client.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+	client.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 		return false, visit([]remote.PullSummary{{Number: 5, RepositoryID: 30, State: "open", UpdatedAt: f.now}})
 	}
 	client.pull = func(_ context.Context, _ int64, _, _ string, n int64) (githubpr.Observation, error) {
@@ -219,7 +219,7 @@ func TestDiscoveryDiagnosticsValidationAndSelectionFailures(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			f := newPollFixture(t)
 			client := f.remote()
-			client.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+			client.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 				repository := int64(30)
 				if stage == "list" {
 					repository = 999

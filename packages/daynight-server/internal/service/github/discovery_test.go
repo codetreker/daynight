@@ -28,7 +28,7 @@ func TestDiscoveryAggregatesDuplicatesAndSkipsOutsideCoverage(t *testing.T) {
 	}
 	r := f.remote()
 	var pulls []int64
-	r.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+	r.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 		if err := visit([]remote.PullSummary{{Number: 1, RepositoryID: 30, State: "closed", UpdatedAt: outside, ClosedAt: &outside}, {Number: 2, RepositoryID: 30, State: "closed", UpdatedAt: outside, ClosedAt: &outside}}); err != nil {
 			return false, err
 		}
@@ -55,7 +55,7 @@ func TestDiscoveryAggregatesDuplicatesAndSkipsOutsideCoverage(t *testing.T) {
 func TestDiscoveryFailureDoesNotAdvanceFullSuccess(t *testing.T) {
 	f := newPollFixture(t)
 	r := f.remote()
-	r.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+	r.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 		return false, errors.New("tenth page failed")
 	}
 	if err := f.run(r); err == nil {
@@ -198,7 +198,7 @@ func TestInvalidTerminalDetailDoesNotCompletePoll(t *testing.T) {
 		return store.GitHubPublicationFacts{Period: &store.GitHubCoveragePeriod{StartedAt: f.now.Add(-time.Hour)}}
 	}
 	r := f.remote()
-	r.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+	r.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 		return false, visit([]remote.PullSummary{{Number: 5, RepositoryID: 30, State: "closed", UpdatedAt: f.now, ClosedAt: &f.now}})
 	}
 	r.pull = func(_ context.Context, _ int64, _, _ string, n int64) (githubpr.Observation, error) {
@@ -322,7 +322,7 @@ func TestPollBackfillsTerminalRequestsAndLaterVisibleNumber(t *testing.T) {
 	round := 1
 	pages, openPages := 0, 0
 	pulls := []int64{}
-	r.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+	r.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 		for page := 0; page < 10; page++ {
 			pages++
 			if err := remote.CheckpointRequest(ctx); err != nil {
@@ -417,7 +417,7 @@ func TestPollRateLimitPreservesSuccessAndRecoversDiscovery(t *testing.T) {
 	r := f.remote()
 	fail := true
 	requests := 0
-	r.listAll = func(ctx context.Context, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
+	r.listAll = func(ctx context.Context, _, _ int64, _, _ string, visit func([]remote.PullSummary) error) (bool, error) {
 		requests++
 		if fail {
 			return false, &remote.Error{Code: "rate_limited", Status: 429, RetryAt: retry}
