@@ -254,10 +254,6 @@ func TestInboxManagementRejectsInvalidRequestsBeforeWriting(t *testing.T) {
 			_, err := m.EnableInbox(context.Background(), d, a, inboxInput(""))
 			return err
 		}, baseTask(), nil, "forbidden"},
-		{"bot read", botActor(), func(m *Module, d store.AssistantTaskDAO, a Actor) error {
-			_, err := m.GetInbox(context.Background(), d, a, taskID)
-			return err
-		}, baseTask(), nil, "forbidden"},
 		{"bot receipt", botActor(), func(m *Module, d store.AssistantTaskDAO, a Actor) error {
 			_, err := m.InboxOperation(context.Background(), d, a, taskID, entryID)
 			return err
@@ -364,6 +360,10 @@ func TestGetInboxReadsStateWithoutSecrets(t *testing.T) {
 	}
 	if view.InboxID != inboxID || !view.Enabled || !view.CreatedAt.Equal(existing.CreatedAt) || view.OverlapUntil != nil || view.SuppressedCount != 3 {
 		t.Fatalf("view %+v", view)
+	}
+	d, _ = inboxDAO(t, baseTask(), &existing)
+	if view, err = New().GetInbox(context.Background(), d, botActor(), taskID); err != nil || view.InboxID != inboxID {
+		t.Fatalf("bot read %+v %v", view, err)
 	}
 	d, _ = inboxDAO(t, baseTask(), nil)
 	if view, err = New().GetInbox(context.Background(), d, userActor(), taskID); err != nil || view != (InboxView{}) {

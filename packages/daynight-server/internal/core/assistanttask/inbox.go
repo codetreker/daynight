@@ -349,11 +349,10 @@ func (m *Module) InboxOperation(ctx context.Context, dao store.AssistantTaskDAO,
 	return m.inboxReceipt(ctx, dao, actor, task, op)
 }
 
-// GetInbox reads the task's inbox state without its token or digests.
+// GetInbox reads the task's inbox state without its token or digests. Only
+// management is owner-only; a verified Bot of the owner may read the state
+// because the view carries no secret.
 func (m *Module) GetInbox(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string) (InboxView, error) {
-	if actor.BotID != nil {
-		return InboxView{}, forbidden()
-	}
 	task, err := loadTask(ctx, dao, actor, taskID, false)
 	if err != nil {
 		return InboxView{}, err
