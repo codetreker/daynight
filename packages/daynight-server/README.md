@@ -557,6 +557,19 @@ understand the renamed grants or inherited authority. After a committed migratio
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
 
+### Dependency type upgrade
+
+Migration 090 adds a default `task` type and nullable Goal edge identity to the
+shared dependency table. Existing rows and writes from already running old
+instances retain the ordinary Task type. New ordinary reads and writes filter
+that type. No Goal edge writes are exposed by this migration.
+
+An old binary cannot restart against the newer migration ledger. Before Goal
+edge writes are enabled, stop every old instance that accesses this table,
+including read-only and Worker API instances. The migration lock coordinates
+migrators, not other writers. Restoring an old binary requires a matching
+database restoration with writers stopped; do not remove ledger entries.
+
 ### Team repository uniqueness upgrade
 
 Stop and drain all old service instances and direct Project writers before

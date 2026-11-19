@@ -24,8 +24,12 @@ func TestTaskTypeParentMigrationPreservesResources(t *testing.T) {
 		if typed {
 			taskExpr += ` - 'type' - 'parent_id'`
 		}
+		dependencyExpr := `to_jsonb(d)`
+		if typed {
+			dependencyExpr += ` - 'dependency_type' - 'goal_edge_id'`
+		}
 		var result string
-		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(`+taskExpr+` ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(to_jsonb(d) ORDER BY task_id,depends_on_task_id) FROM task_dependencies d), 'attachments',(SELECT jsonb_agg(to_jsonb(a) ORDER BY task_id,path) FROM task_attachments a))::text`).Scan(&result)
+		err := pool.QueryRow(ctx, `SELECT jsonb_build_object('tasks',(SELECT jsonb_agg(`+taskExpr+` ORDER BY id) FROM tasks t), 'properties',(SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name) FROM task_properties p), 'dependencies',(SELECT jsonb_agg(`+dependencyExpr+` ORDER BY task_id,depends_on_task_id) FROM task_dependencies d), 'attachments',(SELECT jsonb_agg(to_jsonb(a) ORDER BY task_id,path) FROM task_attachments a))::text`).Scan(&result)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -154,7 +154,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 |---|---|
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes）；内部真实 `Ownership` 保存 TeamID、Version、UpdatedAt，公开内在字段必含 `ownership:{teamId,version}`；GET 另含同快照 access |
 | Task | `id`、`projectId`、资源类型 `type`、可空 `parentId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt`、`cancelledAt` |
-| TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
+| TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false）、非空 `dependency_type`（默认 `task`）、可空 `goal_edge_id` |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 | WorkerConfiguration | 同一账号 Worker 行上的独立目标版本、值、应用观测版本与最近结果；[配置设计](daynight-worker-configuration.md) |
 
@@ -163,6 +163,8 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 保存稳定规则算出的仓库身份。归属仅存于 `project_ownership`，活跃状态仅由 `projects.deleted_at`
 决定；同 Team 活跃身份唯一性由共享 core 规则和 Team 行锁保护。不同 Team 可持有同仓库项目。
 Project 仓库创建后不可修改，软删除保留历史并释放占用。
+
+依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；当前没有公开 Goal 边写入入口。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
 
 任务和关系使用 `projects`、`tasks`、`task_dependencies`，属性使用独立 `task_properties` 表；账号级 Worker 观测使用 `workers`。属性主键为 `(task_id,name)`，value 保存完整 JSON 文本，不重复 project_id，不具有独立版本、时间或删除标记。完整任务先取得可见父行，再在同一快照批量加载属性；图查询保持显式精简投影。其他主键分别为 `id`、`id`、`(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
 检查、非自身依赖检查及主键唯一性保证可局部表达的约束。索引支持以下访问：

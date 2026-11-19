@@ -78,9 +78,9 @@ func (d *retentionDAO) ArchiveRetentionFacts(ctx context.Context, project, task,
  SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=$2 AND type='task' AND effective_deleted_at IS NULL
  UNION
  SELECT neighbor.id FROM chain member CROSS JOIN LATERAL (
- SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND NOT external
+ SELECT depends_on_task_id AS id FROM task_dependencies WHERE project_id=$1 AND task_id=member.id AND dependency_type='task' AND NOT external
  UNION
- SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND NOT external
+ SELECT task_id AS id FROM task_dependencies WHERE project_id=$1 AND depends_on_task_id=member.id AND dependency_type='task' AND NOT external
  ) neighbor JOIN task_resource_rows t ON t.id=neighbor.id AND t.project_id=$1 AND t.type='task' AND t.effective_deleted_at IS NULL
  ) SELECT t.id::text,t.version,t.status,t.completed_at,t.cancelled_at
  FROM chain JOIN task_resource_rows t ON t.id=chain.id AND t.project_id=$1 ORDER BY t.id`, project, task)
