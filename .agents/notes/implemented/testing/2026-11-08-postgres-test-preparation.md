@@ -99,6 +99,13 @@ checks Session authentication while the relation is still absent. A failed case
 stops further reuse. Assignee error tests reuse each fault schema for two
 read-only modes.
 
+[Identity profile contention](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_contract_test.go)
+uses one Store per matrix with a distinct identity per case. The tests verify
+that the intended SQL waits on the exact holder before committing or rolling
+back. Each contender exits before the durable result is read and the next
+case starts. Failure cancels the contender, releases the holder and stops
+reuse.
+
 The [first image-chunk inventory matrix](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_test.go)
 shares one parent-owned Store across its sequential cases. Each case retains its
 own context, generated identities, raw JSON variants, committed Session/upload/chunk
