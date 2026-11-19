@@ -105,7 +105,7 @@ export const deleteProject = async (
 ): Promise<ProjectDeletionReceipt> => {
   const project = requestId(projectId), user = requestId(userId);
   const correlationId = crypto.randomUUID();
-  const response = await request(`/api/v1/projects/${project}`, signal, { method: "DELETE", headers: { Accept: "application/json", "X-Request-ID": correlationId } }, onDispatch);
+  const response = await request(`/api/v1/projects/${project}`, signal, { method: "DELETE", headers: { Accept: "application/json", "X-Request-ID": correlationId, "Daynight-Confirm-Goal-Dependency-Removal": "true" } }, onDispatch);
   assertResponsePrincipal(response, user, onMismatch);
   if (!response.ok) {
     const confirmed = await refusal(response, correlationId, signal);

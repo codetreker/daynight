@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -94,6 +96,9 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 			}
 			if retained != nil {
 				defer func() {
+					if retained == nil {
+						return
+					}
 					if e := retained.Close(); e != nil {
 						httpx.LogFailure(logger, r.Context(), "session", "history release", e)
 					}
@@ -110,7 +115,17 @@ func RegisterHistoryRoutes(mux *http.ServeMux, reader HistoryReader, auth inspec
 			if values := r.Header.Values("Daynight-Task-Body-History-Version"); len(values) == 1 && values[0] == "1" && policy == "task_body" {
 				w.Header().Set("Daynight-Session-Content-Policy", policy)
 			}
-			httpx.WriteJSON(w, r, logger, http.StatusOK, value)
+			if r.Context().Err() != nil {
+				return
+			}
+			var body bytes.Buffer
+			if err := json.NewEncoder(&body).Encode(value); err != nil {
+				fail(err)
+				return
+			}
+			lease := retained
+			retained = nil
+			sendRetainedJSON(w, r, body.Bytes(), 0, lease, logger, "history release", fail)
 		}))
 		mux.HandleFunc(path, auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 			w.Header().Set("Cache-Control", "no-store")

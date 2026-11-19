@@ -833,3 +833,37 @@ func TestPutSyncsNewDirectoryChainBeforeAcknowledgement(t *testing.T) {
 		t.Fatalf("expected file, session, bucket and root barriers, got %v", kinds)
 	}
 }
+
+func TestPutPreservesPublicationWhenContextIsLostDuringSync(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome filestorage.Publication
+		value   string
+	}{
+		{"file bytes", filestorage.NotPublished, "old"},
+		{"directory entry", filestorage.Published, "new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storage, root := newStorage(t)
+			put(t, storage, "bucket", "object", []byte("old"))
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			calls := 0
+			storage.fileSync = func(file *os.File) error {
+				calls++
+				if (tc.outcome == filestorage.NotPublished && calls == 1) || (tc.outcome == filestorage.Published && calls == 2) {
+					cancel(filestorage.ErrGateLost)
+				}
+				return file.Sync()
+			}
+			_, err := storage.Put(ctx, "bucket", "object", strings.NewReader("new"))
+			if !errors.Is(err, filestorage.ErrGateLost) || filestorage.PublicationOutcome(err) != tc.outcome {
+				t.Fatalf("lease lost during sync: outcome %q, error %v", filestorage.PublicationOutcome(err), err)
+			}
+			if got := string(read(t, storage, "bucket", "object")); got != tc.value {
+				t.Fatalf("object content: got %q, want %q", got, tc.value)
+			}
+			assertNoTemporary(t, root)
+		})
+	}
+}

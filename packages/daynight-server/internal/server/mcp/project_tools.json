@@ -42,8 +42,32 @@
     }
   },
   {
+    "name": "project_transfer_preview",
+    "description": "Read the Project, source and destination Teams, exact ownership and target Team versions, and permanent Goal dependency removal scope. Show these facts to the user and obtain explicit confirmation for this transfer before calling project_transfer. No answer or refusal means no write call.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "toTeam": {
+          "type": "string",
+          "description": "Canonical Team UUID or exact same-service /teams/{uuid} link."
+        }
+      },
+      "required": ["projectId", "toTeam"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "project_transfer",
-    "description": "Transfer project ownership with the observed ownership version.",
+    "description": "Transfer project ownership. First call project_transfer_preview, show the Project, target Team and permanent removal of all internal and cross-Project Goal dependencies, and obtain the user's explicit confirmation for this operation. No answer or refusal means no write call. Submit confirm:true, confirmGoalDependencyRemoval:true and both exact preview versions. On a version conflict, preview again and obtain new user confirmation; never replay an unknown write outcome.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -58,7 +82,16 @@
         "ifVersion": {
           "type": "string",
           "pattern": "^[1-9][0-9]{0,18}$",
-          "description": "Exact positive int64 decimal; omit only where current CLI reads a version before writing."
+          "description": "Exact positive int64 ownership version from project_transfer_preview. Required with confirmGoalDependencyRemoval; legacy requests may omit."
+        },
+        "ifTargetVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 target Team version from project_transfer_preview. Required with confirmGoalDependencyRemoval."
+        },
+        "confirmGoalDependencyRemoval": {
+          "const": true,
+          "description": "The user explicitly confirmed this Project transfer and permanent removal of all its Goal dependencies, including internal and cross-Project incoming and outgoing relationships. Requires both preview versions."
         },
         "confirm": {
           "const": true
@@ -69,6 +102,9 @@
         "toTeam",
         "confirm"
       ],
+      "dependentRequired": {
+        "confirmGoalDependencyRemoval": ["ifVersion", "ifTargetVersion"]
+      },
       "additionalProperties": false
     },
     "annotations": {

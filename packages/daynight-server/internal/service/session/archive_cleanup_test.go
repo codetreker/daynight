@@ -77,6 +77,35 @@ func (f cleanupFiles) DeleteSessionArchives(c context.Context, n sessionarchive.
 	return f.deleteArchive(c, n)
 }
 
+type cleanupLeaseFiles struct {
+	cleanupFiles
+	permits map[string]*cleanupLeasePermit
+}
+
+func (f cleanupLeaseFiles) TryAcquireResidency(_ context.Context, key string) (io.Closer, error) {
+	permit, ok := f.permits[key]
+	if !ok {
+		return nil, errors.New("unexpected archive cleanup gate " + key)
+	}
+	return permit, nil
+}
+
+type cleanupLeasePermit struct {
+	lose   context.CancelCauseFunc
+	closed bool
+}
+
+func (p *cleanupLeasePermit) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	p.lose = cancel
+	return ctx, func() { cancel(context.Canceled) }
+}
+
+func (p *cleanupLeasePermit) Close() error {
+	p.closed = true
+	return nil
+}
+
 func cleanupTarget() store.ArchiveCleanupTarget {
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	return store.ArchiveCleanupTarget{ProjectID: uuid.NewString(), TaskID: uuid.NewString(), SessionID: uuid.NewString(), OwnerID: uuid.NewString(), ExpiredAt: &at}
@@ -285,6 +314,100 @@ func TestArchiveCleanupMediaGateAndRestartPreserveIndependentBytes(t *testing.T)
 	cleanupContent(t, f, sessionresource.Bucket, sharedPath, "shared")
 	cleanupContent(t, f, attachment.Bucket, "independent/task.txt", "task attachment")
 	cleanupContent(t, f, sessionarchive.Bucket, botPath, "bot cache")
+}
+
+func TestArchiveCleanupStopsWhenHeldGateIsLost(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		loseOwner   bool
+		afterDelete bool
+	}{
+		{name: "owner lost before deletion", loseOwner: true},
+		{name: "earlier media permit lost before deletion"},
+		{name: "earlier media permit lost after deletion", afterDelete: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := cleanupTarget()
+			localFiles := cleanupLocal(t)
+			namespace, err := sessionarchive.NewNamespace(sessionarchive.Projects, target.ProjectID, target.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := namespace.Directory() + "/timeline"
+			cleanupPut(t, localFiles, sessionarchive.Bucket, path, "archive")
+
+			owner, firstMedia, secondMedia := &cleanupLeasePermit{}, &cleanupLeasePermit{}, &cleanupLeasePermit{}
+			lost := firstMedia
+			if tc.loseOwner {
+				lost = owner
+			}
+			firstID, secondID := uuid.NewString(), uuid.NewString()
+			files := cleanupLeaseFiles{
+				cleanupFiles: cleanupFiles{
+					Storage: localFiles,
+					deleteArchive: func(ctx context.Context, namespace sessionarchive.Namespace) error {
+						if lost.lose == nil {
+							t.Fatal("cleanup did not bind the held lease to its work")
+						}
+						if !tc.afterDelete {
+							lost.lose(filestorage.ErrGateLost)
+							return localFiles.DeleteSessionArchives(ctx, namespace)
+						}
+						if err := localFiles.DeleteSessionArchives(ctx, namespace); err != nil {
+							return err
+						}
+						lost.lose(filestorage.ErrGateLost)
+						return nil
+					},
+				},
+				permits: map[string]*cleanupLeasePermit{
+					"session/archive/owner/" + target.OwnerID:        owner,
+					"media-lease/session-resource-lease/" + firstID:  firstMedia,
+					"media-lease/session-resource-lease/" + secondID: secondMedia,
+				},
+			}
+			var released []string
+			dao := cleanupMediaStub{
+				resources: func(context.Context, string) ([]store.SessionResourceRecord, error) { return nil, nil },
+				leases: func(context.Context, string) ([]store.SessionResourceLease, error) {
+					return []store.SessionResourceLease{{ID: firstID}, {ID: secondID}}, nil
+				},
+				release: func(_ context.Context, sessionID, leaseID string) error {
+					if sessionID != target.SessionID {
+						t.Fatalf("release targeted session %s", sessionID)
+					}
+					released = append(released, leaseID)
+					return nil
+				},
+			}
+			scope := cleanupScopeStub{target: target, dao: dao, complete: func(context.Context, time.Time) error {
+				t.Fatal("marked archive cleanup complete after losing a gate")
+				return nil
+			}}
+			db := cleanupStoreStub{write: func(_ context.Context, _ store.ArchiveCleanupTarget, work func(store.ArchiveCleanupScope) error) (store.Completion, error) {
+				if err := work(scope); err != nil {
+					return store.Completion{Outcome: store.TransactionNotCommitted}, err
+				}
+				return store.Completion{Outcome: store.TransactionCommitted}, nil
+			}}
+			cleanup := NewArchiveCleanup(db, files)
+			cleanup.expire = func(context.Context, store.ArchiveCleanupScope, time.Time) (bool, error) { return true, nil }
+			if err := cleanup.clean(t.Context(), target); !errors.Is(err, filestorage.ErrGateLost) {
+				t.Fatalf("cleanup after losing a gate: %v", err)
+			}
+			if len(released) != 2 || released[0] != firstID || released[1] != secondID {
+				t.Fatalf("unexpected lease releases: %v", released)
+			}
+			if !owner.closed || !firstMedia.closed || !secondMedia.closed {
+				t.Fatal("cleanup did not release all held gates")
+			}
+			if tc.afterDelete {
+				cleanupAbsent(t, localFiles, sessionarchive.Bucket, path)
+			} else {
+				cleanupContent(t, localFiles, sessionarchive.Bucket, path, "archive")
+			}
+		})
+	}
 }
 
 func TestArchiveCleanupSweepAdvancesAcrossFailures(t *testing.T) {

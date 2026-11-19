@@ -13,25 +13,25 @@ const row = (n: number, title: string, dependsOn: string[] = []) => detailFixtur
 
 async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
-  const state = { tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
+  const state = { viewer: TEST_VIEWER_ID, tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
-    const request = route.request(), url = new URL(request.url()), path = url.pathname, graph = graphFixture(state.tasks);
+    const request = route.request(), url = new URL(request.url()), path = url.pathname, targetProject = /^\/api\/v1\/projects\/([^/]+)/.exec(path)?.[1] ?? projectId, graph = graphFixture(state.tasks.map(task => ({ ...task, projectId: targetProject })));
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
-    if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': state.viewer, ...extra } });
+    if (path === '/api/v1/me') return send({ id: state.viewer, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
-    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
+    if (path === `/api/v1/projects/${targetProject}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
-    if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
-    if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) {
+    if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: state.viewer, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
+    if (path === `/api/v1/projects/${targetProject}/access`) return send(directAccessFixture(targetProject, state.viewer));
+    if (path === `/api/v1/projects/${targetProject}/task-sync`) {
       if (state.graphMode === 'pending') await gate.promise;
       if (state.holdReplacement && taskSyncQuery(url).epoch === undefined) { state.replacementHeld = true; await gate.promise; }
       if (state.graphMode === 'error') return send({ error: { code: 'internal_error', message: 'unavailable', requestId: 'graph-failure' } }, 500);
-      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
+      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), epoch: targetProject === projectId ? state.epoch : taskSyncEpoch(targetProject), actorAccess: directAccessFixture(targetProject, state.viewer), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
     }
-    const base = `/api/v1/projects/${projectId}/tasks/`;
+    const base = `/api/v1/projects/${targetProject}/tasks/`;
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
       if (detail && parts.length === 1 && request.method() === 'DELETE') {
@@ -200,6 +200,191 @@ test('project management remains available when the task cache cannot open', asy
   await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Project members', exact: true })).toBeVisible();
   expect(state.writes).toEqual([]);
+});
+
+for (const width of [1100, 390]) test(`top-level project tabs share the painted scroll position at ${width}px`, async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  await install(page, chains);
+  // The retired key would restore a different position in the old implementation.
+  await page.addInitScript(project => localStorage.setItem(`daynight:task-list-scroll:${project}`, '320'), projectId);
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)).toBeGreaterThan(400);
+  const trace = await page.evaluateHandle(() => {
+    let positions: number[] = [], active = false;
+    const sample = () => { if (active) { positions.push(scrollY); requestAnimationFrame(sample); } };
+    return {
+      start: () => { positions = [scrollY]; active = true; requestAnimationFrame(sample); },
+      stop: () => new Promise<number[]>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => { positions.push(scrollY); active = false; resolve(positions); }))),
+    };
+  });
+  const begin = () => trace.evaluate(value => value.start());
+  const end = () => trace.evaluate(value => value.stop());
+  const clickWithoutScrolling = (section: string) => page.locator(`#project-section-tab-${section}`).evaluate((element: HTMLElement) => element.click());
+  const expectStable = (samples: number[], expected: number) => expect(samples).toEqual(samples.map(() => expected));
+  try {
+    await page.evaluate(() => scrollTo(0, 90)); await expect.poll(() => page.evaluate(() => scrollY)).toBe(90);
+    await begin(); await clickWithoutScrolling('tasks'); await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 90);
+    expect(await page.evaluate(() => document.documentElement.scrollHeight - innerHeight)).toBeGreaterThan(400);
+    await page.evaluate(() => scrollTo(0, 400)); await expect.poll(() => page.evaluate(() => scrollY)).toBe(400);
+    await page.locator('#project-section-tab-overview').evaluate((element: HTMLElement) => element.focus({ preventScroll: true }));
+    await begin(); await page.keyboard.press('Enter'); await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 400);
+    await begin(); await page.goBack(); await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 400);
+    await begin(); await page.goForward(); await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), 400);
+    await page.evaluate(() => scrollTo(0, 90));
+    await begin(); await clickWithoutScrolling('prs'); await expect(page.locator('#project-section-tab-prs')).toHaveAttribute('aria-selected', 'true');
+    const prSamples = await end();
+    expect(prSamples.every(value => value <= 90)).toBe(true);
+    const prPosition = prSamples.at(-1)!;
+    await begin(); await clickWithoutScrolling('overview'); await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), prPosition);
+    await page.evaluate(() => scrollTo(0, 400));
+    await begin(); await clickWithoutScrolling('tags'); await expect(page.locator('#project-section-tab-tags')).toHaveAttribute('aria-selected', 'true');
+    const shortSamples = await end(), clamped = shortSamples.at(-1)!;
+    expect(clamped).toBeLessThan(400);
+    expect(shortSamples.every(value => value >= clamped && value <= 400)).toBe(true);
+    await begin(); await clickWithoutScrolling('tasks'); await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+    expectStable(await end(), clamped);
+  } finally { await trace.dispose(); }
+});
+
+test('project position survives reload and stays separate across projects and accounts', async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  const state = await install(page, chains), otherProject = id(32), otherViewer = id(998);
+  const key = (project: string, user: string) => `daynight:project-scroll:${JSON.stringify([project, user])}`;
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 200));
+  await expect.poll(() => page.evaluate(name => localStorage.getItem(name), key(projectId, TEST_VIEWER_ID))).toBe('200');
+  await page.reload();
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await expect.poll(() => position(page)).toBe(200);
+  await page.goto(`/projects/${otherProject}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 300));
+  await expect.poll(() => page.evaluate(name => localStorage.getItem(name), key(otherProject, TEST_VIEWER_ID))).toBe('300');
+  await page.goto(`/projects/${projectId}`);
+  await expect.poll(() => position(page)).toBe(200);
+  state.viewer = otherViewer;
+  await page.reload();
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 250));
+  await expect.poll(() => page.evaluate(name => localStorage.getItem(name), key(projectId, otherViewer))).toBe('250');
+  expect(await page.evaluate(name => localStorage.getItem(name), key(projectId, TEST_VIEWER_ID))).toBe('200');
+  state.viewer = TEST_VIEWER_ID;
+  await page.reload();
+  await expect.poll(() => position(page)).toBe(200);
+});
+
+test('loading and preference failures do not replace a saved position', async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  const state = await install(page, chains);
+  const key = `daynight:project-scroll:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+  await page.addInitScript(name => localStorage.setItem(name, '320'), key);
+  state.graphMode = 'pending';
+  try {
+    await page.goto(`/projects/${projectId}`);
+    await expect(page.getByRole('status', { name: 'Loading task graph' })).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    expect(await page.evaluate(name => localStorage.getItem(name), key)).toBe('320');
+    state.releaseGraph();
+    await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+    await expect.poll(() => position(page)).toBe(320);
+  } finally { state.releaseGraph(); }
+});
+
+test('an unreadable scroll preference reports the failure and leaves navigation usable', async ({ page }) => {
+  await install(page, [row(10, 'Task')]);
+  await page.addInitScript(() => {
+    const read = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (name) {
+      if (name.startsWith('daynight:project-scroll:')) throw new DOMException('Denied', 'SecurityError');
+      return read.call(this, name);
+    };
+  });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByText('The saved project browsing position could not be read. You can continue browsing.')).toBeVisible();
+  await page.locator('#project-section-tab-tasks').evaluate((element: HTMLElement) => element.click());
+  await expect(page.locator('#project-section-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('explicit overview location takes precedence over the shared position', async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  await install(page, chains);
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.locator('#project-overview-progress .overview-progress-row')).toHaveCount(20);
+  await page.evaluate(() => scrollTo(0, 90));
+  const target = page.locator('#project-overview-progress .overview-progress-row').last();
+  const targetTitle = await target.locator('.overview-progress-title').innerText();
+  await target.evaluate((element: HTMLElement) => element.click());
+  const selected = page.locator('#project-section-tab-tasks');
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  const located = page.locator('.overview-progress-target');
+  await expect(located).toContainText(targetTitle);
+  expect(await position(page)).not.toBe(90);
+  await expect(located).toBeFocused();
+});
+
+for (const navigation of ['category', 'history'] as const) test(`cached task preview cancels a pending scroll restore on ${navigation} navigation`, async ({ page }) => {
+  const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
+  const standalone = Array.from({ length: 20 }, (_, i) => row(300 + i, `Standalone ${i}`));
+  const state = await install(page, [...chains, ...standalone]);
+  const key = `daynight:project-scroll:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+  try {
+    await page.goto(`/projects/${projectId}?tab=tasks`);
+    await expect(page.getByRole('tab', { name: 'Task chains', exact: true })).toBeVisible();
+    if (navigation === 'history') {
+      await select(page, 'Standalone tasks');
+      await page.locator('.project-navigation a[href="/projects"]').click();
+      await expect(page).toHaveURL(/\/projects$/);
+    }
+    await page.evaluate(name => { scrollTo(0, 0); localStorage.setItem(name, '320'); }, key);
+    state.graphMode = 'pending';
+    if (navigation === 'history') await page.goBack();
+    else await page.reload();
+    await expect(page.getByRole('tab', { name: navigation === 'history' ? 'Standalone tasks' : 'Task chains', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(await position(page)).toBe(0);
+    if (navigation === 'history') await page.goBack();
+    else await select(page, 'Standalone tasks');
+    await expect(page.getByRole('tab', { name: navigation === 'history' ? 'Task chains' : 'Standalone tasks', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect(await position(page)).toBe(0);
+    const completed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
+    state.releaseGraph();
+    await completed;
+    await expect(page.locator('.snapshot-time time')).toBeVisible();
+    expect(await position(page)).toBe(0);
+  } finally { state.releaseGraph(); }
+});
+
+test('project history restores native mode when leaving for other routes', async ({ page }) => {
+  await install(page, [row(10, 'Task')]);
+  await page.goto(`/projects/${projectId}/settings`);
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.reload();
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.locator('a[href="/projects"]').first().click();
+  await expect(page).toHaveURL(/\/projects$/);
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('auto');
+  await page.goto(`/projects/${projectId}/settings`);
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.locator('.project-management-nav a').click();
+  await expect(page.locator('#project-section-tab-overview')).toBeVisible();
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('manual');
+  await page.reload();
+  await expect(page.locator('#project-section-tab-overview')).toBeVisible();
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('manual');
+  await page.getByRole('link', { name: 'Project settings', exact: true }).click();
+  await expect(page.locator('.project-management-nav a')).toBeVisible();
+  await page.locator('.project-management-nav a').click();
+  await expect(page.locator('#project-section-tab-overview')).toBeVisible();
+  await page.locator('.project-navigation a[href="/projects"]').click();
+  await expect(page).toHaveURL(/\/projects$/);
+  expect(await page.evaluate(() => history.scrollRestoration)).toBe('auto');
 });
 
 test('category switching preserves real scroll and only the browser clamps shorter content', async ({ page }) => {
