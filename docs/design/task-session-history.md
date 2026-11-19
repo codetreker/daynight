@@ -74,6 +74,8 @@ Session 页用同快照的当前完整链及首次归档、宽限和实际过期
 
 组查询计算当前连通分量；成员及期限查询只遍历目标链。Session 查询只投影执行代次和末次终止时间，不返回完整快照或终端运行记录。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
 
+CLI 的 `list --directory-version 1` 消费独立的 Task Session 页，GET 成功响应必须同时具有 `Daynight-Task-History-Directory-Version: 1` 与正文 `version: 1`。独立 DTO 解码器验证原 Task、Session 唯一性、模式与内容类型、分页上限及字段类型，并拒绝未知字段；`graphVersion` 保持十进制字符串。默认 `list` 仍消费旧 inspection 目录，不混入新增字段。版本化续页命令携带相同版本选项，失败保留服务端拒绝，不自动切换入口或重试。正文与 `show` 继续走原 Session 入口；正文 `history_unavailable` 的已知过期原因映射为固定诊断，其他不可用原因不被误判为过期。
+
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 
 Task 内容读取使用单独的授权目的，允许真实 PAT、browser Session 以及固定 API/MCP OAuth binding，并逐页、逐块重新检查。SessionDAO 在原事务中委托 family DAO；API 必须匹配配置 Origin 下的 API resource、daynight:api scope 和 societas-bot client，MCP 保留原 Task 读取子集。可读归档预检保留原 WriteSession 的 READ COMMITTED 事务作用域，其中 ReadOAuthCredential 使用无行锁查询；API 可进入既有用户可读归档，MCP 仅可进入原 Task ArchiveV1Read。实际 IO 准入再次使用原 scope、权限及锁序；独立 Session 保留 owner 与 parent PAT 检查。Controller 注册、生产 channel、归档上传与完成仍使用原生产者条件。网络内容等待后再次授权，并拒绝变化的 fence/epoch。pending、缺件、损坏、来源变化、空历史与可证明的覆盖缺口保留独立结果，不把无法判断的完整性当作已验证事实。
