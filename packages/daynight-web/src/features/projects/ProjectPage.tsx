@@ -45,8 +45,24 @@ import { TagFilter, useTagFilter, matchesTagFilter, type TagFilterValue } from "
 import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
 import { usePullRequestRepositories } from "../pull-requests/usePullRequestRepositories";
 import { NativeSelect } from "../../ui/native-select/NativeSelect";
-import { ValueCopyButton } from "../../ui/copy-button/ValueCopyButton";
+import { ValueCopyButton, type CopyState } from "../../ui/copy-button/ValueCopyButton";
 import "../../styles/project.css";
+
+const RepositoryCopyFeedback = ({ state, event, success, failure }: {
+  readonly state: CopyState; readonly event: string; readonly success: string; readonly failure: string;
+}) => {
+  const [expired, setExpired] = useState<string | null>(null);
+  useEffect(() => {
+    if (state !== "copied") return;
+    const timer = window.setTimeout(() => setExpired(event), 3000);
+    return () => window.clearTimeout(timer);
+  }, [state, event]);
+  const visible = state === "copied" && expired !== event;
+  return <>
+    <span className="project-repository-success" role={visible ? "status" : undefined} aria-hidden={!visible}>{success}</span>
+    {state === "failed" && <span className="project-repository-error" role="alert">{failure}</span>}
+  </>;
+};
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -757,8 +773,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {projectRead.project !== null && <div className="project-repository">
               <span className="project-repository-value">{projectRead.project.repoUrl}</span>
               <ValueCopyButton key={projectRead.project.id} value={projectRead.project.repoUrl} label={m.copyRepositoryUrl} className="project-repository-copy"
-                feedback={state => state === "copied" ? <span className="project-repository-feedback" role="status">{m.repositoryUrlCopied}</span>
-                  : state === "failed" ? <span className="project-repository-feedback" role="alert">{m.copyRepositoryUrlFailed}</span> : null} />
+                feedback={(state, event) => <RepositoryCopyFeedback key={projectRead.project.repoUrl} state={state} event={event} success={m.repositoryUrlCopied} failure={m.copyRepositoryUrlFailed} />} />
             </div>}
           </div>
         </div>
