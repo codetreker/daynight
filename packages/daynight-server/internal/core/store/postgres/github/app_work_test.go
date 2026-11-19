@@ -14,8 +14,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type appWorkFixture struct {
@@ -607,59 +609,97 @@ func TestCoverageConfigurationTransitionsFenceClaim(t *testing.T) {
 	}
 }
 
+type connectionStopState struct {
+	connection, coverage, pending string
+	coverageTable, pendingTable   uint32
+	revisionColumn                int16
+}
+
+func readConnectionStopState(t *testing.T, f appWorkFixture) connectionStopState {
+	t.Helper()
+	var state connectionStopState
+	var intact bool
+	err := f.db.Pool.QueryRow(t.Context(), `SELECT
+ to_jsonb(c)::text,
+ (SELECT jsonb_agg(to_jsonb(x) ORDER BY repository_id,started_at)::text FROM project_github_coverage x WHERE project_id=c.project_id),
+ (SELECT jsonb_agg(to_jsonb(p) ORDER BY number)::text FROM project_github_pending_prs p WHERE project_id=c.project_id),
+ 'project_github_coverage'::regclass::oid,
+ 'project_github_pending_prs'::regclass::oid,
+ (SELECT attnum FROM pg_attribute WHERE attrelid='project_github'::regclass AND attname='revision' AND NOT attisdropped),
+ c.sync_enabled AND c.generation=1
+   AND EXISTS(SELECT FROM project_github_coverage WHERE project_id=c.project_id AND ended_at IS NULL)
+   AND to_regclass('inaccessible_coverage') IS NULL
+   AND to_regclass('inaccessible_pending') IS NULL
+   AND NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid='project_github'::regclass AND attname='inaccessible_revision' AND NOT attisdropped)
+ FROM project_github c WHERE c.project_id=$1`, f.project).
+		Scan(&state.connection, &state.coverage, &state.pending, &state.coverageTable, &state.pendingTable, &state.revisionColumn, &intact)
+	if err != nil || !intact {
+		t.Fatalf("connection stop fixture is not intact: %v, %v", intact, err)
+	}
+	return state
+}
+
 func TestCoverageFailureAbortsConnectionStops(t *testing.T) {
-	for _, action := range []string{"grant", "project", "unbound retirement", "unbound pending failure", "unbound revision failure"} {
-		t.Run(action, func(t *testing.T) {
-			f := newAppWorkFixture(t)
+	f := newAppWorkFixture(t)
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	if _, err := f.db.Pool.Exec(t.Context(), `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
+		t.Fatal(err)
+	}
+	before := readConnectionStopState(t, f)
+	const missingCoverage = `ALTER TABLE project_github_coverage RENAME TO inaccessible_coverage`
+	for _, test := range []struct {
+		name, ddl, state, phase string
+	}{
+		{"grant", missingCoverage, "42P01", "remove empty github coverage"},
+		{"project", missingCoverage, "42P01", "remove empty github coverage"},
+		{"unbound retirement", missingCoverage, "42P01", "remove empty github coverage"},
+		{"unbound pending failure", `ALTER TABLE project_github_pending_prs RENAME TO inaccessible_pending`, "42P01", "clear unbound retirement pending"},
+		{"unbound revision failure", `ALTER TABLE project_github RENAME COLUMN revision TO inaccessible_revision`, "42703", "read unbound retirement versions"},
+	} {
+		// Commit the unbound baseline even when the preceding subtests are filtered out.
+		if test.name == "unbound retirement" {
+			tag, err := f.db.Pool.Exec(t.Context(), `UPDATE project_github SET enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL WHERE project_id=$1`, f.project)
+			if err != nil || tag.RowsAffected() != 1 {
+				t.Fatalf("prepare unbound connection: %v, %v", tag, err)
+			}
+			before = readConnectionStopState(t, f)
+		}
+		if !t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
-			start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
-			if _, err := f.db.Pool.Exec(ctx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at) VALUES($1,30,$2)`, f.project, start); err != nil {
-				t.Fatal(err)
-			}
-			if strings.HasPrefix(action, "unbound") {
-				if _, err := f.db.Pool.Exec(ctx, `UPDATE project_github SET enabled=false,app_resource_id=NULL,team_grant_id=NULL,credential_version=NULL,app_id=NULL,installation_id=NULL WHERE project_id=$1`, f.project); err != nil {
-					t.Fatal(err)
-				}
-			}
 			tx := begin(t, f.db, pgx.TxOptions{})
 			var retirement store.GitHubProjectRetirementDAO
-			if strings.HasPrefix(action, "unbound") {
+			if strings.HasPrefix(test.name, "unbound") {
 				retirement = github.NewProjectRetirement(tx, f.project)
 				if _, err := retirement.LockBinding(ctx); err != nil {
 					t.Fatal(err)
 				}
 			}
-			switch action {
-			case "unbound pending failure":
-				mustExec(t, tx, `ALTER TABLE project_github_pending_prs RENAME TO inaccessible_pending`)
-			case "unbound revision failure":
-				mustExec(t, tx, `ALTER TABLE project_github RENAME COLUMN revision TO inaccessible_revision`)
-			default:
-				mustExec(t, tx, `ALTER TABLE project_github_coverage RENAME TO inaccessible_coverage`)
-			}
+			mustExec(t, tx, test.ddl)
 			var err error
-			switch action {
+			switch test.name {
 			case "grant":
 				_, err = github.NewConnectionStopWriter(tx, f.app).StopProjectConnection(ctx, f.project, f.grant, core.DisconnectionDecision())
 			case "project":
 				err = github.InvalidateProject(ctx, tx, f.project)
-			case "unbound retirement", "unbound pending failure", "unbound revision failure":
+			default:
 				err = retirement.Stop(ctx, core.DisconnectionDecision())
 			}
-			if err == nil {
-				t.Fatal("connection stop ignored coverage failure")
+			var databaseErr *store.Error
+			var cause *pgconn.PgError
+			if !errors.As(err, &databaseErr) || !databaseErr.DatabaseFailure || databaseErr.Phase != test.phase ||
+				!errors.As(err, &cause) || cause.Code != test.state {
+				t.Fatalf("stop error = %v, want SQLSTATE %s from %s", err, test.state, test.phase)
 			}
-			if failed, _ := store.DatabaseErrorFacts(err); !failed {
-				t.Fatalf("database failure lost: %v", err)
-			}
-			if err = tx.Rollback(ctx); err != nil {
+			if err := tx.Rollback(ctx); err != nil {
 				t.Fatal(err)
 			}
-			var intact bool
-			if err = f.db.Pool.QueryRow(ctx, `SELECT sync_enabled AND generation=1 AND EXISTS(SELECT 1 FROM project_github_coverage WHERE project_id=$1 AND ended_at IS NULL) AND EXISTS(SELECT 1 FROM project_github_pending_prs WHERE project_id=$1) FROM project_github WHERE project_id=$1`, f.project).Scan(&intact); err != nil || !intact {
-				t.Fatalf("failed stop changed state: %v %v", intact, err)
+			testutil.AssertPoolReusable(t, f.db.Pool)
+			if after := readConnectionStopState(t, f); after != before {
+				t.Fatalf("failed stop changed state: before=%+v after=%+v", before, after)
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
 
