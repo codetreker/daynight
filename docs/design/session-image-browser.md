@@ -48,7 +48,7 @@ Session 历史展示快照复用统一资源引用遍历，保留旧 `resource`�
 | `owners` | ownerKey → accessEpoch、当前 editableDraftId、unresolvedSubmissionId、blocked 原因、持久 recoveryOnly 历史访问限制、已分配本地字节计数。accessEpoch 是本地失效代次，不是权限令牌；真正授权始终来自现有身份入口。 |
 | `drafts` | ownerKey+draftId → 正 Decimal revision、text、有序 items、保存时间、editable/frozen/detached 状态、未确认放弃的 rejectedCandidates（稳定候选ID/安全label/原因）及超额拒绝数量。一个 owner 最多一个 editable 和一个未结算 frozen 提交；不会建立自动发送队列。 |
 | `blobs` | ownerKey+blobId → 不可变原始 Blob、长度、byteRevision 及引用集合，明确区分未校验原件与带摘要/真实 MIME/尺寸的已校验图片。未校验记录不编造图片元数据。仅同 owner 可共享本地字节；SHA 不是授权或全局 key。 |
-| `uploads` | ownerKey+uploadId →公共协议原 spec、关联 draftImageId/byteRevision、最后确认 receipt、request sequence、待协调 action/块 offset/length/hash、release intent。没有公共 receipt revision，自有顺序不写回服务。 |
+| `uploads` | ownerKey+uploadId →公共协议原 spec、关联 draftImageId/byteRevision、最后确认 receipt、request sequence、待协调 action/块 offset/length/hash、release intent，以及服务以引用占用拒绝释放后的 release retained 结论。没有公共 receipt revision，自有顺序不写回服务。 |
 | `submissions` | ownerKey+operationId → 完整不可变 command intent、原 ImageTarget、draftId/revision、提交文本/有序附件快照、相关 blob/upload 引用、dispatch 状态、最后观察 operation。草稿清除不能删除 unresolved 操作。 |
 
 每项附件有稳定本地 `draftImageId`、本地字节版本、label、blobId 或显式 null、校验状态、uploadId 或 null。wire imageId 是该次上传和待发送图片的出现身份；服务在同一 Session 内保留它与原 uploadId 的关联，终态或释放不会让该 imageId 可供另一次上传使用。精确重试原上传保持两项 wire 标识和原 spec；确认原上传为 failed、expired 或 released 后，显式重新准备必须同时建立新的 imageId 和 uploadId。稳定的本地 draftImageId 与原件不因此改变；已发送后的新消息也必须使用新 imageId。选择相同 bytes 两次仍是两个有序项，按两份长度计入消息限制。
@@ -129,7 +129,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 能力变化先暂停新块并观察原 receipt，不释放仍有效 bytes；同 target 且仍 supported、原 MIME/长度合格可继续准备。更小集合上限不偷偷丢图，整组 Send 禁用；指出当前上限，由用户移除/替换。upload complete 不携带永久模型许可，最终始终用最新 image capability revision。过期显示以服务判定为准，客户端时间只作提前查询提示，不自行延长 expiresAt。
 
-本地原件与远端上传账本分开保留。只有 editable、frozen 和未决 submission 的真实引用占用本地 Blob 及持久字节预算；单独的 release intent 不持有本地原件。最后一个本地内容引用移除后，在同一事务删除 Blob 并回收计量，但保留上传身份、请求未知状态及 release intent 供远端对账；旧 native owner 不再成为当前目标也不阻碍本地回收。同授权恢复范围在冷恢复时重新核对本地内容引用，回收旧版本曾仅因 release intent 保留的孤立 Blob；不修改远端账本，不越过当前访问权限或待清理屏障。移除/清空提交本地 tombstone/release intent 后，尝试服务图片存储DELETE。响应未知先 GET；receiving/verifying/complete 可重做相同显式释放，released 确认结束；upload_in_use 保留 operation 对账，不强删服务资源。旧目标或撤权无 DELETE 资格时停止写，由服务 TTL/所属生命周期清理；不声称 bytes 已删除。释放登记独立于已移除卡片，不能为了后台清理让图重新出现。
+本地原件与远端上传账本分开保留。只有 editable、frozen 和未决 submission 的真实引用占用本地 Blob 及持久字节预算；单独的 release intent 不持有本地原件。最后一个本地内容引用移除后，在同一事务删除 Blob 并回收计量，但保留上传身份、请求未知状态及 release intent 供远端对账；旧 native owner 不再成为当前目标也不阻碍本地回收。同授权恢复范围在冷恢复时重新核对本地内容引用，回收旧版本曾仅因 release intent 保留的孤立 Blob；不修改远端账本，不越过当前访问权限或待清理屏障。移除/清空提交本地 tombstone/release intent 后，尝试服务图片存储DELETE。响应未知先 GET；receiving/verifying/complete 可重做相同显式释放，released 确认结束。服务对原释放请求返回 409 `resource_in_use`，表示消息、operation、归档或原生恢复仍引用该原件；草稿记录 release retained 并结束自己的释放责任，不重试 DELETE、不把它显示为草稿错误，也不影响已发送消息的显示。成功发送后清理冻结草稿属于这一情形。剩余上传引用由服务按上传到期与引用规则回收，operation 对账仍由原 submission 负责，客户端不强删服务资源。其他 409 或未知结果仍保持 unknown 并显示可重试状态。旧目标或撤权无 DELETE 资格时停止写，由服务 TTL/所属生命周期清理；不声称 bytes 已删除。释放登记独立于已移除卡片，不能为了后台清理让图重新出现。
 
 ## 发送事务、编辑和未知结果
 
@@ -194,6 +194,8 @@ Enter/Shift+Enter及平台快捷键沿主线，IME期间不提交；纯图点击
 - `ImagePreviewHost`、`ImagePreviewController` 与 `useSessionImageScope` 定义本专题公共 UI API，负责一个展示 owner 的页内预览、缩放、焦点、滚动和下载；草稿消费者通过同一 asset/lease 合同接入。
 - `SessionMarkdown` 连接 Markdown 来源采集的正文映射与 SessionImageFrame；`ChatMarkdown` 通过公共 Markdown 内核接收受控渲染回调，不获取权限、解析 Controller 路径或发网络请求。
 - live/record/draft adapter 各自提供可读原件与撤销信号。record 不依赖在线 Controller，draft 不伪造服务资源。
+
+实时 `timeline_upsert` 只携带图片出现，不携带 `SessionResource` descriptor；历史页才携带 descriptor。客户端发现条目引用当前状态中不存在的 resourceId 时，对每个条目 revision 至多读取一次当前 Session 的 tail 历史页，只补入缺少的 descriptor，不替换已接受的条目、覆盖范围或连接状态；读取失败保持“图片不可用”，下一次历史加载可再补齐。刚发送消息中的图片由此在原窗口和其他窗口中显示，不依赖草稿资源。
 
 读取流为：真实出现 → owner 校验与 descriptor → store 合并读取 → 校验全部块及完整 SHA → 创建受控 Blob → 浏览器解码 → 原位置展示。打开预览获取同一 lease，下载同一已校验原件。每一异步完成都检查 scope、resource identity 与请求代次；旧结果不能写进新账户、新记录或新出现。
 
