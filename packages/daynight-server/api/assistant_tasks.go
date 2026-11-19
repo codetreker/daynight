@@ -114,8 +114,8 @@ type AssistantTaskRecord struct {
 	Kind        string  `json:"kind"`
 	Text        string  `json:"text"`
 	// Outcome and ActionRecordID are present only on outcome records. Other
-	// records omit both keys so clients that strictly validate the original
-	// record shape keep reading tasks that have no outcome records.
+	// records omit both keys, so clients that validate records strictly can
+	// reject either key on every other kind.
 	Outcome        *string         `json:"outcome,omitempty"`
 	ActionRecordID *string         `json:"actionRecordId,omitempty"`
 	Refs           json.RawMessage `json:"refs"`
