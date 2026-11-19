@@ -13,6 +13,19 @@ const gate = () => ({ userId, projectId, number: '42', canRead: true, active: tr
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
+it('keeps same-number details isolated when the repository changes', async () => {
+  const pending = deferred<Response>();
+  const other = { ...detail('1', 'repository B'), base: { ...detail('1').base, repositoryId: '5', repositoryFullName: 'o/b' } };
+  const fetch = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce(response(other)); vi.stubGlobal('fetch', fetch);
+  const original = { ...gate(), repositoryId: '4' };
+  const { result, rerender } = renderHook(props => usePullRequestDetail(props), { initialProps: original });
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  rerender({ ...original, repositoryId: '5' });
+  await waitFor(() => expect(result.current.detail?.title).toBe('repository B'));
+  await act(async () => { pending.resolve(response(detail('9', 'repository A'))); await pending.promise; });
+  expect(result.current.detail?.title).toBe('repository B');
+});
+
 it('prevents older generations and lower exact revisions from replacing the current detail', async () => {
   const late = deferred<Response>();
   const fetch = vi.fn().mockResolvedValueOnce(response(detail('9007199254740993', 'current'))).mockReturnValueOnce(late.promise).mockResolvedValueOnce(response(detail('9007199254740992', 'older')));

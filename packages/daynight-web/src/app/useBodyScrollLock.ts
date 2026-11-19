@@ -13,6 +13,8 @@ const restore = (style: CSSStyleDeclaration, saved: SavedStyle) => {
   for (const { property, value, priority } of saved.values) style.setProperty(property, value, priority);
 };
 
+export const isBodyScrollLocked = (): boolean => locks.has(document.body);
+
 /** Shared imperative ownership lets a native modal yield before another modal takes focus. */
 export const acquireBodyScrollLock = (freezePosition = false): (() => void) => {
   const body = document.body;

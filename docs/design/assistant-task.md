@@ -59,7 +59,7 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 
 问答分页在所属任务锁内取得数据库观测时间，按该时间判定 open 与 timed_out 的筛选条件，再执行游标与 limit+1 查询。返回页中的到期问题与对应记录、通知在同事务中持久转换，页面 observedAt 保留筛选所用时间。后台批次之外的到期问题不能作为 open 返回，也不能因其他事项的积压而从 timed_out 页面遗漏；只读取 open 的客户端仍推进有界超时维护。
 
-事件保存 pending、delivered 或 expired 与独立的 `attention`、`seenAt`。确认使用客户端 operation ID，可选 `state` 为 delivered 或 expired，省略时为 delivered；指纹包含该结果状态，重复确认不制造新事件，也不能改变结果。expired 不写入 `deliveredAt`，其适用性由应用决定，转交不会自动判定所有旧事件无效。普通关注在用户查看时标为已看，待决定提案由最终决定清除，不能借过期确认清除。Session 输入的发送与恢复、Bot 列表计数和网站展示由消费者负责，事件 delivered 不证明用户已经看到内容。
+事件保存 pending、delivered 或 expired 与独立的 `attention`、`seenAt`。确认使用客户端 operation ID，可选 `state` 为 delivered 或 expired，省略时为 delivered；指纹包含该结果状态，重复确认不制造新事件，也不能改变结果。expired 不写入 `deliveredAt`，其适用性由应用决定，转交不会自动判定所有旧事件无效。普通关注在用户查看时标为已看，待决定提案由最终决定清除，不能借过期确认清除。Session 输入的发送与恢复、Bot 列表计数和网站展示由消费者负责，事件 delivered 不证明用户已经看到内容。事件类型是 core 中的显式枚举，每种类型固定是否点亮关注；Bot 写入接口只接受报告、更新、解决、直接成功、升级、结果未知和定时触发，其余类型由服务端生成。`inbound` 是不点亮关注的服务端类型，core 从原始正文构造并校验其负载，接收流程见[收件箱设计](assistant-task-inbox.md)。
 
 定时配置为 `null`、`{"kind":"interval","minutes":N}` 或 `{"kind":"daily","time":"HH:MM","timeZone":"IANA"}`。`N` 为至少 1 的整数，daily 使用有效的 24 小时时间和 IANA 时区，未知键拒绝。服务端保存配置，当前负责 Worker 计算到期时间；它不能因暂停仍续约而继续触发。
 

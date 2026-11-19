@@ -13,10 +13,10 @@ const empty = (): Snapshot => ({ items: [], query: '', revision: null, nextCurso
 const protocol = () => new ApiError('protocol');
 
 /** An independent, bounded directory; it never replaces the selected author identity. */
-export const usePullRequestAuthors = (options: { readonly userId: string; readonly projectId: string; readonly active: boolean; readonly scope: ReadSession }) => {
-  const { userId, projectId, scope, active } = options;
+export const usePullRequestAuthors = (options: { readonly userId: string; readonly projectId: string; readonly active: boolean; readonly scope: ReadSession; readonly repositoryId?: string | null }) => {
+  const { userId, projectId, scope, active, repositoryId } = options;
   const state = useMemo(() => ({ snapshot: empty(), open: false, generation: 0, pending: null as AbortController | null,
-    timer: undefined as ReturnType<typeof setTimeout> | undefined, acceptedRevision: null as string | null }), [userId, projectId, scope]);
+    timer: undefined as ReturnType<typeof setTimeout> | undefined, acceptedRevision: null as string | null }), [userId, projectId, scope, repositoryId]);
   const [, render] = useState(0);
   const current = useRef(options); current.current = options;
   const publish = useCallback((snapshot: Snapshot) => { state.snapshot = snapshot; render(value => value + 1); }, [state]);
@@ -24,7 +24,7 @@ export const usePullRequestAuthors = (options: { readonly userId: string; readon
     state.generation += 1; state.pending?.abort(); state.pending = null;
     if (state.timer !== undefined) clearTimeout(state.timer); state.timer = undefined;
   }, [state]);
-  const permitted = useCallback(() => state.open && current.current.active && document.visibilityState !== 'hidden' && scope.isAllowed(), [scope, state]);
+  const permitted = useCallback(() => state.open && current.current.repositoryId === repositoryId && repositoryId !== null && current.current.active && document.visibilityState !== 'hidden' && scope.isAllowed(), [scope, state, repositoryId]);
 
   const run = useCallback((mode: 'first' | 'more' | 'rebuild', anchors?: AuthorAnchors) => {
     if (!permitted() || state.pending !== null) return;
@@ -37,7 +37,7 @@ export const usePullRequestAuthors = (options: { readonly userId: string; readon
     let totalTimeout: ReturnType<typeof setTimeout> | undefined, timedOut = false;
     if (mode === 'rebuild') totalTimeout = setTimeout(() => { timedOut = true; controller.abort(); }, 30_000);
     const read = async (cursor: string | null): Promise<PullRequestAuthorsPage> => scope.request(controller.signal,
-      (signal, onDispatch) => getPullRequestAuthors(projectId, { q: initial.query, cursor }, signal, { userId, onPrincipalMismatch: () => {}, onDispatch }));
+      (signal, onDispatch) => getPullRequestAuthors(projectId, { q: initial.query, cursor, repositoryId }, signal, { userId, onPrincipalMismatch: () => {}, onDispatch }));
     const validPage = (page: PullRequestAuthorsPage, previous: readonly PullRequestAuthor[], revision: string | null) => {
       if (revision !== null && page.revision !== revision) throw new ApiError('server', 409, 'resource_conflict');
       if (state.acceptedRevision !== null && BigInt(page.revision) < BigInt(state.acceptedRevision)) throw protocol();
@@ -99,7 +99,7 @@ export const usePullRequestAuthors = (options: { readonly userId: string; readon
       }
     };
     void execute();
-  }, [permitted, projectId, publish, scope, state, userId]);
+  }, [permitted, projectId, publish, scope, state, userId, repositoryId]);
 
   const open = useCallback(() => {
     cancel(); state.open = true; publish(empty()); run('first');

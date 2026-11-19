@@ -81,6 +81,11 @@ for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
     await page.route(url => url.pathname === `/api/v1/projects/${projectId}/github/installation`, route => route.fulfill({ json: { ...candidate, installation: { ...candidate.installation, accountLogin } }, headers: { 'Daynight-User-ID': actorId } }));
     await page.setViewportSize({ width, height: 900 }); await open(page);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const heading = page.getByRole('heading', { name: locale === 'en' ? 'GitHub PR sync' : 'GitHub PR 同步' });
+    await expect(heading).toBeVisible();
+    await expect(heading.locator('..').locator('p')).toHaveCount(0);
+    await expect(page.getByText('Sync PR information and descriptions for this repository.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('同步此仓库的 PR 基本信息与 description。', { exact: true })).toHaveCount(0);
     const opener = page.getByRole('button', { name: locale === 'en' ? 'Connect GitHub App' : '连接 GitHub App' });
     await opener.click();
     const dialog = page.getByRole('dialog');
@@ -168,7 +173,8 @@ test('rejects invalid intervals, preserves conflicts, and responds to permission
   await expect(field).toHaveValue('14'); await expect(page.getByText(/Currently saved: 9 minutes/).first()).toBeVisible();
   state.conflict = false; state.role = 'member';
   const other = await background(page);
-  await expect(page.getByText('Team administrators manage the connection; Project administrators manage sync and polling.')).toBeVisible();
+  await expect(page.locator('.github-sync-readonly')).toHaveText('Disabled');
+  await expect(page.getByRole('switch', { name: 'PR sync' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Save interval' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Connect GitHub App' })).toHaveCount(0);
   await other.close();
@@ -287,6 +293,34 @@ test('switch writes independently of the interval draft and retains server confi
   await expect(page.getByRole('switch', { name: 'PR 同步' })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`connected sync controls omit redundant explanations in ${locale}`, async ({ page }) => {
+    const state = await install(page);
+    state.status = { ...baseStatus(), connection: 'connected', installation: candidate.installation, repository: candidate.repository };
+    await open(page);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const panel = page.locator('.github-settings');
+    const toggle = panel.getByRole('switch', { name: locale === 'en' ? 'PR sync' : 'PR 同步', exact: true });
+    for (const width of [1280, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const text of [
+        'Team administrators manage the connection; Project administrators manage sync and polling.',
+        'Periodic polling and Webhook updates',
+        'Team 管理员管理连接；项目管理员管理同步和轮询间隔。',
+        '周期轮询与 Webhook 更新',
+      ]) await expect(panel.getByText(text, { exact: true })).toHaveCount(0);
+      await expect(toggle).toBeEnabled();
+      await toggle.click();
+      await expect(toggle).toBeChecked({ checked: width === 1280 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    expect(state.writes.map(({ path, body }) => ({ path, body }))).toEqual([
+      { path: `/api/v1/projects/${projectId}/github/sync`, body: '{"version":"1","syncEnabled":true}' },
+      { path: `/api/v1/projects/${projectId}/github/sync`, body: '{"version":"2","syncEnabled":false}' },
+    ]);
+  });
+}
 
 test('an unknown switch write retains the guard until reread and is not replayed', async ({ page }) => {
   const state = await install(page); state.status = { ...baseStatus(), connection: 'connected', installation: candidate.installation, repository: candidate.repository };

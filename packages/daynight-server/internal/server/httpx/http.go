@@ -254,6 +254,10 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusForbidden
 		case "invalid_image", "image_integrity", "image_decode_failed", "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_tag_filter", "invalid_search_expression":
 			status = http.StatusBadRequest
+		case "goal_dependency_target_unavailable":
+			status = http.StatusBadRequest
+		case "goal_dependency_revision_conflict", "goal_dependency_cycle", "goal_dependency_team_mismatch":
+			status = http.StatusConflict
 		case "search_timeout", "timeout":
 			status = http.StatusGatewayTimeout
 		case "payload_too_large", "limit_exceeded":

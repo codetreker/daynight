@@ -12,16 +12,18 @@ import type { ControllerLaunchTicket } from "../../../src/commands/controller/la
 import type { ControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { frozenToolLaunch } from "../../helpers/tool-launch.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 export const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
 const cleanups: (()=>void)[] = [];
 export const cleanupBotProcesses = () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) cleanup(); };
-export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configuration: Partial<BotConfiguration> = {}, persistent = false) => {
+export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configuration: Partial<BotConfiguration> = {}, persistent = false, dedicated = false) => {
   const root=path.resolve(import.meta.dirname,"../../../../../.tmp/bot-process"); mkdirSync(root,{recursive:true});
   const home=mkdtempSync(path.join(root,"h-")); cleanups.push(()=>rmSync(home,{recursive:true,force:true})); vi.stubEnv("DN_CONFIG_DIR",path.join(home,"state"));
   const database = persistent ? path.join(home, "worker.sqlite") : createMemoryDatabase();
-  let store=openBotStore(database,{onMigration:()=>{}}),executions=openBotExecutionStore(database,{onMigration:()=>{}});
+  const storeOptions = { onMigration:()=>undefined, ...(dedicated ? { storageStateDirectory: resolveBotPaths(resolveConfigurationPaths(home).stateDirectory, id(3)).directory } : {}) };
+  let store=openBotStore(database,storeOptions),executions=openBotExecutionStore(database,{onMigration:()=>{}});
   cleanups.push(()=>store.close(),()=>executions.close());
-  const reopen = () => { if (!persistent) throw new Error("Persistent fixture required."); executions.close(); store.close(); store=openBotStore(database,{onMigration:()=>{}}); executions=openBotExecutionStore(database,{onMigration:()=>{}}); };
+  const reopen = () => { if (!persistent) throw new Error("Persistent fixture required."); executions.close(); store.close(); store=openBotStore(database,storeOptions); executions=openBotExecutionStore(database,{onMigration:()=>{}}); };
   const owner={serverOrigin:"https://daynight.example",ownerUserId:id(1),workerId:id(2)};
   let bot:BotDefinition={id:id(3),workerId:id(2),ownerUserId:id(1),version:"1",name:"Only a name",creationOrder:"1",requestedOverrides:{},resolvedConfiguration:{workerId:id(2),cwd:home,provider,model:null,args:[],...configuration},roleConfiguration:null,sessionId:null,testExecutionId:null,startupResult:{state:"pending",code:null},deletion:null,createdAt:"2026-11-05T00:00:00Z",updatedAt:"2026-11-05T00:00:00Z"};
   store.observe(owner,bot,1);

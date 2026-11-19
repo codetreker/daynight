@@ -12,8 +12,10 @@ reliably identify the requested operation.
 ## Decision
 
 The CLI selects a Project by ID or repository, reads the complete deletion
-preview, and requires the exact name as a JSON string literal interactively. A
-noninteractive caller must supply `--confirm`. The preview does not freeze the
+preview, and requires the exact name as a JSON string literal interactively. Every
+caller must supply `--confirm`; the preview warns of permanent removal of all
+Goal dependencies involving the Project, including cross-Project relationships.
+The preview does not freeze the
 Project's name, ownership or contents: the server checks current permissions and
 claims when processing the single DELETE. A validated receipt confirms the
 Project ID and deletion; unknown outcomes are not replayed. The

@@ -17,6 +17,7 @@ export const workspace: WorkspaceMessages = {
     moreFailed: "More projects could not be loaded. Previously loaded projects remain available.", loadingMore: "Loading more…", retryMore: "Retry loading more", loadMore: "Load more", allLoaded: "All projects loaded",
   },
   project: {
+    copyRepositoryUrl: "Copy repository URL", repositoryUrlCopied: "Copied", copyRepositoryUrlFailed: "Could not copy repository URL. Try again.",
     statusFilter: "Status", allStatuses: "All statuses", noStatuses: "No statuses selected", selectedStatuses: ({ count }) => `${number(count)} selected`, statusOptions: { proposed: "Proposed", todo: "To do", in_progress: "In progress", done: "Done", cancelled: "Cancelled" },
     back: "← Projects", lastRefreshed: ({ time }) => `Last successful refresh ${time}`, refreshing: "Refreshing…", loading: "Loading task graph", loadingDetail: "Reading project tasks and dependencies.",
     notFound: "Project not found", incomplete: "Task graph data is incomplete", loadingFailed: "Project could not be loaded",
@@ -57,6 +58,6 @@ export const workspace: WorkspaceMessages = {
     tab: { read: "The saved task tab could not be read. You can continue browsing.", invalid: "The saved task tab is invalid. Task chains are shown by default. You can continue browsing.", write: "The task tab could not be saved. It may not return after a reload. You can continue browsing." },
     assignee: { read: "The saved assignee filter could not be read. You can continue browsing.", invalid: "The saved assignee filter is invalid. All assignees are shown by default. You can continue browsing.", write: "The assignee filter could not be saved. It may not return after a reload. You can continue browsing." },
     status: { read: "The saved status filter could not be read. You can continue browsing.", invalid: "The saved status filter is invalid. All statuses are shown by default. You can continue browsing.", write: "The status filter could not be saved. It may not return after a reload. You can continue browsing." },
-    scroll: { read: "The saved task browsing position could not be read. You can continue browsing.", invalid: "The saved task browsing position is invalid. Browsing starts at the top. You can continue browsing.", write: "The task browsing position could not be saved. It may not return after a reload. You can continue browsing." },
+    scroll: { read: "The saved project browsing position could not be read. You can continue browsing.", invalid: "The saved project browsing position is invalid. Browsing starts at the top. You can continue browsing.", write: "The project browsing position could not be saved. It may not return after a reload. You can continue browsing." },
   },
 };
