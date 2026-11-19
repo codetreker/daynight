@@ -457,7 +457,22 @@ func (f *taskCredentialFixture) expectLifecycleMutation(before, after model.Task
 		err := run(scope)
 		return store.Completion{Outcome: completion}, err
 	}
-	f.database.ReadSnapshotCall = nil
+	if patch {
+		f.database.ReadSnapshotCall = nil
+	} else {
+		reader := &taskHTTPReaderMock{taskHTTPMockBase: base, TaskHeaderFn: func(ctx context.Context, project, id string) (model.TaskHeader, error) {
+			f.requireAddress(ctx, project, id)
+			return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
+		}}
+		projectReader := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
+			if actor != f.actor || project != f.project.ID || ctx.Err() != nil {
+				f.fail("lifecycle preflight changed actor or project")
+			}
+			return taskHTTPMockAccess(f.project, actor), nil
+		}}
+		snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+		f.database.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error { return run(snapshot) }
+	}
 }
 
 func lifecycleMutationCalls(patch bool) map[string]int {

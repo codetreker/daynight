@@ -205,3 +205,96 @@ func TestGoalRemoveExecutionPropertyIsRefused(t *testing.T) {
 		})
 	}
 }
+
+func TestDeletedLifecycleTargetRefusedBeforeWrite(t *testing.T) {
+	for _, operation := range []string{"status", "delete"} {
+		for _, typ := range []model.TaskType{model.TaskTypeTask, model.TaskTypeGoal} {
+			for _, deletedBy := range []string{"header", "error"} {
+				t.Run(operation+"/"+string(typ)+"/"+deletedBy, func(t *testing.T) {
+					f := newTaskRuleFixture(t)
+					ctx := t.Context()
+					deletedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+					reads, access, headers, writes := 0, 0, 0, 0
+					f.projectReader.ProjectAccessFn = func(actual context.Context, principal model.Principal, project string) (model.ProjectAccess, error) {
+						access++
+						if actual != ctx || principal != f.principal || project != f.project.ID {
+							t.Fatal("preflight authorization changed context or identity")
+						}
+						return taskMockAccess(f.project, principal), nil
+					}
+					f.reader.TaskHeaderFn = func(actual context.Context, project, id string) (model.TaskHeader, error) {
+						headers++
+						if actual != ctx || project != f.project.ID || id != f.target.ID {
+							t.Fatal("preflight header changed context or identity")
+						}
+						if deletedBy == "error" {
+							return model.TaskHeader{}, model.ErrTaskDeleted
+						}
+						return model.TaskHeader{ProjectID: project, ID: id, Type: typ, DeletedAt: &deletedAt}, nil
+					}
+					f.database.ReadSnapshotFn = func(actual context.Context, work func(store.SnapshotScope) error) error {
+						reads++
+						if actual != ctx || work == nil {
+							t.Fatal("preflight changed context or callback")
+						}
+						return work(f.snapshot)
+					}
+					f.database.WriteProjectFn = func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error) {
+						writes++
+						t.Error("deleted preflight target entered a write transaction")
+						return store.Completion{Outcome: store.TransactionNotCommitted}, errors.New("unexpected write")
+					}
+					var err error
+					if operation == "status" {
+						var got model.Task
+						got, err = f.tasks.SetStatus(ctx, f.principal, f.project.ID, f.target.ID, taskcore.SetTaskStatus{Version: f.target.Version, Status: model.TaskDone})
+						if !reflect.DeepEqual(got, model.Task{}) {
+							t.Fatalf("deleted status returned a Task: %+v", got)
+						}
+					} else {
+						err = f.tasks.Delete(ctx, f.principal, f.project.ID, f.target.ID, taskcore.DeleteTask{Version: f.target.Version})
+					}
+					var fault *model.Fault
+					if !errors.As(err, &fault) || fault.Code != "task_deleted" || !errors.Is(err, model.ErrTaskDeleted) || reads != 1 || access != 1 || headers != 1 || writes != 0 {
+						t.Fatalf("deleted preflight: error=%v reads=%d access=%d headers=%d writes=%d", err, reads, access, headers, writes)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestDeletedLifecyclePreflightCompletionFailurePrecedesRefusal(t *testing.T) {
+	for _, operation := range []string{"status", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newTaskRuleFixture(t)
+			ctx := t.Context()
+			failure := errors.New("snapshot completion failed")
+			f.reader.TaskHeaderFn = func(context.Context, string, string) (model.TaskHeader, error) {
+				return model.TaskHeader{}, model.ErrTaskDeleted
+			}
+			f.database.ReadSnapshotFn = func(_ context.Context, work func(store.SnapshotScope) error) error {
+				if err := work(f.snapshot); err != nil {
+					t.Fatalf("preflight refusal escaped callback: %v", err)
+				}
+				return failure
+			}
+			writes := 0
+			f.database.WriteProjectFn = func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error) {
+				writes++
+				t.Error("failed preflight entered a write transaction")
+				return store.Completion{Outcome: store.TransactionNotCommitted}, errors.New("unexpected write")
+			}
+			var err error
+			if operation == "status" {
+				_, err = f.tasks.SetStatus(ctx, f.principal, f.project.ID, f.target.ID, taskcore.SetTaskStatus{Version: f.target.Version, Status: model.TaskDone})
+			} else {
+				err = f.tasks.Delete(ctx, f.principal, f.project.ID, f.target.ID, taskcore.DeleteTask{Version: f.target.Version})
+			}
+			var fault *model.Fault
+			if !errors.Is(err, failure) || errors.As(err, &fault) || writes != 0 {
+				t.Fatalf("preflight completion failure lost: error=%v writes=%d", err, writes)
+			}
+		})
+	}
+}

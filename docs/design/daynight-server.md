@@ -291,26 +291,32 @@ DAO 使用独立 Read Committed 语句，通过 `project_ownership` 与 `project
 in_progress/done 的全部直接前置已done或cancelled，todo/cancelled允许未满足前置。引用必须同 project 且存在；
 重复、自身引用、缺失、跨项目和环均拒绝。状态设置与元数据具有单独公开职责。
 
-Goal 不进入依赖图，其 blockedBy 为空且 ready=false。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
+Goal 不进入普通 Task 依赖图，其旧投影的依赖和 blockedBy 为空且 ready=false。普通 Task 的 blockedBy 是按 ID 排序的未完成直接前置；dependsOn 包含全部直接前置，externalDependsOn 是
 external=true 的排序子集；数组明确为空。ready 当且仅当 todo 且 blockedBy 为空。
 派生值不持久化，前置变化不修改本任务版本或更新时间；因此同版本读取可有新 ready/blockedBy。
 POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[外部依赖架构](daynight-external-dependencies.md)。
 
+### Goal 验收依赖的生命周期保护
+
+Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际移除出边从逻辑值 1 推进到 2，空操作不推进。当前状态与删除入口保护已有边，尚未公开 Goal 关系写入。
+
+显式状态与删除先读取不可变类型；识别为 Goal 后进入受图锁影响的分支，使用五秒预算覆盖后续连接池、锁、查询与提交。类型预判使用调用方原 context，不受该分支预算限制。写入先锁本地 Project，读取当前 owner Team，再取得该 Team 的事务级图锁，之后锁定并重读 Goal、检查权限与版本。进入 `done` 要求全部直接前置为 `done`；离开 `done` 时若有已完成下游则拒绝。直接删除拒绝未删除 Goal 的入边；无入边时同事务移除出边、推进关系修订并软删除。拒绝不公开对端身份；事务失败保留原结果及提交未知语义。普通 Task 写入及子 Task 自动开始 Parent 保持原项目事务，不取得图锁。
+
 ## 写事务与并发
 
-所有 Task 与 Goal 创建、元数据更新及生命周期操作，包括语义空更新，都遵循相同事务协议：
+Task 与 Goal 写入共享下述项目事务步骤；显式 Goal 状态与直接删除另遵循上节的 Team 图锁和验收规则：
 
 1. 以 `READ COMMITTED` 开启事务，用 `SELECT ... FOR UPDATE` 查找并锁定 project
    行；不存在时返回 `not_found`。获得锁后检查当前成员关系，非成员同样返回
    `not_found`，管理员操作另行要求 `admin`。
 2. 在获得锁后执行新的查询，读取目标任务、现有依赖和校验所需任务状态。更新检查
    请求中的 `version`，与当前任务版本不一致则返回 `version_conflict`。
-3. 元数据更新构造完整候选；状态设置先检查版本，再判断同状态。实际改变检查全部前置及受保护后继，
-   不满足时使用 dependency_unsatisfied。in_progress 实际许可、平台或负责人变化继续使用 invalid_transition。
+3. 元数据更新构造完整候选；状态设置先检查版本，再判断同状态。普通 Task 实际改变检查全部前置及受保护后继，
+   不满足时使用 dependency_unsatisfied。Goal 验收边的拒绝使用专用错误码。in_progress 实际许可、平台或负责人变化继续使用 invalid_transition。
 4. 原子写入任务、依赖集合与执行起止；存在真实变更时，将版本加 1，并更新 `updatedAt`。
 5. DAO 返回最终资源后、提交前以实际协议编码检查成功响应容量；超限作为事务错误回滚。提交后返回资源；提交或发送故障保留实际完成事实与原始错误链。
 
-同 project 的 task 写入由 project 行锁串行化，不同 project 可以并行。获得锁与读取
+同 project 的 Task 写入由 project 行锁串行化；普通 Task 的不同 project 写入可以并行，受同一 Team 图锁保护的 Goal 操作另按上述规则串行化。获得锁与读取
 任务不能合并为一个依赖同一旧快照的 SQL 语句：等待锁结束后，后续查询需要看到刚
 提交的 project 内写入。任务 UPDATE 依据实际旧/新状态维护时间：进入 in_progress 产生新起点并清空终点，
 退回 proposed/todo 清空两端，in_progress→done 保留可空起点并写真实终点，proposed/todo→done起点保持null。取消记录cancelledAt并保留原执行起止；同状态和普通编辑不刷新取消时间。
@@ -318,7 +324,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 取得新快照的语义，见[事务隔离文档](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED)
 及[行锁文档](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS)。
 
-写锁同时覆盖“检查再写入”，所以并发添加 `A → B` 和 `B → A`，以及依赖更新与
+普通 Task 的项目写锁同时覆盖“检查再写入”，所以并发添加 `A → B` 和 `B → A`，以及依赖更新与
 开始、完成或重开竞争，都根据取得锁后的最新结果校验。状态先检查 version，使落后请求
 返回版本冲突；当前版本同状态不写入。版本检查解决同一任务
 的过期客户端覆盖问题；project 锁解决跨任务图和状态的不变量，两者职责不同。

@@ -243,6 +243,8 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 			}
 			if errors.Is(err, ErrResourceBusy) {
 				failure.Code, failure.Message = "resource_busy", "The tool resource budget is unavailable."
+			} else if unknown := new(taskservice.GoalWriteUnknown); errors.As(err, &unknown) {
+				failure.Code, failure.Message = "write_outcome_unknown", taskservice.GoalWriteUnknownMessage
 			} else if fault, ok := taskservice.ThreadResponseFault(err); ok && !facts.CleanupFailed {
 				failure.Code = fault.Code
 				failure.Message = fault.Message

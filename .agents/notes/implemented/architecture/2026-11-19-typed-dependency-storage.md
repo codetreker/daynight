@@ -20,4 +20,4 @@ The schema migration is additive. A running old instance can briefly coexist bef
 
 ## Consequences
 
-Mixed data requires type predicates on every dependency access. New consumers and mutations must retain this isolation. The existing primary key prevents duplicate endpoint pairs across types; task and Goal endpoints are disjoint. The additive columns do not themselves enforce endpoint types or provide Goal lifecycle protection.
+Mixed data requires type predicates on every dependency access. New consumers and mutations must retain this isolation. The existing primary key prevents duplicate endpoint pairs across types; task and Goal endpoints are disjoint. The additive columns do not themselves enforce endpoint types. The [Goal lifecycle decision](2026-11-19-goal-dependency-lifecycle.md) protects stored relationships during status and direct deletion operations.

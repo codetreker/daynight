@@ -376,6 +376,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 			}
 			assignmentHTTPUpdate(f, task, task, map[string]any{"assignedTo": f.principal.UserID}, nil, false)
 			assignmentHTTPMutation(f, &task, nil, nil, nil, false, nil, nil, store.TransactionCommitted)
+			f.expectLifecyclePreflight(task)
 			same := setHTTPTask(t, f.handler, assignmentHTTPAPI(t, task), "in_progress")
 			platformHTTPCheck(t, same, assignmentHTTPAPI(t, task))
 			for _, target := range []*string{nil, &other} {
@@ -404,6 +405,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 				}
 				values := workerHTTPWriteValues(after)
 				plan := expectWorkerHTTPWrite(t, f.store, task, f.principal, model.ProjectAdmin, &values, after, nil, store.TransactionCommitted)
+				f.expectLifecyclePreflight(task)
 				got := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodPut, taskPath(assignmentHTTPAPI(t, task))+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: task.Version, Status: "done", ClaimID: &claim.ClaimID})), http.StatusOK)
 				plan.check()
 				platformHTTPCheck(t, got, assignmentHTTPAPI(t, after))

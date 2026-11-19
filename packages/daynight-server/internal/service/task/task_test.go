@@ -34,7 +34,18 @@ type taskRuleFixture struct {
 	capture       *captureDAOMock
 	snapshot      *taskSnapshotScopeMock
 	scope         *taskProjectScopeMock
+	lifecycleGoal bool
 }
+
+type goalFixtureDAO struct{}
+
+func (goalFixtureDAO) LockTeam(context.Context) error { return nil }
+func (goalFixtureDAO) UnsatisfiedPrerequisites(context.Context, string) (bool, error) {
+	return false, nil
+}
+func (goalFixtureDAO) DoneSuccessors(context.Context, string) (bool, error) { return false, nil }
+func (goalFixtureDAO) HasIncoming(context.Context, string) (bool, error)    { return false, nil }
+func (goalFixtureDAO) RemoveOutgoing(context.Context, string) error         { return nil }
 
 func newTaskRuleFixture(t *testing.T) *taskRuleFixture {
 	t.Helper()
@@ -73,6 +84,12 @@ func newTaskRuleFixture(t *testing.T) *taskRuleFixture {
 		CaptureDAOFn: func() store.WebhookCaptureDAO { return fixture.capture },
 	}
 	fixture.tasks = taskservice.NewTasks(fixture.database)
+	fixture.database.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error {
+		return work(fixture.snapshot)
+	}
+	fixture.reader.TaskHeaderFn = func(_ context.Context, project, id string) (model.TaskHeader, error) {
+		return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
+	}
 	return fixture
 }
 
@@ -90,20 +107,23 @@ func (fixture *taskRuleFixture) read(ctx context.Context) {
 
 func (fixture *taskRuleFixture) requireAuthorization(before int, method string) {
 	fixture.t.Helper()
-	calls := 0
+	calls, want := 0, 1
 	for _, call := range fixture.database.trace.snapshot()[before:] {
 		if call == method {
 			calls++
 		}
+		if method == "project-writer.ProjectAccess" && call == "scope.GoalDependencyDAO" {
+			want = 2
+		}
 	}
-	if calls != 1 {
-		fixture.t.Errorf("authorization calls=%d want1 in the same scope", calls)
+	if calls != want {
+		fixture.t.Errorf("authorization calls=%d want%d in the same scope", calls, want)
 	}
 }
 
 func (fixture *taskRuleFixture) write(ctx context.Context, completion store.Completion) {
 	fixture.database.WriteProjectFn = func(actual context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		if actual != ctx || id != fixture.project.ID || work == nil {
+		if (actual != ctx && !fixture.lifecycleGoal) || id != fixture.project.ID || work == nil {
 			fixture.t.Fatal("write changed context, Project identity, or callback")
 		}
 		before := len(fixture.database.trace.snapshot())
@@ -114,8 +134,18 @@ func (fixture *taskRuleFixture) write(ctx context.Context, completion store.Comp
 }
 
 func (fixture *taskRuleFixture) current(ctx context.Context, current model.Task) {
+	fixture.lifecycleGoal = current.Type == model.TaskTypeGoal
+	fixture.reader.TaskHeaderFn = func(_ context.Context, project, id string) (model.TaskHeader, error) {
+		if project != current.ProjectID || id != current.ID {
+			fixture.t.Fatal("preflight changed target")
+		}
+		return model.TaskHeader{ProjectID: project, ID: id, Type: current.Type}, nil
+	}
+	if fixture.lifecycleGoal {
+		fixture.scope.GoalDependencyDAOFn = func() store.GoalDependencyDAO { return goalFixtureDAO{} }
+	}
 	fixture.writer.TaskFn = func(actual context.Context, id string) (model.Task, error) {
-		if actual != ctx || id != current.ID {
+		if (actual != ctx && !fixture.lifecycleGoal) || id != current.ID {
 			fixture.t.Fatal("current Task read changed context or identity")
 		}
 		return current, nil
@@ -278,10 +308,14 @@ func TestTaskCreateReadAndDerivedState(t *testing.T) {
 
 type taskInputValidationStore struct {
 	writeProject func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error)
+	readSnapshot func(context.Context, func(store.SnapshotScope) error) error
 }
 
-func (taskInputValidationStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
-	panic("Task input validation unexpectedly read a snapshot")
+func (database taskInputValidationStore) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
+	if database.readSnapshot == nil {
+		panic("Task input validation unexpectedly read a snapshot")
+	}
+	return database.readSnapshot(ctx, run)
 }
 
 func (database taskInputValidationStore) WriteProject(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
@@ -305,7 +339,26 @@ func TestTaskValidInputReachesProjectWriter(t *testing.T) {
 			ctx := t.Context()
 			sentinel := errors.New("Project writer reached")
 			calls := 0
-			tasks := taskservice.NewTasks(taskInputValidationStore{writeProject: func(actual context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+			base := newTaskMockBase(t, "preflight")
+			projectReader := &projectReaderMock{taskMockBase: base, ProjectAccessFn: func(actual context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+				if actual != ctx || actor != principal || id != project.ID {
+					t.Fatal("preflight authorization changed")
+				}
+				return taskMockAccess(project, principal), nil
+			}}
+			reader := &taskReaderMock{taskMockBase: base, TaskHeaderFn: func(actual context.Context, projectID, id string) (model.TaskHeader, error) {
+				if actual != ctx || projectID != project.ID || id != target.ID {
+					t.Fatal("preflight target changed")
+				}
+				return model.TaskHeader{ProjectID: projectID, ID: id, Type: model.TaskTypeTask}, nil
+			}}
+			snapshot := &taskSnapshotScopeMock{taskMockBase: base, ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+			tasks := taskservice.NewTasks(taskInputValidationStore{readSnapshot: func(actual context.Context, run func(store.SnapshotScope) error) error {
+				if method != "status" || actual != ctx {
+					t.Fatal("unexpected preflight")
+				}
+				return run(snapshot)
+			}, writeProject: func(actual context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 				calls++
 				if actual != ctx || id != project.ID || work == nil {
 					t.Fatal("Task input validation changed writer context, Project identity, or callback")
@@ -592,6 +645,9 @@ func TestTaskSetStatusValidationAndScope(t *testing.T) {
 			projectID, taskID := f.project.ID, missing
 			if scope == "project" {
 				projectID, taskID = missing, f.target.ID
+				f.projectReader.ProjectAccessFn = func(context.Context, model.Principal, string) (model.ProjectAccess, error) {
+					return model.ProjectAccess{}, model.ErrNotFound
+				}
 				f.database.WriteProjectFn = func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error) {
 					return store.Completion{Outcome: store.TransactionNotCommitted}, model.ErrNotFound
 				}
@@ -599,6 +655,9 @@ func TestTaskSetStatusValidationAndScope(t *testing.T) {
 				f.write(ctx, store.Completion{Outcome: store.TransactionCommitted})
 				if scope == "foreign task" {
 					taskID = "a1111111-1111-4111-8111-111111111111"
+				}
+				f.reader.TaskHeaderFn = func(context.Context, string, string) (model.TaskHeader, error) {
+					return model.TaskHeader{}, model.ErrNotFound
 				}
 				f.writer.TaskFn = func(actual context.Context, id string) (model.Task, error) {
 					if actual != ctx || id != taskID {

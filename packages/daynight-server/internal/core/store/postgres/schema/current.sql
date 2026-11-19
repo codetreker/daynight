@@ -1,4 +1,4 @@
--- Schema snapshot version: 90
+-- Schema snapshot version: 91
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -312,6 +312,11 @@ CREATE TABLE "github_apps" (
     "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     "deleted_at" timestamp with time zone
+);
+
+CREATE TABLE "goal_dependency_revisions" (
+    "goal_id" "uuid" NOT NULL,
+    "revision" bigint NOT NULL
 );
 
 CREATE TABLE "login_transactions" (
@@ -1649,6 +1654,9 @@ ALTER TABLE ONLY "github_app_team_grants"
 ALTER TABLE ONLY "github_apps"
     ADD CONSTRAINT "github_apps_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "goal_dependency_revisions"
+    ADD CONSTRAINT "goal_dependency_revisions_pkey" PRIMARY KEY ("goal_id");
+
 ALTER TABLE ONLY "login_transactions"
     ADD CONSTRAINT "login_transactions_pkey" PRIMARY KEY ("id");
 
@@ -1992,6 +2000,10 @@ CREATE UNIQUE INDEX "github_app_team_grants_live" ON "github_app_team_grants" US
 CREATE INDEX "github_app_team_grants_team" ON "github_app_team_grants" USING "btree" ("team_id", "app_resource_id") WHERE ("revoked_at" IS NULL);
 
 CREATE UNIQUE INDEX "github_apps_live_github_app_id" ON "github_apps" USING "btree" ("github_app_id") WHERE ("deleted_at" IS NULL);
+
+CREATE UNIQUE INDEX "goal_dependencies_edge_id" ON "task_dependencies" USING "btree" ("goal_edge_id") WHERE ("dependency_type" = 'goal'::"text");
+
+CREATE INDEX "goal_dependencies_predecessor" ON "task_dependencies" USING "btree" ("depends_on_task_id", "task_id") WHERE ("dependency_type" = 'goal'::"text");
 
 CREATE INDEX "login_transactions_expiry" ON "login_transactions" USING "btree" ("expires_at");
 

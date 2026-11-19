@@ -39,6 +39,9 @@ func (h *taskHandler) delete(w http.ResponseWriter, request *http.Request, princ
 	input := taskcore.DeleteTask{Version: version, RemoveDepends: removeDepends != nil && *removeDepends}
 	var metadata service.TaskWriteMetadata
 	if err := h.tasks.Delete(service.WithTaskWriteMetadata(workerProtocolContext(request), &metadata), principal, projectID, id, input); err != nil {
+		if writeGoalOutcomeUnknown(w, request, logger, "delete", err) {
+			return
+		}
 		httpx.WriteError(w, request, logger, "task", "delete", err)
 		return
 	}

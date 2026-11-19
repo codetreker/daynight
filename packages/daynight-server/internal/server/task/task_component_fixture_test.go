@@ -231,6 +231,12 @@ type taskHTTPProjectScopeMock struct {
 	TaskDAOFn                 func() store.TaskWriteDAO
 	SessionDAOFn              func() store.ProjectSessionDAO
 	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
+	GoalDependencyDAOFn       func() store.GoalDependencyDAO
+}
+
+func (mock *taskHTTPProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {
+	mock.need("GoalDependencyDAO", mock.GoalDependencyDAOFn != nil)
+	return mock.GoalDependencyDAOFn()
 }
 
 func (mock *taskHTTPProjectScopeMock) EligibilityDAO() store.WebhookEligibilityDAO {
@@ -888,6 +894,25 @@ func (f *taskHTTPFixture) require(ctx context.Context, projectID string) {
 		f.t.Errorf("DAO context, scope or Project changed: active=%t, project=%q", f.active, projectID)
 		panic("invalid Task HTTP DAO scope")
 	}
+}
+
+func (f *taskHTTPFixture) expectLifecyclePreflight(target model.Task) {
+	f.t.Helper()
+	base := newTaskHTTPMockBase(f.t, "Task HTTP lifecycle preflight")
+	reader := &taskHTTPReaderMock{taskHTTPMockBase: base, TaskHeaderFn: func(ctx context.Context, project, id string) (model.TaskHeader, error) {
+		if ctx.Err() != nil || project != f.project.ID || id != target.ID {
+			f.t.Fatal("lifecycle preflight changed target")
+		}
+		return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
+	}}
+	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, actor model.Principal, project string) (model.ProjectAccess, error) {
+		if ctx.Err() != nil || actor != f.principal || project != f.project.ID {
+			f.t.Fatal("lifecycle preflight changed authorization")
+		}
+		return taskHTTPMockAccess(f.project, actor), nil
+	}}
+	scope := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+	f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error { return run(scope) }
 }
 
 func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*taskHTTPReaderMock, *taskHTTPProjectReaderMock, *taskHTTPSessionReaderMock, *taskHTTPSnapshotScopeMock, *httpCallPlan)) {

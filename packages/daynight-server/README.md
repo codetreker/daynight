@@ -559,10 +559,12 @@ writers remain stopped, with its corresponding loss of later writes.
 
 ### Dependency type upgrade
 
-Migration 090 adds a default `task` type and nullable Goal edge identity to the
-shared dependency table. Existing rows and writes from already running old
+Migrations 090 and 091 add a default `task` type, nullable Goal edge identity,
+Goal relationship revisions, and Goal lookup indexes to the shared dependency
+store. Existing rows and writes from already running old
 instances retain the ordinary Task type. New ordinary reads and writes filter
-that type. No Goal edge writes are exposed by this migration.
+that type. Existing Goal status and direct deletion operations enforce the stored Goal
+relationships; these migrations do not expose Goal edge writes.
 
 An old binary cannot restart against the newer migration ledger. Before Goal
 edge writes are enabled, stop every old instance that accesses this table,
