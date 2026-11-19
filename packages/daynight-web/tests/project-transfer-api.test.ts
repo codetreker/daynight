@@ -24,6 +24,8 @@ describe("project ownership transfer", () => {
     const receipt = await transferProject(project, candidate, user, signal(), vi.fn(), dispatched);
     expect(receipt.actorAccess).toBeNull(); expect(receipt.ownership.version).toBe(9007199254740994n); expect(dispatched).toHaveBeenCalledOnce();
     expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${project}/transfer-preview`);
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).has("Daynight-Confirm-Goal-Dependency-Removal")).toBe(false);
+    expect(new Headers(fetch.mock.calls[1]?.[1].headers).get("Daynight-Confirm-Goal-Dependency-Removal")).toBe("true");
     expect(fetch.mock.calls[1]?.[1].body).toBe(`{"ownership":{"teamId":"${source}","version":9007199254740993},"targetTeam":{"id":"${target}","version":9223372036854775807},"expectedUserId":"${user}"}`);
   });
 

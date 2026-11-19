@@ -17,12 +17,12 @@ type State = {
   directOnly: boolean; actorLost: boolean; loseResponse: boolean; conflict: boolean;
   retainAccess: boolean; transferred: boolean; sourceRead: 'ok' | 'missing' | 'network';
   forbidden: boolean; hold: Promise<void> | null; repositoryError: string | null;
-  holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdTeams: Promise<void> | null; paginated: boolean; longNames: boolean;
-  targetVersion: bigint; requests: string[]; writes: string[]; previews: string[];
+  holdPreview: Promise<void> | null; holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdTeams: Promise<void> | null; paginated: boolean; longNames: boolean;
+  targetVersion: bigint; requests: string[]; writes: string[]; previews: string[]; writeHeaders: (string | null)[]; previewHeaders: (string | null)[];
 };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, repositoryError: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, longNames: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
+  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, repositoryError: null, holdPreview: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, longNames: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [], writeHeaders: [], previewHeaders: [] };
   const ownership = { teamId: sourceId, version: 1n };
   const grant = { projectId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time };
   const access = () => state.transferred ? { projectId, ownerTeam: target, ownership: { teamId: targetId, version: 2n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: grant } : { projectId, ownerTeam: state.longNames ? { ...source, name: longSourceName } : source, ownership, effectiveRole: 'admin', teamRole: state.directOnly ? null : 'admin', canTransfer: !state.directOnly, directGrant: state.directOnly || state.retainAccess ? grant : null };
@@ -48,12 +48,13 @@ const install = async (page: Page): Promise<State> => {
     if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess !== null) await state.holdAccess; return state.actorLost ? send(error('not_found'), 404) : send(access()); }
     if (path === `/api/v1/projects/${projectId}`) return state.actorLost ? send(error('not_found'), 404) : send(project);
     if (path === `/api/v1/projects/${projectId}/transfer-preview`) {
-      state.previews.push(request.postData()!);
+      state.previews.push(request.postData()!); state.previewHeaders.push(request.headers()['daynight-confirm-goal-dependency-removal'] ?? null);
+      if (state.holdPreview !== null) await state.holdPreview;
       if (state.actorLost) return send(error('not_found'), 404);
       return send({ sourceTeam: source, targetTeam: { ...target, version: state.targetVersion }, ownership, actorRole: state.retainAccess ? 'admin' : null });
     }
     if (path === `/api/v1/projects/${projectId}/transfer`) {
-      state.writes.push(request.postData()!);
+      state.writes.push(request.postData()!); state.writeHeaders.push(request.headers()['daynight-confirm-goal-dependency-removal'] ?? null);
       if (state.hold !== null) await state.hold;
       if (state.repositoryError !== null) return send(error(state.repositoryError), 409);
       if (state.forbidden) { state.directOnly = true; return send(error('forbidden'), 403); }
@@ -285,12 +286,15 @@ test('rejects foreign links, cancels without a write, and uses the loss-of-acces
   dialog = await preview(page, `${new URL(page.url()).origin}/teams/${targetId}`);
   await expect(dialog).toContainText('Direct project grants and existing project invitations remain unchanged');
   await expect(dialog).toContainText('lose access');
+  await expect(dialog).toContainText('All Goal dependencies associated with this project will be permanently removed. This includes dependencies within the project, external prerequisites, and dependencies from other projects on Goals in this project. These relationships cannot be restored.');
+  expect(state.previewHeaders).toEqual([null]);
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused(); expect(state.writes).toHaveLength(0);
   await open(page); dialog = await preview(page);
   await dialog.getByRole('button', { name: 'Confirm transfer' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Project transferred to Destination Team.' })).toContainText('no longer have access');
   await expect(page).toHaveURL(new RegExp(`/teams/${sourceId}$`));
+  expect(state.writeHeaders).toEqual(['true']); expect(state.previewHeaders).toEqual([null, null]);
   expect(state.writes).toEqual([`{"ownership":{"teamId":"${sourceId}","version":1},"targetTeam":{"id":"${targetId}","version":9007199254740993},"expectedUserId":"${actorId}"}`]);
 });
 
@@ -314,18 +318,88 @@ test('conflict requires a new preview and a lost response followed by 404 stays 
 });
 
 test('narrow dialog supports bilingual labels, focus trapping and cancellation', async ({ page }) => {
-  const state = await install(page); await page.setViewportSize({ width: 375, height: 667 }); await start(page);
+  const state = await install(page); await page.setViewportSize({ width: 320, height: 667 }); await start(page);
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
   await page.getByRole('button', { name: '转移项目', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
   await expect(dialog.getByRole('heading', { name: '转移项目' })).toBeVisible();
   await expect(dialog.getByLabel('目标 Team ID 或链接')).toBeVisible();
+  await dialog.getByLabel('目标 Team ID 或链接').fill(targetId);
+  await dialog.getByRole('button', { name: '预览', exact: true }).click();
+  const warning = dialog.getByText('所有与此项目相关的 Goal 依赖将永久移除，包括项目内依赖、外部前置及其他项目对本项目 Goal 的依赖。这些关系无法恢复。', { exact: true });
+  await expect(warning).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '确认转移' })).toHaveAccessibleDescription(await warning.textContent() ?? '');
+  const bounds = await warning.evaluate(element => {
+    const text = element.getBoundingClientRect(), body = element.closest('.dialog-body')!.getBoundingClientRect();
+    return { top: text.top, bottom: text.bottom, bodyTop: body.top, bodyBottom: body.bottom };
+  });
+  expect(bounds.top, JSON.stringify(bounds)).toBeGreaterThanOrEqual(bounds.bodyTop - 1);
+  expect(bounds.bottom, JSON.stringify(bounds)).toBeLessThanOrEqual(bounds.bodyBottom + 1);
+  expect(state.previewHeaders).toEqual([null]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.keyboard.press('Shift+Tab');
   expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   await dialog.getByRole('button', { name: '取消' }).click();
   await expect(dialog).toHaveCount(0); expect(state.writes).toHaveLength(0);
+});
+
+test('narrow English transfer preview exposes the permanent removal warning', async ({ page }) => {
+  const state = await install(page); await page.setViewportSize({ width: 320, height: 667 }); await start(page); await open(page);
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Team ID or link').fill(targetId);
+  const previewButton = dialog.getByRole('button', { name: 'Preview', exact: true });
+  await previewButton.focus(); await page.keyboard.press('Enter');
+  await expect(dialog.getByText('Destination Team', { exact: true })).toBeVisible();
+  const warning = dialog.getByText('All Goal dependencies associated with this project will be permanently removed. This includes dependencies within the project, external prerequisites, and dependencies from other projects on Goals in this project. These relationships cannot be restored.', { exact: true });
+  await expect(warning).toBeVisible();
+  const bounds = await warning.evaluate(element => {
+    const text = element.getBoundingClientRect(), body = element.closest('.dialog-body')!.getBoundingClientRect();
+    return { top: text.top, bottom: text.bottom, bodyTop: body.top, bodyBottom: body.bottom };
+  });
+  expect(bounds.top, JSON.stringify(bounds)).toBeGreaterThanOrEqual(bounds.bodyTop - 1);
+  expect(bounds.bottom, JSON.stringify(bounds)).toBeLessThanOrEqual(bounds.bodyBottom + 1);
+  const roleBounds = await dialog.getByText('You will lose access to this project after transfer. No extra grant will be added.', { exact: true }).evaluate(element => {
+    const text = element.getBoundingClientRect(), body = element.closest('.dialog-body')!.getBoundingClientRect();
+    return { top: text.top, bottom: text.bottom, bodyTop: body.top, bodyBottom: body.bottom };
+  });
+  expect(roleBounds.top, JSON.stringify(roleBounds)).toBeGreaterThanOrEqual(roleBounds.bodyTop - 1);
+  expect(roleBounds.bottom, JSON.stringify(roleBounds)).toBeLessThanOrEqual(roleBounds.bodyBottom + 1);
+  await expect(dialog.getByRole('button', { name: 'Confirm transfer' })).toHaveAccessibleDescription(await warning.textContent() ?? '');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  expect(state.writes).toEqual([]); expect(state.previewHeaders).toEqual([null]);
+});
+
+test('a preview received in a hidden settings section exposes its warning on return', async ({ page }) => {
+  const state = await install(page); await page.setViewportSize({ width: 320, height: 667 }); await start(page); await open(page);
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Team ID or link').fill(targetId);
+  const gate = Promise.withResolvers<void>(); state.holdPreview = gate.promise;
+  await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect.poll(() => state.previews.length).toBe(1);
+  await page.evaluate(path => { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }, `/projects/${projectId}/settings`);
+  await expect(dialog).toBeHidden();
+  gate.resolve(); state.holdPreview = null;
+  await expect(page.locator('.auth-dialog .notice.warning')).toHaveCount(1);
+  await page.evaluate(path => { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }, `/projects/${projectId}/settings?tab=management`);
+  await expect(dialog).toBeVisible();
+  const warning = dialog.getByText('All Goal dependencies associated with this project will be permanently removed. This includes dependencies within the project, external prerequisites, and dependencies from other projects on Goals in this project. These relationships cannot be restored.', { exact: true });
+  await expect(warning).toBeVisible();
+  const bounds = await warning.evaluate(element => {
+    const text = element.getBoundingClientRect(), body = element.closest('.dialog-body')!.getBoundingClientRect();
+    return { top: text.top, bottom: text.bottom, bodyTop: body.top, bodyBottom: body.bottom };
+  });
+  expect(bounds.top, JSON.stringify(bounds)).toBeGreaterThanOrEqual(bounds.bodyTop - 1);
+  expect(bounds.bottom, JSON.stringify(bounds)).toBeLessThanOrEqual(bounds.bodyBottom + 1);
+  const body = dialog.locator('.dialog-body');
+  await body.evaluate(element => { element.scrollTop = 0; });
+  await page.evaluate(path => { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }, `/projects/${projectId}/settings`);
+  await expect(dialog).toBeHidden();
+  await page.evaluate(path => { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }, `/projects/${projectId}/settings?tab=management`);
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => body.evaluate(element => element.scrollTop)).toBe(0);
+  expect(state.writes).toEqual([]); expect(state.previewHeaders).toEqual([null]);
 });
 
 test('retained direct access keeps the project open with the receipt owner', async ({ page }) => {
@@ -351,6 +425,14 @@ test('network failure checking source preserves success and retries; confirmed s
   await expect(page).toHaveURL(new RegExp(`/teams/${personalId}$`));
   await expect(notice).toContainText('Project transferred to Destination Team.');
   expect(state.writes).toHaveLength(1);
+});
+
+test('withdraws transfer confirmation after owner admin access is lost', async ({ page }) => {
+  const state = await install(page); await start(page); await open(page); const dialog = await preview(page);
+  state.directOnly = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(dialog.getByRole('button', { name: 'Confirm transfer' })).toBeDisabled();
+  expect(state.writes).toEqual([]); expect(state.previewHeaders).toEqual([null]);
 });
 
 test('a 403 after source admin loss refreshes access and invalidates the old confirmation', async ({ page }) => {
