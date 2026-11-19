@@ -33,6 +33,8 @@ export type AssistantTaskEvent = { id: string; taskId: string; targetBotId: stri
 export type AssistantTaskInquiry = { id: string; taskId: string; itemId: string | null; fromBotId: string; toBotId: string; answerBotId: string | null; question: string; answer: string; state: "open" | "answered" | "timed_out"; createdAt: string; deadline: string; answeredAt: string | null };
 export type AssistantTaskPage<T> = { items: T[]; nextCursor: string | null; observedAt: string };
 export type AssistantTaskQuery = { limit?: number; cursor?: string; state?: string; itemId?: string; targetBotId?: string };
+/** Event pages accept one type filter: `type` keeps that type and `excludeType` drops it. Selecting `inbound` also omits events of paused tasks. */
+export type AssistantTaskEventQuery = AssistantTaskQuery & ({ type?: string; excludeType?: never } | { type?: never; excludeType?: string });
 export type AssistantTaskCredential = { claimToken: string; claimGeneration: string };
 export type CreateAssistantTaskInput = { id: string; name: string; purpose: string; scope: string; kind: "continuous" | "once"; takeover: "manual" | "auto"; application?: string; trigger?: JsonValue; manual: { body: string; rules: JsonValue } };
 export type UpdateAssistantTaskInput = { ifVersion: string; name?: string; purpose?: string; scope?: string; takeover?: "manual" | "auto"; trigger?: JsonValue; state?: "active" | "paused" };
