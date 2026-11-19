@@ -156,7 +156,9 @@ CREATE TABLE "assistant_task_records" (
     "kind" "text" NOT NULL,
     "text" "text" NOT NULL,
     "refs" "jsonb" NOT NULL,
-    "created_at" timestamp with time zone NOT NULL
+    "created_at" timestamp with time zone NOT NULL,
+    "outcome" "text",
+    "action_record_id" "uuid"
 );
 
 CREATE TABLE "assistant_tasks" (

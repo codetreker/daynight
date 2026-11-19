@@ -136,6 +136,19 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	if record.TaskID != id || record.ItemID == nil || *record.ItemID != item.ID || record.AuthorBotID == nil || *record.AuthorBotID != first {
 		t.Fatalf("record identity differs: %+v", record)
 	}
+	action := requestJSON[api.AssistantTaskRecord](t, firstClient, http.MethodPost, base+"/records", protected(map[string]any{
+		"id": uuid.NewString(), "itemId": item.ID, "kind": "action", "text": "Grouped the notes into one folder.",
+	}, firstToken, "1"), http.StatusOK)
+	outcome := requestJSON[api.AssistantTaskRecord](t, firstClient, http.MethodPost, base+"/records", protected(map[string]any{
+		"id": uuid.NewString(), "itemId": item.ID, "kind": "outcome", "text": "The notes stayed grouped.", "outcome": "effective", "actionRecordId": action.ID, "refs": map[string]any{"recordIds": []string{record.ID}},
+	}, firstToken, "1"), http.StatusOK)
+	if action.Outcome != nil || action.ActionRecordID != nil || outcome.Kind != "outcome" || outcome.Outcome == nil || *outcome.Outcome != "effective" || outcome.ActionRecordID == nil || *outcome.ActionRecordID != action.ID {
+		t.Fatalf("outcome record differs: action=%+v outcome=%+v", action, outcome)
+	}
+	itemRecords := requestJSON[api.AssistantTaskPage[api.AssistantTaskRecord]](t, f, http.MethodGet, base+"/records?limit=200&itemId="+item.ID, nil, http.StatusOK)
+	if value := expectID(t, itemRecords.Items, outcome.ID, func(v api.AssistantTaskRecord) string { return v.ID }); value.Outcome == nil || *value.Outcome != "effective" || value.ActionRecordID == nil || *value.ActionRecordID != action.ID || !value.CreatedAt.Equal(outcome.CreatedAt) {
+		t.Fatalf("outcome readback differs: %+v", value)
+	}
 	transfer := requestJSON[api.AssistantTaskClaimResult](t, firstClient, http.MethodPost, base+"/transfer", map[string]any{
 		"operationId": uuid.NewString(), "ifVersion": strconv.FormatInt(readTask().Version, 10), "expectedGeneration": "1", "claimToken": firstToken, "targetBotId": second,
 	}, http.StatusOK)

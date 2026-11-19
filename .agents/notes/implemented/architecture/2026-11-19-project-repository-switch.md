@@ -21,6 +21,13 @@ entries in one transaction. Historical PR sources remain independent. The
 [server design](../../../../docs/design/daynight-server.md#项目仓库改址) owns
 the transaction and observation contract.
 
+The CLI selects the Project by explicit ID or existing repository context and
+submits the preview's exact versions and classification evidence after operator
+confirmation. An unverified identity needs a separate choice to treat it as a
+switch. Noninteractive use requires explicit flags for confirmation and that
+choice. A validated receipt establishes success; stale previews require a new
+confirmation and unknown outcomes require observation without replay.
+
 The Web editor binds confirmation to the exact preview and keeps the decimal
 versions as strings. Repository writes join the existing Project management
 guard. Its unknown result remains guarded after readback because current state

@@ -44,6 +44,7 @@ import { LanguageSelector } from "../i18n/LanguageSelector";
 import { MyTasksPage } from "../features/my-tasks/MyTasksPage";
 import { WorkersPage } from "../features/workers/WorkersPage";
 import { WorkerDetailPage } from "../features/workers/WorkerDetailPage";
+import { useWorkspaceDrawer } from "./sidebar/useWorkspaceDrawer";
 import { WorkspaceSidebar } from "./sidebar/WorkspaceSidebar";
 import { AccountMenu } from "./AccountMenu";
 import { TeamsProvider, useTeams } from "../features/teams/TeamsProvider";
@@ -94,6 +95,9 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
   const sidebar = useSidebarPreference();
   const webhookCatalog = useWebhookCatalog();
   const resourceId = "projectId" in route ? route.projectId : "workerId" in route ? route.workerId : "teamId" in route ? route.teamId : "appId" in route ? route.appId : null;
+  const location = useBrowserLocation();
+  const routeKey = location.pathname + location.search + location.hash;
+  const drawer = useWorkspaceDrawer(routeKey, blocked);
   const label = (route.kind === "githubApps" || (route.kind === "githubAppAdmins" || route.kind === "githubAppTeams")) ? "GitHub Apps" : route.kind === "myTasks" ? (locale === "zh-CN" ? "进行中的任务" : "In-progress tasks") : route.kind === "webhooks" ? "Webhooks" : route.kind === "bots" || route.kind === "bot" || route.kind === "assistantTask" ? botMessages.title : route.kind === "workers" ? m.workers : route.kind === "worker" ? m.worker : route.kind === "testSessions" ? testMessages.title : route.kind === "testSession" ? testMessages.session : (route.kind === "projects" || route.kind === "team") ? app.projects : isTeamSettingsRoute(route) ? teamMessages.settings : route.kind === "sharedProjects" ? teamMessages.shared : route.kind === "account" ? m.accountSettings : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
   const teamPage = route.kind === "projects" || route.kind === "team" || isTeamSettingsRoute(route);
   const confirmedTeam = teamPage && teams.detail.status === "ready" ? teams.detail.team ?? null : null;
@@ -105,11 +109,13 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
   useLayoutEffect(() => { if (!blocked) content.current?.focus(); }, [route.kind, resourceId, blocked]);
   return (
     <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" || route.kind === "bots" || route.kind === "bot" || route.kind === "assistantTask" ? " test-session-shell" : ""}${route.kind === "testSession" ? " test-session-detail-shell" : ""}${route.kind === "bots" || route.kind === "bot" || route.kind === "assistantTask" ? " assistant-workspace-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
-      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} route={route} team={{ personalId: user.personalTeam.id, readyTeamId: teams.detail.status === "ready" ? selectedTeamId : null, visibilityTeamId: teams.visibilityTeamId }} webhooksAvailable={webhookCatalog.catalog !== null} blocked={blocked} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} onCreateTeam={onCreateTeam} />
+      <WorkspaceSidebar drawer={drawer} collapsed={sidebar.collapsed} onToggle={sidebar.toggle} route={route} team={{ personalId: user.personalTeam.id, readyTeamId: teams.detail.status === "ready" ? selectedTeamId : null, visibilityTeamId: teams.visibilityTeamId }} webhooksAvailable={webhookCatalog.catalog !== null} blocked={blocked} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} onCreateTeam={onCreateTeam} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
           <AccountRefreshNotice />
+          <div className="workspace-heading">
+          <button ref={drawer.openerRef} className="workspace-navigation-open" hidden={!drawer.narrow} type="button" aria-controls="workspace-sidebar" aria-expanded={drawer.active} aria-label={m.sidebar.open} title={m.sidebar.open} onClick={drawer.open}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
           <nav className="crumb" aria-label={app.breadcrumb}>
             {teamName !== null && <>{isTeamSettingsRoute(route) ? <a className="crumb-team" href={teamHref} onClick={followLink}>{teamName}</a> : <span className="crumb-team">{teamName}</span>}<span aria-hidden="true">/</span></>}
             {myPage && <><span>{app.my}</span><span aria-hidden="true">/</span></>}
@@ -118,6 +124,7 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
             {route.kind === "worker" && <><a href="/workers" onClick={followLink}>{m.workers}</a><span aria-hidden="true">/</span></>}
             <span className="crumb-current" aria-current="page">{label}</span>
           </nav>
+          </div>
           <div className="account-actions">
             <a className="setup-guide-link" href="/setup" target="_blank" rel="noopener noreferrer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v15M3 4h5a5 5 0 0 1 4 2 5 5 0 0 1 4-2h5v15h-5a5 5 0 0 0-4 2 5 5 0 0 0-4-2H3z" /></svg>{setup.navigation}</a>
             <LanguageSelector />

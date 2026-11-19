@@ -12,6 +12,17 @@ const fixture = () => createBotExecutionFixture(() => createMemoryDatabase());
 afterEach(cleanupBotExecutions);
 
 describe("Bot execution evidence", () => {
+  it.each(["linux:v2:876b21c9-30d7-48c0-a2ab-287291e903a7:1", "linux:v1:invalid:1", "linux:v1:876b21c9-30d7-48c0-a2ab-287291e903a7:18446744073709551616"])("rejects unsupported Linux birth evidence on admission and persisted reads (%s)", startedAt => {
+    const f = fixture(); f.store.prepare(f.record);
+    f.store.update(f.record, { launchSubmission: "unknown" });
+    const invalid = { ...proof, startedAt };
+    expect(() => f.store.update(f.record, { controllerProcess: invalid })).toThrow();
+    expect(f.store.get(f.record)?.controllerProcess).toBeNull();
+    f.store.update(f.record, { controllerProcess: proof });
+    f.database.prepare("UPDATE bot_executions SET record=json_set(record, '$.controllerProcess.startedAt', ?)").run(startedAt);
+    expect(() => f.store.get(f.record)).toThrow();
+  });
+
   it("rejects malformed startup observations on writes and persisted reads", () => {
     const f = fixture(); f.store.prepare(f.record);
     for (const startup of [{ state: "failed", reasonCode: "ready" }, { state: "ready", reasonCode: "ready", extra: true }, { state: "lost", reasonCode: "evidence_missing" }]) {

@@ -109,8 +109,15 @@ func (m *Module) AddRecord(ctx context.Context, dao store.AssistantTaskDAO, acto
 	if actor.BotID == nil {
 		return result, forbidden()
 	}
-	if !strictID(input.ID) || !textValid(input.Text, true) || !validState(input.Kind, "fact", "guess", "action", "unknown", "question", "answer", "note") {
+	if !strictID(input.ID) || !textValid(input.Text, true) || !validState(input.Kind, "fact", "guess", "action", "unknown", "question", "answer", "note", "outcome") {
 		return result, invalid("Record identity, text or kind is invalid.")
+	}
+	if input.Kind == "outcome" {
+		if input.Outcome == nil || !validState(*input.Outcome, "effective", "ineffective", "inconclusive") || input.ActionRecordID == nil || !strictID(*input.ActionRecordID) {
+			return result, invalid("Outcome records require an outcome value and an action record ID.")
+		}
+	} else if input.Outcome != nil || input.ActionRecordID != nil {
+		return result, invalid("Only outcome records carry an outcome value or action record ID.")
 	}
 	refs, err := canonicalJSON(input.Refs)
 	if err != nil {
@@ -143,7 +150,22 @@ func (m *Module) AddRecord(ctx context.Context, dao store.AssistantTaskDAO, acto
 			return result, err
 		}
 	}
-	hash, err := fingerprint([]any{input.ID, task.ID, actor.BotID, input.ItemID, input.Kind, input.Text, refs})
+	if input.Kind == "outcome" {
+		action, err := dao.Record(ctx, task.OwnerUserID, task.ID, *input.ActionRecordID)
+		if errors.Is(err, model.ErrNotFound) || err == nil && action.Kind != "action" {
+			return result, invalid("The action record ID must refer to an action record of this task.")
+		}
+		if err != nil {
+			return result, err
+		}
+	}
+	request := []any{input.ID, task.ID, actor.BotID, input.ItemID, input.Kind, input.Text, refs}
+	// Appending only for outcomes keeps fingerprints of records stored before
+	// the outcome kind existed valid for their replays.
+	if input.Kind == "outcome" {
+		request = append(request, *input.Outcome, *input.ActionRecordID)
+	}
+	hash, err := fingerprint(request)
 	if err != nil {
 		return result, err
 	}
@@ -162,7 +184,7 @@ func (m *Module) AddRecord(ctx context.Context, dao store.AssistantTaskDAO, acto
 	if !errors.Is(err, model.ErrNotFound) {
 		return result, err
 	}
-	result = model.AssistantTaskRecord{ID: input.ID, OwnerUserID: task.OwnerUserID, TaskID: task.ID, ItemID: input.ItemID, Author: "bot", AuthorBotID: actor.BotID, Kind: input.Kind, Text: input.Text, Refs: refs, RequestFingerprint: hash, CreatedAt: now}
+	result = model.AssistantTaskRecord{ID: input.ID, OwnerUserID: task.OwnerUserID, TaskID: task.ID, ItemID: input.ItemID, Author: "bot", AuthorBotID: actor.BotID, Kind: input.Kind, Text: input.Text, Outcome: input.Outcome, ActionRecordID: input.ActionRecordID, Refs: refs, RequestFingerprint: hash, CreatedAt: now}
 	result, err = insertRecord(ctx, dao, result)
 	if err != nil {
 		return result, err
