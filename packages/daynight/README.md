@@ -8,6 +8,15 @@ browser-connected native Controllers, and run a local GitHub PR reviewer
 through Copilot CLI. Both command names share configuration and behavior. Supported native platforms are Linux, Windows
 and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
+Claude Code is temporarily unsupported for managed Task Sessions, Test Sessions
+and assistants. Existing `claude` options and adapter code remain available,
+but initialization disconnect cleanup is not reliable on macOS. The ordinary
+SDK startup suite excludes that Claude disconnect case; passing CI does not
+certify Claude Code support. Restoring support requires fixing and reinstating
+the case with successful macOS validation. Other retained Claude tests provide
+regression coverage only. See the
+[support decision](../../.agents/notes/implemented/testing/2026-11-19-claude-support-suspension.md).
+
 See the [project overview](../../README.md) for the browser workspace and service,
 and the [development guide](../../docs/development.md) for source builds,
 validation, package versions and npm publication. The
@@ -2874,7 +2883,8 @@ recovery ledger. The
 
 ## Web worker sessions
 
-Select Agent `codex`, `claude` or `copilot` in My Workers → Configuration. Before enrollment, omitting `worker.agentControlMode`
+Select Agent `codex` or `copilot` in My Workers → Configuration. The retained
+`claude` option is temporarily unsupported. Before enrollment, omitting `worker.agentControlMode`
 uses `web` for bootstrap. A saved explicit `herdr` target is not converted or
 applied. The service freezes the mode on each claim; existing claim identity is
 not changed by configuration updates.
@@ -3035,11 +3045,11 @@ cannot be combined with standalone prompt or provider options.
 ## Standalone Controller sessions
 
 Start a Test Session in the current directory with the configured Daynight
-service:
+service. Claude Code Test Sessions are temporarily unsupported; the retained
+`claude` commands do not establish a supported startup or cleanup guarantee.
 
 ```bash
 daynight controller codex
-daynight controller claude
 daynight controller copilot
 daynight controller codex "Explain this project"
 ```
@@ -3096,7 +3106,6 @@ Resume a stopped Test Session with its native context:
 
 ```bash
 daynight controller codex resume
-daynight controller claude resume <test-session-id>
 daynight controller copilot resume <test-session-id>
 ```
 
