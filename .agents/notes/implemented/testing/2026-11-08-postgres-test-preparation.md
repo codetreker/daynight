@@ -399,14 +399,16 @@ observes a queued revocation and commits a compatible Session credential read
 within the window. The eligibility and Profile Patch cases join the worker
 before checking that the membership or profile changes were rolled back.
 
-[AssistantTask credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/assistanttask/concurrency_test.go)
-and [Profile credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_credential_test.go)
+[AssistantTask credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/assistanttask/concurrency_test.go),
+[Profile credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_credential_test.go),
+and [Session OAuth expiry](../../../../packages/daynight-server/internal/core/store/postgres/session/oauth_test.go)
 use the same PostgreSQL clock and connection preparation. The expiry update
 commits before taking the credential row lock. The holder leaves that row
 unchanged. The contender waits on the exact holder while the credential is
 still valid, then the post-lock expiry check must reject it. The Profile
 test covers both Session and PAT and distinguishes the post-lock rejection
-from an empty result in the initial credential lookup.
+from an empty result in the initial credential lookup. The OAuth case
+locks the access token itself and retains the caller time from before expiry.
 
 The [Bot runtime write fixture](../../../../packages/daynight-server/internal/core/store/postgres/testdata/testutil/bot.go)
 uses the persisted native credential expiry and explicit caller times on
