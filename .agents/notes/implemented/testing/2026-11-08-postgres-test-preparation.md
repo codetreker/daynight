@@ -139,10 +139,15 @@ rolls back to its savepoint before reading defaults. The tested version gates
 and preference results do not depend on the absolute Bot creation sequence.
 
 Team deletion, Project creation and ownership transfer matrices reuse one
-Store per parent with independent case Teams and Projects. Each case observes
-the actual blocking backend and checks committed ownership or its absence.
-The parent verifies pool reuse after the case joins its waiters. Failure stops
-fixture reuse.
+Store per parent. Contention cases use independent Teams and Projects, observe
+the actual blocking backend and check committed ownership or its absence. The
+parent verifies pool reuse after the case joins its waiters.
+
+The [Project creation Personal Team matrix](../../../../packages/daynight-server/internal/core/store/postgres/project/ownership_contract_test.go)
+uses a fresh owner and Personal Team for each committed membership defect. A
+separate query transaction reads the exact Team and its member and owner counts
+in both lock modes. Each transaction rolls back before the next case. The
+parent schema owns the retained rows, and a failed case stops reuse.
 
 Preview SSO retry and redemption refusal matrices own one Store each.
 Each case uses a separate login ID, Session, credential and set of token

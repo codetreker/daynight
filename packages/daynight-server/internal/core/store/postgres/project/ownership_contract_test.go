@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -11,6 +12,7 @@ import (
 	pgproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestProjectOwnershipCreationAndRequiredReads(t *testing.T) {
@@ -60,13 +62,13 @@ func testProjectOwnershipCreationAndRequiredReads(t *testing.T, missing string) 
 }
 
 func TestProjectCreationPersonalTeamFactsExposeCorruptMembershipSources(t *testing.T) {
+	database := testutil.OpenStore(t, postgres.Open)
 	for _, damage := range []struct {
 		name                 string
 		members, ownerAdmins int64
 	}{{"missing-owner", 0, 0}, {"wrong-role", 1, 0}, {"additional-member", 2, 1}} {
 		for _, lock := range []bool{false, true} {
-			t.Run(damage.name+map[bool]string{false: "/unlocked", true: "/locked"}[lock], func(t *testing.T) {
-				database := testutil.OpenStore(t, postgres.Open)
+			if !t.Run(damage.name+map[bool]string{false: "/unlocked", true: "/locked"}[lock], func(t *testing.T) {
 				user, _, _ := testutil.AuthRecords(t, database)
 				var teamID string
 				if err := database.Pool.QueryRow(t.Context(), `SELECT id::text FROM teams WHERE personal_user_id=$1`, user.ID).Scan(&teamID); err != nil {
@@ -85,12 +87,24 @@ func TestProjectCreationPersonalTeamFactsExposeCorruptMembershipSources(t *testi
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback(context.Background())
+				defer func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+						t.Errorf("release Personal Team query transaction: %v", err)
+					}
+				}()
 				facts, err := pgproject.NewCreation(tx, user.ID).CreationPersonalTeam(t.Context(), lock)
 				if err != nil || facts.ID != teamID || facts.MemberCount != damage.members || facts.OwnerAdminCount != damage.ownerAdmins {
 					t.Fatalf("Project creation Personal facts hid %s: got=%#v team=%s members=%d ownerAdmins=%d error=%v", damage.name, facts, teamID, damage.members, damage.ownerAdmins, err)
 				}
-			})
+				if err := tx.Rollback(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				testutil.AssertPoolReusable(t, database.Pool)
+			}) {
+				return
+			}
 		}
 	}
 }
