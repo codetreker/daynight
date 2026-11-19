@@ -77,7 +77,10 @@ export const decodeInboundPayload = (payload: JsonValue): InboundPayload | null 
   }
 };
 
-const fullEventCommand = (event: AssistantTaskEvent) => `daynight assistant-task events pull ${event.taskId} --json，按事件 ID ${event.id} 查找（未找到时把返回的 nextCursor 作为 --cursor 继续翻页）`;
+// One event per page keeps each read bounded: pages run oldest first and a
+// retained inbound payload can approach 400 KiB of JSON, so a default page
+// could load megabytes of untrusted data into the Session to find one event.
+const fullEventCommand = (event: AssistantTaskEvent) => `daynight assistant-task events pull ${event.taskId} --limit 1 --json，按事件 ID ${event.id} 查找（未找到时把返回的 nextCursor 作为 --cursor 继续逐条翻页）`;
 const actorText = (value: Actor): string => value === null ? "未知" : value.kind === "system" ? "系统" : value.kind === "user" ? `用户 ${value.userId}` : `Bot ${value.botId}（用户 ${value.userId}）`;
 
 /** Heading of the section shared by every Daynight event about one project Task within one assistant task. */

@@ -182,6 +182,9 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
         const notification = createNotificationBatch(), batch = notification.events;
         // Deferred inbound events stay pending and are skipped page by page so
         // that an inbound backlog never blocks other assistant task events.
+        // This is interim: once the server filters events by type, selection
+        // reads non-inbound events first and stops the inbound pass at the
+        // first deferred event instead of fetching the remaining backlog.
         for await (const event of eventsFor(bot, signal, undefined, true)) {
           if (event.targetBotId !== bot.botId || event.state !== "pending") throw new Error("Assistant event page conflicts with its target or state filter.");
           const admission = notification.add(event);
