@@ -52,13 +52,16 @@ func (r *RetainedArchive) GateContext(parent context.Context) (context.Context, 
 	if r.timelineCtx == nil {
 		return r.operation.GateContext(parent)
 	}
+	// MCP may finish the producing tool call before sending its response.
+	held, release := filestorage.GateCleanupContext(r.timelineCtx)
 	ctx, cancel := context.WithCancelCause(parent)
-	stop := context.AfterFunc(r.timelineCtx, func() { cancel(context.Cause(r.timelineCtx)) })
-	if cause := context.Cause(r.timelineCtx); cause != nil {
+	stop := context.AfterFunc(held, func() { cancel(context.Cause(held)) })
+	if cause := filestorage.GateError(held); cause != nil {
 		cancel(cause)
 	}
 	return ctx, func() {
 		stop()
+		release()
 		cancel(context.Canceled)
 	}
 }

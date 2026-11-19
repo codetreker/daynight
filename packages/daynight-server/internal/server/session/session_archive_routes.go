@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -253,10 +254,16 @@ func (h *Routes) archiveResult(w http.ResponseWriter, r *http.Request, value any
 }
 
 func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte, timeout time.Duration, lease io.Closer) {
+	sendRetainedJSON(w, r, data, timeout, lease, h.logger, "archive_close", func(err error) { h.Failure(w, r, err) })
+}
+
+func sendRetainedJSON(w http.ResponseWriter, r *http.Request, data []byte, timeout time.Duration, lease io.Closer, logger *slog.Logger, closePhase string, fail func(error)) {
 	closed := false
 	defer func() {
 		if !closed {
-			h.closeArchive(r, lease)
+			if err := lease.Close(); err != nil {
+				httpx.LogFailure(logger, r.Context(), "session", closePhase, err)
+			}
 		}
 	}()
 	ctx, cancel := filestorage.GateContext(r.Context(), lease)
@@ -264,16 +271,18 @@ func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte
 	if err := ctx.Err(); err != nil {
 		if r.Context().Err() == nil {
 			closed = true
-			h.Failure(w, r, archiveCleanupError(context.Cause(ctx), lease.Close()))
+			fail(archiveCleanupError(context.Cause(ctx), lease.Close()))
 		}
 		return
 	}
 	controller := http.NewResponseController(w)
-	if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		err = archiveCleanupError(err, lease.Close())
-		closed = true
-		h.Failure(w, r, err)
-		return
+	if timeout > 0 {
+		if err := controller.SetWriteDeadline(time.Now().Add(timeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			err = archiveCleanupError(err, lease.Close())
+			closed = true
+			fail(err)
+			return
+		}
 	}
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() { _ = controller.SetWriteDeadline(time.Now()); close(done) })
@@ -302,16 +311,16 @@ func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte
 	if err == nil {
 		err = context.Cause(ctx)
 	}
+	if err == nil && timeout > 0 {
+		err = controller.SetWriteDeadline(time.Time{})
+		if errors.Is(err, http.ErrNotSupported) {
+			err = nil
+		}
+	}
 	if err != nil {
 		err = errors.Join(err, lease.Close())
 		closed = true
-		httpx.LogFailure(h.logger, r.Context(), "session", "response", err)
-		panic(http.ErrAbortHandler)
-	}
-	if err = controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
-		err = errors.Join(err, lease.Close())
-		closed = true
-		httpx.LogFailure(h.logger, r.Context(), "session", "response", err)
+		httpx.LogFailure(logger, r.Context(), "session", "response", err)
 		panic(http.ErrAbortHandler)
 	}
 }
