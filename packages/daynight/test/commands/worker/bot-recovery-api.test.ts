@@ -195,23 +195,38 @@ describe("Bot recovery HTTP boundary", () => {
     expect(f.requests.map(request => request.method)).toEqual(["GET"]);
   });
 
-  it.each(["register", "grant", "takeover"] as const)("classifies only a complete original %s conflict response as proven noncommit", async action => {
-    const f = await listen((_req, res) => { res.statusCode = 409; res.end(JSON.stringify({ error: { code: "resource_conflict", requestId: id(40), message: "Changed binding" } })); });
+  it.each((["register", "grant", "takeover"] as const).flatMap(action => (["resource_conflict", "session_conflict", "version_conflict", "archive_conflict"] as const).map(code => ({ action, code }))))("classifies the original $action $code response as proven noncommit and retains its actual code", async ({ action, code }) => {
+    const f = await listen((_req, res) => { res.statusCode = 409; res.end(JSON.stringify({ error: { code, requestId: id(40), message: "Changed binding" } })); });
     const pending = action === "register" ? f.api.register(f.record, f.registration, signal()) : f.api[action](f.record, f.grant, signal());
     const error = await pending.catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(BotRecoveryRejectedError);
-    expect(error).toMatchObject({ status: 409, code: "resource_conflict", requestId: id(40), writeOutcome: "not_committed", confirmedRefusal: true });
+    expect(error).toMatchObject({ status: 409, code, requestId: id(40), writeOutcome: "not_committed", confirmedRefusal: true });
     expect(f.requests).toHaveLength(1);
   });
 
-  it.each(["operation", "report", "observation"] as const)("does not classify a %s conflict as the original mutation's noncommit", async action => {
-    const f = await listen((_req, res) => { res.statusCode = 409; res.end(JSON.stringify({ error: { code: "resource_conflict", requestId: id(40), message: "Changed" } })); });
+  it.each((["operation", "report", "observation"] as const).flatMap(action => (["resource_conflict", "session_conflict", "version_conflict", "archive_conflict"] as const).map(code => ({ action, code }))))("does not classify $action $code as the original mutation's noncommit", async ({ action, code }) => {
+    const f = await listen((_req, res) => { res.statusCode = 409; res.end(JSON.stringify({ error: { code, requestId: id(40), message: "Changed" } })); });
     const pending = action === "operation" ? f.api.operation(f.record, id(2), id(6), f.identity, signal())
       : action === "observation" ? f.api.observation(f.record, signal())
       : f.api.report(f.record, { ...f.identity, hostingGeneration: "1", report: { botVersion: f.record.observed.version, fence: null, controllerId: "", controllerInstanceId: "", nativeSessionId: null, result: { state: "failed", code: "unavailable" } } }, signal());
     const error = await pending.catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(ApiError); expect(error).not.toBeInstanceOf(BotRecoveryRejectedError);
+    expect(error).toMatchObject({ code, status: 409 });
     expect(f.requests).toHaveLength(1);
+  });
+
+  it.each([
+    [409, "operation_conflict"], [409, "version_exhausted"], [409, "input_unknown"], [403, "forbidden"],
+    [401, "unauthenticated"], [503, "outcome_unknown"], [500, "session_conflict"], [503, "version_conflict"], [503, "archive_conflict"],
+  ] as const)("does not classify HTTP %s %s outside the verified rejection contract", async (status, code) => {
+    const f = await listen((_req, res) => { res.statusCode = status; res.end(JSON.stringify({ error: { code, requestId: id(40), message: "Unconfirmed outcome" } })); });
+    const error = await f.api.register(f.record, f.registration, signal()).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ApiError); expect(error).not.toBeInstanceOf(BotRecoveryRejectedError);
+    expect(error).toMatchObject({ status, code }); expect(f.requests).toHaveLength(1);
+  });
+
+  it("keeps the original rejected-error constructor's resource-conflict default", () => {
+    expect(new BotRecoveryRejectedError(id(40))).toMatchObject({ status: 409, code: "resource_conflict", requestId: id(40), writeOutcome: "not_committed" });
   });
 
   it.each(["principal", "content-type", "json", "additional-field", "unknown-details"])("does not infer noncommit from a conflicting response with invalid %s", async defect => {

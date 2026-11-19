@@ -25,16 +25,20 @@ export const createBotReconciliation = (options: {
     options.store.recordResult(record, pending.body.operationId, result);
     return options.store.finishOperation(record, pending.body.operationId);
   };
-  const submit = async (record: BotRecord, operation: Omit<BotRecoveryOperation, "result">, signal: AbortSignal): Promise<BotRecoveryState> => {
+  const submit = async (record: BotRecord, operation: Omit<BotRecoveryOperation, "result">, signal: AbortSignal, previous?: BotRecoveryProof): Promise<BotRecoveryState> => {
     if (!options.canSubmit()) throw new Error("Bot recovery requires a confirmed Worker machine identity report before preparing an operation.");
     const observed = await options.api.observation(record, signal), intent = record.intent!;
     const grant = operation.kind === "register" ? null : (operation.body as BotRecoveryGrant).grant;
+    // A stopped dedicated Bot can first register recovery after beginRecovery
+    // advances its local intent. Registration retains the service's predecessor;
+    // only the subsequent grant applies the verified stop proof and advances it.
+    const previousGeneration = operation.kind === "register" ? previous?.generation : grant?.previousGeneration;
     if (observed.sessionId !== operation.body.sessionId || observed.testExecutionId !== operation.body.testExecutionId
-      || observed.executionGeneration !== intent.executionGeneration && observed.executionGeneration !== grant?.previousGeneration
+      || observed.executionGeneration !== intent.executionGeneration && observed.executionGeneration !== previousGeneration
       || observed.nativeSessionId !== null && observed.nativeSessionId !== operation.body.nativeSessionId) {
       throw new Error("Bot recovery requires matching current service and authenticated local execution evidence before preparing an operation.");
     }
-    if (grant?.previousGeneration != null && observed.nativeSessionId === null) throw new Error("Bot generation recovery requires the service to retain its original native Session binding.");
+    if (previousGeneration != null && observed.nativeSessionId === null) throw new Error("Bot generation recovery requires the service to retain its original native Session binding.");
     const state = options.store.read(record)!;
     const hosting = state.current?.receipt ?? state.registration?.receipt;
     if (operation.kind === "register" ? observed.hostingGeneration !== null || observed.workerId !== record.owner.workerId
@@ -58,24 +62,24 @@ export const createBotReconciliation = (options: {
       // Only the original submission's complete, validated rejection proves that
       // this attempt did not commit. Queries and unknown responses never do.
       if (cause instanceof BotRecoveryRejectedError) options.store.rejectOperation(record, prepared.body.operationId,
-        { status: 409, code: "resource_conflict", requestId: cause.requestId! });
+        { status: 409, code: cause.code, requestId: cause.requestId! });
       throw cause;
     }
     options.store.recordResult(record, prepared.body.operationId, result);
     return options.store.finishOperation(record, prepared.body.operationId);
   };
-  const register = async (record: BotRecord, binding: BotRecoveryBinding, signal: AbortSignal): Promise<BotRecoveryState> => {
+  const register = async (record: BotRecord, binding: BotRecoveryBinding, signal: AbortSignal, previous?: BotRecoveryProof): Promise<BotRecoveryState> => {
     let state = await settle(record, options.store.ensureIdentity(record), signal);
     if (state.registration !== null) return state;
     state = await submit(record, { kind: "register", workerId: record.owner.workerId, body: {
       ...identity(state), operationId: randomUUID(), botVersion: record.observed.version,
       ...binding,
-    } }, signal);
+    } }, signal, previous);
     return state;
   };
   const grant = async (record: BotRecord, binding: BotRecoveryBinding, signal: AbortSignal, previous?: BotRecoveryProof): Promise<ControllerGrantResponse> => {
     verified.delete(record.botId);
-    let state = await register(record, binding, signal);
+    let state = await register(record, binding, signal, previous);
     const intent = record.intent!;
     let original = state.currentOperation;
     if (original !== null && original.kind !== "register") {

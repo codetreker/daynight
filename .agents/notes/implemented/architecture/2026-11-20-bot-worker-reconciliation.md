@@ -28,7 +28,8 @@ interruption thereafter permits only querying that original operation, including
 when the service has no receipt yet. Historical success and current authorization
 remain separate; a new grant requires its own operation and token after the
 previous result has been resolved. A complete, authenticated HTTP 409
-`resource_conflict` response to the original submission proves a rejected
+`resource_conflict`, `session_conflict`, `version_conflict` or `archive_conflict`
+response to the original submission proves a rejected
 transaction under the recovery service's error contract. The client durably
 retains that operation and refusal before permitting a later operation with a
 new identity. Query failures, missing receipts, malformed responses and unknown
@@ -55,6 +56,14 @@ proof. Providers that create their native identity on first input may renew a
 same-generation null binding. If that binding advances between observation and
 submission, a confirmed conflict ends only that rejected operation; the next
 attempt reads again and uses a new operation ID and token.
+
+An unregistered dedicated Bot may already be stopped when its recovery identity
+is first registered. The local process manager can prepare the next generation
+before that registration. Registration therefore carries the already validated
+exact predecessor evidence through local generation checks while preserving the
+service's predecessor in its receipt. Only the later grant applies the stop proof
+and advances the service generation; missing or mismatched evidence still blocks
+registration.
 
 New recovery operations wait until the service acknowledges the current Worker's
 machine report. Both configuration-protocol and ordinary report paths establish

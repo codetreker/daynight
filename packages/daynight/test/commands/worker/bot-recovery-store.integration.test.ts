@@ -158,14 +158,15 @@ describe("durable Bot recovery operations", () => {
     expect(() => f.store.prepare(f.record, operation)).toThrow();
   });
 
-  it("retains an exact rejected operation across Worker replacement without rewriting native execution evidence", () => {
+  it.each(["resource_conflict", "session_conflict", "version_conflict", "archive_conflict"] as const)("retains an exact %s rejection across Worker replacement without rewriting native execution evidence", code => {
     const f = fixture(), operation = registration(f);
+    const terminal = { ...rejection, code };
     f.local.executions.prepare(f.record); f.local.executions.update(f.record, { launchSubmission: "unknown" });
     const execution = f.local.executions.get(f.record);
     f.store.prepare(f.record, operation);
-    const rejected = f.store.rejectOperation(f.record, operation.body.operationId, rejection);
+    const rejected = f.store.rejectOperation(f.record, operation.body.operationId, terminal);
     expect(rejected).toMatchObject({ pending: null, registration: null, current: null,
-      rejections: [{ operation: { ...operation, result: null }, rejection }] });
+      rejections: [{ operation: { ...operation, result: null }, rejection: terminal }] });
     f.local.close();
     const reopened = f.open({ ...owner, workerId: id(90) });
     const original = reopened.local.scan().records[0]!;
@@ -175,8 +176,9 @@ describe("durable Bot recovery operations", () => {
     expect(() => reopened.store.prepare(original, operation)).toThrow();
     const next = { ...operation, body: { ...operation.body, operationId: id(31) } };
     reopened.store.prepare(original, next);
-    reopened.store.rejectOperation(original, next.body.operationId, { ...rejection, requestId: "bot-recovery-conflict-2" });
+    reopened.store.rejectOperation(original, next.body.operationId, { ...terminal, requestId: "bot-recovery-conflict-2" });
     expect(reopened.store.read(original)?.rejections.map(item => item.operation.body.operationId)).toEqual([operation.body.operationId, next.body.operationId]);
+    expect(reopened.store.read(original)?.rejections.map(item => item.rejection.code)).toEqual([code, code]);
     expect(() => reopened.store.prepare(original, operation)).toThrow();
     expect(() => reopened.store.prepare(original, next)).toThrow();
   });
@@ -251,6 +253,7 @@ describe("durable Bot recovery operations", () => {
   it.each([
     { ...rejection, status: 503 },
     { ...rejection, code: "forbidden" },
+    { ...rejection, code: "unknown_conflict" },
     { ...rejection, requestId: "" },
     { ...rejection, requestId: "a".repeat(65) },
     { ...rejection, requestId: "request\nsecret" },

@@ -11,16 +11,18 @@ import { parseBotRecoveryGrant, parseBotRecoveryIdentity, parseBotRecoveryObserv
 const defaults: OperationLimits = { totalMs: 30_000, requestMs: 10_000, responseBytes: 2 * 1024 * 1024, totalBytes: 2 * 1024 * 1024 };
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
 const conflict = (): never => { throw new ProtocolError("Bot recovery response conflicts with the original operation."); };
+export type BotRecoveryRejectionCode = "resource_conflict" | "session_conflict" | "version_conflict" | "archive_conflict";
+const rejectedCode = (code: string): code is BotRecoveryRejectionCode => code === "resource_conflict" || code === "session_conflict" || code === "version_conflict" || code === "archive_conflict";
 
 /** Only the original recovery mutation's complete conflict response proves noncommit. */
 export class BotRecoveryRejectedError extends ApiError {
   declare readonly status: 409;
-  declare readonly code: "resource_conflict";
+  declare readonly code: BotRecoveryRejectionCode;
   declare readonly requestId: string;
   readonly writeOutcome = "not_committed";
-  constructor(requestId: string) {
+  constructor(requestId: string, code: BotRecoveryRejectionCode = "resource_conflict") {
     super({ operation: "worker.bots.recovery" }, "response", { status: 409, confirmedRefusal: true,
-      serverError: { code: "resource_conflict", requestId, message: "Bot recovery preconditions changed before commitment." },
+      serverError: { code, requestId, message: "Bot recovery preconditions changed before commitment." },
       cause: new Error("The recovery mutation was rejected before commitment.") });
     this.name = "BotRecoveryRejectedError";
   }
@@ -85,13 +87,13 @@ export const createBotRecoveryApi = (options: { owner: BotOwner; serverToken: st
         catch { throw new ProtocolError("Bot recovery response contains invalid JSON or UTF-8."); }
         if (response.status !== 200) {
           const error = parseServerError(value);
-          if (["register", "grant", "takeover"].includes(action) && response.status === 409 && error.code === "resource_conflict") {
+          if (["register", "grant", "takeover"].includes(action) && response.status === 409 && rejectedCode(error.code)) {
             const envelope = value as Record<string, unknown>, failure = envelope.error as Record<string, unknown>;
             const keys = Object.keys(failure);
             const details = failure.details;
             if (Object.keys(envelope).length === 1 && keys.every(key => ["code", "message", "requestId", "details"].includes(key))
               && (details === undefined || details !== null && typeof details === "object" && !Array.isArray(details)
-                && Object.keys(details).length === 1 && (details as Record<string, unknown>).writeOutcome === "not_committed")) throw new BotRecoveryRejectedError(error.requestId);
+                && Object.keys(details).length === 1 && (details as Record<string, unknown>).writeOutcome === "not_committed")) throw new BotRecoveryRejectedError(error.requestId, error.code);
           }
           // Recovery proofs and grant tokens must not be reflected by diagnostics.
           throw new ApiError({ operation: "worker.bots.recovery" }, "response", { status: response.status,

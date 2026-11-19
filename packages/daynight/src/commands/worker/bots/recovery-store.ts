@@ -16,7 +16,7 @@ export type BotRecoveryOperation = {
   body: BotRecoveryRegistration | BotRecoveryGrant;
   result: BotRecoveryResult | null;
 };
-export type BotRecoveryRejection = { status: 409; code: "resource_conflict"; requestId: string };
+export type BotRecoveryRejection = { status: 409; code: "resource_conflict" | "session_conflict" | "version_conflict" | "archive_conflict"; requestId: string };
 export type BotRecoveryRejectedOperation = {
   operation: BotRecoveryOperation & { result: null };
   rejection: BotRecoveryRejection;
@@ -41,9 +41,9 @@ const exact = (input: unknown, keys: string[]): Record<string, unknown> => {
 };
 const checkedRejection = (input: unknown): BotRecoveryRejection => {
   const value = exact(input, ["status", "code", "requestId"]);
-  if (value.status !== 409 || value.code !== "resource_conflict" || typeof value.requestId !== "string"
+  if (value.status !== 409 || value.code !== "resource_conflict" && value.code !== "session_conflict" && value.code !== "version_conflict" && value.code !== "archive_conflict" || typeof value.requestId !== "string"
     || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value.requestId)) return invalid();
-  return { status: 409, code: "resource_conflict", requestId: value.requestId };
+  return { status: 409, code: value.code, requestId: value.requestId };
 };
 const checkedResult = (operation: Omit<BotRecoveryOperation, "result">, input: unknown): BotRecoveryResult => {
   const result = parseBotRecoveryResult(input), receipt = result.receipt, request = operation.body;

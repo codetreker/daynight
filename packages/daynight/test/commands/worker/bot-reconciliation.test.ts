@@ -21,7 +21,7 @@ type Request = { action: string; workerId: string; body: BotRecoveryRegistration
 const fixture = async () => {
   const requests: Request[] = [], operations = new Map<string, { receipt: BotRecoveryReceipt; auth: string }>();
   let hostingWorker = id(2), hostingGeneration = "1", botVersion = "2", selected: string | null = null;
-  const fault: { drop: string | null; refuse: string | null; missingQueries: boolean; expired: boolean; parentRevoked: boolean; canSubmit: boolean; advanceNative: boolean; conflictResponse: "normal" | "drop" | "malformed"; queryConflict: boolean } = { drop: null, refuse: null, missingQueries: false, expired: false, parentRevoked: false, canSubmit: true, advanceNative: false, conflictResponse: "normal", queryConflict: false };
+  const fault: { drop: string | null; refuse: string | null; missingQueries: boolean; expired: boolean; parentRevoked: boolean; canSubmit: boolean; advanceNative: boolean; advanceVersion: boolean; archiveBusy: boolean; conflictResponse: "normal" | "drop" | "malformed"; queryConflict: boolean } = { drop: null, refuse: null, missingQueries: false, expired: false, parentRevoked: false, canSubmit: true, advanceNative: false, advanceVersion: false, archiveBusy: false, conflictResponse: "normal", queryConflict: false };
   const ordinaryReads: string[] = [];
   const observations: string[] = [];
   let record!: ReturnType<ReturnType<typeof openLocalBotStores>["store"]["get"]>;
@@ -37,6 +37,7 @@ const fixture = async () => {
             hostingGeneration: operations.size === 0 ? null : hostingGeneration, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch,
             state: "recovering", reason: "startup_pending", observedAt: "2026-11-20T00:00:00Z", workerLastSeenAt: null, sessionLastSeenAt: null, freshUntil: null, currentTurnId: null }));
           if (fault.advanceNative) { fault.advanceNative = false; snapshot = { ...snapshot, identity: { ...snapshot.identity, nativeSessionId: id(11) } }; }
+          if (fault.advanceVersion) { fault.advanceVersion = false; botVersion = (BigInt(botVersion) + 1n).toString(); }
           return;
         }
         ordinaryReads.push(req.url!);
@@ -64,8 +65,15 @@ const fixture = async () => {
       if (body.nativeSessionId !== snapshot.identity.nativeSessionId) {
         if (fault.conflictResponse === "drop") { req.socket.destroy(); return; }
         res.statusCode = 409;
-        res.end(fault.conflictResponse === "malformed" ? "{invalid" : JSON.stringify({ error: { code: "resource_conflict", message: "Native binding changed before transaction", requestId: id(90) } }));
+        res.end(fault.conflictResponse === "malformed" ? "{invalid" : JSON.stringify({ error: { code: "session_conflict", message: "Native binding changed before transaction", requestId: id(90) } }));
         return;
+      }
+      if (action === "register" && (body as BotRecoveryRegistration).botVersion !== botVersion) {
+        res.statusCode = 409; res.end(JSON.stringify({ error: { code: "version_conflict", message: "Bot version changed", requestId: id(90) } })); return;
+      }
+      if (action !== "register" && fault.archiveBusy) {
+        fault.archiveBusy = false;
+        res.statusCode = 409; res.end(JSON.stringify({ error: { code: "archive_conflict", message: "Active history has an IO lease", requestId: id(90) } })); return;
       }
       if (action === "register") botVersion = (BigInt(botVersion) + 1n).toString();
       if (action === "takeover") { hostingGeneration = (BigInt(hostingGeneration) + 1n).toString(); hostingWorker = workerId; botVersion = (BigInt(botVersion) + 1n).toString(); }
@@ -76,9 +84,9 @@ const fixture = async () => {
       }
       const receipt: BotRecoveryReceipt = { botRecoveryVersion: 1, operationId: body.operationId, kind: action, workerId,
         hostingGeneration, botVersion, sessionId: body.sessionId, testExecutionId: body.testExecutionId, nativeSessionId: body.nativeSessionId,
-        executionGeneration: grant?.executionGeneration ?? record!.intent!.executionGeneration,
-        controllerId: grant?.controllerId ?? record!.intent!.registration.controllerId,
-        controllerInstanceId: grant?.controllerInstanceId ?? record!.intent!.controllerInstanceId,
+        executionGeneration: snapshot.executionGeneration,
+        controllerId: snapshot.identity.controllerId,
+        controllerInstanceId: snapshot.identity.controllerInstanceId,
         grantExpiresAt: grant === null ? null : "2099-01-01T00:00:00Z", controllerTokenHash: grant === null ? null : createHash("sha256").update((body as BotRecoveryGrant).controllerToken).digest("hex") };
       operations.set(body.operationId, { receipt, auth }); if (grant !== null) selected = body.operationId;
       if (fault.drop === action) { fault.drop = null; req.socket.destroy(); return; }
@@ -159,9 +167,10 @@ describe("Bot hosting reconciliation with durable storage and HTTP", () => {
     const f = await fixture();
     f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
     f.fault.advanceNative = true;
-    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toMatchObject({ status: 409, code: "resource_conflict", writeOutcome: "not_committed" });
+    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toMatchObject({ status: 409, code: "session_conflict", writeOutcome: "not_committed" });
     const state = f.active.store.read(f.record)!;
     expect(state.pending).toBeNull(); expect(state.rejections).toHaveLength(1);
+    expect(state.rejections[0]!.rejection.code).toBe("session_conflict");
     const rejected = state.rejections[0]!.operation;
     expect(rejected.body.nativeSessionId).toBeNull(); expect(f.requests).toHaveLength(1);
     const before = f.observations.length;
@@ -170,6 +179,57 @@ describe("Bot hosting reconciliation with durable storage and HTTP", () => {
     expect(f.requests.map(request => request.action)).toEqual(["register", "register", "grant"]);
     expect(f.requests[1]!.body.operationId).not.toBe(rejected.body.operationId);
     expect(f.active.store.read(f.record)!.rejections).toEqual(state.rejections);
+  });
+
+  it("retains the actual registration version conflict and observes a fresh version after restart", async () => {
+    const f = await fixture(); f.fault.advanceVersion = true;
+    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toMatchObject({ status: 409, code: "version_conflict", writeOutcome: "not_committed" });
+    const rejected = f.active.store.read(f.record)!.rejections[0]!;
+    expect(rejected.rejection.code).toBe("version_conflict");
+    expect(f.active.store.read(f.record)!.pending).toBeNull();
+    await f.restart().sessionApi.grant(f.record, signal());
+    expect(f.requests.map(request => request.action)).toEqual(["register", "register", "grant"]);
+    expect(f.requests[1]!.body).toMatchObject({ botVersion: "3" });
+    expect(f.requests[1]!.body.operationId).not.toBe(rejected.operation.body.operationId);
+    expect(f.active.store.read(f.record)!.rejections).toEqual([rejected]);
+  });
+
+  it("retries generation recovery with a new operation after a confirmed archive lease conflict", async () => {
+    const f = await fixture(); await f.active.sessionApi.grant(f.record, signal());
+    const previous = { generation: "1", instanceId: f.record.intent!.controllerInstanceId, recordId: id(50), stoppedAt: "2026-01-01T00:00:00Z" };
+    const next = { ...f.record, intent: { ...f.record.intent!, executionGeneration: "2", controllerInstanceId: id(51) } };
+    f.fault.archiveBusy = true;
+    await expect(f.active.sessionApi.grant(next, signal(), previous)).rejects.toMatchObject({ status: 409, code: "archive_conflict", writeOutcome: "not_committed" });
+    const rejected = f.active.store.read(next)!.rejections[0]!;
+    expect(rejected.rejection.code).toBe("archive_conflict");
+    expect(f.active.store.read(next)!.pending).toBeNull();
+    expect(f.snapshot.executionGeneration).toBe("1");
+    await expect(f.restart().sessionApi.grant(next, signal(), previous)).resolves.toMatchObject({ executionGeneration: "2" });
+    expect(f.requests.at(-1)!.body.operationId).not.toBe(rejected.operation.body.operationId);
+    expect(f.requests.at(-1)!.body).toMatchObject({ grant: { previousGeneration: "1", stopProof: { recordId: previous.recordId } } });
+    expect(f.active.store.read(next)!.rejections).toEqual([rejected]);
+  });
+
+  it("registers the stopped predecessor before granting an unregistered dedicated Bot's next generation", async () => {
+    const f = await fixture();
+    const previous = { generation: "1", instanceId: f.record.intent!.controllerInstanceId, recordId: id(50), stoppedAt: "2026-01-01T00:00:00Z" };
+    const next = { ...f.record, intent: { ...f.record.intent!, executionGeneration: "2", controllerInstanceId: id(51) } };
+    await expect(f.active.sessionApi.grant(next, signal())).rejects.toThrow("matching current service");
+    expect(f.requests).toEqual([]);
+    await expect(f.active.sessionApi.grant(next, signal(), previous)).resolves.toMatchObject({ executionGeneration: "2", controllerInstanceId: id(51) });
+    expect(f.requests.map(request => request.action)).toEqual(["register", "grant"]);
+    expect(f.active.store.read(next)!.registration!.receipt).toMatchObject({ executionGeneration: "1", controllerInstanceId: previous.instanceId });
+    expect(f.requests[0]!.body).not.toHaveProperty("grant");
+    expect(f.requests[1]!.body).toMatchObject({ grant: { previousGeneration: "1", stopProof: { recordId: previous.recordId } } });
+    expect(f.record.intent!.nativeSessionId).toBe(next.intent.nativeSessionId);
+  });
+
+  it("rejects an unregistered predecessor whose service generation differs from the verified stop proof", async () => {
+    const f = await fixture();
+    const previous = { generation: "2", instanceId: id(52), recordId: id(50), stoppedAt: "2026-01-01T00:00:00Z" };
+    const next = { ...f.record, intent: { ...f.record.intent!, executionGeneration: "3", controllerInstanceId: id(51) } };
+    await expect(f.active.sessionApi.grant(next, signal(), previous)).rejects.toThrow("matching current service");
+    expect(f.requests).toEqual([]); expect(f.active.store.read(next)!.pending).toBeNull();
   });
 
   it.each(["drop", "malformed"] as const)("keeps a raced binding with a %s response query-only", async conflictResponse => {
