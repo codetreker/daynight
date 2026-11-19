@@ -3,6 +3,8 @@ import { expectCopyButtonSkin, expectDisabledCopyHover } from './copy-button-ass
 
 const origin = `https://${'a'.repeat(55)}.${'b'.repeat(55)}.example.test:4443`;
 
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'wait' }); });
+
 test('production setup guide remains public and usable across clients, languages and widths', async ({ page }, testInfo) => {
   const requests: string[] = [];
   const errors: string[] = [];
@@ -108,6 +110,5 @@ for (const testOrigin of ['https://daynight.example', 'https://daynight.example:
     await page.goto(`${testOrigin}/setup`);
     await expect(page.locator('#mcp .setup-command code').first()).toHaveText(`${testOrigin}/mcp`);
     expect(requests).toEqual([`${testOrigin}/api/v1/me`]);
-    await page.unrouteAll({ behavior: 'wait' });
   });
 }
