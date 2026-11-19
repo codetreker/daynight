@@ -80,21 +80,46 @@
 .session-primary-actions .session-actions { min-width: 0; margin-left: 0; }
 .session-primary-actions .session-actions .button { max-width: 132px; padding-inline: 8px; }
 @container session-composer-surface (min-width: 234px) {
-  .session-composer-footer-default:not(:has(> .session-composer-activity)):not([data-submit-wide]) { grid-template-columns: minmax(0, 1fr) auto; }
+  .session-composer-footer-default:not(:has(> .session-composer-activity, .session-add-images)):not([data-submit-wide]) { grid-template-columns: minmax(0, 1fr) auto; }
+}
+@container session-composer-surface (min-width: 276px) and (min-width: 17.25rem) {
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) { grid-template-columns: minmax(0, 1fr) auto; }
+}
+@container session-composer-surface (min-width: 276px) and (min-width: 17.25rem) and ((width < 325px) or (width < 20.3125rem)) {
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-controls-toolbar { gap: 1px; }
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-control-trigger { padding-inline: 2px; }
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-model-trigger { min-width: 44px; }
+}
+@container session-composer-surface (max-width: 235px) or (max-width: 14.6875rem) {
+  .session-composer-footer-default .session-controls-toolbar:has(.session-add-images) { display: grid; grid-template-columns: minmax(0, 1fr) max-content; justify-items: start; }
+  .session-composer-footer-default .session-controls-toolbar:has(.session-add-images) .session-model-trigger { width: 100%; }
 }
 @container session-composer-surface (min-width: 346px) {
-  .session-composer-footer-default:has(> .session-composer-activity) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
-  .session-composer-footer-default:has(> .session-composer-activity) .session-controls-toolbar { grid-column: 1 / -1; }
+  .session-composer-footer-default:has(> .session-composer-activity):not(:has(.session-add-images)) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
+  .session-composer-footer-default:has(> .session-composer-activity):not(:has(.session-add-images)) .session-controls-toolbar { grid-column: 1 / -1; }
   .session-primary-actions .session-actions .button { max-width: 210px; }
 }
+@container session-composer-surface (min-width: 346px) and (min-width: 21.625rem) {
+  .session-composer-footer-default:has(> .session-composer-activity):has(.session-add-images) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); }
+  .session-composer-footer-default:has(> .session-composer-activity):has(.session-add-images) .session-controls-toolbar { grid-column: 1 / -1; }
+}
 @container session-composer-surface (min-width: 516px) {
-  .session-composer-footer-default:not(:has(> .session-composer-activity)) { grid-template-columns: minmax(180px, 1fr) minmax(0, 1fr); }
-  .session-composer-footer-default:has(> .session-composer-activity) { grid-template-columns: minmax(180px, 1fr) minmax(0, 1fr) minmax(0, 1.4fr); }
-  .session-composer-footer-default:has(> .session-composer-activity) .session-controls-toolbar { grid-column: auto; }
-  .session-composer-footer-default .session-composer-activity { justify-self: end; }
+  .session-composer-footer-default:not(:has(> .session-composer-activity, .session-add-images)) { grid-template-columns: minmax(180px, 1fr) minmax(0, 1fr); }
+  .session-composer-footer-default:has(> .session-composer-activity):not(:has(.session-add-images)) { grid-template-columns: minmax(180px, 1fr) minmax(0, 1fr) minmax(0, 1.4fr); }
+  .session-composer-footer-default:has(> .session-composer-activity):not(:has(.session-add-images)) .session-controls-toolbar { grid-column: auto; }
+  .session-composer-footer-default:not(:has(.session-add-images)) .session-composer-activity { justify-self: end; }
+}
+@container session-composer-surface (min-width: 516px) and (min-width: 32.25rem) {
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)) { grid-template-columns: minmax(max(240px, 15rem), 1fr) minmax(0, 1fr); }
+  .session-composer-footer-default:has(.session-add-images):has(> .session-composer-activity) { grid-template-columns: minmax(max(240px, 15rem), 1fr) minmax(0, 1fr) minmax(0, 1.4fr); }
+  .session-composer-footer-default:has(.session-add-images):has(> .session-composer-activity) .session-controls-toolbar { grid-column: auto; }
+  .session-composer-footer-default:has(.session-add-images) .session-composer-activity { justify-self: end; }
 }
 @container session-composer-surface (min-width: 600px) {
-  .session-composer-footer-default:has(> .session-composer-activity) { grid-template-columns: minmax(180px, 1fr) minmax(0, max-content) auto; }
+  .session-composer-footer-default:has(> .session-composer-activity):not(:has(.session-add-images)) { grid-template-columns: minmax(180px, 1fr) minmax(0, max-content) auto; }
+}
+@container session-composer-surface (min-width: 600px) and (min-width: 37.5rem) {
+  .session-composer-footer-default:has(> .session-composer-activity):has(.session-add-images) { grid-template-columns: minmax(max(240px, 15rem), 1fr) minmax(0, max-content) auto; }
 }
 @media (pointer: coarse) {
   .session-composer.session-composer-adaptive textarea { font-size: var(--text-touch-field); }
