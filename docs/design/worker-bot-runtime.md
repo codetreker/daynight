@@ -50,6 +50,15 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 ## Codex 原生恢复点
 
+[cell 等待恢复要求](../spec/codex-cell-wait-recovery.md)区分同名工具的依赖：
+仅原生 `function_call` 的确切名称 `wait` 可按参数识别 cell 等待。
+`arguments` 必须是 JSON 对象字符串，包含非空白字符串 `cell_id`，仅允许可选
+`yield_time_ms`、`max_tokens`（非负安全整数）和 `terminate`（布尔值）。
+其他字段、混合 agent ID、损坏 JSON、其他命名空间或调用格式均不获得例外。
+这一检查也应用于 compact 替换历史；声明和工具返回的数据不作为调用解释。
+cell 等待不引用其他原生线程，允许完成轮次接受后续完整性校验，但不证明轮次
+已完成或操作结果已知。真正跨线程调用、fork、collab 和外部媒体仍保持原拒绝。
+
 新建 Codex Bot 的 ticket 以 `codexBotRecovery` 固定 Bot ID 与 `bots/<botId>/native/codex/`。Worker 核对路径由原配置根和 Bot 派生，Controller 将服务、owner、Bot、Session 与真实 cwd 交给恢复存储。已有 ticket 不自动改造，迁移后的 Bot 仍遵守原登记与接管屏障。普通 Task/Test 不启用这一存储。
 
 适配器保留冻结 `nativeHome`、`CODEX_HOME` 与当前配置、认证及工具发现来源，不复制凭据或整个用户 home。已验证版本为 Codex 0.169.0；新线程显式请求 `historyMode=legacy`，并仅在首次创建后以 `thread/name/set` 命名为 `Daynight assistant`，使空 rollout 落盘而不发送业务输入；恢复保留原名字，拒绝 paginated 历史及未验证版本。单 rollout 保存原线程与 compact 上下文；子线程、fork、外部媒体或未知记录依赖不属于已验证闭包，发现后报告具体原因并保留旧点，不能标记完整保护。内嵌图片字节随原文件校验。
