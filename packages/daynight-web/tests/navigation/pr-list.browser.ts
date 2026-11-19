@@ -1,5 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { installPrList, projectId, records, type Scene } from './pr-list-fixture';
+import { expectChartLabelsFit } from './bar-chart-geometry';
 
 const open = async (page: Page) => {
   await page.goto(`/projects/${projectId}`);
@@ -542,7 +543,7 @@ test('directory conflict retains two pages until the complete replacement preser
   expect(state.unexpected).toEqual([]);
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
   test(`project statistics charts and author selection at ${width}px in ${locale}`, async ({ page }) => {
     const state = await installPrList(page, locale);
     await page.route('**/pull-request-statistics?*', async route => {
@@ -558,6 +559,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) 
     const prChart = panel.getByRole('listbox', { name: locale === 'en' ? 'PRs created daily' : '每日新建 PR' });
     await expect(taskChart.getByRole('option')).toHaveCount(30);
     await expect(prChart.getByRole('option')).toHaveCount(30);
+    for (const chart of [taskChart, prChart]) await expectChartLabelsFit(chart.locator('..'));
     await expect(prChart.getByRole('option').last()).toHaveAttribute('aria-label', /: 4$/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await prChart.focus(); await page.keyboard.press('End');

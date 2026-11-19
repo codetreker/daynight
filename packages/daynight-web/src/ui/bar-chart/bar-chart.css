@@ -10,7 +10,7 @@
 .bar-chart__point[data-zero]::after { background: #d3d5eb; }
 .bar-chart__point:hover, .bar-chart__plot:focus-visible .bar-chart__point[data-selected] { background: #ededfb; }
 .bar-chart__point:hover::after, .bar-chart__plot:focus-visible .bar-chart__point[data-selected]::after { background: #5151c8; }
-.bar-chart__labels { position: relative; height: 20px; font-size: 10px; }
+.bar-chart__labels { position: relative; height: calc(1lh + 5px); font-size: 10px; }
 .bar-chart__labels span { position: absolute; top: 5px; max-width: var(--bar-chart-label-width); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 @media (max-width: 740px), (pointer: coarse) { .bar-chart__plot, .bar-chart__labels { min-width: calc(var(--bar-chart-columns) * 24px); } }
 @media (max-width: 740px) { .bar-chart__grid { gap: 0 5px; } .bar-chart__plot, .bar-chart__scale { height: 92px; } .bar-chart__point::after { inset-inline: 1px; border-radius: 2px 2px 0 0; } }
