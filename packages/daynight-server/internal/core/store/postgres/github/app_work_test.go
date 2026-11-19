@@ -728,3 +728,76 @@ func TestPublicationFactsExposeDatabaseFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestRepositorySourcesIsolateLegacyReadsAndLeasePublications(t *testing.T) {
+	f := newAppWorkFixture(t)
+	ctx := t.Context()
+	tx := begin(t, f.db, pgx.TxOptions{})
+	mustExec(t, tx, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,30,'owner/current'),($1,31,'owner/legacy')`, f.project)
+	mustExec(t, tx, `UPDATE project_github SET legacy_repository_id=31 WHERE project_id=$1`, f.project)
+	mustExec(t, tx, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision)
+	 VALUES($1,31,42,4200,'legacy-url','legacy',7,'legacy-author','open',false,'main','sha',now(),now(),now(),1),
+	       ($1,31,43,4300,'legacy-url-43','legacy-only',7,'legacy-author','open',false,'main','sha',now(),now(),now(),1)`, f.project)
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	end := start.Add(30 * time.Second)
+	mustExec(t, tx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,31,$2,$3)`, f.project, start, end)
+	w, lease, now := f.claimed(t, tx)
+	facts, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current != nil || facts.Period != nil {
+		t.Fatalf("another repository's PR and coverage leaked into active facts: %+v valid=%v err=%v", facts, valid, err)
+	}
+	mustExec(t, tx, `INSERT INTO project_github_coverage(project_id,repository_id,started_at,ended_at) VALUES($1,30,$2,$3)`, f.project, start, end)
+	facts, valid, err = w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current != nil || facts.Period == nil || !facts.Period.StartedAt.Equal(start) || facts.Period.EndedAt == nil || !facts.Period.EndedAt.Equal(end) {
+		t.Fatalf("active coverage: %+v valid=%v err=%v", facts, valid, err)
+	}
+	atEnd, valid, err := w.PublicationFacts(ctx, lease, 30, 42, &end)
+	terminal := githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: 42, GitHubID: 420, URL: "current-url", Title: "current", State: "closed", BaseRef: "main", HeadSHA: "sha", GitHubCreatedAt: start, GitHubUpdatedAt: start, GitHubClosedAt: &start, ObservedAt: now}}
+	if err != nil || !valid || !core.EligibleFirstPublication(terminal, facts) || core.EligibleFirstPublication(githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{State: "closed", GitHubClosedAt: &end}}, atEnd) {
+		t.Fatalf("coverage interval eligibility: start=%+v end=%+v valid=%v err=%v", facts, atEnd, valid, err)
+	}
+	active := terminal
+	active.Number, active.GitHubID, active.State, active.Title, active.GitHubClosedAt = 44, 440, "open", "current-only", nil
+	if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{terminal, active}); err != nil || !ok {
+		t.Fatalf("publish: %v %v", ok, err)
+	}
+	if got, valid, err := w.UnseenActive(ctx, lease, uuid.NewString(), 0, 100); err != nil || !valid || !reflect.DeepEqual(got, []int64{44}) {
+		t.Fatalf("active unseen: %v valid=%v err=%v", got, valid, err)
+	}
+	facts, valid, err = w.PublicationFacts(ctx, lease, 30, 42, &start)
+	if err != nil || !valid || facts.Current == nil || facts.Current.Title != "current" {
+		t.Fatalf("current fact: %+v valid=%v err=%v", facts, valid, err)
+	}
+	var oldTitle, newTitle string
+	if err := tx.QueryRow(ctx, `SELECT (SELECT title FROM project_pull_requests WHERE project_id=$1 AND repository_id=31 AND number=42), (SELECT title FROM project_pull_requests WHERE project_id=$1 AND repository_id=30 AND number=42)`, f.project).Scan(&oldTitle, &newTitle); err != nil || oldTitle != "legacy" || newTitle != "current" {
+		t.Fatalf("same-number rows: old=%q new=%q err=%v", oldTitle, newTitle, err)
+	}
+	r := github.NewReader(tx)
+	detail, err := r.PullRequest(ctx, f.project, 42, nil)
+	if err != nil || detail.Title != "legacy" {
+		t.Fatalf("legacy detail: %+v %v", detail, err)
+	}
+	page, err := r.PullRequests(ctx, store.GitHubPRQuery{ProjectID: f.project, State: "all", Limit: 10})
+	if err != nil || page.Total != 2 || !reflect.DeepEqual(numbers(page.Items), []int64{43, 42}) {
+		t.Fatalf("legacy page: %+v %v", page, err)
+	}
+	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: f.project})
+	if err != nil || counts != (store.GitHubPRCounts{Active: 2, All: 2, ProjectTotal: 2}) {
+		t.Fatalf("legacy counts: %+v %v", counts, err)
+	}
+	authors, err := r.Authors(ctx, store.GitHubAuthorQuery{ProjectID: f.project, Limit: 10})
+	if err != nil || len(authors.Items) != 1 || authors.Items[0].Login != "legacy-author" {
+		t.Fatalf("legacy authors: %+v %v", authors, err)
+	}
+	stats, err := r.PullRequestStatistics(ctx, store.GitHubPRStatisticsQuery{ProjectID: f.project, Boundaries: []time.Time{start, now.Add(time.Hour)}, DateIndices: []int32{0, -1}})
+	if err != nil || len(stats.Buckets) != 1 || stats.Buckets[0].Total != 2 {
+		t.Fatalf("legacy statistics: %+v %v", stats, err)
+	}
+	mustExec(t, tx, `UPDATE project_github SET enabled=false,sync_enabled=false WHERE project_id=$1`, f.project)
+	if detail, err := r.PullRequest(ctx, f.project, 42, nil); err != nil || detail.Title != "legacy" {
+		t.Fatalf("disconnected legacy detail: %+v %v", detail, err)
+	}
+	if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{active}); err != nil || ok {
+		t.Fatalf("stale publication accepted: %v %v", ok, err)
+	}
+}

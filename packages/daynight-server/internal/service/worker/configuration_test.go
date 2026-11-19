@@ -77,6 +77,10 @@ func (s configurationReadScope) UserCandidateDAO() store.UserCandidateReader {
 	configurationUnexpected(s.calls.t, "UserCandidateDAO")
 	return nil
 }
+func (s configurationReadScope) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s configurationReadScope) CredentialDAO() store.CredentialReader {
 	configurationUnexpected(s.calls.t, "CredentialDAO")
 	return nil
@@ -624,3 +628,10 @@ func (s configurationReadScope) TagDAO() store.TagReader {
 }
 
 func (s configurationReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (*configurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*configurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}

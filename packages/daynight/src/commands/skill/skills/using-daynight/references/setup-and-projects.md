@@ -169,8 +169,10 @@ acceptance receipt.
 
 Authorized `project transfer --to-team <uuid|same-service-link>` moves the explicit
 `--project` or repository-resolved Project. Source Team admins need no destination
-membership. Review Project, source/destination and expected actor access in the
-preview; confirm interactively or with `--confirm`. The CLI submits observed
+membership. `--confirm` is required. The preview on stderr identifies the Project,
+source/destination and expected actor access, and warns that an actual transfer
+permanently removes all Goal dependencies involving the Project, within and across
+Projects; those relationships cannot be restored. The CLI submits observed
 ownership/destination versions with current identity; conflicts require a new
 preview/decision. Defaults and repository binding stay unchanged; grants and
 invitations remain independent. A receipt can confirm success without remaining
@@ -183,9 +185,10 @@ Explicitly authorized owner Team admins may `project delete` the explicit
 Deletion retains server history/files but makes the Project unavailable without
 a product recovery option.
 
-Review the complete preview. Interactive deletion requires the displayed JSON
-string literal of the name even with `--confirm`; noninteractive deletion requires
-`--confirm`. The preview supplies no version/identity condition on DELETE;
+`--confirm` is required. The complete preview on stderr warns that deletion
+permanently removes all Goal dependencies involving the Project, within and across
+Projects; those relationships cannot be restored. Interactive deletion also requires
+the displayed JSON string literal of the name. The preview supplies no version/identity condition on DELETE;
 the service checks current permissions/claims. The CLI sends at most one DELETE.
 Only a validated receipt confirms deletion; a later 404 cannot prove an unknown
 original outcome.

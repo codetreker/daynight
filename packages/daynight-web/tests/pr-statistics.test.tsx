@@ -32,6 +32,8 @@ describe('PR statistics protocol', () => {
     expect(() => parsePRStatistics({ ...data('8'), authorDaily: Array(30).fill('2') }, projectId, endDate, '8')).toThrow();
     expect(() => parsePRStatistics({ ...data(), daily: Array(29).fill('0') }, projectId, endDate, null)).toThrow();
     expect(() => parsePRStatistics({ ...data(), revision: '01' }, projectId, endDate, null)).toThrow();
+    expect(parsePRStatistics({ ...data(), repository: { repositoryId: '4', fullName: 'o/r' } }, projectId, endDate, null, '4').projectTotal).toBe('9007199254740993');
+    expect(() => parsePRStatistics({ ...data(), repository: { repositoryId: '5', fullName: 'o/r' } }, projectId, endDate, null, '4')).toThrow();
   });
   it('checks window ordering, dates and segment bounds before dispatch', () => {
     expect(() => validateStatisticsWindow(endDate, dateWindow)).not.toThrow();
@@ -49,6 +51,23 @@ describe('PR statistics protocol', () => {
 });
 
 describe('PR statistics lifecycle', () => {
+  it('isolates late statistics from a previous repository and does not read without a source', async () => {
+    const old = deferred<PRStatistics>(), next = deferred<PRStatistics>();
+    vi.mocked(getPRStatistics).mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    const initial = { userId, projectId, repositoryId: '4' as string | null, canRead: true, active: true, endDate, window: dateWindow, onPrincipalMismatch: vi.fn(), onAccessError: vi.fn() };
+    const { result, rerender } = renderHook(props => usePRStatistics(props), { initialProps: initial });
+    await waitFor(() => expect(getPRStatistics).toHaveBeenCalledTimes(1));
+    rerender({ ...initial, repositoryId: '5' });
+    await waitFor(() => expect(getPRStatistics).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(getPRStatistics).mock.calls[1]![6]).toBe('5');
+    await act(async () => { old.resolve(data()); await old.promise; });
+    expect(result.current.data).toBeNull();
+    await act(async () => { next.resolve({ ...data(), projectTotal: '5' }); await next.promise; });
+    await waitFor(() => expect(result.current.data?.projectTotal).toBe('5'));
+    rerender({ ...initial, repositoryId: null });
+    expect(result.current.data).toBeNull();
+    expect(getPRStatistics).toHaveBeenCalledTimes(2);
+  });
   it('drops stale authors and applies the latest login from the aggregation', async () => {
     const previous = deferred<PRStatistics>(), next = deferred<PRStatistics>();
     vi.mocked(getPRStatistics).mockReturnValueOnce(previous.promise).mockReturnValueOnce(next.promise);

@@ -200,7 +200,7 @@ Project 创建、详情、分页条目及图中的 Project 必须包含 `ownersh
 
 ## 项目转移
 
-`daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]`
+`daynight project transfer --to-team <uuid|same-service-link> --confirm [--project <uuid>] [--if-version <version>] [--json]`
 使用显式 Project 或现有仓库发现规则确定项目，不修改仓库绑定或默认 Team。目标必须是
 规范 Team UUID，或当前服务 origin 下路径恰为 `/teams/<uuid>` 的链接；userinfo、query、
 fragment、其他路径和其他服务均被拒绝。只有当前 owner Team admin 能转出，目标无需
@@ -208,20 +208,23 @@ fragment、其他路径和其他服务均被拒绝。只有当前 owner Team adm
 
 命令预览项目、来源和目标及转移后操作者的预期角色，确认后提交该预览的精确 ownership
 与目标版本和当前用户身份。`--if-version` 指定的正 int64 必须与预览归属版本相等，
-不符时本地拒绝。无 `--confirm` 时须交互确认，非 TTY、取消和拒绝不提交。
+不符时本地拒绝。调用必须显式提供 `--confirm`，缺少时不发起请求。实际提交前向 stderr
+展示预览，并说明实际转移会永久移除所有涉及该项目的 Goal 依赖，包括项目内及跨项目
+关系，且无法恢复；归属未改变时关系保留。
 冲突须重新预览和决定；提交结果未知不得自动重放，后续 GET 返回 404 也不能证明成功。
 成功直接使用回执，actorAccess 为 null 仍是成功。转移保留项目身份、单独授权与邀请。
 
 ## 项目删除
 
-`daynight project delete [--project <uuid>] [--confirm] [--json]` 使用显式
+`daynight project delete --confirm [--project <uuid>] [--json]` 使用显式
 Project 或仓库发现选择目标，完整读取预览后至多提交一次删除。只有当前 owner Team
 admin 可以删除；active Worker claim 阻塞删除。项目退出访问且没有产品内恢复入口，
 服务端保留历史和文件。预览数量是观察值，不约束提交时的项目状态。
 
 交互式调用始终要求输入展示的完整 JSON 字符串字面量，解码后与项目名称精确比较，
-即使提供 `--confirm` 也不跳过；非交互调用必须提供 `--confirm`。取消、预览失败或
-缺少确认不提交删除。JSON 模式将预览写入 stderr，stdout 只输出确认的删除回执。
+即使提供 `--confirm` 也不跳过；所有调用均必须提供 `--confirm`，缺少时不发起请求。
+预览在 stderr 说明删除会永久移除所有涉及该项目的 Goal 依赖，包括项目内及跨项目
+关系，且无法恢复。取消或预览失败不提交删除。JSON 模式的 stdout 只输出确认的删除回执。
 请求结果未知时不自动重放，后续 404 不能证明原请求成功；确认后的本地输出或清理
 失败仍保留已删除的事实和 Project ID。
 

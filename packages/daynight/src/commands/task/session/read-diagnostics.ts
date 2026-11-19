@@ -22,13 +22,15 @@ export class SessionReadCommandError extends PublicDiagnosticError {
     const discovery = find(cause, (value): value is ProjectDiscoveryError => value instanceof ProjectDiscoveryError);
     const code = api?.code;
     const retryRead = projectId === undefined || taskId === undefined || sessionId === undefined ? "" : `\nStart a new history read: daynight task session read ${taskId} ${sessionId} --project ${projectId}`;
-    const guidance = code === "reset_required" ? `The history epoch or source changed; discard the old pagination cursor.${retryRead}`
+    const guidance = code === "reset_required" ? `The directory, history epoch or source changed; discard the old pagination cursor and restart from the first page.${retryRead}`
       : code === "content_changed" ? `The entry changed; do not combine fragments from different versions.${retryRead}`
       : code === "upgrade_required" || code === "unsupported" || code === "unsupported_protocol" ? "Upgrade the Daynight service or Controller to use this read capability."
       : code === "unsupported_mode" ? "Herdr contains terminal_recording, not chat messages. Use session show for its state."
       : code === "history_pending" ? "History is not ready. Inspect the same Session before reading again."
+      : code === "history_unavailable" && api?.serverMessage === "Session history has expired." ? "Session history has expired. Its original Session identity remains; the deleted content cannot be read."
       : code === "history_unavailable" ? "History is unavailable; this is not an empty conversation."
       : code === "source_corrupt" ? "The history source failed integrity validation."
+      : api?.status === 403 ? "You do not have permission to read this Task or Session."
       : api?.status === 401 ? "Run daynight login to authenticate." : "";
     const message = cancellation !== undefined ? `Session read cancelled. ${terminalText(cancellation.message)}`
       : cause instanceof UsageError ? `${cause.message} Run ${cause.helpCommand} for usage.`

@@ -12,6 +12,7 @@ Use this topic for definitions, projections, readiness, inventories and property
 | Current first batch of ready candidates | `task_ready`; bounded batch, no assignee filter or continuation |
 | Inventory or all ready work for an assignee | `task_list`; server filters and fenced pagination |
 | Ordinary chain and direct external prerequisites | `task_graph`; [Dependencies](daynight://manuals/dependencies.md) owns scope/projections |
+| Goal acceptance prerequisites and direct successors | `goal_dependencies_show`; [Dependencies](daynight://manuals/dependencies.md) owns the independent relationship projection |
 | Property definitions or complete values | `task_properties`, `mode: "schema"` or `"values"` |
 | Activity, grouped ongoing work and Session identity | [Session reads](daynight://manuals/session-reads.md) |
 | Session messages and complete entries | [Session history](daynight://manuals/session-history.md) |
@@ -36,7 +37,7 @@ Full Task show does not supply attachment inventory/bytes or complete Step/Threa
 
 Full Goal resources additionally expose `progress: {total, done, cancelled, unfinished}` for current direct children. Goal summaries and ordinary Tasks omit progress. Child changes do not increment the Goal version; counts establish no whole-Goal acceptance.
 
-A Goal has `ready: false`, `allowAgents: false`, `requiredPlatform: null` and empty dependency/blocked sets. These are not ordinary scheduling fields. Normal dependency-graph nodes are ordinary Tasks with nullable `parentId`; dependency-only nodes omit type/Parent. Goals are neither graph members nor dependency targets.
+A Goal has `ready: false`, `allowAgents: false`, `requiredPlatform: null` and empty ordinary dependency/blocked sets in Task projections. These are not ordinary scheduling fields. Normal dependency-graph nodes are ordinary Tasks with nullable `parentId`; dependency-only nodes omit type/Parent. Goals are neither ordinary graph members nor ordinary dependency targets. Read their separate acceptance relationships with `goal_dependencies_show`.
 
 | Ordinary status | Read meaning |
 | --- | --- |

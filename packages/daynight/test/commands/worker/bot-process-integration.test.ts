@@ -276,9 +276,11 @@ const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases
   const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
   const nativeFixture = path.join(home, "codex-native.mjs");
   // The copied fixture runs outside this package's dependency tree.
-  const nativeSource = (await readFile(path.resolve(import.meta.dirname, "../controller/fixtures/codex-native.mjs"), "utf8"))
+  const nativeSource = (await readFile(path.resolve(import.meta.dirname, options.dedicatedStorage ? "../controller/fixtures/codex-bot-native.mjs" : "../controller/fixtures/codex-native.mjs"), "utf8"))
     .replace("from 'better-sqlite3'", `from ${JSON.stringify(import.meta.resolve("better-sqlite3"))}`)
-    .replaceAll("native-thread", nativeId);
+    .replaceAll("native-thread", nativeId)
+    .replaceAll("c7975cdc-936b-411e-9f63-cd0a37ad7cbf", nativeId)
+    .replaceAll("CODEX_BOT_REQUEST_LOG", "CODEX_TEST_REQUEST_LOG");
   await writeFile(nativeFixture, nativeSource);
   const providerURL = pathToFileURL(path.join(dist, "commands/controller/providers/codex.js")).href;
   const runtimeURL = pathToFileURL(path.join(dist, "commands/controller/runtime.js")).href;

@@ -138,6 +138,9 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 			// Retain the exact old owner gate through physical deletion and the
 			// final transaction, including an unconfirmed database completion.
 			defer func() { result = errors.Join(result, gate.Close()) }()
+			var cancelGate context.CancelFunc
+			ctx, cancelGate = filestorage.GateContext(ctx, gate)
+			defer cancelGate()
 			err = access(ctx, func(tx *operationTx, _ *record) error {
 				dao, e := resourceDAO(tx)
 				if e != nil {
@@ -155,8 +158,10 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 		return err
 	}
 	defer func() { result = errors.Join(result, payloadGate.Close()) }()
-	// All earlier read-response publishers exited before this sweep. Their exact
-	// shared chunk paths consume the same reservation as ordinary upload chunks.
+	ctx, cancelPayload := filestorage.GateContext(ctx, payloadGate)
+	defer cancelPayload()
+	// The payload gate excludes other publishers during this sweep. Their shared
+	// chunk paths consume the same reservation as ordinary upload chunks.
 	if err = access(ctx, func(tx *operationTx, _ *record) error { return settleUploadMedia(ctx, tx, id, uploadID, upload.BlobID) }); err != nil {
 		return err
 	}
@@ -203,12 +208,14 @@ func (s *Execution) cleanupUploadStorage(ctx context.Context, project, id, uploa
 }
 
 // SettleExpiredUploads is called by stopped archive preparation and sealing.
-// The original upload gate proves its writer exited before expiry and cleanup;
-// durable reservations and resource rows remain until physical cleanup commits.
+// Settlement acquires the original upload gate before expiry and cleanup.
+// Durable reservations and resource rows remain until physical cleanup commits.
 func (op *ArchiveOperation) SettleExpiredUploads(ctx context.Context) (result error) {
 	if err := op.check(ArchiveV1Upload); err != nil {
 		return err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	ctx, finish, err := op.execution.beginImageIO(ctx, op.id, uuid.NewString())
 	if err != nil {
 		return err
@@ -250,6 +257,8 @@ func (op *ArchiveOperation) settleExpiredUpload(ctx context.Context, upload stor
 		return err
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	if err = access(ctx, func(tx *operationTx, r *record) error {
 		dao, e := resourceDAO(tx)
 		if e != nil {

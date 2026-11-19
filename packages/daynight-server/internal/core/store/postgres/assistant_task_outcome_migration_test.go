@@ -9,7 +9,7 @@ import (
 func TestAssistantTaskOutcomeMigrationKeepsExistingRecordsWithoutOutcome(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 94 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 97 })
 	if index < 1 {
 		t.Fatal("assistant task outcome migration is missing")
 	}

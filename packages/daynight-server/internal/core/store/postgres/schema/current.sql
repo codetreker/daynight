@@ -557,7 +557,8 @@ CREATE TABLE "project_github" (
     "sync_enabled" boolean DEFAULT false NOT NULL,
     "app_resource_id" "uuid",
     "team_grant_id" "uuid",
-    "credential_version" bigint
+    "credential_version" bigint,
+    "legacy_repository_id" bigint
 );
 
 CREATE TABLE "project_github_coverage" (
@@ -577,6 +578,12 @@ CREATE TABLE "project_github_pending_prs" (
     "delivery_id" "text" NOT NULL,
     "received_at" timestamp with time zone NOT NULL,
     "next_attempt_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "project_github_repositories" (
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "full_name" "text" NOT NULL
 );
 
 CREATE SEQUENCE "project_grant_versions"
@@ -643,7 +650,8 @@ CREATE TABLE "project_pull_requests" (
     "description" "text",
     "observed_at" timestamp with time zone NOT NULL,
     "revision" bigint NOT NULL,
-    "seen_poll_id" "uuid"
+    "seen_poll_id" "uuid",
+    "repository_id" bigint NOT NULL
 );
 
 CREATE TABLE "project_tags" (
@@ -670,6 +678,7 @@ CREATE TABLE "projects" (
     "deleted_at" timestamp with time zone,
     "tag_catalog_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "repository_identity" "text" COLLATE "pg_catalog"."C",
+    "repository_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "projects_execution_warning_minutes_check" CHECK (("execution_warning_minutes" > 0)),
     CONSTRAINT "projects_name_check" CHECK (("btrim"("name") <> ''::"text")),
     CONSTRAINT "projects_repo_url_check" CHECK (("btrim"("repo_url") <> ''::"text")),
@@ -1584,6 +1593,8 @@ CREATE TABLE "workers" (
     "archive_sessions" boolean DEFAULT true NOT NULL,
     "alias_value" "text",
     "alias_version" bigint DEFAULT 1 NOT NULL,
+    "review_enabled" boolean DEFAULT false NOT NULL,
+    "review_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "worker_configuration_complete" CHECK (((("configuration_revision" IS NULL) AND ("configuration_updated_at" IS NULL) AND ("desired_configuration" IS NULL)) OR (("configuration_revision" IS NOT NULL) AND ("configuration_updated_at" IS NOT NULL) AND ("desired_configuration" IS NOT NULL) AND ("jsonb_typeof"("desired_configuration") = 'object'::"text")))),
     CONSTRAINT "worker_configuration_observation_object" CHECK ((("configuration_observation" IS NULL) OR ("jsonb_typeof"("configuration_observation") = 'object'::"text"))),
     CONSTRAINT "worker_configuration_observation_revision_nonnegative" CHECK (("configuration_observation_revision" >= 0)),
@@ -1742,6 +1753,9 @@ ALTER TABLE ONLY "project_github_pending_prs"
 ALTER TABLE ONLY "project_github"
     ADD CONSTRAINT "project_github_pkey" PRIMARY KEY ("project_id");
 
+ALTER TABLE ONLY "project_github_repositories"
+    ADD CONSTRAINT "project_github_repositories_pkey" PRIMARY KEY ("project_id", "repository_id");
+
 ALTER TABLE ONLY "project_grants"
     ADD CONSTRAINT "project_grants_pkey" PRIMARY KEY ("project_id", "user_id");
 
@@ -1755,7 +1769,7 @@ ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
 
 ALTER TABLE ONLY "project_pull_requests"
-    ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "number");
+    ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "repository_id", "number");
 
 ALTER TABLE ONLY "project_tags"
     ADD CONSTRAINT "project_tags_pkey" PRIMARY KEY ("id");
@@ -2088,9 +2102,9 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
-CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
+CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
 
-CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "state", "number" DESC);
+CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "state", "number" DESC);
 
 CREATE UNIQUE INDEX "project_tags_project_name_key_idx" ON "project_tags" USING "btree" ("project_id", "name_key");
 

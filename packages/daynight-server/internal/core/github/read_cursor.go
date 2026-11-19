@@ -12,6 +12,7 @@ import (
 )
 
 type cursorJSON struct {
+	RepositoryID *string `json:"repositoryId,omitempty"`
 	V            int     `json:"v"`
 	ProjectID    string  `json:"projectId"`
 	State        string  `json:"state"`
@@ -23,7 +24,7 @@ type cursorJSON struct {
 	AuthorID     *string `json:"authorId,omitempty"`
 }
 
-var cursorKeys = map[string]bool{"v": true, "projectId": true, "state": true, "q": true, "limit": true, "upperNumber": true, "anchorNumber": true, "direction": true, "authorId": true}
+var cursorKeys = map[string]bool{"v": true, "projectId": true, "state": true, "q": true, "limit": true, "upperNumber": true, "anchorNumber": true, "direction": true, "authorId": true, "repositoryId": true}
 
 type pageCursor struct {
 	upper, anchor int64
@@ -82,19 +83,38 @@ func decodeCursor(encoded, id string, r ListRequest) (*pageCursor, error) {
 	if !ok {
 		return bad()
 	}
-	if r.AuthorID == nil {
-		if c.V != 1 || len(seen) != 8 || seen["authorId"] {
-			return bad()
-		}
-	} else {
-		if c.V != 2 || len(seen) != 9 || c.AuthorID == nil {
+	expectedFields := 8
+	expectedVersion := 1
+	if r.AuthorID != nil {
+		expectedFields++
+		expectedVersion = 2
+		if c.AuthorID == nil {
 			return bad()
 		}
 		authorID, ok := number(*c.AuthorID, false)
 		if !ok || authorID != *r.AuthorID {
 			return bad()
 		}
+	} else if c.AuthorID != nil {
+		return bad()
 	}
+	if r.RepositoryID != nil {
+		expectedFields++
+		expectedVersion = 3
+		if c.RepositoryID == nil {
+			return bad()
+		}
+		repositoryID, ok := number(*c.RepositoryID, false)
+		if !ok || repositoryID != *r.RepositoryID {
+			return bad()
+		}
+	} else if c.RepositoryID != nil {
+		return bad()
+	}
+	if c.V != expectedVersion || len(seen) != expectedFields {
+		return bad()
+	}
+
 	if c.ProjectID != id || c.State != r.State || c.Q != r.Query || c.Limit != r.Limit || (c.Direction != "next" && c.Direction != "previous") || (anchor > upper && !(c.Direction == "next" && upper < int64(^uint64(0)>>1) && anchor == upper+1)) {
 		return bad()
 	}
@@ -106,6 +126,11 @@ func encodeCursor(id string, r ListRequest, upper, anchor int64, direction strin
 		c.V = 2
 		authorID := strconv.FormatInt(*r.AuthorID, 10)
 		c.AuthorID = &authorID
+	}
+	if r.RepositoryID != nil {
+		c.V = 3
+		repositoryID := strconv.FormatInt(*r.RepositoryID, 10)
+		c.RepositoryID = &repositoryID
 	}
 	b, _ := json.Marshal(c)
 	s := base64.RawURLEncoding.EncodeToString(b)

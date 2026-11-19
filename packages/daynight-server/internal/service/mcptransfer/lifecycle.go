@@ -286,6 +286,8 @@ func (s *Lifecycle) TransitionPublished(ctx context.Context, p *Permit, a Actor,
 	if p.closed {
 		return model.PrivateTransfer{}, transfer.ErrState
 	}
+	ctx, cancel := filestorage.GateContext(ctx, p.gate)
+	defer cancel()
 	return s.transition(ctx, a, id, version, state, data, leaseUntil, materialized)
 }
 
@@ -300,6 +302,8 @@ func (s *Lifecycle) PublishDownload(ctx context.Context, p *Permit, a Actor, id 
 	if p.closed {
 		return model.PrivateTransfer{}, ErrState
 	}
+	ctx, cancel := filestorage.GateContext(ctx, p.gate)
+	defer cancel()
 	return s.transition(ctx, a, id, 0, "readable", data, nil, materialized)
 }
 
@@ -373,6 +377,11 @@ func (s *Lifecycle) FinishCommit(ctx context.Context, p *Permit, a transfer.Acto
 	var result model.PrivateTransfer
 	completionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
+	completionCtx, cancelGate := filestorage.GateContext(completionCtx, p.gate)
+	defer cancelGate()
+	if completionCtx.Err() != nil {
+		return model.PrivateTransfer{}, context.Cause(completionCtx)
+	}
 	versionForDecision := version
 	c, txErr := s.db.WritePrivateTransfer(completionCtx, func(d store.PrivateTransferDAO) error {
 		var e error
@@ -485,12 +494,13 @@ func (s *Lifecycle) AcquirePermit(ctx context.Context, a transfer.Actor, id stri
 		s.wg.Done()
 		return nil, err
 	}
-	p := &Permit{Context: opCtx, cancel: cancel, gate: gate, owner: s, id: id, actor: a}
+	opCtx, cancelGate := filestorage.GateContext(opCtx, gate)
+	p := &Permit{Context: opCtx, cancel: func() { cancelGate(); cancel() }, gate: gate, owner: s, id: id, actor: a}
 	s.mu.Lock()
 	if s.stopping {
 		s.mu.Unlock()
 		_ = gate.Close()
-		cancel()
+		p.cancel()
 		<-s.ioSlots
 		s.wg.Done()
 		return nil, errors.New("private transfer lifecycle stopped")
@@ -603,23 +613,25 @@ func (s *Lifecycle) Maintain(ctx context.Context) error {
 			failures = append(failures, err)
 			continue
 		}
+		cleanupCtx, cancelCleanup := filestorage.GateContext(ctx, gate)
 		namespace, e := filestorage.NewTransferNamespace(r.ID)
 		if e == nil {
-			e = s.private.DeleteTransferNamespace(ctx, namespace)
+			e = s.private.DeleteTransferNamespace(cleanupCtx, namespace)
 		}
 		if e == nil {
-			e = s.transaction(ctx, func(d store.PrivateTransferDAO) error {
-				current, err := d.Get(ctx, r.ID)
+			e = s.transaction(cleanupCtx, func(d store.PrivateTransferDAO) error {
+				current, err := d.Get(cleanupCtx, r.ID)
 				if err != nil {
 					return err
 				}
 				if !transfer.PendingCleanup(current) {
 					return transfer.ErrState
 				}
-				_, err = transfer.Close(ctx, d, current.ID, current.Version, time.Now().UTC().Add(transfer.Retention))
+				_, err = transfer.Close(cleanupCtx, d, current.ID, current.Version, time.Now().UTC().Add(transfer.Retention))
 				return err
 			})
 		}
+		cancelCleanup()
 		e = errors.Join(e, gate.Close())
 		<-s.ioSlots
 		if e != nil {

@@ -33,13 +33,16 @@ func asyncDatabase(t *testing.T, parent context.Context, fn func(context.Context
 
 func rollbackDatabase(t *testing.T, tx pgx.Tx) {
 	t.Helper()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-			t.Errorf("rollback cleanup: %v", err)
-		}
-	})
+	t.Cleanup(func() { rollbackDatabaseNow(t, tx) })
+}
+
+func rollbackDatabaseNow(t *testing.T, tx pgx.Tx) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		t.Errorf("rollback cleanup: %v", err)
+	}
 }
 
 func TestOnlyOneConcurrentPendingBindingCommits(t *testing.T) {

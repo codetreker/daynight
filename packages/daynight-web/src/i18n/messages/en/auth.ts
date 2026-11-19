@@ -182,7 +182,6 @@ export const auth: AuthMessages = {
     settings: {
       eyebrow: "PROJECT SETTINGS",
       title: "Project settings",
-      scopeHint: "Settings apply to the current project only.",
       alertTitle: "Task execution alerts",
       description: "Show “Possibly stuck” on tasks that allow Agents and remain in progress beyond the threshold.",
       scope: "Project setting",
