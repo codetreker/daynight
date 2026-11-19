@@ -161,8 +161,8 @@ daynight project
 daynight project create <name> [--repo <repo>] [--team <uuid|personal>] [--confirm]
 daynight project list [--json]
 daynight project show <project-id> [--json]
-daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]
-daynight project delete [--project <uuid>] [--confirm] [--json]
+daynight project transfer --to-team <uuid|same-service-link> --confirm [--project <uuid>] [--if-version <version>] [--json]
+daynight project delete --confirm [--project <uuid>] [--json]
 daynight tag list [--query <query>] [--limit <1-100>] [--cursor <cursor>] [--project <project-id>] [--json]
 daynight tag show <tag-id> [--project <project-id>] [--json]
 daynight tag create <name> [--color '#RRGGBB'] [--project <project-id>] [--json]
@@ -614,8 +614,10 @@ behavior and remaining task-command scope.
 `/teams/<uuid>` link. It resolves the explicit Project or current repository
 without changing its binding or default Team. Only the current owner Team admin
 can transfer; destination membership is not required. The preview identifies the
-source, destination and expected access before confirmation. `--confirm` skips
-the prompt but retains the preview's exact versions and identity checks. An
+source, destination and expected access on stderr. `--confirm` is required;
+an actual transfer permanently removes all Goal dependencies involving the
+Project, within and across Projects, and those relationships cannot be restored.
+The request retains the preview's exact versions and identity checks. An
 optional `--if-version` rejects a preview with a different ownership version.
 A successful receipt may report no remaining access. Conflicts require a fresh
 preview and decision; a lost receipt remains unknown even if a later read is 404.
@@ -625,8 +627,10 @@ Project grants and invitations are preserved.
 then reads the complete deletion preview. Only an administrator of the current
 owner Team can delete it. The Project becomes unavailable without a product
 recovery option; server history and files are retained. Active Worker claims
-block deletion. Interactive use requires the displayed JSON string literal of the
-Project name, even with `--confirm`; noninteractive use requires `--confirm`.
+block deletion. `--confirm` is required; interactive use also requires the
+displayed JSON string literal of the Project name. Deletion permanently removes
+all Goal dependencies involving the Project, within and across Projects, and
+those relationships cannot be restored.
 The preview is an observation, not a condition on the deletion. JSON output
 contains only the confirmed receipt; preview text goes to stderr. An unknown
 outcome is never automatically retried, and a later 404 cannot prove success.
