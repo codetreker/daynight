@@ -1986,8 +1986,6 @@ CREATE INDEX "assistant_task_inquiries_page" ON "assistant_task_inquiries" USING
 
 CREATE INDEX "assistant_task_inquiries_state_deadline" ON "assistant_task_inquiries" USING "btree" ("state", "deadline");
 
-CREATE INDEX "assistant_task_item_closures_task_closed" ON "assistant_task_item_closures" USING "btree" ("task_id", "closed_at");
-
 CREATE UNIQUE INDEX "assistant_task_items_open_key" ON "assistant_task_items" USING "btree" ("task_id", "key") WHERE ("state" = 'open'::"text");
 
 CREATE INDEX "assistant_task_items_page" ON "assistant_task_items" USING "btree" ("task_id", "created_at", "id");
