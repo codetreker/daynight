@@ -106,13 +106,14 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
   };
   const taskPath = (taskId: string) => `/assistant-tasks/${P.assistantTaskId(taskId)}`;
   const entryPath = (taskId: string, collection: string, id: string) => `${taskPath(taskId)}/${collection}/${P.assistantTaskId(id)}`;
-  const queryPath = (path: string, query: T.AssistantTaskQuery = {}) => {
+  const queryPath = (path: string, query: T.AssistantTaskEventQuery = {}) => {
     const params = new URLSearchParams();
     if (query.limit !== undefined) { if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 200) throw new Error("limit must be an integer from 1 to 200."); params.set("limit", String(query.limit)); }
-    for (const key of ["cursor", "state", "itemId", "targetBotId"] as const) if (query[key] !== undefined) params.set(key, key.endsWith("Id") ? P.assistantTaskId(query[key]) : text(query[key], true));
+    if (query.type !== undefined && query.excludeType !== undefined) throw new Error("type and excludeType cannot be combined.");
+    for (const key of ["cursor", "state", "itemId", "targetBotId", "type", "excludeType"] as const) if (query[key] !== undefined) params.set(key, key.endsWith("Id") ? P.assistantTaskId(query[key]) : text(query[key], true));
     return params.size === 0 ? path : `${path}?${params}`;
   };
-  const list = <V>(path: string, query: T.AssistantTaskQuery | undefined, parse: (value: unknown) => V) => request(queryPath(path, query), "GET", undefined, v => P.parseAssistantTaskPage(v, parse));
+  const list = <V>(path: string, query: T.AssistantTaskEventQuery | undefined, parse: (value: unknown) => V) => request(queryPath(path, query), "GET", undefined, v => P.parseAssistantTaskPage(v, parse));
   return {
     getTask: (taskId: string) => request(taskPath(taskId), "GET", undefined, v => P.parseAssistantTask(v, taskId, ownerId)),
     listTasks: (query?: T.AssistantTaskQuery) => list("/assistant-tasks", query, v => P.parseAssistantTask(v, undefined, ownerId)),
@@ -145,7 +146,7 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
     saveItem: (taskId: string, input: T.SaveAssistantTaskItemInput, id?: string) => request(id === undefined ? `${taskPath(taskId)}/items` : entryPath(taskId, "items", id), id === undefined ? "POST" : "PATCH", input, v => P.parseAssistantTaskItem(v, taskId, id ?? input.id)),
     listRecords: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/records`, query, v => P.parseAssistantTaskRecord(v, taskId)),
     addRecord: (taskId: string, input: T.AddAssistantTaskRecordInput) => request(`${taskPath(taskId)}/records`, "POST", input, v => P.parseAssistantTaskRecord(v, taskId, input.id)),
-    listEvents: (taskId?: string, query?: T.AssistantTaskQuery) => list(taskId === undefined ? "/assistant-task-events" : `${taskPath(taskId)}/events`, query, v => P.parseAssistantTaskEvent(v, taskId)),
+    listEvents: (taskId?: string, query?: T.AssistantTaskEventQuery) => list(taskId === undefined ? "/assistant-task-events" : `${taskPath(taskId)}/events`, query, v => P.parseAssistantTaskEvent(v, taskId)),
     addEvent: (taskId: string, input: T.AddAssistantTaskEventInput) => request(`${taskPath(taskId)}/events`, "POST", input, v => P.parseAssistantTaskEvent(v, taskId, input.id)),
     ackEvent: (taskId: string, id: string, input: { operationId: string; state?: "delivered" | "expired" }) => request(`${entryPath(taskId, "events", id)}/ack`, "POST", input, v => { const event = P.parseAssistantTaskEvent(v, taskId, id); if (event.ackOperationId !== input.operationId) return malformed(); return event; }),
     clearAttention: (targetBotId: string) => request("/assistant-task-events/attention", "POST", { targetBotId }, v => { const d = fields(v, ["targetBotId"]); if (P.assistantTaskId(d.targetBotId) !== targetBotId) return malformed(); return { targetBotId }; }),

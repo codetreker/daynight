@@ -24,7 +24,9 @@ func (d *DAO) Event(ctx context.Context, owner, task, id string) (model.Assistan
 }
 func (d *DAO) Events(ctx context.Context, q store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) {
 	after, id, limit := page(q)
-	return many(ctx, d.tx, "list assistant events", `SELECT `+eventColumns+` FROM assistant_task_events WHERE owner_user_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND ($3='' OR state=$3) AND ($4::uuid IS NULL OR target_bot_id=$4) AND ($5::timestamptz IS NULL OR (created_at,id)>($5,$6::uuid)) ORDER BY created_at,id LIMIT $7`, scanEvent, q.OwnerUserID, nullableID(q.TaskID), q.State, nullableID(q.TargetBotID), after, id, limit)
+	// The paused-task predicate reads the task row in this statement, so a
+	// page never mixes a task's state with events read at another time.
+	return many(ctx, d.tx, "list assistant events", `SELECT `+eventColumns+` FROM assistant_task_events e WHERE owner_user_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND ($3='' OR state=$3) AND ($4::uuid IS NULL OR target_bot_id=$4) AND ($8='' OR type=$8) AND ($9='' OR type<>$9) AND (NOT $10::boolean OR NOT EXISTS (SELECT 1 FROM assistant_tasks t WHERE t.id=e.task_id AND t.owner_user_id=e.owner_user_id AND t.state='paused')) AND ($5::timestamptz IS NULL OR (created_at,id)>($5,$6::uuid)) ORDER BY created_at,id LIMIT $7`, scanEvent, q.OwnerUserID, nullableID(q.TaskID), q.State, nullableID(q.TargetBotID), after, id, limit, q.EventType, q.ExcludeEventType, q.ExcludePausedTasks)
 }
 func eventValues(v model.AssistantTaskEvent) []any {
 	return []any{v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.SeenAt, v.AckOperationID, v.AckFingerprint}

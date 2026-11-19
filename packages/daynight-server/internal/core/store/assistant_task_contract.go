@@ -31,8 +31,13 @@ type AssistantTaskQuery struct {
 	// It selects candidates only; core owns their timed_out transition.
 	IncludeExpiredOpen *time.Time
 	RulesEqual         json.RawMessage
-	Limit              int
-	After              *AssistantTaskPosition
+	// EventType keeps only events of that type and ExcludeEventType drops
+	// events of that type. ExcludePausedTasks drops events whose task is
+	// paused, evaluated against the task row in the same query.
+	EventType, ExcludeEventType string
+	ExcludePausedTasks          bool
+	Limit                       int
+	After                       *AssistantTaskPosition
 }
 
 // AssistantTaskCondition contains the actual write predicates chosen by core.
