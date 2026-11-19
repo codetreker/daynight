@@ -283,6 +283,8 @@ DAO 使用独立 Read Committed 语句，通过 `project_ownership` 与 `project
 
 真实换仓在同一事务关闭旧仓库覆盖区间、推进 GitHub 世代、清除项目侧连接及旧工作，并按一次快照的 Worker 列表以用户和 Worker ID 顺序锁行。锁后基于最新原始配置只移除目标项目，保留其他配置和观测，仅推进实际受影响的目标版本。外部观察和数据库提交的结果独立，未知提交不能重放。旧来源读取见 [PR 来源](github-pr-reading.md)，连接恢复由管理员手工执行。
 
+改址日志关联请求、主体和 Project，记录阶段、分类及事务完成状态，不记录仓库地址或凭据。Worker 配置行数仅在确认提交时表示实际影响；提交未知时记录事务内拟变更数，回滚时记录零。
+
 ## 状态与依赖不变量
 
 普通 Task 使用 `proposed`、`todo`、`in_progress`、`done`、`cancelled`，创建与数据库默认均为 proposed；创建可显式选择 proposed 或 todo。Goal 使用四态及独立的状态时间和负责人策略，详见 [Goal 需求](../spec/daynight-goals.md)。
