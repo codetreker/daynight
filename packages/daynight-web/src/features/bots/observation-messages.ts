@@ -15,6 +15,8 @@ const en = {
     recovery_material_missing: 'The original Session recovery material is missing.', recovery_material_invalid: 'The original Session recovery material failed verification.', recovery_material_incomplete: 'The original Session recovery material is incomplete.', recovery_version_unsupported: 'The Provider version cannot read this recovery material.', outcome_unknown: 'The previous operation’s outcome is unknown.',
   },
   actions: {
+    version: 'On this machine, check the original recovery record and use its compatible Provider and recovery format versions before resuming.',
+    outcome: 'On this machine, check the original operation and its observable effects. Do not resend it while its result is unknown.',
     offline: 'On the machine shown above, run', machineUnknown: 'Locate the Worker machine for this assistant, then run',
     provider: 'On this machine, check that the selected Provider is installed and signed in, then check the Worker report again.',
     native: 'On this machine, restore the original Session record from a verified backup and check its identity before resuming.',
@@ -22,7 +24,7 @@ const en = {
     connecting: 'Check startup progress on this machine. The first native Session ID will appear after it is registered.',
     recovering: 'Check the Worker connection and synchronization on this machine, then refresh the status.',
     directory: 'Restore access to the assistant’s working directory on this machine, then check startup again.',
-    failure: 'On this machine, inspect the original Session and Worker error using the reason above. Check unknown operation results before deciding whether to retry.',
+    failure: 'On this machine, inspect the original Session and Worker error using the reason above. Verify whether the original execution has stopped before recovering. Check unknown operation results before deciding whether to retry.',
   },
 };
 const zh: typeof en = {
@@ -38,12 +40,14 @@ const zh: typeof en = {
     recovery_material_missing: '缺少原会话恢复材料。', recovery_material_invalid: '原会话恢复材料未通过校验。', recovery_material_incomplete: '原会话恢复材料不完整。', recovery_version_unsupported: 'Provider 版本无法读取这份恢复材料。', outcome_unknown: '上次操作的结果未知。',
   },
   actions: {
+    version: '请在这台机器核对原恢复记录，使用与其兼容的 Provider 和恢复格式版本后再恢复。',
+    outcome: '请在这台机器核对原操作及其实际影响，结果未知时不要重发。',
     offline: '请在上述机器运行', machineUnknown: '请先找到这个助手的 Worker 所在机器，再运行',
     provider: '请在这台机器检查所选 Provider 的安装与登录状态，然后重新核对 Worker 报告。',
     native: '请在这台机器从已验证的备份恢复原会话记录，核对身份后再恢复执行。',
     identity: '请在这台机器核对原助手、机器和会话身份，确认原执行是否已停止后再恢复。',
     connecting: '请在这台机器查看启动进度，登记完成后将显示首次原生 Session ID。', recovering: '请检查这台机器的 Worker 连接与同步进度，然后刷新状态。',
-    directory: '请恢复这台机器上助手工作目录的访问，再次核对启动结果。', failure: '请根据上方原因检查这台机器的原会话与 Worker 错误。操作结果未知时，先核对结果再决定是否重试。',
+    directory: '请恢复这台机器上助手工作目录的访问，再次核对启动结果。', failure: '请根据上方原因检查这台机器的原会话与 Worker 错误，恢复前确认原执行是否已停止。操作结果未知时，先核对结果再决定是否重试。',
   },
 };
 export const useBotObservationMessages = () => {

@@ -130,7 +130,9 @@ function BotObservationInformation({ bot, observation }: { readonly bot: BotDefi
   const reason = value?.reason ?? '';
   let action: string | null = null;
   if (value && !observation?.stale) {
-    if (reason.startsWith('provider_')) action = m.actions.provider;
+    if (reason === 'recovery_version_unsupported') action = m.actions.version;
+    else if (reason === 'outcome_unknown') action = m.actions.outcome;
+    else if (reason.startsWith('provider_')) action = m.actions.provider;
     else if (['native_identity_missing', 'native_session_missing', 'native_record_missing', 'recovery_material_missing', 'recovery_material_invalid', 'recovery_material_incomplete'].includes(reason)) action = m.actions.native;
     else if (reason.includes('identity_mismatch') || reason.includes('conflict') || reason.includes('ownership')) action = m.actions.identity;
     else if (reason === 'directory_missing' || reason === 'invalid_cwd') action = m.actions.directory;
