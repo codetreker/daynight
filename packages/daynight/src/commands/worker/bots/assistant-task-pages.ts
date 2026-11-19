@@ -7,7 +7,7 @@ import type { AssistantTaskPage, AssistantTaskQuery } from "../../../api/assista
 export const ASSISTANT_TASK_RESPONSE_BYTES = 32 * 1024 * 1024;
 export const ASSISTANT_TASK_OPERATION_BYTES = 256 * 1024 * 1024;
 
-type PageReader<T> = (query: AssistantTaskQuery) => Promise<AssistantTaskPage<T>>;
+type PageReader<T, Q extends AssistantTaskQuery> = (query: Q) => Promise<AssistantTaskPage<T>>;
 
 /**
  * Read one task or event per page and retain no previous payloads.
@@ -15,14 +15,14 @@ type PageReader<T> = (query: AssistantTaskQuery) => Promise<AssistantTaskPage<T>
  * volume cannot exhaust the cumulative budget of a later acknowledgment.
  * Consumers stop iteration once their batch or lookup is complete.
  */
-export async function* assistantTaskPages<T>(
-  readPage: PageReader<T>,
-  query: Omit<AssistantTaskQuery, "limit" | "cursor"> = {},
+export async function* assistantTaskPages<T, Q extends AssistantTaskQuery = AssistantTaskQuery>(
+  readPage: PageReader<T, Q>,
+  query: Omit<Q, "limit" | "cursor"> = {} as Omit<Q, "limit" | "cursor">,
 ): AsyncGenerator<T> {
   const cursors = new Set<string>();
   let cursor: string | undefined;
   for (;;) {
-    const page = await readPage({ ...query, limit: 1, ...(cursor === undefined ? {} : { cursor }) });
+    const page = await readPage({ ...query, limit: 1, ...(cursor === undefined ? {} : { cursor }) } as Q);
     if (page.items.length > 1) throw new Error("Assistant task page exceeded its requested size.");
     if (page.nextCursor !== null && cursors.has(page.nextCursor)) throw new Error("Assistant task pagination repeated a cursor.");
     for (const item of page.items) yield item;

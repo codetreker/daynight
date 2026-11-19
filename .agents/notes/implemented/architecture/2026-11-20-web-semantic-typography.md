@@ -13,8 +13,12 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. A shared touch-field minimum keeps task search at least 16 CSS px
-while respecting a larger interface role. The shared shell, task rows, personal task groups, Goal summaries, and task search use semantic roles at all viewport widths.
+baseline. The shared shell, selection controls, task filters, task rows,
+personal task groups, Goal summaries, and task search use semantic roles at
+all viewport widths. Selection text retains its existing touch conditions and
+16 CSS px minimum; count badges use the metadata role. A shared touch-field
+minimum keeps task search at least 16 CSS px while respecting larger browser
+font preferences.
 The [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses
 and sizes. Fixed geometry that depended on the former 14px root is independent
 of that root; text-related spacing remains relative. The earlier
@@ -32,8 +36,8 @@ and makes changing a reading size require edits across consumers.
 
 ## Consequences
 
-The migrated consumers and inherited interface baseline respond to browser font preferences;
-fixed layouts retain their intended geometry. Existing feature-specific font
+The migrated consumers and inherited interface baseline respond to browser
+font preferences; fixed layouts retain their intended geometry. Existing feature-specific font
 sizes remain until those consumers migrate, so the shared definitions alone do
 not establish whole-site consistency. Narrow layouts must accommodate text
 without reducing its role size.
