@@ -29,6 +29,12 @@ continue to read internally consistent frozen configuration.
 Hosting generation is distinct from Controller execution generation. The latter
 advances only through its existing previous-generation and stop-proof rules.
 
+Browser permission projection and command admission require the durable connection
+lease to remain valid. A same-fence relay cache may retain readable content after
+recovery, but cannot restore send authority after that lease is cleared or expires.
+This barrier remains effective on another relay and when a committed transaction
+returns an unknown outcome without publishing the caller's live-cache changes.
+
 Clients generate and durably retain a fresh controller token before submitting a
 grant operation. The database retains only its hash and a safe receipt. Exact
 request replay returns the recorded result without another grant or generation;
@@ -57,6 +63,11 @@ the Worker that must already persist the original request.
 **Rotate only the grant.** Existing Controller leases have their own parent
 credential and remain live after ordinary grant renewal. Explicit disconnection
 is required to reject delayed observations before the new connection synchronizes.
+
+**Rely on local cache invalidation.** Recovery can preserve the Controller fence,
+and another relay can retain a synchronized cache. An unknown commit also prevents
+local after-commit publication. Both cases require durable lease checks at input
+admission; deleting one relay's cache cannot establish the shared barrier.
 
 ## Consequences
 

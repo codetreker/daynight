@@ -80,7 +80,7 @@ Worker 保存完整冻结配置并使用它核对登记请求与执行身份。�
 
 `takeover` 和 `grant` 另含持久原 `operationId`、`expectedHostingGeneration`、完整原 Session/native 绑定、既有 `grant` 参数和预先生成并落盘的 `controllerToken`。token 为 `dncontroller_` 加 32 字节 canonical base64url，每个新操作使用新 token；服务端在 Bot 锁内检查全部历史回执中的摘要，拒绝重用任何旧 token。服务端仅保存摘要；调用方凭自身保留的 token 和回执恢复授权。接管核对同机身份，原子推进 `bot_recovery.worker_id`、Bot version 和 hosting generation，重置启动状态；`bots.worker_id`、原始 `resolvedConfiguration.workerId`、显式 overrides、创建指纹和角色保持冻结，旧管理 DTO 仍表示创建时绑定。当前承载身份由恢复回执提供，不能用旧 Worker inventory 发现或授权恢复执行。普通恢复 grant 只允许当前 Worker 与当前承载代次，不推进承载代次。
 
-`service/bot/runtime.Recovery` 协调当前凭据、Bot、Session 和机器报告锁，`core/bot` 判断归属、恢复证明与承载代次，`core/session` 核验原会话及 Controller stopProof。`bot_recovery` 保存当前 Worker、服务域、机器、证明摘要和代次；`bot_recovery_operations` 保存原请求摘要和无秘密回执。它们与既有 Session 使用同一数据库事务。每次恢复 grant 都清除旧连接租约及同步资格，新连接同步完成前不能发送输入。连接失效不证明本机命令已停止。
+`service/bot/runtime.Recovery` 协调当前凭据、Bot、Session 和机器报告锁，`core/bot` 判断归属、恢复证明与承载代次，`core/session` 核验原会话及 Controller stopProof。`bot_recovery` 保存当前 Worker、服务域、机器、证明摘要和代次；`bot_recovery_operations` 保存原请求摘要和无秘密回执。它们与既有 Session 使用同一数据库事务。每次恢复 grant 都清除旧连接租约及同步资格。浏览器权限投影与命令准入共同要求当前持久连接租约有效；同 fence 的 relay 缓存只能提供阅读内容，不能覆盖租约撤销或过期。因此其它 relay 的旧缓存，以及提交成功但调用方只收到 unknown 的情况，都不能在新连接同步完成前恢复发送资格。连接失效不证明本机命令已停止。
 
 回执包含原 `operationId`、kind、Worker、承载代次、Bot version、平台和原生身份，以及可空的 grant 到期时间与 token SHA-256。`current` 表示该回执仍对应当前承载；含 grant 时还要求未过期、摘要仍被选中、Controller 身份相同，且父 PAT 就是本次认证的 PAT。新 PAT 可以读取旧回执，但旧授权不因此恢复。相同操作 ID 与相同请求只返回原回执，不重新签发；不同请求冲突。未知提交保留 `outcome_unknown`，查询不存在不能证明先前未提交。客户端须保留原请求，不能把历史成功或当前可读状态当作新授权。
 

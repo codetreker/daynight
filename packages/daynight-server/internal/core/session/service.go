@@ -179,6 +179,12 @@ func permissions(r *record, write bool, now time.Time) sp.Snapshot {
 	if r.LastSeen == nil || now.Sub(*r.LastSeen) > HeartbeatTimeout {
 		v.ConnectionState = "disconnected"
 	}
+	// A recovery grant can revoke the durable lease without changing the
+	// Controller fence. A relay's retained cache cannot restore that authority.
+	if r.ConnectionExpiry == nil || !now.Before(*r.ConnectionExpiry) {
+		v.ConnectionState = "disconnected"
+		v.Synchronized = false
+	}
 	if v.Controls != nil && (!write || v.Lifecycle != "active" || v.ConnectionState != "connected" || !v.Synchronized || !controlActivity(v.Activity)) {
 		for i := range v.Controls.Settings {
 			v.Controls.Settings[i].Mutable = false
