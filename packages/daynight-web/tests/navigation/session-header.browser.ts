@@ -339,6 +339,15 @@ for (const entry of ['task', 'test'] as const) for (const locale of ['en', 'zh-C
       expect(await rows.nth(0).locator('summary').evaluate(node => getComputedStyle(node).display)).toBe(width < 480 ? 'grid' : 'flex');
       await expect(rows.nth(0)).toHaveAttribute('open', '');
     }
+    await content.evaluate(node => { (node as HTMLElement).style.width = ''; (node as HTMLElement).style.maxWidth = ''; });
+    for (const width of [768, 1360]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await content.evaluate(node => node.clientWidth)).toBeGreaterThanOrEqual(480);
+      expect(await rows.nth(0).locator('summary').evaluate(node => getComputedStyle(node).display)).toBe('flex');
+      await expect(rows.nth(0).locator('.session-tool-name-wide')).toBeVisible();
+      await expect(rows.nth(0)).toHaveAttribute('open', '');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
     expect(observations.writes).toEqual([]);
   });
 }
