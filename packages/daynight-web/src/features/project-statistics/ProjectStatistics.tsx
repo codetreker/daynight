@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import type { ApiError } from '../../api/client';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { BarChart } from '../../ui/bar-chart';
@@ -13,6 +13,7 @@ import './statistics.css';
 export function ProjectStatistics(props: {
   readonly userId: string; readonly projectId: string; readonly canRead: boolean; readonly active: boolean;
   readonly snapshot: GraphSnapshot | null; readonly taskError: unknown; readonly onTaskRetry: () => void;
+  readonly onScrollReady?: (ready: boolean) => void;
   readonly onPrincipalMismatch: () => void; readonly onAccessError: (error: ApiError) => void; readonly refreshRevision: number;
 }) {
   const { locale } = useI18n(), m = statisticsText(locale);
@@ -22,6 +23,8 @@ export function ProjectStatistics(props: {
   const previousRefresh = useRef(props.refreshRevision);
   useEffect(() => { if (previousRefresh.current !== props.refreshRevision) { previousRefresh.current = props.refreshRevision; if (props.active) pr.refresh(); } }, [props.refreshRevision, props.active, pr.refresh]);
   const data = pr.data;
+  const scrollReady = props.active && props.canRead && props.snapshot !== null && props.snapshot.observedAt !== null && props.snapshot.revision > 0 && props.taskError === null && data !== null && pr.error === null && !pr.loading;
+  useLayoutEffect(() => { props.onScrollReady?.(scrollReady); }, [props.onScrollReady, scrollReady]);
   const all = data?.daily.map(BigInt) ?? [];
   const selected = pr.author === null ? all : data?.authorDaily?.map(BigInt) ?? all;
   const ready = data?.availability === 'ready';

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { createProjectTag, deleteProjectTag, getProjectTag, listProjectTags, normalizeTagName, resolveProjectTagColors, tagNameKey, updateProjectTag, type ProjectTag } from '../../api/task-tags';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -36,16 +36,18 @@ const draftsFor = (scope: TaskCacheScope): Map<string, Draft> => {
 };
 
 let scopeKey = 0;
-export const ProjectTags = ({ projectId, active = true }: { readonly projectId: string; readonly active?: boolean }) => {
+export const ProjectTags = ({ projectId, active = true, onScrollReady }: { readonly projectId: string; readonly active?: boolean; readonly onScrollReady?: (ready: boolean) => void }) => {
   const scope = useTaskCacheScope();
   const key = useMemo(() => ++scopeKey, [scope]);
-  return <ProjectTagsContent key={`${projectId}:${key}`} projectId={projectId} active={active} />;
+  return <ProjectTagsContent key={`${projectId}:${key}`} projectId={projectId} active={active} {...(onScrollReady === undefined ? {} : { onScrollReady })} />;
 };
 
-const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string; readonly active: boolean }) => {
+const ProjectTagsContent = ({ projectId, active, onScrollReady }: { readonly projectId: string; readonly active: boolean; readonly onScrollReady?: (ready: boolean) => void }) => {
   const { locale } = useI18n(); const m = tagMessages[locale];
   const scope = useTaskCacheScope(); const access = useProjectAccess(projectId);
   const catalog = useProjectTags(projectId, active);
+  const scrollReady = active && catalog.page !== null && !catalog.loading && catalog.error === null;
+  useLayoutEffect(() => { onScrollReady?.(scrollReady); }, [onScrollReady, scrollReady]);
   const colorIds = active ? catalog.page?.items.map(tag => tag.id) ?? [] : [];
   const colors = useTagColors(projectId, colorIds);
   const saved = useRef(draftsFor(scope).get(projectId) ?? null);
