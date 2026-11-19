@@ -151,6 +151,13 @@ rollback or expired-code cleanup and reading the affected login back. The
 cleanup case runs before the other redemption cases seed their logins.
 The parent checks pool reuse after each case.
 
+The Project deletion claim and thread matrix shares one Store across its
+lock-order cases. Each trigger is limited to the case Project or Task. Its
+advisory gate belongs to a transaction, and both writers exit before the
+trigger and function are removed and their absence is checked. Case-specific
+records preserve independent committed-state checks. A failed case stops
+reuse.
+
 The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
 share one Store per parent and give each case independent account, Project,
 Task, credential, claim and Session identities. The registration refusal
