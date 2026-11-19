@@ -3,6 +3,7 @@ import { validateServerToken, validateTokenTransport } from "../config/server-to
 import type { Operation } from "./operation.js";
 import { fields, malformed, text, timestamp } from "./validation.js";
 import * as P from "./assistant-task-parse.js";
+import { botIdentityHeaders } from "./bot-identity.js";
 import type * as T from "./assistant-task-types.js";
 export * from "./assistant-task-types.js";
 export * from "./assistant-task-parse.js";
@@ -47,7 +48,7 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
       if (controller.signal.aborted) throw new AssistantTaskApiError(false, "request_cancelled");
       dispatched = true;
       response = await Promise.race([(options.fetch ?? globalThis.fetch)(new URL(`/api/v1${path}`, origin), {
-        method, headers: { Accept: "application/json", "X-Request-ID": randomUUID(), ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }), ...(botId === undefined ? {} : { "X-Daynight-Bot-Id": botId }), ...(payload === undefined ? {} : { "Content-Type": "application/json" }) },
+        method, headers: { Accept: "application/json", "X-Request-ID": randomUUID(), ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }), ...botIdentityHeaders(botId), ...(payload === undefined ? {} : { "Content-Type": "application/json" }) },
         ...(payload === undefined ? {} : { body: payload }), redirect: "manual", cache: "no-store", signal: controller.signal,
       }), aborted]);
       const principal = response.headers.get("Daynight-User-ID");
