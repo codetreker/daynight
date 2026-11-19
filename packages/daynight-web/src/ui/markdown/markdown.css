@@ -1,25 +1,25 @@
-.markdown-content { min-width: 0; max-width: 100%; font-size: var(--markdown-font-size, 12px); line-height: var(--markdown-line-height, 1.85); color: var(--markdown-color, #45516a); overflow-wrap: anywhere; }
+.markdown-content { min-width: 0; max-width: 100%; font-size: var(--text-reading); line-height: 1.75; color: var(--markdown-color, #45516a); overflow-wrap: anywhere; }
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
-.markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4, .markdown-content h5, .markdown-content h6 { font-size: var(--markdown-heading-size, 14px); line-height: 1.6; color: var(--markdown-heading-color, #344258); margin: var(--markdown-heading-margin, 19px 0 9px); font-weight: 600; letter-spacing: 0; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3, .markdown-content h4, .markdown-content h5, .markdown-content h6 { font-size: var(--text-section-heading); line-height: 1.6; color: var(--markdown-heading-color, #344258); margin: var(--markdown-heading-margin, 19px 0 9px); font-weight: 600; letter-spacing: 0; }
 .markdown-content p { margin: var(--markdown-paragraph-margin, 9px 0); }
-.markdown-content > p:first-child { margin-top: var(--markdown-first-paragraph-margin-top, 0); font-size: var(--markdown-first-paragraph-size, inherit); font-weight: var(--markdown-first-paragraph-weight, inherit); }
+.markdown-content > p:first-child { margin-top: var(--markdown-first-paragraph-margin-top, 0); font-weight: var(--markdown-first-paragraph-weight, inherit); }
 .markdown-content a { color: #5c5cbd; text-decoration: underline; text-underline-offset: 3px; }
 .markdown-content a:hover { color: #44449b; }
 .markdown-content img { max-width: 100%; height: auto; }
 .markdown-content ul, .markdown-content ol { padding-left: var(--markdown-list-indent, 21px); margin: var(--markdown-list-margin, 9px 0); }
 .markdown-content li { margin: var(--markdown-item-margin, 3px 0); }
 .markdown-content strong { font-weight: var(--markdown-strong-weight, bolder); color: var(--markdown-strong-color, inherit); }
-.markdown-content code { font: var(--markdown-code-size, 10px)/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f2f3f7; border-radius: 3px; padding: 2px 4px; color: #5e587c; }
+.markdown-content code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: var(--text-interface); line-height: 1.8; background: #f2f3f7; border-radius: 3px; padding: 2px 4px; color: #5e587c; }
 .markdown-content pre { max-width: 100%; background: #f7f8fa; border: 1px solid #edf0f4; border-radius: var(--markdown-pre-radius, 6px); padding: var(--markdown-pre-padding, 12px); overflow-x: auto; margin: var(--markdown-pre-margin, 12px 0); color: #45516a; tab-size: 2; }
 .markdown-content pre code { background: none; padding: 0; color: inherit; white-space: pre; overflow-wrap: normal; }
 .markdown-table { overflow-x: auto; margin: 12px 0; max-width: 100%; }
-.markdown-content table { border-collapse: collapse; font-size: var(--markdown-table-size, 11px); min-width: 100%; width: max-content; overflow-wrap: normal; }
+.markdown-content table { border-collapse: collapse; font-size: var(--text-interface); min-width: 100%; width: max-content; overflow-wrap: normal; }
 .markdown-content th, .markdown-content td { border: 1px solid #e5e8ee; padding: var(--markdown-cell-padding, 7px 9px); text-align: left; }
 .markdown-content th { background: #fafbfe; font-weight: 550; }
 .markdown-content blockquote { margin: 13px 0; border-left: 3px solid #dcdcf1; padding: 2px 0 2px 12px; color: var(--markdown-quote-color, #737d8e); }
 .markdown-content input[type=checkbox] { margin-right: 6px; }
-.mermaid-chart { min-width: 0; max-width: 100%; margin: 12px 0; border: 1px solid #e5e8ee; border-radius: 6px; background: #fff; overflow: hidden; }
+.mermaid-chart { font-size: var(--text-interface); min-width: 0; max-width: 100%; margin: 12px 0; border: 1px solid #e5e8ee; border-radius: 6px; background: #fff; overflow: hidden; }
 .mermaid-chart > p, .mermaid-chart > details { margin: 0; padding: 10px 12px; }
 .mermaid-chart > pre { margin: 0; border: 0; border-top: 1px solid #edf0f4; border-radius: 0; }
 .mermaid-chart summary { cursor: pointer; color: #5c5cbd; }
@@ -28,6 +28,5 @@
 .markdown-content .mermaid-diagram img { display: block; max-width: none; }
 .mermaid-diagram:focus-visible { outline: 2px solid #5c5ce0; outline-offset: -2px; }
 .markdown-content .markdown-table:focus-visible, .markdown-content pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
-.markdown-content .footnotes { font-size: 11px; }
 .markdown-content .footnotes .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.markdown-resource-unavailable { color: #808a9b; font-size: 12px; }
+.markdown-resource-unavailable { color: #808a9b; font-size: var(--text-interface); }

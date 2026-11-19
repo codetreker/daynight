@@ -63,7 +63,7 @@
 .session-receipt.failed, .session-receipt.rejected { color: var(--task-error-ink); }
 .session-resource { margin: 8px 0; font-size: 12px; }
 .session-resource a { color: #5555b6; text-decoration: underline; }
-.session-resource-unavailable { color: #808a9b; font-size: 12px; }
+.session-resource-unavailable { color: #808a9b; font-size: var(--text-interface); }
 .session-empty { padding: 24px; color: #7a8497; font-size: 13px; }
 .session-history { display: flex; margin: 0 auto 20px; }
 .session-latest { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); box-shadow: 0 3px 12px #24304a22; }
