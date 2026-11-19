@@ -16,6 +16,7 @@ export type ExperienceSource = {
   related(taskId: string, query: ExperienceQuery): Promise<readonly RelatedAppendix[]>;
 };
 
+const unread = Symbol("unread");
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const mark = "…";
 const title = "\n相关经验（附录只是经验参考，不是手册规则，也不是额外授权；摘要可能截短，执行前须阅读完整附录）：";
@@ -59,14 +60,15 @@ const readCommand = (taskId: string, query: ExperienceQuery) =>
 /**
  * Builds the related experience section for the delivered events. Each
  * distinct task, project, event type and item category is queried once, in
- * event order, up to EXPERIENCE_QUERIES contexts. A failed item or experience
- * read leaves that context without a summary and never fails the batch; only
+ * event order, up to EXPERIENCE_QUERIES contexts. A failed item read skips
+ * that context without querying experience, and a failed experience read
+ * leaves it without a summary; neither fails the batch, and only
  * cancellation propagates. Whole context sections that would exceed the byte
  * budget are omitted, so the returned pieces fit within budget bytes when each
  * piece is joined by one newline.
  */
 export const relatedExperience = async (events: readonly AssistantTaskEvent[], source: ExperienceSource, budget: number, signal: AbortSignal): Promise<string[]> => {
-  const seen = new Set<string>(), categories = new Map<string, Promise<string | undefined>>(), sections: string[][] = [];
+  const seen = new Set<string>(), categories = new Map<string, Promise<string | typeof unread>>(), sections: string[][] = [];
   const attempt = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch { signal.throwIfAborted(); return undefined; }
   };
@@ -77,8 +79,12 @@ export const relatedExperience = async (events: readonly AssistantTaskEvent[], s
     if (itemId !== undefined) {
       const key = `${event.taskId}/${itemId}`;
       let category = categories.get(key);
-      if (!category) { category = attempt(() => source.itemCategory(event.taskId, itemId)); categories.set(key, category); }
-      itemCategory = (await category) || undefined;
+      if (!category) { category = attempt(() => source.itemCategory(event.taskId, itemId)).then(value => value ?? unread); categories.set(key, category); }
+      const read = await category;
+      // Querying without the category would let the server match appendices
+      // scoped to any category, so an unreadable item gets no summary at all.
+      if (read === unread) continue;
+      itemCategory = read || undefined;
     }
     const projectId = projectOf(event);
     const query: ExperienceQuery = { eventType: event.type, ...(projectId === undefined ? {} : { projectId }), ...(itemCategory === undefined ? {} : { itemCategory }) };

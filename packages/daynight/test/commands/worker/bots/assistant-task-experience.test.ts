@@ -74,9 +74,10 @@ describe("related experience", () => {
       itemCategory: vi.fn<ExperienceSource["itemCategory"]>(async () => { throw new Error("item gone"); }),
       related: vi.fn<ExperienceSource["related"]>(async (_taskId, query) => { if (query.eventType === "update") throw new Error("server down"); return query.eventType === "trigger" ? [] : [{ id: id(40), text: "tip" }]; }),
     });
-    const pieces = await run([event(1, "update", null), event(2, "trigger", null), event(3, "retrospective", { itemId: item })], value);
-    expect(value.related).toHaveBeenCalledWith(assistantTask, { eventType: "retrospective" });
+    const pieces = await run([event(1, "update", null), event(2, "trigger", null), event(3, "retrospective", { itemId: item }), event(4, "comment", null)], value);
+    expect(value.related.mock.calls.map(([, query]) => query.eventType)).toEqual(["update", "trigger", "comment"]);
     expect(pieces.filter(piece => piece.startsWith("- 附录 "))).toEqual([`- 附录 ${id(40)}：tip`]);
+    expect(pieces.join("\n")).not.toContain("retrospective");
     expect(await run([event(1, "update", null)], source({ related: vi.fn<ExperienceSource["related"]>(async () => { throw new Error("down"); }) }))).toEqual([]);
   });
 
