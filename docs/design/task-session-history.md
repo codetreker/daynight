@@ -2,7 +2,7 @@
 
 ## 职责与入口
 
-本文的现有入口与原文读取机制保留原合同。服务端通过 `Daynight-Task-Body-History-Version: 1` 声明正文历史协议支持；生产方必须核对能力后使用正文格式。协议支持不改变旧 Controller 的保存策略，也不表示[正文保存与期限规格](../spec/task-session-history.md)中的 `taskHistoryDirectoryVersion=1` 或七天清理已启用。Bot 窗口使用独立的[近期历史能力](../spec/bot-session-view.md#近期历史窗口合同)，不复用 Task 的七天期限。
+本文的现有入口与原文读取机制保留原合同。服务端通过 `Daynight-Task-Body-History-Version: 1` 声明正文历史协议支持；生产方必须核对能力后使用正文格式。协议支持不改变旧 Controller 的保存策略。独立历史目录通过 `Daynight-Task-History-Directory-Version: 1` 声明[正文保存与期限规格](../spec/task-session-history.md)中的 `taskHistoryDirectoryVersion=1`。Bot 窗口使用独立的[近期历史能力](../spec/bot-session-view.md#近期历史窗口合同)，不复用 Task 的七天期限。
 
 `core/session` 拥有当前关联、历史目录、读取授权、Controller 内容请求及归档验证。`service/session.History` 根据共享 `Inspection` 的明确 Session 身份协调 live 或 archive 读取，并返回持有归档句柄的 `ReadResult`。HTTP 与 MCP 只解析输入、传递真实 principal、预算包络和输出结果；CLI 通过 HTTP 读取，不能访问 Worker 的文件。
 
@@ -54,7 +54,25 @@ service 的后台清理器在应用启动后扫描每页最多 32 个原 Session
 
 全部文件释放与资源记录回收确认后写入 `cleaned_at`，清除归档 bundle、文件、分块、迁移明细与旧内联时间线，保留原 Session、轻量归档和期限摘要及独立操作回执。物理删除失败或事务完成未知均保留过期屏障与未完成责任，重启后继续；已经过期的责任在 Task 或 Project 软删除后仍可完成。应用停止时先取消并排空清理器，再关闭其借用的文件存储与数据库。资源仍被独立引用时，其字节继续保留，不因归档过期删除。
 
-这些内部能力不声明 `taskHistoryDirectoryVersion=1`；归档文件 schema、正文策略能力和目录能力分别版本化，旧 `view=inspection` 响应保持原形状。期限摘要保存 `reason`、成员版本和时间，归档摘要保留原提交字节数；目录统计须区分逻辑内容量与实际文件占用。取舍见[期限持久化决策](../../.agents/notes/implemented/architecture/2026-11-19-task-archive-retention.md)及[清理决策](../../.agents/notes/implemented/architecture/2026-11-19-task-archive-cleanup.md)。
+归档文件 schema、正文策略能力和目录能力分别版本化，旧 `view=inspection` 响应保持原形状。期限摘要保存 `reason`、成员版本和时间，归档摘要保留原提交字节数；目录统计须区分逻辑内容量与实际文件占用。取舍见[期限持久化决策](../../.agents/notes/implemented/architecture/2026-11-19-task-archive-retention.md)及[清理决策](../../.agents/notes/implemented/architecture/2026-11-19-task-archive-cleanup.md)。
+
+### 分组历史目录
+
+以下独立 GET／HEAD 入口均返回 `version: 1`、精确十进制字符串 `graphVersion`、`items`、可空 `nextCursor` 和服务端 `observedAt`，并设置 `Cache-Control: no-store`。只接受 `limit`（默认 20，范围 1–200）与 `cursor`；新字段不加入旧 Session 目录。
+
+| 入口 | 内容与排序 |
+| --- | --- |
+| `/api/v1/projects/{projectId}/history-directory` | 当前普通依赖链及独立 Task；`scopeEndedAt` 倒序、未知和未结束项置后，同时间按 `groupId` 升序。 |
+| `/api/v1/projects/{projectId}/history-directory/{groupId}/members` | 组内成员，按 `taskId` 升序；无对应当前组时为空。 |
+| `/api/v1/projects/{projectId}/history-directory/tasks/{taskId}/sessions` | 原 Task 历次 Session，按创建时间与 Session UUID 倒序；不存在或不可见的 Task 不返回历史。 |
+
+组 ID 是当前普通依赖连通分量中的最小 UUID，不是持久资源；Goal、外部依赖、软删除成员不参与分组。组项保留 `kind=chain|task`、成员数及 `timeState=ended|unfinished|unknown`。成员项保留标题、状态、终态时间和时间状态。Session 项保留原 Session、claim、执行代次、内容类型、创建时间及 `currentBinding`；后继 claim 不改变原记录身份。Web Session 没有可靠的单次执行终止时间时，`endedAt` 保持 null。
+
+`GroupDirectory` 在同一只读 repeatable-read 快照内复查凭据与项目权限，调用 core 目录规则及 PostgreSQL DAO。当前 Task 权限继承项目；有效删除视图进一步排除失效资源。每页游标绑定账号、项目、入口、目标与目录事实摘要。摘要包含项目任务版本、原 Session 身份及目录可见归档事实，排除心跳；后续页事实变化返回 `reset_required`，客户端重新读取首屏。`graphVersion` 是该摘要的精确十进制表示，不是递增计数。每种展开独立分页，成员和 Session 不内嵌在组页。
+
+Session 页用同快照的当前完整链及首次归档、宽限和实际过期事实调用 `CalculateArchiveRetention`，不更新数据库或沿用缓存期限。`archiveState` 为 `pending|failed|ready|partial|expired`，`completeness` 保留缺口标记。`retentionState` 为 `waiting|unknown|scheduled|expired`，`reason` 区分未结束、时间缺失、待归档及已过期。`scopeEndedAt`、`firstArchivedAt`、`legacyGraceStartedAt`、`expiresAt` 和 `expiredAt` 保留真实时间或 null；宽限起点由持久化宽限下限减七天得到。只有 `expired_at` 已提交才显示 expired，超过候选期限不伪造删除完成。Herdr 保留终端录像类型，期限原因是 `not_applicable`，不套用 Web TTL。内容继续由原 Session 的既有读取入口授权并提供，此目录不搬运正文。
+
+组查询计算当前连通分量；成员及期限查询只遍历目标链。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
 
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 
