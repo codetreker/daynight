@@ -62,10 +62,12 @@ Preparation and execution steps are individually bounded; their declared
 maxima include cleanup and upload and remain below the job limit. Recovery
 preserves the original scenario and cleanup receipt instead of turning an
 interrupted run green. Artifact uploads include only results and logs.
-The Playwright process has a seven-minute bound within the existing journey
-step. The previous five-minute process limit expired on CI during the expanded
-sequential authentication journey, before the per-test deadline; the larger
-bound preserves the complete assertions and independent recovery deadline while
+The Playwright process has a ten-minute bound within the existing journey
+step. The original five-minute process limit expired on CI during the expanded
+sequential authentication journey, before the per-test deadline, and was raised
+to seven minutes. The assistant inbox journey then added up to two Worker
+assistant-task minute-loop waits (takeover and delivery), raising it to ten
+minutes. Each larger bound preserves the complete assertions and independent recovery deadline while
 leaving less normal cleanup time within the journey step at the process limit.
 The Redis container has no published port or persistent volume and is included
 in the exact owner-checked cleanup and absence proof. Existing receipts without
