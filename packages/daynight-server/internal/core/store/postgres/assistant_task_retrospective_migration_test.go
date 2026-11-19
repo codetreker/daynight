@@ -9,7 +9,7 @@ import (
 func TestAssistantTaskRetrospectiveMigrationStartsExistingTasksWithoutAWindow(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 101 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 102 })
 	if index < 1 {
 		t.Fatal("assistant task retrospective migration is missing")
 	}

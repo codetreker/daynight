@@ -54,6 +54,21 @@ func TestClosedTransactionRetainsDriverCauseAcrossAccessPatterns(t *testing.T) {
 		{"records", func() error { _, e := d.Records(ctx, q); return e }},
 		{"events", func() error { _, e := d.Events(ctx, q); return e }},
 		{"inquiries", func() error { _, e := d.Inquiries(ctx, q); return e }},
+		{"inbox_insert", func() error { _, e := d.InsertInbox(ctx, model.AssistantTaskInbox{InboxID: id}); return e }},
+		{"inbox_current", func() error { _, e := d.CurrentInbox(ctx, f.owner, f.task.ID); return e }},
+		{"inbox_identity", func() error { _, e := d.InboxIdentity(ctx, id); return e }},
+		{"inbox_lock", func() error { _, e := d.LockInbox(ctx, f.owner, f.task.ID, id); return e }},
+		{"inbox_save", func() error { _, e := d.SaveInbox(ctx, model.AssistantTaskInbox{InboxID: id}, 1); return e }},
+		{"inbox_suppressed", func() error { _, e := d.AddInboxSuppressed(ctx, f.owner, f.task.ID, id); return e }},
+		{"receipt", func() error { _, e := d.InboxReceipt(ctx, f.owner, id, "key"); return e }},
+		{"receipt_insert", func() error {
+			_, e := d.InsertInboxReceipt(ctx, model.AssistantTaskInboxReceipt{InboxID: id})
+			return e
+		}},
+		{"pending_inbound", func() error { _, e := d.PendingInboundEvents(ctx, f.owner, f.task.ID, id, 1); return e }},
+		{"received_inbound", func() error { _, e := d.ReceivedInbound(ctx, f.owner, id, id, time.Time{}); return e }},
+		{"receipt_reclaim", func() error { _, e := d.ReclaimInboxReceipts(ctx, f.owner, f.task.ID, 1); return e }},
+		{"event_reclaim", func() error { _, e := d.ReclaimInboundEvents(ctx, f.owner, f.task.ID, time.Time{}, 1); return e }},
 		{"record_insert", func() error {
 			_, e := d.InsertRecord(ctx, model.AssistantTaskRecord{OwnerUserID: f.owner, TaskID: f.task.ID})
 			return e

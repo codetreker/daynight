@@ -1,4 +1,4 @@
--- Schema snapshot version: 101
+-- Schema snapshot version: 102
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -51,7 +51,36 @@ CREATE TABLE "assistant_task_events" (
     "seen_at" timestamp with time zone,
     "ack_operation_id" "uuid",
     "ack_fingerprint" "text",
-    "created_at" timestamp with time zone NOT NULL
+    "created_at" timestamp with time zone NOT NULL,
+    "settled_at" timestamp with time zone
+);
+
+CREATE TABLE "assistant_task_inbox_receipts" (
+    "inbox_id" "uuid" NOT NULL,
+    "idempotency_key" "text" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "body_sha256" "text" NOT NULL,
+    "event_id" "uuid",
+    "suppressed" boolean NOT NULL,
+    "target_bot_id" "uuid" NOT NULL,
+    "subject_task_id" "uuid",
+    "received_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_inboxes" (
+    "inbox_id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "state" "text" NOT NULL,
+    "token_digest" "text",
+    "overlap_token_digest" "text",
+    "overlap_until" timestamp with time zone,
+    "suppressed_count" bigint NOT NULL,
+    "version" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "rotated_at" timestamp with time zone
 );
 
 CREATE TABLE "assistant_task_inquiries" (
@@ -207,6 +236,24 @@ CREATE TABLE "bot_model_preferences" (
     CONSTRAINT "bot_model_preferences_creation_order_check" CHECK (("creation_order" > 0)),
     CONSTRAINT "bot_model_preferences_model_check" CHECK ((("octet_length"("model") >= 1) AND ("octet_length"("model") <= 256))),
     CONSTRAINT "bot_model_preferences_provider_check" CHECK (("provider" = ANY (ARRAY['codex'::"text", 'claude'::"text", 'copilot'::"text"])))
+);
+
+CREATE TABLE "bot_recovery" (
+    "bot_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "service_origin" "text" NOT NULL,
+    "machine_id" "text" NOT NULL,
+    "machine_name" "text" NOT NULL,
+    "identity_hash" "bytea" NOT NULL,
+    "hosting_generation" bigint NOT NULL
+);
+
+CREATE TABLE "bot_recovery_operations" (
+    "bot_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "request_hash" "bytea" NOT NULL,
+    "receipt" "jsonb" NOT NULL
 );
 
 CREATE TABLE "bot_worker_preferences" (
@@ -1625,6 +1672,12 @@ ALTER TABLE ONLY "assistant_task_claim_operations"
 ALTER TABLE ONLY "assistant_task_events"
     ADD CONSTRAINT "assistant_task_events_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "assistant_task_inbox_receipts"
+    ADD CONSTRAINT "assistant_task_inbox_receipts_pkey" PRIMARY KEY ("inbox_id", "idempotency_key");
+
+ALTER TABLE ONLY "assistant_task_inboxes"
+    ADD CONSTRAINT "assistant_task_inboxes_pkey" PRIMARY KEY ("inbox_id");
+
 ALTER TABLE ONLY "assistant_task_inquiries"
     ADD CONSTRAINT "assistant_task_inquiries_pkey" PRIMARY KEY ("id");
 
@@ -1654,6 +1707,12 @@ ALTER TABLE ONLY "bot_effort_preferences"
 
 ALTER TABLE ONLY "bot_model_preferences"
     ADD CONSTRAINT "bot_model_preferences_pkey" PRIMARY KEY ("user_id", "worker_id", "provider");
+
+ALTER TABLE ONLY "bot_recovery_operations"
+    ADD CONSTRAINT "bot_recovery_operations_pkey" PRIMARY KEY ("bot_id", "operation_id");
+
+ALTER TABLE ONLY "bot_recovery"
+    ADD CONSTRAINT "bot_recovery_pkey" PRIMARY KEY ("bot_id");
 
 ALTER TABLE ONLY "bot_worker_preferences"
     ADD CONSTRAINT "bot_worker_preferences_pkey" PRIMARY KEY ("user_id");
@@ -2008,9 +2067,17 @@ ALTER TABLE ONLY "workers"
 
 CREATE INDEX "assistant_task_appendix_page" ON "assistant_task_appendix" USING "btree" ("task_id", "created_at", "id");
 
+CREATE INDEX "assistant_task_events_inbound_settled" ON "assistant_task_events" USING "btree" ("task_id", "settled_at") WHERE (("type" = 'inbound'::"text") AND ("state" = ANY (ARRAY['delivered'::"text", 'expired'::"text"])));
+
 CREATE INDEX "assistant_task_events_page" ON "assistant_task_events" USING "btree" ("task_id", "created_at", "id");
 
 CREATE INDEX "assistant_task_events_target_state" ON "assistant_task_events" USING "btree" ("target_bot_id", "state");
+
+CREATE INDEX "assistant_task_inbox_receipts_expiry" ON "assistant_task_inbox_receipts" USING "btree" ("task_id", "expires_at");
+
+CREATE INDEX "assistant_task_inbox_receipts_wake" ON "assistant_task_inbox_receipts" USING "btree" ("target_bot_id", "subject_task_id", "received_at");
+
+CREATE UNIQUE INDEX "assistant_task_inboxes_live" ON "assistant_task_inboxes" USING "btree" ("task_id") WHERE ("state" = 'enabled'::"text");
 
 CREATE INDEX "assistant_task_inquiries_page" ON "assistant_task_inquiries" USING "btree" ("task_id", "created_at", "id");
 
@@ -2031,6 +2098,8 @@ CREATE INDEX "assistant_tasks_holder" ON "assistant_tasks" USING "btree" ("holde
 CREATE UNIQUE INDEX "assistant_tasks_owner_application" ON "assistant_tasks" USING "btree" ("owner_user_id", "application") WHERE (("application" <> ''::"text") AND ("state" <> 'deleted'::"text"));
 
 CREATE INDEX "assistant_tasks_owner_page" ON "assistant_tasks" USING "btree" ("owner_user_id", "created_at", "id");
+
+CREATE INDEX "bot_recovery_operation_tokens" ON "bot_recovery_operations" USING "btree" ("bot_id", (("receipt" ->> 'controllerTokenHash'::"text")));
 
 CREATE INDEX "bots_owner_list" ON "bots" USING "btree" ("owner_user_id", "created_at", "id") WHERE ("deletion" IS NULL);
 

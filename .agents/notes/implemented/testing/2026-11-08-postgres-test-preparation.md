@@ -141,6 +141,12 @@ transactions see the missing names, missing policy row, or insert trigger.
 Each case restores the original catalog and policy row, verifies that no
 endpoint or signing key survived, and stops reuse on failure.
 
+The [Session Archive Cleanup fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/session/archive_cleanup_test.go)
+shares one Store across five cases with separate Projects, Tasks, Sessions,
+and archive paths. The actual stage-specific triggers preserve the native
+rollback witnesses. Each case checks retained ownership, then removes the
+trigger and function and verifies their absence before reuse.
+
 [Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_boundaries_test.go)
 share one committed Session for the descriptor, missing relations and canceled
 read. The read-only inventory transaction observes committed faults. Cleanup
@@ -230,6 +236,20 @@ Project row holder blocks the second write until the first commits. The test
 checks both completion receipts and the committed deletion, attachment and
 Task version facts. Each case joins its writer and verifies pool reuse before
 the next case; failure stops reuse.
+
+The [Task deletion and incoming write matrix](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
+shares one Store across separate Project and Task identities. Each pair
+waits behind the real Project transaction before either writer can
+proceed. The shared race fixture drains both writers, then the case
+checks the pool and the durable deletion, edge, and version outcomes.
+
+The [Worker Claim configuration admission matrices](../../../../packages/daynight-server/internal/core/store/postgres/worker/claim_admission_test.go)
+share one Store per parent. Each case owns a distinct Worker and owner
+because first-report admission locks the owner across the database.
+The cases observe the exact Worker row or owner advisory lock and keep
+the original commit, rollback, and cancellation results. A waiter exits
+before its transaction is cleaned up, and the parent checks pool reuse
+before starting another case.
 
 The [Thread expiry and exact-message matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_thread_witnesses_test.go)
 use one Store per parent with independent Project, Task, author, and

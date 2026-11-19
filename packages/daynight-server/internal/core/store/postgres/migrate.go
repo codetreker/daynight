@@ -291,6 +291,12 @@ var projectRepositoryVersionSQL string
 //go:embed schema/migrations/096_pr_review_assignment.sql
 var prReviewAssignmentSQL string
 
+//go:embed schema/migrations/099_assistant_task_inboxes.sql
+var assistantTaskInboxesSQL string
+
+//go:embed schema/migrations/100_bot_recovery.sql
+var botRecoverySQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -307,10 +313,10 @@ var webhookEventActorSQL string
 //go:embed schema/migrations/098_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
-//go:embed schema/migrations/100_assistant_task_item_lifecycle.sql
+//go:embed schema/migrations/101_assistant_task_item_lifecycle.sql
 var assistantTaskItemLifecycleSQL string
 
-//go:embed schema/migrations/101_assistant_task_retrospectives.sql
+//go:embed schema/migrations/102_assistant_task_retrospectives.sql
 var assistantTaskRetrospectivesSQL string
 
 type migration struct {
@@ -417,8 +423,10 @@ var schemaMigrations = []migration{
 	{version: 96, sql: prReviewAssignmentSQL},
 	{version: 97, sql: webhookEventActorSQL},
 	{version: 98, sql: assistantTaskOutcomesSQL},
-	{version: 100, sql: assistantTaskItemLifecycleSQL},
-	{version: 101, sql: assistantTaskRetrospectivesSQL},
+	{version: 99, sql: assistantTaskInboxesSQL},
+	{version: 100, sql: botRecoverySQL},
+	{version: 101, sql: assistantTaskItemLifecycleSQL},
+	{version: 102, sql: assistantTaskRetrospectivesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

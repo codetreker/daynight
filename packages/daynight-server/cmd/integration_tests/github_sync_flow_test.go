@@ -299,6 +299,11 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `DROP TABLE project_pr_review_assignments`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_inbox_receipts, assistant_task_inboxes;
+			DROP INDEX assistant_task_events_inbound_settled;
+			ALTER TABLE assistant_task_events DROP COLUMN settled_at`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version, DROP COLUMN review_enabled, DROP COLUMN review_version`); err != nil {
 			t.Fatal(err)
 		}
@@ -332,6 +337,9 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE task_dependencies DROP COLUMN dependency_type, DROP COLUMN goal_edge_id`); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `DROP TABLE bot_recovery_operations, bot_recovery`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_task_records DROP COLUMN outcome, DROP COLUMN action_record_id`); err != nil {
 			t.Fatal(err)
 		}
@@ -344,7 +352,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE assistant_tasks DROP COLUMN last_retrospective_at`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,100,101)`); err != nil || result.RowsAffected() != 22 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102)`); err != nil || result.RowsAffected() != 24 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

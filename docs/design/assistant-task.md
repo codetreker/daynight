@@ -14,26 +14,28 @@
 
 ## 存储与事务
 
-迁移 `071_assistant_tasks.sql` 增加下列独立资源；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
+迁移 `071_assistant_tasks.sql` 增加下列独立资源，`099_assistant_task_inboxes.sql` 增加收件箱的两张表与入站事件结算时间；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
 
 | 表 | 持久职责 |
 | --- | --- |
-| `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头；迁移 `101_assistant_task_retrospectives.sql` 增加可空的上次周期复盘时间，既有行为空 |
+| `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头；迁移 `102_assistant_task_retrospectives.sql` 增加可空的上次周期复盘时间，既有行为空 |
 | `assistant_task_claim_operations` | `(owner_user_id, task_id, operation_id)` 唯一的成功认领操作回执 |
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
 | `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
-| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本；迁移 `100_assistant_task_item_lifecycle.sql` 增加可空的本次打开时间与最近关闭时间，既有行两者为空 |
-| `assistant_task_item_closures` | 迁移 `100_assistant_task_item_lifecycle.sql` 新增的只追加关闭登记：事项 ID、episode、本次打开时间（可空）与关闭时间 |
+| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本；迁移 `101_assistant_task_item_lifecycle.sql` 增加可空的本次打开时间与最近关闭时间，既有行两者为空 |
+| `assistant_task_item_closures` | 迁移 `101_assistant_task_item_lifecycle.sql` 新增的只追加关闭登记：事项 ID、episode、本次打开时间（可空）与关闭时间 |
 | `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `098_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
 | `assistant_task_events` | 目标 Bot、负载、投递与关注状态、确认操作身份 |
 | `assistant_task_inquiries` | 双方 Bot、问题与回答、状态和固定截止时间 |
+| `assistant_task_inboxes` | 任务的收件箱及其墓碑：令牌摘要、重叠期限、抑制计数与版本，见[收件箱设计](assistant-task-inbox.md#存储) |
+| `assistant_task_inbox_receipts` | `(inbox_id, idempotency_key)` 唯一的接收回执，服务幂等、相互唤醒判断与过期回收，见[收件箱设计](assistant-task-inbox.md#存储) |
 
 非空应用标识在同一用户的未删除任务中唯一。事项在同一任务内以打开状态的应用键唯一；通用模块不推导 episode 或异常复发策略。索引分别服务 owner 任务分页、任务材料分页、事项记录分页、目标 Bot 待投递事件和到期问答查询。查询先在数据库中执行筛选、排序及 `limit+1`，core 生成绑定 owner、任务、资源种类和筛选条件的游标，每页最多 200 项。
 
 `WriteAssistantTask` 使用 ReadCommitted 事务。凭据共享锁保护撤销交错，Bot 共享锁保护删除交错。任务行是同一任务材料和认领变更的共同互斥范围：仅对单个子资源做 CAS 无法同时保护暂停、删除、手册基准、租约和事项转移。core 在该范围中重读并决定，DAO 仍以明确版本和认领条件执行实际写入，零命中返回冲突。锁等待接受请求取消与 deadline。
 
-创建尚无任务行可锁，因此使用按规范 task ID 命名的事务 advisory lock，覆盖初版手册、创建指纹读取和插入。插入继续使用 `ON CONFLICT DO NOTHING` 保护 ID 及应用唯一性。相同请求身份返回原定义，不同内容或已删除身份不重新创建。任务删除保留最小 tombstone，以阻止旧身份恢复；业务材料和操作回执在同一事务中删除。
+创建尚无任务行可锁，因此使用按规范 task ID 命名的事务 advisory lock，覆盖初版手册、创建指纹读取和插入。插入继续使用 `ON CONFLICT DO NOTHING` 保护 ID 及应用唯一性。相同请求身份返回原定义，不同内容或已删除身份不重新创建。任务删除保留最小 tombstone，以阻止旧身份恢复；业务材料、操作回执和收件箱接收回执在同一事务中删除，收件箱转为不含令牌摘要的墓碑。
 
 时间由数据库提供。受保护写入在锁等待后取当前时间，最终返回事务 callback 前再次核验凭据、相关 Bot 和原租约期限；不能用事务起点 `now()` 证明等待后的有效性。认领回执中的 `admittedAt` 是事务内准入时间，不是 COMMIT 时间。公开任务观测的时间与 holder 删除状态来自同次数据库投影，不能给旧数据附上一次较新的时间读取。
 
