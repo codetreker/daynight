@@ -77,8 +77,11 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `records` | GET 可按事项分页；POST 有明确作者的追加记录 |
 | `events, events/{id}/ack` | GET 可按目标和状态分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
 | `inquiries, inquiries/{id}/answer` | GET 列表；POST Bot 提问；POST 负责目标 Bot 回答 |
+| `inbox` | GET 收件箱状态：`inboxId,enabled,createdAt,rotatedAt,overlapUntil,suppressedCount`，未开启时 `inboxId` 与时间为 `null`；不返回令牌或摘要，用户与已核验 Bot 均可读取 |
+| `inbox/enable, inbox/rotate, inbox/disable` | POST 用户管理，请求为 `operationId,ifVersion`，轮换另需 `mode`（`overlap` 或 `immediate`）；返回 `operation` 回执与 `inbox`，开启与轮换另返回 `token`，只有实际生成令牌的请求为字符串，重放为 `null` |
+| `inbox-operations/{id}` | GET 用户核对收件箱管理操作的原回执及当前 `inbox`，不返回令牌 |
 
-跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。
+跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。收件箱管理与回执读取在解析请求体之前拒绝 `X-Daynight-Bot-Id`，返回 403 `forbidden`，请求不进入 service。
 
 ## 验证责任
 
