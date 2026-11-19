@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	monitoringredis "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/assistanttask"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	githubservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -51,6 +52,7 @@ type App struct {
 	Web                  *webresources.Resources
 	Ready                func(context.Context) error
 	Webhooks             *webhook.Service
+	AssistantTaskInbox   *assistanttask.Inbox
 	webhookRuntime       *webhookRuntime
 	githubRuntime        *githubRuntime
 	archiveCleanup       *sessionservice.ArchiveCleanupRunner
@@ -112,6 +114,9 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
+	if inbound, ok := database.(store.AssistantTaskInboundWriter); ok {
+		app.AssistantTaskInbox = assistanttask.NewInbox(inbound, c.Server.PublicOrigin)
+	}
 	app.Usage, app.UsageError = usageapp.FromEnvironment(database, c.S2S.SharedKey)
 	app.closeLock <- struct{}{}
 	app.DirectMembers = team.NewDirectMembers(database, app.Identity.EnsureUser, c.Server.PublicOrigin+"/api/v1")

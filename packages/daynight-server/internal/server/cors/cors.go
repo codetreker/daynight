@@ -82,7 +82,8 @@ func userREST(path string, nativePaths []string) bool {
 			return false
 		}
 	}
-	for _, prefix := range []string{"/api/v1/oauth/requests/", "/api/v1/oauth/s2s/", "/api/v1/controller-resources/"} {
+	// The public assistant task inbox accepts server-to-server requests only.
+	for _, prefix := range []string{"/api/v1/oauth/requests/", "/api/v1/oauth/s2s/", "/api/v1/controller-resources/", "/api/v1/assistant-task-inbox/"} {
 		if strings.HasPrefix(path, prefix) {
 			return false
 		}
