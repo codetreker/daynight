@@ -15,14 +15,16 @@ The Web entry stylesheet loads six shared `rem` roles defined in
 The browser sets the root size and the body uses the interface role as its
 baseline. The shared shell, selection controls, task filters, task rows,
 personal task groups, Goal summaries, task search, Markdown reading surfaces,
-Worker pages and configuration, Worker Prompt editors, usage panels, and project
-settings use semantic roles at all viewport widths. Selection text retains the
+Worker pages and configuration, Worker Prompt editors, usage panels, project
+settings, and Session controls and timeline details use semantic roles at all viewport widths. Selection text retains the
 existing touch conditions and a 16 CSS px minimum; count badges use the metadata
 role. Markdown code and tables use the interface role; Bot first-paragraph
 emphasis retains its weight without a separate size. The
 [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses and
 sizes. Touch fields use the shared `--text-touch-field` size to preserve a 16 CSS
-px minimum while responding to larger browser font preferences.
+px minimum while responding to larger browser font preferences. Terminal recordings
+use a shared `--text-terminal` base, multiplied by their independent zoom scale;
+reading-role changes do not affect terminal output.
 
 Business states, errors, controls, tool paths, and code use the interface role;
 IDs, times, versions, and secondary counts use metadata. Feature-owned form

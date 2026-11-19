@@ -220,6 +220,14 @@ test('terminal recording native zoom Escape cancels before leaving fullscreen', 
   const toggle = page.locator('.session-fullscreen-toggle');
   await toggle.click();
   const zoom = page.locator('.terminal-recording-summary select');
+  const terminal = page.locator('.terminal-text');
+  await expect(terminal).toHaveCSS('font-size', '12px');
+  await zoom.selectOption('125');
+  await expect(terminal).toHaveCSS('font-size', '15px');
+  await page.evaluate(() => document.documentElement.style.setProperty('--text-reading', '2rem'));
+  await expect(terminal).toHaveCSS('font-size', '15px');
+  await zoom.selectOption('100');
+  await expect(terminal).toHaveCSS('font-size', '12px');
   await zoom.selectOption('125');
   await expect(zoom.locator('..')).toHaveAttribute('data-density', 'filter');
   expect(await zoom.evaluate(node => node.getBoundingClientRect().height)).toBe(32);

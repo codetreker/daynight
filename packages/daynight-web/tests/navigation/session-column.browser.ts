@@ -432,3 +432,26 @@ for (const entry of ['task', 'assistant'] as const) test(`${entry} timeline nati
   expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
   await info.attach('native-interaction-cancel', { body: JSON.stringify({ entry, nativePopupObserved: true, firstEscapeRetainsFullscreen: true, secondEscapeRestoresFocus: true, multiple: ['feature-1', 'feature-3'], flag: false }), contentType: 'application/json' });
 });
+
+for (const entry of ['task', 'assistant'] as const) test(`${entry} composer follows interface and touch typography without losing its draft`, async ({ browser }) => {
+  for (const touch of [false, true]) {
+    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width: 320, height: 900 }, hasTouch: touch });
+    try {
+      const page = await context.newPage();
+      const { observations } = await open(page, 'zh-CN', 'working', entry, 'long');
+      const input = page.locator('.session-composer textarea');
+      await input.fill('保留草稿 Retained draft');
+      await expect(input).toHaveCSS('font-size', touch ? '16px' : '14px');
+      await expect(page.locator('.session-control-trigger').first()).toHaveCSS('font-size', '14px');
+      await page.locator('.session-model-trigger').click();
+      await expect(page.locator('.session-control-setting label').first()).toHaveCSS('font-size', '14px');
+      await expect(page.locator('.session-controls-foot small')).toHaveCSS('font-size', '14px');
+      await page.evaluate(() => document.documentElement.style.fontSize = '20px');
+      await expect(input).toHaveCSS('font-size', touch ? '20px' : '17.5px');
+      await expect(page.locator('.session-control-trigger').first()).toHaveCSS('font-size', '17.5px');
+      await expect(input).toHaveValue('保留草稿 Retained draft');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+    } finally { await context.close(); }
+  }
+});

@@ -272,10 +272,15 @@ for (const locale of ['en', 'zh-CN']) for (const width of [1280, 320]) for (cons
     for (const [status, role] of Object.entries(statuses)) {
       const tool = page.locator(`.session-tool-${status}`);
       await expect(tool.locator('.session-tool-status')).toHaveCSS('color', roleColors[role][3]);
+      await expect(tool.locator('.session-tool-name')).toHaveCSS('font-size', '14px');
+      await expect(tool.locator('.session-tool-summary')).toHaveCSS('font-size', '14px');
+      await expect(tool.locator('.session-tool-status')).toHaveCSS('font-size', '14px');
       await expectTextContrast(tool.locator('.session-tool-status'));
       await expectTextContrast(tool.locator('.session-tool-summary'));
       await tool.locator('summary').click();
       await expect(tool.locator('.session-tool-input')).toHaveText('{}');
+      await expect(tool.locator('h5').first()).toHaveCSS('font-size', '14px');
+      await expect(tool.locator('.session-tool-input')).toHaveCSS('font-size', '14px');
     }
     await expectTextContrast(health);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

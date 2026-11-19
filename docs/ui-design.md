@@ -30,7 +30,7 @@ controls and lists should use 1.5. Keep roles consistent across viewport widths:
 wrap, rearrange, or scroll content instead of shrinking text. Preserve existing
 touch target dimensions and the 16 CSS px minimum on touch fields and task
 filters through the shared `--text-touch-field` size (`max(1rem, 16px)`).
-Terminal text retains independent scaling; external diagrams retain
+Terminal text uses `--text-terminal` (12px at a 16px root) as its base and retains independent scaling; external diagrams retain
 their own rendering boundary. Any necessary first-party special size belongs
 in the shared definitions with its reason.
 
