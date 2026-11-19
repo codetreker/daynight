@@ -239,6 +239,75 @@ test("compacted native calls still retain their external thread dependency", asy
   await expect(storage.protect(input())).rejects.toMatchObject({ code: "recovery_material_invalid", retryable: false });
 });
 
+test.each([
+  { cell_id: "3", yield_time_ms: 1000, max_tokens: 18000 },
+  { cell_id: "4" },
+  { cell_id: "4", terminate: false, yield_time_ms: 0, max_tokens: 0 },
+  { cell_id: "4", terminate: true },
+])("completed cell wait protects and restores the original bytes: %j", async args => {
+  const storage = await protect(); await storage.markDirty();
+  const records = [
+    { type: "event_msg", payload: { type: "task_started", turn_id: "cell-turn" } },
+    { type: "response_item", payload: { type: "function_call", name: "wait", call_id: "cell-call", arguments: JSON.stringify(args) } },
+    { type: "response_item", payload: { type: "function_call_output", call_id: "cell-call", output: "Script completed" } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: "cell-turn" } },
+  ];
+  await appendFile(source, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  await storage.protect(input("cell-turn"));
+  expect(await manifest()).toMatchObject({ dirty: false, point: { nativeSessionId, protectedThroughTurn: "cell-turn" } });
+  const bytes = await readFile(source);
+  const resumed = new CodexBotRecovery(options), active = await resumed.prepare(nativeSessionId, providerVersion);
+  expect(await readFile(active!)).toEqual(bytes);
+  expect(resumed.protectedThroughTurn).toBe("cell-turn");
+  expect((await manifest()).dirty).toBe(true);
+});
+
+test("compacted cell waits remain restorable without treating returned JSON as calls", async () => {
+  const storage = await protect(); await storage.markDirty();
+  await appendFile(source, JSON.stringify({ type: "compacted", payload: { replacement_history: [
+    { type: "function_call", name: "wait", arguments: '{"cell_id":"3"}' },
+    { type: "function_call_output", output: '{"type":"function_call","name":"wait","arguments":"broken"}' },
+  ] } }) + "\n");
+  await storage.protect(input());
+  const active = await new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion);
+  expect(await readFile(active!)).toEqual(await readFile(source));
+});
+
+test.each([
+  { name: "wait", arguments: '{"ids":["another-agent"]}' },
+  { name: "wait", arguments: '{"cell_id":"3","ids":["another-agent"]}' },
+  { name: "wait", arguments: '{"cell_id":"3","agent_id":"another-agent"}' },
+  { name: "wait", arguments: '{"cell_id":"3","unknown":true}' },
+  { name: "wait", arguments: '{"cell_id":"3"' },
+  { name: "wait", arguments: '[]' },
+  { name: "wait", arguments: 'null' },
+  { name: "wait", arguments: '{}' },
+  { name: "wait", arguments: '{"cell_id":3}' },
+  { name: "wait", arguments: '{"cell_id":" "}' },
+  { name: "wait", arguments: '{"cell_id":"3","yield_time_ms":-1}' },
+  { name: "wait", arguments: '{"cell_id":"3","yield_time_ms":1.5}' },
+  { name: "wait", arguments: '{"cell_id":"3","max_tokens":"1000"}' },
+  { name: "wait", arguments: '{"cell_id":"3","max_tokens":1e100}' },
+  { name: "wait", arguments: '{"cell_id":"3","terminate":null}' },
+  { name: "wait", arguments: { cell_id: "3" } },
+  { name: "functions.wait", arguments: '{"cell_id":"3"}' },
+  { name: "agents.wait", arguments: '{"cell_id":"3"}' },
+  { name: "agents:wait", arguments: '{"cell_id":"3"}' },
+  { name: "spawn_agent", arguments: '{"cell_id":"3"}' },
+  { name: "send_input", arguments: '{"cell_id":"3"}' },
+  { name: "resume_agent", arguments: '{"cell_id":"3"}' },
+  { name: "close_agent", arguments: '{"cell_id":"3"}' },
+  { type: "custom_tool_call", name: "wait", arguments: '{"cell_id":"3"}' },
+  { type: "tool_call", name: "wait", arguments: '{"cell_id":"3"}' },
+])("unverified wait calls preserve the dirty barrier and previous point: %j", async call => {
+  const storage = await protect(), previous = await manifest(); await storage.markDirty();
+  await appendFile(source, JSON.stringify({ type: "response_item", payload: { type: "function_call", ...call } }) + "\n");
+  await expect(storage.protect(input())).rejects.toMatchObject({ code: "recovery_material_invalid", retryable: false });
+  expect((await manifest()).point).toEqual(previous.point);
+  expect((await manifest()).dirty).toBe(true);
+  await expect(new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown" });
+});
+
 test("capture preserves complete UTF-8 records spanning multiple IO chunks", async () => {
   const storage = await protect();
   await appendFile(source, JSON.stringify({ type: "response_item", payload: { type: "message", content: [{ type: "output_text", text: "中文🌙".repeat(14_000) }] } }) + "\n");
