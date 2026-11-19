@@ -7,6 +7,7 @@ import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TES
 import { stringifyWireJson } from '../helpers/wireJson';
 import { unsupportedSessionObservation } from '../../../daynight/src/api/task-observation';
 import { TEST_PROFILE_VERSION } from '../helpers/taskSync';
+import { usageMetricKeys } from '../../src/api/usage';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
@@ -815,3 +816,92 @@ test('service-unsupported usage precedes the status in the narrow standalone row
       document.documentElement.scrollWidth <= innerWidth;
   })).toBe(true);
 });
+
+for (const entry of ['dialog', 'page'] as const) for (const width of [320, 1280]) {
+  test(`task detail keeps usage inside its tab in ${entry} at ${width}px`, async ({ page }, info) => {
+    const zh = width === 320;
+    const labels = {
+      usage: zh ? '用量' : 'Usage', overview: zh ? '概览' : 'Overview',
+      loading: zh ? '读取用量…' : 'Loading usage…',
+      empty: zh ? '暂无计量记录；未知不代表零。' : 'No measurements; unknown does not mean zero.',
+      error: zh ? '用量暂不可用' : 'Usage unavailable',
+      unsupported: zh ? '此服务不支持用量查询' : 'This service does not support usage',
+    };
+    type UsageState = 'loading' | 'data' | 'empty' | 'error' | 'unsupported';
+    let usageState: UsageState = 'loading';
+    const loading = Promise.withResolvers<void>();
+    await install(page);
+    await page.route(/\/api\/(usage\/v1\/capabilities|projects\/.*\/usage\/v1\/)/, async route => {
+      const request = route.request(), path = new URL(request.url()).pathname;
+      const state = usageState;
+      const send = (body: unknown, status = 200) => route.fulfill({ status, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+      if (state === 'loading') await loading.promise;
+      if (path.endsWith('/capabilities')) return state === 'unsupported' ? send({}, 404) : send({ protocol: 'daynight.usage.v1' });
+      if (state === 'error') return send({ error: { code: 'internal_error', requestId: 'usage-detail' } }, 503);
+      if (state === 'unsupported') return send({ error: { code: 'usage_unsupported', requestId: 'usage-detail' } }, 404);
+      if (path.endsWith('/task-summaries')) {
+        const { taskIds } = request.postDataJSON() as { taskIds: string[] };
+        const summary = {
+          metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: state === 'empty' ? null : '12345', contributingRecords: state === 'empty' ? '0' : '1', unknownRecords: '0' }])),
+          scope: 'registered_web_executions', completeness: state === 'empty' ? 'no_data' : 'complete', reasonCodes: [],
+          coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '1', partialExecutions: '0', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' },
+          measurementRecords: state === 'empty' ? '0' : '1', lastMeasuredAt: state === 'empty' ? null : time, observedAt: time, etag: 'detail-usage',
+        };
+        return send({ items: taskIds.map(id => ({ taskId: id, summary })) });
+      }
+      if (path.endsWith('/records')) return send({ items: [], nextCursor: null, snapshotToken: 'detail-usage', observedAt: time });
+      throw new Error(`Unexpected usage request ${request.method()} ${path}`);
+    });
+    await page.setViewportSize({ width, height: 900 });
+    const surface = page.locator(entry === 'dialog' ? '.task-detail-dialog' : '.task-detail-page');
+    const heading = surface.locator('.task-detail-heading');
+    const usage = surface.getByRole('tab', { name: labels.usage, exact: true });
+    const overview = surface.getByRole('tab', { name: labels.overview, exact: true });
+    const panel = surface.locator('.task-detail-panel-usage');
+    const open = async (deepLink: boolean) => {
+      if (entry === 'page') await page.goto(`/projects/${projectId}/tasks/${taskId}${deepLink ? '?tab=usage' : ''}`);
+      else {
+        await page.goto(`/projects/${projectId}`);
+        await page.locator('#project-section-tab-tasks').click();
+        await page.getByRole('tab', { name: zh ? '独立任务' : 'Standalone tasks' }).click();
+        await page.locator(`#standalone-task-${taskId}`).click();
+      }
+      await expect(heading.locator('.task-detail-status-row')).toBeVisible();
+      await expect(heading.locator('.task-usage-summary, .usage-summary, .usage-error')).toHaveCount(0);
+      await expect(heading.locator(':scope > *')).toHaveCount(1);
+      if (deepLink && entry === 'page') await expect(usage).toHaveAttribute('aria-selected', 'true');
+      await overview.click();
+      await usage.click();
+      await expect(panel).toBeVisible();
+      await usage.press('Home');
+      await expect(overview).toBeFocused();
+      await overview.press('End');
+      await expect(usage).toBeFocused();
+      await expect(usage).toHaveAttribute('aria-selected', 'true');
+    };
+    const layout = () => heading.evaluate(element => {
+      const status = element.querySelector('.task-detail-status-row')!.getBoundingClientRect();
+      const box = element.getBoundingClientRect();
+      const tabs = element.parentElement!.querySelector('.task-detail-tabs')!.getBoundingClientRect();
+      return { headerHeight: box.height, belowControls: Math.abs(box.bottom - status.bottom) < 1, tabsBelow: tabs.top >= box.bottom, controlsInside: status.left >= box.left && status.right <= box.right, noPageOverflow: document.documentElement.scrollWidth <= innerWidth };
+    });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(zh ? 'zh-CN' : 'en');
+    try {
+      await open(false);
+      await expect(panel.getByText(labels.loading, { exact: true }).first()).toBeVisible();
+      const initial = await layout();
+      expect(initial).toMatchObject({ belowControls: true, tabsBelow: true, controlsInside: true, noPageOverflow: true });
+      usageState = 'data'; loading.resolve();
+      await expect(panel.locator('.usage-metrics dd').first()).toHaveText('12,345');
+      for (const state of ['data', 'empty', 'error', 'unsupported'] as const) {
+        usageState = state;
+        await open(entry === 'page');
+        if (state === 'data') await expect(panel.locator('.usage-metrics dd').first()).toHaveText('12,345');
+        else await expect(panel.getByText(labels[state], { exact: true }).first()).toBeVisible();
+        expect(await layout()).toEqual(initial);
+        await page.screenshot({ path: info.outputPath(`${entry}-${width}-${state}.png`) });
+      }
+    } finally { loading.resolve(); }
+  });
+}
