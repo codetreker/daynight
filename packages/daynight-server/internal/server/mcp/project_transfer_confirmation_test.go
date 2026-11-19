@@ -11,7 +11,6 @@ import (
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type transferConfirmationOperations struct {
