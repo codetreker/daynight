@@ -21,6 +21,15 @@ or trusting cached deadlines. An expired tombstone remains authoritative.
 The [history design](../../../../docs/design/task-session-history.md) owns routes,
 fields, sort order and retention mapping.
 
+The CLI selects the retention Session page with `list --directory-version 1`,
+validates the response capability header and body version, and preserves that
+selection in continuation commands. Default `list` retains its legacy endpoint
+and JSON. Strict decoders remain separate. Original-Session content failures
+retain explicit expiry diagnostics without looking up the current claim.
+The versioned decoder preserves valid RFC3339 numeric offsets from PostgreSQL
+timestamps, validating calendar and offset fields independently; requiring UTC
+text would reject valid archives served from a non-UTC environment.
+
 ## Alternatives
 
 **Extend the original directory response.** Strict CLI decoders would reject the
@@ -29,6 +38,12 @@ additional fields before consumers could adopt the new capability.
 **Read the old directory and enrich each row separately.** This would introduce
 per-Session queries and mix claim, graph and retention observations from different
 transactions.
+
+**Automatically change CLI directory versions when the server upgrades.** This
+would change existing script output and cursor meaning without an explicit
+selection. Requiring version 1 keeps legacy scripts stable and makes unsupported
+capabilities visible without interpreting permission or cursor failures as a
+reason to fall back.
 
 **Persist directory groups.** This would add group maintenance to Task graph
 writes and require invalidation on every relevant lifecycle transition. The

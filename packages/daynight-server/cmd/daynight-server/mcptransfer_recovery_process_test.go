@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -17,9 +19,11 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	storagegates "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/redis"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	redisstore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	"github.com/google/uuid"
 )
@@ -39,13 +43,32 @@ func (w transferRecoverySweepLog) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+func transferRecoveryStorage(t *testing.T, root, redisURL string) *local.Storage {
+	t.Helper()
+	client, err := redisstore.NewClient(redisURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	files, err := local.NewWithGates(root, storagegates.New(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := files.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return files
+}
+
 func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 	if mode := os.Getenv("DAYNIGHT_MCPTRANSFER_RECOVERY_HELPER"); mode != "" {
-		files, err := local.New(os.Getenv("DAYNIGHT_MCPTRANSFER_RECOVERY_ROOT"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer files.Close()
+		files := transferRecoveryStorage(t, os.Getenv("DAYNIGHT_MCPTRANSFER_RECOVERY_ROOT"), os.Getenv("DAYNIGHT_MCPTRANSFER_RECOVERY_REDIS"))
 		id := os.Getenv("DAYNIGHT_MCPTRANSFER_RECOVERY_ID")
 		switch mode {
 		case "writer":
@@ -58,7 +81,9 @@ func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer permit.Close()
-			if _, err := files.PutTransfer(t.Context(), n, os.Getenv("DAYNIGHT_MCPTRANSFER_RECOVERY_OBJECT"), strings.NewReader("orphan")); err != nil {
+			writeCtx, cancel := filestorage.GateContext(t.Context(), permit)
+			defer cancel()
+			if _, err := files.PutTransfer(writeCtx, n, os.Getenv("DAYNIGHT_MCPTRANSFER_RECOVERY_OBJECT"), strings.NewReader("orphan")); err != nil {
 				t.Fatal(err)
 			}
 			fmt.Println("published")
@@ -107,6 +132,10 @@ func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 		return
 	}
 
+	redisURL := os.Getenv("DAYNIGHT_TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Fatal("DAYNIGHT_TEST_REDIS_URL is required for transfer crash recovery")
+	}
 	values := processAPIEnvironment(t)
 	db, err := postgres.Open(t.Context(), values["DAYNIGHT_DATABASE_URL"])
 	if err != nil {
@@ -131,11 +160,7 @@ func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	files, err := local.New(values["DAYNIGHT_STORAGE_ROOT"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer files.Close()
+	files := transferRecoveryStorage(t, values["DAYNIGHT_STORAGE_ROOT"], redisURL)
 	lifecycle, err := mcptransfer.New(db, files, files, 1<<30, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -157,11 +182,18 @@ func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	objectID := uuid.NewString()
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	command := func(mode string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMCPTransferCrossProcessCrashRecovery$")
-		cmd.Env = append(os.Environ(), "DAYNIGHT_MCPTRANSFER_RECOVERY_HELPER="+mode, "DAYNIGHT_MCPTRANSFER_RECOVERY_ROOT="+values["DAYNIGHT_STORAGE_ROOT"], "DAYNIGHT_MCPTRANSFER_RECOVERY_DATABASE="+values["DAYNIGHT_DATABASE_URL"], "DAYNIGHT_MCPTRANSFER_RECOVERY_ID="+r.ID, "DAYNIGHT_MCPTRANSFER_RECOVERY_OBJECT="+objectID)
+		cmd.Env = append(os.Environ(),
+			"DAYNIGHT_MCPTRANSFER_RECOVERY_HELPER="+mode,
+			"DAYNIGHT_MCPTRANSFER_RECOVERY_ROOT="+values["DAYNIGHT_STORAGE_ROOT"],
+			"DAYNIGHT_MCPTRANSFER_RECOVERY_DATABASE="+values["DAYNIGHT_DATABASE_URL"],
+			"DAYNIGHT_MCPTRANSFER_RECOVERY_REDIS="+redisURL,
+			"DAYNIGHT_MCPTRANSFER_RECOVERY_ID="+r.ID,
+			"DAYNIGHT_MCPTRANSFER_RECOVERY_OBJECT="+objectID,
+		)
 		return cmd
 	}
 	writer := command("writer")
@@ -203,8 +235,8 @@ func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 	if _, err := lifecycle.RequestCleanup(t.Context(), actor, r.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := lifecycle.Maintain(t.Context()); err == nil {
-		t.Fatal("cross-process gate did not prevent deletion")
+	if err := lifecycle.Maintain(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup did not wait for the live writer's Redis gate: %v", err)
 	}
 	pending, err := lifecycle.LookupBound(t.Context(), actor, r.ID)
 	if err != nil || pending.State != "cleanup_pending" || pending.ReservedBytes != 6 {
@@ -233,15 +265,29 @@ func TestMCPTransferCrossProcessCrashRecovery(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("writer did not exit after kill")
 	}
-	if err := lifecycle.Close(t.Context()); err != nil {
+	if err := lifecycle.Maintain(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup did not wait for the dead writer's unexpired Redis gate: %v", err)
+	}
+	if err := lifecycle.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The killed writer could not release its key. Observe its natural expiry
+	// through the same gate operation before testing the restart sweep.
+	permit, err := files.AcquireGate(ctx, filestorage.PrivateGate, r.ID)
+	if err != nil {
+		t.Fatalf("dead writer's Redis gate did not expire: %v", err)
+	}
+	if err := permit.Close(); err != nil {
 		t.Fatal(err)
 	}
 	output, err := command("restart").CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "recovered") {
 		t.Fatalf("restart process did not recover orphan: %v\n%s", err, output)
 	}
-	if object, err := files.OpenTransfer(t.Context(), n, objectID); err == nil {
+	if object, err := files.OpenTransfer(ctx, n, objectID); err == nil {
 		object.Body.Close()
 		t.Fatal("orphan remains after restart")
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("checking the removed orphan failed: %v", err)
 	}
 }

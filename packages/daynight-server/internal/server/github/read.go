@@ -118,7 +118,7 @@ func (h *handler) detail(w http.ResponseWriter, r *http.Request, p model.Princip
 		if err != nil {
 			return nil, err
 		}
-		summary, err := summaryResponse(result.Connection, result.PullRequest.PullRequestSummary)
+		summary, err := summaryResponse(result.PullRequest.PullRequestSummary)
 		if err != nil {
 			return nil, err
 		}
@@ -225,9 +225,9 @@ func nextAttempt(c githubpr.Connection) *time.Time {
 	}
 	return utc(planned)
 }
-func summaryResponse(c githubpr.Connection, p githubpr.PullRequestSummary) (api.PullRequestSummary, error) {
+func summaryResponse(p githubpr.PullRequestSummary) (api.PullRequestSummary, error) {
 	var out api.PullRequestSummary
-	if c.RepositoryID == nil || c.RepositoryFullName == nil {
+	if p.RepositoryID <= 0 || p.RepositoryFullName == "" {
 		return out, fmt.Errorf("missing persisted GitHub base repository")
 	}
 	if (p.AuthorID == nil) != (p.AuthorLogin == nil) {
@@ -242,7 +242,7 @@ func summaryResponse(c githubpr.Connection, p githubpr.PullRequestSummary) (api.
 	out.Title = p.Title
 	out.State = p.State
 	out.Draft = p.Draft
-	out.Base = api.PullRequestBase{RepositoryID: decimal(*c.RepositoryID), RepositoryFullName: *c.RepositoryFullName, Ref: p.BaseRef}
+	out.Base = api.PullRequestBase{RepositoryID: decimal(p.RepositoryID), RepositoryFullName: p.RepositoryFullName, Ref: p.BaseRef}
 	out.Head = api.PullRequestHead{RepositoryID: optionalDecimal(p.HeadRepositoryID), RepositoryFullName: p.HeadRepositoryFullName, Ref: p.HeadRef, SHA: p.HeadSHA}
 	out.CreatedAt = p.GitHubCreatedAt.UTC()
 	out.UpdatedAt = p.GitHubUpdatedAt.UTC()
@@ -259,7 +259,7 @@ func pageResponse(p coregithub.Page) (api.PullRequestPage, error) {
 		out.ProjectTotal = optionalDecimal(&p.Counts.ProjectTotal)
 	}
 	for _, item := range p.Items {
-		v, err := summaryResponse(p.Connection, item)
+		v, err := summaryResponse(item)
 		if err != nil {
 			return out, err
 		}

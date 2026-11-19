@@ -284,9 +284,13 @@ that crosses its 100-row page boundary.
 Expiry probes whose SQL samples database time retain actual row lock barriers
 and short test deadlines. The grant test arms expiry after its lock receipt,
 preserving rejection of a stale time sampled before the lock. Private Transfer
-retains the locked, cached token expiry. Deadline probes retain connection
-preparation and actual query observation. The large search fixture keeps its
-complete description but constructs its expected snippet independently.
+retains the locked, cached token expiry. The
+[GitHub Signal deadline test](../../../../packages/daynight-server/internal/core/store/postgres/github_webhook_integration_test.go)
+warms the receiver and observer before starting the request deadline. It
+observes the exact PostgreSQL blocker before timeout, checks the deadline
+error and drains the connection while the holder is still locked. The large
+search fixture keeps its complete description and constructs its expected
+snippet independently.
 
 [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go),
 [Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go),
@@ -299,6 +303,13 @@ before the holder commits. The Direct Member target-membership case also
 observes a queued revocation and commits a compatible Session credential read
 within the window. The eligibility and Profile Patch cases join the worker
 before checking that the membership or profile changes were rolled back.
+
+[AssistantTask credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/assistanttask/concurrency_test.go)
+uses the same PostgreSQL clock and connection preparation. The expiry update
+commits before taking the Session row lock because the holder locks the same
+row that stores the credential. The holder leaves that row unchanged. The
+contender waits on the exact holder while the Session is still valid, and
+its fresh read after natural expiry must reject the transaction.
 
 [Session/PAT deletion storage proofs](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go)
 use a stable stored expiry and explicit caller times on either side of it. The

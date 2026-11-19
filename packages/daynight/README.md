@@ -1358,6 +1358,7 @@ mutation receipts retain their original reads and output.
 ```bash
 daynight task session current TASK --project PROJECT --json
 daynight task session list TASK --project PROJECT --limit 20 --json
+daynight task session list TASK --project PROJECT --directory-version 1 --json
 daynight task session show TASK SESSION --project PROJECT --json
 daynight task session read TASK SESSION --project PROJECT --json
 daynight task session read TASK SESSION --project PROJECT --before TOKEN --conversation --json
@@ -1372,6 +1373,16 @@ directory page with execution and archive facts, `currentBinding`, and
 Session's inspection, including its original fence, readable live/archive source
 and independent observation and send eligibility. A changed Task claim does not
 redirect a historical read.
+
+Default `list` preserves the legacy endpoint and JSON on old and new services.
+`--directory-version 1` selects the separate retention directory and requires
+the service's version-1 capability response. Its JSON retains `version`, exact
+string `graphVersion`, `observedAt`, and each original Session's archive state,
+retention reason and nullable expiry times. Text distinguishes pending archival
+and confirmed expiry. Keep `--directory-version 1` with its continuation cursor;
+legacy and versioned cursors are not interchangeable. A `reset_required` result
+requires restarting the directory without a cursor. Unsupported responses,
+permission failures and expired cursors never trigger a legacy fallback.
 
 `read` returns the latest 20 timeline entries by default, with a 1–200 limit.
 Entries include tools and interactions, and are ordered oldest to newest within
@@ -1394,7 +1405,9 @@ contains references only; these commands do not emit media bytes or base64.
 Valid archives remain readable while the original Worker is offline. `coverage`
 preserves visible gaps in original entries, resources or archives; `complete`
 does not prove exhaustive native history capture. Pending/unavailable history,
-corrupt archives and empty history are distinct results. Every page and block is reauthorized.
+corrupt archives, expired content and empty history are distinct results. Expired
+content keeps the original `history_unavailable` error with an explicit expiry
+diagnostic; it never redirects to another Session. Every page and block is reauthorized.
 `reset_required` rejects changed epochs or live/archive sources;
 `content_changed` rejects changed entry content. Discard the old continuation
 and explicitly read the same Session again. The CLI never switches targets or
@@ -1897,6 +1910,16 @@ the same Bot, Session, frozen role and native identity when verified stop eviden
 permits recovery. Missing native identity or uncertain stopping remains an error,
 without creating a blank replacement or resending a previous request. Bots use Web sessions and do not consume task
 `maxConcurrent` slots; their processes still consume machine resources.
+
+New Claude Bots with dedicated storage mirror their native root transcript in
+`bots/<botId>/native/claude/recovery.sqlite`, while retaining the original
+account configuration directory. Recovery requires the verified SDK 0.3.247 /
+CLI 2.1.247 combination, an intact protected turn and proof that the original
+execution stopped. Missing or conflicting records and unknown operation results
+fail explicitly. This profile rejects image input and overlapping turns;
+compaction and additional native resource dependencies are not verified.
+Claude's temporary support suspension remains in effect. See the
+[recovery design](../../docs/design/worker-bot-runtime.md#claude-原生恢复点).
 
 The assistant receives additional native role instructions and uses the normal
 Daynight CLI for queries and authorized operations. Its capabilities follow CLI

@@ -274,6 +274,7 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version，真正移除可写属性，返回 200 属性资源 |
 | `GET` | `/api/v1/projects/{projectId}/task-graph?taskId={taskId}` | 返回同一快照中的 project、完整本链及一层外部前置、相应统计 |
 | `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta 及完整轻量 sessions，使用 epoch 与任务最大 updatedAt 水位 |
+| `GET/PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` | 独立的授权关系读取与精确修订编辑，见 [Goal 依赖协议](goal-dependencies.md) |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`，五状态精确版本设置，返回完整任务 |
 | `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 精确版本软删除；可选 removeDepends=true 原子解除全部传入引用，成功 `204`，保留任务与附件数据 |

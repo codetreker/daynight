@@ -71,13 +71,16 @@ func (s *Storage) PublishTransferAttachment(ctx context.Context, namespace files
 	if err := s.checkSpelling(destination); err != nil {
 		return err
 	}
+	if err := filestorage.GateError(ctx); err != nil {
+		return err
+	}
 	if err := s.root.MkdirAll(path.Dir(destination), 0o700); err != nil {
 		return err
 	}
-	if err := s.fileTarget(destination, true); err != nil {
+	if err := s.fileTarget(ctx, destination, true); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := verifyMutation(ctx); err != nil {
 		return err
 	}
 	outcome = filestorage.PublicationUnknown
@@ -100,7 +103,7 @@ func (s *Storage) PublishTransferAttachment(ctx context.Context, namespace files
 			}
 		}
 	}
-	return nil
+	return filestorage.GateError(ctx)
 }
 
 type rangeBody struct {

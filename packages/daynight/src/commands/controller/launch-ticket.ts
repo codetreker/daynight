@@ -24,6 +24,8 @@ type LaunchCommon = {
   readonly configuration: FrozenExecutionConfiguration;
   readonly initialOperationId: string; readonly initialPrompt: string;
   readonly instructions?: string;
+  readonly codexBotRecovery?: { readonly botId: string; readonly directory: string };
+  readonly claudeBotRecovery?: { readonly botId: string; readonly directory: string };
   readonly resumeNativeSessionId: string | null;
   readonly credentialFile: string; readonly ipcEndpoint: string; readonly ipcSecret: string;
   readonly createdAt: string;
@@ -47,12 +49,24 @@ export const parseLaunchTicket = (value: unknown): ControllerLaunchTicket => {
   const binding = sessionBinding(data);
   const test = binding.testExecutionId !== undefined;
   const ids = ["launchId", "executionId", "controllerId", "controllerInstanceId", "sessionId", ...(test ? ["testExecutionId", "ownerUserId"] : ["projectId", "taskId", "claimId", "workerId", "worktreeId", "userId"]), "initialOperationId"];
-  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
+  const keys = ["schemaVersion", ...ids, ...(test ? ["initialInput"] : []), ...(Object.hasOwn(data, "instructions") ? ["instructions"] : []), ...["codexBotRecovery", "claudeBotRecovery"].filter(key => Object.hasOwn(data, key)), "executionGeneration", "serverOrigin", "provider", "cwd", "nativeHome", "configuration", "initialPrompt", "resumeNativeSessionId", "credentialFile", "ipcEndpoint", "ipcSecret", "createdAt"];
   if (Object.keys(data).length !== keys.length || keys.some((key) => !Object.hasOwn(data, key))) throw new Error("Controller ticket has invalid fields.");
   for (const key of ids) uuid(data[key]);
   if (data.schemaVersion !== 1 || typeof data.executionGeneration !== "string" || !/^[1-9][0-9]{0,18}$/.test(data.executionGeneration) || BigInt(data.executionGeneration) > 9_223_372_036_854_775_807n) throw new Error("Controller ticket version or execution generation is invalid.");
   if (typeof data.serverOrigin !== "string" || normalizeServerUrl(data.serverOrigin) !== data.serverOrigin) throw new Error("Controller ticket server origin is invalid.");
   if (data.provider !== "codex" && data.provider !== "claude" && data.provider !== "copilot") throw new Error("Controller ticket provider is invalid.");
+  if (Object.hasOwn(data, "codexBotRecovery")) {
+    const recovery = data.codexBotRecovery as Record<string, unknown> | null;
+    if (!test || data.provider !== "codex" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
+      || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Codex Bot recovery binding is invalid.");
+    uuid(recovery.botId);
+  }
+  if (Object.hasOwn(data, "claudeBotRecovery")) {
+    const recovery = data.claudeBotRecovery as Record<string, unknown> | null;
+    if (!test || data.provider !== "claude" || !recovery || typeof recovery !== "object" || Object.keys(recovery).sort().join() !== "botId,directory"
+      || typeof recovery.directory !== "string" || !path.isAbsolute(recovery.directory) || path.resolve(recovery.directory) !== recovery.directory || /[\0\r\n]/.test(recovery.directory)) throw new Error("Claude Bot recovery binding is invalid.");
+    uuid(recovery.botId);
+  }
   for (const key of ["cwd", "nativeHome", "credentialFile"]) if (typeof data[key] !== "string" || !path.isAbsolute(data[key]) || /[\0\r\n]/.test(data[key])) throw new Error(`Controller ticket ${key} must be absolute.`);
   if (typeof data.ipcEndpoint !== "string" || /[\0\r\n]/.test(data.ipcEndpoint) || !(path.isAbsolute(data.ipcEndpoint) || data.ipcEndpoint.startsWith("\\\\.\\pipe\\"))) throw new Error("Controller IPC endpoint is invalid.");
   if (typeof data.ipcSecret !== "string" || !/^[a-f0-9]{64}$/.test(data.ipcSecret)) throw new Error("Controller IPC authentication is invalid.");

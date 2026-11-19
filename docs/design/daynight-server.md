@@ -164,7 +164,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 决定；同 Team 活跃身份唯一性由共享 core 规则和 Team 行锁保护。不同 Team 可持有同仓库项目。
 Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
-依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；当前没有公开 Goal 边写入入口。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
+依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；Goal 关系通过独立的 [REST 资源](../spec/goal-dependencies.md)读写。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
 
 任务和关系使用 `projects`、`tasks`、`task_dependencies`，属性使用独立 `task_properties` 表；账号级 Worker 观测使用 `workers`。属性主键为 `(task_id,name)`，value 保存完整 JSON 文本，不重复 project_id，不具有独立版本、时间或删除标记。完整任务先取得可见父行，再在同一快照批量加载属性；图查询保持显式精简投影。其他主键分别为 `id`、`id`、`(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
 检查、非自身依赖检查及主键唯一性保证可局部表达的约束。索引支持以下访问：
@@ -417,7 +417,8 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `POST /api/v1/projects/{projectId}/tasks` | 创建普通 Task 或 Goal，默认分别为 `proposed` 和 `todo` |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
-| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
+| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及普通 Task 依赖 |
+| `GET/PATCH /api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` | 独立授权投影与关系修订编辑 |
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标五状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
