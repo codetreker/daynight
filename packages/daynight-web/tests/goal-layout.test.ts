@@ -18,7 +18,7 @@ const verify = (layout: CanvasLayout, input: GraphProjection, direction: GraphDi
   const nodes = new Map(layout.nodes.map((node) => [node.id, node]));
   for (const [index, node] of layout.nodes.entries()) {
     expect(node.kind).toBe(input.mainIds.has(node.id) ? 'main' : 'external');
-    expect([node.width, node.height]).toEqual([220, 96]);
+    expect([node.width, node.height]).toEqual([360, 184]);
     expect(node.position.x).toBeGreaterThanOrEqual(0); expect(node.position.y).toBeGreaterThanOrEqual(0);
     expect(node.position.x + node.width).toBeLessThanOrEqual(layout.width); expect(node.position.y + node.height).toBeLessThanOrEqual(layout.height);
     for (const other of layout.nodes.slice(index + 1)) expect(node.position.x + node.width <= other.position.x || other.position.x + other.width <= node.position.x ||
@@ -26,8 +26,8 @@ const verify = (layout: CanvasLayout, input: GraphProjection, direction: GraphDi
   }
   for (const edge of layout.edges) {
     const source = nodes.get(edge.source)!; const target = nodes.get(edge.target)!;
-    const sourcePort = direction === 'horizontal' ? { x: source.position.x + 220, y: source.position.y + 48 } : { x: source.position.x + 110, y: source.position.y + 96 };
-    const targetPort = direction === 'horizontal' ? { x: target.position.x, y: target.position.y + 48 } : { x: target.position.x + 110, y: target.position.y };
+    const sourcePort = direction === 'horizontal' ? { x: source.position.x + source.width, y: source.position.y + source.height / 2 } : { x: source.position.x + source.width / 2, y: source.position.y + source.height };
+    const targetPort = direction === 'horizontal' ? { x: target.position.x, y: target.position.y + target.height / 2 } : { x: target.position.x + target.width / 2, y: target.position.y };
     expect(edge.points[0]).toEqual(sourcePort); expect(edge.points.at(-1)).toEqual(targetPort);
     expect(direction === 'horizontal' ? sourcePort.x : sourcePort.y).toBeLessThan(direction === 'horizontal' ? targetPort.x : targetPort.y);
     for (const point of edge.points) {

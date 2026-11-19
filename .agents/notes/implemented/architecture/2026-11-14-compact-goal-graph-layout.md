@@ -20,7 +20,8 @@ Ordinary chains retain their Dagre layout. The shared canvas accepts an optional
 controlled fit action so both Goal fit controls request new geometry before
 applying the overview viewport.
 
-The initial Goal viewport keeps a 0.8–1 readable zoom; explicit fit shows the
+The initial Goal viewport uses a maximum zoom of 1 and normally a minimum of
+0.8, lowering that minimum to fit a card on a narrow canvas, down to 0.2; explicit fit shows the
 complete graph. Topology and direction changes create a new readable layout,
 while content updates and passive resizing preserve geometry and viewport. The
 [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
