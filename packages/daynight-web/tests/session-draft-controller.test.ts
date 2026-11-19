@@ -1014,6 +1014,27 @@ describe('durable Session image coordination', () => {
     await controller.addFiles([file()], 'retain me'); expect(controller.getSnapshot().text).toBe('retain me'); expect(controller.getSnapshot().items).toHaveLength(1); expect(controller.getSnapshot().items[0]?.validation).toBe('pending');
     open.mockRestore(); await controller.retrySave(); expect(controller.getSnapshot().canSend).toBe(true); expect((await f.store.readExisting(identity))?.editable?.text).toBe('retain me');
   });
+  it('settles the draft release once an accepted message references the upload', async () => {
+    const f = fixture(), controller = f.create();
+    vi.mocked(f.resources.releaseUpload).mockRejectedValue(new ApiError('server', 409, 'resource_in_use'));
+    f.dispatch.mockImplementation(async command => { f.commands.push(command); return f.operation(command, 'provider_accepted'); });
+    await controller.addFiles([file()], 'with image'); await controller.send();
+    await controller.checkStatus(); await controller.checkStatus();
+    const saved = (await f.store.readExisting(identity))!;
+    expect(f.commands).toHaveLength(1);
+    expect(f.resources.releaseUpload).toHaveBeenCalledOnce();
+    expect(saved.uploads).toEqual([expect.objectContaining({ releaseIntent: true, releaseRetained: true, outcomeUnknown: false, pendingAction: null })]);
+    expect(controller.getSnapshot()).toMatchObject({ error: null, text: '', items: [], submission: null });
+  });
+  it('keeps a removed upload release unknown when the service rejects it for another reason', async () => {
+    const f = fixture(), controller = f.create(); await controller.addFiles([file()], 'keep text');
+    vi.mocked(f.resources.releaseUpload).mockRejectedValue(new ApiError('server', 409, 'resource_conflict'));
+    await controller.remove(controller.getSnapshot().items[0]!.draftImageId);
+    const saved = (await f.store.readExisting(identity))!;
+    expect(saved.uploads).toEqual([expect.objectContaining({ releaseIntent: true, outcomeUnknown: true })]);
+    expect(saved.uploads[0]).not.toHaveProperty('releaseRetained', true);
+    expect(controller.getSnapshot().error).not.toBeNull();
+  });
   it('can send a text successor after every image is explicitly removed without Web Locks', async () => {
     const f = fixture(null), controller = f.create(); await controller.addFiles([file()], 'text only'); await controller.remove(controller.getSnapshot().items[0]!.draftImageId); await controller.send();
     expect(f.commands).toHaveLength(1); expect(f.commands[0]?.kind === 'send_message' && f.commands[0].payload.content).toEqual([{ type: 'text', text: 'text only' }]);
