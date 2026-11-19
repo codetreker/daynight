@@ -137,11 +137,15 @@ rename is reversed and the original relation OID is verified. A new
 transaction reads the original PAT and Personal Team facts before the next
 case. The fixture shares the reversible catalog helper with Backup Inventory.
 
-The [Identity initialization rollback matrix](../../../../packages/daynight-server/internal/core/store/postgres/identity_boundaries_test.go)
-shares an initially empty Store. Each case commits its own login consumption,
-then exercises a different real insert fault. The global empty-state check
-detects partial identity or replayable login rows. The fault trigger and
-function are removed and checked in the catalog before reuse.
+The [Identity rollback matrices](../../../../packages/daynight-server/internal/core/store/postgres/identity_boundaries_test.go)
+share one Store per parent. The initialization cases commit their own login
+consumption, then exercise different real insert faults. The global
+empty-state check detects partial identity or replayable login rows. Each
+fault trigger and function is removed and checked in the catalog before reuse.
+The Personal Team facts cases give each actor independent identity, Session,
+and Team records. Each case corrupts only its own Team membership, performs a
+profile write, and refuses the transaction after observing the corrupted
+membership facts. A fresh read confirms that the saved profile is unchanged.
 
 The [Webhook management fault matrix](../../../../packages/daynight-server/internal/core/store/postgres/webhook/management_contract_test.go)
 shares one fixture with distinct case identifiers. Real WriteWebhook
