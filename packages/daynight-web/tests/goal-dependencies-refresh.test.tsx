@@ -6,7 +6,7 @@ import { browserNavigation } from '../src/app/navigation';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { useGoalDependencies } from '../src/features/goal-detail/useGoalDependencies';
-import { markGoalDependencyDeparture, rememberGoalDependencyReading } from '../src/features/goal-detail/goal-dependency-reading';
+import { finishGoalDependencyReturn, goalDependencyReturn, markGoalDependencyDeparture, rememberGoalDependencyReading } from '../src/features/goal-detail/goal-dependency-reading';
 import { detailFixture, resourceResponse } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
@@ -23,6 +23,8 @@ const sourceDenied = vi.fn();
 let sessions: TaskDetailSessions;
 let dependencies: ReturnType<typeof useGoalDependencies>;
 const Harness = ({ active = true }: { readonly active?: boolean }) => {
+  const navigation = browserNavigation();
+  useSyncExternalStore(navigation.subscribe, navigation.snapshot);
   sessions = useTaskDetailSessions();
   const subscribe = useCallback((listener: () => void) => sessions.subscribe(projectId, goalId, listener), [sessions]);
   const state = useSyncExternalStore(subscribe, () => sessions.snapshot(projectId, goalId));
@@ -228,4 +230,77 @@ it.each([false, true])('reauthorizes a remembered downstream page after remount 
     expect(requests.every((cursor, index) => index === 0 || cursor === 'page-2')).toBe(true);
     expect(screen.getByText('Previous')).toBeEnabled();
   } finally { second?.view.unmount(); first.view.unmount(); first.scope.dispose(); }
+});
+
+it('persists paging after consumed return focus and reauthorizes the latest position on another mount', async () => {
+  const requests: (string | null)[] = [];
+  vi.stubGlobal('fetch', vi.fn((url: string) => {
+    if (!url.includes('/goal-dependencies')) return respond(parent);
+    const cursor = new URL(url, location.origin).searchParams.get('cursor'); requests.push(cursor);
+    return respond(page(cursor === null ? 'First' : 'Second', cursor === null ? 'page-2' : null));
+  }));
+  const first = mount(); let second: ReturnType<typeof mount> | undefined;
+  try {
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('First'));
+    fireEvent.click(screen.getByText('Next')); await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Second'));
+    const entryId = browserNavigation().snapshot().entryId!, href = `/projects/${peerId}/tasks/${goalId}?tab=description`;
+    rememberGoalDependencyReading(first.scope, entryId, dependencies.position, href);
+    markGoalDependencyDeparture(first.scope, entryId, href);
+    const returned = goalDependencyReturn(first.scope, entryId, dependencies.position)!;
+    expect(finishGoalDependencyReturn(first.scope, entryId, returned)).toBe(true);
+    fireEvent.click(screen.getByText('Previous')); await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('First'));
+    markGoalDependencyDeparture(first.scope, entryId, href);
+    first.view.unmount(); second = mount(first.scope);
+    await waitFor(() => expect(requests).toEqual([null, 'page-2', null, null]));
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('First'));
+    expect(screen.getByText('Previous')).toBeDisabled();
+  } finally { second?.view.unmount(); first.view.unmount(); first.scope.dispose(); }
+});
+
+it('inherits unseen tab entries and restores known entries without remounting the Goal reader', async () => {
+  const requests: (string | null)[] = [];
+  vi.stubGlobal('fetch', vi.fn((url: string) => {
+    if (!url.includes('/goal-dependencies')) return respond(parent);
+    const cursor = new URL(url, location.origin).searchParams.get('cursor'); requests.push(cursor);
+    return respond(page(cursor === null ? 'First' : 'Second', cursor === null ? 'page-2' : null));
+  }));
+  const { scope, view } = mount();
+  try {
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('First'));
+    fireEvent.click(screen.getByText('Next')); await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Second'));
+    const navigation = browserNavigation(), sourceEntry = navigation.snapshot().entryId;
+    act(() => navigation.navigate(`/projects/${projectId}/tasks/${goalId}?tab=discussion`));
+    const middleEntry = navigation.snapshot().entryId;
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Second'));
+    act(() => navigation.navigate(`/projects/${projectId}/tasks/${goalId}?tab=description`));
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Second'));
+    await waitFor(() => expect(dependencies.pending).toBe(false));
+    fireEvent.click(screen.getByText('Previous')); await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('First'));
+    act(() => window.history.back());
+    await waitFor(() => expect(navigation.snapshot().entryId).toBe(middleEntry));
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Second'));
+    act(() => window.history.back());
+    await waitFor(() => expect(navigation.snapshot().entryId).toBe(sourceEntry));
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Second'));
+    expect(requests.at(-1)).toBe('page-2');
+  } finally { view.unmount(); scope.dispose(); }
+});
+
+it('does not inherit peer identities when withdrawal and a new same-Goal entry are batched', async () => {
+  let returning = false;
+  vi.stubGlobal('fetch', vi.fn((url: string) => !url.includes('/goal-dependencies') ? respond(parent)
+    : returning ? Promise.resolve(failure()) : respond(page('Private'))));
+  const { scope, view } = mount();
+  try {
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Private'));
+    act(() => {
+      returning = true;
+      scope.suspendProject(peerId);
+      browserNavigation().navigate(`/projects/${projectId}/tasks/${goalId}?tab=discussion`);
+    });
+    expect(screen.getByTestId('goal')).toHaveTextContent('none');
+    await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('error'));
+    expect(screen.getByTestId('goal')).toHaveTextContent('none');
+    expect(screen.getByTestId('successors')).toHaveTextContent('none');
+  } finally { view.unmount(); scope.dispose(); }
 });

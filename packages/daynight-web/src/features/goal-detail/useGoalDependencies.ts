@@ -5,7 +5,7 @@ import { pollingInterval } from '../../app/polling';
 import { browserNavigation } from '../../app/navigation';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
-import { goalDependencyReturn, type GoalDependencyPosition } from './goal-dependency-reading';
+import { goalDependencyPosition, saveGoalDependencyPosition, type GoalDependencyPosition } from './goal-dependency-reading';
 
 type State = { readonly owner: object; readonly page: GoalDependencies | null; readonly unavailable: boolean; readonly error: unknown;
   readonly pending: boolean; readonly cursor: string | null; readonly previous: readonly (string | null)[] };
@@ -15,8 +15,17 @@ const denied = (error: unknown) => error instanceof ApiError && error.kind === '
 
 export const useGoalDependencies = (projectId: string, goalId: string, history: number, active: boolean, onSourceDenied: () => void) => {
   const scope = useTaskCacheScope(), sessions = useTaskDetailSessions();
-  const owner = useMemo(() => ({}), [scope, sessions, projectId, goalId, history]);
-  const opening = useMemo(() => initial(owner, goalDependencyReturn(scope, browserNavigation().snapshot().entryId, { projectId, goalId, history })?.position), [scope, projectId, goalId, history, owner]);
+  const entryId = browserNavigation().snapshot().entryId;
+  const resource = useMemo(() => ({}), [scope, sessions, projectId, goalId, history]);
+  const retained = useRef<{ readonly resource: object; readonly position: Pick<GoalDependencyPosition, 'cursor' | 'previous'> } | null>(null);
+  const owner = useMemo(() => ({}), [resource, entryId]);
+  const opening = useMemo(() => {
+    const position = goalDependencyPosition(scope, entryId, { projectId, goalId, history });
+    // New tab entries inherit the current reader; revisited entries reread their
+    // own coordinates, even when the same Goal component remains mounted.
+    if (position === undefined && retained.current?.resource === resource) return initial(owner, retained.current.position);
+    return initial(owner, position);
+  }, [scope, projectId, goalId, history, resource, owner, entryId]);
   const [state, setState] = useState<State>(() => opening);
   const stateRef = useRef(state); stateRef.current = state;
   const sourceDenied = useRef(onSourceDenied); sourceDenied.current = onSourceDenied;
@@ -64,6 +73,9 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
           if (!currentRequest() || qualification === null ||
             !await sessions.verifyDirectQualificationHistory(projectId, goalId, qualification, signal) ||
             sessions.captureDirectQualification(projectId, goalId) === null || !currentRequest()) return;
+          if (entryId !== null && browserNavigation().snapshot().entryId === entryId) {
+            saveGoalDependencyPosition(scope, entryId, { projectId, goalId, history, cursor, previous });
+          }
           setState({ owner, page: result.kind === 'available' ? result.page : null, unavailable: result.kind === 'unavailable',
             error: null, pending: false, cursor, previous });
         } catch (error) {
@@ -104,8 +116,9 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
     document.addEventListener('visibilitychange', visibility); window.addEventListener('focus', refresh);
     return () => { disposed = true; cancel(); readRef.current = () => {}; unsubscribe(); if (timer !== null) clearInterval(timer);
       document.removeEventListener('visibilitychange', visibility); window.removeEventListener('focus', refresh); };
-  }, [scope, sessions, projectId, goalId, history, owner, opening, active]);
+  }, [scope, sessions, projectId, goalId, history, owner, opening, active, entryId]);
   const visible = state.owner === owner ? state : opening;
+  retained.current = { resource, position: { cursor: visible.cursor, previous: visible.previous } };
   const refresh = useCallback(() => { const current = stateRef.current.owner === owner ? stateRef.current : opening; readRef.current(current.cursor, current.previous, true); }, [owner, opening]);
   const next = useCallback(() => { const current = stateRef.current; if (current.owner === owner && current.page?.nextCursor != null && !current.pending) readRef.current(current.page.nextCursor, [...current.previous, current.cursor], true); }, [owner]);
   const previous = useCallback(() => { const current = stateRef.current; if (current.owner === owner && current.previous.length > 0 && !current.pending) readRef.current(current.previous.at(-1)!, current.previous.slice(0, -1), true); }, [owner]);

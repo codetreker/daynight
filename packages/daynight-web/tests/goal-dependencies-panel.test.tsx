@@ -1,8 +1,11 @@
-import { cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { GoalDependencies as DependencyPage } from '../src/api/goal-dependencies';
 import { browserNavigation } from '../src/app/navigation';
+import { emptyResourceReading, readResourceHistory, resourceHistory } from '../src/app/page-history';
+import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { GoalDependencies } from '../src/features/goal-detail/GoalDependencies';
 import type { useGoalDependencies } from '../src/features/goal-detail/useGoalDependencies';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -68,4 +71,31 @@ it('provides keyboard-accessible downstream pagination without implying hidden c
   fireEvent.click(within(pagination).getByRole('button', { name: 'Next' })); expect(dependencies.next).toHaveBeenCalledOnce();
   result.rerender(panel(view({ hasPrevious: true, page: { ...page, nextCursor: null } })));
   expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled(); expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+});
+
+it.each(['description', 'discussion'])('opens an overlaid Goal relation to the root from %s through draft admission and preserves its dialog entry for Back', async tab => {
+  const navigation = browserNavigation(), scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const href = `/projects/${projectId}/tasks/${internal.goalId}?tab=description`;
+  navigation.navigate(`/projects/${projectId}/tasks/${internal.goalId}?tab=${tab}`);
+  const source = resourceHistory(TEST_VIEWER_ID, projectId, internal.goalId, {
+    goalChildren: null, externalGoal: { id: goalId, witness: external.goalId, navigation: { tab: 'description', path: null }, goalChildren: null },
+  });
+  navigation.setView(source);
+  const origin = navigation.snapshot().entryId, discard = vi.fn(); let dirty = true;
+  const unregister = navigation.register({ scope: { identity: scope, projectId, taskId: goalId }, isDirty: () => dirty,
+    discard: () => { dirty = false; discard(); }, survives: () => false });
+  const result = renderWithLocale(panel(), { locale: 'en', taskCache: { scope } });
+  try {
+    const link = screen.getAllByRole('link', { name: internal.title })[0]!;
+    fireEvent.click(link);
+    expect(navigation.isBusy()).toBe(true); expect(navigation.snapshot().entryId).toBe(origin);
+    act(() => navigation.cancel());
+    expect(navigation.snapshot().view).toEqual(source); expect(discard).not.toHaveBeenCalled();
+    fireEvent.click(link); act(() => navigation.confirm());
+    expect(discard).toHaveBeenCalledOnce(); expect(navigation.snapshot().entryId).not.toBe(origin);
+    expect(readResourceHistory(navigation.snapshot().view, TEST_VIEWER_ID, projectId, internal.goalId)).toEqual(emptyResourceReading());
+    act(() => window.history.back());
+    await waitFor(() => expect(navigation.snapshot().entryId).toBe(origin));
+    expect(navigation.snapshot().view).toEqual(source);
+  } finally { unregister(); result.unmount(); scope.dispose(); }
 });

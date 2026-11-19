@@ -10,6 +10,8 @@ const prerequisiteId = '00000000-0000-4000-8000-000000000301';
 const localGoalId = '00000000-0000-4000-8000-000000000302';
 const successorId = '00000000-0000-4000-8000-000000000303';
 const secondSuccessorId = '00000000-0000-4000-8000-000000000304';
+const sourceChildId = '00000000-0000-4000-8000-000000000305';
+const otherChildId = '00000000-0000-4000-8000-000000000306';
 const teamId = '00000000-0000-4000-8000-000000000701';
 const edgeId = '00000000-0000-4000-8000-000000000801';
 const localEdgeId = '00000000-0000-4000-8000-000000000802';
@@ -30,14 +32,18 @@ const relationships = (cursor: string | null = null) => ({
 });
 type Mode = 'ready' | 'failure' | 'old-router' | 'forbidden';
 
-const install = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
+const install = async (page: Page, locale: 'en' | 'zh-CN' = 'en', crossGoal = false) => {
   const source = detailFixture(projectId, goalId, { type: 'goal', title: 'Release the new client', status: 'in_progress', startedAt: time, ready: false, description: 'Deliver the client after authentication acceptance.' });
   const local = detailFixture(projectId, localGoalId, { type: 'goal', title: 'Acceptance criteria', status: 'done', completedAt: time, ready: false });
   const external = detailFixture(externalProjectId, prerequisiteId, { type: 'goal', title: externalTitle, status: 'in_progress', startedAt: time, ready: false, description: 'Authentication upgrade details.' });
   const firstSuccessor = detailFixture(projectId, successorId, { type: 'goal', title: 'Staged rollout', ready: false });
   const secondSuccessor = detailFixture(projectId, secondSuccessorId, { type: 'goal', title: 'Second rollout', ready: false });
-  const graphs = [graphFixture([source, local, firstSuccessor, secondSuccessor]), graphFixture([external])];
-  const details = [source, local, external, firstSuccessor, secondSuccessor];
+  const children = crossGoal ? [
+    detailFixture(projectId, sourceChildId, { parentId: goalId, title: 'Client child' }),
+    detailFixture(projectId, otherChildId, { parentId: localGoalId, title: 'Acceptance child', dependsOn: [sourceChildId], blockedBy: [sourceChildId], ready: false }),
+  ] : [];
+  const graphs = [graphFixture([source, local, firstSuccessor, secondSuccessor, ...children]), graphFixture([external])];
+  const details = [source, local, external, firstSuccessor, secondSuccessor, ...children];
   let mode: Mode = 'ready';
   const revokedProjects = new Set<string>();
   let hidden = false;
@@ -69,6 +75,10 @@ const install = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
       }
       return send(data);
     }
+    if (crossGoal && path === `/api/v1/projects/${projectId}/tasks/${localGoalId}/goal-dependencies`) {
+      const laterPage = url.searchParams.has('cursor');
+      return send({ goalId: localGoalId, canEdit: false, completionBlocked: false, prerequisites: [], successors: [laterPage ? target(goalId, source.title) : target(successorId, firstSuccessor.title)], nextCursor: laterPage ? null : 'dialog-second-page' });
+    }
     if (path.endsWith('/goal-dependencies')) return send({ goalId: path.split('/').at(-2), canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/status`) {
       writes++;
@@ -81,10 +91,14 @@ const install = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
       if (path === `${base}/access`) return send(directAccessFixture(graph.project.id));
       if (path === `${base}/tags`) return send({ items: [], catalogEpoch: taskSyncEpoch(graph.project.id), nextCursor: null });
       if (path === `${base}/task-assignees`) return send({ items: [], unresolvedUserIds: [] });
-      if (path === `${base}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: task => details.find(detail => detail.id === task.id)!.version }));
+      if (path === `${base}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: task => details.find(detail => detail.id === task.id)!.version, propertiesForTask: task => details.find(detail => detail.id === task.id)!.properties, tagsForTask: task => details.find(detail => detail.id === task.id)!.tags }));
     }
     const detail = details.find(detail => path === `/api/v1/projects/${detail.projectId}/tasks/${detail.id}`);
     if (detail !== undefined) return revokedProjects.has(detail.projectId) ? fail(404, 'not_found') : send(detail, 200, true, { 'Daynight-Task-Epoch': taskSyncEpoch(detail.projectId) });
+    if (path.endsWith('/steps')) {
+      const taskId = path.split('/').at(-2)!;
+      return send({ projectId, taskId, version: details.find(item => item.id === taskId)!.version, steps: [] });
+    }
     if (path.endsWith('/thread/messages')) return send({ items: [], hasMoreBefore: false, hasMoreAfter: false });
     if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
@@ -201,6 +215,96 @@ for (const failedReturn of [false, true]) test(`returning from a later-page depe
   expect(fixture.cursors().at(-1)).toBe('second-page');
 });
 
+test('repeated browser Back and Forward retain the later-page dependent Goal and its link focus', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(sourceUrl);
+  await panel(page).getByRole('button', { name: 'Next', exact: true }).click();
+  const origin = panel(page).getByRole('link', { name: 'Second rollout', exact: true });
+  await expect(origin).toBeVisible();
+  await origin.focus(); await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${secondSuccessorId}`));
+  await expect(page.locator('.task-detail-title')).toHaveText('Second rollout');
+  for (let cycle = 0; cycle < 3; cycle++) {
+    fixture.holdNext();
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(sourceUrl));
+    await expect.poll(fixture.held).toBe(true);
+    await expect(panel(page).getByRole('status')).toBeVisible();
+    await expect(origin).toHaveCount(0);
+    expect(fixture.cursors().at(-1)).toBe('second-page');
+    fixture.release();
+    await expect(origin).toBeVisible(); await expect(origin).toBeFocused();
+    await expect(panel(page).getByRole('link', { name: 'Staged rollout', exact: true })).toHaveCount(0);
+    await expect(panel(page).getByRole('button', { name: 'Previous', exact: true })).toBeEnabled();
+    await expect(panel(page).getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
+    if (cycle === 2) break;
+    await page.goForward();
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${secondSuccessorId}`));
+    await expect(page.locator('.task-detail-title')).toHaveText('Second rollout');
+  }
+  await page.screenshot({ path: test.info().outputPath('later-page-repeated-history.png'), fullPage: true });
+});
+
+test('pagination after a return updates the source entry restored by later Forward and Back', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(sourceUrl);
+  await panel(page).getByRole('button', { name: 'Next', exact: true }).click();
+  const origin = panel(page).getByRole('link', { name: 'Second rollout', exact: true });
+  await origin.click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${secondSuccessorId}`));
+  await expect(page.locator('.task-detail-title')).toHaveText('Second rollout');
+  await page.goBack();
+  await expect(origin).toBeFocused();
+  await panel(page).getByRole('button', { name: 'Previous', exact: true }).click();
+  const firstPage = panel(page).getByRole('link', { name: 'Staged rollout', exact: true });
+  await expect(firstPage).toBeVisible(); await expect(origin).toHaveCount(0);
+  expect(fixture.cursors().at(-1)).toBeNull();
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${secondSuccessorId}`));
+  await expect(page.locator('.task-detail-title')).toHaveText('Second rollout');
+  fixture.holdNext();
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(sourceUrl));
+  await expect.poll(fixture.held).toBe(true);
+  await expect(panel(page).getByRole('status')).toBeVisible();
+  await expect(firstPage).toHaveCount(0); await expect(origin).toHaveCount(0);
+  expect(fixture.cursors().at(-1)).toBeNull();
+  fixture.release();
+  await expect(firstPage).toBeVisible(); await expect(origin).toHaveCount(0);
+  await expect(page.locator('.task-detail-title')).toBeFocused();
+  await expect(panel(page).getByRole('button', { name: 'Previous', exact: true })).toBeDisabled();
+  await expect(panel(page).getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
+  await page.screenshot({ path: test.info().outputPath('updated-source-history-page.png'), fullPage: true });
+});
+
+test('known Description history entries restore their own dependency page while new tabs preserve continuity', async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(sourceUrl);
+  await panel(page).getByRole('button', { name: 'Next', exact: true }).click();
+  const secondPage = panel(page).getByRole('link', { name: 'Second rollout', exact: true });
+  await expect(secondPage).toBeVisible();
+  const entryA = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  await page.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await page.getByRole('tab', { name: 'Description', exact: true }).click();
+  await expect(secondPage).toBeVisible();
+  expect(await page.evaluate(() => history.state.__daynightNavigation.entryId)).not.toBe(entryA);
+  await panel(page).getByRole('button', { name: 'Previous', exact: true }).click();
+  await expect(panel(page).getByRole('link', { name: 'Staged rollout', exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole('tab', { name: 'Discussion', exact: true })).toHaveAttribute('aria-selected', 'true');
+  fixture.holdNext();
+  await page.goBack();
+  await expect(page.getByRole('tab', { name: 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
+  expect(await page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(entryA);
+  await expect.poll(fixture.held).toBe(true);
+  expect(fixture.cursors().at(-1)).toBe('second-page');
+  fixture.release();
+  await expect(secondPage).toBeVisible();
+  await expect(panel(page).getByRole('link', { name: 'Staged rollout', exact: true })).toHaveCount(0);
+  await expect(panel(page).getByRole('button', { name: 'Previous', exact: true })).toBeEnabled();
+  await expect(panel(page).getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
+});
+
 test('a project-summary Goal dialog reads its own acceptance dependencies', async ({ page }) => {
   await install(page);
   await page.goto(`/projects/${projectId}`);
@@ -209,6 +313,52 @@ test('a project-summary Goal dialog reads its own acceptance dependencies', asyn
   await page.locator(`#project-goal-detail-${goalId}`).click();
   await expect(page.getByRole('dialog', { name: 'Release the new client', exact: true })).toBeVisible();
   await expect(panel(page).getByRole('link', { name: externalTitle, exact: true })).toBeVisible();
+});
+
+test('an external Goal dialog dependency returns to its underlying Goal and Back restores the dialog page and focus', async ({ page }) => {
+  await install(page, 'en', true);
+  await page.goto(sourceUrl);
+  const root = page.locator('.goal-detail-surface.task-detail-page');
+  await expect(root.locator('.goal-information-counts').first()).toBeAttached();
+  await root.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await root.getByRole('tab', { name: 'Description', exact: true }).click();
+  await page.evaluate(({ goalId, sourceChildId }) => window.selectGoalReading(goalId, { graphRootId: sourceChildId, task: null }), { goalId, sourceChildId });
+  await page.locator('.task-chain-dialog').getByRole('button', { name: 'Acceptance child, Details', exact: true }).click();
+  const external = page.getByRole('dialog', { name: 'Acceptance criteria', exact: true });
+  await expect(external).toBeVisible();
+  await page.getByRole('dialog', { name: 'Acceptance child', exact: true }).getByRole('button', { name: 'Close task details', exact: true }).click();
+  await external.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  const draft = external.locator('.thread-composer textarea');
+  await draft.fill('Retain the external Goal discussion draft');
+  await external.getByRole('tab', { name: 'Description', exact: true }).click();
+  const dependencies = external.locator('.goal-dependencies');
+  await dependencies.getByRole('button', { name: 'Next', exact: true }).click();
+  const origin = dependencies.getByRole('link', { name: 'Release the new client', exact: true });
+  await expect(origin).toBeVisible();
+  await origin.click();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(external).toBeVisible(); await expect(origin).toBeVisible();
+  await external.getByRole('tab', { name: 'Discussion', exact: true }).click();
+  await expect(draft).toHaveValue('Retain the external Goal discussion draft');
+  await external.getByRole('tab', { name: 'Description', exact: true }).click();
+  await expect(origin).toBeVisible();
+  const sourceEntry = await page.evaluate(() => history.state.__daynightNavigation.entryId as string);
+  await origin.click();
+  await confirmation.getByRole('button', { name: 'Discard and leave', exact: true }).click();
+  await expect(external).toHaveCount(0);
+  await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`${sourceUrl}\\?tab=description$`));
+  await expect(root.locator('.task-detail-title')).toHaveText('Release the new client');
+  expect(await page.evaluate(() => history.state.__daynightNavigation.entryId)).not.toBe(sourceEntry);
+  await page.goBack();
+  await expect(external).toBeVisible();
+  expect(await page.evaluate(() => history.state.__daynightNavigation.entryId)).toBe(sourceEntry);
+  await expect(origin).toBeVisible(); await expect(origin).toBeFocused();
+  await expect(dependencies.getByRole('button', { name: 'Previous', exact: true })).toBeEnabled();
+  await expect(dependencies.getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
+  await page.screenshot({ path: test.info().outputPath('external-dialog-return.png'), fullPage: true });
 });
 
 test('hidden description tabs stop relationship reads and resume on their original cursor', async ({ page }) => {

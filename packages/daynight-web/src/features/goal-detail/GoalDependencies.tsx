@@ -2,7 +2,8 @@ import { useId, useLayoutEffect, useRef, type MouseEvent, type RefObject } from 
 import type { RelatedGoal } from '../../api/goal-dependencies';
 import { ApiError } from '../../api/client';
 import { browserNavigation } from '../../app/navigation';
-import { taskDetailUrl } from '../../app/router';
+import { emptyResourceReading, resourceHistory } from '../../app/page-history';
+import { parseRoute, taskDetailUrl } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import type { useGoalDependencies } from './useGoalDependencies';
@@ -37,16 +38,20 @@ export const GoalDependencies = ({ dependencies, canComplete, refusal, fallbackF
       (link ?? fallbackFocus.current)?.focus();
     });
   }, [scope, entryId, navigation, page, unavailable, fallbackFocus, dependencies.position]);
-  const follow = (event: MouseEvent<HTMLAnchorElement>) => {
+  const follow = (event: MouseEvent<HTMLAnchorElement>, target: RelatedGoal) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     if (entryId !== null) {
       rememberGoalDependencyReading(scope, entryId, dependencies.position, event.currentTarget.getAttribute('href')!);
     }
-    navigation.navigate(event.currentTarget.getAttribute('href')!);
+    const location = navigation.snapshot(), current = parseRoute(location.pathname, location.search);
+    const href = event.currentTarget.getAttribute('href')!;
+    if ((current.kind === 'task' || current.kind === 'attachment') && current.projectId === target.projectId && current.taskId === target.goalId) {
+      navigation.setView(resourceHistory(scope.userId, target.projectId, target.goalId, emptyResourceReading()), { to: href });
+    } else navigation.navigate(href);
   };
   const relation = (goal: RelatedGoal, key: string) => <li key={key}>
-    <div><a href={hrefFor(goal)} onClick={follow}>{goal.title}</a><span className="goal-dependency-context">{goal.kind === 'internal' ? (zh ? '项目内' : 'Same project') : `${zh ? '外部' : 'External'} · ${goal.projectName}`}</span></div>
+    <div><a href={hrefFor(goal)} onClick={event => follow(event, goal)}>{goal.title}</a><span className="goal-dependency-context">{goal.kind === 'internal' ? (zh ? '项目内' : 'Same project') : `${zh ? '外部' : 'External'} · ${goal.projectName}`}</span></div>
     <span className={`goal-dependency-status goal-dependency-status-${goal.status}`}>{messages.common.status[goal.status]}</span>
   </li>;
   const refused = refusal instanceof ApiError && refusal.code === 'goal_dependency_unsatisfied';

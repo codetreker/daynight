@@ -25,10 +25,18 @@ it and invalidate outstanding responses. A router-level JSON 404 without a
 principal means unavailable capability while leaving the source Goal readable.
 
 Links use each endpoint's actual Project and Goal. Ordinary application
-navigation protects drafts. Source-entry restoration keeps only the source
+navigation protects drafts. A relation pointing to the underlying standalone
+root atomically pushes its URL and empty nested-reader selection through the
+same draft admission, so same-URL navigation reveals the root while Back keeps
+the original dialog. Source-entry restoration keeps only the source
 resource/history, current cursor, previous cursor trail and originating link
-under the account scope. A route remount rereads that cursor with fresh
-authorization before restoring link focus. Transient return failures retain the
+under the account scope, separately for each browser entry and Goal reader.
+Admitted reads update the current entry position. New tab entries inherit only
+current coordinates, while known entries reread their saved cursor even without
+a component remount. Focus consumption leaves coordinates and the originating
+destination available for repeated native Forward/Back traversals; a matching
+committed departure rearms focus. A canceled link followed by unrelated navigation
+clears its focus candidate. Fresh authorization precedes returned link focus. Transient return failures retain the
 coordinates and focus intent for retry; an authorized page without the link
 falls back to the Goal heading. Source permission/history withdrawal invalidates
 the saved position, including while its Goal component is unmounted. Goal
@@ -60,6 +68,7 @@ Readers can inspect acceptance blockers without entering a relationship editor.
 Each visible description adds one bounded periodic relationship request; it
 does not fetch individual targets. Scope and permission events must fence both
 retained content and late responses. Cursor history and focus intent remain
-runtime reading state, scoped to the source browser entry and discarded after
-its return is completed. They do not preserve relation rows across a route
+runtime reading state under the account scope. Coordinates survive completed
+returns and track subsequent paging; focus is consumed once per matching return.
+Source access/history invalidation retires both, including while unmounted. They do not preserve relation rows across a route
 remount. Transient errors remain distinct from empty results.
