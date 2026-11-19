@@ -284,9 +284,13 @@ that crosses its 100-row page boundary.
 Expiry probes whose SQL samples database time retain actual row lock barriers
 and short test deadlines. The grant test arms expiry after its lock receipt,
 preserving rejection of a stale time sampled before the lock. Private Transfer
-retains the locked, cached token expiry. Deadline probes retain connection
-preparation and actual query observation. The large search fixture keeps its
-complete description but constructs its expected snippet independently.
+retains the locked, cached token expiry. The
+[GitHub Signal deadline test](../../../../packages/daynight-server/internal/core/store/postgres/github_webhook_integration_test.go)
+warms the receiver and observer before starting the request deadline. It
+observes the exact PostgreSQL blocker before timeout, checks the deadline
+error and drains the connection while the holder is still locked. The large
+search fixture keeps its complete description and constructs its expected
+snippet independently.
 
 [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go),
 [Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go),
