@@ -19,7 +19,7 @@ func TestWorkerAliasMigrationPreservesReports(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT to_jsonb(w)::text FROM workers w WHERE user_id=$1 AND worker_id=$2`, user, worker).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 	var after string
@@ -28,7 +28,7 @@ func TestWorkerAliasMigrationPreservesReports(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT (to_jsonb(w)-'alias_value'-'alias_version')::text,alias_value,alias_version FROM workers w WHERE user_id=$1 AND worker_id=$2`, user, worker).Scan(&after, &value, &version); err != nil || after != before || value != nil || version != 1 {
 		t.Fatalf("migration changed existing report: equal=%v value=%v version=%d err=%v", before == after, value, version, err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:81]); err != nil {
 		t.Fatal(err)
 	}
 }

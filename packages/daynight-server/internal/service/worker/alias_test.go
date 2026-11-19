@@ -140,3 +140,7 @@ func TestWorkerAliasServiceRejectsInvalidVersionBeforeWrite(t *testing.T) {
 		t.Fatal("invalid version accepted")
 	}
 }
+
+func (aliasServiceDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}

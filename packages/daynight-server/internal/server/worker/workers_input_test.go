@@ -169,15 +169,31 @@ func capacityExpectedSnapshot(t *testing.T, user, worker string, body map[string
 }
 
 type capacityReportOperations struct {
-	t             *testing.T
-	alias         func(context.Context, model.Principal, string) (model.WorkerAlias, error)
-	putAlias      func(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
-	report        func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
-	sync          func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
-	put           func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
-	get           func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
-	list          func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
-	configuration func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+	reviewParticipation    func(context.Context, model.Principal, string) (model.WorkerReviewParticipation, error)
+	putReviewParticipation func(context.Context, model.Principal, string, string, bool) (model.WorkerReviewParticipation, error)
+	t                      *testing.T
+	alias                  func(context.Context, model.Principal, string) (model.WorkerAlias, error)
+	putAlias               func(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
+	report                 func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
+	sync                   func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
+	put                    func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	get                    func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
+	list                   func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
+	configuration          func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+}
+
+func (s *capacityReportOperations) ReviewParticipation(ctx context.Context, p model.Principal, id string) (model.WorkerReviewParticipation, error) {
+	if s.reviewParticipation == nil {
+		return model.WorkerReviewParticipation{}, s.unexpected("ReviewParticipation")
+	}
+	return s.reviewParticipation(ctx, p, id)
+}
+
+func (s *capacityReportOperations) PutReviewParticipation(ctx context.Context, p model.Principal, id, expected string, enabled bool) (model.WorkerReviewParticipation, error) {
+	if s.putReviewParticipation == nil {
+		return model.WorkerReviewParticipation{}, s.unexpected("PutReviewParticipation")
+	}
+	return s.putReviewParticipation(ctx, p, id, expected, enabled)
 }
 
 func (s *capacityReportOperations) Alias(ctx context.Context, p model.Principal, id string) (model.WorkerAlias, error) {
