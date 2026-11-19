@@ -9,17 +9,17 @@ import { captureProcessProof, confirmControllerProcessesStopped, inspectProcessP
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const boot = "876b21c9-30d7-48c0-a2ab-287291e903a7";
 const pid = 4101;
-const stat = (ticks = "26140755", parent = 4000, group = pid, state = "S") =>
-  `${pid} (node (worker)) ${[state, parent, group, ...Array(16).fill(0), ticks, 0, 0].join(" ")}\n`;
-let ticks: string, bootId: string, wallTime: string, command: string, group: number, parent: number, state: string, present: boolean;
+const stat = (ticks = "26140755", parent = 4000, group = pid, state = "S", flags = "0") =>
+  `${pid} (node (worker)) ${[state, parent, group, 0, 0, 0, flags, ...Array(12).fill(0), ticks, 0, 0].join(" ")}\n`;
+let ticks: string, bootId: string, wallTime: string, command: string, group: number, parent: number, state: string, flags: string, present: boolean;
 
 beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "linux" });
   ticks = "26140755"; bootId = boot; wallTime = "Thu Nov 19 19:43:08 2026";
-  command = "node main.js --launch-id original"; group = pid; parent = 4000; state = "S"; present = true;
+  command = "node main.js --launch-id original"; group = pid; parent = 4000; state = "S"; flags = "0"; present = true;
   io.read.mockReset().mockImplementation(async (path: string) => {
     if (path === "/proc/sys/kernel/random/boot_id") return `${bootId}\n`;
-    if (path === `/proc/${pid}/stat`) return stat(ticks, parent, group, state);
+    if (path === `/proc/${pid}/stat`) return stat(ticks, parent, group, state, flags);
     throw new Error(`Unexpected process identity read: ${path}`);
   });
   io.exec.mockReset().mockImplementation((_file: string, args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
@@ -135,6 +135,161 @@ it("does not capture running proof when the process becomes a zombie during samp
   let reads = 0;
   io.read.mockImplementation(async (path: string) => path.endsWith("boot_id") ? `${boot}\n` : stat(ticks, parent, group, ++reads === 1 ? "S" : "Z"));
   await expect(captureProcessProof(pid)).rejects.toThrow();
+});
+
+// Each setup starts a fresh observation of the same kernel process. The first
+// stat precedes exit; the final stat reports Z after reparenting and argv loss.
+const observeExit = (exitBeforePs: 0 | 1 | 2, options: { changed?: "ticks" | "boot"; changedGroupAt?: 0 | 1 | 2 | 3; liveMember?: boolean } = {}) => {
+  let statReads = 0, psReads = 0, bootReads = 0;
+  const sampledGroup = (sample: number) => options.changedGroupAt === sample ? 9999 : pid;
+  io.read.mockImplementation(async (path: string) => {
+    if (path === "/proc/sys/kernel/random/boot_id") {
+      return `${options.changed === "boot" && ++bootReads === 2 ? "187b21c9-30d7-48c0-a2ab-287291e903a7" : boot}\n`;
+    }
+    if (path === `/proc/${pid}/stat`) {
+      const final = ++statReads === 2;
+      return stat(options.changed === "ticks" && final ? "26140756" : ticks,
+        final ? 1 : parent, sampledGroup(final ? 3 : 0), final ? "Z" : "S");
+    }
+    throw new Error(`Unexpected process identity read: ${path}`);
+  });
+  io.exec.mockImplementation((_file: string, args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
+    if (args.includes("-A")) {
+      callback(null, `${pid} ${pid} Z\n${options.liveMember ? `4202 ${pid} S\n` : ""}`);
+      return;
+    }
+    const exited = psReads >= exitBeforePs;
+    const observedGroup = sampledGroup(++psReads);
+    callback(null, `${pid} ${exited ? 1 : parent} ${observedGroup} ${exited ? "Z" : "S"} ${wallTime} ${exited ? "[node] <defunct>" : command}\n`);
+  });
+};
+
+it.each([0, 1, 2] as const)("recognizes only the original exited PID when exit occurs before ps observation %s", async exitBeforePs => {
+  const proof = await captureProcessProof(pid);
+  observeExit(exitBeforePs);
+  expect(await inspectProcessProof(proof)).toBe("stopped");
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+
+  observeExit(exitBeforePs);
+  await expect(captureProcessProof(pid)).rejects.toThrow(/exiting/);
+
+  observeExit(exitBeforePs, { liveMember: true });
+  expect(await confirmControllerProcessesStopped(proof, [])).toBe(false);
+  observeExit(exitBeforePs, { liveMember: true });
+  await expect(stopControllerProcesses(proof, [], Date.now() + 5000)).rejects.toThrow(/no original/);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each(["ticks", "boot"] as const)("rejects an exit observation whose %s identity changes during sampling", async changed => {
+  const proof = await captureProcessProof(pid);
+  observeExit(1, { changed });
+  await expect(inspectProcessProof(proof)).rejects.toThrow(/changed during observation/);
+  observeExit(1, { changed, liveMember: true });
+  await expect(stopControllerProcesses(proof, [], Date.now() + 5000)).rejects.toThrow(/changed during observation/);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each([0, 1, 2, 3] as const)("rejects an exited process when group observation %s disagrees", async changedGroupAt => {
+  const proof = await captureProcessProof(pid);
+  observeExit(1, { changedGroupAt });
+  await expect(inspectProcessProof(proof)).rejects.toThrow(/changed during observation/);
+  observeExit(1, { changedGroupAt, liveMember: true });
+  await expect(stopControllerProcesses(proof, [], Date.now() + 5000)).rejects.toThrow(/changed during observation/);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each(["ticks", "boot", "group"] as const)("does not identify a different stable zombie %s as the saved original", async difference => {
+  const proof = await captureProcessProof(pid);
+  state = "Z"; parent = 1; command = "[node] <defunct>";
+  if (difference === "ticks") ticks = "26140756";
+  else if (difference === "boot") bootId = "187b21c9-30d7-48c0-a2ab-287291e903a7";
+  else group = 9999;
+  expect(await inspectProcessProof(proof)).toBe("replaced");
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each(["Z", "ESRCH"] as const)("waits for a kernel-exiting original to reach %s before confirming that PID stopped", async terminal => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  flags = "4"; command = "[node] <defunct>"; parent = 1;
+  const read = io.read.getMockImplementation()!;
+  io.read.mockImplementation(async (path: string) => {
+    if (path === `/proc/${pid}/stat` && !present) throw Object.assign(new Error("Process disappeared"), { code: "ENOENT" });
+    return read(path);
+  });
+  io.exec.mockClear(); io.read.mockClear();
+  let settled = false;
+  const pending = inspectProcessProof(proof, 100).then(value => { settled = true; return value; });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(settled).toBe(false);
+  expect(io.exec).toHaveBeenCalledTimes(2);
+  if (terminal === "Z") state = "Z";
+  else present = false;
+  await vi.advanceTimersByTimeAsync(25);
+  expect(await pending).toBe("stopped");
+  expect(io.read.mock.calls.filter(([path]) => path === "/proc/sys/kernel/random/boot_id").length).toBeGreaterThan(2);
+  expect(io.read.mock.calls.filter(([path]) => path === `/proc/${pid}/stat`).length).toBeGreaterThan(2);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it("does not create a running proof from the kernel exit flag before the process becomes a zombie", async () => {
+  flags = "4";
+  await expect(captureProcessProof(pid)).rejects.toThrow(/exiting/);
+  expect(process.kill).not.toHaveBeenCalled();
+});
+
+it("does not renew the passive exit budget when re-sampling or when wall time moves backwards", async () => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  flags = "4"; command = "[node] <defunct>";
+  io.exec.mockClear();
+  const started = performance.now();
+  let settled = false;
+  const pending = inspectProcessProof(proof, 100).catch(error => { settled = true; return error; });
+  await vi.advanceTimersByTimeAsync(25);
+  expect(settled).toBe(false);
+  vi.setSystemTime(Date.now() - 60_000);
+  await vi.advanceTimersByTimeAsync(75);
+  expect((await pending).message).toMatch(/deadline.*unconfirmed/i);
+  expect(performance.now() - started).toBe(100);
+  const timeouts = io.exec.mock.calls.map(([, , options]) => options.timeout as number);
+  expect(timeouts[0]).toBe(100);
+  expect(timeouts.at(-1)).toBe(25);
+  expect(timeouts.every((timeout, index) => index === 0 || timeout <= timeouts[index - 1]!)).toBe(true);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each(["ticks", "boot", "group"] as const)("does not wait on or authorize a kernel-exiting process with a different %s identity", async difference => {
+  const proof = await captureProcessProof(pid);
+  flags = "4"; command = "[node] <defunct>";
+  if (difference === "ticks") ticks = "26140756";
+  else if (difference === "boot") bootId = "187b21c9-30d7-48c0-a2ab-287291e903a7";
+  else group = 9999;
+  io.exec.mockClear();
+  expect(await inspectProcessProof(proof, 100)).toBe("replaced");
+  expect(io.exec).toHaveBeenCalledTimes(2);
+  if (difference === "group") await stopControllerProcesses(proof, [], Date.now() + 100);
+  else await expect(stopControllerProcesses(proof, [], Date.now() + 100)).rejects.toThrow(/no original/);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it("does not send a stop signal to a process that remains in kernel exit until the stop deadline", async () => {
+  const proof = await captureProcessProof(pid);
+  vi.useFakeTimers();
+  flags = "4";
+  const pending = stopControllerProcesses(proof, [], Date.now() + 100).catch(error => error);
+  await vi.advanceTimersByTimeAsync(100);
+  expect((await pending).message).toMatch(/deadline/);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+});
+
+it.each(["0", "8"])("does not retry ordinary command replacement without PF_EXITING (flags=%s)", async kernelFlags => {
+  const proof = await captureProcessProof(pid);
+  flags = kernelFlags; command = "[node] <defunct>";
+  io.exec.mockClear();
+  expect(await inspectProcessProof(proof, 100)).toBe("replaced");
+  expect(io.exec).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(process.kill).mock.calls.every(([, signal]) => signal === 0)).toBe(true);
 });
 
 it.each(["-1", "1.5", "18446744073709551616"])("rejects invalid kernel start ticks (%s)", async invalid => {
