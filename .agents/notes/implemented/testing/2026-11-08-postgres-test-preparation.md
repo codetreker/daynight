@@ -167,14 +167,18 @@ committed operations and scoped results. A failed case stops reuse.
 
 The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
 and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
-matrices each use one Store. Cases keep distinct App, grant, and Project
-identities with mutations restricted to their own rows. Signal tests hold the
-installation and repository identifiers constant across Apps and read committed
-pending rows by Project. Retirement cases finish their transaction before the
-next case. The trigger fault is observed as its PostgreSQL exception, the
-affected state is read back after rollback, and the trigger and function are
-removed and checked in the catalog before reuse. A failed case or transaction
-release stops the matrix.
+matrices each use one Store. Signal cases hold installation and repository
+identifiers constant across distinct Apps and read committed pending rows
+by Project. Project retirement cases keep separate App, grant, and Project
+identities. The retirement trigger raises its PostgreSQL exception, and state
+is read back after rollback. The trigger and function are removed and checked
+in the catalog before reuse.
+
+The pre-canceled retirement matrix also uses one Store, with a new transaction
+and fresh identifiers for each DAO call. Each call receives a canceled context
+after its transaction has already begun. The transaction is rolled back with a
+live context, the pool is checked for reuse, and the fixture remains empty.
+A failed case stops either retirement matrix.
 
 [Task write competition](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
 uses distinct Project and Task IDs inside each matrix's store. Actual lock

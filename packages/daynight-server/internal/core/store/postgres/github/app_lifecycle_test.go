@@ -10,6 +10,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -146,15 +147,21 @@ func TestProjectRetirementMissingUnboundAndIntegrity(t *testing.T) {
 }
 
 func TestRetirementDAOPropagatesCancellation(t *testing.T) {
+	db, _ := dbFixture(t)
 	for _, operation := range []string{"binding", "Team grants", "stop", "impact", "revoke"} {
-		t.Run(operation, func(t *testing.T) {
-			db, _ := dbFixture(t)
+		if !t.Run(operation, func(t *testing.T) {
 			ctx := t.Context()
 			tx, err := db.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback(context.Background())
+			defer func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+					t.Errorf("release canceled retirement transaction: %v", err)
+				}
+			}()
 			canceled, cancel := context.WithCancel(ctx)
 			cancel()
 			switch operation {
@@ -172,7 +179,19 @@ func TestRetirementDAOPropagatesCancellation(t *testing.T) {
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancellation lost: %v", err)
 			}
-		})
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			testutil.AssertPoolReusable(t, db.Pool)
+			var empty bool
+			if err := db.Pool.QueryRow(ctx, `SELECT NOT EXISTS(SELECT FROM project_github)
+ AND NOT EXISTS(SELECT FROM github_apps)
+ AND NOT EXISTS(SELECT FROM github_app_team_grants)`).Scan(&empty); err != nil || !empty {
+				t.Fatalf("canceled retirement changed fixture: empty=%t error=%v", empty, err)
+			}
+		}) {
+			return
+		}
 	}
 }
 
