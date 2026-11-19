@@ -40,10 +40,16 @@ type projectCreateInput struct {
 	Confirm bool   `json:"confirm"`
 }
 type projectTransferInput struct {
-	ProjectID string  `json:"projectId"`
-	ToTeam    string  `json:"toTeam"`
-	IfVersion *string `json:"ifVersion"`
-	Confirm   bool    `json:"confirm"`
+	ProjectID                    string  `json:"projectId"`
+	ToTeam                       string  `json:"toTeam"`
+	IfVersion                    *string `json:"ifVersion"`
+	IfTargetVersion              *string `json:"ifTargetVersion"`
+	Confirm                      bool    `json:"confirm"`
+	ConfirmGoalDependencyRemoval bool    `json:"confirmGoalDependencyRemoval"`
+}
+type projectTransferPreviewInput struct {
+	ProjectID string `json:"projectId"`
+	ToTeam    string `json:"toTeam"`
 }
 type projectShowInput struct {
 	ProjectID string `json:"projectId"`
@@ -70,7 +76,10 @@ func RegisterProjectTools(e *Entry, projects projectOperations, identity persona
 	if err := RegisterTypedTool(e, byName["project_create"], BudgetLarge, h.create, "name", "repoUrl", "team"); err != nil {
 		return err
 	}
-	if err := RegisterTypedTool(e, byName["project_transfer"], BudgetControl, h.transfer, "projectId", "toTeam", "ifVersion"); err != nil {
+	if err := registerTypedReadTool(e, byName["project_transfer_preview"], BudgetControl, h.transferPreview, "projectId", "toTeam"); err != nil {
+		return err
+	}
+	if err := RegisterTypedTool(e, byName["project_transfer"], BudgetControl, h.transfer, "projectId", "toTeam", "ifVersion", "ifTargetVersion"); err != nil {
 		return err
 	}
 	if err := registerTypedReadTool(e, byName["project_list"], BudgetLarge, h.list, "cursor"); err != nil {
@@ -233,15 +242,49 @@ func mapProjectAccess(a *model.ProjectAccess) *projectAccessWire {
 	}
 	return out
 }
+func (h *projectTools) transferPreview(ctx context.Context, actor RequestActor, in projectTransferPreviewInput) (ToolResult, error) {
+	target, err := teamIdentifier(in.ToTeam, h.origin)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	preview, err := h.projects.TransferPreview(ctx, actor.Principal, in.ProjectID, target)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	project, err := h.projects.Get(ctx, actor.Principal, in.ProjectID)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	return ToolResult{Data: map[string]any{
+		"projectId": project.ID, "projectName": project.Name,
+		"sourceTeam": MapTeamRef(preview.SourceTeam),
+		"targetTeam": map[string]any{"id": preview.TargetTeam.ID, "name": preview.TargetTeam.Name, "kind": preview.TargetTeam.Kind, "version": Decimal(preview.TargetTeamVersion)},
+		"ownership":  ProjectOwnership{TeamID: preview.Ownership.TeamID, Version: Decimal(preview.Ownership.Version), UpdatedAt: preview.Ownership.UpdatedAt.UTC()},
+		"goalDependencyRemoval": map[string]any{
+			"onOwnershipChange": true, "ownershipWillChange": preview.Ownership.TeamID != target, "permanent": true,
+			"scope": "All Goal dependencies with either endpoint in this Project, including internal dependencies and incoming and outgoing dependencies across Projects. Other Projects may be affected. Transferring back does not restore these relationships. Unchanged ownership preserves them.",
+		},
+	}}, nil
+}
+
 func (h *projectTools) transfer(ctx context.Context, actor RequestActor, in projectTransferInput) (ToolResult, error) {
 	target, err := teamIdentifier(in.ToTeam, h.origin)
 	if err != nil {
 		return ToolResult{}, err
 	}
 	refs := map[string]any{"projectId": in.ProjectID, "targetTeamId": target}
-	var version int64
+	if in.ConfirmGoalDependencyRemoval && (in.IfVersion == nil || in.IfTargetVersion == nil) {
+		return ToolResult{Refs: refs}, &model.Fault{Code: "invalid_input", Message: "Goal dependency removal confirmation requires both ifVersion and ifTargetVersion from project_transfer_preview. Preview and obtain explicit user confirmation before submitting."}
+	}
+	var version, targetVersion int64
 	if in.IfVersion != nil {
 		version, err = ParseVersion(*in.IfVersion)
+		if err != nil {
+			return ToolResult{Refs: refs}, err
+		}
+	}
+	if in.IfTargetVersion != nil {
+		targetVersion, err = ParseVersion(*in.IfTargetVersion)
 		if err != nil {
 			return ToolResult{Refs: refs}, err
 		}
@@ -254,7 +297,10 @@ func (h *projectTools) transfer(ctx context.Context, actor RequestActor, in proj
 	if in.IfVersion != nil {
 		preview.Ownership.Version = version
 	}
-	receipt, err := h.projects.Transfer(ctx, actor.Principal, in.ProjectID, coreproject.TransferInput{Ownership: preview.Ownership, TargetTeam: coreproject.TeamVersion{ID: target, Version: preview.TargetTeamVersion}, ExpectedUserID: actor.Principal.UserID})
+	if in.IfTargetVersion != nil {
+		preview.TargetTeamVersion = targetVersion
+	}
+	receipt, err := h.projects.Transfer(ctx, actor.Principal, in.ProjectID, coreproject.TransferInput{ConfirmGoalDependencyRemoval: in.ConfirmGoalDependencyRemoval, Ownership: preview.Ownership, TargetTeam: coreproject.TeamVersion{ID: target, Version: preview.TargetTeamVersion}, ExpectedUserID: actor.Principal.UserID})
 	if err != nil {
 		return ToolResult{Refs: refs}, err
 	}

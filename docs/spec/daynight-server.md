@@ -114,6 +114,8 @@ MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调
 确认并执行创建事务；创建权限通过后，不可见占用或并发竞争返回 `project_repository_conflict`。历史 NULL 身份不参与匹配。
 跨 Team 的可见匹配仍可使独立仓库发现报告歧义。
 
+MCP 的只读 `project_transfer_preview(projectId,toTeam)` 沿用转移预览权限，返回项目 ID、名称、来源与目标 Team、精确 ownership 与目标 Team 版本，以及永久清理范围。实际转移会原子移除本项目任一端的全部 Goal 依赖，包括项目内与跨项目两方向，影响其他项目且转回不恢复；同归属空操作保留关系。宿主必须先展示本次项目、目标 Team 和清理范围，取得明确用户答复；未答复或拒绝时零次调用写工具。确认后 `project_transfer` 携带 `confirm:true`、`confirmGoalDependencyRemoval:true`，以及预览原值 `ifVersion` 和 `ifTargetVersion`；清理确认缺少任一版本时拒绝。版本冲突必须重新预览并确认，结果未知不得自动重放。旧请求未声明清理确认时，有边的实际转移被拒绝并保留关系，无边及同归属操作保留既有行为。经其他受支持入口删除项目时，MCP 宿主同样先取得对项目和永久清理范围的明确确认。
+
 接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
 列表在数据库中先按当前成员关系过滤，再进行分页。创建后 `repoUrl` 不可通过 task 或设置更新改变。

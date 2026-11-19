@@ -362,6 +362,8 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 另一种并发控制，但还需要全操作重试及冲突响应策略；project 已经是依赖范围，因此
 以 project 行锁组织写入更直接。若出现单 project 写入瓶颈，再根据观测重新评估。
 
+MCP 的只读 `project_transfer_preview(projectId,toTeam)` 复用项目转移预览准入，再读取 Project 名称，返回项目身份、来源和目标 Team、精确十进制字符串 ownership 与目标 Team 版本，以及永久清理范围。预览不枚举或计数关系；确认覆盖事务提交时所有相关 Goal 边，包括其他项目的入边和出边。宿主展示项目、两侧 Team 和影响，取得用户对本次转移及清理的明确答复后，才调用 `project_transfer`，同时提交 `confirm:true`、`confirmGoalDependencyRemoval:true`、预览原值 `ifVersion` 和 `ifTargetVersion`。清理确认要求两个版本均存在，适配器保持原值并交给既有事务检查。无答复或拒绝时宿主不调用写工具；冲突须重新预览和确认，结果未知不自动重放。stateless MCP 不发起服务端确认请求。旧工具请求缺少清理声明时沿用服务端拒绝规则，无边及同归属空操作保持可用。完整调用方法由嵌入的 `daynight://manuals/concepts.md` 维护。
+
 ## HTTP 传输准入
 
 Runtime 在业务路由前限制原始 target 和 query，并将 Go 的 `MaxHeaderBytes` 设置为 64 KiB 减去初始读取的 4096-byte slop。该预算适用于 HTTP/1；未来 HTTP/2 的解压头字段需独立定义。`httpx` 沿 `ResponseWriter.Unwrap` 使用 `ResponseController`，在实际读取开始时设置 socket deadline。成功读到 EOF 后清除期限；请求入口跟踪底层 body 的实际 EOF，使已消费正文的业务错误保留连接与正常取消语义。取消或未消费正文时关闭连接并阻止自动 drain。流式读取使用 `DeadlineBody`，供附件和归档入口在授权后的实际读取处应用各自期限。
