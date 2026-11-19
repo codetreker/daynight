@@ -99,6 +99,14 @@ checks Session authentication while the relation is still absent. A failed case
 stops further reuse. Assignee error tests reuse each fault schema for two
 read-only modes.
 
+[Project App root failures](../../../../packages/daynight-server/internal/core/store/postgres/github_project_app_scope_test.go)
+share one Store for missing ownership or Team rows and the three catalog
+faults. The write scope sees each committed fault. After restoring the
+original rows or reversing the rename, the test resets cached plans and
+checks that the real write scope commits without creating a connection.
+The original catalog identities and fixture rows must match before the
+next case. The missing App and closed-pool checks own a separate Store.
+
 [Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_boundaries_test.go)
 share one committed Session for the descriptor, missing relations and canceled
 read. The read-only inventory transaction observes committed faults. Cleanup
