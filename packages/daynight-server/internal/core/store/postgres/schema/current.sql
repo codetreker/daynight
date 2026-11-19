@@ -1,4 +1,4 @@
--- Schema snapshot version: 88
+-- Schema snapshot version: 89
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -711,6 +711,17 @@ CREATE TABLE "session_archive_migrations" (
     "target_path" "text" DEFAULT ''::"text" NOT NULL,
     "target_hash" "text" DEFAULT ''::"text" NOT NULL,
     "phase" "text" NOT NULL
+);
+
+CREATE TABLE "session_archive_retention" (
+    "session_id" "uuid" NOT NULL,
+    "first_succeeded_at" timestamp with time zone,
+    "grace_until" timestamp with time zone,
+    "expires_at" timestamp with time zone,
+    "expired_at" timestamp with time zone,
+    "reason" "text" DEFAULT 'pending'::"text" NOT NULL,
+    "version" bigint DEFAULT 1 NOT NULL,
+    "members" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL
 );
 
 CREATE TABLE "session_archives" (
@@ -1743,6 +1754,9 @@ ALTER TABLE ONLY "session_archive_migrations"
 
 ALTER TABLE ONLY "session_archive_migrations"
     ADD CONSTRAINT "session_archive_migrations_pkey" PRIMARY KEY ("session_id");
+
+ALTER TABLE ONLY "session_archive_retention"
+    ADD CONSTRAINT "session_archive_retention_pkey" PRIMARY KEY ("session_id");
 
 ALTER TABLE ONLY "session_archives"
     ADD CONSTRAINT "session_archives_pkey" PRIMARY KEY ("session_id");

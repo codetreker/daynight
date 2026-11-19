@@ -1113,6 +1113,9 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 		if e = dao.SetUnifiedSessionArchiveReady(ctx, op.id, digest, len(data), path, manifest.Completeness); e != nil {
 			return e
 		}
+		if e = op.execution.recordArchiveSuccess(ctx, tx, op.id); e != nil {
+			return e
+		}
 		// A stopped original writer may have created its native session after
 		// the last relay acknowledgement, but cannot replace a known identity.
 		if r.Snapshot.Identity.NativeSessionID == nil && manifest.NativeSessionID != nil {
