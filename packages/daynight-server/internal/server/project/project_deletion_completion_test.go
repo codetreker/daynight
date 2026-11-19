@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 )
@@ -31,7 +32,7 @@ func TestProjectDeletionHTTPCompletionClassification(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHTTPHarness(t)
-			h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+			h.Projects.DeleteWithInputFunc = func(_ context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 				if id != h.Project.ID {
 					t.Fatal(id)
 				}
@@ -50,7 +51,7 @@ func TestProjectDeletionHTTPCompletionClassification(t *testing.T) {
 			if strings.Contains(response.Body.String(), "private") || strings.Contains(h.Logs.String(), "private") {
 				t.Fatalf("unsafe output body=%s logs=%s", response.Body, &h.Logs)
 			}
-			h.assertCalls(map[string]int{"Delete": 1})
+			h.assertCalls(map[string]int{"DeleteWithInput": 1})
 		})
 	}
 }
@@ -59,7 +60,7 @@ func TestProjectDeletionHTTPLostSuccessResponse(t *testing.T) {
 	for _, short := range []bool{false, true} {
 		t.Run(map[bool]string{false: "failed write", true: "short write"}[short], func(t *testing.T) {
 			h := newHTTPHarness(t)
-			h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+			h.Projects.DeleteWithInputFunc = func(_ context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 				if id != h.Project.ID {
 					t.Fatal(id)
 				}
@@ -73,14 +74,14 @@ func TestProjectDeletionHTTPLostSuccessResponse(t *testing.T) {
 			if !strings.Contains(h.Logs.String(), `"component":"project_deletion"`) || !strings.Contains(h.Logs.String(), `"phase":"response"`) || strings.Contains(h.Logs.String(), "private response failure") {
 				t.Fatalf("response logs=%s", &h.Logs)
 			}
-			h.assertCalls(map[string]int{"Delete": 1})
+			h.assertCalls(map[string]int{"DeleteWithInput": 1})
 		})
 	}
 }
 
 func TestProjectDeletionHTTPPreflightFailure(t *testing.T) {
 	h := newHTTPHarness(t)
-	h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+	h.Projects.DeleteWithInputFunc = func(_ context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 		if id != h.Project.ID {
 			t.Fatal(id)
 		}
@@ -91,14 +92,14 @@ func TestProjectDeletionHTTPPreflightFailure(t *testing.T) {
 	if body.Error.Code != "internal_error" || body.Error.Details == nil || body.Error.Details.WriteOutcome == nil || *body.Error.Details.WriteOutcome != "not_committed" {
 		t.Fatalf("preflight=%s", response.Body)
 	}
-	h.assertCalls(map[string]int{"Delete": 1})
+	h.assertCalls(map[string]int{"DeleteWithInput": 1})
 }
 
 func TestProjectDeletionHTTPCancellationReachesOperation(t *testing.T) {
 	h := newHTTPHarness(t)
 	started := make(chan struct{})
 	exited := make(chan struct{})
-	h.Projects.DeleteFunc = func(ctx context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+	h.Projects.DeleteWithInputFunc = func(ctx context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 		if id != h.Project.ID {
 			t.Errorf("id=%s", id)
 		}
@@ -132,5 +133,5 @@ func TestProjectDeletionHTTPCancellationReachesOperation(t *testing.T) {
 	if response.Body.Len() != 0 {
 		t.Fatalf("wrote canceled response: %s", response.Body)
 	}
-	h.assertCalls(map[string]int{"Delete": 1})
+	h.assertCalls(map[string]int{"DeleteWithInput": 1})
 }
