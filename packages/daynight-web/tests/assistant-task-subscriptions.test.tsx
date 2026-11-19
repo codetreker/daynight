@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AssistantTask } from '../src/api/assistant-tasks';
 import { invalidateAuthRequests } from '../src/api/client';
@@ -197,6 +197,39 @@ it('adopts a create confirmed by a manual operation check while the directory re
   fireEvent.click(save);
   await waitFor(() => expect(s.writes).toHaveLength(2));
   expect(s.writes[1]).toMatchObject({ method: 'PATCH', path: `/api/v1/me/webhooks/${botId(80)}`, body: { ifVersion: '1' } });
+});
+
+it('releases a recovered create that belongs to another inbox without blocking this inbox', async () => {
+  const s = server(); mount();
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  const original = s.fetch.getMockImplementation()!;
+  let receipt: unknown = null, lookupFails = true;
+  s.fetch.mockImplementation(async (url, options) => {
+    const path = String(url), method = options?.method ?? 'GET';
+    if (method === 'POST') { receipt = (await (await original(url, options)).json() as { operation: unknown }).operation; throw new TypeError('Response lost'); }
+    if (path.startsWith('/api/v1/me/webhooks/operations/')) return lookupFails ? botError(500, 'internal') : botResponse(receipt);
+    return original(url, options);
+  });
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task created' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  await screen.findByRole('button', { name: 'Check operation' });
+  cleanup();
+  lookupFails = false;
+  const otherInbox = botId(81);
+  mount({ inboxId: otherInbox });
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  fireEvent.click(await screen.findByRole('button', { name: 'Check operation' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Check operation' })).toBeNull());
+  await waitFor(() => expect(s.fetch).toHaveBeenCalledWith(`/api/v1/me/webhooks/${botId(80)}`, expect.anything()));
+  const create = await screen.findByRole('button', { name: 'Create subscription' });
+  await waitFor(() => expect(create).toBeEnabled());
+  expect(screen.getByText('No Webhook endpoint targets this inbox yet.')).toBeVisible();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Beta' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(create);
+  await waitFor(() => expect(s.writes).toHaveLength(2));
+  expect(s.writes[1]).toMatchObject({ method: 'POST', body: { destination: { configuration: { url: `${origin}/api/v1/assistant-task-inbox/${otherInbox}` } } } });
 });
 
 it('prompts to pause or delete endpoints that still target a disabled inbox', async () => {

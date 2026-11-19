@@ -89,11 +89,21 @@ const pages = async <T,>(read: (cursor: string | null) => Promise<{ readonly ite
 };
 const webhookAdmission = (scope: TaskCacheScope): WebhookAdmission => ({ userId: scope.userId, onPrincipalMismatch: scope.principalMismatch, ready: signal => scope.ready(signal) });
 
-async function loadDirectory(scope: TaskCacheScope, matches: (target: string | null) => boolean, includeTeam: boolean, signal: AbortSignal): Promise<Directory> {
+const endpointGone = (error: unknown) => error instanceof ApiError && error.kind === 'server' && (error.status === 404 || error.status === 410);
+
+/**
+ * `pendingId` names a confirmed create whose destination is not yet known. It is read directly so the directory states
+ * authoritatively whether that endpoint targets this inbox, independent of list ordering or pagination.
+ */
+async function loadDirectory(scope: TaskCacheScope, matches: (target: string | null) => boolean, includeTeam: boolean, pendingId: string | null, signal: AbortSignal): Promise<Directory> {
   const admission = webhookAdmission(scope), personal: WebhookOwner = { kind: 'personal', id: scope.userId };
   const projects = await pages(cursor => listProjects({ limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }));
   const summaries = await pages(cursor => listWebhooks(personal, { limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, admission));
   const linked = await Promise.all(summaries.filter(item => matches(item.destination.url)).map(item => getWebhook(personal, item.id, signal, admission)));
+  if (pendingId !== null && !linked.some(item => item.id === pendingId)) {
+    const pending = await getWebhook(personal, pendingId, signal, admission).catch(error => { if (endpointGone(error)) return null; throw error; });
+    if (pending?.lifecycle === 'active' && matches(pending.destination.url)) linked.push(pending);
+  }
   const teams = includeTeam ? (await pages(cursor => listTeams(cursor, scope.userId, signal, scope.principalMismatch))).filter(team => team.kind === 'ordinary') : [];
   const team: TeamEndpoint[] = [];
   for (const entry of teams) {
@@ -121,22 +131,29 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const reading = active && selfSubscribe && matchKey !== null;
   const [directory, setDirectory] = useState<{ readonly url: string; readonly value: Directory } | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null), [revision, setRevision] = useState(0);
+  // A confirmed create is adopted immediately so a slow or failed directory refresh cannot reopen the create branch
+  // and produce a second independent endpoint. A receipt-only confirmation does not show the destination: the
+  // controller restores a pending operation per user rather than per inbox, so it may belong to another inbox. Such an
+  // adoption stays unverified until a directory load reads the endpoint and either keeps it or releases it.
+  const [created, setCreated] = useState<{ readonly url: string; readonly endpointId: string; readonly endpoint: WebhookActiveEndpoint | null } | null>(null);
+  const createdRef = useRef(created);
+  createdRef.current = created;
   useEffect(() => {
     if (!reading || matchKey === null) return;
     const matches = inboxUrl === null ? (target: string | null) => targetsAnyInbox(target, serviceOrigin) : (target: string | null) => targetsInbox(target, inboxUrl);
     const controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
+    const pending = createdRef.current?.url === matchKey && createdRef.current.endpoint === null ? createdRef.current : null;
     void (async () => {
       try {
         await scope.ready(signal);
-        const value = await loadDirectory(scope, matches, !retired, signal);
-        if (!signal.aborted) { setDirectory({ url: matchKey, value }); setLoadError(null); }
+        const value = await loadDirectory(scope, matches, !retired, pending?.endpointId ?? null, signal);
+        if (signal.aborted) return;
+        setDirectory({ url: matchKey, value }); setLoadError(null);
+        if (pending !== null && !value.personal.some(item => item.id === pending.endpointId)) setCreated(old => old === pending ? null : old);
       } catch (error) { if (!signal.aborted) setLoadError(error); }
     })();
     return () => controller.abort();
   }, [reading, inboxUrl, matchKey, retired, serviceOrigin, scope, revision]);
-  // A confirmed create is adopted immediately so a slow or failed directory refresh cannot reopen the create branch
-  // and produce a second independent endpoint.
-  const [created, setCreated] = useState<{ readonly url: string; readonly endpointId: string; readonly endpoint: WebhookActiveEndpoint | null } | null>(null);
   const adopted = created?.url === matchKey ? created : null;
   const loaded = directory?.url === matchKey ? directory.value : null;
   const data = loaded === null || adopted?.endpoint == null || loaded.personal.some(item => item.id === adopted.endpointId) ? loaded : { ...loaded, personal: [...loaded.personal, adopted.endpoint] };
@@ -149,12 +166,14 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const [failure, setFailure] = useState<unknown>(null);
   // Both a direct submit and a manual reconciliation can confirm a create; either way the endpoint is adopted.
   const confirm = useCallback((state: WebhookIntentState) => {
-    if (state.result?.operation.kind === 'endpoint.create' && matchKey !== null) {
-      const endpoint = state.result.endpoint?.lifecycle === 'active' ? state.result.endpoint : null;
-      setCreated({ url: matchKey, endpointId: state.result.operation.endpointId, endpoint });
+    if (state.result?.operation.kind === 'endpoint.create' && matchKey !== null && inboxUrl !== null) {
+      const view = state.result.endpoint;
+      // A returned view proves the destination; an endpoint aimed elsewhere or already deleted is not adopted.
+      if (view === undefined) setCreated({ url: matchKey, endpointId: state.result.operation.endpointId, endpoint: null });
+      else if (view.lifecycle === 'active' && targetsInbox(view.destination.url, inboxUrl)) setCreated({ url: matchKey, endpointId: view.id, endpoint: view });
     }
     setRevision(value => value + 1);
-  }, [matchKey]);
+  }, [matchKey, inboxUrl]);
   const submit = useCallback(async (input: WebhookIntentInput) => {
     if (controller === null) return false;
     setFailure(null);
