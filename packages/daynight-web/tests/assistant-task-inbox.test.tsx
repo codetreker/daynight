@@ -40,9 +40,12 @@ function server(initial: Inbox) {
 }
 function mount(onChanged = vi.fn(async () => undefined)) {
   const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  renderWithLocale(<TaskCacheProvider scope={scope}><AssistantTaskInbox task={task} enabled disabled={false} onChanged={onChanged} /></TaskCacheProvider>, { locale: 'en' });
+  const view = (props: { readonly task: AssistantTask; readonly enabled: boolean }) => <TaskCacheProvider scope={scope}><AssistantTaskInbox task={props.task} enabled={props.enabled} disabled={false} onChanged={onChanged} /></TaskCacheProvider>;
+  const { rerender } = renderWithLocale(view({ task, enabled: true }), { locale: 'en' });
+  mounted.rerender = props => rerender(view(props));
   return onChanged;
 }
+const mounted: { rerender: (props: { readonly task: AssistantTask; readonly enabled: boolean }) => void } = { rerender: () => undefined };
 
 it('routes the inbox tab of an assistant task', () => {
   expect(parseAuthRoute(`/bots/tasks/${taskId}`, '?tab=inbox')).toEqual({ kind: 'assistantTask', taskId, tab: 'inbox' });
@@ -69,24 +72,6 @@ it('enables the inbox, shows the token once and the token-free URL with copy act
   await waitFor(() => expect(writeText).toHaveBeenCalledWith(token));
   fireEvent.click(screen.getByRole('button', { name: 'I have saved the token' }));
   expect(screen.queryByText(token)).toBeNull();
-});
-
-it('keeps a token issued while the inbox tab was hidden for the same mounted panel', async () => {
-  const s = server(off), scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
-  const view = (enabled: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskInbox task={task} enabled={enabled} disabled={false} onChanged={vi.fn(async () => undefined)} /></TaskCacheProvider>;
-  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
-  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
-  let release!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const original = vi.mocked(fetch).getMockImplementation()!;
-  vi.mocked(fetch).mockImplementationOnce(async (url, options) => { await gate; return original(url, options); });
-  fireEvent.click(enable);
-  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([, options]) => options?.method === 'POST')).toBe(true));
-  rerender(view(false));
-  release();
-  await waitFor(() => expect(s.writes).toHaveLength(1));
-  rerender(view(true));
-  expect(within(await screen.findByRole('group', { name: 'New token' })).getByText(token)).toBeVisible();
 });
 
 it('rotates with overlap by default and only immediately while an overlap token is still valid', async () => {
@@ -173,4 +158,57 @@ it('validates inbox payloads and rejects malformed tokens or inconsistent state'
   vi.stubGlobal('fetch', vi.fn(async () => botResponse(receipt('inbox_enable', on, operationId, null))));
   await expect(enableAssistantTaskInbox(taskId, { operationId, ifVersion: '7' }, signal, admission)).resolves.toMatchObject({ token: null, inbox: on });
   expect(assistantTaskInboxUrl(inboxId, 'https://daynight.example')).toBe(`https://daynight.example/api/v1/assistant-task-inbox/${inboxId}`);
+});
+
+it('submits the confirmed task version and requires a new confirmation after the task changes', async () => {
+  const s = server(on); mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Disable inbox' }));
+  mounted.rerender({ task: { ...task, version: '8' }, enabled: true });
+  const dialog = screen.getByRole('dialog', { name: 'Disable inbox' });
+  expect(within(dialog).getByRole('alert')).toHaveTextContent(/changed after you opened this confirmation/);
+  expect(within(dialog).getByRole('button', { name: 'Disable inbox' })).toBeDisabled();
+  fireEvent.submit(within(dialog).getByRole('button', { name: 'Disable inbox' }).closest('form')!);
+  expect(s.writes).toEqual([]);
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  mounted.rerender({ task: { ...task, version: '8' }, enabled: true });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Rotate token' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Rotate token' }));
+  mounted.rerender({ task: { ...task, version: '8' }, enabled: true });
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Rotate inbox token' })).getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(s.writes.at(-1)?.input).toEqual({ operationId: expect.any(String), ifVersion: '8', mode: 'overlap' }));
+});
+
+it('pairs the submitted version with the displayed inbox instead of a newer independently loaded task version', async () => {
+  const s = server(on); mount();
+  await screen.findByRole('button', { name: 'Disable inbox' });
+  const replacement = botId(93);
+  let respond!: () => void;
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementationOnce((url, options) => new Promise(resolve => { respond = () => resolve(original(url, options)); }));
+  s.state.inbox = { ...on, inboxId: replacement };
+  mounted.rerender({ task: { ...task, version: '9' }, enabled: true });
+  expect(screen.getByText(assistantTaskInboxUrl(inboxId))).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Disable inbox' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Rotate token' })).toBeDisabled();
+  await waitFor(() => expect(respond).toBeDefined());
+  respond();
+  expect(await screen.findByText(assistantTaskInboxUrl(replacement))).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Disable inbox' }));
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Disable inbox' })).getByRole('button', { name: 'Disable inbox' }));
+  await waitFor(() => expect(s.writes.at(-1)?.input).toEqual({ operationId: expect.any(String), ifVersion: '9' }));
+});
+
+it('keeps a token issued while the inbox tab was hidden', async () => {
+  server(off); const changed = mount();
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  let respond!: () => void;
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementationOnce((url, options) => new Promise(resolve => { respond = () => resolve(original(url, options)); }));
+  fireEvent.click(enable);
+  await waitFor(() => expect(respond).toBeDefined());
+  mounted.rerender({ task, enabled: false });
+  respond();
+  await waitFor(() => expect(changed).toHaveBeenCalled());
+  mounted.rerender({ task, enabled: true });
+  expect(within(await screen.findByRole('group', { name: 'New token' })).getByText(token)).toBeVisible();
 });

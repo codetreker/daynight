@@ -1,4 +1,5 @@
 import './native-select-fixture.css';
+import '../../src/styles/typography.css';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { NativeSelect, isNativeSelectPopupOpen } from '../../src/ui/native-select/NativeSelect';

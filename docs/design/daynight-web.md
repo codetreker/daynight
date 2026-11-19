@@ -69,11 +69,11 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ### 工作空间导航
 
-`AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权。`app/sidebar/WorkspaceSidebar` 拥有折叠、抽屉、焦点和滚动生命周期；`WorkspaceNavigation` 根据 `AuthRoute` 组合三组固定入口，第一组在 Team 选择器和项目之间放置账号级“进行中的任务”，其后为“我的”和“工具”组；`SidebarProjectList` 消费现有 `useProjectList` 目录。`/my-tasks` 链接不依赖 Team ready，项目和团队入口继续使用 Team 链接准入。`SidebarTeamContext` 分离 Personal ID、仅在 Team ready 时可生成链接的 ID 和仅用于可见性的 ID，未知范围保留禁用占位，已确认 Personal 隐藏团队设置。
+`AuthenticatedApp` 的 Workspace 保持路由、认证屏障、顶栏与正文所有权，并与 `app/sidebar/WorkspaceSidebar` 共享临时抽屉状态、独立打开按钮引用和关闭原因。`WorkspaceSidebar` 管理侧栏呈现、抽屉焦点和滚动生命周期；`WorkspaceNavigation` 根据 `AuthRoute` 组合三组固定入口，第一组在 Team 选择器和项目之间放置账号级“进行中的任务”，其后为“我的”和“工具”组；`SidebarProjectList` 消费现有 `useProjectList` 目录。`/my-tasks` 链接不依赖 Team ready，项目和团队入口继续使用 Team 链接准入。`SidebarTeamContext` 分离 Personal ID、仅在 Team ready 时可生成链接的 ID 和仅用于可见性的 ID，未知范围保留禁用占位，已确认 Personal 隐藏团队设置。
 
-三组共享可滚动的 `.sidebar-main`，不收缩的 `.sidebar-bottom` 仅持有切换按钮。项目子项使用与当前 Team 项目列表相同的分页目录和原生链接处理；折叠竖条隐藏项目树，共享路由保留当前 Team 项目树。项目、成员及设置路由仅选中已加载目录中匹配的项目，Team 列表与设置、共享列表、账号资源和工具按各自路由选中。明确项目的面包屑不推断侧栏 Team 归属，账号及工具使用纯文本范围父项。Team／Personal 项目列表 H1 和 document title 统一为“项目”，范围显示在 eyebrow。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
+三组共享可滚动的 `.sidebar-main`，不收缩的 `.sidebar-bottom` 仅持有桌面折叠按钮。项目子项使用与当前 Team 项目列表相同的分页目录和原生链接处理；桌面折叠竖条隐藏项目树，共享路由保留当前 Team 项目树。项目、成员及设置路由仅选中已加载目录中匹配的项目，Team 列表与设置、共享列表、账号资源和工具按各自路由选中。明确项目的面包屑不推断侧栏 Team 归属，账号及工具使用纯文本范围父项。Team／Personal 项目列表 H1 和 document title 统一为“项目”，范围显示在 eyebrow。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
 
-sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。`SidebarIcon` 集中九种局部 SVG 图形及 24×24 画布、1.6 线宽和装饰性属性；侧栏样式以 18×18 槽双轴居中，并在该作用域内让 SVG 继承入口颜色；取舍见[导航图标决策](../../.agents/notes/implemented/bug-fix/2026-11-17-sidebar-navigation-icons.md)。完整名称作为链接名称及 title，视觉文字允许省略。详细取舍见[侧栏范围决策](../../.agents/notes/implemented/architecture/2026-11-12-sidebar-navigation-scopes.md)及[进行中任务入口位置](../../.agents/notes/implemented/architecture/2026-11-17-in-progress-tasks-sidebar-position.md)。
+桌面 sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。`SidebarIcon` 集中九种局部 SVG 图形及 24×24 画布、1.6 线宽和装饰性属性；侧栏样式以 18×18 槽双轴居中，并在该作用域内让 SVG 继承入口颜色；取舍见[导航图标决策](../../.agents/notes/implemented/bug-fix/2026-11-17-sidebar-navigation-icons.md)。完整名称作为链接名称及 title，视觉文字允许省略。详细取舍见[侧栏范围决策](../../.agents/notes/implemented/architecture/2026-11-12-sidebar-navigation-scopes.md)及[进行中任务入口位置](../../.agents/notes/implemented/architecture/2026-11-17-in-progress-tasks-sidebar-position.md)。
 
 `TeamSelector` 展开时以 flex 对齐头像、单行主名称和箭头，不渲染类型行或占位；名称优先截断并保留箭头。触发器在宽于 740px 的细指针环境高 36px，在窄屏或粗指针环境高 44px 且至少宽 44px；头像为 24px。局部装饰性 SVG 使用 12px 画布及居中路径，避免字符字形和行框造成视觉偏移，同时保留深色入口自己的皮肤。按钮的可访问名称和 title 仍组合完整名称与已知类型，折叠竖条保留图标入口。触发器所在侧栏内保留菜单 DOM，并使用 top-layer popover 脱离滚动裁剪；定位根据触发器、视口和菜单尺寸调整，菜单自身限制高度并滚动。保持 DOM 所属关系使手机抽屉的焦点隔离包含菜单；菜单先处理 Escape，创建时沿用抽屉与创建窗口的焦点交接。目录、分页和偏好仍由原有所有者管理，菜单的打开状态不依赖后台复核结果。详见[紧凑选择器决策](../../.agents/notes/implemented/bug-fix/2026-11-17-compact-team-selector.md)、[单行选择器决策](../../.agents/notes/implemented/simplification/2026-11-17-single-line-team-selector.md)和[Team 切换菜单决策](../../.agents/notes/implemented/feature/2026-11-05-team-switcher-popover.md)。
 
@@ -88,13 +88,19 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 显式切换保留新内存值并尝试保存，重试保存当前值，成功后清除 issue。外观值不包含
 用户、项目或令牌，跨项目及身份切换保留；它不依赖 project feature 的偏好 helper。
 
-桌面网格使用 190px 或 68px 侧栏；740px 及以下固定为 60px 竖条，展开覆盖导航宽
-220px。媒体查询与脚本使用同一 740px 断点约定。临时 `drawerOpen` 与持久 `collapsed`
-分离，手机开关不写桌面记录。覆盖导航位于 Workspace 认证屏障内，提供具名模态语义、
-实际可见控件的 Tab 约束、背景 inert 和共享 `useBodyScrollLock` 引用计数锁。
-清理恢复原 inert 与滚动状态，不释放图全屏或详情持有的锁。Escape/遮罩关闭恢复展开
-按钮焦点；路由导航交给既有正文聚焦。路由、桌面断点、真实身份失效或卸载
-均关闭临时层。账户变化等待刷新时保持导航、焦点约束与滚动锁；请求和发布仍受认证准入约束。
+桌面网格使用 190px 或 68px 侧栏；740px 及以下使用单列网格，正文显式位于第一列，覆盖 600px 通用布局及助手／测试会话外壳的网格定位。
+同一个 `WorkspaceNavigation` 在关闭时不可见、不可聚焦且不占列，打开时呈现 220px 左侧覆盖抽屉；不重复挂载数据消费者。
+媒体查询与脚本使用同一 740px 断点约定。Workspace 持有 `useWorkspaceDrawer`，将当前路由的临时打开状态、断点、按钮引用及关闭原因交给侧栏；持久 `collapsed` 仍由 `useSidebarPreference` 管理，手机开关不写桌面记录。
+顶栏前端为三横按钮保留 44×44px 空间，与可收缩的面包屑组合；深色按钮使用白色装饰性 SVG、8px 圆角和轻阴影。
+按钮提供本地化名称、`aria-controls` 与 `aria-expanded`。普通文档的窄屏顶栏置顶，助手和测试会话复用独立滚动外壳内既有的固定可见页头。
+
+抽屉头部的 44×44px 关闭图标按钮独立于桌面底部折叠按钮。覆盖导航位于 Workspace 认证屏障内，提供具名模态语义、
+打开时的内部焦点、实际可见控件的 Tab 约束、背景 inert 和共享 `useBodyScrollLock` 引用计数锁。
+清理恢复原 inert 与滚动状态，不释放图全屏或详情持有的锁。关闭按钮、Escape 和遮罩的关闭原因要求先解除 Workspace inert，再恢复仍可见的三横按钮焦点；
+普通链接的关闭原因交给既有目标正文聚焦，修饰键和新标签页继续原生行为。Team popover 在抽屉内优先处理 Escape，创建 Team 弹窗沿用原有焦点交接。
+路由、跨断点、真实身份阻塞／换号及卸载关闭临时层，不恢复隐藏入口的焦点；回桌面仍采用原持久偏好。
+账户变化等待刷新及同账号不变数据的后台复核保持导航、焦点约束与滚动锁；请求和发布仍受认证准入约束。
+入口和焦点顺序的取舍见[窄屏导航按钮决策](../../.agents/notes/implemented/feature/2026-11-19-mobile-navigation-button.md)。
 
 侧栏状态不参与用户、项目、缓存或详情的 React key。宽度变化仅改变布局，图沿用已有
 尺寸观察，不重新初始化视口或增加读取、缓存及轮询器。跨标签实时同步与服务端同步可独立
@@ -178,6 +184,8 @@ sudo 清理控件以目标字段的存在性判定服务是否提供配置，不
 
 ### 个人 Worker Prompt 编辑
 
+个人 Prompt 的[容器布局规格](../spec/worker-prompt-layout.md)要求三个入口按实际内容空间切换排版。已确定的布局方案以共享编辑器外层 `.worker-prompt` 为名为 `worker-prompt` 的 inline-size 查询容器，由宿主分配宽度，内部 `.worker-prompt-layout` 消费尺寸查询。实际内容宽度不超过620px时，编辑区和说明区按 DOM 顺序单列排列；超过620px时沿用编辑区与说明区的双列分配。容器必须位于被切换的 grid 外层，使查询宽度来自宿主而不依赖该 grid 的列布局。尺寸变化只调整 CSS 排版，保持编辑节点、焦点、选区和草稿，不引入 JavaScript 宽度监听或改变保存流程。取舍见[容器布局决策](../../.agents/notes/implemented/bug-fix/2026-11-19-prompt-container-layout.md)，实现是否满足约定由规格中的真实几何与交互标准判定。
+
 `features/worker-prompts/` 共用三个个人资源的 API、纯状态转换、hook 和编辑器。账号、项目和 Worker 入口提供资源目标；项目请求等待 `ProjectAccessSession`，普通成员不继承共享设置的管理员限制。Worker prompt 与运行配置分别位于同级页签，读取、校验和保存互不阻塞；[页签组织决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-detail-prompt-tab.md)记录其协调取舍。
 
 状态独立保存最高版本资源、草稿基线、原文、编辑代次和提交快照。GET 按版本单调接纳，PUT 只提交冻结的账号、版本和正文；继续输入不被回执覆盖。冲突保留草稿并要求明确处理最新版本。已发送请求结果未知时保留快照，以 GET 核对当前事实，不重放写入。同账户身份准入暂停保留节点及草稿，确认失权或当前根 owner 失效身份时撤销旧资源和请求。身份错配后若 owner 保留页面，终止旧操作等待并仅记录已确认、明确拒绝或未知结果，不安装回执或重放写入；已确认结果提示刷新后继续。导航聚合 Worker 两份草稿，并在待定、已确认待呈现或未知写入期间保留对应页面 owner；放弃草稿不会撤销已发送写入。[编辑决策](../../.agents/notes/implemented/architecture/2026-11-09-web-personal-prompt-editor.md)记录取舍。
@@ -217,6 +225,8 @@ sudo 清理控件以目标字段的存在性判定服务是否提供配置，不
 管理界面的 `Identity` 消费现有完整用户或成员 profile 的 nullable `avatarUrl`，沿用姓名、邮箱和本地 ID 的名称回退。头像局部状态按规范用户 ID 与准确图片源隔离；换源或换人只重建头像，已卸载图片的事件不能影响当前图片。同一组合重绘保留加载结果，避免影响页面、名单或确认窗口的生命周期。非空源原样传给图片，空源不创建图片请求；加载中及失败时保留两字符占位，失败不自动重试。局部样式使用圆形容器及 `object-fit: cover`，继承普通 30px 和资料 49px 的尺寸；容器对辅助技术隐藏，图片使用空 alt，身份信息由相邻文字表达。[头像决策](../../.agents/notes/implemented/bug-fix/2026-11-14-management-identity-avatar.md)记录状态隔离的取舍；资料本身与读取合同仍归[鉴权需求](../spec/daynight-auth.md)所有。
 
 ### 项目详情 `/projects/{projectId}`
+
+`ProjectSectionTabs` 在已提交的 section、项目、语言或排列方向变化后的布局阶段测量活动项。横向布局中，活动项超出页签条边界才按差值及 4px 内侧间距写入该容器的 `scrollLeft`，由浏览器钳制滚动范围。`ResizeObserver` 观察容器及每个页签的尺寸，覆盖容器收窄、文字及字体布局变化，并在依赖变化或卸载时断开。被动校正不移动焦点、不滚动祖先；方向键保留导航成功提交后的聚焦回调。没有 scroll 订阅或轮询，手动浏览其他页签不会持续被拉回。取舍见[活动页签可见性决策](../../.agents/notes/implemented/bug-fix/2026-11-19-project-active-tab-visibility.md)。
 
 ```text
 ← 项目                         最近刷新时间   [刷新]
@@ -264,7 +274,7 @@ PR 列表    │ 负责人：全部  状态：全部状态       2 / 2 条任务
 - 代表任务仍为完整分量中的真实代表，用作链标题与图 witness；范围外代表不作为范围内 Task 显示负责人或状态。范围内每个 Task 包括代表恰好展示一次，链图保留完整可见依赖和原有普通/外部边分类。范围内独立 Task 直接展示；项目 Goal 列表单层展示全部直接孩子，Goal 详情只展示资源内容与分类统计。
 - 普通任务链分享使用项目根路由的 `tab=tasks&chain={taskId}` 查询；路由 helper 严格解析单个 canonical UUID 并生成同源绝对地址。`ProjectPage` 在完整索引和现有访问准入就绪后复用外部链导航，历史 owner 原子提交阅读选择并替换 URL 清除入口；无效目标也消费，主动切换节区丢弃等待中的入口。有效查询优先于旧 fragment，消费时一并清除 fragment，避免重复导航。登录返回仍只接受原有受约束的 pathname 与 search。详细锚点和菜单机制见[任务链浏览设计](daynight-task-inspection.md)。
 
-- 三个类别共用负责人和状态筛选。`ProjectPage` 从完整快照与 `projectTaskScope(index, null)` 单独派生三个页签数字：单成员分量的范围内普通 Task 用列表共用的负责人匹配规则逐个计入未结束任务；多成员分量的范围内成员只要有一个同时满足未结束和负责人匹配即计一条链，范围外成员与 external 前置不参与判断；Goal 从 `assignedGoals` 使用 `isTerminalStatus` 排除自身 `done` 和 `cancelled`，形成 `unfinishedGoalCount`，孩子的状态、负责人和进度不参与。`unfinishedChainCount` 和 `unfinishedGoalCount` 经 `ProjectTaskWorkspace` 传给 `ProjectTaskTabs`，各使用独立双语提示。该投影不依赖状态、Goal 标签或子 Task 标签筛选、搜索、分页、类别、图或展开状态；快照、负责人或当前 viewer 变化时重算，不裁剪完整索引，也不新增读取。`GoalList` 的 `total` 仍使用 `allGoals.length`，独立于徽标；刷新进行中及失败时沿用最后可信快照及现有反馈。列表筛选不改变图和进度；链只根据范围内成员匹配。`useProjectAssigneeFilter` 和 `useProjectStatusFilter` 按账号和项目保存负责人及状态偏好；状态集合按固定业务顺序规范化，等值时保留引用以保护概览异步围栏。`TaskStatusFilter` 使用真实复选框与视口内浮层。负责人、状态及主/子标签入口使用公共 `SelectTrigger`；AssigneePicker 仅在 TaskAssigneeFilter 显式选择时采用标准入口，其他人员编辑保持原呈现。搜索保留独立单选 NativeSelect。上述入口显式使用 `density="filter" touchMode="responsive" focusTone="task"`，共享 32px/11px 与小屏或粗指针的 44px/16px 密度，具体 API、状态与所有权由[公共选择控件](native-select.md)拥有。筛选 owner 保留选择、偏好、菜单定位和焦点恢复；项目页面 owner 管理外层与内层共享的页面偏移。三个类别和概览独立持有页码，`usePagination` 每页选择 20 个顶层条目，子 Task 不占分页条目。筛选变化重置任务区页码；失败保留本次内存选择并显示提示。计数取舍见[未完成任务链决策](../../.agents/notes/implemented/bug-fix/2026-11-14-unfinished-chain-tab-count.md)和[未完成 Goal 决策](../../.agents/notes/implemented/bug-fix/2026-11-14-unfinished-goal-tab-count.md)；偏好和图交互的历史取舍见[负责人偏好决策](../../.agents/notes/implemented/feature/2026-11-09-project-assignee-filter-preference.md)、[筛选决策](../../.agents/notes/implemented/feature/2026-11-05-task-list-status-filter.md)及[项目共享滚动决策](../../.agents/notes/implemented/bug-fix/2026-11-19-project-shared-scroll.md)。
+- 三个类别共用负责人和状态筛选。`ProjectPage` 从完整快照与 `projectTaskScope(index, null)` 单独派生三个页签数字：单成员分量的范围内普通 Task 用列表共用的负责人匹配规则逐个计入未结束任务；多成员分量的范围内成员只要有一个同时满足未结束和负责人匹配即计一条链，范围外成员与 external 前置不参与判断；Goal 从 `assignedGoals` 使用 `isTerminalStatus` 排除自身 `done` 和 `cancelled`，形成 `unfinishedGoalCount`，孩子的状态、负责人和进度不参与。`unfinishedChainCount` 和 `unfinishedGoalCount` 经 `ProjectTaskWorkspace` 传给 `ProjectTaskTabs`，各使用独立双语提示。该投影不依赖状态、Goal 标签或子 Task 标签筛选、搜索、分页、类别、图或展开状态；快照、负责人或当前 viewer 变化时重算，不裁剪完整索引，也不新增读取。`GoalList` 的 `total` 仍使用 `allGoals.length`，独立于徽标；刷新进行中及失败时沿用最后可信快照及现有反馈。列表筛选不改变图和进度；链只根据范围内成员匹配。`useProjectAssigneeFilter` 和 `useProjectStatusFilter` 按账号和项目保存负责人及状态偏好；状态集合按固定业务顺序规范化，等值时保留引用以保护概览异步围栏。`TaskStatusFilter` 使用真实复选框与视口内浮层。负责人、状态及主/子标签入口使用公共 `SelectTrigger`；AssigneePicker 仅在 TaskAssigneeFilter 显式选择时采用标准入口，其他人员编辑保持原呈现。搜索保留独立单选 NativeSelect。上述入口显式使用 `density="filter" touchMode="responsive" focusTone="task"`，共享 32px 高度和界面字号，小屏或粗指针使用 44px 高度及不小于 16 CSS px 的字号，具体 API、状态与所有权由[公共选择控件](native-select.md)拥有。筛选 owner 保留选择、偏好、菜单定位和焦点恢复；项目页面 owner 管理外层与内层共享的页面偏移。三个类别和概览独立持有页码，`usePagination` 每页选择 20 个顶层条目，子 Task 不占分页条目。筛选变化重置任务区页码；失败保留本次内存选择并显示提示。计数取舍见[未完成任务链决策](../../.agents/notes/implemented/bug-fix/2026-11-14-unfinished-chain-tab-count.md)和[未完成 Goal 决策](../../.agents/notes/implemented/bug-fix/2026-11-14-unfinished-goal-tab-count.md)；偏好和图交互的历史取舍见[负责人偏好决策](../../.agents/notes/implemented/feature/2026-11-09-project-assignee-filter-preference.md)、[筛选决策](../../.agents/notes/implemented/feature/2026-11-05-task-list-status-filter.md)及[项目共享滚动决策](../../.agents/notes/implemented/bug-fix/2026-11-19-project-shared-scroll.md)。
 - `GoalList` 为当前页每个 Goal 挂载 `GoalItem`，同一 `projectTaskScope` 同时供摘要、进度和内容；标题行以非交互摘要容器排列原生展开按钮、标题按钮和静态信息。展开按钮保留 `goal-list-toggle`、ref、`aria-expanded`、`aria-controls` 及摘要的可访问描述；标题按钮保留稳定 Goal DOM 身份，调用现有详情入口。行上的点击委托只处理非交互后代，避免按钮和链接的动作重复触发展开；详情、Session 和整体图控件各自处理操作。详情与图分别记录实际触发器供关闭焦点恢复；折叠时焦点从将隐藏的内容返回展开按钮。完成时间的提示以独立详情按钮为键盘触发器。交互取舍见[Goal 标题详情入口决策](../../.agents/notes/implemented/bug-fix/2026-11-14-goal-title-details.md)。
 - Goal 卡片建立 inline-size 容器，以 600px 容器断点选择摘要前侧 15px 或 11px 内边距，与任务链箭头对齐；740px 视口断点仍负责标题行整体重排。展开按钮的真实宽度为 22px、高度至少 34px，两侧各以 -4px 逻辑 margin 将布局占用压为 14px，内部箭头 viewport 为 14×14px。20×20px 的装饰同心圆 SVG 使用 16×16 坐标系，代替字体字符和底框；箭头视觉列至图标、图标至标题列各间隔 8px。740px 及以下视口或 600px 及以下卡片的摘要允许换行，标题和换行进度均从 50px 前缀计算起点，避免宽视口内的窄卡片挤空标题，并保留按钮命中范围与其他控件之间的间隔。取舍见 [Goal 前缀布局决策](../../.agents/notes/implemented/bug-fix/2026-11-16-goal-list-prefix-spacing.md)。
 - `goal-list-card` 统一拥有 8px 外圆角、状态边框及内容裁剪，标题行不另设圆角；展开内容保留顶部单条分隔线和中性背景。共享 `goal-task-list` 横向 padding 为 0，使 Goal、完整链和范围链成员整行背景及边框贴齐展开内容区的左右内边缘。列表声明成员内容的逻辑前侧附加偏移，TaskRow 样式只将其加到该列表内成员行的响应式基础前侧 padding：视口大于 600px 增加 16px，600px 及以下增加 12px。缩进由行的状态和悬停背景覆盖，独立及个人普通行仍使用基础 padding。列表默认保留 5px 底部 padding，Goal 专属规则只将底部 padding 置零，使末行贴合卡片内底边；空态仍使用自身 padding。横向布局的取舍见[成员行内缩进决策](../../.agents/notes/implemented/bug-fix/2026-11-16-expanded-member-inner-indent.md)。展开按钮使用内侧焦点轮廓，完成时间提示通过原生 popover 进入 top layer，不受卡片裁剪。取舍见 [Goal 卡片接缝决策](../../.agents/notes/implemented/bug-fix/2026-11-14-goal-card-seams.md)。
@@ -1003,6 +1013,8 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 共享 request 边界在账户变化时暂停，保留表单并阻止迟到结果发布；真实会话失效仍退休原身份。
 
 GitHub 设置读取独立的 Project GitHub 资源，严格解析必填 boolean `syncEnabled`，并与项目设置、转移和删除共用同步管理 guard。开关位于连接操作之后、渠道状态之前；管理员操作，成员只读。设置页将服务器确认的配置意愿与服务可用性、连接和轮询/Webhook 健康分别呈现。未连接或不可用时不能开启，已有开启意愿仍可在服务或授权不可用时关闭；关闭后的历史错误标为历史事实。PR 页保留已保存列表与详情，刷新只读取数据；其单一主状态提示、独立诊断和读取机制由[PR 读取设计](github-pr-reading.md)拥有。
+
+GitHub panel 的 `.panel-body` 建立名为 `github-settings` 的 inline-size 查询容器，以内容盒而非整个 viewport 决定仓库行排列。内容宽度不超过 480px 时，仓库信息和操作组纵向排列；更宽时恢复横排。操作组可换行并限制在容器范围内，按钮文案允许换行，仓库值保留完整文本和原有断行。容器由宿主设置网格分配宽度，布局不改变导航结构、组件身份或弹窗状态机；选择理由见[容器布局决策](../../.agents/notes/implemented/bug-fix/2026-11-19-github-settings-container-layout.md)。
 
 开关使用独立的 `PATCH /github/sync`，只提交观察到的精确 version 和目标 boolean，不提交间隔草稿。全部管理响应同样严格解析完整状态，配置版本和同步 revision 仲裁观察，管理请求绑定当前身份。写入期间保持已确认的开关值并阻止重复操作；冲突或未知结果触发只读核对，核对成功或作用域结束前保留 guard 和原页面所有权，不重发原写入，草稿不被后台检查覆盖。断开已有绑定不依赖远端可用性；发现安装和重连使用当前 owner Team 授权的 App。服务端连接和调度机制由[连接运行设计](github-connection-runtime.md)拥有，管理交互的取舍见[GitHub 设置决策](../../.agents/notes/implemented/feature/2026-11-13-github-connection-settings.md)。
 

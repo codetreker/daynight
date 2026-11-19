@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +50,9 @@ func ResponsibleBot(task model.AssistantTask, now time.Time) (string, bool) {
 
 // InboxTargetMatches reports whether a stored HTTP destination configuration
 // names this inbox: its URL has the given origin and exactly the inbox path.
+// Origins compare by scheme, case-folded hostname, and effective port, because
+// endpoint validation keeps an explicit default port such as ":443" that the
+// canonical server origin omits; the request still reaches this server.
 // Query parameters do not change the target, because the inbox URL itself
 // carries no secret.
 func InboxTargetMatches(configuration []byte, origin, inboxID string) bool {
@@ -65,7 +69,43 @@ func InboxTargetMatches(configuration []byte, origin, inboxID string) bool {
 	if err != nil || target.User != nil || target.Opaque != "" {
 		return false
 	}
-	return strings.EqualFold(target.Scheme+"://"+target.Host, origin) && target.EscapedPath() == InboxPathPrefix+inboxID
+	if target.EscapedPath() != InboxPathPrefix+inboxID {
+		return false
+	}
+	want, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	targetOrigin, ok := canonicalOrigin(target)
+	wantOrigin, wantOK := canonicalOrigin(want)
+	return ok && wantOK && targetOrigin == wantOrigin
+}
+
+// canonicalOrigin returns the scheme, lower-case hostname, and effective port
+// of u, omitting the scheme-default port and leading zeros of an explicit port.
+func canonicalOrigin(u *url.URL) (string, bool) {
+	scheme, hostname, port := strings.ToLower(u.Scheme), strings.ToLower(u.Hostname()), u.Port()
+	if hostname == "" {
+		return "", false
+	}
+	if port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number > 65535 {
+			return "", false
+		}
+		port = strconv.Itoa(number)
+		if scheme == "https" && number == 443 || scheme == "http" && number == 80 {
+			port = ""
+		}
+	}
+	host := hostname
+	if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host, true
 }
 
 // ReclaimInbound deletes, within fixed bounds, expired receipts of the task

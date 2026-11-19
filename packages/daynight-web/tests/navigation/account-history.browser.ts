@@ -67,7 +67,7 @@ for (const width of [1280, 320]) {
     expect(writes).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 
-    if (width === 320) await page.getByRole('button', { name: 'Expand sidebar' }).click();
+    if (width === 320) await page.getByRole('button', { name: 'Open navigation' }).click();
     await page.locator('.sidebar nav').getByRole('link', { name: 'Projects', exact: true }).click();
     const dialog = page.getByRole('alertdialog');
     await expect(dialog).toBeVisible();

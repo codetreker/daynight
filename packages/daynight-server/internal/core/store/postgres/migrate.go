@@ -285,6 +285,15 @@ var githubRepositorySourcesSQL string
 //go:embed schema/migrations/094_worker_review_participation.sql
 var workerReviewParticipationSQL string
 
+//go:embed schema/migrations/095_project_repository_version.sql
+var projectRepositoryVersionSQL string
+
+//go:embed schema/migrations/096_pr_review_assignment.sql
+var prReviewAssignmentSQL string
+
+//go:embed schema/migrations/099_assistant_task_inboxes.sql
+var assistantTaskInboxesSQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -295,11 +304,11 @@ func (e *githubRepositoryIdentityMigrationError) Error() string {
 }
 func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
 
-//go:embed schema/migrations/095_webhook_event_actor.sql
+//go:embed schema/migrations/097_webhook_event_actor.sql
 var webhookEventActorSQL string
 
-//go:embed schema/migrations/096_assistant_task_inboxes.sql
-var assistantTaskInboxesSQL string
+//go:embed schema/migrations/098_assistant_task_outcomes.sql
+var assistantTaskOutcomesSQL string
 
 type migration struct {
 	version         int64
@@ -401,8 +410,11 @@ var schemaMigrations = []migration{
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
 	{version: 94, sql: workerReviewParticipationSQL},
-	{version: 95, sql: webhookEventActorSQL},
-	{version: 96, sql: assistantTaskInboxesSQL},
+	{version: 95, sql: projectRepositoryVersionSQL},
+	{version: 96, sql: prReviewAssignmentSQL},
+	{version: 97, sql: webhookEventActorSQL},
+	{version: 98, sql: assistantTaskOutcomesSQL},
+	{version: 99, sql: assistantTaskInboxesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

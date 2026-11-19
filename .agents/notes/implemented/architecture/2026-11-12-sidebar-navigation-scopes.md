@@ -24,7 +24,9 @@ The [single-line selector decision](../simplification/2026-11-17-single-line-tea
 replaces that label while retaining the known type in the accessible name and
 title.
 
-`WorkspaceSidebar` owns layout and drawer lifecycle, `WorkspaceNavigation`
+`WorkspaceSidebar` owns layout and drawer lifecycle, sharing temporary state and
+the topbar opener with Workspace under the
+[mobile navigation button decision](../feature/2026-11-19-mobile-navigation-button.md). `WorkspaceNavigation`
 composes the fixed routes and derives their active state, and
 `SidebarProjectList` consumes the current Team project directory, shared with the
 Team project cards. The [directory isolation decision](../bug-fix/2026-11-14-shared-project-directory-isolation.md)

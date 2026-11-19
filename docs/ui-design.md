@@ -8,6 +8,36 @@ and reference these rules.
 
 Use the shared [MarkdownView](../packages/daynight-web/src/ui/markdown/MarkdownView.tsx) component for Markdown rendering.
 
+## Web typography
+
+The shared [typography definitions](../packages/daynight-web/src/styles/typography.css)
+provide semantic sizes relative to the browser's default root font size. At a
+16px root, the roles are:
+
+| Role | Variable | Size | Use |
+|---|---|---|---|
+| Metadata | `--text-metadata` | 12px | IDs, times, and secondary counts |
+| Interface | `--text-interface` | 14px | Navigation, list titles, controls, status, errors, code, and tables |
+| Reading | `--text-reading` | 16px | Task and Goal descriptions, discussions, Session and Bot messages, and Markdown previews |
+| Section heading | `--text-section-heading` | 18px | Headings within a page |
+| Detail heading | `--text-detail-heading` | 22px | Detail titles |
+| Page heading | `--text-page-heading` | 28px | Page titles |
+
+Use a shared role or inherit it; do not override the variables locally or add
+numeric fallbacks. The browser controls the root size, and the body uses the
+interface role as its baseline. Reading text should use a 1.75 line height;
+controls and lists should use 1.5. Keep roles consistent across viewport widths:
+wrap, rearrange, or scroll content instead of shrinking text. Preserve existing
+touch target dimensions and the 16 CSS px minimum on touch fields and task
+filters. Terminal text retains independent scaling; external diagrams retain
+their own rendering boundary. Any necessary first-party special size belongs
+in the shared definitions with its reason.
+
+The shared definitions are loaded by the Web entry stylesheet. Existing feature
+styles are migrated separately; until migrated they retain their existing sizes.
+Verify consumers with browser font preferences, desktop and 320px layouts,
+long content and applicable interaction states.
+
 ## Brand mark
 
 Use the D letter mark for Web brand entries: an independent vertical stem and

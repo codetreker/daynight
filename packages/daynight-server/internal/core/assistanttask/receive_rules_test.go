@@ -56,7 +56,13 @@ func TestInboxTargetMatchesOnlyThisInboxPath(t *testing.T) {
 		{"other inbox", doc("http", origin+InboxPathPrefix+"88888888-8888-4888-8888-888888888888"), false},
 		{"trailing slash", doc("http", origin+InboxPathPrefix+inbox+"/"), false},
 		{"other origin", doc("http", "https://attacker.example"+InboxPathPrefix+inbox), false},
+		{"explicit default port", doc("http", origin+":443"+InboxPathPrefix+inbox), true},
+		{"explicit default port with leading zeros", doc("http", "https://Daynight.EXAMPLE:00443"+InboxPathPrefix+inbox), true},
+		{"empty port", doc("http", origin+":"+InboxPathPrefix+inbox), true},
+		{"explicit default port other path", doc("http", origin+":443"+InboxPathPrefix+inbox+"/"), false},
 		{"other port", doc("http", origin+":8443"+InboxPathPrefix+inbox), false},
+		{"other scheme default port", doc("http", "http://daynight.example:443"+InboxPathPrefix+inbox), false},
+		{"port out of range", doc("http", origin+":70000"+InboxPathPrefix+inbox), false},
 		{"user info", doc("http", "https://user@daynight.example"+InboxPathPrefix+inbox), false},
 		{"other kind", doc("slack", origin+InboxPathPrefix+inbox), false},
 		{"unparsable url", doc("http", "https://daynight.example/%zz"), false},
@@ -67,6 +73,23 @@ func TestInboxTargetMatchesOnlyThisInboxPath(t *testing.T) {
 				t.Fatalf("got %v", got)
 			}
 		})
+	}
+	// A server origin with a non-default port matches only that port.
+	const ported = "https://daynight.example:8443"
+	for url, want := range map[string]bool{
+		ported + InboxPathPrefix + inbox:                           true,
+		"https://daynight.example:08443" + InboxPathPrefix + inbox: true,
+		origin + InboxPathPrefix + inbox:                           false,
+		origin + ":443" + InboxPathPrefix + inbox:                  false,
+	} {
+		if got := InboxTargetMatches(doc("http", url), ported, inbox); got != want {
+			t.Fatalf("%s against %s: got %v", url, ported, got)
+		}
+	}
+	for _, bad := range []string{"%zz", "/relative"} {
+		if InboxTargetMatches(doc("http", origin+InboxPathPrefix+inbox), bad, inbox) {
+			t.Fatalf("matched invalid origin %q", bad)
+		}
 	}
 }
 

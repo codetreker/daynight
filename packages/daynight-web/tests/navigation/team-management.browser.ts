@@ -240,7 +240,7 @@ test('cancel and Escape submit nothing; dialogs retain focus on narrow screens i
   await openCreate(page); await dialog.getByRole('button', { name: 'Cancel' }).click(); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
   await page.setViewportSize({ width: 375, height: 667 });
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
-  const toggle = page.getByRole('button', { name: /展开侧栏/ });
+  const toggle = page.getByRole('button', { name: /打开导航/ });
   await toggle.click(); await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: '创建 Team', exact: true }).click();
   await expect(dialog.getByLabel('Team 名称')).toBeFocused();
   await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
