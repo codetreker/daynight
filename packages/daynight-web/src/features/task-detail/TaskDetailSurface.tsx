@@ -294,7 +294,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                   {task.assignmentUncertain ? <span className="task-assignment-uncertain" role="status">{messages.assignment.uncertain}</span> : <TaskAgentPermissionSwitch detail={detail} disabled={!task.canDisplayAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />}
                 </div>
-                <TaskUsageSummary projectId={projectId} taskId={taskId} compact onOpen={() => changeSelection({ tab: 'usage', path: null })} href={taskDetailUrl(projectId, taskId, { tab: 'usage', path: null })} />
+                <TaskUsageSummary projectId={projectId} taskId={taskId} compact hideUnsupported={selection.tab === 'usage'} onOpen={() => changeSelection({ tab: 'usage', path: null })} href={taskDetailUrl(projectId, taskId, { tab: 'usage', path: null })} />
                 <TaskPauseControl paused={readTaskPaused(detail.properties) === true} disabled={!task.canUnpause} mutation={task.mutation} onUnpause={() => task.unpause(detail.version)} fallbackFocus={titleRef} />
                 {currentClaim !== null && access.error !== null && <div role="alert"><TaskDetailError error={access.error} /><button className="button" type="button" onClick={() => { void access.session.revalidate(); }}>{messages.workspace.projects.retry}</button></div>}
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry} profileRecoveryUrl={popout}
