@@ -205,19 +205,27 @@ func TestProjectLifecycleGraphWaitPrecedesTaskLocksAndReleasesResources(t *testi
 						t.Fatalf("canceled backend retained resources: %v", err)
 					}
 				}
-				probe, err = f.db.Pool.Begin(ctx)
+				probe, err = f.db.Pool.Begin(cleanup)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err = probe.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE NOWAIT`, f.downProject.ID); err != nil {
-					probe.Rollback(ctx)
+				if _, err = probe.Exec(cleanup, `SELECT id FROM projects WHERE id=$1 FOR UPDATE NOWAIT`, f.downProject.ID); err != nil {
+					probe.Rollback(cleanup)
 					t.Fatalf("Project retained after cancellation: %v", err)
 				}
-				if err = probe.Rollback(ctx); err != nil {
+				if err = probe.Rollback(cleanup); err != nil {
 					t.Fatal(err)
 				}
-				if count := f.db.Pool.Stat().AcquiredConns(); count != 1 {
-					t.Fatalf("connections retained %d want holder only", count)
+				// Pool destruction releases its slot after driver cleanup, asynchronously.
+				// https://github.com/jackc/pgx/blob/5e583fa7aabfa88b796292f849fc9d7d75ac159d/pgxpool/pool.go#L309-L325
+				for {
+					count := f.db.Pool.Stat().AcquiredConns()
+					if count == 1 {
+						break
+					}
+					if err := testutil.WaitThreadClock(cleanup); err != nil {
+						t.Fatalf("connections retained %d want holder only: %v", count, err)
+					}
 				}
 				close(release)
 				if err = testutil.ReceiveQueryResult(t, ctx, stopped); err != nil {
