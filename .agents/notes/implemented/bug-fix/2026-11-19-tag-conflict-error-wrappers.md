@@ -22,10 +22,10 @@ database error below it, and one reliable operation-phase rollback are required.
 Cleanup failure, a commit attempt, additional error branches, and unknown or
 committed outcomes retain their existing failure responses.
 
-The [PostgreSQL regression](../../../../packages/daynight-server/internal/server/tag/routes_postgres_test.go)
-executes the real project transaction, tag service and HTTP adapter with fixed
-authentication. It verifies duplicate creation and rename refusal together with
-unchanged persisted catalog state. Controlled error tests own the unsafe
+Regression coverage at the [REST boundary](../../../../packages/daynight-server/internal/server/tag/)
+must execute the real project transaction, tag service and HTTP adapter with
+fixed authentication, verifying duplicate creation and rename refusal together
+with unchanged persisted catalog state. Controlled error tests own the unsafe
 completion and additional-failure cases.
 
 ## Alternatives

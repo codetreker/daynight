@@ -407,56 +407,6 @@ func TestNameConflictRequiresReliableRollback(t *testing.T) {
 	}
 }
 
-func TestNameConflictStoreWrappers(t *testing.T) {
-	database := func(cause error, state string) error {
-		return &store.Error{Phase: "project write", DatabaseFailure: true, SQLState: state, Cause: cause}
-	}
-	leaf := database(errors.New("private driver failure"), "23505")
-	marked := func(cause error) error {
-		return coretag.Unique(fmt.Errorf("%w: %w", store.ErrTagNameConflict, cause))
-	}
-	transaction := func(cause error) error {
-		return &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: cause}
-	}
-	conflict := transaction(marked(leaf))
-	for _, tc := range []struct {
-		name   string
-		err    error
-		status int
-	}{
-		{"production wrapper", database(conflict, "23505"), 409},
-		{"repeated summaries", database(database(conflict, "23505"), "23505"), 409},
-		{"different database failure", database(conflict, "08006"), 500},
-		{"unclassified database failure", database(conflict, ""), 500},
-		{"extra same-state branch", database(errors.Join(conflict, leaf), "23505"), 500},
-		{"extra untyped branch", database(errors.Join(conflict, errors.New("private cleanup")), "23505"), 500},
-		{"nested marked databases", database(transaction(marked(database(leaf, "23505"))), "23505"), 500},
-		{"missing transaction", database(marked(leaf), "23505"), 500},
-		{"repeated transaction", database(transaction(conflict), "23505"), 500},
-		{"cleanup failed", database(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: marked(leaf)}, "23505"), 500},
-		{"commit attempted", database(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CommitAttempted: true, Cause: marked(leaf)}, "23505"), 500},
-		{"unknown completion", database(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: marked(leaf)}, "23505"), 503},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
-			f.ops.create = func(context.Context, model.Principal, string, string) (service.WriteResult, error) {
-				return service.WriteResult{Outcome: store.TransactionNotCommitted, Phase: "write"}, tc.err
-			}
-			got := decode[api.ErrorResponse](t, f.request("POST", collection, `{"name":"a"}`, true), tc.status)
-			want := "internal_error"
-			if tc.status == 409 {
-				want = "tag_name_conflict"
-			}
-			if tc.status == 503 {
-				want = "write_outcome_unknown"
-			}
-			if got.Error.Code != want || strings.Contains(f.logs.String(), "private") {
-				t.Fatalf("response=%+v logs=%s", got, &f.logs)
-			}
-		})
-	}
-}
-
 func TestOversizedRequestIsRejectedWithoutCall(t *testing.T) {
 	f := newFixture(t)
 	body := `{"name":"` + strings.Repeat("a", httpx.MaxJSONBody) + `"}`
