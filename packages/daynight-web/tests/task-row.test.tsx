@@ -27,6 +27,13 @@ const tree = (model: TaskRowModel, open = vi.fn(), session = vi.fn(), instanceId
     assignee={<span>Assignee: Unassigned</span>} onOpenTask={open} onOpenSession={session} /></ul></ClockInputProvider>;
 
 describe('shared task row', () => {
+  it('distinguishes a current alias from a recorded execution hostname', () => {
+    const view = renderWithLocale(tree({ ...base, worker: { kind: 'historical', name: 'worker host', currentName: 'Current office' } }), { locale: 'en' });
+    expect(screen.getByText('Worker: Current office')).toBeVisible();
+    expect(screen.queryByText('Recorded machine: Current office')).toBeNull();
+    view.rerender(tree(base));
+    expect(screen.getByText('Recorded machine: worker host')).toBeVisible();
+  });
   it('keeps task, copy and Session actions independent, including modified links and readable ID', async () => {
     const write = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText: write } });

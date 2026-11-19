@@ -18,6 +18,7 @@ import (
 
 type DeletionClaim struct {
 	TaskID, Title, MachineName string
+	UserID, WorkerID           string
 	Platform                   model.TaskPlatform
 	Phase                      model.WorkerPhase
 	Paused                     bool
@@ -101,7 +102,7 @@ func (s *Projects) DeletionPreview(ctx context.Context, p model.Principal, id st
 						connectivity = "online"
 					}
 				}
-				out.ActiveClaims = append(out.ActiveClaims, DeletionClaim{TaskID: f.TaskID, Title: f.Title, MachineName: f.Worker.Machine.Name, Platform: f.Worker.Platform, Phase: f.Worker.Phase, Paused: f.Paused, Connectivity: connectivity})
+				out.ActiveClaims = append(out.ActiveClaims, DeletionClaim{UserID: f.Worker.UserID, WorkerID: f.Worker.WorkerID, TaskID: f.TaskID, Title: f.Title, MachineName: f.Worker.Machine.Name, Platform: f.Worker.Platform, Phase: f.Worker.Phase, Paused: f.Paused, Connectivity: connectivity})
 				return nil
 			})
 			if err != nil {

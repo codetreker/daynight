@@ -1,7 +1,7 @@
 import type { ExecutionPlatform, TaskStatus, TaskTag } from '../../api/types';
 
 export type TaskRowWorker =
-  | { readonly kind: 'active' | 'historical'; readonly name: string }
+  | { readonly kind: 'active' | 'historical'; readonly name: string; readonly currentName?: string }
   | { readonly kind: 'none' | 'unknown' | 'error' };
 
 export type TaskRowSession = {

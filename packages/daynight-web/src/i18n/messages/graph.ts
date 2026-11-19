@@ -18,6 +18,7 @@ export type GraphMessages = {
   readonly noMachineRecord: string;
   readonly claimMachine: (args: { name: string }) => string;
   readonly recordedMachine: (args: { name: string }) => string;
+  readonly currentWorkerName: (args: { name: string }) => string;
   readonly childTasks: (args: { count: number }) => string;
   readonly representativeTaskDetails: string;
   readonly representativeTaskDetailsLabel: (args: { title: string }) => string;

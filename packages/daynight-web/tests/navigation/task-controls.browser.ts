@@ -16,6 +16,7 @@ const step = { id: '00000001', title: 'Review', description: 'Read this', status
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
 type FixtureOptions = {
+  readonly workerAlias?: string;
   readonly steps?: readonly TaskStep[];
   readonly outcome?: 'conflict' | 'lost' | 'malformed';
   readonly gate?: { readonly started: () => void; readonly wait: Promise<void> };
@@ -46,6 +47,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, headers: Readonly<Record<string, string>> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...headers } });
+    if (options.workerAlias && path.endsWith('/alias')) return send({ workerId: path.split('/')[5], alias: { value: options.workerAlias, version: '1' } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph().project], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}`) return send(graph().project);
@@ -1168,5 +1170,28 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     expect(await titleFits(`[id="chain-task-goal-${goalId}-${goalTaskId}"] .root-title`)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     expect(detailReads).toEqual([]);
+  });
+}
+
+
+for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) for (const kind of ['standalone', 'chain']) {
+  test(`shared project rows preserve Worker aliases ${kind} ${locale} ${width}px`, async ({ page }, info) => {
+    const alias = '上海办公室跨页面识别的 Windows 工作站 '.repeat(2).trim();
+    const workerId = '00000000-0000-4000-8000-000000000070';
+    const claim = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active', userId: TEST_VIEWER_ID, workerId, machine: { id: '00000000-0000-4000-8000-000000000072', name: 'Historical host' }, platform: 'windows', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000073', phase: 'executing', nativeSessionId: null, claimedAt: time };
+    await install(page, true, kind === 'chain', false, false, false, undefined, { ...(kind === 'chain' ? { status: 'done' as const, completedAt: '2026-10-22T10:00:00Z' } : {}), properties: kind === 'standalone' ? { worker: claim } : {} }, { workerAlias: alias, ...(kind === 'chain' ? { previousChanges: { status: 'in_progress', startedAt: time, ready: false, properties: { worker: claim } } } : {}) });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('.locale-control select').selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    if (kind === 'standalone') await page.locator('#project-task-tab-standalone').click();
+    else await page.locator('.root-toggle').first().click();
+    const row = page.locator('.task-row-item').filter({ has: page.getByRole('link', { name: kind === 'standalone' ? 'Target task' : 'History origin', exact: true }) });
+    await expect(row.locator('.task-row-machine')).toContainText(alias);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(await row.locator('.task-row-machine').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+    await row.locator('.task-row-machine').scrollIntoViewIfNeeded();
+    await expect(row.locator('.task-row-machine')).toBeInViewport();
+    await page.screenshot({ path: info.outputPath(`${kind}-worker-alias.png`), fullPage: true });
   });
 }

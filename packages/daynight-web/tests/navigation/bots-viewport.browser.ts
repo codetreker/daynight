@@ -9,7 +9,7 @@ const personalId = botId(100), personal = { id: personalId, kind: 'personal', na
 const profile = { id: BOT_USER, personalTeam: personal, name: 'Viewport fixture', email: null, emailVerified: null, avatarUrl: null };
 const team = { ...personal, version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME, membership: { teamId: personalId, userId: BOT_USER, role: 'admin', version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME } };
 const bots = Array.from({ length: 70 }, (_, index) => ({ ...botDefinition(index + 1), name: index === 0 ? 'Bot A' : index === 1 ? 'Bot B' : `Assistant ${index + 1}`, sessionId: botId(index + 201), testExecutionId: botId(index + 401), roleConfiguration: { instructions: 'Fixture only.', revision: '1', digest: 'a'.repeat(64) }, startupResult: { state: 'ready' as const, code: null } }));
-const install = async (page: Page, options: { items?: readonly BotDefinition[]; defaults?: BotDefaults } = {}) => {
+const install = async (page: Page, options: { items?: readonly BotDefinition[]; defaults?: BotDefaults; alias?: string } = {}) => {
   const definitions = options.items ?? bots;
   const writes: string[] = [];
   await page.route('**/api/v1/**', async route => {
@@ -20,6 +20,7 @@ const install = async (page: Page, options: { items?: readonly BotDefinition[]; 
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (options.alias && path === `/api/v1/me/workers/${botId(20)}/alias`) return send({ workerId: botId(20), alias: { value: options.alias, version: '1' } });
     if (path === '/api/v1/me/bots/defaults') return send(options.defaults ?? botDefaults());
     if (path === '/api/v1/me/bots') return send({ items: definitions, nextCursor: null });
     const bot = definitions.find(value => path === `/api/v1/me/bots/${value.id}`);
@@ -717,5 +718,25 @@ for (const width of [1440, 390, 320]) {
       expect(writes).toEqual([]); expect(errors).toEqual([]);
       await writeFile(info.outputPath(`hot-switch-${width}.json`), JSON.stringify({ boundary: 'Production Web DOM in Chromium with controlled HTTP and SessionApi; no Worker or Provider.', width, before, restored, held, writes, errors }, null, 2));
     } finally { frozen = false; release?.(); }
+  });
+}
+
+
+for (const locale of ['en', 'zh-CN']) for (const width of [1440, 320]) {
+  test(`reads long Worker aliases in assistant details ${locale} ${width}px`, async ({ page }, info) => {
+    const alias = '上海办公室跨页面识别的 Windows 工作站 '.repeat(2).trim();
+    const bot = bots[0]!;
+    await install(page, { items: [bot], alias });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/bots/${bot.id}`);
+    await page.locator('.locale-control select').selectOption(locale);
+    await focusBotControl(page, botDetailsOpener(page, bot.name));
+    await page.keyboard.press('Enter');
+    const details = await expectBotDetailsMode(page);
+    await expectBotDetailText(details, `${alias} · Machine 20`);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: info.outputPath('worker-alias-details.png') });
+    await page.keyboard.press('Escape');
+    await expect(botDetailsOpener(page, bot.name)).toBeFocused();
   });
 }

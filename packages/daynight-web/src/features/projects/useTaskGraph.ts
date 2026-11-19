@@ -2,7 +2,7 @@ import { useProjectAccessSession, type ProjectAccessSession } from "./ProjectAcc
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ApiError, authRequestsPauseRevision, getTaskSync, isAbortError } from "../../api/client";
 import { pollingInterval } from "../../app/polling";
-import type { TaskGraph, TaskSummary, WorkerClaim } from "../../api/types";
+import type { TaskGraph, TaskSummary, WorkerMachine } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
@@ -20,7 +20,7 @@ export type GraphSnapshot = {
   readonly index: GraphIndex;
   readonly summaries: ReadonlyMap<string, TaskSummary>;
   readonly pausedTaskIds: ReadonlySet<string>;
-  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
+  readonly workerMachines: ReadonlyMap<string, WorkerMachine>;
 } & ({
   readonly observedAt: string;
   readonly receivedMonotonic: number;

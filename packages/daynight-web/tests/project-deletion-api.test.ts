@@ -82,3 +82,24 @@ describe("project deletion API", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+
+describe('project deletion worker identity negotiation', () => {
+  it('requires both stable identities after negotiation and rejects unknown versions', async () => {
+    const claim = body.activeClaims[0]!;
+    const worker = { ...claim.worker, userId: user, workerId: correlation };
+    const value = { ...body, activeClaims: [{ ...claim, worker }] };
+    const identityResponse = (candidate: unknown, version: string | null) => {
+      const result = response(candidate);
+      if (version !== null) result.headers.set('Daynight-Worker-Identity', version);
+      return result;
+    };
+    const fetch = vi.fn().mockResolvedValue(identityResponse(value, '1')); vi.stubGlobal('fetch', fetch);
+    expect((await previewProjectDeletion(project, {}, user, signal(), vi.fn())).activeClaims[0]?.worker).toEqual(worker);
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).get('Daynight-Worker-Identity')).toBe('1');
+    for (const [candidate, version] of [[body, '1'], [value, null], [body, '2'], [{ ...value, activeClaims: [{ ...claim, worker: { ...worker, userId: 'invalid' } }] }, '1']] as const) {
+      fetch.mockResolvedValue(identityResponse(candidate, version));
+      await expect(previewProjectDeletion(project, {}, user, signal(), vi.fn())).rejects.toMatchObject({ kind: 'protocol' });
+    }
+  });
+});

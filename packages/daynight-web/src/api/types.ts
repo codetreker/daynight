@@ -73,6 +73,7 @@ export type WorkerState = "active" | "completed";
 export type WorkerAgent = "codex" | "copilot" | "claude";
 export type WorkerAgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
+export type WorkerMachine = Pick<WorkerClaim, 'state' | 'machine'> & Partial<Pick<WorkerClaim, 'userId' | 'workerId'>>;
 export type WorkerClaim = {
   readonly claimId: string;
   readonly state: WorkerState;

@@ -1,4 +1,4 @@
-import type { Project, TaskDependencyState, TaskGraph, TaskGraphSummary, TaskSummary, WorkerClaim } from "../../api/types";
+import type { Project, TaskDependencyState, TaskGraph, TaskGraphSummary, TaskSummary, WorkerMachine } from "../../api/types";
 import { readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { sameTaskTags } from "../../api/task-tags";
 import { buildGraphIndex, GraphDataError, type GraphIndex } from "../task-graph/model";
@@ -36,7 +36,7 @@ export const sameProject = (left: Project, right: Project): boolean =>
   left.settings.version === right.settings.version && left.settings.executionWarningMinutes === right.settings.executionWarningMinutes &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
-export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint>; readonly pausedTaskIds: ReadonlySet<string>; readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">> };
+export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint>; readonly pausedTaskIds: ReadonlySet<string>; readonly workerMachines: ReadonlyMap<string, WorkerMachine> };
 
 export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], dependencyStates: ReadonlyMap<string, TaskDependencyState>, observedAt: string): TaskProjection => {
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
@@ -53,10 +53,10 @@ export const projectSummaries = (project: Project, summaries: readonly TaskSumma
     else summary.proposed++;
     return { ...task, blockedBy, ready };
   });
-  const workerMachines = new Map<string, Pick<WorkerClaim, "state" | "machine">>();
+  const workerMachines = new Map<string, WorkerMachine>();
   for (const task of ordered) {
     const claim = readWorkerClaim(task.properties);
-    if (claim !== undefined) workerMachines.set(task.id, { state: claim.state, machine: claim.machine });
+    if (claim !== undefined) workerMachines.set(task.id, { state: claim.state, machine: claim.machine, userId: claim.userId, workerId: claim.workerId });
   }
   const graph: TaskGraph = { project, observedAt, tasks, summary };
   return { graph, index: buildGraphIndex(graph), workerMachines, pausedTaskIds: new Set(ordered.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), versions: new Map(ordered.map((task) => [task.id, task.version])) };

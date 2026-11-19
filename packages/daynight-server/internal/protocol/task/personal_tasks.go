@@ -58,6 +58,7 @@ type PersonalTask struct {
 }
 
 type PersonalTaskWorker struct {
+	UserID   *string             `json:"userId,omitempty"`
 	WorkerID string              `json:"workerId"`
 	State    string              `json:"state"`
 	Machine  PersonalTaskMachine `json:"machine"`
