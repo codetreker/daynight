@@ -40,6 +40,7 @@ type githubAppStore interface {
 	store.GitHubAppWebhookStore
 	store.GitHubAppWorkReader
 	store.GitHubAppWorkWriter
+	store.PullRequestReviewerAllocator
 	store.SnapshotReader
 }
 
@@ -61,7 +62,7 @@ func (a *App) assembleGitHub(db store.Transactions, logger *slog.Logger) error {
 		_ = provider.Close(context.Background())
 		return err
 	}
-	runner, err := githubservice.NewAppRunner(backend, executor, logger)
+	runner, err := githubservice.NewAppRunner(backend, executor, backend, logger)
 	if err != nil {
 		_ = provider.Close(context.Background())
 		return err

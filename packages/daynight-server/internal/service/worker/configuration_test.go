@@ -20,6 +20,12 @@ type configurationCalls struct {
 	want, seen []string
 }
 
+func (*configurationDAO) WorkerReviewEnabled(context.Context, string, string) (bool, error) {
+	panic("unexpected review setting read")
+}
+func (*configurationDAO) SetWorkerReviewEnabled(context.Context, string, string, bool) (bool, error) {
+	panic("unexpected review setting write")
+}
 func (*configurationDAO) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
 	panic("unexpected alias read")
 }

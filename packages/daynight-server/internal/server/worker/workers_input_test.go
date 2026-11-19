@@ -169,15 +169,31 @@ func capacityExpectedSnapshot(t *testing.T, user, worker string, body map[string
 }
 
 type capacityReportOperations struct {
-	t             *testing.T
-	alias         func(context.Context, model.Principal, string) (model.WorkerAlias, error)
-	putAlias      func(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
-	report        func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
-	sync          func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
-	put           func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
-	get           func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
-	list          func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
-	configuration func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+	readReviewSetting  func(context.Context, model.Principal, string) (bool, error)
+	writeReviewSetting func(context.Context, model.Principal, string, bool) (bool, error)
+	t                  *testing.T
+	alias              func(context.Context, model.Principal, string) (model.WorkerAlias, error)
+	putAlias           func(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
+	report             func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error)
+	sync               func(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (workerservice.ConfigurationSyncResult, error)
+	put                func(context.Context, model.Principal, string, string, model.WorkerConfiguration) (model.WorkerConfigurationResource, error)
+	get                func(context.Context, model.Principal, string) (workerservice.WorkerDetailResult, error)
+	list               func(context.Context, model.Principal, model.PageRequest) (workerservice.WorkerPage, error)
+	configuration      func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error)
+}
+
+func (s *capacityReportOperations) ReviewEnabled(ctx context.Context, principal model.Principal, workerID string) (bool, error) {
+	if s.readReviewSetting == nil {
+		return false, s.unexpected("ReviewEnabled")
+	}
+	return s.readReviewSetting(ctx, principal, workerID)
+}
+
+func (s *capacityReportOperations) SetReviewEnabled(ctx context.Context, principal model.Principal, workerID string, enabled bool) (bool, error) {
+	if s.writeReviewSetting == nil {
+		return false, s.unexpected("SetReviewEnabled")
+	}
+	return s.writeReviewSetting(ctx, principal, workerID, enabled)
 }
 
 func (s *capacityReportOperations) Alias(ctx context.Context, p model.Principal, id string) (model.WorkerAlias, error) {

@@ -62,6 +62,12 @@ func newWorkerRouteFixture(t *testing.T) *workerRouteFixture {
 	f.cookie = &http.Cookie{Name: auth.SessionCookieName(), Value: workerRouteSession}
 	operations := &capacityReportOperations{
 		t: t,
+		readReviewSetting: func(ctx context.Context, actor model.Principal, id string) (bool, error) {
+			return workerRouteResult[bool](f.take(ctx, actor, "ReviewEnabled", id))
+		},
+		writeReviewSetting: func(ctx context.Context, actor model.Principal, id string, enabled bool) (bool, error) {
+			return workerRouteResult[bool](f.take(ctx, actor, "SetReviewEnabled", id, enabled))
+		},
 		report: func(ctx context.Context, actor model.Principal, id string, input model.WorkerReport) (workerservice.WorkerReportResult, error) {
 			return workerRouteResult[workerservice.WorkerReportResult](f.take(ctx, actor, "Report", id, input))
 		},

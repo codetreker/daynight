@@ -142,16 +142,34 @@ const summaryFields = `project_id::text, number, github_id, url, title, author_i
  state, draft, base_ref, head_repository_id, head_repository_full_name, head_ref, head_sha,
  github_created_at, github_updated_at, github_closed_at, github_merged_at, observed_at, revision, seen_poll_id::text`
 
+const reviewerFields = `user_id::text, worker_id::text, assigned_at`
+const reviewerJoin = ` FROM project_pull_requests LEFT JOIN project_pull_request_reviewers USING (project_id, github_id) WHERE `
+
 func summaryTargets(p *githubpr.PullRequestSummary) []any {
 	return []any{&p.ProjectID, &p.Number, &p.GitHubID, &p.URL, &p.Title, &p.AuthorID, &p.AuthorLogin,
 		&p.State, &p.Draft, &p.BaseRef, &p.HeadRepositoryID, &p.HeadRepositoryFullName, &p.HeadRef, &p.HeadSHA,
 		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID}
 }
+
+func scanSummaryWithReviewer(row rowScanner, p *githubpr.PullRequestSummary, extra ...any) error {
+	var userID, workerID *string
+	var assignedAt *time.Time
+	targets := append(summaryTargets(p), &userID, &workerID, &assignedAt)
+	if err := row.Scan(append(targets, extra...)...); err != nil {
+		return err
+	}
+	if (userID == nil) != (workerID == nil) || (workerID == nil) != (assignedAt == nil) {
+		return errors.New("incomplete persisted PR reviewer assignment")
+	}
+	if workerID != nil {
+		p.Reviewer = &githubpr.PullRequestReviewer{UserID: *userID, WorkerID: *workerID, AssignedAt: *assignedAt}
+	}
+	return nil
+}
 func (r *reader) PullRequest(ctx context.Context, id string, number int64) (githubpr.PullRequest, error) {
 	var p githubpr.PullRequest
-	targets := append(summaryTargets(&p.PullRequestSummary), &p.Description)
-	err := r.tx.QueryRow(ctx, `SELECT `+summaryFields+`, description FROM project_pull_requests WHERE project_id=$1 AND number=$2`, id, number).Scan(targets...)
-	if err != nil {
+	row := r.tx.QueryRow(ctx, `SELECT `+summaryFields+`, `+reviewerFields+`, description`+reviewerJoin+`project_id=$1 AND number=$2`, id, number)
+	if err := scanSummaryWithReviewer(row, &p.PullRequestSummary, &p.Description); err != nil {
 		return githubpr.PullRequest{}, pg.QueryError("read github pull request", err)
 	}
 	return p, nil
@@ -191,7 +209,7 @@ func (r *reader) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store
 	if q.Previous {
 		order, comparison = "ASC", ">"
 	}
-	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+` FROM project_pull_requests WHERE `+where+
+	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+`, `+reviewerFields+reviewerJoin+where+
 		` AND ($6::bigint IS NULL OR number <= $6) AND ($7::bigint IS NULL OR number `+comparison+` $7)
 		 ORDER BY number `+order+` LIMIT $8`, q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.UpperNumber, q.AnchorNumber, q.Limit+1)
 	if err != nil {
@@ -200,7 +218,7 @@ func (r *reader) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store
 	defer rows.Close()
 	for rows.Next() {
 		var p githubpr.PullRequestSummary
-		if err := rows.Scan(summaryTargets(&p)...); err != nil {
+		if err := scanSummaryWithReviewer(rows, &p); err != nil {
 			return store.GitHubPRPage{}, pg.QueryError("list github pull requests", err)
 		}
 		page.Items = append(page.Items, p)

@@ -46,7 +46,7 @@ func (f appDueReaderFunc) DueGitHubAppProjects(ctx context.Context, now time.Tim
 }
 
 func appRunnerFixture(reader store.GitHubAppWorkReader, exec projectExecutor) *AppRunner {
-	r, err := NewAppRunner(reader, &AppExecutor{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r, err := NewAppRunner(reader, &AppExecutor{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		panic(err)
 	}
@@ -170,7 +170,7 @@ func TestAppRunnerRecoversScanFailureAndReportsPanics(t *testing.T) {
 }
 
 func TestAppRunnerStartupValidation(t *testing.T) {
-	if _, err := NewAppRunner(nil, nil, nil); err == nil {
+	if _, err := NewAppRunner(nil, nil, nil, nil); err == nil {
 		t.Fatal("accepted missing dependencies")
 	}
 	r := appRunnerFixture(appDueReaderFunc(func(context.Context, time.Time, int) ([]string, error) { return nil, nil }), executorFunc(func(context.Context, string) error { return nil }))
@@ -217,7 +217,7 @@ func TestAppRunnerCancelsPendingClaimWithoutCancelingWork(t *testing.T) {
 
 func TestAppRunnerConstructorSuppliesDefaults(t *testing.T) {
 	reader := appDueReaderFunc(func(context.Context, time.Time, int) ([]string, error) { return nil, nil })
-	runner, err := NewAppRunner(reader, &AppExecutor{}, nil)
+	runner, err := NewAppRunner(reader, &AppExecutor{}, nil, nil)
 	if err != nil || runner == nil || runner.interval != time.Second || runner.logger == nil || runner.Failures() == nil {
 		t.Fatalf("runner defaults: %#v %v", runner, err)
 	}

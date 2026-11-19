@@ -40,6 +40,10 @@ type admissionServiceFixture struct {
 	entered           chan struct{}
 }
 
+func (f *admissionServiceFixture) SetWorkerReviewEnabled(context.Context, string, string, bool) (bool, error) {
+	f.t.Fatal("unexpected review setting write")
+	return false, nil
+}
 func (f *admissionServiceFixture) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
 	f.t.Fatal("unexpected alias read")
 	return model.WorkerAlias{}, nil

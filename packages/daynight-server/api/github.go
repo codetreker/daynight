@@ -85,22 +85,28 @@ type PullRequestHead struct {
 	Ref                *string `json:"ref"`
 	SHA                string  `json:"sha"`
 }
+type PullRequestReviewer struct {
+	UserID     string    `json:"userId"`
+	WorkerID   string    `json:"workerId"`
+	AssignedAt time.Time `json:"assignedAt"`
+}
 type PullRequestSummary struct {
-	Number     string             `json:"number"`
-	ID         string             `json:"id"`
-	URL        string             `json:"url"`
-	Title      string             `json:"title"`
-	Author     *PullRequestAuthor `json:"author"`
-	State      string             `json:"state"`
-	Draft      bool               `json:"draft"`
-	Base       PullRequestBase    `json:"base"`
-	Head       PullRequestHead    `json:"head"`
-	CreatedAt  time.Time          `json:"createdAt"`
-	UpdatedAt  time.Time          `json:"updatedAt"`
-	ClosedAt   *time.Time         `json:"closedAt"`
-	MergedAt   *time.Time         `json:"mergedAt"`
-	ObservedAt time.Time          `json:"observedAt"`
-	Revision   string             `json:"revision"`
+	Number     string               `json:"number"`
+	ID         string               `json:"id"`
+	URL        string               `json:"url"`
+	Title      string               `json:"title"`
+	Author     *PullRequestAuthor   `json:"author"`
+	Reviewer   *PullRequestReviewer `json:"reviewer"`
+	State      string               `json:"state"`
+	Draft      bool                 `json:"draft"`
+	Base       PullRequestBase      `json:"base"`
+	Head       PullRequestHead      `json:"head"`
+	CreatedAt  time.Time            `json:"createdAt"`
+	UpdatedAt  time.Time            `json:"updatedAt"`
+	ClosedAt   *time.Time           `json:"closedAt"`
+	MergedAt   *time.Time           `json:"mergedAt"`
+	ObservedAt time.Time            `json:"observedAt"`
+	Revision   string               `json:"revision"`
 }
 type PullRequestDetail struct {
 	PullRequestSummary

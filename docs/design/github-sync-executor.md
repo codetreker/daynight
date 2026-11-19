@@ -1,6 +1,6 @@
 # 单 Project GitHub 同步执行器
 
-`service/github.AppExecutor` 通过 App-aware 工作事务执行单个 Project 的同步。[连接与运行时](github-connection-runtime.md)负责调度扫描、HTTP 管理入口和服务启停；授权与生命周期见[独立 App 执行](github-app-execution.md)。
+`service/github.AppExecutor` 通过 App-aware 工作事务执行单个 Project 的同步。[连接与运行时](github-connection-runtime.md)负责调度扫描、HTTP 管理入口和服务启停。授权与生命周期见[独立 App 执行](github-app-execution.md)。[PR reviewer 分配](pull-request-reviewer-allocation.md)独立读取已提交的同步事实。
 
 ## 领取与发布
 

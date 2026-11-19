@@ -3375,6 +3375,19 @@ configuration prerequisite. No task fields, acquisition constraints or recovery
 semantics change. This service validates and exchanges settings; native
 preparation and resource stopping remain machine-side runtime responsibilities.
 
+## Worker review settings
+
+`GET`, `HEAD`, and `PUT /api/v1/me/workers/{workerId}/review-settings`
+use the authenticated account's Worker row. GET returns `{"enabled":false}`
+until the account enables review. PUT replaces the setting and returns its
+stored value. The body must contain exactly one boolean field, `enabled`.
+A missing Worker or an ID belonging only to another account returns
+`404 not_found`.
+
+Review participation is a server-side setting. Reading or changing it does not
+renew Worker liveness. Worker reports and ordinary cloud configuration writes
+preserve it.
+
 ## Team lifecycle API
 
 The authenticated Team API creates ordinary Teams and reads the caller's joined

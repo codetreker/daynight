@@ -2,7 +2,7 @@
 
 Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配置及持久化同步事实，通过 `GET /api/v1/projects/{projectId}/pull-requests` 读取摘要页，通过 `GET /api/v1/projects/{projectId}/pull-requests/{number}` 读取完整详情，通过 `GET /api/v1/projects/{projectId}/pull-request-authors` 读取作者目录，并通过 `GET /api/v1/projects/{projectId}/pull-request-statistics` 读取项目每日统计。读取不访问 GitHub；服务未配置、同步关闭或连接断开时仍可读取保留的数据。没有连接行时返回虚拟未连接状态，不创建存储行。部署配置决定 `serviceAvailable`，与连接和观测版本无关；必填 boolean `syncEnabled` 表示 Project 保存的同步意愿，不随服务禁用或访问撤权自动改写。
 
-项目读取权限、连接、计数和页面或详情在同一只读快照内验证与读取。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要不包含 description，详情保留原始 Markdown，空字符串和 null 不合并。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
+项目读取权限、连接、计数和页面或详情在同一只读快照内验证与读取。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要和详情通过 `reviewer` 返回项目内该 GitHub PR 的持久化分配。已分配时包含 `userId`、`workerId` 和 UTC 时间 `assignedAt`，没有分配时返回 null。分配与 GitHub 观测共享读取快照，分配变化独立于 GitHub revision。摘要省略 description，详情保留原始 Markdown 的空字符串和 null 语义。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
 
 列表按 number 降序读取，支持 `state=active|closed|merged|all`（默认 active）、字面大小写不敏感的标题或编号子串 `q`（最多 1024 UTF-8 bytes）、`limit`（默认 20，范围 1–100）、可选 `authorId` 和 cursor。`authorId` 必须是正 int64 规范十进制字符串，省略表示全部作者；不存在的合法 ID 返回实际零匹配。作者、状态和查询在分页前组合，`total` 统计完整组合，不受页锚点和上界限制。
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5"
@@ -78,11 +78,13 @@ func (w *writer) PublicationFacts(ctx context.Context, lease store.GitHubLease, 
 	if !matching {
 		return facts, false, nil
 	}
-	current, err := (&reader{tx: w.tx}).PullRequest(ctx, w.projectID, number)
+	var current githubpr.PullRequest
+	targets := append(summaryTargets(&current.PullRequestSummary), &current.Description)
+	err = w.tx.QueryRow(ctx, `SELECT `+summaryFields+`, description FROM project_pull_requests WHERE project_id=$1 AND number=$2`, w.projectID, number).Scan(targets...)
 	if err == nil {
 		facts.Current = &current
-	} else if !errors.Is(err, model.ErrNotFound) {
-		return facts, false, err
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return facts, false, pg.QueryError("read github pull request", err)
 	}
 	if terminalAt != nil {
 		var period store.GitHubCoveragePeriod

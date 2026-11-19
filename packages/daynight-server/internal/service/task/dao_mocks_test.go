@@ -881,6 +881,9 @@ type workerReaderMock struct {
 	WorkerConfigurationFn func(context.Context, string, string) (model.WorkerConfigurationResource, error)
 }
 
+func (*workerReaderMock) WorkerReviewEnabled(context.Context, string, string) (bool, error) {
+	panic("unexpected worker review setting read")
+}
 func (*workerReaderMock) WorkerAlias(context.Context, string, string) (model.WorkerAlias, error) {
 	panic("unexpected worker alias read")
 }

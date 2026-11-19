@@ -154,6 +154,10 @@ type workerHTTPWriteDAO struct {
 	SetWorkerConfigurationObservationCall func(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
 }
 
+func (d *workerHTTPWriteDAO) SetWorkerReviewEnabled(context.Context, string, string, bool) (bool, error) {
+	workerHTTPUnexpected(d.t, "SetWorkerReviewEnabled")
+	return false, nil
+}
 func (d *workerHTTPWriteDAO) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
 	if d.WorkerAliasCall == nil {
 		workerHTTPUnexpected(d.t, "WorkerAlias")
@@ -243,6 +247,10 @@ func (d *workerHTTPReader) Workers(ctx context.Context, u string, now time.Time,
 		workerHTTPUnexpected(d.t, "Workers")
 	}
 	return d.WorkersCall(ctx, u, now, p)
+}
+func (d *workerHTTPReader) WorkerReviewEnabled(context.Context, string, string) (bool, error) {
+	workerHTTPUnexpected(d.t, "WorkerReviewEnabled")
+	return false, nil
 }
 func (d *workerHTTPReader) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
 	if d.WorkerAliasCall == nil {

@@ -236,6 +236,9 @@ func summaryResponse(c githubpr.Connection, p githubpr.PullRequestSummary) (api.
 	if p.AuthorID != nil {
 		out.Author = &api.PullRequestAuthor{ID: decimal(*p.AuthorID), Login: *p.AuthorLogin}
 	}
+	if p.Reviewer != nil {
+		out.Reviewer = &api.PullRequestReviewer{UserID: p.Reviewer.UserID, WorkerID: p.Reviewer.WorkerID, AssignedAt: p.Reviewer.AssignedAt.UTC()}
+	}
 	out.Number = decimal(p.Number)
 	out.ID = decimal(p.GitHubID)
 	out.URL = p.URL

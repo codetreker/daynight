@@ -164,6 +164,13 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	}
 	mustExec(t, setup, `ROLLBACK TO SAVEPOINT unique_pr`)
 	insertPR(t, setup, other, 9, "open", "same number in another project", nil)
+	insertPR(t, setup, other, 8, "open", "same PR in another project", nil)
+	mustExec(t, setup, `UPDATE project_pull_requests SET github_id=98 WHERE project_id=$1 AND number=8`, other)
+	worker, user := uuid.NewString(), uuid.NewString()
+	assignedAt := time.Now().UTC().Truncate(time.Microsecond)
+	mustExec(t, setup, `INSERT INTO project_pull_request_reviewers(project_id, github_id, user_id, worker_id, assigned_at)
+		VALUES ($1,9,$3,$4,$5), ($1,8,$3,$4,$5), ($2,98,$3,$4,$5)`, id, other, user, worker, assignedAt)
+	mustExec(t, setup, `UPDATE project_pull_requests SET github_id=98 WHERE project_id=$1 AND number=8`, id)
 	if err := setup.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -173,15 +180,18 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	if err != nil || detail.Description == nil || *detail.Description != body || detail.AuthorID != nil || detail.AuthorLogin != nil || detail.HeadRepositoryID != nil || detail.HeadRepositoryFullName != nil || detail.HeadRef != nil {
 		t.Fatalf("detail: %+v %v", detail, err)
 	}
+	if detail.Reviewer == nil || detail.Reviewer.UserID != user || detail.Reviewer.WorkerID != worker || !detail.Reviewer.AssignedAt.Equal(assignedAt) {
+		t.Fatalf("detail reviewer: %+v", detail.Reviewer)
+	}
 	emptyDetail, err := r.PullRequest(ctx, id, 8)
-	if err != nil || emptyDetail.Description == nil || *emptyDetail.Description != "" {
+	if err != nil || emptyDetail.Description == nil || *emptyDetail.Description != "" || emptyDetail.Reviewer != nil {
 		t.Fatalf("empty: %+v %v", emptyDetail, err)
 	}
 	nullDetail, err := r.PullRequest(ctx, id, 7)
 	if err != nil || nullDetail.Description != nil {
 		t.Fatalf("null: %+v %v", nullDetail, err)
 	}
-	if _, err = r.PullRequest(ctx, other, 8); !errors.Is(err, model.ErrNotFound) {
+	if _, err = r.PullRequest(ctx, other, 7); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing: %v", err)
 	}
 	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id})
@@ -192,6 +202,9 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	first, err := r.PullRequests(ctx, q)
 	if err != nil || !reflect.DeepEqual(numbers(first.Items), []int64{9, 8}) || first.Total != 3 || !first.HasMore || first.UpperNumber == nil || *first.UpperNumber != 9 {
 		t.Fatalf("first: %+v %v", first, err)
+	}
+	if !reflect.DeepEqual(first.Items[0].Reviewer, detail.Reviewer) || first.Items[1].Reviewer != nil {
+		t.Fatalf("list reviewers: %+v, %+v", first.Items[0].Reviewer, first.Items[1].Reviewer)
 	}
 	q.UpperNumber, q.AnchorNumber = first.UpperNumber, ptr(int64(8))
 	second, err := r.PullRequests(ctx, q)

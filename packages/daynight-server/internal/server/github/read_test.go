@@ -98,7 +98,9 @@ func fixture() (githubpr.Connection, githubpr.PullRequestSummary) {
 }
 func TestReadResponses(t *testing.T) {
 	c, pr := fixture()
-	s := &readerStub{status: coregithub.Status{Connection: c, ServiceAvailable: false}, page: coregithub.Page{Connection: c, Items: []githubpr.PullRequestSummary{pr}, Total: 1, Counts: store.GitHubPRCounts{Active: 1, All: 1}}, detail: coregithub.Detail{Connection: c, PullRequest: githubpr.PullRequest{PullRequestSummary: pr, Description: pointer("")}}}
+	assigned := pr
+	assigned.Reviewer = &githubpr.PullRequestReviewer{UserID: "20000000-0000-0000-0000-000000000001", WorkerID: "10000000-0000-0000-0000-000000000001", AssignedAt: pr.ObservedAt}
+	s := &readerStub{status: coregithub.Status{Connection: c, ServiceAvailable: false}, page: coregithub.Page{Connection: c, Items: []githubpr.PullRequestSummary{assigned}, Total: 1, Counts: store.GitHubPRCounts{Active: 1, All: 1}}, detail: coregithub.Detail{Connection: c, PullRequest: githubpr.PullRequest{PullRequestSummary: pr, Description: pointer("")}}}
 	m := newMux(s)
 	w := call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests?state=all&q=%23hello&limit=6&cursor=token")
 	var page api.PullRequestPage
@@ -107,6 +109,10 @@ func TestReadResponses(t *testing.T) {
 	}
 	if s.input.State != "all" || s.input.Query != "#hello" || s.input.Limit != 6 || s.input.Cursor != "token" || page.Total != "1" || page.Counts.Active != "1" || page.Items[0].Number != "9007199254740993" || page.Items[0].Author != nil || page.Items[0].Head.RepositoryID != nil || strings.Contains(w.Body.String(), "description") || strings.Contains(w.Body.String(), "authorId") || strings.Contains(w.Body.String(), "projectTotal") {
 		t.Fatalf("page %s input %+v", w.Body, s.input)
+	}
+	if reviewer := page.Items[0].Reviewer; reviewer == nil || reviewer.UserID != assigned.Reviewer.UserID || reviewer.WorkerID != assigned.Reviewer.WorkerID ||
+		!reviewer.AssignedAt.Equal(assigned.Reviewer.AssignedAt) || !strings.Contains(w.Body.String(), `"assignedAt":"2026-01-01T03:00:00.000000123Z"`) {
+		t.Fatalf("page reviewer: %s", w.Body)
 	}
 	author := int64(9007199254740993)
 	s.page.AuthorID = &author
@@ -117,7 +123,7 @@ func TestReadResponses(t *testing.T) {
 	}
 	s.page.AuthorID = nil
 	w = call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests/9007199254740993")
-	if w.Code != 200 || s.number != 9007199254740993 || !strings.Contains(w.Body.String(), `"description":""`) {
+	if w.Code != 200 || s.number != 9007199254740993 || !strings.Contains(w.Body.String(), `"description":""`) || !strings.Contains(w.Body.String(), `"reviewer":null`) {
 		t.Fatalf("detail %d %s", w.Code, w.Body)
 	}
 	if w.Header().Get("Daynight-User-ID") != userID || w.Header().Get("Cache-Control") != "no-store" {

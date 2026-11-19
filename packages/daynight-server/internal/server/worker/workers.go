@@ -27,6 +27,8 @@ type workersHandler struct {
 type workerService interface {
 	Alias(context.Context, model.Principal, string) (model.WorkerAlias, error)
 	PutAlias(context.Context, model.Principal, string, string, *string) (model.WorkerAlias, error)
+	ReviewEnabled(context.Context, model.Principal, string) (bool, error)
+	SetReviewEnabled(context.Context, model.Principal, string, bool) (bool, error)
 	Report(context.Context, model.Principal, string, model.WorkerReport) (service.WorkerReportResult, error)
 	ReportSync(context.Context, model.Principal, string, model.WorkerReport, []model.PromptSelector) (service.ConfigurationSyncResult, error)
 	List(context.Context, model.Principal, model.PageRequest) (service.WorkerPage, error)
@@ -78,6 +80,9 @@ func registerRoutes(mux *http.ServeMux, handler *workersHandler, require func(ht
 	mux.HandleFunc("GET "+base+"/{workerId}/configuration", require(handler.configuration))
 	mux.HandleFunc("PUT "+base+"/{workerId}/configuration", require(handler.configuration))
 	mux.HandleFunc(base+"/{workerId}/configuration", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
+	mux.HandleFunc("GET "+base+"/{workerId}/review-settings", require(handler.reviewSettings))
+	mux.HandleFunc("PUT "+base+"/{workerId}/review-settings", require(handler.reviewSettings))
+	mux.HandleFunc(base+"/{workerId}/review-settings", require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PUT")))
 	mux.HandleFunc("POST "+base+"/{workerId}/report", require(handler.report))
 	mux.HandleFunc(base+"/{workerId}/report", require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	mux.HandleFunc("GET "+base, require(handler.list))

@@ -41,6 +41,12 @@ type Author struct {
 	LoginAmbiguous bool
 }
 
+type PullRequestReviewer struct {
+	UserID     string
+	WorkerID   string
+	AssignedAt time.Time
+}
+
 // PullRequestSummary deliberately excludes the potentially large description.
 type PullRequestSummary struct {
 	ProjectID                        string
@@ -48,6 +54,7 @@ type PullRequestSummary struct {
 	URL, Title                       string
 	AuthorID                         *int64
 	AuthorLogin                      *string
+	Reviewer                         *PullRequestReviewer
 	State                            string
 	Draft                            bool
 	BaseRef                          string

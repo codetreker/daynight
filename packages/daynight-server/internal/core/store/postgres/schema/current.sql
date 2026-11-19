@@ -1,4 +1,4 @@
--- Schema snapshot version: 92
+-- Schema snapshot version: 93
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -605,6 +605,14 @@ CREATE TABLE "project_ownership" (
     "version" bigint DEFAULT 1 NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     CONSTRAINT "project_ownership_version_check" CHECK (("version" > 0))
+);
+
+CREATE TABLE "project_pull_request_reviewers" (
+    "project_id" "uuid" NOT NULL,
+    "github_id" bigint NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "assigned_at" timestamp with time zone NOT NULL
 );
 
 CREATE TABLE "project_pull_requests" (
@@ -1570,6 +1578,7 @@ CREATE TABLE "workers" (
     "archive_sessions" boolean DEFAULT true NOT NULL,
     "alias_value" "text",
     "alias_version" bigint DEFAULT 1 NOT NULL,
+    "review_enabled" boolean DEFAULT false NOT NULL,
     CONSTRAINT "worker_configuration_complete" CHECK (((("configuration_revision" IS NULL) AND ("configuration_updated_at" IS NULL) AND ("desired_configuration" IS NULL)) OR (("configuration_revision" IS NOT NULL) AND ("configuration_updated_at" IS NOT NULL) AND ("desired_configuration" IS NOT NULL) AND ("jsonb_typeof"("desired_configuration") = 'object'::"text")))),
     CONSTRAINT "worker_configuration_observation_object" CHECK ((("configuration_observation" IS NULL) OR ("jsonb_typeof"("configuration_observation") = 'object'::"text"))),
     CONSTRAINT "worker_configuration_observation_revision_nonnegative" CHECK (("configuration_observation_revision" >= 0)),
@@ -1736,6 +1745,9 @@ ALTER TABLE ONLY "project_invitations"
 
 ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
+
+ALTER TABLE ONLY "project_pull_request_reviewers"
+    ADD CONSTRAINT "project_pull_request_reviewers_pkey" PRIMARY KEY ("project_id", "github_id");
 
 ALTER TABLE ONLY "project_pull_requests"
     ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "number");
@@ -2204,6 +2216,8 @@ CREATE INDEX "webhook_subscriptions_deleted" ON "webhook_subscriptions" USING "b
 CREATE INDEX "webhook_subscriptions_endpoint" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "id") WHERE ("deleted_at" IS NULL);
 
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
+
+CREATE INDEX "workers_review_enabled_last_seen" ON "workers" USING "btree" ("last_seen_at") WHERE "review_enabled";
 
 CREATE TRIGGER "webhook_policy_no_update" BEFORE UPDATE ON "webhook_policies" FOR EACH ROW EXECUTE FUNCTION "webhook_policy_no_update"();
 

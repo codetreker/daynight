@@ -24,6 +24,7 @@ type projectExecutor interface {
 type AppRunner struct {
 	reader     store.GitHubAppWorkReader
 	executor   projectExecutor
+	reviewers  store.PullRequestReviewerAllocator
 	logger     *slog.Logger
 	interval   time.Duration
 	mu         sync.Mutex
@@ -35,14 +36,14 @@ type AppRunner struct {
 	failure    error
 }
 
-func NewAppRunner(reader store.GitHubAppWorkReader, executor *AppExecutor, logger *slog.Logger) (*AppRunner, error) {
+func NewAppRunner(reader store.GitHubAppWorkReader, executor *AppExecutor, reviewers store.PullRequestReviewerAllocator, logger *slog.Logger) (*AppRunner, error) {
 	if reader == nil || executor == nil {
 		return nil, errors.New("github runner requires work reader and executor")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AppRunner{reader: reader, executor: executor, logger: logger, interval: time.Second, failures: make(chan error, 1)}, nil
+	return &AppRunner{reader: reader, executor: executor, reviewers: reviewers, logger: logger, interval: time.Second, failures: make(chan error, 1)}, nil
 }
 
 func (r *AppRunner) Failures() <-chan error { return r.failures }
@@ -101,6 +102,18 @@ func (r *AppRunner) loop(work, claims context.Context) {
 		workers.Wait()
 		close(r.done)
 	}()
+	if r.reviewers != nil {
+		reviewerCtx, cancel := context.WithCancel(claims)
+		defer cancel()
+		workers.Go(func() {
+			defer func() {
+				if recover() != nil {
+					r.fail()
+				}
+			}()
+			r.reconcileReviewers(reviewerCtx)
+		})
+	}
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
