@@ -35,6 +35,8 @@ export type ServerCommandOptions = {
   readonly platform?: NodeJS.Platform;
   readonly operationLimits?: Partial<OperationLimits>;
   readonly fetch?: typeof globalThis.fetch;
+  // Attached only to Task, Step and Thread writes; see the API client.
+  readonly botId?: string;
 };
 
 // Output and cleanup failures may quote the bytes they were asked to write.
@@ -90,7 +92,7 @@ export const runServerCommand = async (
     const { serverUrl, serverToken } = await loadServerConfiguration(paths, operation.signal);
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     operation.check();
-    const api = createApiClient({ serverUrl, serverToken, operation, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
+    const api = createApiClient({ serverUrl, serverToken, operation, ...(options.fetch === undefined ? {} : { fetch: options.fetch }), ...(options.botId === undefined ? {} : { botId: options.botId }) });
     const output = await command({ api, operation, serverUrl, serverConfiguration: { serverUrl, serverToken } });
     if (typeof output === "object" && output.kind === "known-session-operation") {
       known = output;

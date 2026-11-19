@@ -695,9 +695,23 @@ Windows development installation and nonempty Agent CLI alias mappings currently
 fail explicitly; ordinary Windows CLI operation and `DN_CONFIG_DIR` remain supported.
 
 Each installation builds the CLI and copies its production dependencies into an
-independent `.tmp/dev-builds/build-*/` snapshot. The installed symlink changes
-atomically after verifying the snapshot's version. `--build-info` reports the
-source checkout, commit, dirty state, version, build time and snapshot directory.
+independent `.tmp/dev-builds/build-*/` snapshot. Resolved physical packages use
+numbered `.dev-store/<id>/` roots, with links to their copied JavaScript
+dependencies. Dependency file symlinks are materialized; dependency links do not
+point back to the source checkout's mutable `node_modules`.
+
+The installer checks only the snapshot's version before atomically replacing
+the installed symlink. It does not load sharp, better-sqlite3 or Koffi during
+verification. Numbered roots can break native relative library lookup, so a
+snapshot that fails to load sharp can pass installation and replace a usable
+entry. Successful installation does not establish native dependency readiness.
+The [native dependency requirements](spec/development-snapshot-native-layout.md)
+define the required named package layout, native checks before publication and
+preservation of the previous entry on native failure; those protections are not
+implemented by the current installer.
+
+`--build-info` reports the source checkout, commit, dirty state, version, build
+time and snapshot directory.
 Running processes and resolved Agent aliases keep their original snapshot when
 the entry is reinstalled. Keep its snapshot and fixed Node executable available
 while any execution can use them. Removing a worktree also removes its snapshots;

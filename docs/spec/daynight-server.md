@@ -71,7 +71,7 @@ Project 包含以下字段：
 
 一个 Project 关联一个 repo。同一普通或 Personal Team 对同一仓库身份最多拥有一个活跃 Project；
 不同 Team 可以分别拥有该仓库的 Project。软删除和成功转出释放原 Team 的占用，历史数据继续保留。
-仓库身份沿用 HTTPS、SSH URL 和 SCP 的现有等价规则，保留路径大小写，不访问远端推断别名。支持 HTTPS URL、
+仓库占用身份沿用 HTTPS、SSH URL 和 SCP 的现有等价规则，保留路径大小写。支持 HTTPS URL、
 SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；地址登记不验证实际访问权限。
 名称必须是无 NUL 的有效 UTF-8 文本，最多 256 个 Unicode code points 且最多 1024 个
 UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含凭据，SSH 地址允许用户名，
@@ -81,6 +81,10 @@ UTF-8 bytes；`repoUrl` 最多 4096 个 UTF-8 bytes。HTTPS 地址不得包含�
 目标 Team 已有活跃同仓库项目时，HTTP 返回 `409 project_repository_conflict`，MCP 使用既有
 错误信封返回同名代码。拒绝不依赖冲突项目的可见性，不透露其 ID、名称、地址、成员或其他私有详情，
 也不留下新 Project、授权、归属变化或集成副作用。请求及成功回执格式保持不变。
+
+有效 Project admin 可预览和确认仓库改址。原文不变保持版本；等价地址或可信 GitHub 稳定 ID 证明同库时保存新地址并保留绑定。稳定 ID 证实不同则按换仓处理；无法确认时必须明确选择按换仓处理。已知相反 ID 优先于地址等价。预览绑定地址版本、归属版本、分类和目标 ID；任何事实漂移要求重新预览。只有 owner Team admin 且现有 App grant 有效时才按候选路径探查，Project admin 可按现有连接读取旧稳定 ID 的当前路径。
+
+换仓在同一事务保存地址、解除项目侧 GitHub App 连接并停止旧同步，同时移除本次快照中已选择该项目的 Worker 云端目标配置。旧 PR 来源及项目历史保留，管理员可手工连接新仓库。快照后的新选择和首次导入按普通配置处理；已有 claim 不构成换仓条件，Worker 应用配置前仍可能领取工作，应用移除时可能停止现有执行。本地仓库及映射由使用者管理。确定拒绝不产生部分修改；提交结果未知时先只读核对，不自动重放。
 
 升级在开放业务流量前检查全部存量：同 Team 活跃等价仓库或重复的无法解析原文使迁移失败，
 报告 Team 与 Project ID 并回滚；不得自行合并、删除或转移。单个无法解析的历史地址保留原文与
@@ -283,8 +287,18 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET` | `/api/v1/me/workers/{workerId}` | 返回近期 Worker telemetry 与按当前权限过滤的任务观测 |
 | `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | 读取账号拥有的云端目标与逐项应用观测，不受近期窗口限制 |
 | `PUT` | `/api/v1/me/workers/{workerId}/configuration` | 精确目标版本保存完整配置，返回当前配置资源 |
+| `GET, HEAD, PUT` | `/api/v1/me/workers/{workerId}/review-participation` | 读取或按独立版本修改账号自己的 PR review 参与开关，默认关闭；[资源合同](../design/worker-review-participation.md) |
 
 项目成员和管理员可管理标签库。标签名称去除 Unicode 首尾空白后为 1–64 个 code point，拒绝控制字符及 U+2028/U+2029；同项目名称按 ASCII 大小写不区分重名，展示拼写保留。目录默认每页 50 条、最多 100 条，按名称键和 ID 排序；cursor 绑定项目、principal、查询、limit 与目录 epoch。目录名称、颜色或成员变化后旧 cursor 明确失效。使用计数是读取快照中的提示，不属于标签 version；确认删除包括之后新增的关联。resolve 的编码结果最多 512 KiB，超限拒绝而不截断。创建可省略 `color`，默认 `#9AA3B2`；更新必须提供精确 `version` 和至少一个 `name`、`color`，省略字段保持原值。颜色输入经校验规范化为大写 `#RRGGBB`，拒绝无效值和 null。成功回执的 ID 和 version 确认请求的规范颜色已随事务提交；后续读取只证明当前状态。旧 REST 标签和 Task/Goal 引用响应不包含颜色。
+
+标签重名创建及重命名只有在精确名称唯一索引冲突、事务确认未提交且回滚清理可靠时，才返回 HTTP 409 `tag_name_conflict`。同一故障的外层数据库包装不改变此业务结果。附加数据库故障、清理失败、提交已尝试或未知事务结果不得被降格为普通名称冲突；确认未提交的重名拒绝不得新增标签、覆盖原记录或推进目录 epoch；未知结果仍须保留可能已提交的事实。正常创建、改名、改色和删除的既有权限、版本与事务合同保持不变。
+
+重名冲突的验收必须包括：
+
+1. 使用真实 PostgreSQL、标签 service 和 REST 处理链验证完全同名、ASCII 大小写变体与重命名冲突均返回 409，并读回确认目录、版本、时间和颜色未改变。
+2. 在完整错误链上验证附加故障、回滚清理失败、提交尝试和未知结果保留其失败语义；仅模拟一个数据库错误包装不构成生产路径证明。
+3. 在真实浏览器中确认既有重名提示可操作，名称与颜色草稿保留且可编辑，修正名称后可继续保存，不进入“操作结果尚未确认”流程。
+4. 通过正常标签 CRUD 与相关服务端门禁，保留修复前复现证据及修复后产品复测结果。
 
 颜色 resolve 接收 `tagIds` 和可省略的 `catalogEpoch`，在同一授权读取快照校验 epoch 并规范化去重 ID。返回 `catalogEpoch` 和每个唯一 ID 的一项：存在时为 `{id,state:"found",version,color}`，缺失、已删除或跨项目时为 `{id,state:"missing"}`。非法 UUID、权限或 epoch 错误拒绝整批；epoch 不匹配返回 `catalog_changed`。请求沿用 1 MiB JSON 上限，实际编码结果超过 512 KiB 时拒绝，不返回部分结果。
 

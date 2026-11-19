@@ -30,6 +30,7 @@ type WorkerAdmission struct {
 
 type WorkerWriteDAO interface {
 	WorkerAliasWriter
+	WorkerReviewParticipationWriter
 	ReportTaskSnapshots(context.Context, string, model.WorkerTaskInventory) ([]WorkerTaskSource, error)
 	// UpsertWorker requires admission for the same owner in this transaction;
 	// its report timestamp must be the locked admission observation.

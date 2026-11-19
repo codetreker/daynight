@@ -10,10 +10,16 @@ export function imageDownloadName(label: string, mime: VerifiedImageLease['media
 type Request = { readonly scope: ImageScope; readonly asset: ImageAssetAdapter; readonly label: string; readonly signal: AbortSignal };
 type Job = { readonly request: Request; readonly controller: AbortController; readonly resolve: () => void; readonly reject: (error: unknown) => void; readonly unsubscribe: () => void; timer: ReturnType<typeof setTimeout> | null; cleanup: (() => void) | null; triggered: boolean };
 
-/** A page has one download original/URL and at most two waiting user requests. */
+/**
+ * A page reads at most one download original at a time and keeps at most two
+ * waiting user requests. Triggered downloads leave the read slot immediately;
+ * their dedicated URLs stay retained, at most two at once, for the browser's
+ * bounded handoff period.
+ */
 export class ImageDownloadQueue {
   private active: Job | null = null;
   private queue: Job[] = [];
+  private retained: Job[] = [];
   download(request: Request): Promise<void> {
     if (request.scope !== request.asset.scope || !request.asset.canDownload() || request.signal.aborted) return Promise.reject(request.signal.aborted ? request.signal.reason : new ImageFailure(request.scope.valid ? 'access_pending' : 'access_revoked', 'Image download is unavailable.'));
     if (this.active && this.queue.length >= 2) return Promise.reject(new ImageFailure('download_busy', 'Image download is busy. Try again.'));
@@ -36,28 +42,49 @@ export class ImageDownloadQueue {
   }
   private start(job: Job) { this.active = job; if (job.timer) clearTimeout(job.timer); job.timer = null; void this.run(job); }
   private async run(job: Job) {
-    let lease: VerifiedImageLease | null = null, url: string | null = null;
-    const cleanup = () => { if (url) { URL.revokeObjectURL(url); url = null; } lease?.release(); lease = null; this.finish(job); };
+    let lease: VerifiedImageLease | null = null, handoff: VerifiedImageLease | null = null, url: string | null = null;
+    const cleanup = () => { if (url) { URL.revokeObjectURL(url); url = null; } lease?.release(); lease = null; handoff?.release(); handoff = null; this.finish(job); };
     try {
       job.controller.signal.throwIfAborted();
       if (!job.request.asset.canDownload()) throw new ImageFailure(job.request.scope.valid ? 'access_pending' : 'access_revoked', 'Image download is unavailable.');
       lease = await job.request.asset.acquire(job.controller.signal, 'download');
+      job.controller.signal.throwIfAborted();
+      // The cached original resolves this lease without another read. It keeps
+      // the retained URL's bytes charged to the background budget once the
+      // download reservation is released; when that budget is full the store
+      // drops its cache entry and the URL alone holds the Blob until revoked.
+      handoff = await job.request.asset.acquire(job.controller.signal, 'background').catch(() => null);
       job.controller.signal.throwIfAborted();
       if (!job.request.asset.canDownload() || !lease.valid) throw new ImageFailure(job.request.scope.valid ? 'access_pending' : 'access_revoked', 'Image download is unavailable.');
       url = URL.createObjectURL(lease.blob);
       const link = document.createElement('a'); link.href = url;
       link.download = imageDownloadName(job.request.label, lease.mediaType, job.request.asset.resource?.resourceId ?? job.request.asset.key);
       link.click(); job.triggered = true; job.cleanup = cleanup;
-      job.timer = setTimeout(cleanup, 60_000); job.resolve();
+      lease.release(); lease = handoff; handoff = null;
+      job.timer = setTimeout(cleanup, 60_000);
+      this.retain(job); job.resolve();
     } catch (error) { cleanup(); job.reject(error); }
+  }
+  private retain(job: Job) {
+    this.retained.push(job);
+    // Revoking the oldest retained URL early bounds page-held download Blobs
+    // after the browser has already received each earlier download.
+    while (this.retained.length > 2) this.retained.shift()?.cleanup?.();
+    this.release(job);
+  }
+  private release(job: Job) {
+    if (this.active !== job) return;
+    this.active = null; const next = this.queue.shift(); if (next) this.start(next);
   }
   private finish(job: Job) {
     if (job.timer) clearTimeout(job.timer); job.timer = null; job.cleanup = null; job.unsubscribe();
-    if (this.active === job) { this.active = null; const next = this.queue.shift(); if (next) this.start(next); }
+    const at = this.retained.indexOf(job); if (at >= 0) this.retained.splice(at, 1);
+    this.release(job);
   }
   close() {
     for (const job of [...this.queue]) job.controller.abort(new ImageFailure('access_revoked', 'Image access has ended.'));
     this.active?.controller.abort(new ImageFailure('access_revoked', 'Image access has ended.'));
+    for (const job of [...this.retained]) job.controller.abort(new ImageFailure('access_revoked', 'Image access has ended.'));
   }
 }
 export const imageDownloads = new ImageDownloadQueue();
