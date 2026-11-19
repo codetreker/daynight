@@ -3,14 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 )
 
 func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
@@ -25,9 +25,14 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 				mustQueryExec(t, db, `UPDATE projects SET deleted_at=NULL WHERE id=$1`, project.ID)
 				mustQueryExec(t, db, `DELETE FROM task_dependencies; DELETE FROM goal_dependency_revisions`)
 				mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,dependency_type,goal_edge_id) VALUES($1,$2,$3,'goal',$4)`, external.ID, remote, local, queryID(21))
-				cause := errors.New("refuse subsequent Project effect")
-				remove := func(dao store.ProjectGoalDependencyDAO) error {
-					if err := dao.RemoveProjectEdges(t.Context()); err != nil {
+				var beforeVersion int64
+				if err := db.Pool.QueryRow(t.Context(), `SELECT version FROM project_ownership WHERE project_id=$1`, project.ID).Scan(&beforeVersion); err != nil {
+					t.Fatal(err)
+				}
+				cause := errors.New("refuse after Project and graph effects")
+				remove := func(dao store.ProjectGoalDependencyDAO) error { return dao.RemoveProjectEdges(t.Context()) }
+				finish := func(err error) error {
+					if err != nil {
 						return err
 					}
 					if rollback {
@@ -48,7 +53,7 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 							return err
 						}
 						_, err := scope.ProjectDAO().MoveOwnership(t.Context(), project.Ownership.TeamID)
-						return err
+						return finish(err)
 					})
 				case "App transfer":
 					completion, err = db.WriteGitHubProjectTransfer(t.Context(), project.ID, func(scope store.GitHubProjectTransferScope) error {
@@ -56,7 +61,7 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 							return err
 						}
 						_, err := scope.ProjectDAO().MoveOwnership(t.Context(), project.Ownership.TeamID)
-						return err
+						return finish(err)
 					})
 				case "delete":
 					completion, err = db.WriteProjectDeletion(t.Context(), project.ID, func(scope store.ProjectDeletionScope) error {
@@ -64,7 +69,7 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 							return err
 						}
 						_, err := scope.ProjectDAO().MarkDeleted(t.Context())
-						return err
+						return finish(err)
 					})
 				case "App delete":
 					completion, err = db.WriteGitHubProjectDeletion(t.Context(), project.ID, func(scope store.GitHubProjectDeletionScope) error {
@@ -72,12 +77,22 @@ func TestProjectLifecycleGoalCleanupSharesCommitAndRollback(t *testing.T) {
 							return err
 						}
 						_, err := scope.ProjectDAO().MarkDeleted(t.Context())
-						return err
+						return finish(err)
 					})
 				}
 				var edges, revisions int
-				if readErr := db.Pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM task_dependencies),(SELECT count(*) FROM goal_dependency_revisions)`).Scan(&edges, &revisions); readErr != nil {
+				var deleted bool
+				var version int64
+				if readErr := db.Pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM task_dependencies),(SELECT count(*) FROM goal_dependency_revisions),deleted_at IS NOT NULL,(SELECT version FROM project_ownership WHERE project_id=$1) FROM projects WHERE id=$1`, project.ID).Scan(&edges, &revisions, &deleted, &version); readErr != nil {
 					t.Fatal(readErr)
+				}
+				expectedVersion := beforeVersion
+				if !rollback && (kind == "transfer" || kind == "App transfer") {
+					expectedVersion++
+				}
+				expectedDeleted := !rollback && (kind == "delete" || kind == "App delete")
+				if version != expectedVersion || deleted != expectedDeleted {
+					t.Fatalf("project effects version=%d want %d deleted=%v want %v", version, expectedVersion, deleted, expectedDeleted)
 				}
 				if rollback {
 					if !errors.Is(err, cause) || completion.Outcome != store.TransactionNotCommitted || edges != 1 || revisions != 0 {
