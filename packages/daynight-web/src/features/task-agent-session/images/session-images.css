@@ -16,7 +16,7 @@
 .session-image-preview::backdrop { background: #101827c9; }
 .session-image-preview-heading { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
 .session-image-preview-heading h2 { flex: 1; min-width: 0; max-height: 4.5em; overflow: auto; margin: 0; padding-block: 9px; font-size: var(--text-section-heading); line-height: 1.5; overflow-wrap: anywhere; }
-.session-image-preview-heading > button { flex: none; font-size: 24px; }
+.session-image-preview-heading > button { flex: none; font-size: var(--text-interface); }
 .session-image-preview-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .session-image-preview-controls [aria-pressed="true"] { background: #ececf8; color: #373778; border-color: #9c9cc5; }
 .session-image-preview-stage { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; border-radius: 6px; background: #e8ebf0; }

@@ -13,7 +13,7 @@
 @media (max-width: 800px), (pointer: coarse) {
   .selection-control[data-touch-mode="responsive"] {
     --selection-control-height: 44px;
-    --selection-control-font-size: max(var(--text-interface), 16px);
+    --selection-control-font-size: var(--text-touch-field);
     --selection-control-min-hit-width: 44px;
     --selection-control-count-height: 20px;
   }
@@ -24,7 +24,7 @@
 @media (pointer: coarse) {
   .selection-control[data-touch-mode="container"] {
     --selection-control-height: 44px;
-    --selection-control-font-size: max(var(--text-interface), 16px);
+    --selection-control-font-size: var(--text-touch-field);
     --selection-control-min-hit-width: 44px;
     --selection-control-count-height: 20px;
   }

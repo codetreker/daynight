@@ -34,12 +34,32 @@ Terminal text uses `--text-terminal` (12px at a 16px root) as its base and retai
 their own rendering boundary. Any necessary first-party special size belongs
 in the shared definitions with its reason.
 
-The shared definitions are loaded by the Web entry stylesheet. Existing feature
-styles are migrated separately; until migrated they retain their existing sizes.
-Public landing and Setup pages, standalone login, invitations and authorization
-pages use these roles, including the first-party landing demonstrations.
-Verify consumers with browser font preferences, desktop and 320px layouts,
-long content and applicable interaction states.
+The Web entry stylesheet loads the shared definitions. All first-party production
+styles, including public landing demonstrations, Setup, authentication, workspace,
+Bot and attachment interfaces, use these roles. The Web harness runs the
+[typography ownership checker](../packages/daynight-web/scripts/typography-policy.mts)
+over every production CSS, TS and TSX source, including unreferenced files. Run it
+independently with `pnpm --filter @codetreker/daynight-web test:typography-policy`.
+It rejects fixed sizes, numeric fallbacks, unregistered size aliases and local
+role definitions, including obsolete declarations hidden by later overrides.
+`font` shorthands must inherit or contain a registered role as their size.
+
+Selection and native-select styles own their registered font-size parameters;
+those parameters resolve to shared roles. Terminal size may multiply
+`--text-terminal` by `--terminal-text-scale` with a unitless scale fallback of
+`1`. Mermaid's typed `MermaidConfig.themeVariables` controls external diagram
+rendering. These rendering mechanisms do not exempt other declarations in their
+files. First-party surrounding controls and character icons still use shared
+roles.
+
+The TypeScript inspection covers statically readable inline font properties,
+constant aliases and strings, JSX, DOM style assignments, `setProperty`,
+`cssText` and `setAttribute`. Dynamic font values at recognized declarations
+fail. CSS strings that cannot be resolved statically, arbitrary runtime functions
+and dynamically computed property names are outside static evaluation. Static
+ownership does not prove rendered geometry.
+Verify consumers with browser font preferences, desktop and 320px layouts, long
+content and applicable interaction states.
 
 ## Brand mark
 
