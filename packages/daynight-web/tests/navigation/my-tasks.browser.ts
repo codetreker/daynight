@@ -101,8 +101,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 12
     const task = link.locator('xpath=ancestor::li');
     const id = task.locator('.task-row-id');
     const copy = task.getByRole('button', { name: locale === 'en' ? 'Copy task ID' : '复制任务 ID' });
-    await expect(link).toHaveCSS('font-size', '13px');
-    await expect(id).toHaveCSS('font-size', '11px');
+    await expect(link).toHaveCSS('font-size', '14px');
+    await expect(id).toHaveCSS('font-size', '12px');
     await expect(id).toHaveText(taskId(1));
     await expect(task.locator('.assignee-name')).toHaveText('Current Reader');
     await expect.poll(() => task.locator('.assignee-avatar img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
@@ -117,7 +117,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 12
     await page.mouse.move(box.x + Math.min(box.width - 2, 80), box.y + box.height / 2, { steps: 6 }); await page.mouse.up();
     const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
     expect(selected.length).toBeGreaterThan(0);
-    await page.keyboard.press('Control+C');
+    await page.keyboard.press('ControlOrMeta+C');
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
@@ -132,7 +132,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 12
     for (const target of [link, goal]) {
       const metaHandled = await target.evaluate(element => { let prevented = true; window.addEventListener('click', event => { prevented = event.defaultPrevented; event.preventDefault(); }, { once: true }); element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true })); return prevented; });
       expect(metaHandled).toBe(false);
-      const opened = context.waitForEvent('page'); await target.click({ modifiers: ['Control'] });
+      const opened = context.waitForEvent('page'); await target.click({ modifiers: ['ControlOrMeta'] });
       const popup = await opened; await popup.waitForLoadState();
       expect(new URL(popup.url()).pathname).toBe(await target.getAttribute('href'));
       await popup.close();
@@ -246,7 +246,7 @@ for (const width of [320, 1280]) {
     expect(await worker.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const popupPromise = context.waitForEvent('page');
-    await goal.click({ modifiers: ['Control'] });
+    await goal.click({ modifiers: ['ControlOrMeta'] });
     const popup = await popupPromise;
     await expect.poll(() => new URL(popup.url()).pathname).toBe(`/projects/${projectId}/tasks/${goalId}`);
     await popup.close();
