@@ -114,3 +114,12 @@ it('ignores other event types and pages long inbound histories', () => {
   expect(screen.getAllByRole('listitem')).toHaveLength(25);
   expect(screen.queryByRole('button', { name: 'Show more inbound events' })).toBeNull();
 });
+
+it('renders a deep-linked inbound event that is older than the first page', () => {
+  const many = Array.from({ length: 25 }, (_, index) => inbound(botId(100 + index), daynightPayload, `2026-01-${String(index + 1).padStart(2, '0')}T00:00:00Z`));
+  renderWithLocale(<AssistantTaskInboundEvents events={many} eventId={botId(100)} />, { locale: 'en' });
+  const entries = screen.getAllByRole('listitem');
+  expect(entries).toHaveLength(25);
+  expect(entries[24]).toHaveAttribute('id', `assistant-event-${botId(100)}`);
+  expect(screen.queryByRole('button', { name: 'Show more inbound events' })).toBeNull();
+});

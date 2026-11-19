@@ -46,10 +46,12 @@ const Link = ({ href, children }: { readonly href: string; readonly children: st
  * Inbound events are informational: they never use the attention role and stay
  * outside the decisions strip. Whether the user must act is the assistant's report.
  */
-export function AssistantTaskInboundEvents({ events, bots = [] }: { readonly events: readonly AssistantTaskEvent[]; readonly bots?: readonly BotDefinition[] }) {
+export function AssistantTaskInboundEvents({ events, bots = [], eventId }: { readonly events: readonly AssistantTaskEvent[]; readonly bots?: readonly BotDefinition[]; readonly eventId?: string }) {
   const m = useAssistantTaskContentMessages();
-  const [shown, setShown] = useState(PAGE);
+  const [paged, setShown] = useState(PAGE);
   const inbound = events.filter(event => event.type === 'inbound').sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // A deep-linked event must be rendered so the detail view can focus it, even when it is older than the loaded page.
+  const shown = Math.max(paged, inbound.findIndex(event => event.id === eventId) + 1);
   if (inbound.length === 0) return null;
   const actorName = (actor: InboundActor) => actor === null ? m.inboundActorUnknown : actor.kind === 'user' ? m.inboundActorUser : actor.kind === 'system' ? m.system
     : actor.botId === null ? m.inboundActorUnknown : bots.find(bot => bot.id === actor.botId)?.name ?? m.unknownAssistant.replace('{id}', actor.botId);
