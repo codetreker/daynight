@@ -10,6 +10,7 @@ import (
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/team"
 	"github.com/jackc/pgx/v5"
 )
@@ -19,6 +20,9 @@ type appProjectTransferScope struct {
 	id string
 }
 
+func (s appProjectTransferScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	return task.NewProjectGoalDependencyWriter(s.tx, s.id)
+}
 func (s appProjectTransferScope) ProjectDAO() store.ProjectWriteDAO {
 	return project.NewWriter(s.tx, s.id)
 }
@@ -65,6 +69,9 @@ func (s *Store) writeAppProjectLifecycle(ctx context.Context, id string, deletin
 		var locked string
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&locked); err != nil {
 			return pg.QueryError("lock App lifecycle Project", err)
+		}
+		if err := pg.LockGoalDependencyTeam(ctx, tx, id); err != nil {
+			return err
 		}
 		if deleting {
 			rows, err := tx.Query(ctx, `SELECT id FROM tasks WHERE project_id=$1 ORDER BY id FOR UPDATE`, id)

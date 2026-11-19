@@ -405,3 +405,7 @@ func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, str
 func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	panic(s.f.unexpected("WorkerClaimAdmissionDAO"))
 }
+
+func (s *writeWitnessScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	panic("unexpected Project Goal dependency capability")
+}

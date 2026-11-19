@@ -130,7 +130,7 @@ Project 的 owner Team admin 可以读取删除预览并删除项目。预览返
 
 预览返回 `observedAt`、`project:{id,name,repoUrl,ownerTeam}`、`summary:{taskCount,unfinishedTaskCount,attachmentCount}`、`activeClaims` 和可空 `nextCursor`。每条阻塞项包含 `taskId`、`title` 及 `worker:{machineName,platform,phase,paused,connectivity}`。分页默认 50、最大 100，cursor 绑定当前用户和 Project；按条数返回完整阻塞项，不按标题或响应字节缩短页面。
 
-成功返回 `200` 与 `{projectId, deleted:true}`，此后项目及其子资源不再可访问或接受新写入，重复删除返回 404。删除保留任务状态、版本、计时、依赖、成员关系、历史和附件文件；撤回项目 Session 的可操作状态，不声称本机进程已退出。其他项目、账号 Bot 和独立测试 Session 保持可用。Team 非空检查只计活跃项目；旧邀请不可消费，Worker 历史输出不显示已删除项目。事务结果未知返回 `503 write_outcome_unknown`，已确认未提交的内部失败返回 `500 internal_error` 和 `error.details.writeOutcome: "not_committed"`；后续读取不能恢复原操作回执。
+成功返回 `200` 与 `{projectId, deleted:true}`，此后项目及其子资源不再可访问或接受新写入，重复删除返回 404。删除保留任务状态、版本、计时、普通 Task 依赖、成员关系、历史和附件文件；涉及该项目的全部 Goal 验收依赖在明确确认后与项目删除原子清除，项目内及跨项目两方向均受影响，无关 Goal 边保留。缺少确认且存在 Goal 边时以 `400 invalid_input` 拒绝，项目与全部关系保持原值，并提示更新客户端或更换入口。每个实际失去出边的下游 Goal 关系修订仅推进一次，已确认未提交的失败保留项目及关系，取消与提交故障沿用下述未知结果规则，操作预算十五秒；撤回项目 Session 的可操作状态，不声称本机进程已退出。其他项目、账号 Bot 和独立测试 Session 保持可用。Team 非空检查只计活跃项目；旧邀请不可消费，Worker 历史输出不显示已删除项目。事务结果未知返回 `503 write_outcome_unknown`，已确认未提交的内部失败返回 `500 internal_error` 和 `error.details.writeOutcome: "not_committed"`；后续读取不能恢复原操作回执。
 
 ## Task 与依赖
 

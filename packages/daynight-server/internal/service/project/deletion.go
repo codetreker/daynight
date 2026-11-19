@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
@@ -128,10 +129,16 @@ func (s *Projects) DeletionPreview(ctx context.Context, p model.Principal, id st
 }
 
 func (s *Projects) Delete(ctx context.Context, p model.Principal, id string) (DeletionReceipt, error) {
+	return s.DeleteWithInput(ctx, p, id, core.DeletionInput{})
+}
+
+func (s *Projects) DeleteWithInput(ctx context.Context, p model.Principal, id string, input core.DeletionInput) (DeletionReceipt, error) {
 	id, err := core.ValidateRead(p, id)
 	if err != nil {
 		return DeletionReceipt{}, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, projectLifecycleTimeout)
+	defer cancel()
 	access, err := s.Access(ctx, p, id)
 	if err != nil {
 		if _, ok := err.(*model.Fault); ok {
@@ -168,6 +175,9 @@ func (s *Projects) Delete(ctx context.Context, p model.Principal, id string) (De
 		}
 		if active {
 			return &model.Fault{Code: "active_worker_claims", Message: "Project has active Worker claims."}
+		}
+		if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+			return err
 		}
 		marked, err := dao.MarkDeleted(ctx)
 		if err != nil {

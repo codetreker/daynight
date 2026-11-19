@@ -627,3 +627,7 @@ func (f *strictStepWrite) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDA
 	f.t.Fatal("unexpected WorkerClaimAdmissionDAO call")
 	return nil
 }
+
+func (s *strictStepWrite) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	panic("unexpected Project Goal dependency capability")
+}

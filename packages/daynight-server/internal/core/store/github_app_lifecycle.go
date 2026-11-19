@@ -5,12 +5,14 @@ import "context"
 // App lifecycle scopes retain the existing resource locks and bind every DAO
 // to one transaction. Their callers decide when a resource must be retired.
 type GitHubProjectTransferScope interface {
+	ProjectGoalDependencyDAO() ProjectGoalDependencyDAO
 	ProjectDAO() ProjectWriteDAO
 	GitHubDAO() GitHubProjectRetirementDAO
 	EligibilityDAO() WebhookEligibilityDAO
 }
 
 type GitHubProjectDeletionScope interface {
+	ProjectGoalDependencyDAO() ProjectGoalDependencyDAO
 	ProjectDAO() ProjectDeletionDAO
 	GitHubDAO() GitHubProjectRetirementDAO
 	EligibilityDAO() WebhookEligibilityDAO

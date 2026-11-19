@@ -15,15 +15,19 @@ type appLifecycleTestStore struct {
 	f *appLifecycleTest
 }
 type appLifecycleTest struct {
-	t                     *testing.T
-	principal             model.Principal
-	project               model.Project
-	access                model.ProjectAccess
-	mode                  string
-	cause                 error
-	completion            store.Completion
-	readCalls, writeCalls int
-	retirementCalls       []string
+	t                           *testing.T
+	principal                   model.Principal
+	project                     model.Project
+	access                      model.ProjectAccess
+	mode                        string
+	cause                       error
+	completion                  store.Completion
+	readCalls, writeCalls       int
+	retirementCalls             []string
+	goalFound                   bool
+	goalProbeErr, goalRemoveErr error
+	goalCalls                   []string
+	sameTeam                    bool
 }
 
 func (f *appLifecycleTest) fail(mode string) error {
@@ -103,7 +107,11 @@ func (d appLifecycleTransferDAO) LockTransferOwnership(context.Context) (model.P
 	return d.f.project.Ownership, d.f.fail("transfer")
 }
 func (d appLifecycleTransferDAO) LockTransferTeams(context.Context, string, string) (store.TransferTeam, store.TransferTeam, error) {
-	return store.TransferTeam{Ref: d.f.access.OwnerTeam, Version: 1}, store.TransferTeam{Ref: model.TeamRef{ID: "ef000000-0000-4000-8000-000000000002"}, Version: 1}, nil
+	target := store.TransferTeam{Ref: model.TeamRef{ID: "ef000000-0000-4000-8000-000000000002"}, Version: 1}
+	if d.f.sameTeam {
+		target = store.TransferTeam{Ref: d.f.access.OwnerTeam, Version: 1}
+	}
+	return store.TransferTeam{Ref: d.f.access.OwnerTeam, Version: 1}, target, nil
 }
 func (d appLifecycleTransferDAO) ProjectAccess(context.Context, model.Principal) (model.ProjectAccess, error) {
 	return d.f.access, nil
@@ -252,4 +260,23 @@ func TestAppProjectRepositoryConflictPrecedesIntegrationEffects(t *testing.T) {
 	if !errors.As(err, &fault) || fault.Code != "project_repository_conflict" || len(f.retirementCalls) != 0 {
 		t.Fatalf("conflict performed integration effects: %v %v", err, f.retirementCalls)
 	}
+}
+
+func (s appLifecycleScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	return appLifecycleGoalDependencies{f: s.f}
+}
+
+type appLifecycleGoalDependencies struct{ f *appLifecycleTest }
+
+func (d appLifecycleGoalDependencies) LockTeam(context.Context) error {
+	d.f.goalCalls = append(d.f.goalCalls, "lock")
+	return d.f.fail("graph lock")
+}
+func (d appLifecycleGoalDependencies) HasProjectEdges(context.Context) (bool, error) {
+	d.f.goalCalls = append(d.f.goalCalls, "probe")
+	return d.f.goalFound, d.f.goalProbeErr
+}
+func (d appLifecycleGoalDependencies) RemoveProjectEdges(context.Context) error {
+	d.f.goalCalls = append(d.f.goalCalls, "remove")
+	return d.f.goalRemoveErr
 }

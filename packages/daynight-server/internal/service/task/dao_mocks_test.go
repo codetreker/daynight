@@ -152,13 +152,19 @@ var _ store.SnapshotScope = (*taskSnapshotScopeMock)(nil)
 
 type taskProjectScopeMock struct {
 	taskMockBase
-	EligibilityDAOFn          func() store.WebhookEligibilityDAO
-	CaptureDAOFn              func() store.WebhookCaptureDAO
-	ProjectDAOFn              func() store.ProjectWriteDAO
-	TaskDAOFn                 func() store.TaskWriteDAO
-	SessionDAOFn              func() store.ProjectSessionDAO
-	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
-	GoalDependencyDAOFn       func() store.GoalDependencyDAO
+	EligibilityDAOFn           func() store.WebhookEligibilityDAO
+	CaptureDAOFn               func() store.WebhookCaptureDAO
+	ProjectDAOFn               func() store.ProjectWriteDAO
+	TaskDAOFn                  func() store.TaskWriteDAO
+	SessionDAOFn               func() store.ProjectSessionDAO
+	WorkerClaimAdmissionDAOFn  func() store.WorkerClaimAdmissionDAO
+	GoalDependencyDAOFn        func() store.GoalDependencyDAO
+	ProjectGoalDependencyDAOFn func() store.ProjectGoalDependencyDAO
+}
+
+func (mock *taskProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
+	return mock.ProjectGoalDependencyDAOFn()
 }
 
 func (mock *taskProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {

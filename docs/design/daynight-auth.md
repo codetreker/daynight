@@ -722,14 +722,14 @@ Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性�
 
 项目转移预览使用 Repeatable Read 快照，先验证当前 owner Team admin，再按目标 UUID
 读取最小 Team 引用与元数据版本，并结合目标成员角色和现存 direct grant 计算预期角色。
-转移使用 Read Committed，先锁 Project，再锁 ownership，最后按 UUID 升序锁 source/target
+转移使用 Read Committed，先锁 Project，再取得当前 owner Team 的事务级 Goal 图锁，之后锁 ownership，最后按 UUID 升序锁 source/target
 Team（相同时只锁一次）；锁后重新检查主体、归属及版本。当前 Team 的 no-op 保持原检查；
 实际转移读取受锁 Project 的持久仓库身份，再用独立 Read Committed 语句检查目标 Team
 活跃占用，且不锁其他 Project。NULL 身份返回 `project_repository_identity_unavailable`，
 冲突返回 `project_repository_conflict`；两者都在归属写入及 GitHub App 集成副作用前拒绝。
 [仓库占用设计](daynight-server.md#team-仓库占用)拥有身份、查询及释放机制。Team 删除持有同一 Team 锁，
 随后以新语句检查 ownership，因此转入和删除不会留下悬空归属。转移不取得 Task、credential
-或 Thread head 锁，不修改 grant 或邀请；回执中的当前 access 在事务内计算，提交确认后发送。
+或 Thread head 锁，不修改 grant 或邀请；实际转移在同一事务清理项目内及跨项目两方向的 Goal 验收边，并检查清理确认，普通 Task 历史边保留。[项目清理设计](daynight-server.md#项目生命周期中的-goal-边清理)拥有清理、修订与操作预算。回执中的当前 access 在事务内计算，提交确认后发送。
 Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team_id 对应的 Team，再锁
 实际成员及 grant；等待期间提交的新目标不会被旧语句快照中的连接行误判为完整性错误。
 

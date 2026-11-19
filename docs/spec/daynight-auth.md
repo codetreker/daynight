@@ -333,7 +333,7 @@ owner Team admin 读取同一快照下的 `sourceTeam`、`targetTeam:{id,kind,na
 `409 version_conflict`，不可见项目或不存在目标返回 `404 not_found`，仅有 Project admin
 而非 owner Team admin 返回 `403 forbidden`。同一 owner 仍核对权限和双方版本，返回
 `changed:false` 且不更新任何时间或版本；实际转移使 ownership version 加一，保留 Project
-身份及所有 grant 和邀请。版本耗尽时真实转移返回 `409 version_exhausted`。
+身份及所有 grant 和邀请。实际转移须明确确认永久清除项目内及跨项目两方向的全部 Goal 验收依赖；缺少确认且有边时返回 `400 invalid_input`，项目及关系保持原值，并提示更新客户端或更换入口。清理与转移原子提交，各受影响下游的关系修订推进一次，无关 Goal 边和普通 Task 历史边保留。同归属空操作保留所有边，无边请求沿用既有准入。转移预算十五秒；已确认未提交的拒绝和失败保留项目及关系，取消与提交故障沿用下述未知结果规则。版本耗尽时真实转移返回 `409 version_exhausted`。
 实际转移还检查目标普通或 Personal Team 的活跃仓库占用；同仓库已存在时返回
 `409 project_repository_conflict`，历史地址无可用仓库身份时返回
 `409 project_repository_identity_unavailable`。拒绝不改变 ownership、Project 版本与时间、
