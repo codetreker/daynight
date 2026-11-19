@@ -202,6 +202,28 @@ test("IPC loss with a live writer cannot grant or launch a new generation", asyn
   expect(f.grant).toHaveBeenCalledTimes(1); expect(f.launch).toHaveBeenCalledTimes(1);
 });
 
+test("a new host reauthorizes an authenticated working Controller without replaying its turn", async () => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  f.patch({ lifecycle: "working", activity: "working", currentTurnId: id(91) });
+  const host = f.createProcess(f.deps, 3, undefined, () => true);
+  await expect(host.advance(f.current(), f.signal)).resolves.toMatchObject({ currentTurnId: id(91), lifecycle: "working" });
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.launch).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.deps.request).not.toHaveBeenCalled();
+  expect(f.current().intent).toEqual(original);
+});
+
+test("refused hosting authorization preserves the live Controller and its original generation", async () => {
+  const f = await recoveryFixture(), original = f.current().intent!;
+  f.grant.mockRejectedValueOnce(new Error("resource_conflict"));
+  const host = f.createProcess(f.deps, 3, undefined, () => true);
+  await expect(host.advance(f.current(), f.signal)).rejects.toThrow("resource_conflict");
+  expect(f.launch).toHaveBeenCalledOnce();
+  expect(f.deps.stopProcesses).not.toHaveBeenCalled();
+  expect(f.current().intent).toEqual(original);
+});
+
 test("shutdown fails visibly when its stop receipt cannot prove the process tree stopped", async () => {
   const f = await recoveryFixture(); f.deps.stopProcesses.mockRejectedValue(new Error("cannot stop original process"));
   await expect(f.manager.shutdown(f.current(), f.signal)).rejects.toThrow(/cannot stop/);

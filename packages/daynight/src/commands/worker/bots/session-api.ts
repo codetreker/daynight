@@ -7,6 +7,7 @@ import { parseControllerGrantResponse, parseRegistrationResponse, type Controlle
 import { parseSessionSnapshot, SESSION_PROTOCOL, sessionFence, type SessionSnapshot } from "../../../session/protocol.js";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
 import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotDeleted, type BotOwner, type BotRecord } from "./types.js";
+import type { BotReconciliation } from "./reconciliation.js";
 
 export type BotRecoveryProof = { generation: string; instanceId: string; recordId: string; stoppedAt: string };
 export type BotDeletionStop = {
@@ -22,13 +23,14 @@ export type BotStartupResult = { state: "ready" | "failed"; code?: string | null
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
 
 /** Lifecycle writes preserve the original registration and never retry an uncertain POST. */
-export const createBotSessionApi = (options: { owner: BotOwner; serverToken: string }) => {
+export const createBotSessionApi = (options: { owner: BotOwner; serverToken: string; recovery?: BotReconciliation }) => {
   const owner = Object.freeze(parseBotOwner(options.owner));
   const token = validateServerToken(options.serverToken);
   validateTokenTransport(owner.serverOrigin);
   const active = (record: BotRecord): BotDefinition => {
-    if (!same(parseBotOwner(record.owner), owner)) throw new Error("Bot lifecycle owner differs from the original Worker binding.");
-    const bot = parseBot(record.observed, owner);
+    const original = parseBotOwner(record.owner);
+    if (original.serverOrigin !== owner.serverOrigin || original.ownerUserId !== owner.ownerUserId || options.recovery === undefined && original.workerId !== owner.workerId) throw new Error("Bot lifecycle owner differs from the original Worker binding.");
+    const bot = parseBot(record.observed, original);
     if (bot.id !== record.botId || bot.deletion !== null || record.definition === null) throw new Error("Bot lifecycle requires its original active definition.");
     if (!same(bot.resolvedConfiguration, record.definition.resolvedConfiguration)) throw new Error("Bot frozen configuration differs from its original definition.");
     return bot;
@@ -40,7 +42,7 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
     return intent;
   };
   const checkedBot = (value: unknown, record: BotRecord): BotDefinition => {
-    const previous = active(record), bot = parseBot(value, owner);
+    const previous = active(record), bot = parseBot(value, record.owner);
     if (bot.deletion !== null || bot.id !== record.botId || BigInt(bot.version) < BigInt(previous.version) || !same(bot.resolvedConfiguration, previous.resolvedConfiguration)
       || previous.sessionId !== null && (bot.sessionId !== previous.sessionId || bot.testExecutionId !== previous.testExecutionId)
       || previous.roleConfiguration !== null && !same(bot.roleConfiguration, previous.roleConfiguration)) throw new ProtocolError("Bot lifecycle response conflicts with the original definition.");
@@ -107,8 +109,10 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
   return {
     /** Submit the persisted receipt unchanged; the caller observes after any uncertain result. */
     completeDeletion: (record: BotRecord, receipt: BotDeletionReceipt, signal: AbortSignal): Promise<BotDeleted> => run(signal, async operation => {
-      if (!same(parseBotOwner(record.owner), owner)) throw new Error("Bot deletion owner differs from the original Worker binding.");
-      const bot = parseBot(record.observed, owner);
+      const original = parseBotOwner(record.owner);
+      if (original.serverOrigin !== owner.serverOrigin || original.ownerUserId !== owner.ownerUserId
+        || options.recovery === undefined && original.workerId !== owner.workerId) throw new Error("Bot deletion owner differs from the original Worker binding.");
+      const bot = parseBot(record.observed, original);
       if (bot.id !== record.botId || bot.deletion === null) throw new Error("Bot deletion requires its original deletion responsibility.");
       const exactKeys = (value: unknown, fields: string[]): boolean => value !== null && typeof value === "object" && !Array.isArray(value)
         && Object.keys(value).sort().join() === [...fields].sort().join();
@@ -136,7 +140,7 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       }
       // Private sources may already be gone. The durable receipt and deletion
       // identity remain sufficient for exact replay; do not read a deleted Session.
-      const result = parseBot(await request(`/api/v1/me/workers/${owner.workerId}/bots/${record.botId}/deletion-complete`, operation, receipt), owner);
+      const result = parseBot(await request(`/api/v1/me/workers/${owner.workerId}/bots/${record.botId}/deletion-complete`, operation, receipt), original);
       if (result.id !== record.botId || result.deletion === null || BigInt(result.version) < BigInt(bot.version)
         || result.deletion.deletionId !== bot.deletion.deletionId || result.deletion.requestedVersion !== bot.deletion.requestedVersion
         || !same(result.deletion.workerCleanup, receipt.result)) throw new ProtocolError("Bot deletion response does not confirm the original cleanup receipt.");
@@ -154,6 +158,9 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       return { bot: registered, snapshot: checkedSnapshot(result.session, record, registered.sessionId, { generation: "1", instanceId: intent.registration.controllerInstanceId }) };
     }),
     readSession: (record: BotRecord, signal: AbortSignal): Promise<SessionSnapshot> => run(signal, operation => read(record, operation)),
+    registerRecovery: (record: BotRecord, signal: AbortSignal): Promise<void> => run(signal, async operation => {
+      if (options.recovery?.applicable(record)) await options.recovery.register(record, await read(record, operation), signal);
+    }),
     grant: (record: BotRecord, signal: AbortSignal, previous?: BotRecoveryProof): Promise<ControllerGrantResponse> => run(signal, async operation => {
       const bot = active(record), intent = intentOf(record);
       if (previous !== undefined) {
@@ -167,6 +174,7 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
           || !Number.isFinite(Date.parse(previous.stoppedAt)) || Date.parse(previous.stoppedAt) > Date.now() + 1000) throw new Error("Bot recovery proof does not identify the exact stopped predecessor generation.");
       }
       const snapshot = await read(record, operation, previous);
+      if (options.recovery?.applicable(record)) return options.recovery.grant(record, snapshot, signal, previous);
       // A lost response may have already advanced the service. Observe the
       // persisted target before choosing recovery or a same-generation grant.
       const recovering = previous !== undefined && snapshot.executionGeneration === previous.generation;
@@ -185,11 +193,14 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
       if (bot.sessionId !== null) snapshot = await read(record, operation);
       if (result.state === "ready" && (snapshot === null || !snapshot.synchronized || snapshot.connectionState !== "connected" || snapshot.lifecycle !== "active" || !["idle", "working", "waiting_input"].includes(snapshot.activity))) throw new Error("Bot ready report requires a synchronized active Session.");
       if (result.nativeSessionId !== undefined && result.nativeSessionId !== (snapshot?.identity.nativeSessionId ?? null)) throw new Error("Bot startup report native identity differs from the observed Session.");
-      const reported = checkedBot(await request(`${prefix(record)}/report`, operation, {
+      const payload = {
         botVersion: bot.version, fence: snapshot === null ? null : { ...sessionFence(snapshot), connectionEpoch: snapshot.connectionEpoch },
         controllerId: snapshot?.identity.controllerId ?? "", controllerInstanceId: snapshot?.identity.controllerInstanceId ?? "",
         nativeSessionId: snapshot?.identity.nativeSessionId ?? null, result: { state: result.state, code },
-      }), record);
+      };
+      const reported = checkedBot(options.recovery?.applicable(record) && snapshot !== null
+        ? await options.recovery.report(record, { ...payload, fence: { sessionId: snapshot.sessionId, testExecutionId: intentOf(record).executionId, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch } }, signal)
+        : await request(`${prefix(record)}/report`, operation, payload), record);
       if (reported.startupResult.state !== result.state || reported.startupResult.code !== code) throw new ProtocolError("Bot startup report response does not confirm the requested result.");
       return reported;
     }),

@@ -9,14 +9,14 @@ import { captureBotDeletionFiles, removeBotDeletionFile } from "./delete-files.j
 /** Owns local deletion and receipt reconciliation while the caller holds the Worker lock. */
 export const createBotDeletion = (options: {
   homeDirectory: string; store: BotStore; executions: BotExecutionStore;
-  process: BotProcess; sessionApi: BotSessionApi; remote: BotRemote; now?: () => number;
+  process: BotProcess; sessionApi: Pick<BotSessionApi, "completeDeletion">; remote: BotRemote; now?: () => number;
   dependencies?: { capture?: typeof captureBotDeletionFiles; remove?: typeof removeBotDeletionFile };
 }) => {
   const now = options.now ?? Date.now;
   const capture = options.dependencies?.capture ?? captureBotDeletionFiles;
   const remove = options.dependencies?.remove ?? removeBotDeletionFile;
   const refresh = async (input: BotRecord, signal: AbortSignal): Promise<BotRecord> => {
-    const bot = await options.remote.read(input.botId, signal);
+    const bot = await options.remote.read(input.botId, signal, input.owner);
     if (bot === null) throw new Error("Bot deletion authority is missing; local responsibility is retained.");
     const record = options.store.observe(input.owner, bot, now());
     if (record.observed.deletion === null || input.observed.deletion === null

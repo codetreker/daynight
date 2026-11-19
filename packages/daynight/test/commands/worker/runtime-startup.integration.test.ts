@@ -1114,20 +1114,36 @@ it("starts Bot management with no projects and preserves the Worker lock through
   expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
 });
 
-it("attempts Task shutdown and releases stores and the lock when Bot shutdown fails", async () => {
+it("attempts Task shutdown but retains Bot storage and its lock when Bot shutdown is unconfirmed", async () => {
   const f = await fixture(false, false), cancellation = new AbortController(); cancellations.add(cancellation);
   mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
   const failure = new Error("Bot writer stop remains unconfirmed");
+  const shutdown = vi.fn(async () => { throw failure; });
+  const { bot } = await import("./bot-store.fixtures.js");
+  const definition = bot();
+  if (definition.deletion !== null) throw new Error("Expected an active Bot fixture.");
+  const retained = { ...definition, ownerUserId: uuid(6), workerId,
+    resolvedConfiguration: { ...definition.resolvedConfiguration, workerId } };
   let botOptions: any;
   mocks.bots.mockImplementation(options => {
     botOptions = options;
-    return { run: async () => {}, shutdown: async () => { throw failure; } };
+    options.store.observe(options.owner, retained, 1);
+    return { run: async () => {}, shutdown };
   });
   const tasks = coordinator(async () => cancellation.abort()); mocks.coordinator.mockReturnValue(tasks);
-  await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toBe(failure);
-  expect(tasks.shutdown).toHaveBeenCalledOnce();
-  expect(() => botOptions.store.list(botOptions.owner)).toThrow();
-  expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+  try {
+    await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toMatchObject({
+      errors: [failure, expect.objectContaining({ message: expect.stringContaining("storage locks are retained") })],
+    });
+    expect(tasks.shutdown).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(botOptions.store.get(botOptions.owner, retained.id)?.observed).toEqual(retained);
+    expect(await readFile(path.join(f.paths.stateDirectory, "bots", retained.id, "instance.lock"), "utf8")).toContain(String(process.pid));
+    expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+  } finally {
+    // The controlled runtime never started a writer; release its retained test handle.
+    botOptions?.store.close();
+  }
 });
 
 
