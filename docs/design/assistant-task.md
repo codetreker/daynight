@@ -24,7 +24,7 @@
 | `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
 | `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本 |
-| `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `094_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
+| `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `098_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
 | `assistant_task_events` | 目标 Bot、负载、投递与关注状态、确认操作身份 |
 | `assistant_task_inquiries` | 双方 Bot、问题与回答、状态和固定截止时间 |
 
