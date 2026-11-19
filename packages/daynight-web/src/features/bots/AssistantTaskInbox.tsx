@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { AssistantTaskDialog } from './AssistantTaskDialog';
+import { AssistantTaskSubscriptions } from './AssistantTaskSubscriptions';
 import { assistantTaskAdmission } from './assistant-task-data';
 import { useAssistantTaskMutation } from './useAssistantTaskMutation';
 import { useBotRead } from './useBotRead';
@@ -52,6 +53,8 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
   const reload = async () => { read.refresh(); await onChanged(); };
   const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation);
   const [token, setToken] = useState<string | null>(null), [dialog, setDialog] = useState<'rotate' | 'disable' | null>(null);
+  // The disabled inbox no longer reports its id; keep the one disabled here so its endpoints can still be cleaned up.
+  const [retiredInboxId, setRetiredInboxId] = useState<string | null>(null);
   const inbox = read.value, overlapActive = inbox?.overlapUntil != null;
   const [mode, setMode] = useState<AssistantTaskInboxRotation>('overlap');
   const blocked = disabled || mutation.blocked;
@@ -81,12 +84,13 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
       </dl>
       <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode(overlapActive ? 'immediate' : 'overlap'); setDialog('rotate'); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog('disable')} /></div>
     </> : null}
+    {inbox ? <AssistantTaskSubscriptions task={task} inboxId={inbox.enabled ? inbox.inboxId : retiredInboxId} inboxEnabled={inbox.enabled} active={enabled} /> : null}
     {dialog ? <AssistantTaskDialog title={dialog === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); void (async () => {
       const operationId = crypto.randomUUID();
       const ok = dialog === 'rotate'
         ? await issue((signal, access) => rotateAssistantTaskInbox(taskId, { operationId, ifVersion: task.version, mode }, signal, access))
         : await mutation.run(async signal => { await disableAssistantTaskInbox(taskId, { operationId, ifVersion: task.version }, signal, admission); });
-      if (ok) { setDialog(null); if (dialog === 'disable') setToken(null); }
+      if (ok) { setDialog(null); if (dialog === 'disable') { setToken(null); setRetiredInboxId(inbox?.inboxId ?? null); } }
     })(); }}>
       <div className="dialog-body assistant-task-form">{dialog === 'rotate' ? <fieldset className="assistant-task-inbox-modes"><legend>{m.rotateMode}</legend>
         <label><input type="radio" name={modeName} value="overlap" checked={mode === 'overlap'} disabled={overlapActive} onChange={() => setMode('overlap')} /><span><strong>{m.overlapMode}</strong><span className="assistant-task-meta">{overlapActive ? m.overlapBlocked : m.overlapHint}</span></span></label>

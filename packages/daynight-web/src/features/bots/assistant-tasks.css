@@ -75,3 +75,16 @@
   .assistant-task-tabs button { padding-inline: 8px; }
   .assistant-task-panel, .assistant-task-entry, .assistant-task-proposal, .assistant-task-record-section { padding: 12px; }
 }
+.assistant-task-subscriptions { display: grid; gap: 12px; }
+.assistant-task-subscriptions h4 { margin: 0; font-size: 13px; }
+.assistant-task-subscriptions .notice { margin: 0; }
+.assistant-task-subscription-form fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.assistant-task-subscription-form legend { margin-bottom: 8px; font-size: 13px; }
+.assistant-task-subscription-checks { display: grid; grid-template-columns: repeat(auto-fill,minmax(200px,1fr)); gap: 6px 12px; max-height: 220px; overflow: auto; }
+.assistant-task-subscription-checks label { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.assistant-task-subscription-endpoints { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.assistant-task-subscription-endpoints li { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.assistant-task-subscription-endpoints li > span:first-child { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+@container bots-workspace (max-width: 650px) {
+  .assistant-task-subscription-checks label { min-height: 44px; }
+}
