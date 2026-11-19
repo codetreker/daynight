@@ -29,7 +29,8 @@ interface role as its baseline. Reading text should use a 1.75 line height;
 controls and lists should use 1.5. Keep roles consistent across viewport widths:
 wrap, rearrange, or scroll content instead of shrinking text. Preserve existing
 touch target dimensions and the 16 CSS px minimum on touch fields and task
-filters. Terminal text retains independent scaling; external diagrams retain
+filters. Touch fields use `--text-touch-field`, which also respects larger
+browser font preferences. Terminal text retains independent scaling; external diagrams retain
 their own rendering boundary. Any necessary first-party special size belongs
 in the shared definitions with its reason.
 
