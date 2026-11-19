@@ -253,6 +253,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"project_grants",
 		"project_invitations",
 		"project_ownership",
+		"project_pr_review_assignments",
 		"project_pull_requests",
 		"project_tags",
 		"projects",

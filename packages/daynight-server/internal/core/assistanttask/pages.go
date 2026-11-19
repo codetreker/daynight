@@ -15,6 +15,10 @@ type cursor struct {
 	Version                                    int `json:"v"`
 	Owner, Task, Resource, State, Item, Target string
 	Position                                   store.AssistantTaskPosition
+	// Event type filters are omitted when empty so unfiltered cursors keep
+	// their existing encoding.
+	EventType   string `json:",omitempty"`
+	ExcludeType string `json:",omitempty"`
 }
 
 func pageQuery(actor Actor, taskID, resource string, input PageInput) (store.AssistantTaskQuery, cursor, error) {
@@ -52,7 +56,15 @@ func pageQuery(actor Actor, taskID, resource string, input PageInput) (store.Ass
 	if input.ItemID != "" && resource != "records" && resource != "inquiries" || input.TargetBotID != "" && resource != "tasks" && resource != "events" {
 		return query, cursor{}, invalid("The resource does not support this page filter.")
 	}
-	want := cursor{Version: 1, Owner: query.OwnerUserID, Task: taskID, Resource: resource, State: input.State, Item: input.ItemID, Target: input.TargetBotID}
+	if input.Type != "" || input.ExcludeType != "" {
+		if resource != "events" {
+			return query, cursor{}, invalid("The resource does not support this page filter.")
+		}
+		if err := eventTypeFilter(&query, input); err != nil {
+			return query, cursor{}, err
+		}
+	}
+	want := cursor{Version: 1, Owner: query.OwnerUserID, Task: taskID, Resource: resource, State: input.State, Item: input.ItemID, Target: input.TargetBotID, EventType: input.Type, ExcludeType: input.ExcludeType}
 	if input.Cursor != "" {
 		encoded, err := base64.RawURLEncoding.DecodeString(input.Cursor)
 		if err != nil {

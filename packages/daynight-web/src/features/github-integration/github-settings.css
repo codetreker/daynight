@@ -1,6 +1,7 @@
 .github-settings-heading, .github-repository, .github-empty { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; }
 .github-settings h3 { margin: 0 0 .45rem; font-size: 1rem; }
 .github-settings p { margin: .35rem 0; }
+.github-settings > .panel-body { container: github-settings / inline-size; }
 .github-repository { padding: .25rem 0 1rem; border-bottom: 1px solid #d5dce5; }
 .github-repository > div, .github-repository-name, .github-dialog-target { min-width: 0; }
 .github-repository-name { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
@@ -18,8 +19,10 @@
 .github-dialog-target { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-bottom: 1rem; }
 .github-dialog-target .small-label { flex-basis: 100%; }
 @media (max-width: 600px) {
-  .github-repository, .github-empty { flex-direction: column; }
   .github-channels, .github-settings-grid, .github-details { grid-template-columns: minmax(0, 1fr); }
+}
+@container github-settings (max-width: 480px) {
+  .github-repository, .github-empty { flex-direction: column; }
 }
 .github-overview { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .github-counts { display: flex; gap: 1.5rem; }
@@ -30,7 +33,8 @@
 .github-settings .number-unit { display: flex; gap: 9px; align-items: center; font-size: 12px; }
 .github-settings .number-unit input { width: 140px; }
 .github-settings .number-unit span { flex: none; }
-.github-repository-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.github-repository-actions { display: flex; gap: .5rem; flex-wrap: wrap; flex: 0 1 auto; max-width: 100%; }
+.github-repository-actions > .button, .github-empty > .button { max-width: 100%; white-space: normal; }
 
 .github-sync-control { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #d5dce5; }
 .github-sync-control > div { min-width: 0; }
