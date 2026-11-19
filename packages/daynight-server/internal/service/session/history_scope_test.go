@@ -23,6 +23,22 @@ func stopHistoryEngine(t *testing.T, engine *core.Engine) {
 	}
 }
 
+type historyOrderScope struct {
+	store.SessionScope
+	dao store.SessionDAO
+}
+
+func (s *historyOrderScope) SessionDAO() store.SessionDAO { return s.dao }
+
+type historyOrderExpiryDAO struct {
+	store.SessionDAO
+	read func(context.Context, string) (bool, error)
+}
+
+func (d historyOrderExpiryDAO) SessionArchiveExpired(ctx context.Context, id string) (bool, error) {
+	return d.read(ctx, id)
+}
+
 func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
 	for _, kind := range []string{"query", "content", "archive", "directory"} {
 		steps := []string{"task", "credential", "project"}
@@ -30,14 +46,14 @@ func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
 			steps = append(steps, "load")
 		}
 		if kind == "content" || kind == "archive" {
-			steps = append(steps, "bind")
+			steps = append(steps, "bind", "expiry")
 		}
 		steps = append(steps, "work")
 		for _, failure := range append(slices.Clone(steps), "", "not_committed", "unknown", "cleanup", "panic") {
 			t.Run(kind+"/"+failure, func(t *testing.T) {
 				ctx := t.Context()
 				actor := model.Principal{Kind: model.OAuthCredential, UserID: "reader", CredentialID: "credential"}
-				scope := &archiveCompletionOrderScope{}
+				scope := &historyOrderScope{}
 				task, access := &core.TaskAccess{}, &core.Access{}
 				cause := errors.New("history scope failure")
 				var calls []string
@@ -72,6 +88,13 @@ func TestHistoryScopeOrdersAdmissionAndPreservesCompletion(t *testing.T) {
 					}
 					return nil
 				}
+				scope.dao = historyOrderExpiryDAO{read: func(actual context.Context, id string) (bool, error) {
+					checkScope(operation, actual, scope)
+					if id != "session" {
+						t.Fatal("expiry lookup changed Session identity")
+					}
+					return false, step("expiry")
+				}}
 				writerCalls := 0
 				writer := archiveCompletionOrderWriter(func(actual context.Context, run func(store.SessionScope) error) (store.Completion, error) {
 					writerCalls++
