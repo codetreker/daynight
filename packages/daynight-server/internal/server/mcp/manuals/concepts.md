@@ -19,7 +19,7 @@ Use this topic when identity or the intended Project is unknown. A connection au
 | Session | Execution or conversation content with its own execution identity. Task material cannot reconstruct it. |
 | Bot | An Account-owned assistant definition and runtime state. Creation establishes neither readiness nor execution. |
 
-[Materials](daynight://manuals/materials.md) owns shared Goal conclusions and task-specific results. [Dependencies](daynight://manuals/dependencies.md) owns scheduling relationships. A terminal Task or Goal progress count does not establish acceptance of the full objective.
+[Materials](daynight://manuals/materials.md) owns shared Goal conclusions and task-specific results. [Dependencies](daynight://manuals/dependencies.md) owns ordinary scheduling and Goal acceptance relationships. A terminal Task or Goal progress count does not establish acceptance of the full objective.
 
 MCP supplies advertised service operations. The host supplies checkout, filesystem, shell, Git, browser, tests and collaboration capabilities; a repository address supplies none of these. The target project's workflow owns required documents, review and delivery gates. No universal Goal/PR pipeline or separate discussion Task is imposed. Explicit Worker assignments follow [Worker operations](daynight://manuals/worker-operations.md).
 
