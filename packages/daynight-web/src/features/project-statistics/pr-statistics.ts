@@ -8,6 +8,7 @@ import { getPRStatistics, type PRStatistics } from './pr-statistics-api';
 
 export type PRStatisticsOptions = {
   readonly userId: string; readonly projectId: string; readonly canRead: boolean; readonly active: boolean;
+  readonly repositoryId?: string | null;
   readonly endDate: string; readonly window: string;
   readonly onPrincipalMismatch: () => void; readonly onAccessError: (error: ApiError) => void;
 };
@@ -16,11 +17,11 @@ const empty = (): Snapshot => ({ data: null, window: '', author: null, loading: 
 
 /** Reads the aggregation and author directory under one authenticated project admission. */
 export const usePRStatistics = (options: PRStatisticsOptions) => {
-  const { userId, projectId, canRead, active, endDate, window: dateWindow } = options;
-  const key = JSON.stringify([userId, projectId]);
+  const { userId, projectId, repositoryId, canRead, active, endDate, window: dateWindow } = options;
+  const key = JSON.stringify([userId, projectId, repositoryId]);
   const current = useRef(options); current.current = options;
   const currentKey = useRef(key); currentKey.current = key;
-  const permitted = useCallback(() => currentKey.current === key && current.current.canRead && current.current.active && document.visibilityState !== 'hidden', [key]);
+  const permitted = useCallback(() => currentKey.current === key && current.current.repositoryId !== null && current.current.canRead && current.current.active && document.visibilityState !== 'hidden', [key]);
   const state = useMemo(() => ({ snapshot: empty(), targetAuthor: null as PullRequestAuthor | null, generation: 0, pending: null as AbortController | null }), [key]);
   const [, render] = useState(0);
   const publish = useCallback((snapshot: Snapshot) => { state.snapshot = snapshot; render(value => value + 1); }, [state]);
@@ -36,7 +37,7 @@ export const usePRStatistics = (options: PRStatisticsOptions) => {
       const applicable = () => permitted() && current.current.endDate === input.endDate && current.current.window === input.window && (state.snapshot.author?.id ?? null) === author;
       try {
         await base.request(signal, (s, dispatch) => getProject(projectId, s, { userId, onPrincipalMismatch: () => {} }, dispatch));
-        await base.request(signal, (s, dispatch) => getPRStatistics(projectId, input.endDate, input.window, author, s, { userId, onPrincipalMismatch: () => {}, onDispatch: dispatch }));
+        await base.request(signal, (s, dispatch) => getPRStatistics(projectId, input.endDate, input.window, author, s, { userId, onPrincipalMismatch: () => {}, onDispatch: dispatch }, repositoryId ?? null));
         return await base.accept(token, signal) && applicable();
       } catch (cause) {
         if (signal.aborted || !applicable()) return false;
@@ -58,7 +59,7 @@ export const usePRStatistics = (options: PRStatisticsOptions) => {
       return verified;
     };
     return { ...base, verifyBaseline, recover } satisfies ReadSession;
-  }, [userId, projectId, permitted, state]);
+  }, [userId, projectId, repositoryId, permitted, state]);
   useLayoutEffect(() => scope.subscribe(error => { cancel(); state.targetAuthor = null; publish(error ? { ...empty(), error } : empty()); }), [scope, cancel, publish, state]);
   useLayoutEffect(() => {
     if (!canRead) scope.revoke();
@@ -87,7 +88,7 @@ export const usePRStatistics = (options: PRStatisticsOptions) => {
     publish({ ...old, data: old.data?.endDate === input.endDate && old.window === input.window ? old.data : null, loading: true, error: null });
     void (async () => {
       try {
-        const data = await scope.request(controller.signal, (signal, dispatch) => getPRStatistics(projectId, input.endDate, input.window, authorId, signal, { userId, onPrincipalMismatch: () => {}, onDispatch: dispatch }));
+        const data = await scope.request(controller.signal, (signal, dispatch) => getPRStatistics(projectId, input.endDate, input.window, authorId, signal, { userId, onPrincipalMismatch: () => {}, onDispatch: dispatch }, repositoryId ?? null));
         if (!await scope.accept(token, controller.signal) || !admitted()) return;
         const author = targetAuthor === null || data.author === null ? null : { ...targetAuthor, login: data.author.login };
         state.targetAuthor = author;
@@ -100,7 +101,7 @@ export const usePRStatistics = (options: PRStatisticsOptions) => {
         else publish({ ...state.snapshot, loading: false, error });
       } finally { if (state.pending === controller) state.pending = null; }
     })();
-  }, [cancel, permitted, projectId, publish, scope, state, userId]);
+  }, [cancel, permitted, projectId, repositoryId, publish, scope, state, userId]);
 
   const refresh = useCallback(() => run(false), [run]);
   const setAuthor = useCallback((author: PullRequestAuthor | null) => {
@@ -118,6 +119,6 @@ export const usePRStatistics = (options: PRStatisticsOptions) => {
   }, [active, canRead, endDate, dateWindow, permitted, run, cancel, publish, state]);
   const snapshot = canRead ? state.snapshot : empty();
   const data = snapshot.data?.endDate === endDate && snapshot.window === dateWindow ? snapshot.data : null;
-  const authors = usePullRequestAuthors({ userId, projectId, active: active && canRead && data !== null, scope });
-  return { data, error: snapshot.error, loading: snapshot.loading || active && canRead && data === null && snapshot.error === null, author: snapshot.author, setAuthor, refresh, authors };
+  const authors = usePullRequestAuthors({ userId, projectId, ...(repositoryId === undefined ? {} : { repositoryId }), active: active && canRead && data !== null, scope });
+  return { data, error: snapshot.error, loading: snapshot.loading || active && canRead && repositoryId !== null && data === null && snapshot.error === null, author: snapshot.author, setAuthor, refresh, authors };
 };

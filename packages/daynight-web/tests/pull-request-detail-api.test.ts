@@ -41,4 +41,11 @@ describe('PR detail API', () => {
     await expect(getPullRequestDetail(projectId, '01', new AbortController().signal, { userId, onPrincipalMismatch: vi.fn() })).rejects.toMatchObject({ kind: 'protocol' });
     expect(fetch).not.toHaveBeenCalled();
   });
+  it('binds the same PR number to its selected repository', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(detail())); vi.stubGlobal('fetch', fetch);
+    const signal = new AbortController().signal, gate = { userId, onPrincipalMismatch: vi.fn() };
+    await getPullRequestDetail(projectId, detail().number, signal, gate, '4');
+    expect(new URL(fetch.mock.calls[0]![0] as string, 'https://daynight.test').searchParams.get('repositoryId')).toBe('4');
+    await expect(getPullRequestDetail(projectId, detail().number, signal, gate, '5')).rejects.toMatchObject({ kind: 'protocol' });
+  });
 });

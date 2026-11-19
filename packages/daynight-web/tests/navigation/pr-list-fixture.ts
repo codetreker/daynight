@@ -45,6 +45,7 @@ export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') =
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/tags`) return send({ items: [], catalogEpoch: '00000000-0000-4000-8000-000000000062', nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return state.graphFailure ? send(fault(), 500) : send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 1n }));
+    if (path === `/api/v1/projects/${projectId}/pull-request-repositories`) return send({ currentRepositoryId: state.scene === 'notconnected' ? null : '10', items: state.scene === 'notconnected' ? [] : [{ repositoryId: '10', fullName: 'codetreker/daynight' }], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/github`) {
       state.statusReads++;
       if (state.scene === 'read-error') return send(fault(), 500);
@@ -59,7 +60,7 @@ export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') =
     }
     if (path === `/api/v1/projects/${projectId}/pull-request-statistics`) {
       const authorId = url.searchParams.get('authorId');
-      return send({ projectId, endDate: url.searchParams.get('endDate'), revision: String(state.revision), projectTotal: '0', availability: 'ready', hasAuthors: false,
+      return send({ projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: String(state.revision), projectTotal: '0', availability: 'ready', hasAuthors: false,
         daily: Array(30).fill('0'), authorId, author: null, authorDaily: authorId === null ? null : Array(30).fill('0') });
     }
     if (path === `/api/v1/projects/${projectId}/pull-request-authors`) {
@@ -70,7 +71,7 @@ export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') =
       if (parts !== null && Number(parts[2]) !== state.revision) return send(fault('resource_conflict'), 409);
       const offset = parts === null ? 0 : Number(parts[1]);
       const matches = authors.filter(author => author.login.toLowerCase().includes(query.toLowerCase()));
-      return send({ projectId, revision: String(state.revision), items: matches.slice(offset, offset + 50), nextCursor: offset + 50 < matches.length ? `authors:${offset + 50}:${state.revision}` : null });
+      return send({ projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, revision: String(state.revision), items: matches.slice(offset, offset + 50), nextCursor: offset + 50 < matches.length ? `authors:${offset + 50}:${state.revision}` : null });
     }
     if (path === `/api/v1/projects/${projectId}/pull-requests`) {
       state.pageReads.push(url.search);
@@ -95,7 +96,7 @@ export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') =
         if (position?.direction === 'previous' || hasMore) nextCursor = token(BigInt(items[items.length - 1]!.number), 'next');
       } else if (position?.direction === 'next') previousCursor = token(position.anchor - 1n, 'previous');
       else if (position?.direction === 'previous') nextCursor = token(position.anchor + 1n, 'next');
-      return send({ projectId, revision: String(state.revision), items: items.map(item => ({ ...item, revision: String(state.revision), title: state.longContent && ['1248', '1246', '1236', '1208'].includes(item.number) ? 'Long title 中文标题'.repeat(12) : state.revision > 1 && item.number === '1248' ? `${item.title} updated` : item.title, author: state.longContent && item.number === '1248' ? { id: '42', login: 'longusername'.repeat(12) } : item.author })), total: String(matches.length),
+      return send({ projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, revision: String(state.revision), items: items.map(item => ({ ...item, revision: String(state.revision), title: state.longContent && ['1248', '1246', '1236', '1208'].includes(item.number) ? 'Long title 中文标题'.repeat(12) : state.revision > 1 && item.number === '1248' ? `${item.title} updated` : item.title, author: state.longContent && item.number === '1248' ? { id: '42', login: 'longusername'.repeat(12) } : item.author })), total: String(matches.length),
         counts: state.longCounts ? { active: '9223372036854775807', merged: '9223372036854775807', closed: '9223372036854775807', all: '9223372036854775807' } : { active: String(scoped.filter(item => item.state === 'open').length), merged: String(scoped.filter(item => item.state === 'merged').length), closed: String(scoped.filter(item => item.state === 'closed').length), all: String(scoped.length) }, ...(authorId === null ? {} : { authorId, projectTotal: String(all.length) }), previousCursor, nextCursor });
     }
     if (path.startsWith(`/api/v1/projects/${projectId}/pull-requests/`)) {
