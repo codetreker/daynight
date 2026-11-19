@@ -432,6 +432,10 @@ func (s *attachmentSnapshot) UserCandidateDAO() store.UserCandidateReader {
 	s.reject("UserCandidateDAO")
 	return nil
 }
+func (s *attachmentSnapshot) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *attachmentSnapshot) CredentialDAO() store.CredentialReader {
 	s.reject("CredentialDAO")
 	return nil

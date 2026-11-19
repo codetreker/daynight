@@ -170,6 +170,10 @@ func (s *listOperationStore) WriteProject(context.Context, string, func(store.Pr
 
 type listOperationScope struct{ fixture *listOperationFixture }
 
+func (s *listOperationScope) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *listOperationScope) ProjectDAO() store.ProjectReader {
 	s.fixture.step("ProjectDAO")
 	s.fixture.requireActive(s.fixture.ctx)

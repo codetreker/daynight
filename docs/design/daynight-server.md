@@ -298,7 +298,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 
 ### Goal 验收依赖的生命周期保护
 
-Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际移除出边从逻辑值 1 推进到 2，空操作不推进。当前状态、直接删除与项目生命周期入口保护已有边，尚未公开 Goal 关系写入。
+Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际修改出边从逻辑值 1 推进到 2，空操作不推进，清空不删除修订。状态、直接删除与项目生命周期入口保护已有边；独立关系服务提供授权读取与编辑，机制见[Goal 关系设计](goal-dependencies.md)。公开关系路由独立于旧 Task 投影。
 
 显式状态与删除先读取不可变类型；识别为 Goal 后进入受图锁影响的分支，使用五秒预算覆盖后续连接池、锁、查询与提交。类型预判使用调用方原 context，不受该分支预算限制。写入先锁本地 Project，读取当前 owner Team，再取得该 Team 的事务级图锁，之后锁定并重读 Goal、检查权限与版本。进入 `done` 要求全部直接前置为 `done`；离开 `done` 时若有已完成下游则拒绝。直接删除拒绝未删除 Goal 的入边；无入边时同事务移除出边、推进关系修订并软删除。拒绝不公开对端身份；事务失败保留原结果及提交未知语义。普通 Task 写入及子 Task 自动开始 Parent 保持原项目事务，不取得图锁。
 

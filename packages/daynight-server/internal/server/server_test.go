@@ -591,6 +591,10 @@ func (s *httpTestSnapshot) UserCandidateDAO() store.UserCandidateReader {
 	}
 	return s.UserCandidates
 }
+func (s *httpTestSnapshot) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *httpTestSnapshot) CredentialDAO() store.CredentialReader {
 	if s.Credentials == nil {
 		unexpectedHTTPCall(s.t, "SnapshotScope.CredentialDAO")
