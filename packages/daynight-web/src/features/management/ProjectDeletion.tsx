@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useWorkerNames } from '../worker-names/useWorkerNames';
 import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from "../../api/client";
 import { browserNavigation, type BrowserLocation } from "../../app/navigation";
@@ -7,6 +7,7 @@ import { navigate } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { useProjectAccess } from "../projects/ProjectAccess";
 import { ManagementDialog } from "./ManagementDialog";
+import { goalDependencyWarning } from "./goal-dependency-warning";
 import type { ProjectManagementGuard } from "./ProjectManagementGuard";
 
 const labels = (zh: boolean) => zh ? {
@@ -39,6 +40,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
   readonly onOutcome?: ((kind: "unknown" | "rejected", error: unknown, check: () => Promise<"available" | "unavailable">) => void) | undefined;
 }) => {
   const access = useProjectAccess(projectId), scope = access.session.scope;
+  const warningId = useId();
   const { locale, messages: { inspection: { claim } } } = useI18n(), m = labels(locale === "zh-CN");
   const [dialog, setDialog] = useState(false), [preview, setPreview] = useState<ProjectDeletionPreview | null>(null);
   const names = useWorkerNames(preview?.activeClaims.map(entry => entry.worker) ?? []);
@@ -222,13 +224,14 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
     <button className="button danger" type="button" disabled={!active || guard.isBlocked("delete") || !unknown && (unavailable || !access.ready || !canDelete)} onClick={open}>{m.open}</button>
   </div>{dialog && <ManagementDialog title={unknown ? m.unknown : m.question} initialFocus="cancel" closeOnBackdrop busy={pending} suspended={!active} onClose={close} footer={<>
     <button className="button" type="button" data-dialog-cancel disabled={pending} onClick={unknown ? () => { close(); navigate("/projects"); } : close}>{unknown ? m.back : m.cancel}</button>
-    {unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => load()}>{loading ? m.checking : m.check}</button> : <button className="button danger" type="button" disabled={pending || loading || preview === null || preview.nextCursor !== null || preview.activeClaims.length !== 0 || !matchesName(typed, preview.project.name) || guard.isBlocked("delete")} onClick={submit}>{pending ? m.submitting : m.delete}</button>}
+    {unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => load()}>{loading ? m.checking : m.check}</button> : <button className="button danger" type="button" aria-describedby={preview !== null && !unavailable && access.status === "ready" && access.access?.teamRole === "admin" && !scope.isProjectSuspended(projectId) ? warningId : undefined} disabled={pending || loading || preview === null || preview.nextCursor !== null || preview.activeClaims.length !== 0 || !matchesName(typed, preview.project.name) || guard.isBlocked("delete")} onClick={submit}>{pending ? m.submitting : m.delete}</button>}
   </>}>
     {loading && preview === null && !unknown && <p role="status">{m.loading}</p>}
     {readError !== null && <div className="notice error" role="alert"><p>{readError instanceof ApiError && readError.kind === "server" && readError.status === 403 && readError.code === "forbidden" ? m.denied : m.failedRead}</p>{readError instanceof ApiError && readError.requestId !== null && <p>{m.request}<code>{readError.requestId}</code></p>}<button className="button" type="button" onClick={() => load(preview?.nextCursor ?? undefined)}>{m.retry}</button></div>}
     {unknown && <div className="notice warning" role="alert"><p>{m.unknown}</p>{checked !== null && <p>{checked === "available" ? m.available : m.unavailable}</p>}</div>}
     {result?.kind === "rejected" && <div className="notice error" role="alert"><p>{detail}</p>{error instanceof ApiError && error.requestId !== null && <p>{m.request}<code>{error.requestId}</code></p>}</div>}
     {preview !== null && !unknown && !unavailable && access.status === "ready" && access.access?.teamRole === "admin" && !scope.isProjectSuspended(projectId) && <>
+      <div id={warningId} className="notice warning">{goalDependencyWarning(locale === "zh-CN")}</div>
       <dl className="project-deletion-details"><dt>{m.name}</dt><dd>{needsEscape(preview.project.name) ? encodedName(preview.project.name) : preview.project.name}</dd><dt>{m.id}</dt><dd><code>{preview.project.id}</code></dd><dt>{m.repo}</dt><dd>{preview.project.repoUrl}</dd><dt>{m.team}</dt><dd>{preview.project.ownerTeam.kind === "personal" ? m.personal : preview.project.ownerTeam.name}</dd></dl>
       <p><strong>{m.scope}</strong><br />{m.impact}</p><p>{m.observed} · {preview.summary.taskCount} {m.tasks} · {preview.summary.unfinishedTaskCount} {m.unfinished} · {preview.summary.attachmentCount} {m.attachments} · <time>{preview.observedAt}</time></p><div className="notice warning">{m.retention}</div>
       {preview.activeClaims.length > 0 && <div className="notice warning"><p>{m.blockers}</p><ul>{preview.activeClaims.map((entry) => <li key={entry.taskId}><a href={`/projects/${projectId}/tasks/${entry.taskId}`}>{entry.title}</a> <code>{entry.taskId}</code> · <bdi>{names.name(entry.worker.userId, entry.worker.workerId, entry.worker.machineName, true)}</bdi> · {entry.worker.platform} · {entry.worker.connectivity === "offline" ? m.offline : entry.worker.paused || entry.worker.phase === "paused" ? m.paused : claim.phase[entry.worker.phase]}</li>)}</ul></div>}
