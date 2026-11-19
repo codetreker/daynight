@@ -1,6 +1,6 @@
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 import { jsonContainerSources, jsonObjectSources } from './json-source';
-import { array, boolean, id, malformed, nullableTimestamp, record, string, timestamp } from './validation';
+import { array, boolean, count, id, malformed, nullableTimestamp, record, string, timestamp } from './validation';
 import type { WorkerReadAdmission } from './workers';
 
 class AssistantTaskJsonNumber {
@@ -25,6 +25,11 @@ export type AssistantTaskProposal = { readonly id: string; readonly taskId: stri
 export type AssistantTaskItem = { readonly id: string; readonly taskId: string; readonly key: string; readonly episode: string; readonly state: 'open' | 'closed'; readonly category: string; readonly followerBotId: string | null; readonly appState: AssistantTaskJson; readonly version: string; readonly createdAt: string; readonly updatedAt: string };
 export type AssistantTaskRecord = { readonly id: string; readonly taskId: string; readonly itemId: string | null; readonly author: 'bot' | 'system'; readonly authorBotId: string | null; readonly kind: 'fact' | 'guess' | 'action' | 'unknown' | 'question' | 'answer' | 'note' | 'outcome'; readonly text: string; readonly outcome?: AssistantTaskOutcome; readonly actionRecordId?: string; readonly refs: AssistantTaskJson; readonly createdAt: string };
 export type AssistantTaskOutcome = 'effective' | 'ineffective' | 'inconclusive';
+export type AssistantTaskMetrics = {
+  readonly observedAt: string; readonly windowStart: string; readonly windowEnd: string; readonly actionCount: number;
+  readonly outcomes: { readonly [K in AssistantTaskOutcome]: number }; readonly escalationCount: number; readonly resultUnknownCount: number;
+  readonly closureCount: number; readonly untimedClosureCount: number; readonly averageResolutionMs: number | null; readonly recurringItemCount: number;
+};
 const eventTypes = ['report', 'escalation', 'result_unknown', 'proposal_pending', 'inquiry_timed_out', 'takeover', 'claim_lost', 'update', 'resolved', 'direct_success', 'proposal_decided', 'appendix_added', 'inquiry', 'answer', 'transfer', 'intervention', 'trigger', 'retrospective', 'inbound'] as const;
 export type AssistantTaskEvent = { readonly id: string; readonly taskId: string; readonly targetBotId: string; readonly type: typeof eventTypes[number]; readonly payload: AssistantTaskJson; readonly state: 'pending' | 'delivered' | 'expired'; readonly attention: boolean; readonly createdAt: string; readonly deliveredAt: string | null; readonly seenAt: string | null; readonly ackOperationId: string | null };
 export type AssistantTaskPage<T> = { readonly items: readonly T[]; readonly nextCursor: string | null; readonly observedAt: string };
@@ -172,6 +177,17 @@ export const parseAssistantTaskRecord = (value: unknown, taskId: string): Assist
   if ((result.author === 'bot') !== (result.authorBotId !== null)) return malformed();
   return result;
 };
+// The server averages database-time closure intervals without a lower bound, so a backward clock step can yield a
+// negative average; the panel shows it as zero instead of discarding otherwise valid counters.
+const resolutionMs = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) ? Math.max(value, 0) : malformed();
+export const parseAssistantTaskMetrics = (value: unknown): AssistantTaskMetrics => {
+  const data = fields(value, ['observedAt', 'windowStart', 'windowEnd', 'actionCount', 'outcomes', 'escalationCount', 'resultUnknownCount', 'closureCount', 'untimedClosureCount', 'averageResolutionMs', 'recurringItemCount']);
+  const outcomes = fields(data.outcomes, ['effective', 'ineffective', 'inconclusive']);
+  const result = { observedAt: timestamp(data.observedAt), windowStart: timestamp(data.windowStart), windowEnd: timestamp(data.windowEnd), actionCount: count(data.actionCount), outcomes: { effective: count(outcomes.effective), ineffective: count(outcomes.ineffective), inconclusive: count(outcomes.inconclusive) }, escalationCount: count(data.escalationCount), resultUnknownCount: count(data.resultUnknownCount), closureCount: count(data.closureCount), untimedClosureCount: count(data.untimedClosureCount), averageResolutionMs: data.averageResolutionMs === null ? null : resolutionMs(data.averageResolutionMs), recurringItemCount: count(data.recurringItemCount) };
+  // Every closure is either timed or untimed, and only timed closures produce an average.
+  if (result.untimedClosureCount > result.closureCount || (result.averageResolutionMs === null) !== (result.untimedClosureCount === result.closureCount) || Date.parse(result.windowEnd) !== Date.parse(result.observedAt) || Date.parse(result.windowStart) > Date.parse(result.windowEnd)) return malformed();
+  return result;
+};
 export const parseAssistantTaskEvent = (value: unknown, taskId?: string): AssistantTaskEvent => {
   const data = fields(value, ['id', 'taskId', 'targetBotId', 'type', 'payload', 'state', 'attention', 'createdAt', 'deliveredAt', 'seenAt', 'ackOperationId']);
   return { id: uuid(data.id), taskId: taskId === undefined ? uuid(data.taskId) : taskIdentity(data, taskId), targetBotId: uuid(data.targetBotId), type: choice(data.type, eventTypes), payload: jsonValue(data.payload), state: choice(data.state, ['pending', 'delivered', 'expired']), attention: boolean(data.attention), createdAt: timestamp(data.createdAt), deliveredAt: nullableTimestamp(data.deliveredAt), seenAt: nullableTimestamp(data.seenAt), ackOperationId: nullableId(data.ackOperationId) };
@@ -227,6 +243,7 @@ export const listAssistantTasks = (query: AssistantTaskQuery, signal: AbortSigna
 export const getAssistantTaskManual = (taskId: string, signal: AbortSignal, admission: AssistantTaskAdmission, version?: string) => read(`${path(taskId)}/manual${version === undefined ? '' : `/versions/${input(() => decimal(version))}`}`, signal, admission, value => {
   const manual = parseAssistantTaskManual(value, taskId); if (version !== undefined && manual.version !== version) return malformed(); return manual;
 });
+export const getAssistantTaskMetrics = (taskId: string, signal: AbortSignal, admission: AssistantTaskAdmission) => read(`${path(taskId)}/metrics`, signal, admission, parseAssistantTaskMetrics);
 export const getAssistantTaskClaimOperation = (taskId: string, operationId: string, signal: AbortSignal, admission: AssistantTaskAdmission) => read(`${path(taskId)}/claim-operations/${target(operationId)}`, signal, admission, value => parseAssistantTaskClaimResult(value, taskId, operationId));
 const listResource = <T>(taskId: string, resource: string, query: AssistantTaskQuery, signal: AbortSignal, admission: AssistantTaskAdmission, parser: (value: unknown, taskId: string) => T, key: (item: T) => string, states: readonly string[] = [], allowed: readonly string[] = states.length ? ['state'] : []) => read(`${path(taskId)}/${resource}${queryString(query, allowed, states)}`, signal, admission, value => page(value, value => {
   const parsed = parser(value, taskId), data = record(parsed);
