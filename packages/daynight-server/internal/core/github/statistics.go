@@ -97,6 +97,11 @@ func statisticsAvailability(c githubpr.Connection, available bool, total int64) 
 	if c.InstallationID == nil {
 		return "not_connected"
 	}
+	// Current synchronization facts describe the fixed source only while its
+	// repository identity matches the active connection.
+	if c.LegacyRepositoryID == nil || c.RepositoryID == nil || *c.LegacyRepositoryID != *c.RepositoryID {
+		return "no_saved_data"
+	}
 	initializing := c.Enabled && c.SyncEnabled && (c.LastFullGeneration == nil || *c.LastFullGeneration != c.Generation)
 	if c.Enabled && c.AccessState != "unavailable" && c.SyncEnabled && available && initializing {
 		return "initializing"

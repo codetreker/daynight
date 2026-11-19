@@ -16,7 +16,7 @@ func (r *reader) Authors(ctx context.Context, q store.GitHubAuthorQuery) (store.
 	 SELECT DISTINCT ON (author_id) author_id, author_login,
 	        lower(author_login COLLATE "C") AS name_key
 	 FROM project_pull_requests
-	 WHERE project_id=$1 AND author_id IS NOT NULL
+	 WHERE project_id=$1 AND repository_id=(SELECT legacy_repository_id FROM project_github WHERE project_id=$1) AND author_id IS NOT NULL
 	 ORDER BY author_id, observed_at DESC, revision DESC, number DESC
 	), named AS (
 	 SELECT author_id, author_login, name_key,

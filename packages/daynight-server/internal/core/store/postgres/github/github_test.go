@@ -114,9 +114,17 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	}
 }
 
+func ensureLegacySource(t *testing.T, tx pgx.Tx, id string) {
+	t.Helper()
+	mustExec(t, tx, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,30,'owner/repo') ON CONFLICT DO NOTHING`, id)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,legacy_repository_id) VALUES($1,30) ON CONFLICT(project_id) DO NOTHING`, id)
+	mustExec(t, tx, `UPDATE project_github SET legacy_repository_id=30 WHERE project_id=$1 AND legacy_repository_id IS NULL`, id)
+}
+
 func insertPR(t *testing.T, tx pgx.Tx, id string, n int, state, title string, body *string) {
 	t.Helper()
-	mustExec(t, tx, `INSERT INTO project_pull_requests (project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision) VALUES ($1,$2,$2,$3,$4,$5,false,'main','abcdef',now(),now(),$6,now(),1)`, id, n, fmt.Sprintf("https://example.test/%d", n), title, state, body)
+	ensureLegacySource(t, tx, id)
+	mustExec(t, tx, `INSERT INTO project_pull_requests (project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision) VALUES ($1,30,$2,$2,$3,$4,$5,false,'main','abcdef',now(),now(),$6,now(),1)`, id, n, fmt.Sprintf("https://example.test/%d", n), title, state, body)
 }
 func numbers(items []githubpr.PullRequestSummary) []int64 {
 	out := make([]int64, 0, len(items))
@@ -157,7 +165,7 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	other := uuid.NewString()
 	insertPR(t, setup, other, 50, "open", "other", nil)
 	mustExec(t, setup, `SAVEPOINT unique_pr`)
-	_, duplicateErr := setup.Exec(ctx, `INSERT INTO project_pull_requests (project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES ($1,9,99,'url','duplicate','open',false,'main','sha',now(),now(),now(),1)`, id)
+	_, duplicateErr := setup.Exec(ctx, `INSERT INTO project_pull_requests (project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES ($1,30,9,99,'url','duplicate','open',false,'main','sha',now(),now(),now(),1)`, id)
 	var pgErr *pgconn.PgError
 	if !errors.As(duplicateErr, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("same Project and PR number: %v", duplicateErr)
