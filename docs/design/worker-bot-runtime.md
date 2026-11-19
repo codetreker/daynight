@@ -62,6 +62,18 @@ manifest 完成发布（包括支持平台上的目录同步）后才进入内�
 
 Bot 删除在停证之后将同一派生恢复目录纳入既有精确删除计划，保留删除回执和共享 native home。该机制不单独启用完整 `botRecoveryVersion=1`，不证明跨版本、跨机、独立 Worker 接管或所有 Provider 功能恢复。历史越长，复制成本越高；单记录超过 32 MiB 明确失败，不截断恢复材料。取舍见[恢复点决策](../../.agents/notes/implemented/architecture/2026-11-19-codex-bot-recovery-points.md)。
 
+## Claude 原生恢复点
+
+新建专属存储的 Claude Bot 通过 `claudeBotRecovery` 绑定 Bot ID 与 `bots/<botId>/native/claude/`，其中 `recovery.sqlite` 保存原生镜像、身份、摘要和受保护轮次。已有 ticket、普通 Task/Test 不自动启用该模式。Worker 校验由原配置根派生的位置，Controller 保留原服务、owner、Bot、Session、cwd 和 `nativeHome`。删除 Bot 时回收私有镜像，共享 Claude 配置与工作区保留。
+
+已验证组合是 SDK 0.3.247 与其默认 CLI 2.1.247。SDK 的 `sessionStore.append` 接收本地写入成功后的原生记录，成功 result 发布前等待镜像 flush。存储通过 SQLite 事务、FULL 同步、UUID 更新和内容摘要保留镜像；第一次写入失败锁存错误，SDK 重试或后续 result 不能清除失败。跨 helper 的镜像传输按有界分片传递，单批上限 32 MiB，超限明确失败。
+
+启动、恢复、输入和设置派发前持久标记 dirty；成功轮次须有原输入 UUID 与后续助手记录，镜像保护完成后才报告轮次完成和空闲。错误、中断、镜像失败和未知结果保留 dirty，禁止从旧点自动重放。空闲设置确认仍需下一成功轮次保护；启动或恢复后尚无成功轮次时仍保留 dirty；没有保护轮次的空会话不能用新会话代替恢复。为避免一个结果误清除另一轮次的未完成状态，该模式不接收运行中追加输入；图片在派发前拒绝。compact、子 Agent 和根 transcript 以外的原生资源没有已验证恢复闭包，遇到对应记录时明确拒绝保护。账号的工具配置继续按原来源解析。
+
+恢复先核对原执行停证及专属存储归属，再检查格式、版本、原生 ID、cwd 和镜像摘要。原 transcript 缺失时，同步临时文件并通过不覆盖目标的原子发布重建原路径；已有文件须与镜像一致，否则保留文件并报错。`CLAUDE_CONFIG_DIR` 保持原目录，SDK 通过 `extraArgs.resume` 传入原 ID，避免 SDK 自带的 store load 将配置改到临时目录；意外调用 load 明确拒绝。此版本相关行为由真实 SDK 参数和 flush 回归验证，实际 runtime profile 不匹配时拒绝后续业务输入。
+
+该机制不恢复一般 Claude 支持承诺；初始化断连清理仍受现有暂停声明约束。方案取舍和扩展条件见 [Claude 恢复决策](../../.agents/notes/implemented/architecture/2026-11-19-claude-bot-recovery-points.md)。
+
 ## 原会话恢复
 
 对已提交执行，先用原 ticket 观察 Controller。可观察且仍在 starting、ready 或 working 的执行继续复用，并撤销先前未完成停机的来源标记，避免后来异常退出获得正常重启豁免；无法观察时读取同一 journal 和持久进程证据。恢复路径不为了获得停证主动杀死一个可能存活的 writer。`confirmControllerProcessesStopped` 核对原进程实例及所属进程组或 Windows Job Object，随后通过 journal 的停证写入和 snapshot CAS 固定原 generation 已停止。Windows 复核以出生身份绑定的原进程句柄完成状态为依据；未 signaled 的退出过渡仍不能确认 stopped，ESRCH 和变化的退出码均不能代替完成观察。仍运行的同出生实例若命令行哈希、父 PID 或 process group 冲突，先报告身份不确定并保留原责任，停止确认不能以 Job 查询代替该实例的完整停证。缺失证明或 native ID 时保留责任并报告，不能新建空白会话。
