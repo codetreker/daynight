@@ -547,17 +547,38 @@ func TestProjectWriteMissingRelationAndClosedSnapshotPreserveCauses(t *testing.T
 
 func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, external := range []bool{false, true} {
-		t.Run(fmt.Sprintf("external=%t", external), func(t *testing.T) {
-			database := isolatedStore(t)
-			project := queryProject(t, database, 1)
-			predecessor := queryTask(t, database, project.ID, 11, model.TaskDone)
-			successor := queryTask(t, database, project.ID, 12, model.TaskTodo)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+	database := isolatedStore(t)
+	for index, external := range []bool{false, true} {
+		if !t.Run(fmt.Sprintf("external=%t", external), func(t *testing.T) {
+			offset := index * 100
+			project := queryProject(t, database, offset+1)
+			predecessor := queryTask(t, database, project.ID, offset+11, model.TaskDone)
+			successor := queryTask(t, database, project.ID, offset+12, model.TaskTodo)
+			var wantExternal []string
+			if external {
+				wantExternal = []string{predecessor.ID}
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			var waiterDone <-chan struct{}
+			defer func() {
+				cancel()
+				if waiterDone == nil {
+					return
+				}
+				cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stop()
+				select {
+				case <-waiterDone:
+				case <-cleanup.Done():
+					t.Errorf("dependency decision waiter did not drain: %v", cleanup.Err())
+				}
+			}()
 			results := make(chan error, 1)
 			if err := writeProjectForTest(database, ctx, project.ID, func(holder ProjectWriteScope) error {
+				finished := make(chan struct{})
+				waiterDone = finished
 				go func() {
+					defer close(finished)
 					results <- writeProjectForTest(database, ctx, project.ID, func(waiter ProjectWriteScope) error {
 						current, err := waiter.TaskDAO().Task(ctx, successor.ID)
 						if err != nil {
@@ -565,6 +586,9 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 						}
 						if current.Status != model.TaskInProgress || current.Version != successor.Version+1 || !slices.Equal(current.DependsOn, []string{predecessor.ID}) {
 							return errors.New("post-lock target read lost the preceding dependency/status write")
+						}
+						if !slices.Equal(current.ExternalDependsOn, wantExternal) {
+							return fmt.Errorf("post-lock external dependencies = %v, want %v", current.ExternalDependsOn, wantExternal)
 						}
 						prerequisites, err := waiter.TaskDAO().TasksByID(ctx, current.DependsOn)
 						if err != nil {
@@ -593,9 +617,7 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 				taskMutationWaitForWriters(t, ctx, database, 1)
 				values := taskMutationValues(successor)
 				values.Status, values.DependsOn = model.TaskInProgress, []string{predecessor.ID}
-				if external {
-					values.ExternalDependsOn = []string{predecessor.ID}
-				}
+				values.ExternalDependsOn = slices.Clone(wantExternal)
 				_, err := holder.TaskDAO().UpdateTask(ctx, successor.ID, values)
 				return err
 			}); err != nil {
@@ -607,7 +629,10 @@ func TestTaskDependencyDecisionQueriesReadPostLockCommittedFacts(t *testing.T) {
 			if after := snapshotTask(t, database, project.ID, predecessor.ID); !reflect.DeepEqual(after, predecessor) {
 				t.Fatalf("decision reads mutated their prerequisite: %#v", after)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, database.Pool)
 	}
 }
 
