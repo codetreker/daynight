@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { sessionFence, type SessionCommand, type SessionSnapshot } from '../../../daynight/src/session/protocol';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
@@ -469,4 +471,37 @@ for (const entry of ['task', 'assistant'] as const) test(`${entry} composer foll
       expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
     } finally { await context.close(); }
   }
+});
+
+
+test('Task and Bot composers remain usable at 200% browser zoom', async ({ playwright }) => {
+  const temporary = fileURLToPath(new URL('../../../../.tmp/session-column/', import.meta.url));
+  await mkdir(temporary, { recursive: true });
+  const profile = await mkdtemp(`${temporary}/zoom-profile-`);
+  try {
+    await mkdir(`${profile}/Default`);
+    await writeFile(`${profile}/Default/Preferences`, JSON.stringify({ partition: { default_zoom_level: { x: Math.log(2) / Math.log(1.2) } } }));
+    const executable = process.env.DAYNIGHT_BROWSER_EXECUTABLE;
+    const context = await playwright.chromium.launchPersistentContext(profile, {
+      channel: 'chromium', headless: true, baseURL: 'http://127.0.0.1:4303', viewport: null,
+      args: ['--window-size=1280,900', '--force-device-scale-factor=1'],
+      ...(executable === undefined ? {} : { executablePath: executable }),
+    });
+    try {
+      for (const entry of ['task', 'assistant'] as const) {
+        const page = await context.newPage();
+        const { observations } = await open(page, 'en', 'working', entry, 'long');
+        expect(await page.evaluate(() => devicePixelRatio)).toBeCloseTo(2, 1);
+        const input = page.locator('.session-composer textarea');
+        await input.fill('Draft at browser zoom');
+        await page.locator('.session-model-trigger').click();
+        await expect(page.locator('.session-control-setting label').first()).toHaveCSS('font-size', '14px');
+        await page.keyboard.press('Escape');
+        await expect(input).toHaveValue('Draft at browser zoom');
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+        await page.close();
+      }
+    } finally { await context.close(); }
+  } finally { await rm(profile, { recursive: true, force: true }); }
 });
