@@ -34,6 +34,8 @@ export type QualifiedImages = ImageQualification & Readonly<{ fingerprint: strin
 // evidence package. Limits are the largest values that package actually
 // delivered and the model answered correctly, not native or catalog maxima;
 // steer stays false because no same-turn steer receipt was collected.
+// evidenceId pins native evidence only; product-chain acceptance for the same
+// combination is required separately before a row ships.
 const codex0170DarwinArm64 = (modelId: string, maxImageBytes: string, maxMessageImageBytes: string): ImageQualification => ({
   identity: { provider: "codex", nativeVersion: "0.170.0", nativeExecutableSha256: "9248cfeebec9b4cc3034d5114caab10fbf426cbfa79dba410c5fa1b72762abd6", sdkVersion: null, platform: "darwin", arch: "arm64", backendIdentity: "63f0adb320dcbb521cec93c8831f86816f0d19954083a222070a6cad69b8bc14", modelId },
   evidenceId: "daynight-task:5f7c3a89-22c8-43a9-9cc7-6631287e1de2/evidence/codex-macos-0.170.0/evidence.zip",

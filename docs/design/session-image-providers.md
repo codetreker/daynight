@@ -71,7 +71,7 @@ Daynight 将公共存储中的完整原件按原顺序交给原生图片接口�
 
 限额只取原生证据实际交付且模型正确回答的值，不是原生或目录上限：输入 MIME 为 PNG、JPEG、WebP；每条消息最多 8 张；宽、高各不超过 16384，像素不超过 33554432，帧数为 1；单图字节上限 `gpt-6-astra` 为 10461350、`gpt-6.2-astra` 为 10442582，整条消息图片字节上限分别为 20904114 与 20883253。JPEG 与 WebP 只在小尺寸样本上验证，限额仍按整行统一表达。公共能力再与 `IMAGE_LIMITS` 及服务端组件取交集。
 
-Codex 自更新、重装或其他改变程序字节的升级会使摘要失配，Session 回到 `capability_unknown` 或 `profile_disabled`，图片关闭而文字不受影响。resume 线程不建立声明配置观察，因而保持 unknown。证据包由 `evidenceId` 与 `evidenceSha256` 引用；[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-codex-macos-image-runtime.md)保留取舍与后果。
+Codex 自更新、重装或其他改变程序字节的升级会使摘要失配，Session 回到 `capability_unknown` 或 `profile_disabled`，图片关闭而文字不受影响。resume 线程不建立声明配置观察，因而保持 unknown。`evidenceId` 与 `evidenceSha256` 只绑定原生证据包，该包确定身份、限额与 steer 判断，本身不是产品链路验收。[验收规格](../spec/session-image-acceptance.md)要求的同一组合产品链路证据（上传、原生交付、模型回答、历史、预览、下载、归档及 Controller 停止后读取原件）由该组合的验收报告保存，不写入资格行；两行只在这些证据通过后随代码发布。[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-codex-macos-image-runtime.md)保留取舍与后果。
 
 ### 能力、编码与接受
 
