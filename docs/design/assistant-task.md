@@ -23,9 +23,9 @@
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
 | `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
-| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本；迁移 `096_assistant_task_item_lifecycle.sql` 增加可空的本次打开时间与最近关闭时间，既有行两者为空 |
-| `assistant_task_item_closures` | 迁移 `096_assistant_task_item_lifecycle.sql` 新增的只追加关闭登记：事项 ID、episode、本次打开时间（可空）与关闭时间 |
-| `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `094_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
+| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本；迁移 `100_assistant_task_item_lifecycle.sql` 增加可空的本次打开时间与最近关闭时间，既有行两者为空 |
+| `assistant_task_item_closures` | 迁移 `100_assistant_task_item_lifecycle.sql` 新增的只追加关闭登记：事项 ID、episode、本次打开时间（可空）与关闭时间 |
+| `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `098_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
 | `assistant_task_events` | 目标 Bot、负载、投递与关注状态、确认操作身份 |
 | `assistant_task_inquiries` | 双方 Bot、问题与回答、状态和固定截止时间 |
 
