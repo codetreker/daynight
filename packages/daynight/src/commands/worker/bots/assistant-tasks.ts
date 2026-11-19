@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { AssistantTaskApiError, type AssistantTask, type AssistantTaskClient } from "../../../api/assistant-task.js";
+import type { AssistantTaskEvent, AssistantTaskEventQuery } from "../../../api/assistant-task.js";
 import { parseSessionCommand, SESSION_PROTOCOL, type SessionCommand, type SessionOperation } from "../../../session/protocol.js";
 import { readClaimCredential, recoverClaimOperation, runClaimOperation } from "../../assistant-task/claims.js";
 import { withClaimStorage } from "../../assistant-task/state.js";
 import { AssistantTaskSessionError } from "./assistant-task-session.js";
 import { withAssistantRuntimeState } from "./assistant-task-state.js";
 import { assistantTaskPages } from "./assistant-task-pages.js";
+import { INBOUND_EVENT_TYPE } from "./assistant-task-inbound.js";
 import { createNotificationBatch } from "./assistant-task-notification.js";
 import { assistantTriggerId, assistantTriggerOccurrence } from "./assistant-task-trigger.js";
 import type { BotOwner, BotRecord } from "./types.js";
@@ -20,6 +22,7 @@ export type AssistantApplicationContext = {
 };
 export type AssistantApplicationFactory = (context: AssistantApplicationContext) => Promise<void>;
 type Delivery = { command: SessionCommand; events: { taskId: string; id: string }[]; confirmed: boolean };
+type EventTypeFilter = { type?: string; excludeType?: string };
 type TriggerState = { id: string; occurrence: string; confirmed: boolean };
 type Application = { botId: string; generation: string; cancellation: AbortController; expiry: AbortController; work: Promise<void> };
 export type AssistantTaskRuntimeOptions = {
@@ -163,10 +166,20 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       })));
     }
   };
-  const eventsFor = (bot: BotRecord, signal: AbortSignal, taskId?: string, pending = false) => assistantTaskPages(
+  const eventsFor = (bot: BotRecord, signal: AbortSignal, taskId?: string, pending = false, filter: EventTypeFilter = {}) => assistantTaskPages<AssistantTaskEvent, AssistantTaskEventQuery>(
     query => options.withApi(bot.botId, signal, api => api.listEvents(taskId, query)),
-    pending ? { state: "pending", targetBotId: bot.botId } : {},
+    pending ? { state: "pending", targetBotId: bot.botId, ...filter } : {},
   );
+  /** Pending events for this Bot in page order; every item must match the requested filters. */
+  async function* pendingEvents(bot: BotRecord, signal: AbortSignal, filter: EventTypeFilter = {}): AsyncGenerator<AssistantTaskEvent> {
+    for await (const event of eventsFor(bot, signal, undefined, true, filter)) {
+      if (event.targetBotId !== bot.botId || event.state !== "pending"
+        || (filter.type !== undefined && event.type !== filter.type) || (filter.excludeType !== undefined && event.type === filter.excludeType)) {
+        throw new Error("Assistant event page conflicts with its target, state or type filter.");
+      }
+      yield event;
+    }
+  }
   const deliveryBot = async (bot: BotRecord, signal: AbortSignal): Promise<void> => {
     await withAssistantRuntimeState({ owner: options.owner, stateDirectory: await options.stateDirectory(bot.botId), key: "delivery" }, async (read, save) => {
       const saved = await read();
@@ -180,16 +193,22 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       if (!delivery) {
         if (!await healthy(bot, signal) || !await options.idle(bot, signal)) return;
         const notification = createNotificationBatch(), batch = notification.events;
-        // Deferred inbound events stay pending and are skipped page by page so
-        // that an inbound backlog never blocks other assistant task events.
-        // This is interim: once the server filters events by type, selection
-        // reads non-inbound events first and stops the inbound pass at the
-        // first deferred event instead of fetching the remaining backlog.
-        for await (const event of eventsFor(bot, signal, undefined, true)) {
-          if (event.targetBotId !== bot.botId || event.state !== "pending") throw new Error("Assistant event page conflicts with its target or state filter.");
-          const admission = notification.add(event);
-          if (admission === "full") {
-            if (!batch.length) throw new Error("Assistant notification exceeds its bounded Session input size.");
+        // Non-inbound events are selected first, so an inbound backlog never
+        // blocks other assistant task notifications. Inbound events are then
+        // paged separately until the inbound budget or the batch limit; the
+        // server omits paused tasks, and unselected events stay pending without
+        // any per-event skip request.
+        let full = false;
+        for await (const event of pendingEvents(bot, signal, { excludeType: INBOUND_EVENT_TYPE })) {
+          if (notification.add(event) === "added") continue;
+          if (!batch.length) throw new Error("Assistant notification exceeds its bounded Session input size.");
+          full = true; break;
+        }
+        if (!full) {
+          for await (const event of pendingEvents(bot, signal, { type: INBOUND_EVENT_TYPE })) {
+            const admission = notification.add(event);
+            if (admission === "added") continue;
+            if (admission === "full" && !batch.length) throw new Error("Assistant notification exceeds its bounded Session input size.");
             break;
           }
         }
@@ -217,14 +236,20 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       if (!delivery.confirmed) return;
       // Pending-only reads exclude delivered history. Each page and ACK has its own
       // bounded API operation; a lost ACK response never creates a new Session command.
+      // The journal does not record event types. Non-inbound events are acknowledged
+      // first without reading the inbound backlog; any remaining event is then found
+      // in an unfiltered read, which still includes inbound events of a task paused
+      // after the notification was sent.
       const remaining = new Set(delivery.events.map(event => `${event.taskId}/${event.id}`));
-      for await (const event of eventsFor(bot, signal, undefined, true)) {
-        if (event.targetBotId !== bot.botId || event.state !== "pending") throw new Error("Assistant event page conflicts with its target or state filter.");
-        const key = `${event.taskId}/${event.id}`;
-        if (!remaining.has(key)) continue;
-        await options.withApi(bot.botId, signal, api => api.ackEvent(event.taskId, event.id, { operationId: delivery!.command.operationId }));
-        remaining.delete(key);
+      for (const filter of [{ excludeType: INBOUND_EVENT_TYPE }, {}] satisfies EventTypeFilter[]) {
         if (!remaining.size) break;
+        for await (const event of pendingEvents(bot, signal, filter)) {
+          const key = `${event.taskId}/${event.id}`;
+          if (!remaining.has(key)) continue;
+          await options.withApi(bot.botId, signal, api => api.ackEvent(event.taskId, event.id, { operationId: delivery!.command.operationId }));
+          remaining.delete(key);
+          if (!remaining.size) break;
+        }
       }
       await save(null);
     });

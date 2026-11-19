@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantTaskApiError, assistantTaskClaimFingerprint, type AssistantTask, type AssistantTaskClient, type AssistantTaskClaimInput, type AssistantTaskClaimKind, type AssistantTaskClaimResult, type AssistantTaskEvent } from "../../../../src/api/assistant-task.js";
+import { AssistantTaskApiError, assistantTaskClaimFingerprint, type AssistantTask, type AssistantTaskClient, type AssistantTaskClaimInput, type AssistantTaskClaimKind, type AssistantTaskClaimResult, type AssistantTaskEvent, type AssistantTaskEventQuery } from "../../../../src/api/assistant-task.js";
 import { withClaimStorage, type ClaimScope } from "../../../../src/commands/assistant-task/state.js";
 import * as claimOperations from "../../../../src/commands/assistant-task/claims.js";
 import { createAssistantTaskRuntime, type AssistantApplicationContext, type AssistantTaskClock, type AssistantTaskRuntime, type AssistantTaskRuntimeOptions } from "../../../../src/commands/worker/bots/assistant-tasks.js";
@@ -55,7 +55,9 @@ const fixture = async (botNumber = 3) => {
   const listEvents = vi.fn<AssistantTaskClient["listEvents"]>(async (taskId, query) => {
     const after = query?.cursor === undefined ? -1 : events.findIndex(event => event.id === query.cursor);
     if (query?.cursor !== undefined && after < 0) throw new Error("Unexpected event cursor");
-    const matching = events.slice(after + 1).filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state) && (query?.targetBotId === undefined || event.targetBotId === query.targetBotId));
+    // Mirrors the server type filters: selecting inbound events also omits paused tasks.
+    const matching = events.slice(after + 1).filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state) && (query?.targetBotId === undefined || event.targetBotId === query.targetBotId)
+      && (query?.type === undefined || event.type === query.type && !(query.type === "inbound" && event.taskId === task.id && task.state === "paused")) && (query?.excludeType === undefined || event.type !== query.excludeType));
     const items = matching.slice(0, query?.limit ?? 200);
     return { items, nextCursor: matching.length > items.length ? items.at(-1)!.id : null, observedAt: new Date(clock.now()).toISOString() };
   });
@@ -574,6 +576,55 @@ describe("assistant-task managed loops", () => {
     expect(f.send).toHaveBeenCalledTimes(2); expect(f.events.every(event => event.state === "delivered")).toBe(true);
     expect(new Set(f.ackEvent.mock.calls.map(call => call[1])).size).toBe(13);
     expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("selects other events before paging inbound events and stops inbound reads at the inbound budget", async () => {
+    const f = await fixture(), runtime = f.create(), body = "y".repeat(4096);
+    const inbound = (n: number): AssistantTaskEvent => ({ ...f.event(n), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 4096, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.events = [...Array.from({ length: 40 }, (_, index) => inbound(100 + index)), f.event(60)];
+    const send = f.send.getMockImplementation()!;
+    let selection: (AssistantTaskEventQuery | undefined)[] = [];
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selection = f.listEvents.mock.calls.map(([, query]) => query); return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    const acked = f.ackEvent.mock.calls.map(call => call[1]), admitted = acked.length - 1;
+    expect(acked).toContain(id(60)); expect(admitted).toBeGreaterThan(0); expect(admitted).toBeLessThan(40);
+    expect(acked.filter(eventId => eventId !== id(60))).toEqual(Array.from({ length: admitted }, (_, index) => id(100 + index)));
+    // One read returns the only non-inbound event; inbound reads end at the first deferred event.
+    expect(selection[0]).toEqual({ state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 });
+    expect(selection.slice(1)).toHaveLength(admitted + 1);
+    expect(selection.slice(1).every(query => query?.type === "inbound" && query.excludeType === undefined)).toBe(true);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("leaves inbound events of a paused task pending while other events are delivered", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    f.task = { ...f.task, state: "paused" };
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }, f.event(52)];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52)]);
+    expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain(id(51));
+    expect(f.listEvents.mock.calls.slice(-1).every(([, query]) => query?.excludeType === "inbound")).toBe(true);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges a delivered inbound event after its task is paused", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
+    const send = f.send.getMockImplementation()!;
+    f.send.mockImplementationOnce(async (bot, command, abort) => { f.task = { ...f.task, state: "paused" }; return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51)]);
+    expect(f.listEvents.mock.calls.at(-1)![1]).toEqual({ state: "pending", targetBotId: f.bot.botId, limit: 1 });
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("rejects an event page that conflicts with its type filter", async () => {
+    const f = await fixture(), runtime = f.create();
+    f.events = [f.event(51)];
+    f.listEvents.mockImplementationOnce(async () => ({ items: [{ ...f.event(51), type: "inbound" }], nextCursor: null, observedAt: new Date(f.clock.now()).toISOString() }));
+    await runtime.tick("delivery", signal());
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.onError).toHaveBeenCalledWith("Assistant event page conflicts with its target, state or type filter.", f.bot.botId);
   });
 
   it("queries and acknowledges only pending events for the local Bot", async () => {
