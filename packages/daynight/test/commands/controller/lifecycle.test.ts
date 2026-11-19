@@ -160,6 +160,22 @@ it("test tickets and journals omit task identity and preserve no-input initializ
   await expect(writeLaunchTicket(home, { ...ticket, claimId: randomUUID() } as never)).rejects.toThrow();
 });
 
+it("Codex Bot recovery bindings are preserved only on valid independent Codex tickets", async () => {
+  const { home, ticket: task } = await fixture();
+  const { claimId: _, projectId: __, taskId: ___, workerId: ____, worktreeId: _____, userId: ______, ...common } = task;
+  const binding = { botId: randomUUID(), directory: path.join(home, "bot-recovery") };
+  const ticket = { ...common, testExecutionId: randomUUID(), ownerUserId: randomUUID(), initialInput: "none", initialPrompt: "", codexBotRecovery: binding };
+  expect(parseLaunchTicket(ticket)).toEqual(ticket);
+  expect(() => parseLaunchTicket({ ...task, codexBotRecovery: binding })).toThrow(/recovery binding/);
+  for (const provider of ["claude", "copilot"]) {
+    expect(() => parseLaunchTicket({ ...ticket, provider, configuration: { ...ticket.configuration, agent: provider } })).toThrow(/recovery binding/);
+  }
+  for (const recovery of [null, { ...binding, directory: "relative/recovery" }, { ...binding, directory: `${home}${path.sep}..${path.sep}recovery` },
+    { ...binding, directory: `${home}\nother` }, { ...binding, extra: true }, { directory: binding.directory }, { ...binding, botId: "not-a-uuid" }]) {
+    expect(() => parseLaunchTicket({ ...ticket, codexBotRecovery: recovery })).toThrow();
+  }
+});
+
 it("compacts offline transport without losing local history or blocking native input", async () => {
   const { home, ticket, database } = await fixture(); const store = openControllerLifecycleStore(path.join(home, "content.sqlite"), ticket, { database, contentOwnedLocally: true, maxOutboxBytes: 512 });
   try {

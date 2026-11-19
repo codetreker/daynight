@@ -129,12 +129,18 @@ describe("Bot private file deletion", () => {
     const botPaths = resolveBotPaths(path.join(f.home, "state"), f.record.botId);
     const retained = [botPaths.databaseFile, botPaths.lockFile,
       path.join(resolveBotPaths(path.join(f.home, "state"), id(60)).directory, "store.sqlite"),
+      path.join(f.ticketValue.nativeHome, "config.toml"), path.join(f.ticketValue.nativeHome, "sessions", "shared.jsonl"),
       controllerTicketPath(f.home, f.record.intent!.launchId)];
     for (const file of retained) { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "retained"); }
+    await mkdir(botPaths.codexRecoveryDirectory, { recursive: true });
+    await writeFile(path.join(botPaths.codexRecoveryDirectory, "manifest.json"), "private recovery manifest");
+    await writeFile(path.join(botPaths.codexRecoveryDirectory, "snapshot.jsonl"), "private recovery history");
     const targets = await captureBotDeletionFiles(f.home, f.record, f.execution, signal());
+    expect(targets.filter(target => target.path === botPaths.codexRecoveryDirectory)).toHaveLength(1);
+    expect(targets.some(target => target.path === f.ticketValue.nativeHome)).toBe(false);
     for (const target of targets) await removeBotDeletionFile(target, signal());
     for (const file of retained) expect(await readFile(file, "utf8")).toBe("retained");
-    for (const file of [f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias]) {
+    for (const file of [f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias, botPaths.codexRecoveryDirectory]) {
       await expect(lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
     }
   });
