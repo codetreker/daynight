@@ -215,7 +215,7 @@ func TestAssistantTaskInboundScopeBindsVerificationReaders(t *testing.T) {
 		if _, err := sources.CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
 			return errors.Join(errors.New("unknown captured event was not missing"), err)
 		}
-		destinations, err := sources.PersonalDeliveryDestinations(ctx, uuid.NewString(), uuid.NewString(), "https://daynight.example", 1)
+		destinations, err := sources.PersonalDeliveryDestinations(ctx, uuid.NewString(), uuid.NewString(), "https://daynight.example", "", 1)
 		if err != nil || len(destinations) != 0 {
 			return errors.Join(errors.New("unknown event had delivery destinations"), err)
 		}
