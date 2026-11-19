@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ApiError } from "../../api/client.js";
 import { createAssistantTaskClient, AssistantTaskApiError } from "../../api/assistant-task.js";
-import type { AssistantTaskQuery, AssistantTaskClaimKind, AssistantTaskCredential, JsonValue } from "../../api/assistant-task-types.js";
+import type { AssistantTaskQuery, AssistantTaskClaimKind, AssistantTaskCredential, AssistantTaskOutcome, JsonValue } from "../../api/assistant-task-types.js";
 import type { CliContext } from "../../cli/context.js";
 import { UsageError } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
@@ -32,7 +32,7 @@ const userActions = new Set(["create", "update", "pause", "resume", "delete", "m
 const botActions = new Set(["claim", "bind", "renew", "appendix add", "propose", "record add", "item add", "item update", "ask", "answer", "events add", "events ack"]);
 const claimActions = new Set(["claim", "bind", "renew", "release", "transfer"]);
 const readActions = new Set(["list", "show", "claim-operation show", "manual show", "manual list", "appendix list", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull"]);
-const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record"]);
+const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record", "--action-record"]);
 const integerOptions = new Set(["--if-version", "--base-version", "--manual-version", "--version", "--episode", "--expected-generation"]);
 const jsonOptions = new Set(["--rules", "--trigger", "--app-state", "--refs", "--payload"]);
 const output = (value: unknown, json: boolean): string => json ? `${JSON.stringify(value)}\n` : `${terminalText(JSON.stringify(value, null, 2))}\n`;
@@ -72,6 +72,8 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
   if (action === "update" && !["--name", "--purpose", "--scope", "--takeover", "--trigger"].some(key => command.options.has(key))) throw new UsageError("Update requires at least one changed field.", help);
   if (action === "proposal decide" && option("--decision") !== "edited" && (option("--body") !== undefined || option("--rules") !== undefined)) throw new UsageError("Only an edited decision accepts --body or --rules.", help);
   if (action === "appendix update" && command.options.has("--source-record") && command.options.has("--clear-source-records")) throw new UsageError("--source-record and --clear-source-records cannot be combined.", help);
+  if (action === "record add" && option("--kind") === "outcome" && !(command.options.has("--outcome") && command.options.has("--action-record"))) throw new UsageError("An outcome record requires --outcome and --action-record.", help);
+  if (action === "record add" && option("--kind") !== "outcome" && (command.options.has("--outcome") || command.options.has("--action-record"))) throw new UsageError("Only outcome records accept --outcome or --action-record.", help);
   const value = (key: string, fallback: JsonValue = null): JsonValue => values.get(key) ?? fallback;
   const query: AssistantTaskQuery = {
     ...(option("--limit") === undefined ? {} : { limit: Number(option("--limit")) }),
@@ -117,7 +119,7 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
             const current = await api.getTask(taskId!);
             const protectedInput = current.holderBotId === botId ? await credential() : {};
             if (current.holderBotId !== botId && !["action", "note"].includes(option("--kind")!)) throw new ClaimStateError("Only the responsible Bot may append this record kind. Other Bots may append action or note records.");
-            return api.addRecord(taskId!, { ...protectedInput, id: operationId!, kind: option("--kind")!, text: option("--text")!, ...(values.has("--refs") ? { refs: value("--refs") } : {}), ...(option("--item") === undefined ? {} : { itemId: option("--item")! }) });
+            return api.addRecord(taskId!, { ...protectedInput, id: operationId!, kind: option("--kind")!, text: option("--text")!, ...(option("--kind") === "outcome" ? { outcome: option("--outcome")! as AssistantTaskOutcome, actionRecordId: option("--action-record")! } : {}), ...(values.has("--refs") ? { refs: value("--refs") } : {}), ...(option("--item") === undefined ? {} : { itemId: option("--item")! }) });
           }
           case "item list": return api.listItems(taskId!, query);
           case "item show": return api.getItem(taskId!, resourceId!);

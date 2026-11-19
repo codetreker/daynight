@@ -13,9 +13,11 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell, dependency graphs, project overview and statistics use the
-semantic roles at all viewport widths. Graph layout coordinates grow with the
-root font size so fixed node boxes accommodate text independently of graph zoom.
+baseline. The shared shell, selection controls, task filters, dependency graphs,
+project overview and statistics use the semantic roles at all viewport widths.
+Selection text retains the existing touch conditions and a 16 CSS px minimum;
+count badges use the metadata role. Graph layout coordinates grow with the root
+font size so fixed node boxes accommodate text independently of graph zoom.
 Overview progress rows rearrange at narrow widths; chart axes preserve horizontal
 scrolling and provide room for enlarged labels.
 The [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses
