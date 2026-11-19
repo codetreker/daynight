@@ -1,5 +1,5 @@
 import { ChildProcess, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getEventListeners } from "node:events";
@@ -17,10 +17,15 @@ const operation = (milliseconds = 5_000, signal?: AbortSignal): Operation => { c
 const start: OwnedSpawn = (file, args, options) => { const child = spawn(file, [...args], options); children.push(child); return child; };
 const command = (source: string, environment: NodeJS.ProcessEnv = process.env) => ({ file: process.execPath, args: ["--input-type=module", "--eval", source], environment });
 const root = async (): Promise<string> => { const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-command"); await mkdir(scratch, { recursive: true }); const created = await mkdtemp(path.join(scratch, "command-")); roots.push(created); return created; };
-const waitFor = async (file: string): Promise<string> => {
+const waitFor = async (file: string): Promise<number> => {
   const deadline = Date.now() + 4_000;
   while (true) {
-    try { return await readFile(file, "utf8"); }
+    try {
+      const text = await readFile(file, "utf8");
+      const pid = Number(text);
+      if (!/^[1-9][0-9]*$/.test(text) || !Number.isSafeInteger(pid)) throw new Error("The owned command checkpoint must contain a positive safe integer PID.");
+      return pid;
+    }
     catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
     if (Date.now() >= deadline) throw new Error("The owned command did not create its checkpoint.");
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
@@ -75,20 +80,37 @@ describe("bounded owned prerequisite commands", () => {
 
   it("cancels the owned command tree and waits for its output streams to close", async () => {
     const directory = await root(); const checkpoint = path.join(directory, "checkpoint"); const ticks = path.join(directory, "ticks");
-    const leaf = `import {appendFileSync,writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(checkpoint)},String(process.pid));setInterval(()=>appendFileSync(${JSON.stringify(ticks)},'tick\\n'),10);`;
+    // Publish only a complete PID; an empty checkpoint would otherwise become PID 0.
+    const leaf = `import {appendFileSync,writeFileSync,renameSync} from 'node:fs';writeFileSync(${JSON.stringify(`${checkpoint}.pending`)},String(process.pid));renameSync(${JSON.stringify(`${checkpoint}.pending`)},${JSON.stringify(checkpoint)});setInterval(()=>appendFileSync(${JSON.stringify(ticks)},'tick\\n'),10);`;
     const source = `import {spawn} from 'node:child_process';spawn(process.execPath,['--input-type=module','--eval',${JSON.stringify(leaf)}],{stdio:'inherit'});setInterval(()=>{},1000);`;
     const controller = new AbortController(); const op = operation(8_000, controller.signal);
-    const pending = runOwnedCommand(command(source), op, start); const leafPid = Number(await waitFor(checkpoint));
+    const pending = runOwnedCommand(command(source), op, start).catch((error: unknown) => error);
+    let leafPid: number | undefined;
     try {
+      leafPid = await waitFor(checkpoint);
       controller.abort(new Error("Stop the owned prerequisite tree"));
-      const failure: unknown = await pending.catch((error: unknown) => error);
+      const failure: unknown = await pending;
       const primary = failure instanceof AggregateError ? failure.cause : failure; expect(primary).toBe(op.signal.reason);
       const before = await readFile(ticks, "utf8").catch((error: unknown) => { if (error instanceof Error && "code" in error && error.code === "ENOENT") return ""; throw error; });
       await new Promise<void>((resolve) => setTimeout(resolve, 80));
       const after = await readFile(ticks, "utf8").catch((error: unknown) => { if (error instanceof Error && "code" in error && error.code === "ENOENT") return ""; throw error; }); expect(after).toBe(before);
     } finally {
-      try { process.kill(leafPid, "SIGKILL"); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
+      controller.abort();
+      await pending;
+      if (leafPid !== undefined) {
+        try { process.kill(leafPid, "SIGKILL"); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
+      }
     }
+  });
+
+  it("rejects incomplete and invalid PID checkpoints before process cleanup", async () => {
+    const checkpoint = path.join(await root(), "checkpoint");
+    for (const text of ["", "0", "-1", "12x", "1.5", " 12", "9007199254740992"]) {
+      await writeFile(checkpoint, text);
+      await expect(waitFor(checkpoint)).rejects.toThrow("positive safe integer PID");
+    }
+    await writeFile(checkpoint, "1234");
+    await expect(waitFor(checkpoint)).resolves.toBe(1234);
   });
 
   it("does not spawn a prerequisite after its operation was already cancelled", async () => {
