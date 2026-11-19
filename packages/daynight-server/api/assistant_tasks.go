@@ -73,6 +73,25 @@ type AssistantTaskAppendix struct {
 	Version       int64     `json:"version,string"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
+	// Scope is omitted for an unrestricted appendix and Validation before the
+	// first validation, so clients that predate both keys can still read such
+	// appendices.
+	Scope      *AssistantTaskAppendixScope      `json:"scope,omitempty"`
+	Validation *AssistantTaskAppendixValidation `json:"validation,omitempty"`
+}
+
+// AssistantTaskAppendixScope lists every declared dimension; an empty array
+// leaves that dimension unrestricted.
+type AssistantTaskAppendixScope struct {
+	ProjectIDs     []string `json:"projectIds"`
+	EventTypes     []string `json:"eventTypes"`
+	ItemCategories []string `json:"itemCategories"`
+}
+
+type AssistantTaskAppendixValidation struct {
+	SuccessCount    int64     `json:"successCount,string"`
+	FailureCount    int64     `json:"failureCount,string"`
+	LastValidatedAt time.Time `json:"lastValidatedAt"`
 }
 
 type AssistantTaskProposal struct {

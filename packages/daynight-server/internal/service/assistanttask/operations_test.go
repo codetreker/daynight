@@ -88,6 +88,13 @@ func (m *operationMock) UpdateAppendix(ctx context.Context, dao store.AssistantT
 	}
 	return value.(model.AssistantTaskAppendix), err
 }
+func (m *operationMock) ValidateAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AppendixValidationInput) (model.AssistantTaskAppendix, error) {
+	value, err := m.call(ctx, dao, actor, "ValidateAppendix", input)
+	if value == nil {
+		return model.AssistantTaskAppendix{}, err
+	}
+	return value.(model.AssistantTaskAppendix), err
+}
 func (m *operationMock) ListProposals(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string, input core.PageInput) (model.AssistantTaskPage[model.AssistantTaskProposal], error) {
 	value, err := m.call(ctx, dao, actor, "ListProposals", taskID, input)
 	if value == nil {

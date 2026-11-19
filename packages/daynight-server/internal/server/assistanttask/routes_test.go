@@ -86,6 +86,9 @@ func TestWriteRoutesPreserveInputsAndActor(t *testing.T) {
 		{"POST", taskPath + "/appendix", `{"id":"` + testID + `",` + claimBody + `,"text":"appendix","sourceRecords":["` + testID + `"]}`, "AddAppendix", true, []any{core.AppendixInput{Mutation: mutation, Text: "appendix", SourceRecords: []string{testID}}}},
 		{"PATCH", taskPath + "/appendix/" + testID, `{"ifVersion":"8","text":"edited","sourceRecords":["` + testID + `"]}`, "UpdateAppendix", false, []any{core.AppendixInput{Mutation: core.Mutation{TaskID: testTask, ID: testID, IfVersion: 8}, Text: "edited", State: "edited", SourceRecords: []string{testID}}}},
 		{"DELETE", taskPath + "/appendix/" + testID, `{"ifVersion":"9"}`, "UpdateAppendix", false, []any{core.AppendixInput{Mutation: core.Mutation{TaskID: testTask, ID: testID, IfVersion: 9}, State: "deleted"}}},
+		{"POST", taskPath + "/appendix", `{"id":"` + testID + `",` + claimBody + `,"text":"appendix","scope":{"projectIds":["` + testTarget + `"],"eventTypes":["report"],"itemCategories":["build"]}}`, "AddAppendix", true, []any{core.AppendixInput{Mutation: mutation, Text: "appendix", Scope: &model.AssistantTaskAppendixScope{ProjectIDs: []string{testTarget}, EventTypes: []string{"report"}, ItemCategories: []string{"build"}}}}},
+		{"PATCH", taskPath + "/appendix/" + testID, `{"ifVersion":"8","text":"edited","scope":{"eventTypes":["escalation"]}}`, "UpdateAppendix", false, []any{core.AppendixInput{Mutation: core.Mutation{TaskID: testTask, ID: testID, IfVersion: 8}, Text: "edited", State: "edited", Scope: &model.AssistantTaskAppendixScope{EventTypes: []string{"escalation"}}}}},
+		{"POST", taskPath + "/appendix/" + testID + "/validations", `{` + claimBody + `,"outcomeRecordId":"` + testOperation + `"}`, "ValidateAppendix", true, []any{core.AppendixValidationInput{Mutation: mutation, OutcomeRecordID: testOperation}}},
 		{"POST", taskPath + "/proposals", `{"id":"` + testID + `",` + claimBody + `,"baseVersion":"2","body":"manual","rules":[],"reason":"reason","evidenceRecords":["` + testID + `"]}`, "Propose", true, []any{core.ProposalInput{Mutation: mutation, BaseVersion: 2, Body: "manual", Rules: json.RawMessage(`[]`), Reason: "reason", EvidenceRecords: []string{testID}}}},
 		{"POST", taskPath + "/proposals/" + testID + "/decision", `{"ifVersion":"8","decision":"edited","body":"modified","rules":[],"note":"reason"}`, "Decide", false, []any{core.DecisionInput{TaskID: testTask, ID: testID, IfVersion: 8, Decision: "edited", Body: pointer("modified"), Rules: pointer(json.RawMessage(`[]`)), Note: "reason"}}},
 		{"POST", taskPath + "/manual/rollback", `{"ifVersion":"8","manualVersion":"2"}`, "Rollback", false, []any{core.RollbackInput{TaskID: testTask, IfVersion: 8, ManualVersion: 2}}},
@@ -252,6 +255,14 @@ func TestProtocolRefusalsNeverCallOperations(t *testing.T) {
 		{"POST", taskPath + "/records", `{"id":"` + testID + `",` + claimBody + `,"kind":"outcome","text":"cleared","outcome":"effective","actionId":"` + testOperation + `"}`, true},
 		{"POST", taskPath + "/appendix", `{"id":"` + testID + `",` + claimBody + `,"text":"text","sourceRecords":[null]}`, true},
 		{"POST", taskPath + "/appendix", `{"id":"` + testID + `",` + claimBody + `,"text":"text","sourceRecords":["bad"]}`, true},
+		{"POST", taskPath + "/appendix", `{"id":"` + testID + `",` + claimBody + `,"text":"text","scope":null}`, true},
+		{"POST", taskPath + "/appendix", `{"id":"` + testID + `",` + claimBody + `,"text":"text","scope":{"projects":[]}}`, true},
+		{"POST", taskPath + "/appendix", `{"id":"` + testID + `",` + claimBody + `,"text":"text","scope":{"eventTypes":"report"}}`, true},
+		{"PATCH", taskPath + "/appendix/" + testID, `{"ifVersion":"8","text":"edited","scope":{"itemCategories":[1]}}`, false},
+		{"DELETE", taskPath + "/appendix/" + testID, `{"ifVersion":"8","scope":{}}`, false},
+		{"POST", taskPath + "/appendix/" + testID + "/validations", `{` + claimBody + `,"outcomeRecordId":"bad"}`, true},
+		{"POST", taskPath + "/appendix/" + testID + "/validations", `{` + claimBody + `,"outcomeRecordId":"` + testOperation + `","outcome":"effective"}`, true},
+		{"POST", taskPath + "/appendix/" + testID + "/validations", `{"outcomeRecordId":"` + testOperation + `"}`, true},
 	} {
 		assertError(t, request(h, test.method, test.path, test.body, test.bot), 400, "invalid_input")
 	}

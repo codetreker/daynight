@@ -106,6 +106,19 @@ describe('assistant task response contracts', () => {
     for (const extra of [{ outcome: 'effective' }, { actionRecordId: botId(85) }, { outcome: 'effective', actionRecordId: botId(85) }])
       expect(() => api.parseAssistantTaskRecord({ ...record(), kind: 'action', ...extra }, taskId)).toThrow();
   });
+  it('accepts appendix scope and validation only when the server declares them', () => {
+    const scope = { projectIds: [botId(86)], eventTypes: ['report'], itemCategories: ['build'] };
+    const validation = { successCount: '9007199254740993', failureCount: '0', lastValidatedAt: BOT_TIME };
+    const scoped = { ...appendix(), scope, validation };
+    expect(api.parseAssistantTaskAppendix(scoped, taskId)).toEqual(scoped);
+    expect(api.parseAssistantTaskAppendix(appendix(), taskId)).not.toHaveProperty('scope');
+    for (const value of [
+      { ...appendix(), scope: { projectIds: [], eventTypes: [], itemCategories: [] } }, { ...appendix(), scope: { ...scope, projectIds: ['bad'] } },
+      { ...appendix(), scope: { ...scope, itemCategories: [' '] } }, { ...appendix(), scope: { eventTypes: ['report'] } }, { ...appendix(), scope: null },
+      { ...appendix(), validation: { ...validation, successCount: '0' } }, { ...appendix(), validation: { ...validation, failureCount: 1 } }, { ...appendix(), validation: { ...validation, lastValidatedAt: null } },
+      { ...appendix(), state: 'deleted', text: '', sourceRecords: [], scope }, { ...appendix(), state: 'deleted', text: '', sourceRecords: [], validation },
+    ]) expect(() => api.parseAssistantTaskAppendix(value, taskId)).toThrow();
+  });
   it('validates related resource ownership, precise enums and revisions', () => {
     for (const [parse, value] of [
       [api.parseAssistantTaskManual, manual()], [api.parseAssistantTaskAppendix, appendix()], [api.parseAssistantTaskProposal, proposal()],

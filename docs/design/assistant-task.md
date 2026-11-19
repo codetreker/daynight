@@ -74,7 +74,7 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `claim-operations/{id}` | GET 历史回执及当前认领 |
 | `manual, manual/versions, manual/versions/{manualVersion}` | GET 当前手册、版本页和历史版本 |
 | `manual/rollback` | POST 用户回退，带任务 `ifVersion` 和目标 `manualVersion` |
-| `appendix, appendix/{id}` | GET 列表；POST 负责 Bot 追加；PATCH/DELETE 用户编辑或删除，带任务 `ifVersion` |
+| `appendix, appendix/{id}, appendix/{id}/validations` | GET 列表；POST 负责 Bot 追加；PATCH/DELETE 用户编辑或删除，带任务 `ifVersion`。追加与编辑可带 `scope` 对象，含可选的 `projectIds`、`eventTypes`、`itemCategories` 数组；编辑省略 `scope` 时保留原范围，删除不接受 `scope`。POST `validations` 由负责 Bot 带认领与 `outcomeRecordId` 登记验证，返回更新后的附录。响应只在范围非空时包含列出三个数组的 `scope`，只在登记过验证后包含 `validation`（十进制字符串 `successCount`、`failureCount` 与 `lastValidatedAt`），使只认识原附录结构的客户端仍可读取未使用这两项的附录 |
 | `proposals, proposals/{id}/decision` | GET 列表；POST 负责 Bot 提案；POST 用户决定，带任务 `ifVersion` |
 | `items, items/{id}` | GET 列表/详情；POST/PATCH 负责 Bot 写入，更新另带事项 `ifVersion` |
 | `records` | GET 可按事项分页；POST 有明确作者的追加记录。`outcome` 记录另带 `outcome` 与 `actionRecordId`，其他类型提交任一键被拒绝；响应只在结果记录中包含这两个键，使只认识原记录结构的客户端仍可读取没有结果记录的任务 |
