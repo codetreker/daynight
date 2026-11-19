@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"slices"
@@ -250,8 +251,13 @@ func TestCapturePassesPublishedVectorBytes(t *testing.T) {
 func TestCaptureRejectsInvalidActorBeforeStorage(t *testing.T) {
 	for _, actor := range []wm.Actor{{}, {Kind: wm.ActorUser}, {Kind: "worker", UserID: captureOwnerID}} {
 		dao := newCaptureDAOMock(t)
-		if err := (&Capturer{}).CaptureBatch(t.Context(), dao, actor, []protocol.Fact{captureFact(protocol.Created)}); err == nil {
+		var logs bytes.Buffer
+		c := &Capturer{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+		if err := c.CaptureBatch(t.Context(), dao, actor, []protocol.Fact{captureFact(protocol.Created)}); err == nil {
 			t.Fatalf("actor %+v accepted", actor)
+		}
+		if entry := captureLog(t, &logs); entry["project_id"] != captureProjectID || entry["phase"] != "source" {
+			t.Fatalf("invalid actor failure log = %v", entry)
 		}
 	}
 }

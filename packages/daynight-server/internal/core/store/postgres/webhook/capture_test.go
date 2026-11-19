@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -365,6 +366,11 @@ func testCapturedEventProvenanceRoundTripsActorAndFactState(t *testing.T, conn *
 	}
 	if _, err = read(event.ID); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
 		t.Fatalf("rolled back event provenance err=%v", err)
+	}
+	for _, malformed := range []string{"", "not-a-uuid", "{" + legacy + "}", strings.ReplaceAll(legacy, "-", "")} {
+		if _, err = read(malformed); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
+			t.Fatalf("malformed event ID %q provenance err=%v", malformed, err)
+		}
 	}
 	var removed string
 	for id, actor := range saved {

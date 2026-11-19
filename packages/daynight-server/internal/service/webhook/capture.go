@@ -127,11 +127,11 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 	if len(facts) < 1 || len(facts) > 2 || dao == nil {
 		return fmt.Errorf("invalid webhook capture batch")
 	}
+	types := make([]string, 0, len(facts))
+	project = facts[0].ProjectID
 	if err := actor.Validate(); err != nil {
 		return err
 	}
-	types := make([]string, 0, len(facts))
-	project = facts[0].ProjectID
 	if c.RequestID != nil {
 		request = c.RequestID(ctx)
 		if len(request) > 128 {

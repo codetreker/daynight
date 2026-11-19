@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -186,6 +187,11 @@ func (d *DAO) SaveCapture(ctx context.Context, event store.WebhookCapturedEvent,
 // NULL actor columns are the unknown actor of events captured before actors
 // were recorded; any other incomplete combination is invalid stored data.
 func (d *DAO) CapturedEventProvenance(ctx context.Context, eventID string) (store.WebhookCapturedEventProvenance, error) {
+	// Event IDs come from verified request bodies; a malformed ID cannot name
+	// a captured event.
+	if _, err := model.CanonicalID(eventID); err != nil {
+		return store.WebhookCapturedEventProvenance{}, store.ErrWebhookCapturedEventMissing
+	}
 	var out store.WebhookCapturedEventProvenance
 	var kind, userID, botID *string
 	err := d.tx.QueryRow(ctx, `SELECT id::text,actor_kind,actor_user_id::text,actor_bot_id::text,fact_sha256,fact_removed_at FROM webhook_events WHERE id=$1`, eventID).Scan(&out.EventID, &kind, &userID, &botID, &out.FactSHA256, &out.FactRemovedAt)
