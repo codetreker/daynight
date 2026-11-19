@@ -21,6 +21,8 @@ model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普�
 公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
 [公开入口设计](daynight-landing.md)拥有路由组合与公开身份提示，后者不参与私有资源准入。
 
+独立登录、邀请、设备授权与 OAuth 授权页面引用[公共语义字号](../ui-design.md#web-typography)，页面标题使用页面角色，表单标签、错误、状态、权限说明和操作使用界面角色，账号附属信息、有效期和请求 ID 使用元数据角色。设备确认码采用详情标题角色，输入采用小节标题角色并保持等宽字体。窄屏保持角色大小，账号与切换操作换行，长名称及返回地址在容器内折行。认证状态机、登录目标和授权回跳继续由各自组件负责。
+
 [身份基础](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
 与[成员基础](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
 先独立交付的原因仍成立；当前统一组合由本文说明，启用决策保留采用该组合的历史理由。以下固定源码是最初设计
