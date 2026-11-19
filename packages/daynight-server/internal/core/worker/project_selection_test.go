@@ -41,8 +41,8 @@ func TestRemoveProjectSelections(t *testing.T) {
 		id:         {Revision: 7, Raw: json.RawMessage(`{"extra":{"future":1234567890123456789},"projects":[{"projectId":"other","future":true},{"projectId":"` + selectedProject + `","nativeOverrides":{}},{"projectId":"tail","nested":[1,2]}]}`)},
 		unselected: {Revision: 9, Raw: json.RawMessage(`{"projects":[{"projectId":"other"}]}`)},
 	}, writes: map[store.WorkerSelectionID]store.WorkerSelectionTarget{}}
-	if err := RemoveProjectSelections(t.Context(), d, selectedProject); err != nil {
-		t.Fatal(err)
+	if count, err := RemoveProjectSelectionsCount(t.Context(), d, selectedProject); err != nil || count != 1 {
+		t.Fatalf("count=%d error=%v", count, err)
 	}
 	got := d.writes[id]
 	if len(d.writes) != 1 || got.Revision != 8 {
@@ -66,20 +66,20 @@ func TestRemoveProjectSelectionsEmptyAndFailure(t *testing.T) {
 		return &selectionsDAO{candidates: []store.WorkerSelectionID{id}, targets: map[store.WorkerSelectionID]*store.WorkerSelectionTarget{id: {Revision: revision, Raw: json.RawMessage(`{"projects":[{"projectId":"` + selectedProject + `"}]}`)}}, writes: map[store.WorkerSelectionID]store.WorkerSelectionTarget{}}
 	}
 	d := newDAO(1)
-	if err := RemoveProjectSelections(t.Context(), d, selectedProject); err != nil {
-		t.Fatal(err)
+	if count, err := RemoveProjectSelectionsCount(t.Context(), d, selectedProject); err != nil || count != 1 {
+		t.Fatalf("count=%d error=%v", count, err)
 	}
 	if string(d.writes[id].Raw) != `{"projects":[]}` {
 		t.Fatalf("last selection: %s", d.writes[id].Raw)
 	}
 	d = newDAO(math.MaxInt64)
 	var fault *model.Fault
-	if err := RemoveProjectSelections(t.Context(), d, selectedProject); !errors.As(err, &fault) || fault.Code != "version_exhausted" || len(d.writes) != 0 {
-		t.Fatalf("exhaustion: %v %+v", err, d.writes)
+	if count, err := RemoveProjectSelectionsCount(t.Context(), d, selectedProject); !errors.As(err, &fault) || fault.Code != "version_exhausted" || count != 0 || len(d.writes) != 0 {
+		t.Fatalf("exhaustion: count=%d %v %+v", count, err, d.writes)
 	}
 	d = newDAO(1)
 	d.failure = errors.New("unavailable")
-	if err := RemoveProjectSelections(t.Context(), d, selectedProject); !errors.Is(err, d.failure) || len(d.writes) != 0 {
-		t.Fatalf("query failure: %v", err)
+	if count, err := RemoveProjectSelectionsCount(t.Context(), d, selectedProject); !errors.Is(err, d.failure) || count != 0 || len(d.writes) != 0 {
+		t.Fatalf("query failure: count=%d %v", count, err)
 	}
 }

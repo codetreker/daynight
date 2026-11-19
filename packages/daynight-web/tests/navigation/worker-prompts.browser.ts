@@ -47,6 +47,35 @@ const revalidate = async (page: Page) => page.evaluate(() => {
   document.dispatchEvent(new Event('visibilitychange'));
 });
 
+test('prompt content width preserves editing space and draft continuity across the column boundary', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const state = await install(page); await open(page);
+  const editor = page.locator('.worker-prompt'), input = editor.locator('textarea');
+  const host = editor.locator('..'), originalInput = await input.elementHandle();
+  const text = 'Keep this long instruction readable across changing navigation widths. 汉字 '.repeat(30);
+  await input.fill(text); await input.focus();
+  await input.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(5, 28));
+
+  // Host space can shrink independently of the viewport when navigation is present.
+  for (const [width, stacked] of [[314, true], [620, true], [621, false], [900, false], [314, true]] as const) {
+    await host.evaluate((element, value) => { (element as HTMLElement).style.width = `${value}px`; }, width);
+    await expect.poll(async () => {
+      const panel = await editor.locator('.worker-prompt-panel').boundingBox();
+      const aside = await editor.locator('.worker-prompt-aside').boundingBox();
+      if (panel === null || aside === null) return false;
+      return stacked ? aside.y >= panel.y + panel.height : aside.x >= panel.x + panel.width;
+    }).toBe(true);
+    expect((await input.boundingBox())!.width).toBeGreaterThanOrEqual(250);
+    await expect(input).toBeFocused(); await expect(input).toHaveValue(text);
+    expect(await input.evaluate((element, original) => element === original, originalInput)).toBe(true);
+    expect(await input.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 28]);
+    expect(await editor.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  await page.keyboard.insertText('Edited');
+  await expect(input).toHaveValue(`${text.slice(0, 5)}Edited${text.slice(28)}`);
+  expect(state.writes).toEqual([]);
+});
+
 for (const width of [1280, 390]) test(`${width}px preserves focus, selection and history and saves long text independently`, async ({ page }) => {
   await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
   const state = await install(page); await open(page);

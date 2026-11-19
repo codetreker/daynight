@@ -291,6 +291,9 @@ var projectRepositoryVersionSQL string
 //go:embed schema/migrations/096_pr_review_assignment.sql
 var prReviewAssignmentSQL string
 
+//go:embed schema/migrations/099_assistant_task_inboxes.sql
+var assistantTaskInboxesSQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -303,9 +306,6 @@ func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause
 
 //go:embed schema/migrations/097_webhook_event_actor.sql
 var webhookEventActorSQL string
-
-//go:embed schema/migrations/099_assistant_task_inboxes.sql
-var assistantTaskInboxesSQL string
 
 type migration struct {
 	version         int64

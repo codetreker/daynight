@@ -9,13 +9,24 @@ const installTest = process.platform === "win32" ? test.skip : test;
 const temporaryRoot = fileURLToPath(new URL("../.tmp/dev-installer-tests/", import.meta.url));
 await mkdir(temporaryRoot, { recursive: true });
 const moduleUrl = new URL("./dev-install.mjs", import.meta.url);
+const writePackage = async (directory, metadata, code) => {
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "package.json"), JSON.stringify({ version: "1.0.0", main: "index.js", ...metadata }));
+  await writeFile(path.join(directory, "index.js"), code);
+};
+// These fixtures exercise subprocess validation and publication, not native binaries.
+const nativeFixtures = {
+  sharp: 'module.exports = () => ({ png: () => ({ toBuffer: async () => Buffer.from([1]) }) });\n',
+  "better-sqlite3": 'module.exports = class { prepare() { return { get: () => ({ value: 1 }) }; } close() {} };\n',
+  koffi: 'module.exports = {};\n',
+};
 const fixture = async (t) => {
   const root = await mkdtemp(path.join(temporaryRoot, "case-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const source = path.join(root, "checkout with 'spaces");
   const packageDirectory = path.join(source, "packages/daynight");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
-  await writeFile(path.join(packageDirectory, "package.json"), JSON.stringify({ name: "@codetreker/daynight", version: "0.27.0", type: "module", dependencies: { dependency: "1.0.0" } }));
+  await writeFile(path.join(packageDirectory, "package.json"), JSON.stringify({ name: "@codetreker/daynight", version: "0.27.0", type: "module", dependencies: { dependency: "1.0.0", ...Object.fromEntries(Object.keys(nativeFixtures).map((name) => [name, "1.0.0"])) } }));
   await writeFile(path.join(packageDirectory, "dist/main.js"), 'import value from "dependency"; if (process.argv[2] === "--version") console.log("0.27.0"); else console.log(JSON.stringify({ value, root: process.env.DN_CONFIG_DIR, home: process.env.HOME, args: process.argv.slice(2) }));\n');
   const dependency = path.join(source, "node_modules/.pnpm/dependency@1.0.0/node_modules/dependency");
   await mkdir(dependency, { recursive: true });
@@ -23,6 +34,9 @@ const fixture = async (t) => {
   await writeFile(path.join(dependency, "index.js"), 'export default "original";\n');
   await mkdir(path.join(packageDirectory, "node_modules"));
   await symlink(dependency, path.join(packageDirectory, "node_modules/dependency"));
+  for (const [name, code] of Object.entries(nativeFixtures)) {
+    await writePackage(path.join(packageDirectory, "node_modules", name), { name }, code);
+  }
   return { root, source, packageDirectory, dependency, binDirectory: path.join(root, "bin") };
 };
 const loadInstaller = async () => {

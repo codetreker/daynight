@@ -1,3 +1,4 @@
+import { isProcessBirth } from "./linux-process-proof.js";
 import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
 import { openUsageStore } from "./usage/store.js";
@@ -549,7 +550,7 @@ export const readCurrentControllerSnapshot = (file: string, ticket: ControllerLa
     const row = readControllerStopRow(file, deadline, true);
     if (row === null) throw new Error("Original controller journal evidence is unavailable.");
     const value = row.snapshot;
-    const processProof = (proof: ProcessProof): boolean => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && typeof proof.startedAt === "string" && proof.startedAt.trim() !== "" && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
+    const processProof = (proof: ProcessProof): boolean => proof !== null && typeof proof === "object" && Number.isSafeInteger(proof.pid) && proof.pid > 0 && proof.pid <= 2_147_483_647 && Number.isSafeInteger(proof.parentPid) && proof.parentPid >= 0 && (proof.processGroupId === null || Number.isSafeInteger(proof.processGroupId) && proof.processGroupId > 0) && isProcessBirth(proof.startedAt) && typeof proof.commandHash === "string" && /^[a-f0-9]{64}$/.test(proof.commandHash) && (proof.jobObjectName === undefined || typeof proof.jobObjectName === "string" && proof.jobObjectName.trim() !== "" && !proof.jobObjectName.includes("\0"));
     if (value === null || typeof value !== "object" || Array.isArray(value) || row.ticketHash !== controllerPayloadHash(ticket)
       || value.executionId !== ticket.executionId || value.sessionId !== ticket.sessionId || value.claimId !== ticket.claimId || value.testExecutionId !== ticket.testExecutionId
       || value.executionGeneration !== ticket.executionGeneration || value.controllerInstanceId !== ticket.controllerInstanceId
