@@ -7,7 +7,7 @@ import type { ParsedCommand } from "../../cli/schema.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { terminalText } from "../../platform/terminal.js";
 import type { ServerSession } from "../server/runtime.js";
-import { confirmTeamChange, requireTeamConfirmation } from "../team/confirmation.js";
+import { confirmTeamChange } from "../team/confirmation.js";
 import { resolveProject } from "./resolve.js";
 import { renderProjectJsonValue } from "./rendering.js";
 
@@ -16,7 +16,7 @@ export const prepareDelete = (command: Extract<ParsedCommand, { kind: "run" }>, 
   const projectId = rawProject === undefined ? undefined : canonicalId(rawProject);
   if (projectId === null) throw new UsageError("project-id must be a hyphenated UUID.", "daynight project delete --help");
   const confirmed = command.options.has("--confirm");
-  requireTeamConfirmation(context, confirmed, "Project deletion");
+  if (!confirmed) throw new UsageError("Project deletion requires --confirm.", "daynight project delete --help");
   return { projectId, confirmed };
 };
 
@@ -31,6 +31,7 @@ export const runDelete = async (command: Extract<ParsedCommand, { kind: "run" }>
     `Owner Team: ${terminalText(team.kind === "personal" ? "Personal" : JSON.stringify(team.name))} (${team.id})`,
     `Observed at ${preview.observedAt}: ${preview.summary.taskCount} Tasks, ${preview.summary.unfinishedTaskCount} unfinished, ${preview.summary.attachmentCount} attachments.`,
     "The Project will be unavailable with no in-product recovery. History and files remain on the server.",
+    "Deletion permanently removes all Goal dependencies involving this Project, including within and across Projects; affected relationships cannot be restored.",
     ...preview.activeClaims.map(({ taskId, title, worker }) => `Active claim: ${taskId} ${terminalText(JSON.stringify(title))} (${terminalText(JSON.stringify(worker.machineName))}, ${worker.platform}, ${worker.connectivity === "offline" ? "offline" : worker.paused || worker.phase === "paused" ? "paused" : worker.phase}, ${worker.connectivity})`),
   ];
   context.stderr(`${lines.join("\n")}\n`);

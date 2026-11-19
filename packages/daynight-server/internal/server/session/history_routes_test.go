@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	ss "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -203,6 +204,57 @@ func TestHistoryReadCancellationReleasesReturnedLease(t *testing.T) {
 	}
 	if w.Body.Len() != 0 {
 		t.Fatal("canceled read wrote a response")
+	}
+}
+
+func TestHistoryRoutesStopResponseWhenRetainedLeaseIsLost(t *testing.T) {
+	const base = "/api/v1/projects/11111111-1111-4111-8111-111111111111/tasks/22222222-2222-4222-8222-222222222222/sessions/33333333-3333-4333-8333-333333333333"
+	for _, suffix := range []string{"/messages", "/message-content?cursor=body"} {
+		for _, beforeWrite := range []bool{false, true} {
+			phase := "blocked write"
+			if beforeWrite {
+				phase = "before write"
+			}
+			t.Run(suffix+"/"+phase, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodGet, base+suffix, nil).WithContext(t.Context())
+				ctx, lose := context.WithCancelCause(request.Context())
+				defer lose(context.Canceled)
+				permit := &responseArchivePermit{ctx: ctx}
+				mock := historyRouteMock{}
+				if suffix == "/messages" {
+					mock.read = func(context.Context, model.Principal, string, string, string, ss.ReadRequest) (*ss.ReadResult[sp.MessagePage], error) {
+						return ss.NewReadResult(sp.MessagePage{}, permit), nil
+					}
+				} else {
+					mock.entry = func(context.Context, model.Principal, string, string, string, ss.EntryRequest) (*ss.ReadResult[sp.EntryChunk], error) {
+						return ss.NewReadResult(sp.EntryChunk{Fragment: "archive contents"}, permit), nil
+					}
+				}
+				mux := http.NewServeMux()
+				RegisterHistoryRoutes(mux, mock, inspectionRouteAuth{}, testLogger())
+				recorder := httptest.NewRecorder()
+				if beforeWrite {
+					lose(filestorage.ErrGateLost)
+					mux.ServeHTTP(recorder, request)
+					if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"cleanup_unknown"`) {
+						t.Fatalf("expected structured error before write, got %d %q", recorder.Code, recorder.Body.String())
+					}
+				} else {
+					writer := &archiveLeaseWriter{ResponseRecorder: recorder, loseLease: lose, deadline: make(chan struct{})}
+					abort := func() (value any) {
+						defer func() { value = recover() }()
+						mux.ServeHTTP(writer, request)
+						return nil
+					}()
+					if abort != http.ErrAbortHandler || !writer.interrupted || recorder.Body.Len() != 0 {
+						t.Fatalf("history response survived lease loss: abort=%v interrupted=%t body=%q", abort, writer.interrupted, recorder.Body.String())
+					}
+				}
+				if permit.closed != 1 || request.Context().Err() != nil {
+					t.Fatalf("lease closes=%d requestErr=%v", permit.closed, request.Context().Err())
+				}
+			})
+		}
 	}
 }
 

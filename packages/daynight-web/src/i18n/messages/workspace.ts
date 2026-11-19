@@ -41,6 +41,9 @@ export type WorkspaceMessages = {
     readonly allLoaded: string;
   };
   readonly project: {
+    readonly copyRepositoryUrl: string;
+    readonly repositoryUrlCopied: string;
+    readonly copyRepositoryUrlFailed: string;
     readonly back: string;
     readonly lastRefreshed: (args: { readonly time: string }) => string;
     readonly refreshing: string;

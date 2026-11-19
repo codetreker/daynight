@@ -34,6 +34,17 @@ it('keeps the complete message blocked when an image failed', () => {
   expect(screen.getByText('reference.png')).toBeInTheDocument();
 });
 
+it('explains a disabled image profile while retaining the draft and blocking send', () => {
+  const props = setup('Explain this image', true, { canSend: false, disabledReason: 'profile_disabled' });
+  expect(screen.getByText('Image input is not yet available for the current model. The draft is retained; remove the images to send text.')).toBeInTheDocument();
+  expect(screen.queryByText(/Check the connection/)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+  expect(props.onSend).not.toHaveBeenCalled();
+  expect(screen.getByText('reference.png')).toBeInTheDocument();
+  expect(screen.getByRole('textbox')).toHaveValue('Explain this image');
+});
+
 it('keeps retry available while an unreadable saved draft blocks editing and sending', () => {
   const props = setup('retained text', false, { readOnly: true, error: 'image_draft_unavailable', items: [] });
   expect(screen.getByRole('textbox')).toHaveAttribute('readonly');

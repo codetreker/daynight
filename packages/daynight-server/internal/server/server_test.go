@@ -127,11 +127,19 @@ type httpTestStore struct {
 	WriteCredentialUsageCall       func(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error)
 	WriteGrantLifecycleCall        func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
 	ReadTaskSearchCall             func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
+	ReadHistoryDirectoryCall       func(ctx context.Context, fn func(store.HistoryDirectoryScope) error) error
 	WriteWebhookCall               func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
 	ReadWebhookSnapshotCall        func(ctx context.Context, fn func(store.WebhookReadScope) error) error
 }
 
 var _ store.Transactions = (*httpTestStore)(nil)
+
+func (s *httpTestStore) ReadHistoryDirectory(ctx context.Context, fn func(store.HistoryDirectoryScope) error) error {
+	if s.ReadHistoryDirectoryCall == nil {
+		unexpectedHTTPCall(s.t, "ReadHistoryDirectory")
+	}
+	return s.ReadHistoryDirectoryCall(ctx, fn)
+}
 
 func (s *httpTestStore) ReadUsage(context.Context, func(store.UsageScope) error) error {
 	unexpectedHTTPCall(s.t, "ReadUsage")
@@ -591,6 +599,10 @@ func (s *httpTestSnapshot) UserCandidateDAO() store.UserCandidateReader {
 	}
 	return s.UserCandidates
 }
+func (s *httpTestSnapshot) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s *httpTestSnapshot) CredentialDAO() store.CredentialReader {
 	if s.Credentials == nil {
 		unexpectedHTTPCall(s.t, "SnapshotScope.CredentialDAO")

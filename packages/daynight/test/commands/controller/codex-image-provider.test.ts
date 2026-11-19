@@ -229,6 +229,7 @@ test("a repeated native history cursor fails the same connection without startin
 test("the original late response can resolve an unknown input without dispatching it twice", async () => {
   const f = await fixture("late"), provider = await openCodexProvider(f.options);
   try {
+    await vi.waitFor(() => expect(f.states.at(-1)?.images?.send).toBe("supported"));
     const input = f.input([await f.image()]); rpcPolicy.timeoutMs = 20;
     await expect(provider.send(input.value, input.operationId, null)).rejects.toBeInstanceOf(NativeRpcTimeoutError);
     expect(f.observations).toEqual([]);

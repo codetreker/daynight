@@ -10,7 +10,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	coresession "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
@@ -183,7 +182,7 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 		logger = slog.Default()
 	}
 	return openApp(ctx, c, logger, appOpeners{
-		files: func(root string) (appStorage, error) { return local.New(root) },
+		files: func(root string) (appStorage, error) { return openFileStorage(root, c.Monitoring.Redis.RedisURL) },
 		database: func(ctx context.Context, databaseURL string) (persistenceBackend, error) {
 			return openPostgresWithLogger(ctx, databaseURL, logger)
 		},

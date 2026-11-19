@@ -24,7 +24,7 @@ Versions are positive signed-int64 decimal strings, `"1"` through `"922337203685
 | Step | Parent Task version from the Steps read |
 | Team rename/delete | Team version |
 | Member role/removal | Selected user's membership version, not Team version |
-| Project transfer | Ownership facts required by the tool |
+| Project transfer with cleanup confirmation | `ownership.version` and `targetTeam.version` from `project_transfer_preview`, supplied unchanged as `ifVersion` and `ifTargetVersion`; [Concepts](daynight://manuals/concepts.md) owns the required user confirmation |
 
 Other resources use their actual schema/read. A handler's omitted-version preflight read cannot protect an earlier decision: supply the exact observed `ifVersion` when that decision depends on it. A nearby object's version provides no invented protection. Current-version same-value requests may preserve fields/times; stale same-value requests still conflict. `in_progress` establishes neither a lock, renewable lease nor execution ownership.
 

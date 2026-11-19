@@ -8,9 +8,7 @@ Assistant tasks can hold a long-running responsibility, but an assistant only
 learns about Project activity by polling or by being told in chat. External
 systems have no way to notify an assistant, and Daynight's own outbound
 Webhooks can only reach public HTTPS receivers, while assistants run on Worker
-machines that are usually unreachable from the internet. Assistants also lose
-what they learned whenever a Session is compacted, evicted from its bounded
-cache, or taken over by another Bot, so repeated work does not improve.
+machines that are usually unreachable from the internet.
 
 ## Proposal
 
@@ -20,15 +18,14 @@ server, as specified in
 [its design](../../../../docs/design/assistant-task-inbox.md). Requests become
 `inbound` assistant task events for the current holder Bot and travel through
 the existing Worker event delivery. A Project event subscription is an ordinary
-personal outbound Webhook endpoint whose URL is the inbox URL. Daynight events
-are authenticated by comparing the request bytes with the captured event fact
-on the server and confirming that one of the owner's personal endpoints targets
-this inbox. Captured events store their authenticated actor on the server, and
+personal outbound Webhook endpoint whose URL is the token-free inbox URL.
+Daynight events are authenticated by comparing the request bytes with the
+captured event fact on the server and confirming that one of the owner's
+personal endpoints delivered it to this inbox; external senders use a bearer
+token. Captured events store their authenticated actor on the server, and
 Task, Step and Thread writes accept an optional Bot identity, so an inbox
 suppresses events caused by its holder Bot and events caused by another of the
-owner's Bots shortly after that Bot was notified about the same Task. Work records gain an `outcome`
-kind, retrospectives are generated without a server scheduler, and appendix
-entries gain scope and validation counts so experience survives Sessions.
+owner's Bots shortly after that Bot was notified about the same Task.
 
 ## Alternatives
 
@@ -46,11 +43,17 @@ no change to the outbound module and also serves external senders; the
 internal shortcut remains a later optimization when the server recognizes its
 own inbox URL.
 
+**Token in the subscription endpoint URL.** Daynight endpoints can only carry
+a URL, so a token would sit in the query string. Rotating it changes the
+endpoint destination, which advances the destination revision and ends both
+automatic retries and manual redelivery of earlier Deliveries; the token would
+also appear in endpoint configuration and delivery history. Verifying Daynight
+requests against the captured fact and the owner's Delivery needs no secret,
+so rotation never touches subscriptions.
+
 **Sharing the endpoint signing secret with the inbox.** Verifying the Standard
 Webhooks signature would require users to copy and rotate a secret in two
-places. Comparing the body with the stored event fact proves origin without any
-shared secret, at the cost of classifying redeliveries after fact retention
-expires as `external`.
+places. The stored fact and Delivery already prove origin.
 
 **Server pushing directly into the Bot Session.** The assistant task
 specification states that the server does not send Session messages on behalf
@@ -65,6 +68,11 @@ would also disclose user and Bot IDs to every receiver. The inbox already reads
 the captured event by ID, so storing the actor server-side gives it the fact
 without any wire change.
 
+**Relying on the assistant to ignore its own events.** Prompt-level discipline
+cannot bound a feedback loop when the assistant replies to a Thread event with
+a Thread post. Server-side suppression plus rate and backlog limits bound it
+mechanically.
+
 **Suppressing only the holder Bot.** Two assistants of the same user that
 subscribe to the same Project would wake each other indefinitely, because each
 hop is caused by a different holder.
@@ -75,22 +83,16 @@ a primary thing a monitoring assistant needs to see. Suppressing another Bot's
 event only when that Bot was notified about the same Task within ten minutes
 targets the reaction that forms a loop and keeps independent work visible.
 
-**Relying on the assistant to ignore its own events.** Prompt-level discipline
-cannot bound a feedback loop when the assistant replies to a Thread event with
-a Thread post. Server-side suppression plus rate and backlog limits bound it
-mechanically.
-
 ## Acceptance Criteria
 
 - The inbox, receiving endpoint, server-side actor capture, suppression,
-  Worker rendering, subscription UI and learning features behave as the
-  specification requires, verified by the tests named in the design.
-- A real outbound Webhook on a public deployment delivers to its own inbox,
-  retries and manual redeliveries create no duplicates, and the holder Bot
-  receives a compact notification when idle.
-- Tokens never appear in logs, errors, events or inbox read results; the
-  token-bearing URL appears only in enable and rotate responses and in the
-  owner's own endpoint configuration and delivery history.
+  Worker rendering and subscription UI behave as the specification requires,
+  verified by the tests named in the design.
+- A real outbound Webhook on a public deployment delivers to its own token-free
+  inbox URL; retries and manual redeliveries create no duplicates and survive a
+  token rotation; the holder Bot receives a compact notification when idle.
+- Tokens never appear in logs, errors, events or inbox read results, and appear
+  only in enable and rotate responses.
 
 ## Risks
 
@@ -105,8 +107,5 @@ mechanically.
 - Local deployments cannot exercise the self-subscription path end to end.
 - Bot identity on Task, Step and Thread writes is a same-user declaration, not
   a security boundary; a same-user process can omit it and avoid suppression.
-- An `immediate` token rotation drops pending retries and redeliveries that
-  still carry the old URL; `overlap` keeps the old token valid for 8 days and
-  refuses a second overlap rotation within that window.
 - The ten-minute reaction window is a heuristic: a reaction after the window
   is delivered, and an unrelated write inside the window is suppressed.
