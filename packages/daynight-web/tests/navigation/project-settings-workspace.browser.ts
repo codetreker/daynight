@@ -36,6 +36,82 @@ const install = async (page: Page, name = 'Example project') => {
 
 const section = (page: Page, name: string) => page.getByRole('navigation', { name: 'Project settings sections' }).getByRole('link', { name });
 
+const expectSelectedVisible = async (page: Page) => {
+  await expect.poll(() => page.locator('.project-settings-tabs').evaluate(element => {
+    const nav = element.getBoundingClientRect(), link = element.querySelector('[aria-current="page"]')!.getBoundingClientRect();
+    const left = nav.left + element.clientLeft + 4, right = left + element.clientWidth - 8;
+    return getComputedStyle(element).flexDirection === 'column'
+      ? element.scrollLeft === 0
+      : link.width > right - left ? Math.abs(link.left - left) <= 1 : link.left >= left - 1 && link.right <= right + 1;
+  })).toBe(true);
+};
+
+test('keeps the current settings link visible through resizing and language changes', async ({ page }) => {
+  const writes = await install(page);
+  await page.setViewportSize({ width: 1360, height: 720 });
+  await page.goto(`${base}?tab=members`);
+  await expect(section(page, 'Members & invitations')).toHaveAttribute('aria-current', 'page');
+  for (const locale of ['en', 'zh-CN']) {
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    for (const width of [320, 375, 390, 740, 741, 768, 1360]) {
+      await page.setViewportSize({ width, height: 720 });
+      await expectSelectedVisible(page);
+      await expect(page.locator('.project-settings-tabs [aria-current="page"]')).toHaveAttribute('href', `${base}?tab=members`);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  }
+  await page.setViewportSize({ width: 320, height: 720 });
+  await expectSelectedVisible(page);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  await expectSelectedVisible(page);
+  expect(writes).toEqual([]);
+});
+
+test('responds to container and link geometry without changing focus or the selected section', async ({ page }) => {
+  await install(page); await page.setViewportSize({ width: 390, height: 720 });
+  await page.goto(`${base}?tab=members`);
+  const search = page.getByRole('searchbox', { name: 'Search and add members' });
+  await expect(search).toBeVisible(); await search.focus();
+  const nav = page.locator('.project-settings-tabs');
+  await expectSelectedVisible(page);
+  // A parent layout can narrow the navigation without a viewport resize.
+  await nav.evaluate(element => { element.style.width = '200px'; });
+  await expectSelectedVisible(page); await expect(search).toBeFocused();
+  // Earlier links can grow when fonts or status text change, moving the selected link.
+  await nav.locator('a').first().evaluate(element => { element.style.paddingInline = '80px'; });
+  await expectSelectedVisible(page); await expect(search).toBeFocused();
+  await nav.evaluate(element => { element.style.width = '100px'; });
+  await expectSelectedVisible(page);
+  await nav.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+  const manualPosition = await nav.evaluate(element => element.scrollLeft);
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await nav.evaluate(element => element.scrollLeft)).toBe(manualPosition);
+  await expect(search).toBeFocused();
+  await nav.locator('[aria-current="page"]').dispatchEvent('click');
+  await expectSelectedVisible(page);
+  await expect(page).toHaveURL(`${base}?tab=members`);
+});
+
+test('reveals changed status text while unchanged rerenders preserve manual navigation scrolling', async ({ page }) => {
+  const writes = await install(page); await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${base}?tab=github`);
+  const interval = page.getByLabel('Poll interval'); await expect(interval).toHaveValue('5');
+  await expectSelectedVisible(page);
+  await interval.fill('0');
+  await expect(section(page, 'GitHub integration')).toContainText('Unsaved · Needs attention');
+  await expectSelectedVisible(page); await expect(interval).toBeFocused();
+  const nav = page.locator('.project-settings-tabs');
+  await nav.evaluate(element => { element.scrollLeft = 0; });
+  const y = await page.evaluate(() => window.scrollY);
+  await interval.fill('-1');
+  await expect(interval).toHaveValue('-1');
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await nav.evaluate(element => element.scrollLeft)).toBe(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(y);
+  await expect(interval).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
 test('preserves independent drafts and history without issuing writes', async ({ page }) => {
   const writes = await install(page); await page.goto(base);
   const threshold = page.getByLabel('Alert threshold'); await expect(threshold).toHaveValue('60'); await threshold.fill('75');

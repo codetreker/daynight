@@ -243,6 +243,25 @@ describe('shared Session image preview', () => {
     expect(onInvalidResource).not.toHaveBeenCalled();
   });
 
+  it('settles a second image download from the timeline or preview once the first reaches the browser', async () => {
+    const f = fixture(), second = { ...descriptor, resourceId: '00000013-1111-4111-8111-111111111111' };
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download'); vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      render(<Surface scope={f.scope}><SessionResourceView resource={descriptor} label="First.png" active mediaKey="message/first" onLoad={vi.fn()} /><SessionResourceView resource={second} label="Second.png" active mediaKey="message/second" onLoad={vi.fn()} /></Surface>);
+      await waitFor(() => expect(screen.getAllByRole('img')).toHaveLength(2));
+      const first = screen.getByRole('button', { name: 'Download image: First.png' });
+      fireEvent.click(first); await waitFor(() => expect(first).toHaveTextContent(/^Download$/)); expect(first).not.toBeDisabled();
+      const timeline = screen.getByRole('button', { name: 'Download image: Second.png' });
+      fireEvent.click(timeline); await waitFor(() => expect(timeline).toHaveTextContent(/^Download$/)); expect(timeline).not.toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'View image: Second.png' }));
+      const dialog = screen.getByRole('dialog'); await within(dialog).findByRole('img');
+      const preview = within(dialog).getByRole('button', { name: 'Download image: Second.png' });
+      fireEvent.click(preview); await waitFor(() => expect(preview).toHaveTextContent(/^Download$/)); expect(preview).not.toBeDisabled();
+      expect(click).toHaveBeenCalledTimes(3); expect(screen.queryByRole('alert')).toBeNull();
+    } finally { imageDownloads.close(); }
+  });
+
   it('reports a full download queue without calling the image unavailable', async () => {
     const f = fixture(); vi.spyOn(imageDownloads, 'download').mockRejectedValue(new ImageFailure('download_busy', 'Busy'));
     render(<Surface scope={f.scope} />); await screen.findByRole('img');
