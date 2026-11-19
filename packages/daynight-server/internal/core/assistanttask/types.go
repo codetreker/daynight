@@ -79,9 +79,10 @@ type ItemInput struct {
 }
 type RecordInput struct {
 	Mutation
-	ItemID     *string
-	Kind, Text string
-	Refs       json.RawMessage
+	ItemID                  *string
+	Kind, Text              string
+	Outcome, ActionRecordID *string
+	Refs                    json.RawMessage
 }
 type EventInput struct {
 	Mutation

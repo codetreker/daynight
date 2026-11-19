@@ -94,8 +94,11 @@ export const parseAssistantTaskItem = (value: unknown, taskId: string, expectedI
   return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), key: text(d.key, true), episode: assistantTaskInteger(d.episode), state: choice(d.state, ["open", "closed"]), category: text(d.category), followerBotId: nullableId(d.followerBotId), appState: json(d.appState), version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
 };
 export const parseAssistantTaskRecord = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskRecord => {
-  const d = fields(value, ["id", "taskId", "itemId", "author", "authorBotId", "kind", "text", "refs", "createdAt"]);
-  return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), author: choice(d.author, ["bot", "system"]), authorBotId: nullableId(d.authorBotId), kind: choice(d.kind, ["fact", "guess", "action", "unknown", "question", "answer", "note"]), text: text(d.text, true), refs: json(d.refs), createdAt: timestamp(d.createdAt) };
+  const d = fields(value, ["id", "taskId", "itemId", "author", "authorBotId", "kind", "text", "outcome", "actionRecordId", "refs", "createdAt"]);
+  const kind = choice(d.kind, ["fact", "guess", "action", "unknown", "question", "answer", "note", "outcome"]);
+  // Only outcome records carry the evaluation; any other record with either key is malformed.
+  const evaluation = kind === "outcome" ? { outcome: choice(d.outcome, ["effective", "ineffective", "inconclusive"] as const), actionRecordId: assistantTaskId(d.actionRecordId) } : Object.hasOwn(d, "outcome") || Object.hasOwn(d, "actionRecordId") ? malformed() : {};
+  return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), author: choice(d.author, ["bot", "system"]), authorBotId: nullableId(d.authorBotId), kind, text: text(d.text, true), ...evaluation, refs: json(d.refs), createdAt: timestamp(d.createdAt) };
 };
 export const parseAssistantTaskEvent = (value: unknown, taskId?: string, expectedId?: string): T.AssistantTaskEvent => {
   const d = fields(value, ["id", "taskId", "targetBotId", "type", "payload", "state", "attention", "createdAt", "deliveredAt", "seenAt", "ackOperationId"]);

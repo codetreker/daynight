@@ -135,6 +135,21 @@ it('loads record pages without losing earlier records, groups by item and distin
   expect(screen.getByText('Evidence 41')).toBeVisible(); expect(screen.queryByText('Evidence 42')).toBeNull();
 });
 
+it('renders an outcome record beside other kinds and follows its evaluated action', async () => {
+  const onRecords = vi.fn();
+  const outcome: AssistantTaskRecord = { ...record(46, null, 'outcome'), outcome: 'ineffective', actionRecordId: botId(45) };
+  vi.mocked(listAssistantTaskItems).mockResolvedValue({ items: [], nextCursor: null, observedAt: BOT_TIME });
+  vi.mocked(listAssistantTaskRecords).mockResolvedValue({ items: [record(45, null, 'action'), outcome, record(47, null, 'note')], nextCursor: null, observedAt: BOT_TIME });
+  renderWithLocale(<AssistantTaskRecords taskId={taskId} enabled onRecords={onRecords} />, { locale: 'en', taskCache: true });
+  const entry = (await screen.findByText('Evidence 46')).closest('li')!;
+  expect(screen.getByText('Evidence 45')).toBeVisible(); expect(screen.getByText('Evidence 47')).toBeVisible();
+  expect(within(entry).getByText('Ineffective')).toBeVisible(); expect(within(entry).getByText('Evaluated action')).toBeVisible();
+  fireEvent.click(within(entry).getByRole('button', { name: `Record ${botId(45)}` }));
+  expect(onRecords).toHaveBeenCalledWith(botId(45));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Record type' }), { target: { value: 'outcome' } });
+  expect(screen.getByText('Evidence 46')).toBeVisible(); expect(screen.queryByText('Evidence 45')).toBeNull(); expect(screen.queryByText('Evidence 47')).toBeNull();
+});
+
 it('distinguishes empty records from failed reads and resolves an evidence link across pages', async () => {
   vi.mocked(listAssistantTaskItems).mockResolvedValue({ items: [], nextCursor: null, observedAt: BOT_TIME });
   vi.mocked(listAssistantTaskRecords).mockRejectedValueOnce(new Error('offline'));

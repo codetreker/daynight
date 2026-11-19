@@ -77,13 +77,16 @@ daynight assistant-task appendix add <task-id> --text "Observed behavior" --sour
 daynight assistant-task propose <task-id> --base-version <manual-version> --body "Revised manual" --reason "Evidence" --evidence-record <record-id> --json
 daynight assistant-task proposal list <task-id> --json
 daynight assistant-task record add <task-id> --kind fact --text "Observed result" --json
+daynight assistant-task record add <task-id> --kind outcome --outcome effective --action-record <action-record-id> --text "Observed result" --json
 daynight assistant-task ask <task-id> --question "What is the current finding?" --json
 daynight assistant-task answer <task-id> <inquiry-id> --answer "Observed result" --json
 ```
 
 The responsible Bot needs a current saved credential for protected writes.
 Another Bot can ask a question or append an `action`/`note` intervention record;
-other record kinds require the holder. Inquiries have a fixed five-minute
+other record kinds require the holder. An `outcome` record evaluates one earlier
+`action` record of the same task as `effective`, `ineffective` or `inconclusive`;
+the action stays unchanged and later observations append further outcomes. Inquiries have a fixed five-minute
 deadline. Read `inquiry list` and `record list` to distinguish an answer from a
 timeout. Appendices cite records; proposals cite evidence and retain the base
 manual version. Proposals do not change the effective manual until a user decides.
