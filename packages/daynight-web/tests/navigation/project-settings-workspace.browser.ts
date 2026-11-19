@@ -210,3 +210,44 @@ test('project members without administrator access do not see search', async ({ 
   await expect(page.getByText('Project administrators manage members and invitations.', { exact: false })).toBeVisible();
   await expect(page.getByRole('searchbox', { name: 'Search and add members' })).toHaveCount(0);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const role of ['admin', 'member'] as const) {
+  test(`project management headings and controls at ${width}px (${locale}, ${role})`, async ({ page }) => {
+    const writes = await install(page);
+    if (role === 'member') {
+      const memberAccess = { ...access, effectiveRole: 'member', teamRole: null, canTransfer: false, directGrant: { ...access.directGrant, role: 'member' } };
+      await page.route(`**/api/v1/projects/${projectId}/access`, route => route.fulfill({ status: 200, body: stringifyWireJson(memberAccess), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } }));
+    }
+    await page.route(`**/api/v1/projects/${projectId}/deletion-preview`, route => route.fulfill({ status: 200, body: stringifyWireJson({ observedAt: time, project: { id: projectId, name: project.name, repoUrl: project.repoUrl, ownerTeam: team }, summary: { taskCount: 2, unfinishedTaskCount: 1, attachmentCount: 3 }, activeClaims: [], nextCursor: null }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } }));
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto(`${base}?tab=management`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const zh = locale === 'zh-CN';
+    const owner = page.getByRole('region', { name: zh ? '项目归属' : 'Project ownership' });
+    const deletion = page.getByRole('region', { name: zh ? '删除项目' : 'Delete project' });
+    for (const panel of [owner, deletion]) {
+      await expect(panel).toBeVisible();
+      await expect(panel.locator('.panel-heading h2')).toHaveCount(1);
+      await expect(panel.locator('.panel-heading p')).toHaveCount(0);
+    }
+    await expect(owner.getByText(teamId)).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (role === 'member') {
+      await expect(owner.getByText(zh ? '只有所属 Team 的 admin 可以转移项目。' : 'Only an admin of the owner Team can transfer this project.')).toBeVisible();
+      await expect(owner.getByRole('button', { name: zh ? '转移项目' : 'Transfer project' })).toHaveCount(0);
+      await expect(deletion.getByText(zh ? '只有所属 Team 的 admin 可以删除项目。' : 'Only an admin of the owner Team can delete this project.')).toBeVisible();
+      await expect(deletion.getByRole('button', { name: zh ? '删除项目' : 'Delete project' })).toBeDisabled();
+    } else {
+      await owner.getByRole('button', { name: zh ? '转移项目' : 'Transfer project' }).click();
+      const transfer = page.getByRole('dialog', { name: zh ? '转移项目' : 'Transfer project' });
+      await expect(transfer.getByLabel(zh ? '目标 Team ID 或链接' : 'Team ID or link')).toBeVisible();
+      await transfer.getByRole('button', { name: zh ? '取消' : 'Cancel' }).click();
+      await deletion.getByRole('button', { name: zh ? '删除项目' : 'Delete project' }).click();
+      const dialog = page.getByRole('dialog', { name: zh ? '删除此项目？' : 'Delete this project?' });
+      await expect(dialog.getByText(zh ? '项目及其全部任务、依赖、Steps、讨论、附件和 Session 将退出访问；项目授权和旧邀请不再生效。' : 'The project and all its tasks, dependencies, Steps, discussions, attachments and Sessions will become inaccessible. Project grants and old invitations will no longer grant access.')).toBeVisible();
+      await expect(dialog.getByText(zh ? '服务端保留历史数据和文件，产品内没有恢复入口。Git 仓库、PR、分支和本地文件不受影响。' : 'Historical data and files remain on the server; recovery is not available in the product. The Git repository, PRs, branches and local files are unaffected.')).toBeVisible();
+      await dialog.getByRole('button', { name: zh ? '取消' : 'Cancel' }).click();
+    }
+    expect(writes).toEqual([]);
+  });
+}
