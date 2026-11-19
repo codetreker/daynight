@@ -1426,7 +1426,7 @@ without narrowing the title or moving the restored page position. The header doe
 not display the current user's role; the members and invitations section retains
 role details. The
 [header-role decision](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md) records this choice and the earlier layout rationale; the existing
-[shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.
+[project shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-19-project-shared-scroll.md) records the rationale for one page offset per account and project, independent of graph viewports.
 
 ## Languages
 
@@ -1628,7 +1628,7 @@ requests or stored page preferences.
 Clicking a progress row selects Task list and the matching category, switches to
 the destination Goal's page, then scrolls, focuses and briefly highlights it.
 The standalone aggregate selects its list's first page. Explicit positioning wins
-over saved task-list scroll for that activation; ordinary category switches
+over initial project scroll restoration; ordinary category switches
 keep the current page position. The [recent browsing decision](../../.agents/notes/archived/feature/2026-10-27-recent-task-pages.md) records the rationale for the shared window and paging policy; the [progress decision](../../.agents/notes/archived/feature/2026-10-26-project-overview-progress.md)
 retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
@@ -1980,7 +1980,8 @@ persist. Locale translates controls without adding business reads. The
 separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
-category and one shared task-list page offset. Graph direction is saved per project
+category. The page offset is shared across sections and scoped by account and
+project. Graph direction is saved per project
 and representative task. Filters, graph dialog opening, witness, Goal disclosure,
 fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
@@ -2023,23 +2024,23 @@ does not delete it. Pending saves retain later local edits. Identity change or
 project access withdrawal retires private editing state.
 
 Both stable inner tabpanel wrappers retain their IDs and hide inactive content.
-Task page scroll restoration and scroll/pagehide listeners are active only when
-Task list is selected and a snapshot is available. Leaving Tasks saves its
-shared position before Overview can restore its own per-mount memory
-position. Overview starts at zero and never reads or overwrites the persisted
-task offset. The JSON number at `daynight:task-list-scroll:${projectId}` is
-restored on task-list entry, reload or project return. Inner category switching
-does not call scroll restoration: the current offset stays within the new
-document range, and shorter content can naturally clamp it to the bottom.
-Returning to longer content does not recover an older category offset. The old
-`daynight:task-view-scroll:${projectId}` record is no longer read or written.
-Outer switches retain the already visited task subtree; inner
-switches retain their conditional-content mounting. Graph dialogs close on
-either departure and open only after a new dependency-graph action. Section/category
-switching, filtering and scroll restoration make no API requests and do not
-alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)
-records the original persistence rules; the
-[shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for the shared offset and category-switch behavior.
+The project page shares a nonnegative finite window offset across Overview,
+Statistics, Tasks, PRs and Tags, stored as a JSON number under
+`daynight:project-scroll:${JSON.stringify([projectId, userId])}`. The old
+task-list scroll keys are not read or migrated. The initial target restores at
+most once after usable content is ready; a section switch, user scroll or
+explicit positioning takes precedence. Loading, failure, access withdrawal and
+overlay locks do not save temporary offsets. Preference errors remain visible.
+Ordinary section and category switches and same-project history traversal do
+not restore older offsets: the browser naturally clamps shorter pages, and
+returning to longer content does not rebound. Native history restoration is
+managed for actual project entries; settings and other routes retain their
+existing behavior. Outer switches retain the already visited task subtree; inner
+switches retain conditional-content mounting. Graph dialogs close on departure
+and open only after a new dependency-graph action. Switching, filtering and
+scroll restoration make no API requests and do not alter project counters or
+prerequisites. The [project shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-19-project-shared-scroll.md)
+records the rationale and earlier choices.
 
 The generic task and summary decoders require type, nullable parentId and
 assignedTo, and a properties object, preserving all property keys. Graph decoders

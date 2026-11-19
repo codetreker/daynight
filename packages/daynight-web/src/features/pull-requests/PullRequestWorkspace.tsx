@@ -64,6 +64,7 @@ export type PullRequestWorkspaceProps = {
   readonly projectId: string;
   readonly active: boolean;
   readonly canRead: boolean;
+  readonly onScrollReady?: (ready: boolean) => void;
   readonly onPrincipalMismatch: () => void;
   readonly onAccessError?: (error: ApiError) => void;
 };
@@ -84,6 +85,8 @@ const Workspace = (props: PullRequestWorkspaceProps) => {
     error.code === 'principal_mismatch' || error.status === 401 || error.kind === 'server' && (error.status === 403 || error.status === 404)
   ));
   const loading = read.loading && !accessDenied;
+  const scrollReady = props.active && props.canRead && !accessDenied && page !== null && status !== null && !loading && read.error === null && read.statusError === null;
+  useLayoutEffect(() => { props.onScrollReady?.(scrollReady); }, [props.onScrollReady, scrollReady]);
   const [selected, setSelected] = useState<string | null>(null);
   useLayoutEffect(() => read.scope.subscribe(() => setSelected(null)), [read.scope]);
   const trigger = useRef<HTMLButtonElement | null>(null);
