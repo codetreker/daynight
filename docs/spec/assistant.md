@@ -55,7 +55,7 @@ Codex 必须以发生 compact 的线程验证同一 ID resume 后继续下一轮
 
 ### 字段、版本与失败语义
 
-新增字段通过独立版本化接管／观测合同交换，既有管理 DTO 和 `/grant` 不静默扩展。恢复登记、接管、grant、report 与原操作查询由[独立恢复 v1 协议](../design/assistant.md#服务端恢复-v1-协议)提供。下表的 Provider 备份和完整机器在线状态字段仍须由其生产方声明能力，不能从恢复回执推导。
+新增字段通过独立版本化接管／观测合同交换，既有管理 DTO 和 `/grant` 不静默扩展。恢复登记、接管、grant、report 与原操作查询由[独立恢复 v1 协议](../design/assistant.md#服务端恢复-v1-协议)提供；机器定位与可用性由[服务端观测 v1 协议](../design/assistant.md#服务端观测-v1-协议)提供。下表的 Provider 备份字段仍须由其生产方声明能力，不能从恢复回执或在线状态推导。
 
 | 字段／能力 | 语义 |
 | --- | --- |
@@ -71,6 +71,12 @@ Codex 必须以发生 compact 的线程验证同一 ID resume 后继续下一轮
 无能力为 `upgrade_required`；账号认证失效为 `unauthenticated`，错误 owner／服务域为拒绝访问，预期代次或执行权冲突为 `resource_conflict`。缺恢复材料、Provider 不可用、不兼容版本、旧执行未证实停止必须有可区分原因，分别为 `recovery_material_missing`、`provider_unavailable`、`recovery_version_unsupported`、`stop_unconfirmed`。未知结果保持 `outcome_unknown`，不能映射成失败重试许可。旧接口仍维持原错误形状；新增错误通过版本化合同提供。
 
 Worker 心跳过期显示 offline 并保留机器、主机名与最后时间，提示在该机器运行 `daynight worker run`。上线但定位、接管或同步未完成显示 connecting/recovering；已证实缺件或执行权冲突显示 abnormal 及具体补救。idle/working 只取该 Bot 当前代次已同步 Session 的当前轮次；同机其它任务活动和持久 ready 不改变它。首次尚无原生 ID 显示 connecting。已有授权缓存只供阅读，不恢复实时 Working、计时或发送资格。
+
+`GET /api/v1/me/bots/{botId}/observation` 返回独立 `schemaVersion=1` 的观测 DTO，也支持 HEAD；不接受 query。它使用当前有效账号与 Bot 归属授权，不要求原创建 PAT 仍有效，不启动 Provider、不写 Session、不签发 grant，且不返回发送权限。旧 Bot 列表、详情及 Worker inventory 的 DTO 与创建时 Worker 字段保持原义。未升级服务没有此入口时，客户端不得由旧 ready 构造新观测。
+
+观测返回当前承载 `workerId`、可空 `machine`、`provider`、原平台及原生 Session 身份、承载与连接代次、`state`／`reason`、服务端 `observedAt`、可空 `workerLastSeenAt`／`sessionLastSeenAt`／`freshUntil` 和仅工作中有效的 `currentTurnId`。版本及代次为十进制字符串，未知值明确为 null；未登记恢复身份的 `hostingGeneration` 为 null。机器定位不受普通 Worker 查询的 72 小时窗口影响。恢复登记的机器 ID 保持不变，同一机器的新上报名称可以更新显示；不同机器 ID 不覆盖已确认定位。
+
+Worker 报告年龄须严格小于 120 秒；有效在线活动还要求当前 Session 心跳年龄严格小于 30 秒、持久连接租约未到期、相同 Controller fence、年龄严格小于 30 秒的当前 relay 已提交同步采样。`freshUntil` 取所用事实的最早截止时间，客户端到期须撤下实时状态并刷新，不能延续计时。只有其它 relay 的连接时返回 recovering／`session_observation_unavailable`，不从数据库的历史 activity 猜测在线活动。原生记录缺失等已确认启动失败保留其实际错误码，过期的 Provider 预检失败不覆盖当前已同步的 Bot 活动。
 
 ### 恢复验证边界
 

@@ -163,7 +163,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		Prompts:          prompt.New(database),
 		WorkerReadOnly:   workerReadOnly,
 		AssistantTasks:   assistanttask.New(database),
-		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly),
+		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly).WithSessionObserver(engine),
 		BotDeletions:     bot.NewDeletions(database, files, engine),
 		Tags:             tag.New(database),
 		Tasks:            construct.tasks(database, capturer),
