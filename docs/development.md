@@ -577,6 +577,14 @@ wait. The fixture holds only the subsequent retry so IPC cancellation reaches
 the waiting Controller before a second synchronous acquisition. The
 [Controller storage contention decision](../.agents/notes/implemented/testing/2026-11-18-controller-storage-contention-cancel.md)
 owns the cancellation boundary.
+The Controller IPC waiter-capacity regression observes all 32 authenticated
+response-waiter registrations before probing rejection. Its controlled schedule
+holds duplicate client frames to verify that first native dispatch alone does
+not establish capacity. Finalization cancels and joins requests and the
+Controller before deleting the SQLite fixture; the ordinary test deadline stays
+unchanged. The
+[IPC admission decision](../.agents/notes/implemented/testing/2026-11-19-ipc-waiter-admission-barrier.md)
+owns the ordering proof and its historical attribution limits.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
