@@ -2,23 +2,27 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
 import { getGoalDependencies, type GoalDependencies } from '../../api/goal-dependencies';
 import { pollingInterval } from '../../app/polling';
+import { browserNavigation } from '../../app/navigation';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
+import { goalDependencyReturn, type GoalDependencyPosition } from './goal-dependency-reading';
 
 type State = { readonly owner: object; readonly page: GoalDependencies | null; readonly unavailable: boolean; readonly error: unknown;
   readonly pending: boolean; readonly cursor: string | null; readonly previous: readonly (string | null)[] };
-const initial = (owner: object): State => ({ owner, page: null, unavailable: false, error: null, pending: false, cursor: null, previous: [] });
+const initial = (owner: object, position?: Pick<GoalDependencyPosition, 'cursor' | 'previous'>): State => ({ owner, page: null, unavailable: false, error: null, pending: false,
+  cursor: position === undefined ? null : position.cursor, previous: position === undefined ? [] : position.previous });
 const denied = (error: unknown) => error instanceof ApiError && error.kind === 'server' && [401, 403, 404, 410].includes(error.status ?? 0);
 
 export const useGoalDependencies = (projectId: string, goalId: string, history: number, active: boolean, onSourceDenied: () => void) => {
   const scope = useTaskCacheScope(), sessions = useTaskDetailSessions();
   const owner = useMemo(() => ({}), [scope, sessions, projectId, goalId, history]);
-  const [state, setState] = useState<State>(() => initial(owner));
+  const opening = useMemo(() => initial(owner, goalDependencyReturn(scope, browserNavigation().snapshot().entryId, { projectId, goalId, history })?.position), [scope, projectId, goalId, history, owner]);
+  const [state, setState] = useState<State>(() => opening);
   const stateRef = useRef(state); stateRef.current = state;
   const sourceDenied = useRef(onSourceDenied); sourceDenied.current = onSourceDenied;
   const readRef = useRef<(cursor: string | null, previous: readonly (string | null)[], replace: boolean) => void>(() => {});
   useEffect(() => {
-    if (stateRef.current.owner !== owner) setState(initial(owner));
+    if (stateRef.current.owner !== owner) setState(opening);
     let disposed = false, sequence = 0;
     let controller: AbortController | null = null;
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -47,7 +51,7 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
           if (!currentRequest()) return;
           qualification = sessions.captureDirectQualification(projectId, goalId);
           if (qualification === null) return;
-          setState(old => old.owner === owner ? { ...old, pending: true } : { ...initial(owner), pending: true });
+          setState(old => old.owner === owner ? { ...old, pending: true } : { ...opening, pending: true });
           const result = await getGoalDependencies(projectId, goalId, cursor, signal, {
             userId: scope.userId, onPrincipalMismatch: scope.principalMismatch,
             onDispatch: () => { timeout = setTimeout(() => {
@@ -73,7 +77,7 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
     };
     readRef.current = read;
     const refresh = () => {
-      const current = stateRef.current.owner === owner ? stateRef.current : initial(owner);
+      const current = stateRef.current.owner === owner ? stateRef.current : opening;
       read(current.cursor, current.previous, false);
     };
     const visibility = () => {
@@ -100,11 +104,12 @@ export const useGoalDependencies = (projectId: string, goalId: string, history: 
     document.addEventListener('visibilitychange', visibility); window.addEventListener('focus', refresh);
     return () => { disposed = true; cancel(); readRef.current = () => {}; unsubscribe(); if (timer !== null) clearInterval(timer);
       document.removeEventListener('visibilitychange', visibility); window.removeEventListener('focus', refresh); };
-  }, [scope, sessions, projectId, goalId, history, owner, active]);
-  const visible = state.owner === owner ? state : initial(owner);
-  const refresh = useCallback(() => { const current = stateRef.current; if (current.owner === owner) readRef.current(current.cursor, current.previous, true); else readRef.current(null, [], true); }, [owner]);
+  }, [scope, sessions, projectId, goalId, history, owner, opening, active]);
+  const visible = state.owner === owner ? state : opening;
+  const refresh = useCallback(() => { const current = stateRef.current.owner === owner ? stateRef.current : opening; readRef.current(current.cursor, current.previous, true); }, [owner, opening]);
   const next = useCallback(() => { const current = stateRef.current; if (current.owner === owner && current.page?.nextCursor != null && !current.pending) readRef.current(current.page.nextCursor, [...current.previous, current.cursor], true); }, [owner]);
   const previous = useCallback(() => { const current = stateRef.current; if (current.owner === owner && current.previous.length > 0 && !current.pending) readRef.current(current.previous.at(-1)!, current.previous.slice(0, -1), true); }, [owner]);
   return { page: visible.page, unavailable: visible.unavailable, error: visible.error, pending: visible.pending,
+    position: { projectId, goalId, history, cursor: visible.cursor, previous: visible.previous },
     hasPrevious: visible.previous.length > 0, refresh, next, previous };
 };

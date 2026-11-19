@@ -25,9 +25,15 @@ it and invalidate outstanding responses. A router-level JSON 404 without a
 principal means unavailable capability while leaving the source Goal readable.
 
 Links use each endpoint's actual Project and Goal. Ordinary application
-navigation protects drafts, and source-entry focus restoration returns keyboard
-readers to the relationship they followed. Goal completion keeps its existing
-mutation owner; a dependency refusal refreshes the independent relationship read.
+navigation protects drafts. Source-entry restoration keeps only the source
+resource/history, current cursor, previous cursor trail and originating link
+under the account scope. A route remount rereads that cursor with fresh
+authorization before restoring link focus. Transient return failures retain the
+coordinates and focus intent for retry; an authorized page without the link
+falls back to the Goal heading. Source permission/history withdrawal invalidates
+the saved position, including while its Goal component is unmounted. Goal
+completion keeps its existing mutation owner; a dependency refusal refreshes
+the independent relationship read.
 
 ## Alternatives
 
@@ -43,10 +49,17 @@ necessary projection without changing those contracts.
 semantics do not identify cross-project Goal resources. Exact resource links
 preserve the intended destination and native browser actions.
 
+**Retain relationship rows across route changes.** That would require a live
+permission and history owner for each saved page while its reader is unmounted.
+Cursor-only restoration preserves the reading position while requiring a fresh
+authorized projection for every returned page.
+
 ## Consequences
 
 Readers can inspect acceptance blockers without entering a relationship editor.
 Each visible description adds one bounded periodic relationship request; it
 does not fetch individual targets. Scope and permission events must fence both
 retained content and late responses. Cursor history and focus intent remain
-runtime reading state, and transient errors remain distinct from empty results.
+runtime reading state, scoped to the source browser entry and discarded after
+its return is completed. They do not preserve relation rows across a route
+remount. Transient errors remain distinct from empty results.

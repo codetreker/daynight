@@ -2,9 +2,11 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { pauseAuthRequests } from '../src/api/client';
+import { browserNavigation } from '../src/app/navigation';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { useGoalDependencies } from '../src/features/goal-detail/useGoalDependencies';
+import { markGoalDependencyDeparture, rememberGoalDependencyReading } from '../src/features/goal-detail/goal-dependency-reading';
 import { detailFixture, resourceResponse } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
@@ -19,6 +21,7 @@ const page = (title: string, cursor: string | null = null) => ({ goalId, canEdit
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 const sourceDenied = vi.fn();
 let sessions: TaskDetailSessions;
+let dependencies: ReturnType<typeof useGoalDependencies>;
 const Harness = ({ active = true }: { readonly active?: boolean }) => {
   sessions = useTaskDetailSessions();
   const subscribe = useCallback((listener: () => void) => sessions.subscribe(projectId, goalId, listener), [sessions]);
@@ -26,14 +29,15 @@ const Harness = ({ active = true }: { readonly active?: boolean }) => {
   const history = sessions.historyGeneration(projectId);
   useEffect(() => { sessions.openDirect(projectId, goalId); return () => sessions.releaseRead(projectId, goalId); }, []);
   const value = useGoalDependencies(projectId, goalId, history, active && state.status === 'ready', sourceDenied);
+  dependencies = value;
   return <><span data-testid="goal">{value.page?.prerequisites[0]?.target?.title ?? 'none'}</span>
     <span data-testid="successors">{value.page?.successors.map(item => item.title).join(',') ?? 'none'}</span>
     <span data-testid="error">{value.error === null ? 'none' : 'error'}</span><span data-testid="unavailable">{String(value.unavailable)}</span>
     <button onClick={value.refresh}>Retry</button><button onClick={value.next} disabled={value.pending || value.page?.nextCursor == null}>Next</button>
     <button onClick={value.previous} disabled={value.pending || !value.hasPrevious}>Previous</button></>;
 };
-const mount = () => {
-  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+const mount = (existingScope?: ReturnType<typeof createTaskCacheScope>) => {
+  const scope = existingScope ?? createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const view = renderWithLocale(<TaskDetailSessionProvider><Harness /></TaskDetailSessionProvider>, { locale: 'en', taskCache: { scope } });
   return { scope, view };
 };
@@ -47,7 +51,7 @@ const timers = () => {
 };
 const respond = (body: unknown) => Promise.resolve(resourceResponse(body, TEST_VIEWER_ID));
 const failure = (status = 503, code = 'internal_error') => wireResponse({ error: { code, message: 'Unavailable', requestId: 'failure' } }, { status, headers: viewerHeaders(TEST_VIEWER_ID) });
-afterEach(() => { cleanup(); sourceDenied.mockClear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); browserNavigation().dispose(); sourceDenied.mockClear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it('refreshes independently of source versions, retaining visible relations on transient failure', async () => {
   const tick = timers(); let reads = 0;
@@ -193,4 +197,35 @@ it('keeps old-router unavailability separate from an authenticated access denial
     tick(); await waitFor(() => expect(sourceDenied).toHaveBeenCalledOnce());
     expect(screen.getByTestId('goal')).toHaveTextContent('none');
   } finally { view.unmount(); scope.dispose(); }
+});
+
+it.each([false, true])('reauthorizes a remembered downstream page after remount without retaining its old rows (failure: %s)', async failureOnReturn => {
+  const requests: (string | null)[] = [], held = deferred<Response>(); let returning = false, retried = false;
+  vi.stubGlobal('fetch', vi.fn((url: string) => {
+    if (!url.includes('/goal-dependencies')) return respond(parent);
+    const cursor = new URL(url, location.origin).searchParams.get('cursor'); requests.push(cursor);
+    if (returning && !retried) return held.promise;
+    return respond(page(returning ? 'Authorized return' : cursor === null ? 'First' : 'Second', cursor === null ? 'page-2' : null));
+  }));
+  const first = mount(); let second: ReturnType<typeof mount> | undefined;
+  try {
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('First'));
+    fireEvent.click(screen.getByText('Next')); await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Second'));
+    const entryId = browserNavigation().snapshot().entryId!, href = `/projects/${peerId}/tasks/${goalId}?tab=description`;
+    rememberGoalDependencyReading(first.scope, entryId, dependencies.position, href);
+    markGoalDependencyDeparture(first.scope, entryId, href);
+    first.view.unmount(); returning = true;
+    second = mount(first.scope);
+    await waitFor(() => expect(requests).toEqual([null, 'page-2', 'page-2']));
+    expect(screen.getByTestId('goal')).toHaveTextContent('none');
+    if (failureOnReturn) {
+      await act(async () => held.resolve(failure()));
+      await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('error'));
+      expect(screen.getByTestId('goal')).toHaveTextContent('none');
+      retried = true; fireEvent.click(screen.getByText('Retry'));
+    } else await act(async () => held.resolve(resourceResponse(page('Authorized return'), TEST_VIEWER_ID)));
+    await waitFor(() => expect(screen.getByTestId('goal')).toHaveTextContent('Authorized return'));
+    expect(requests.every((cursor, index) => index === 0 || cursor === 'page-2')).toBe(true);
+    expect(screen.getByText('Previous')).toBeEnabled();
+  } finally { second?.view.unmount(); first.view.unmount(); first.scope.dispose(); }
 });

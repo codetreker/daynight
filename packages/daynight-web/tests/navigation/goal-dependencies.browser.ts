@@ -34,8 +34,10 @@ const install = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
   const source = detailFixture(projectId, goalId, { type: 'goal', title: 'Release the new client', status: 'in_progress', startedAt: time, ready: false, description: 'Deliver the client after authentication acceptance.' });
   const local = detailFixture(projectId, localGoalId, { type: 'goal', title: 'Acceptance criteria', status: 'done', completedAt: time, ready: false });
   const external = detailFixture(externalProjectId, prerequisiteId, { type: 'goal', title: externalTitle, status: 'in_progress', startedAt: time, ready: false, description: 'Authentication upgrade details.' });
-  const graphs = [graphFixture([source, local]), graphFixture([external])];
-  const details = [source, local, external];
+  const firstSuccessor = detailFixture(projectId, successorId, { type: 'goal', title: 'Staged rollout', ready: false });
+  const secondSuccessor = detailFixture(projectId, secondSuccessorId, { type: 'goal', title: 'Second rollout', ready: false });
+  const graphs = [graphFixture([source, local, firstSuccessor, secondSuccessor]), graphFixture([external])];
+  const details = [source, local, external, firstSuccessor, secondSuccessor];
   let mode: Mode = 'ready';
   const revokedProjects = new Set<string>();
   let hidden = false;
@@ -67,7 +69,7 @@ const install = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
       }
       return send(data);
     }
-    if (path.endsWith('/goal-dependencies')) return send({ goalId: prerequisiteId, canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null });
+    if (path.endsWith('/goal-dependencies')) return send({ goalId: path.split('/').at(-2), canEdit: false, completionBlocked: false, prerequisites: [], successors: [], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/tasks/${goalId}/status`) {
       writes++;
       return fail(409, 'goal_dependency_unsatisfied');
@@ -160,6 +162,43 @@ test('relationship pagination reads the selected cursor and returns to the prece
   await dependencies.getByRole('button', { name: /Previous/ }).click();
   await expect(dependencies.getByRole('link', { name: 'Staged rollout', exact: true })).toBeVisible();
   expect(fixture.cursors()).toEqual([null, 'second-page', null]);
+});
+
+for (const failedReturn of [false, true]) test(`returning from a later-page dependent Goal restores cursor and link focus${failedReturn ? ' after retrying the return read' : ''}`, async ({ page }) => {
+  const fixture = await install(page);
+  await page.goto(sourceUrl);
+  await panel(page).getByRole('button', { name: 'Next', exact: true }).click();
+  const origin = panel(page).getByRole('link', { name: 'Second rollout', exact: true });
+  await expect(origin).toBeVisible();
+  await expect(origin).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${secondSuccessorId}`));
+  await origin.focus(); await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${secondSuccessorId}`));
+  await expect(page.locator('.task-detail-title')).toHaveText('Second rollout');
+  if (failedReturn) fixture.mode('failure');
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(sourceUrl));
+  if (failedReturn) {
+    await expect(panel(page).getByRole('alert')).toContainText('Could not load');
+    await expect(origin).toHaveCount(0);
+    expect(fixture.cursors().at(-1)).toBe('second-page');
+    fixture.mode('ready');
+    await panel(page).getByRole('button', { name: 'Retry', exact: true }).click();
+  }
+  await expect(origin).toBeVisible();
+  await expect(origin).toBeFocused();
+  await expect(panel(page).getByRole('link', { name: 'Staged rollout', exact: true })).toHaveCount(0);
+  await expect(panel(page).getByRole('button', { name: 'Previous', exact: true })).toBeEnabled();
+  await expect(panel(page).getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
+  expect(fixture.cursors().at(-1)).toBe('second-page');
+  await page.screenshot({ path: test.info().outputPath('later-page-return.png'), fullPage: true });
+  fixture.mode('failure'); await refresh(page);
+  await expect(panel(page).getByRole('alert')).toContainText('Could not refresh');
+  await expect(origin).toBeVisible(); await expect(origin).toBeFocused();
+  fixture.mode('ready');
+  await panel(page).getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(panel(page).getByRole('alert')).toHaveCount(0);
+  await expect(origin).toBeVisible();
+  expect(fixture.cursors().at(-1)).toBe('second-page');
 });
 
 test('a project-summary Goal dialog reads its own acceptance dependencies', async ({ page }) => {

@@ -6,10 +6,9 @@ import { taskDetailUrl } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import type { useGoalDependencies } from './useGoalDependencies';
+import { finishGoalDependencyReturn, goalDependencyReturn, markGoalDependencyDeparture, rememberGoalDependencyReading } from './goal-dependency-reading';
 import './goal-dependencies.css';
 
-type FocusIntent = { readonly href: string; departed: boolean };
-const returnFocus = new WeakMap<object, Map<string, FocusIntent>>();
 const hrefFor = (goal: RelatedGoal) => taskDetailUrl(goal.projectId, goal.goalId, { tab: 'description', path: null });
 
 export const GoalDependencies = ({ dependencies, canComplete, refusal, fallbackFocus }: {
@@ -22,27 +21,27 @@ export const GoalDependencies = ({ dependencies, canComplete, refusal, fallbackF
   const { page, pending, error, unavailable } = dependencies;
   const navigation = browserNavigation(), entryId = navigation.snapshot().entryId;
   useLayoutEffect(() => navigation.subscribe(() => {
-    if (entryId !== null && navigation.snapshot().entryId !== entryId) {
-      const intent = returnFocus.get(scope)?.get(entryId); if (intent !== undefined) intent.departed = true;
+    const destination = navigation.snapshot();
+    if (entryId !== null && destination.entryId !== entryId) {
+      markGoalDependencyDeparture(scope, entryId, `${destination.pathname}${destination.search}${destination.hash}`);
     }
   }), [scope, navigation, entryId]);
   useLayoutEffect(() => {
-    if (entryId === null || page === null && error === null && !unavailable) return;
-    const intents = returnFocus.get(scope), intent = intents?.get(entryId);
-    if (intent?.departed !== true) return;
-    intents!.delete(entryId);
+    if (entryId === null || page === null && !unavailable) return;
+    const reading = goalDependencyReturn(scope, entryId, dependencies.position);
+    if (reading === null || dependencies.position.cursor !== reading.position.cursor) return;
     queueMicrotask(() => {
       if (scope.signal.aborted || scope.hasIdentityMismatch || navigation.snapshot().entryId !== entryId || document.visibilityState === 'hidden') return;
-      const link = [...root.current?.querySelectorAll<HTMLAnchorElement>('a') ?? []].find(item => item.getAttribute('href') === intent.href);
+      if (!finishGoalDependencyReturn(scope, entryId, reading)) return;
+      const link = [...root.current?.querySelectorAll<HTMLAnchorElement>('a') ?? []].find(item => item.getAttribute('href') === reading.href);
       (link ?? fallbackFocus.current)?.focus();
     });
-  }, [scope, entryId, navigation, page, error, unavailable, fallbackFocus]);
+  }, [scope, entryId, navigation, page, unavailable, fallbackFocus, dependencies.position]);
   const follow = (event: MouseEvent<HTMLAnchorElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     if (entryId !== null) {
-      let intents = returnFocus.get(scope); if (intents === undefined) { intents = new Map(); returnFocus.set(scope, intents); }
-      intents.set(entryId, { href: event.currentTarget.getAttribute('href')!, departed: false });
+      rememberGoalDependencyReading(scope, entryId, dependencies.position, event.currentTarget.getAttribute('href')!);
     }
     navigation.navigate(event.currentTarget.getAttribute('href')!);
   };

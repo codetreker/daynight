@@ -12,7 +12,8 @@ const goalId = '20000000-0000-4000-8000-000000000001';
 const internal = { projectId, projectName: 'Client', goalId: '20000000-0000-4000-8000-000000000002', title: 'Release criteria', status: 'done' as const, kind: 'internal' as const };
 const external = { ...internal, projectId: '10000000-0000-4000-8000-000000000002', projectName: 'Identity service', goalId: '20000000-0000-4000-8000-000000000003', title: 'Upgrade authentication', status: 'cancelled' as const, kind: 'external' as const };
 const page: DependencyPage = { goalId, canEdit: false, completionBlocked: true, prerequisites: [{ target: internal }, { target: external }, { target: null }], successors: [internal], nextCursor: 'next-page' };
-const view = (changes: Partial<ReturnType<typeof useGoalDependencies>> = {}) => ({ page, error: null, unavailable: false, pending: false, hasPrevious: false, refresh: vi.fn(), next: vi.fn(), previous: vi.fn(), ...changes });
+const view = (changes: Partial<ReturnType<typeof useGoalDependencies>> = {}) => ({ page, error: null, unavailable: false, pending: false, hasPrevious: false,
+  position: { projectId, goalId, history: 0, cursor: null, previous: [] }, refresh: vi.fn(), next: vi.fn(), previous: vi.fn(), ...changes });
 const panel = (dependencies = view(), canComplete = true, refusal: unknown = null) => <GoalDependencies dependencies={dependencies} canComplete={canComplete} refusal={refusal} fallbackFocus={{ current: null }} />;
 afterEach(() => { cleanup(); browserNavigation().dispose(); vi.restoreAllMocks(); });
 

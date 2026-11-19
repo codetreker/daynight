@@ -34,7 +34,7 @@ core 先比较原关系修订，再建立最终边集合。新增目标必须可
 
 请求绑定当前账号、源项目 history generation、源详情资格及 AbortSignal；发布前重新检查准入。项目权限事件撤回失权目标并作废先前响应，源失权退役关系读取，较旧响应不能恢复身份和状态。账号检查等待保持已有界面，实际身份切换清理旧范围。响应主体仅在 principal 验证后准入；旧服务 router 的无 `Daynight-User-ID` JSON 404 在关系解析前识别为能力不可用，保留已获准源详情。有 principal 的领域级 403/404/410 沿用源权限观察。
 
-普通关联点击经过 `BrowserNavigation` 的草稿保护，修改键保留原生链接行为。返回焦点只保存当前身份、源 history entry 与关联入口的运行期引用，恢复来源后聚焦仍可见的关联链接；入口消失时回退 Goal 标题，不持久保存关系资料。取舍见[Web Goal 依赖决策](../../.agents/notes/implemented/feature/2026-11-19-web-goal-dependencies.md)。
+普通关联点击经过 `BrowserNavigation` 的草稿保护，修改键保留原生链接行为。`goal-dependency-reading` 只在账号作用域的内存中保存源 Project、Goal、history generation、浏览器 entry、当前下游游标、上一页路径和关联链接；只有实际进入对应目标才把该位置作为返回来源。源失权、history 改变或账号作用域退役使保存位置失效。详情因路由跳转卸载后，返回直接重新读取该游标页，不复用旧关系资料；取得当前授权投影后聚焦原关联链接，链接已不在该页时回退 Goal 标题。瞬时读取失败保留返回位置和焦点意图，重试仍读取该页，不能用第一页提前消耗返回意图。取舍见[Web Goal 依赖决策](../../.agents/notes/implemented/feature/2026-11-19-web-goal-dependencies.md)。
 
 ## 验证归属
 
