@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { AssistantTaskDialog } from './AssistantTaskDialog';
+import { AssistantTaskSubscriptions } from './AssistantTaskSubscriptions';
 import { assistantTaskAdmission } from './assistant-task-data';
 import { useAssistantTaskMutation } from './useAssistantTaskMutation';
 import { useBotRead } from './useBotRead';
@@ -52,7 +53,7 @@ const useInboxMessages = () => { const { locale } = useI18n(); return { ...(loca
  * started. The inbox shown is therefore never older than the submitted version, so a concurrent inbox change becomes a conflict
  * instead of a write against an inbox other than the one displayed. A confirmation keeps the version it was opened against.
  */
-export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown> }) {
+export function AssistantTaskInbox({ task, enabled, disabled, onChanged, serviceOrigin }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown>; readonly serviceOrigin?: string }) {
   const m = useInboxMessages(), scope = useTaskCacheScope(), admission = assistantTaskAdmission(scope), taskId = task.id, heading = useId(), modeName = useId();
   const observed = useRef(task.version); observed.current = task.version;
   const load = useCallback(async (scope: TaskCacheScope, signal: AbortSignal) => {
@@ -66,7 +67,14 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
   useEffect(() => { if (read.value !== null && read.value.version !== task.version) refreshRead(); }, [read.value, task.version, refreshRead]);
   const reload = async () => { read.refresh(); await onChanged(); };
   const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation);
-  const [token, setToken] = useState<string | null>(null), [dialog, setDialog] = useState<{ readonly kind: 'rotate' | 'disable'; readonly version: string } | null>(null);
+  // The issued token stays bound to the identity scope that received it and is never shown to another identity.
+  const [issuedToken, setIssuedToken] = useState<{ readonly scope: TaskCacheScope; readonly value: string } | null>(null);
+  const token = issuedToken !== null && issuedToken.scope === scope && !scope.isInvalidated ? issuedToken.value : null;
+  const setToken = (value: string | null) => setIssuedToken(value === null ? null : { scope, value });
+  const [dialog, setDialog] = useState<{ readonly kind: 'rotate' | 'disable'; readonly version: string } | null>(null);
+  // A disabled inbox no longer reports its id. The id disabled by this mount narrows the cleanup list to that inbox;
+  // otherwise the subscription panel lists every personal endpoint aimed at an inbox of this site.
+  const [retiredInboxId, setRetiredInboxId] = useState<string | null>(null);
   const owner = useRef({ scope, taskId }); owner.current = { scope, taskId };
   const inbox = read.value?.inbox ?? null, snapshotVersion = read.value?.version ?? task.version, overlapActive = inbox?.overlapUntil != null;
   const [mode, setMode] = useState<AssistantTaskInboxRotation>('overlap');
@@ -103,12 +111,13 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
       </dl>
       <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode(overlapActive ? 'immediate' : 'overlap'); setDialog({ kind: 'rotate', version: snapshotVersion }); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog({ kind: 'disable', version: snapshotVersion })} /></div>
     </> : null}
+    {inbox ? <AssistantTaskSubscriptions task={task} inboxId={inbox.enabled ? inbox.inboxId : retiredInboxId} inboxEnabled={inbox.enabled} active={enabled} {...(serviceOrigin === undefined ? {} : { serviceOrigin })} /> : null}
     {dialog ? <AssistantTaskDialog title={dialog.kind === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); if (changed) return; void (async () => {
       const operationId = crypto.randomUUID(), ifVersion = dialog.version;
       const ok = dialog.kind === 'rotate'
         ? await issue((signal, access) => rotateAssistantTaskInbox(taskId, { operationId, ifVersion, mode }, signal, access))
         : await mutation.run(async signal => { await disableAssistantTaskInbox(taskId, { operationId, ifVersion }, signal, admission); });
-      if (ok) { setDialog(null); if (dialog.kind === 'disable') setToken(null); }
+      if (ok) { setDialog(null); if (dialog.kind === 'disable') { setToken(null); setRetiredInboxId(inbox?.inboxId ?? null); } }
     })(); }}>
       <div className="dialog-body assistant-task-form">{dialog.kind === 'rotate' ? <fieldset className="assistant-task-inbox-modes"><legend>{m.rotateMode}</legend>
         <label><input type="radio" name={modeName} value="overlap" checked={mode === 'overlap'} disabled={overlapActive} onChange={() => setMode('overlap')} /><span><strong>{m.overlapMode}</strong><span className="assistant-task-meta">{overlapActive ? m.overlapBlocked : m.overlapHint}</span></span></label>
