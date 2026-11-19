@@ -23,8 +23,9 @@ func TestGitHubGrantLostCommitReceipt(t *testing.T) {
 	mustQueryExec(t, s, `INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret,impact_version) VALUES($1,1,'app','remote','slug','k','s',2)`, app)
 	mustQueryExec(t, s, `INSERT INTO github_app_admins(app_resource_id,user_id) VALUES($1,$2)`, app, actor)
 	mustQueryExec(t, s, `INSERT INTO github_app_team_grants(id,team_id,app_resource_id) VALUES($1,$2,$3)`, grant, teamID, app)
-	mustQueryExec(t, s, `INSERT INTO project_github(project_id,app_resource_id,team_grant_id,enabled,sync_enabled,repository_id) VALUES($1,$2,$3,true,true,42)`, project, app, grant)
-	mustQueryExec(t, s, `INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, project)
+	mustQueryExec(t, s, `INSERT INTO project_github(project_id,app_resource_id,team_grant_id,enabled,sync_enabled,repository_id,legacy_repository_id,repository_full_name) VALUES($1,$2,$3,true,true,42,42,'owner/repo')`, project, app, grant)
+	mustQueryExec(t, s, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,42,'owner/repo')`, project)
+	mustQueryExec(t, s, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,42,1,1,'url','title','open',false,'main','sha',now(),now(),now(),1)`, project)
 	var armed, lost atomic.Bool
 	config := s.Pool.Config().Copy()
 	config.ConnConfig.TLSConfig = nil

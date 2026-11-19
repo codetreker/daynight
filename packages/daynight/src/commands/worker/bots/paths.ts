@@ -17,6 +17,9 @@ export const resolveBotPaths = (stateDirectory: string, botId: string) => {
     ownershipGateFile: path.join(directory, "ownership.sqlite"),
     stateDirectory: path.join(directory, "state"),
     controllerStateDirectory: directory,
+    codexRecoveryDirectory: path.join(directory, "native", "codex"),
+    claudeRecoveryDirectory: path.join(directory, "native", "claude"),
+    copilotRecoveryDirectory: path.join(directory, "native", "copilot"),
   };
 };
 

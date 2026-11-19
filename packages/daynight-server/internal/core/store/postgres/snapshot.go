@@ -58,6 +58,7 @@ func (s *Snapshot) TeamDAO() TeamReader                   { return team.NewReade
 func (s *Snapshot) ProjectDAO() ProjectReader             { return project.NewReader(s.tx) }
 func (s *Snapshot) TagDAO() TagReader                     { return tag.NewReader(s.tx) }
 func (s *Snapshot) TaskDAO() TaskReader                   { return task.NewReader(s.tx) }
+func (s *Snapshot) GoalRelationDAO() GoalRelationReader   { return task.NewGoalRelationReader(s.tx) }
 func (s *Snapshot) WorkerDAO() WorkerReader               { return worker.NewReader(s.tx) }
 func (s *Snapshot) SessionDAO() SessionReader             { return session.NewReader(s.tx) }
 func (s *Snapshot) BotDAO() BotReader                     { return bot.NewReader(s.tx) }

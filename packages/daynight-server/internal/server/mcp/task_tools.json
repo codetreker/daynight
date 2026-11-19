@@ -1,7 +1,7 @@
 [
   {
     "name": "task_create",
-    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or dependencies. Supply tagIds as the complete Project tag UUID set.",
+    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or ordinary Task dependencies; it starts without acceptance relationships, which can be edited separately. Supply tagIds as the complete Project tag UUID set.",
     "inputSchema": {
       "type": "object",
       "properties": {

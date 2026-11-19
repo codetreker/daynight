@@ -135,10 +135,12 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
 	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, app.TaskObservations, auth, logger)
+	taskhttp.GoalDependencyRoutes(mux, app.Tasks, auth, logger)
 	usagehttp.RegisterRoutes(mux, app.Usage, auth, logger)
 	taskhttp.PersonalTaskRoutes(mux, app.TaskObservations.PersonalTasks, auth, logger)
 	sessionhttp.RegisterInspectionRoutes(mux, app.TaskInspection, auth, logger)
 	sessionhttp.RegisterHistoryRoutes(mux, app.TaskHistory, auth, logger)
+	sessionhttp.RegisterGroupDirectoryRoutes(mux, app.HistoryDirectory, auth, logger)
 	taskhttp.TaskSearchRoutes(mux, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
 		return tasksearch.Search(ctx, app.TaskSearch, principal, projectID, input)
 	}, auth, logger)
@@ -250,6 +252,7 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error { return mcphttp.RegisterTagTools(entry, app.Tags) },
 		func() error { return mcphttp.RegisterThreadTools(entry, app.TaskThreads) },
 		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks, app.TaskObservations) },
+		func() error { return mcphttp.RegisterGoalDependencyTools(entry, app.Tasks) },
 		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks, app.TaskObservations) },
 		func() error {
 			return mcphttp.RegisterTaskSearchTool(entry, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {

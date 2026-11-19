@@ -253,21 +253,48 @@ describe('pull request workspace', () => {
     expect(fetch.mock.calls.every(([url]) => !String(url).endsWith('/github/sync'))).toBe(true);
   });
 
-  it('announces new records without replacing the current page until explicit refresh', async () => {
-    let updated = false;
-    mockReads(url => url.pathname.endsWith('/github') ? status() : page([summary(updated && !url.searchParams.has('cursor') ? '124' : '123')], { revision: updated ? '5' : '4' }));
-    renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'zh-CN' });
-    await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
-    await waitFor(() => expect(screen.getByRole('button', { name: '刷新' })).toBeEnabled());
-    updated = true;
-    fireEvent.focus(window);
-    expect(await screen.findByText('有新的 PR，刷新后可纳入当前列表。')).toBeVisible();
-    expect(screen.getByRole('button', { name: '#123 Preserve 123, Open' })).toBeVisible();
-    expect(screen.queryByRole('button', { name: '#124 Preserve 124, Open' })).toBeNull();
-    await waitFor(() => expect(screen.getAllByRole('button', { name: '刷新' })[0]).toBeEnabled());
-    fireEvent.click(screen.getAllByRole('button', { name: '刷新' })[0]!);
+  it.each(['en', 'zh-CN'] as const)('silently updates the first page in %s without disrupting controls during a delayed read', async locale => {
+    let hold = false, release!: (value: PullRequestPage) => void;
+    const pending = new Promise<PullRequestPage>(resolve => { release = resolve; });
+    const fetch = mockReads(url => url.pathname.endsWith('/github') ? status() : hold ? pending : page([summary()]));
+    renderWithLocale(<PullRequestWorkspace {...options()} />, { locale });
+    const row = await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+    const refresh = screen.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' });
+    const search = screen.getByRole('searchbox'); search.focus();
+    const calls = fetch.mock.calls.length; hold = true; fireEvent.focus(window);
+    await waitFor(() => expect(fetch.mock.calls.length).toBe(calls + 2));
+    expect(screen.getByRole('button', { name: '#123 Preserve 123, Open' })).toBe(row);
+    expect(search).toHaveFocus(); expect(refresh).toBeEnabled();
+    expect(screen.queryByText(locale === 'en' ? 'Refreshing…' : '正在刷新…')).toBeNull();
+    expect(screen.queryByText(locale === 'en' ? 'Loading pull requests…' : '正在读取 PR…')).toBeNull();
+    await act(async () => { release(page([summary('124'), summary()], { revision: '5' })); await pending; });
     expect(await screen.findByRole('button', { name: '#124 Preserve 124, Open' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '#123 Preserve 123, Open' })).toBe(row);
+    expect(search).toHaveFocus();
     expect(screen.queryByText('有新的 PR，刷新后可纳入当前列表。')).toBeNull();
+    expect(screen.queryByText(/New pull requests/)).toBeNull();
+    expect(screen.getAllByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' })).toHaveLength(1);
+  });
+
+  it('keeps an existing list error visible while a background retry is pending', async () => {
+    let mode: 'initial' | 'fail' | 'hold' = 'initial', release!: (value: PullRequestPage) => void;
+    const pending = new Promise<PullRequestPage>(resolve => { release = resolve; });
+    const fetch = mockReads(url => {
+      if (url.pathname.endsWith('/github')) return status();
+      if (mode === 'fail') throw new TypeError('network');
+      return mode === 'hold' ? pending : page([summary()]);
+    });
+    renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    const row = await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+    mode = 'fail'; fireEvent.focus(window);
+    const error = await screen.findByText('Could not read pull requests. Previously saved data has not been deleted.');
+    mode = 'hold'; const calls = fetch.mock.calls.length; fireEvent.focus(window);
+    await waitFor(() => expect(fetch.mock.calls.length).toBe(calls + 2));
+    expect(error).toBeVisible(); expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '#123 Preserve 123, Open' })).toBe(row);
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
+    await act(async () => { release(page([summary()], { revision: '5' })); await pending; });
+    await waitFor(() => expect(screen.queryByText('Could not read pull requests. Previously saved data has not been deleted.')).toBeNull());
   });
 
   it.each([

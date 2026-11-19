@@ -30,7 +30,9 @@ mechanism.
 This extends the earlier [reading history decision](2026-11-11-account-reading-history.md):
 project section selection is addressable, while nested reading remains in history.
 The archived [section restoration decision](../../archived/bug-fix/2026-10-25-project-section-restoration.md)
-retains the rationale for per-project preferences on bare entry.
+retains the rationale for per-project preferences on bare entry. The
+[project shared-scroll decision](../bug-fix/2026-11-19-project-shared-scroll.md)
+keeps one page position across these section URLs and same-project history.
 
 ## Alternatives
 

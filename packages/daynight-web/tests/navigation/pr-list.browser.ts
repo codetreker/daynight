@@ -21,6 +21,38 @@ const assertFits = async (page: Page) => {
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
 };
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`status icons center within short and multiline cards at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    state.longContent = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    for (const [filter, first, expected] of [['active', '1248', ['open', 'draft']], ['merged', '1236', ['merged']], ['closed', '1208', ['closed']]] as const) {
+      await page.locator('#pr-filter').selectOption(filter);
+      await expect(page.locator('.pr-row')).toHaveCount(6);
+      await expect(page.locator('.pr-row').first()).toHaveAttribute('id', `pr-row-${first}`);
+      for (const tone of expected) {
+        const rows = page.locator('.pr-row').filter({ has: page.locator(`.pr-status-icon.${tone}`) });
+        expect(await rows.count()).toBeGreaterThanOrEqual(2);
+        const heights: number[] = [];
+        for (const row of await rows.all()) {
+          const geometry = await row.evaluate(element => {
+            const row = element.getBoundingClientRect(), icon = element.querySelector('.pr-status-icon')!.getBoundingClientRect();
+            const main = element.querySelector('.pr-row-main')!.getBoundingClientRect();
+            return { difference: Math.abs(row.top + row.height / 2 - icon.top - icon.height / 2), gap: main.left - icon.right, height: row.height };
+          });
+          expect(geometry.difference).toBeLessThanOrEqual(1);
+          expect(geometry.gap).toBeGreaterThanOrEqual(0);
+          heights.push(geometry.height);
+        }
+        expect(Math.max(...heights)).toBeGreaterThan(Math.min(...heights));
+      }
+      await assertFits(page);
+    }
+    expect(state.unexpected).toEqual([]);
+  });
+}
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 390, 320]) {
   test(`PR cards retain geometry and readable long content at ${width}px in ${locale}`, async ({ page }, info) => {
     const state = await installPrList(page, locale);
@@ -758,5 +790,146 @@ for (const locale of ['en', 'zh-CN'] as const) test(`statistics headings and lon
   const pickerBox = (await picker.boundingBox())!, parentBox = (await picker.locator('..').boundingBox())!;
   expect(pickerBox.x).toBeGreaterThanOrEqual(parentBox.x - 1); expect(pickerBox.x + pickerBox.width).toBeLessThanOrEqual(parentBox.x + parentBox.width + 1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(state.unexpected).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`new matching PRs join the first page without disturbing the creator menu at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.install();
+    await open(page);
+    const trigger = page.locator('.pr-author-trigger'), menu = page.locator('.pr-author-menu');
+    await trigger.click();
+    await menu.getByRole('option', { name: /^author$/ }).click();
+    const search = page.locator('#pr-search');
+    await search.fill('Pull request');
+    await expect(page.locator('.pr-row').first()).toContainText('#1247');
+    await trigger.click();
+    const menuSearch = menu.getByRole('combobox');
+    await expect(menuSearch).toBeFocused();
+    await menu.evaluate(element => element.setAttribute('data-menu-witness', 'retained'));
+    const retainedRow = page.locator('#pr-row-1247');
+    await retainedRow.evaluate(element => element.setAttribute('data-row-witness', 'retained'));
+    const position = await page.evaluate(() => scrollY);
+    let release!: () => void;
+    state.holdPages = new Promise<void>(resolve => { release = resolve; });
+    state.added = [
+      { ...records[0]!, number: '1250', id: '9250', title: 'Pull request other author', author: { id: '9001', login: 'other' } },
+      { ...records[0]!, number: '1249', id: '9249', title: 'Pull request newly synchronized' },
+    ];
+    state.revision++;
+    const reads = state.pageReads.length;
+    try {
+      await page.clock.fastForward(15_100);
+      await expect.poll(() => state.pageReads.length).toBeGreaterThan(reads);
+      expect(new URLSearchParams(state.pageReads.at(-1)).has('cursor')).toBe(false);
+      await expect(retainedRow).toHaveAttribute('data-row-witness', 'retained');
+      await expect(menu).toHaveAttribute('data-menu-witness', 'retained');
+      await expect(menuSearch).toBeFocused();
+      await expect(page.locator('.pr-heading button')).toHaveAttribute('aria-busy', 'false');
+      await expect(page.locator('.pr-heading button')).toBeEnabled();
+      await expect(page.locator('.pr-row')).toHaveCount(6);
+    } finally { state.holdPages = null; release(); }
+    await expect(page.locator('.pr-row').first()).toContainText('#1249');
+    await expect(page.locator('.pr-row')).toHaveCount(6);
+    await expect(page.locator('.pr-results-count')).toContainText('11');
+    await expect(page.locator('#pr-row-1250')).toHaveCount(0);
+    await expect(retainedRow).toHaveAttribute('data-row-witness', 'retained');
+    await expect(menu).toHaveAttribute('data-menu-witness', 'retained');
+    await expect(menuSearch).toBeFocused();
+    expect(await page.evaluate(() => scrollY)).toBe(position);
+    await expect(page.locator('.pull-request-workspace')).not.toContainText(/New pull requests are available|有新的 PR，刷新后可纳入当前列表/);
+    await assertFits(page);
+    expect(state.unexpected).toEqual([]);
+  });
+
+  test(`an empty first page accepts its first matching PR at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    state.removed = records.map(item => item.number);
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.install();
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-prs').click();
+    await expect(page.locator('.pr-empty-state')).toBeVisible();
+    const search = page.locator('#pr-search');
+    await search.fill('newly synchronized');
+    await expect(page.locator('.pr-empty-state')).toContainText(locale === 'en' ? 'No matching pull requests' : '没有找到匹配的 PR');
+    await search.focus();
+    state.added = [
+      { ...records[0]!, number: '1250', id: '9250', title: 'Does not match' },
+      { ...records[0]!, number: '1249', id: '9249', title: 'newly synchronized' },
+    ];
+    state.revision++;
+    await page.clock.fastForward(15_100);
+    await expect(page.locator('.pr-row')).toHaveCount(1);
+    await expect(page.locator('.pr-row').first()).toContainText('#1249');
+    await expect(page.locator('.pr-results-count')).toContainText('1');
+    await expect(search).toBeFocused();
+    await expect(page.locator('.pull-request-workspace')).not.toContainText(/New pull requests are available|有新的 PR，刷新后可纳入当前列表/);
+    await expect(page.locator('.pr-pagination button').first()).toBeDisabled();
+    await expect(page.locator('.pr-pagination button').last()).toBeDisabled();
+    await assertFits(page);
+    expect(state.unexpected).toEqual([]);
+  });
+}
+
+test('anchored pages stay put and a return to the first boundary resumes live first-page updates', async ({ page }) => {
+  const state = await installPrList(page);
+  await page.clock.install();
+  await open(page);
+  const panel = page.locator('#project-section-panel-prs');
+  await panel.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.locator('.pr-row').first()).toContainText('#1242');
+  state.added = [{ ...records[0]!, number: '1249', id: '9249', title: 'Newly synchronized' }];
+  state.revision++;
+  await page.clock.fastForward(15_100);
+  await expect(panel.locator('.pr-results-count')).toContainText('13');
+  await expect(page.locator('.pr-row').first()).toContainText('#1242');
+  await panel.getByRole('button', { name: 'Previous', exact: true }).click();
+  await expect(page.locator('.pr-row').first()).toContainText('#1248');
+  const reads = state.pageReads.length;
+  await page.clock.fastForward(15_100);
+  await expect(page.locator('.pr-row').first()).toContainText('#1249');
+  expect(new URLSearchParams(state.pageReads[reads]).has('cursor')).toBe(false);
+  expect(state.unexpected).toEqual([]);
+});
+
+test('background failure remains retryable during the next check and leaves an open detail intact', async ({ page }) => {
+  const state = await installPrList(page);
+  await page.clock.install();
+  await open(page);
+  await page.locator('#pr-row-1247').click();
+  const dialog = page.getByRole('dialog'), raw = dialog.getByRole('checkbox', { name: 'Raw Markdown' });
+  await raw.check();
+  await dialog.evaluate(element => element.setAttribute('data-detail-witness', 'retained'));
+  const body = dialog.locator('.dialog-body');
+  const position = await body.evaluate(element => { element.scrollTop = Math.floor(element.scrollHeight / 2); return element.scrollTop; });
+  state.pageError = true;
+  await page.clock.fastForward(15_100);
+  const alert = page.locator('#project-section-panel-prs').getByRole('alert');
+  await expect(alert).toContainText('Could not read pull requests');
+  await expect(alert.getByRole('button', { name: 'Retry' })).toBeVisible();
+  let release!: () => void;
+  state.holdPages = new Promise<void>(resolve => { release = resolve; });
+  state.pageError = false;
+  state.added = [{ ...records[0]!, number: '1249', id: '9249', title: 'Newly synchronized' }];
+  state.revision++;
+  const reads = state.pageReads.length;
+  try {
+    await page.clock.fastForward(15_100);
+    await expect.poll(() => state.pageReads.length).toBeGreaterThan(reads);
+    await expect(alert).toBeVisible();
+    await expect(dialog).toHaveAttribute('data-detail-witness', 'retained');
+    await expect(raw).toBeChecked();
+    await expect(raw).toBeFocused();
+    await expect(page.locator('.pr-heading button')).toHaveAttribute('aria-busy', 'false');
+  } finally { state.holdPages = null; release(); }
+  await expect(alert).toHaveCount(0);
+  await expect(page.locator('.pr-row').first()).toContainText('#1249');
+  await expect(dialog).toHaveAttribute('data-detail-witness', 'retained');
+  await expect(raw).toBeChecked();
+  await expect(raw).toBeFocused();
+  expect(await body.evaluate(element => element.scrollTop)).toBe(position);
   expect(state.unexpected).toEqual([]);
 });

@@ -28,5 +28,6 @@ type Transactions interface {
 	AttachmentWriter
 	AttachmentMutationWriter
 	TaskSearchReader
+	HistoryDirectoryReader
 	AssistantTaskWriter
 }

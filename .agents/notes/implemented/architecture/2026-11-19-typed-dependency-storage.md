@@ -8,7 +8,7 @@ Goal acceptance relationships need to coexist with ordinary Task dependencies wi
 
 ## Decision
 
-Keep the existing dependency table and primary and reverse indexes. A non-null `dependency_type` defaults to `task`; a nullable `goal_edge_id` reserves identity for Goal edges. Every ordinary dependency read, traversal and mutation filters the task type, and inserts specify it. The application does not expose Goal edge writes at this stage. Existing rows and old writes receive the task default.
+Keep the existing dependency table and primary and reverse indexes. A non-null `dependency_type` defaults to `task`; a nullable `goal_edge_id` reserves identity for Goal edges. Every ordinary dependency read, traversal and mutation filters the task type, and inserts specify it. The initial storage delivery withheld Goal edge writes; the [independent REST resource](../feature/2026-11-19-goal-dependency-rest.md) exposes them with lifecycle and Project cleanup protection. Existing rows and old writes receive the task default.
 
 The schema migration is additive. A running old instance can briefly coexist before Goal edges are introduced, but an old binary restarted against the new migration ledger rejects it. All old instances that access the table must exit before Goal edge writes are enabled.
 

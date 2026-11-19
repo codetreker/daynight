@@ -9,7 +9,7 @@ type Connection struct {
 	ProjectID                                                         string
 	Version, Generation, Revision                                     int64
 	Enabled, SyncEnabled                                              bool
-	AppID, InstallationID, RepositoryID                               *int64
+	AppID, InstallationID, RepositoryID, LegacyRepositoryID           *int64
 	InstallationAccountLogin, RepositoryFullName                      *string
 	RepositoryPrivate                                                 *bool
 	PollIntervalMinutes                                               int32
@@ -44,6 +44,8 @@ type Author struct {
 // PullRequestSummary deliberately excludes the potentially large description.
 type PullRequestSummary struct {
 	ProjectID                        string
+	RepositoryID                     int64
+	RepositoryFullName               string
 	Number, GitHubID                 int64
 	URL, Title                       string
 	AuthorID                         *int64

@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -68,7 +69,12 @@ func (h *projectHandler) delete(w http.ResponseWriter, r *http.Request, p model.
 			return
 		}
 	}
-	receipt, err := h.projects.Delete(r.Context(), p, r.PathValue("projectId"))
+	confirmed, err := goalDependencyRemovalConfirmation(r.Header)
+	if err != nil {
+		httpx.WriteError(w, r, logger, "project_deletion", "prepare", err)
+		return
+	}
+	receipt, err := h.projects.DeleteWithInput(r.Context(), p, r.PathValue("projectId"), coreproject.DeletionInput{ConfirmGoalDependencyRemoval: confirmed})
 	if err != nil {
 		var failure *service.DeletionFailure
 		if errors.As(err, &failure) {

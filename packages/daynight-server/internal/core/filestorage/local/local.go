@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -25,18 +26,30 @@ type Storage struct {
 	exactSpelling bool
 	namespace     sync.Mutex
 	fileSync      func(*os.File) error
-	gates         [2][256]chan struct{}
-	residencyMu   sync.Mutex
-	residency     map[string]struct{}
+	gates         filestorage.Gates
+	closed        atomic.Bool
 }
 
 var _ filestorage.Storage = (*Storage)(nil)
 
+// New opens a storage root with gate coordination within this process.
 func New(root string) (*Storage, error) {
 	return newWithDirectorySync(root, (*os.File).Sync)
 }
 
+// NewWithGates opens a storage root using gates owned by the caller.
+func NewWithGates(root string, gates filestorage.Gates) (*Storage, error) {
+	if gates == nil {
+		return nil, errors.New("storage gates are required")
+	}
+	return openStorage(root, (*os.File).Sync, gates)
+}
+
 func newWithDirectorySync(root string, fileSync func(*os.File) error) (*Storage, error) {
+	return openStorage(root, fileSync, nil)
+}
+
+func openStorage(root string, fileSync func(*os.File) error, gates filestorage.Gates) (*Storage, error) {
 	if err := makeRoot(root, fileSync); err != nil {
 		return nil, err
 	}
@@ -74,16 +87,14 @@ func newWithDirectorySync(root string, fileSync func(*os.File) error) (*Storage,
 	if !sensitive && runtime.GOOS != "darwin" {
 		return nil, errors.Join(ErrCaseInsensitive, directory.Close())
 	}
-	storage := &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync}
-	for domain := range storage.gates {
-		for stripe := range storage.gates[domain] {
-			storage.gates[domain][stripe] = make(chan struct{}, 1)
-		}
+	if gates == nil {
+		gates = standaloneGates{root: resolved}
 	}
-	return storage, nil
+	return &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync, gates: gates}, nil
 }
 
 func (s *Storage) Close() error {
+	s.closed.Store(true)
 	return s.root.Close()
 }
 
@@ -98,7 +109,7 @@ func (s *Storage) Put(ctx context.Context, bucket, name string, content io.Reade
 	if err != nil {
 		return info, err
 	}
-	file, temporary, err := s.beginPut(address)
+	file, temporary, err := s.beginPut(ctx, address)
 	if err != nil {
 		return info, err
 	}
@@ -108,7 +119,7 @@ func (s *Storage) Put(ctx context.Context, bucket, name string, content io.Reade
 		}
 	}()
 	size, copyErr := io.Copy(file, contextReader{ctx: ctx, reader: content})
-	result = errors.Join(copyErr, ctx.Err())
+	result = errors.Join(copyErr, filestorage.GateError(ctx))
 	if result == nil {
 		result = s.fileSync(file)
 	}
@@ -116,7 +127,7 @@ func (s *Storage) Put(ctx context.Context, bucket, name string, content io.Reade
 	if result != nil {
 		return info, result
 	}
-	if err := s.publish(temporary, address, &outcome); err != nil {
+	if err := s.publish(ctx, temporary, address, &outcome); err != nil {
 		return info, err
 	}
 	temporary = ""
@@ -138,6 +149,9 @@ func (s *Storage) Open(ctx context.Context, bucket, name string) (filestorage.Ob
 	if err := s.regular(address); err != nil {
 		return filestorage.Object{}, err
 	}
+	if err := filestorage.GateError(ctx); err != nil {
+		return filestorage.Object{}, err
+	}
 	file, err := s.root.Open(address)
 	if err != nil {
 		return filestorage.Object{}, err
@@ -146,7 +160,7 @@ func (s *Storage) Open(ctx context.Context, bucket, name string) (filestorage.Ob
 	if err == nil && !info.Mode().IsRegular() {
 		err = filestorage.ErrNotRegular
 	}
-	if err != nil {
+	if err = errors.Join(err, filestorage.GateError(ctx)); err != nil {
 		return filestorage.Object{}, errors.Join(err, file.Close())
 	}
 	return filestorage.Object{
@@ -167,14 +181,24 @@ func (s *Storage) Delete(ctx context.Context, bucket, name string) error {
 	}
 	if err := s.regular(address); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			return filestorage.GateError(ctx)
 		}
+		return err
+	}
+	if err := verifyMutation(ctx); err != nil {
 		return err
 	}
 	if err := s.root.Remove(address); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return s.pruneParents(address)
+	return errors.Join(s.pruneParents(address), filestorage.GateError(ctx))
+}
+
+func verifyMutation(ctx context.Context) error {
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	return filestorage.VerifyGates(ctx)
 }
 
 func checkedAddress(ctx context.Context, bucket, name string) (string, error) {
@@ -184,16 +208,19 @@ func checkedAddress(ctx context.Context, bucket, name string) (string, error) {
 	if err := filestorage.ValidateAddress(bucket, name); err != nil {
 		return "", err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := filestorage.GateError(ctx); err != nil {
 		return "", err
 	}
 	return bucket + "/" + name, nil
 }
 
-func (s *Storage) beginPut(address string) (file *os.File, temporary string, result error) {
+func (s *Storage) beginPut(ctx context.Context, address string) (file *os.File, temporary string, result error) {
 	s.namespace.Lock()
 	defer s.namespace.Unlock()
 	if err := s.checkSpelling(address); err != nil {
+		return nil, "", err
+	}
+	if err := filestorage.GateError(ctx); err != nil {
 		return nil, "", err
 	}
 	defer func() {
@@ -204,7 +231,10 @@ func (s *Storage) beginPut(address string) (file *os.File, temporary string, res
 	if err := s.root.MkdirAll(path.Dir(address), 0o700); err != nil {
 		return nil, "", err
 	}
-	if err := s.fileTarget(address, false); err != nil {
+	if err := s.fileTarget(ctx, address, false); err != nil {
+		return nil, "", err
+	}
+	if err := filestorage.GateError(ctx); err != nil {
 		return nil, "", err
 	}
 	temporary = path.Join(path.Dir(address), ".daynight-upload-"+rand.Text())
@@ -212,13 +242,16 @@ func (s *Storage) beginPut(address string) (file *os.File, temporary string, res
 	return file, temporary, err
 }
 
-func (s *Storage) publish(temporary, address string, outcome *filestorage.Publication) error {
+func (s *Storage) publish(ctx context.Context, temporary, address string, outcome *filestorage.Publication) error {
 	s.namespace.Lock()
 	defer s.namespace.Unlock()
 	if err := s.checkSpelling(address); err != nil {
 		return err
 	}
-	if err := s.fileTarget(address, true); err != nil {
+	if err := s.fileTarget(ctx, address, true); err != nil {
+		return err
+	}
+	if err := verifyMutation(ctx); err != nil {
 		return err
 	}
 	*outcome = filestorage.PublicationUnknown
@@ -237,7 +270,7 @@ func (s *Storage) publish(temporary, address string, outcome *filestorage.Public
 			return err
 		}
 		if directory == "." {
-			return nil
+			return filestorage.GateError(ctx)
 		}
 	}
 }
@@ -277,7 +310,7 @@ func (s *Storage) pruneParents(address string) error {
 // Empty physical directories are reusable names; active child uploads keep them
 // nonempty. The namespace lock excludes this instance's publishers and deleters
 // while an empty directory is checked and removed.
-func (s *Storage) fileTarget(address string, replaceEmpty bool) error {
+func (s *Storage) fileTarget(ctx context.Context, address string, replaceEmpty bool) error {
 	info, err := s.root.Lstat(address)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -307,6 +340,9 @@ func (s *Storage) fileTarget(address string, replaceEmpty bool) error {
 		return fmt.Errorf("%w: %s", filestorage.ErrNotRegular, address)
 	}
 	if replaceEmpty {
+		if err := verifyMutation(ctx); err != nil {
+			return err
+		}
 		return s.root.Remove(address)
 	}
 	return nil
@@ -329,11 +365,11 @@ type contextReader struct {
 }
 
 func (r contextReader) Read(buffer []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
+	if err := context.Cause(r.ctx); err != nil {
 		return 0, err
 	}
 	count, err := r.reader.Read(buffer)
-	if contextErr := r.ctx.Err(); contextErr != nil {
+	if contextErr := context.Cause(r.ctx); contextErr != nil {
 		return count, errors.Join(err, contextErr)
 	}
 	return count, err
@@ -350,7 +386,7 @@ func (f *contextFile) Read(buffer []byte) (int, error) {
 }
 
 func (f *contextFile) Close() error {
-	return errors.Join(f.ctx.Err(), f.file.Close())
+	return errors.Join(context.Cause(f.ctx), f.file.Close())
 }
 
 func checkCaseSensitive(root *os.Root) (sensitive bool, result error) {

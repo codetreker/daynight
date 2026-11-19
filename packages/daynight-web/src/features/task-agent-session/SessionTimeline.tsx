@@ -1,5 +1,5 @@
 import { sessionFenceKey } from '../../../../daynight/src/session/protocol';
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { legacySubagentActivity } from './legacy-subagent-activity';
 import './session-timeline.css';
 import { SessionMarkdown } from './SessionMarkdown';
@@ -15,6 +15,7 @@ import { useSessionMessages } from './messages';
 import { useSessionHistoryPagination } from './useSessionHistoryPagination';
 import { usePendingInteractionLocator } from './usePendingInteractionLocator';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
+import { useSessionImageScope } from './images/SessionImageScope';
 import { selectSessionDisplayEntries, type SessionDisplayMode } from './display-mode';
 import { matchingSessionHistoryPreview, selectSessionHistoryRows, type SessionHistoryPreview, type SessionHistoryCoverage } from './history-preview';
 import { toolSummary } from './tool-summary';
@@ -68,6 +69,12 @@ export function SessionTimeline({ state, active, canRespond, actionAdmitted = tr
     for (const key of disclosures.current.values.keys()) if (!retained.has(key.split('/')[0]!)) disclosures.current.values.delete(key);
   }, [originalKeys]);
   const currentScroll = useRef(scroll); currentScroll.current = scroll;
+  const imagePreview = useSessionImageScope()?.preview;
+  useLayoutEffect(() => imagePreview?.subscribe(() => {
+    // The browser may have scrolled before activation without delivering its
+    // scroll event yet. The preview lock will ignore that pending event.
+    if (imagePreview.snapshot()) currentScroll.current.onScroll();
+  }), [imagePreview]);
   const readingHandle = useMemo<SessionTimelineReadingHandle>(() => ({
     captureBookmark: () => currentScroll.current.captureBookmark(),
     restoreBookmark: bookmark => currentScroll.current.restoreBookmark(bookmark),

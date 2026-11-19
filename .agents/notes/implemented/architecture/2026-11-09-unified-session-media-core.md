@@ -189,9 +189,11 @@ The [actual content capacity decision](2026-11-13-session-actual-content-capacit
 replaces the former fixed archive and future-volume reservations.
 Deletion closes admission and joins physical operations before its final sweep.
 Ordinary media admission also reaps crash-orphaned leases across the deployment.
-It ends the listing transaction before trying each original filesystem lock,
-retains busy owners, and holds an acquired lock through confirmed deletion of
-that exact lease. A timeout or uncertain commit never clears the counters.
+It ends the listing transaction before trying each original owner gate,
+retains busy owners, and holds an acquired permit through confirmed deletion of
+that exact lease. A timeout or uncertain commit leaves the counters intact.
+[Redis storage gates](2026-11-19-redis-storage-gates.md) own expiry and recovery
+of the synchronization keys.
 The immutable archive barrier includes unresolved content-changing commands and
 resource associations; unrelated unknown control receipts retain their original
 identity without preventing publication of complete message history.
