@@ -343,3 +343,28 @@ func TestVerifyGatesRejectsReplacedOuterLeaseBeforeRenewal(t *testing.T) {
 		t.Fatalf("verification must preserve the successor: %q, %v", got, err)
 	}
 }
+
+func TestRedisVerificationFailureRevokesLease(t *testing.T) {
+	server, _ := redisFixture(t)
+	client := redisclient.NewClient(server.client.Options())
+	gates := New(client)
+	p := acquireForTest(t, func() (io.Closer, error) {
+		return gates.TryAcquireResidency(t.Context(), t.Name())
+	})
+	defer server.client.Del(t.Context(), p.key)
+	defer p.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := p.VerifyGate(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("verify with canceled context: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.VerifyGate(t.Context()); !errors.Is(err, filestorage.ErrGateLost) || !errors.Is(err, redisclient.ErrClosed) {
+		t.Fatalf("verify after client closed: %v", err)
+	}
+	if err := p.VerifyGate(t.Context()); !errors.Is(err, filestorage.ErrGateLost) {
+		t.Fatalf("recheck revoked lease: %v", err)
+	}
+}
