@@ -9,6 +9,7 @@ import { installGraphMeasurements } from './graph-measurements';
 import { detailFixture, snapshotFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
+vi.mock('../src/features/goal-detail/useGoalDependencies', () => ({ useGoalDependencies: () => ({ page: null, unavailable: false, error: null, pending: false, hasPrevious: false, refresh: () => {}, next: () => {}, previous: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => null }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));

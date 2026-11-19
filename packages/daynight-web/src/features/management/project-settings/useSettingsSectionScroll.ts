@@ -20,7 +20,7 @@ export const useSettingsSectionScroll = (tab: ProjectSettingsTab | null, onRoute
     window.addEventListener('popstate', capture, true);
     document.addEventListener('focusin', capture);
     document.addEventListener('select', capture);
-    return () => { window.removeEventListener('scroll', capture); window.removeEventListener('popstate', capture, true); document.removeEventListener('focusin', capture); document.removeEventListener('select', capture); window.history.scrollRestoration = old; };
+    return () => { window.removeEventListener('scroll', capture); window.removeEventListener('popstate', capture, true); document.removeEventListener('focusin', capture); document.removeEventListener('select', capture); if (/^\/projects\/[^/]+\/settings(?:\/|$)/.test(window.location.pathname)) window.history.scrollRestoration = old; };
   }, [onRoute, capture]);
   useLayoutEffect(() => {
     if (current.current === tab) return;

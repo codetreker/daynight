@@ -18,6 +18,7 @@ import (
 	mcpconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp/config"
 
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -53,13 +54,14 @@ type RequestActor struct {
 
 type scopeKey struct{}
 type requestScope struct {
-	actor    RequestActor
-	mu       sync.Mutex
-	httpDone bool
-	handlers int
-	releases []func()
-	batchKey string
-	batchIDs map[string]batchRPCID
+	actor        RequestActor
+	mu           sync.Mutex
+	httpDone     bool
+	handlers     int
+	releases     []func()
+	historyLease io.Closer
+	batchKey     string
+	batchIDs     map[string]batchRPCID
 }
 
 func (s *requestScope) begin()     { s.mu.Lock(); s.handlers++; s.mu.Unlock() }
@@ -70,12 +72,24 @@ func (s *requestScope) hold(release func()) {
 	s.releases = append(s.releases, release)
 	s.mu.Unlock()
 }
+func (s *requestScope) holdHistory(lease io.Closer, release func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.historyLease = lease
+	s.releases = append(s.releases, release)
+}
+func (s *requestScope) retainedHistory() io.Closer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.historyLease
+}
 func (s *requestScope) finish() {
 	if s.httpDone && s.handlers == 0 {
 		for _, release := range s.releases {
 			release()
 		}
 		s.releases = nil
+		s.historyLease = nil
 	}
 }
 
@@ -310,8 +324,18 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	if historyRead {
 		bounded := &sessionReadResponseWriter{ResponseWriter: w}
 		e.http.ServeHTTP(&safeSDKWriter{ResponseWriter: bounded}, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
-		if err := bounded.finish(r); err != nil {
+		if err := bounded.finish(r, s.retainedHistory()); err != nil {
+			lost := errors.Is(err, filestorage.ErrGateLost)
+			if lost && !bounded.started && r.Context().Err() == nil {
+				s.delivered()
+				w.Header().Del("Content-Length")
+				httpx.WriteError(w, r, e.logger, "mcp", "session_read_delivery", &model.Fault{Code: "history_unavailable", Message: "The Session history is no longer available for this response.", Cause: err})
+				return
+			}
 			httpx.LogFailure(e.logger, r.Context(), "mcp", "session_read_delivery", err)
+			if lost && bounded.started {
+				panic(http.ErrAbortHandler)
+			}
 		}
 		return
 	}

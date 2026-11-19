@@ -7,6 +7,7 @@ import { detailFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
 const select = vi.hoisted(() => vi.fn());
+vi.mock('../src/features/goal-detail/useGoalDependencies', () => ({ useGoalDependencies: () => ({ page: null, unavailable: false, error: null, pending: false, hasPrevious: false, refresh: () => {}, next: () => {}, previous: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: ({ reveal }: { reveal: { path: string | null } }) => <span>Attachment: {reveal.path}</span> }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));

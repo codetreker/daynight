@@ -200,6 +200,10 @@ func (s *writeWitnessStore) WriteProject(ctx context.Context, project string, ru
 
 type writeWitnessScope struct{ f *writeWitness }
 
+func (s *writeWitnessScope) GoalRelationDAO() store.GoalRelationEditor {
+	panic(s.f.unexpected("GoalRelationDAO"))
+}
+
 func (s *writeWitnessScope) ProjectDAO() store.ProjectWriteDAO {
 	s.f.checkContext(s.f.ctx)
 	s.f.step("ProjectDAO")

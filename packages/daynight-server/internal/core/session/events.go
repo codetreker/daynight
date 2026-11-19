@@ -25,7 +25,7 @@ func (s *Execution) SourceSeq(ctx context.Context, f sp.ControllerFence) (int64,
 	return n, err
 }
 func (s *Execution) Handle(ctx context.Context, m sp.ControllerMessage) (_ map[string]any, result error) {
-	prepared, check, finish, err := s.prepareReadMediaResponse(ctx, m)
+	ctx, prepared, check, finish, err := s.prepareReadMediaResponse(ctx, m)
 	if err != nil {
 		return nil, err
 	}

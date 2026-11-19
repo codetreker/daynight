@@ -12,6 +12,7 @@ type SnapshotReader interface {
 }
 
 type SnapshotScope interface {
+	GoalRelationDAO() GoalRelationReader
 	CredentialDAO() CredentialReader
 	UserCandidateDAO() UserCandidateReader
 	TeamDAO() TeamReader

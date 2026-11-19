@@ -49,6 +49,14 @@ const issues: Readonly<Record<string, readonly [string, string]>> = {
   image_target_changed: ['The Session changed. Review the saved draft before sending.', 'Session 已变化，请检查保存的草稿后再发送。'],
   image_capability_changed: ['The model’s image support changed. Check the current model and retry.', '模型的图片能力已变化，请检查当前模型后重试。'],
   image_capability_unavailable: ['Image sending is unavailable for the current model or Session.', '当前模型或 Session 暂不支持发送图片。'],
+  // Service image capability reasonCode values from imageCapabilitySchema in
+  // daynight-server/internal/core/session/protocol/images.go. provider_unsupported
+  // and component_unsupported are mapped through aliases below.
+  profile_disabled: ['Image input is not yet available for the current model. The draft is retained; remove the images to send text.', '当前模型尚未开放图片输入。草稿已保留，可移除图片后发送文字。'],
+  model_unsupported: ['The current model does not support image input. Switch to a model that supports images, or remove the images to send text.', '当前模型不支持图片输入。可切换到支持图片的模型，或移除图片后发送文字。'],
+  capability_unknown: ['Image support for the current model cannot be confirmed yet. The draft is retained; try again later, or remove the images to send text.', '暂时无法确认当前模型的图片支持。草稿已保留，请稍后重试，或移除图片后发送文字。'],
+  policy_restricted: ['The current policy does not allow sending images. Remove the images to send text.', '当前策略不允许发送图片。可移除图片后发送文字。'],
+  worker_upgrade_required: ['The Worker running this Session must be upgraded before images can be sent. Remove the images to send text.', '执行此 Session 的 Worker 需要升级后才能发送图片。可移除图片后发送文字。'],
   image_session_unavailable: ['Wait for the Session to reconnect before sending.', '请等待 Session 恢复连接后发送。'],
   image_access_unavailable: ['Session access must be confirmed before continuing.', '请等待 Session 访问权限确认后继续。'],
   image_draft_unsaved: ['Wait for the draft to finish saving.', '请等待草稿保存完成。'],

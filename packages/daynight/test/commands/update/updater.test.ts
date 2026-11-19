@@ -863,7 +863,7 @@ const {runUpdateCommand}=await import(${JSON.stringify(moduleUrl)});try{await ru
     const ready = path.join(directory, "ready");
     const stop = path.join(directory, "stop");
     const anchorPid = path.join(directory, "anchor-pid");
-    const command = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`;
+    const command = `const fs=require('node:fs');${publishFixturePid(ready)}setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`;
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
     const driver = `const cp=require('node:child_process');const {syncBuiltinESMExports}=require('node:module');const originalSpawn=cp.spawn;let anchor,cleanupRequests=0;
 ${controlledDeadlineDriver}
@@ -881,7 +881,7 @@ await outcome;process.stdout.write(JSON.stringify({message,cleanupRequests,elaps
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     const closed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
     try {
-      const pgid = processGroupOf(Number(await waitForFile(ready)));
+      const pgid = processGroupOf(await waitForFixturePid(ready));
       child.send("interrupt");
       expect(await waitForDriver(closed, () => stderr), stderr).toBe(0);
       const observed = JSON.parse(stdout) as { message: string; cleanupRequests: number; elapsed: number };

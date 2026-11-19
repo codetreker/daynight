@@ -130,7 +130,6 @@ export const auth: AuthMessages = {
     settings: {
       eyebrow: "项目设置",
       title: "项目设置",
-      scopeHint: "设置仅适用于当前项目。",
       alertTitle: "任务执行提醒",
       description: "为允许 Agent 且执行时间过长的进行中任务显示「可能卡住了」。",
       scope: "项目级设置",

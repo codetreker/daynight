@@ -184,6 +184,8 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 	if err != nil {
 		return model.Attachment{}, false, nil, err
 	}
+	ctx, cancelUpload := UploadLeaseContext(ctx, lease)
+	defer cancelUpload()
 	permit, err := s.files.AcquireGate(ctx, filestorage.TargetGate, address.StoragePath)
 	if err != nil {
 		return model.Attachment{}, false, lease, fmt.Errorf("acquire attachment gate: %w", err)
@@ -197,6 +199,11 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 			}
 		}
 	}()
+	ctx, cancelTarget := filestorage.GateContext(ctx, permit)
+	defer cancelTarget()
+	if body, ok := content.(interface{ SetReadContext(context.Context) }); ok {
+		body.SetReadContext(ctx)
+	}
 	var attachment model.Attachment
 	var created bool
 	publication := filestorage.NotPublished
@@ -226,11 +233,14 @@ func (s *Attachments) PutRetained(ctx context.Context, principal model.Principal
 			}
 			return fmt.Errorf("write attachment content: %w", err)
 		}
+		if err := filestorage.VerifyGates(ctx); err != nil {
+			return err
+		}
 		attachment, created, err = s.operations.putMetadata(ctx, dao, address, contentType, info.Size)
 		if err != nil {
 			return fmt.Errorf("write attachment metadata: %w", err)
 		}
-		return nil
+		return filestorage.VerifyGates(ctx)
 	})
 	if err == nil && completion.Outcome != store.TransactionCommitted {
 		err = &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
@@ -301,12 +311,19 @@ func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Princip
 	if err != nil {
 		return nil, fmt.Errorf("acquire attachment gate: %w", err)
 	}
+	ctx, cancel := filestorage.GateContext(ctx, permit)
+	defer cancel()
 	if err := s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
 		return s.operations.checkPathConflict(ctx, dao, address)
 	}); err != nil {
 		return nil, errors.Join(err, permit.Close())
 	}
 	return &TransferAdmission{service: s, principal: principal, address: address, contentType: contentType, namespace: namespace, target: target, private: private, publisher: publisher, permit: permit}, nil
+}
+
+// GateContext binds work to the retained target permit.
+func (a *TransferAdmission) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return filestorage.GateContext(ctx, a.permit)
 }
 
 // Put consumes an admission at most once and leaves cleanup of staged objects
@@ -319,6 +336,8 @@ func (a *TransferAdmission) Put(ctx context.Context, content io.Reader) (model.A
 // transfer reader must hold its private permit and use only scope-bound receipt
 // reads, avoiding a Task-to-transfer lock inversion during Project deletion.
 func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.AttachmentMutationScope) (io.ReadCloser, error)) (item model.Attachment, created bool, resultErr error) {
+	ctx, cancelTarget := a.GateContext(ctx)
+	defer cancelTarget()
 	lease, err := a.service.AcquireUploadLease(ctx, a.principal, a.address.ProjectID, a.address.TaskID)
 	if err != nil {
 		return model.Attachment{}, false, err
@@ -355,6 +374,13 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 		return model.Attachment{}, false, errors.New("transfer admission is closed or already used")
 	}
 	a.used = true
+	ctx, cancelUpload := lease.gateContext(ctx)
+	defer cancelUpload()
+	ctx, cancelTarget := a.GateContext(ctx)
+	defer cancelTarget()
+	if ctx.Err() != nil {
+		return model.Attachment{}, false, context.Cause(ctx)
+	}
 	object, err := uuid.NewRandom()
 	if err != nil {
 		return model.Attachment{}, false, fmt.Errorf("generate staged attachment ID: %w", err)
@@ -397,11 +423,14 @@ func (a *TransferAdmission) PutFromWithLease(ctx context.Context, held io.Closer
 			return fmt.Errorf("publish attachment content: %w", err)
 		}
 		publication = filestorage.Published
+		if err := filestorage.VerifyGates(ctx); err != nil {
+			return err
+		}
 		attachment, created, err = a.service.operations.putMetadata(ctx, dao, a.address, a.contentType, info.Size)
 		if err != nil {
 			return fmt.Errorf("write attachment metadata: %w", err)
 		}
-		return nil
+		return filestorage.VerifyGates(ctx)
 	})
 	if err == nil && completion.Outcome != store.TransactionCommitted {
 		err = &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
@@ -429,7 +458,7 @@ func (a *TransferAdmission) Close() error {
 	return a.closeErr
 }
 
-func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (model.Attachment, filestorage.Object, error) {
+func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (result model.Attachment, opened filestorage.Object, resultErr error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
@@ -441,24 +470,42 @@ func (s *Attachments) Open(ctx context.Context, principal model.Principal, proje
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, fmt.Errorf("acquire attachment gate: %w", err)
 	}
-	defer permit.Close()
+	defer func() {
+		if err := permit.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("release attachment gate: %w", err))
+			if opened.Body != nil {
+				resultErr = errors.Join(resultErr, opened.Body.Close())
+				result, opened = model.Attachment{}, filestorage.Object{}
+			}
+		}
+	}()
+	gateCtx, cancel := filestorage.GateContext(ctx, permit)
+	defer cancel()
 	var attachment model.Attachment
-	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
+	err = s.read(gateCtx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
 		var err error
-		attachment, err = s.operations.metadata(ctx, reader, address)
+		attachment, err = s.operations.metadata(gateCtx, reader, address)
 		return err
 	})
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
+	if gateCtx.Err() != nil {
+		return model.Attachment{}, filestorage.Object{}, context.Cause(gateCtx)
+	}
+	// The open handle pins the file version. Its reader remains bound to the
+	// caller after the target permit is released.
 	object, err := s.files.Open(ctx, attachmentcore.Bucket, address.StoragePath)
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, fmt.Errorf("open attachment content: %w", err)
 	}
+	if gateCtx.Err() != nil {
+		return model.Attachment{}, filestorage.Object{}, errors.Join(context.Cause(gateCtx), object.Body.Close())
+	}
 	return attachment, object, nil
 }
 
-func (s *Attachments) Delete(ctx context.Context, principal model.Principal, projectID, taskID, path string) error {
+func (s *Attachments) Delete(ctx context.Context, principal model.Principal, projectID, taskID, path string) (resultErr error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
@@ -470,7 +517,17 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 	if err != nil {
 		return fmt.Errorf("acquire attachment gate: %w", err)
 	}
-	defer permit.Close()
+	defer func() {
+		if err := permit.Close(); err != nil {
+			if resultErr == nil {
+				resultErr = &FileEffectError{Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: err}}
+			} else {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}
+	}()
+	ctx, cancel := filestorage.GateContext(ctx, permit)
+	defer cancel()
 	fileStarted := false
 	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
 		if _, err := s.operations.metadata(ctx, dao, address); err != nil {
@@ -480,10 +537,13 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 		if err := s.files.Delete(ctx, attachmentcore.Bucket, address.StoragePath); err != nil {
 			return fmt.Errorf("delete attachment content: %w", err)
 		}
+		if err := filestorage.VerifyGates(ctx); err != nil {
+			return err
+		}
 		if err := s.operations.deleteMetadata(ctx, dao, address); err != nil {
 			return fmt.Errorf("delete attachment metadata: %w", err)
 		}
-		return nil
+		return filestorage.VerifyGates(ctx)
 	})
 	if err != nil && fileStarted {
 		return &FileEffectError{Cause: err}

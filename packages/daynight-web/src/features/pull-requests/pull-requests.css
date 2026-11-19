@@ -25,7 +25,7 @@
 .pr-row { display: flex; width: 100%; min-width: 0; gap: 12px; align-items: flex-start; text-align: left; background: #fafbfc; border: 1px solid #d5dce5; border-radius: 8px; padding: 10px 15px; }
 .pr-row:hover { background: #f0f3f7; }
 .pr-row:focus-visible { outline: 3px solid #344054; outline-offset: -3px; }
-.pr-status-icon { flex: none; margin-top: 1px; color: #357558; }
+.pr-status-icon { flex: none; align-self: center; color: #357558; }
 .pr-status-icon.draft { color: #657187; }
 .pr-status-icon.merged { color: #79519f; }
 .pr-status-icon.closed { color: #9c5062; }

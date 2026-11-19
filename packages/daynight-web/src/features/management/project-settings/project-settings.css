@@ -9,6 +9,9 @@
 .project-settings-tab-state { color: #805b27; font-size: 10px; font-weight: 400; }
 .project-settings-content { min-width: 0; }
 .project-settings-content > [hidden] { display: none !important; }
+.project-ownership-panel .panel-body .project-ownership-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.project-ownership-panel .panel-body .project-ownership-identity { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.project-ownership-panel .panel-body .project-ownership-row > .button { flex: none; }
 @media (max-width: 740px) {
   .project-settings-layout { display: block; }
   .project-settings-tabs { top: 0; z-index: 3; flex-direction: row; overflow-x: auto; scrollbar-width: thin; padding: 4px; background: #eeeef6; border-radius: 8px; margin-bottom: 20px; }

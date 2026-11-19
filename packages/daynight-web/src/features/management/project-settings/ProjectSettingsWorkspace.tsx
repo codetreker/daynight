@@ -77,7 +77,7 @@ const ProjectSettingsContent = ({ projectId, user, selection = { kind: "tab", ta
     {showUnavailable ? unavailableView : navigation}
     <div ref={setMemberResultHost} />
     <div hidden={showUnavailable} inert={showUnavailable}>
-    <div className="page-heading project-settings-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? projectId}</h1><p className="subtitle">{m.scopeHint}</p></div></div>
+    <div className="page-heading project-settings-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? projectId}</h1></div></div>
     {state.error !== null && <ManagementError error={state.error} retry={state.retry} />}
     <div className="project-settings-layout"><ProjectSettingsTabs projectId={projectId} selected={selected} states={states} onSelect={select} />
     <div className="project-settings-content">
