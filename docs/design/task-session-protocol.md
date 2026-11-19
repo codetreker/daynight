@@ -120,6 +120,18 @@ Controller 在所有副作用构造之前取得 permit 并准备 writer；自身
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并以 `thread/turns/list` 分页读取轮次状态、`thread/items/list` 分页读取对应 items；仅当原生明确不支持该方法时回退 `thread/items/list`，此时没有轮次状态就不推断中断。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
+### Linux 稳定出生身份确定方案
+
+Linux 稳定出生身份已确定采用下述机制；运行时接入及真实产品验收尚未完成。当前 `process-proof.ts` 的 Linux 路径仍以 `ps lstart` 文本作为出生身份。`LC_ALL=C` 只解决语言与格式差异，不能保证墙钟校正前后的展示值相同。以下要求由[Session 需求](../spec/task-sessions.md#linux-进程出生身份)拥有，取舍由[出生身份决策](../../.agents/notes/implemented/bug-fix/2026-11-19-linux-process-birth.md)记录。
+
+Linux 采集器以 `/proc/sys/kernel/random/boot_id` 的开机身份和 `/proc/<pid>/stat` 字段 22 的 starttime ticks 组成出生 token。`ProcessProof.startedAt` 承载可判别的 `linux:v1:<boot-id>:<ticks>`，该字段在 Linux 上表示身份而非时间戳；ticks 保留十进制整数精度，不转换成 JavaScript 浮点数或墙钟时间。macOS 的日期文本和 Windows 的原生出生时间表示保持不变。读取器须接受历史平台 token，但识别并严格验证保留的 `linux:` 格式；未知版本、缺失组成部分和损坏值不能按旧日期文本处理。
+
+一次采集共用原调用预算：先读取 boot identity 与 stat，再采集命令、父 PID、进程组和状态，最后重新读取 stat 与 boot identity。stat 解析须允许括号和空格出现在进程名称中，不以名称内的空格计算字段位置。前后出生身份必须一致，关联信息必须与同次 stat 匹配；命令及进程组也须重复观察一致，退出状态转换不能拼成完整运行证明。任何替换、不可读、格式错误、预算耗尽或不一致均拒绝整个采集，不保存部分身份。`ps lstart` 即使继续出现在查询输出，也不参与 Linux 出生比较。
+
+Controller 启动证明、原生子进程证明、Worker/Bot 持久记录、独立 Test 恢复以及工具提取子进程使用相同出生 token 约束。所有持久解析器须保留完整 token，不截断、规范化成日期或丢弃版本。旧 proof 的读取与其能否授权运行操作分开：缺乏稳定 Linux 身份的旧记录继续可读，针对仍可能运行实例的核验须给出明确错误并保留记录；不能仅凭当前 PID 重新采样后覆盖原证明。原 PID 已不存在的权威观察以及原执行已有的有效停证，继续遵循各自停止确认规则，不能凭格式差异宣称原进程已退出。
+
+出生 token 相等不替代命令哈希、进程组、执行 ticket 与原生归属校验。不同 ticks 或 boot identity 只证明当前实例不等于原实例，不允许向当前实例发信号。同出生实例的命令或组冲突继续保留责任。孤儿重新托管和 zombie 的单实例退出规则、TERM/KILL 前的复核、完整进程组停止及原绝对期限保持原有边界。Linux `/proc` 采集不进入 macOS 或 Windows 路径。
+
 ### Codex 输出消费与 I/O
 
 私有 Codex RPC reader 将每个 OS chunk 以不超过 decoder 的 `bufferBytes`（64 KiB）的 `subarray` 片段交给同一个惰性 decoder，跨片段保留 UTF-8/JSON 状态。每个完整帧串行分发，保留一次微任务让响应消费者取得媒体 lease，再于 `finally` 释放帧引用。每帧和每个片段耗尽时均等待一次 ref'ed `node:timers/promises.setImmediate()`，使已就绪的 IPC、定时器及其他 I/O 在输入尚未耗尽时有执行机会；不复制整块输入或建立待派发队列。
