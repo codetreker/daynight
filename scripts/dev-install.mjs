@@ -51,17 +51,19 @@ const copyDependencies = async (packageDirectory, destination, manifest) => {
   const copyPackage = async (source) => {
     const previous = copied.get(source);
     if (previous !== undefined) return previous;
-    const target = path.join(store, String(copied.size));
+    const metadata = await readJson(path.join(source, "package.json"));
+    const modules = path.join(store, String(copied.size), "node_modules");
+    const target = path.join(modules, metadata.name);
     copied.set(source, target);
     await mkdir(path.dirname(target), { recursive: true });
     await cp(source, target, {
       recursive: true, dereference: true, mode: constants.COPYFILE_FICLONE,
       filter: (filename) => filename !== path.join(source, "node_modules"),
     });
-    await connect(source, target, await readJson(path.join(source, "package.json")));
+    await connect(source, modules, metadata, target);
     return target;
   };
-  const connect = async (source, target, metadata) => {
+  const connect = async (source, modules, metadata, packageTarget) => {
     const required = new Set(Object.keys(metadata.dependencies ?? {}));
     const optional = new Set(Object.keys(metadata.optionalDependencies ?? {}));
     const peers = Object.keys(metadata.peerDependencies ?? {});
@@ -73,12 +75,44 @@ const copyDependencies = async (packageDirectory, destination, manifest) => {
         throw error;
       }
       const copiedDependency = await copyPackage(dependency);
-      const link = path.join(target, "node_modules", name);
+      // Native libraries resolve named siblings relative to their physical package path.
+      let link = path.join(modules, name);
+      if (link === packageTarget) {
+        if (copiedDependency === packageTarget) continue;
+        // A dependency on another version of the package must shadow the capsule's own name.
+        link = path.join(packageTarget, "node_modules", name);
+      }
       await mkdir(path.dirname(link), { recursive: true });
       await symlink(path.relative(path.dirname(link), copiedDependency), link);
     }
   };
-  await connect(packageDirectory, destination, manifest);
+  await connect(packageDirectory, path.join(destination, "node_modules"), manifest);
+};
+
+const verifyNativeDependencies = async (nodeExecutable, destination) => {
+  const environment = { ...process.env };
+  // Loader overrides can hide a snapshot's missing native dependency links.
+  for (const name of ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"]) delete environment[name];
+  const probes = {
+    sharp: `const sharp = require("sharp");
+await sharp({ create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } } }).png().toBuffer();`,
+    "better-sqlite3": `const Database = require("better-sqlite3");
+const database = new Database(":memory:");
+try {
+  if (database.prepare("SELECT 1 AS value").get().value !== 1) throw new Error("Unexpected SQLite query result.");
+} finally { database.close(); }`,
+    koffi: `require("koffi");`,
+  };
+  for (const [name, probe] of Object.entries(probes)) {
+    const script = `import { createRequire } from "node:module";
+const require = createRequire(${JSON.stringify(path.join(destination, "package.json"))});
+${probe}`;
+    try {
+      await exec(nodeExecutable, ["--input-type=module", "--eval", script], { cwd: destination, env: environment, timeout: 30_000 });
+    } catch (error) {
+      throw new Error(`Development snapshot dependency validation failed for ${name}: ${error.stderr?.trim() || error.message}`, { cause: error });
+    }
+  }
 };
 
 const build = async (sourceDirectory) => {
@@ -135,6 +169,7 @@ export const installDevelopmentBuild = async (options = {}) => {
     const main = path.join(destination, "dist", "main.js");
     const verifiedVersion = (await exec(nodeExecutable, [main, "--version"], { cwd: snapshot, timeout: 30_000 })).stdout.trim();
     if (verifiedVersion !== manifest.version) throw new Error(`The development snapshot returned version ${JSON.stringify(verifiedVersion)}; expected ${manifest.version}.`);
+    await verifyNativeDependencies(nodeExecutable, destination);
     const launcher = path.join(snapshot, "launcher.mjs");
     await writeFile(launcher, `import { homedir } from "node:os";
 import path from "node:path";

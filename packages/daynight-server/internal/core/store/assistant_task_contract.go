@@ -68,6 +68,12 @@ type AssistantTaskDAO interface {
 	InsertTask(context.Context, model.AssistantTask) (bool, error)
 	SaveTask(context.Context, model.AssistantTask, AssistantTaskCondition) (bool, error)
 	DeleteTaskContent(context.Context, string, string) error
+	// RetrospectiveTasks preselects up to Limit task IDs whose periodic
+	// retrospective is due at the cutoff, filtered by TaskID and holder
+	// TargetBotID when set. It is a candidate list, not a locked decision.
+	RetrospectiveTasks(context.Context, AssistantTaskQuery, time.Time) ([]string, error)
+	LatestOutcomeAt(context.Context, string, string) (*time.Time, error)
+	MarkRetrospective(context.Context, string, string, time.Time) (bool, error)
 	ClaimOperation(context.Context, string, string, string) (model.AssistantTaskClaimOperation, error)
 	InsertClaimOperation(context.Context, model.AssistantTaskClaimOperation) error
 	Manual(context.Context, string, string, int64) (model.AssistantTaskManual, error)

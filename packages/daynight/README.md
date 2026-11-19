@@ -168,6 +168,7 @@ daynight skill                      # Show skill help
 daynight skill install              # Select Agents, then User or Project scope
 daynight project
 daynight project create <name> [--repo <repo>] [--team <uuid|personal>] [--confirm]
+daynight project set-repository --repo <url> [--project <uuid>] [--confirm] [--allow-unverified-switch] [--json]
 daynight project list [--json]
 daynight project show <project-id> [--json]
 daynight project transfer --to-team <uuid|same-service-link> --confirm [--project <uuid>] [--if-version <version>] [--json]
@@ -583,6 +584,7 @@ daynight project create "Example" --repo https://github.com/OWNER/REPO.git --tea
 daynight project list
 daynight project list --json
 daynight project show <project-id> --json
+daynight project set-repository --project <project-id> --repo https://github.com/OWNER/REPO.git
 ```
 
 Creation requires one positional name; quote names containing spaces. Omit
@@ -618,6 +620,29 @@ terminal-control escapes. JSON preserves resource fields and nanosecond timestam
 strings; a later-page failure produces an error with empty stdout. The
 [project/task requirements](../../docs/spec/daynight-project-task.md) own the complete
 behavior and remaining task-command scope.
+
+`project set-repository` changes a Project's repository address. Select a Project
+with `--project`, including outside Git, or use the current repository context.
+An effective Project admin can preview and confirm the change. The preview on
+stderr identifies the Project, old and new addresses, classification and effect.
+An unchanged address or confirmed same repository preserves the GitHub App
+connection and Worker selections. A switch disconnects the Project's GitHub App
+repository connection and removes the Project from Worker cloud configurations
+selected in the transaction's snapshot. Worker application is asynchronous;
+existing executions may stop. Local clones, origins and worktrees are retained.
+Reconnect GitHub and manage local Worker configuration as needed after a switch.
+
+Interactive use prompts for confirmation; `--confirm` supplies it. An unverified
+repository identity also needs an explicit choice to treat it as a switch, by
+prompt or `--allow-unverified-switch`. Noninteractive use requires `--confirm`,
+and an unverified identity also requires `--allow-unverified-switch`. Cancellation
+sends no change. The request preserves the preview's exact versions and
+classification evidence. For a stale preview, rerun the command to preview and
+confirm again. A same-Team repository occupancy conflict refuses the change.
+Only the validated receipt confirms the write; an unknown outcome requires
+read-only observation and is never automatically replayed. `--json` prints only
+the receipt on stdout. This command requires a service supporting repository changes;
+existing Project and Task commands remain available on older services.
 
 `project transfer` moves a Project to a Team identified by UUID or a same-service
 `/teams/<uuid>` link. It resolves the explicit Project or current repository

@@ -138,6 +138,10 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 		if err := threadPresence(presence); err != nil {
 			return err
 		}
+		actor, err := sourceActor(ctx, tx, principal)
+		if err != nil {
+			return err
+		}
 		message, encoded, err := threadcore.Append(ctx, tx.TaskDAO(), tx.CredentialDAO(), tx.ThreadDAO(), principal, projectID, taskID, input.Body, input.ReplyTo, input.ClaimID, credential)
 		failure.MessageID = message.ID
 		failure.Execution = message.Author.Execution
@@ -146,7 +150,7 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 		}
 		result = ThreadMessageDocument{Message: message, JSON: encoded}
 		f := protocol.Fact{Type: protocol.ThreadPosted, ProjectID: projectID, TaskID: taskID, MessageID: message.ID, OccurredAt: message.CreatedAt, CreatedAt: &message.CreatedAt, ReplyTo: message.ReplyTo}
-		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
+		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, []protocol.Fact{f})
 	})
 	if err == nil && completion.Outcome != store.TransactionCommitted {
 		err = errors.New("thread write did not commit")

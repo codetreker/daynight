@@ -4,8 +4,8 @@
 
 认证账号可以独立读取和修改自己 Worker 的 PR review 参与设置。默认关闭，
 读取和修改不要求 Worker 在线，也不受 Worker 列表最近 72 小时窗口限制。
-本资源保存后续 Reviewer 候选所需的参与意愿；自动分配、归属读取及 review
-执行由各自机制负责。
+本资源保存 Reviewer 候选所需的参与意愿；[自动分配和归属读取](pr-review-assignment.md)
+使用该设置，review 执行由独立机制负责。
 
 | 方法 | 路径 | 请求或响应 |
 |---|---|---|
@@ -47,7 +47,7 @@ telemetry、别名或 Task claim。注册、心跳、配置和领取继续保有
 HTTP 层负责认证接入、严格输入、响应投影与错误映射；`core/worker` 负责所有权、
 版本与状态变化；`service/worker` 组织快照和事务；`core/store` 声明独立的
 `WorkerReviewParticipationReader`、`WorkerReviewParticipationWriter`，由 PostgreSQL
-Worker DAO 实现。未来候选读取可在自己的作用域中消费这些设置。
+Worker DAO 实现。候选对账在自己的事务作用域中读取并重新检查这些设置。
 
 ## 验证职责
 

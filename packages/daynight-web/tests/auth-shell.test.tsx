@@ -269,7 +269,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     mockSidebarMediaQuery(true); window.localStorage.setItem(SIDEBAR_STORAGE_KEY, "true");
     const fetcher = install(); render(<AuthenticatedApp />);
     const heading = await screen.findByRole("heading", { name: "私有项目" });
-    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开导航" }));
     const drawer = screen.getByRole("dialog", { name: "工作空间导航" });
     accountChange(otherId);
     expect(screen.getByRole("dialog", { name: "工作空间导航" })).toBe(drawer);

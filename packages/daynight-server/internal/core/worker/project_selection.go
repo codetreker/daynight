@@ -12,37 +12,46 @@ import (
 // RemoveProjectSelections removes the project from the selected snapshot in the
 // caller's transaction. Later selections and first imports remain independent.
 func RemoveProjectSelections(ctx context.Context, dao store.WorkerProjectSelectionDAO, projectID string) error {
+	_, err := RemoveProjectSelectionsCount(ctx, dao, projectID)
+	return err
+}
+
+// RemoveProjectSelectionsCount reports rows changed inside the caller's
+// transaction. The count is durable only if that transaction commits.
+func RemoveProjectSelectionsCount(ctx context.Context, dao store.WorkerProjectSelectionDAO, projectID string) (int, error) {
 	id, err := model.CanonicalID(projectID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	candidates, err := dao.ProjectSelectionCandidates(ctx, id)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	count := 0
 	for _, candidate := range candidates {
 		target, err := dao.LockProjectSelection(ctx, candidate)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if target == nil {
 			continue
 		}
 		updated, changed, err := removeProjectSelection(target.Raw, id)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if !changed {
 			continue
 		}
 		if target.Revision == math.MaxInt64 {
-			return &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
+			return 0, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
 		}
 		if err := dao.SaveProjectSelection(ctx, candidate, target.Revision+1, updated); err != nil {
-			return err
+			return 0, err
 		}
+		count++
 	}
-	return nil
+	return count, nil
 }
 
 func removeProjectSelection(raw json.RawMessage, projectID string) (json.RawMessage, bool, error) {
