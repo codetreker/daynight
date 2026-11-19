@@ -76,7 +76,7 @@ func TestClaimTransitionsPreserveCredentialAndOwnershipFences(t *testing.T) {
 			var condition store.AssistantTaskCondition
 			var receipt model.AssistantTaskClaimOperation
 			var events []model.AssistantTaskEvent
-			transfers := 0
+			transfers, retargets := 0, 0
 			d.claimOperation = func(context.Context, string, string, string) (model.AssistantTaskClaimOperation, error) {
 				return model.AssistantTaskClaimOperation{}, model.ErrNotFound
 			}
@@ -91,6 +91,13 @@ func TestClaimTransitionsPreserveCredentialAndOwnershipFences(t *testing.T) {
 					transfers++
 					if owner != ownerID || id != taskID || holder == nil || *holder != wantHolder {
 						t.Fatal("wrong item transfer")
+					}
+					return nil
+				}
+				d.retargetInbound = func(_ context.Context, owner, id, holder string) error {
+					retargets++
+					if owner != ownerID || id != taskID || holder != wantHolder || transfers != 1 || len(events) != 0 {
+						t.Fatal("inbound events not retargeted with the item transfer")
 					}
 					return nil
 				}
@@ -136,8 +143,8 @@ func TestClaimTransitionsPreserveCredentialAndOwnershipFences(t *testing.T) {
 			if len(events) != wantEvents {
 				t.Fatalf("got %d events", len(events))
 			}
-			if wantTransfer && transfers != 1 {
-				t.Fatal("items not transferred once")
+			if wantTransfer && (transfers != 1 || retargets != 1) {
+				t.Fatal("items or inbound events not transferred once")
 			}
 			if name == "takeover" {
 				var payload map[string]any
@@ -257,6 +264,38 @@ func TestClaimOperationReadRefreshesClaimAfterReceipt(t *testing.T) {
 	}
 	if result.CurrentClaim.Generation != 3 || result.CurrentClaim.ObservedAt != second.ObservedAt {
 		t.Fatal("stale claim accompanied new receipt")
+	}
+}
+
+func TestClaimFollowerFailuresStopBeforeNotificationsAndReceipt(t *testing.T) {
+	for _, step := range []string{"items", "inbound"} {
+		t.Run(step, func(t *testing.T) {
+			d := baseDAO(t, baseTask())
+			d.claimOperation = func(context.Context, string, string, string) (model.AssistantTaskClaimOperation, error) {
+				return model.AssistantTaskClaimOperation{}, model.ErrNotFound
+			}
+			d.saveTask = func(context.Context, model.AssistantTask, store.AssistantTaskCondition) (bool, error) {
+				return true, nil
+			}
+			d.transferOpenItems = func(context.Context, string, string, *string) error {
+				if step == "items" {
+					return sentinel
+				}
+				return nil
+			}
+			d.retargetInbound = func(context.Context, string, string, string) error {
+				if step == "items" {
+					t.Fatal("inbound retargeted after item failure")
+				}
+				return sentinel
+			}
+			input := ClaimInput{Kind: "transfer", TaskID: taskID, OperationID: entryID, IfVersion: ptr(int64(7)), ExpectedGeneration: 2, TargetBotID: ptr(targetID)}
+			// Event and receipt writers stay unset, so reaching them after the
+			// follower failure would fail the test.
+			if _, err := New().Claim(context.Background(), d, userActor(), input); !errors.Is(err, sentinel) {
+				t.Fatalf("lost cause: %v", err)
+			}
+		})
 	}
 }
 

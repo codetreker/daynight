@@ -25,16 +25,18 @@ describe('image download lifetimes', () => {
     await vi.advanceTimersByTimeAsync(60_000); expect(revoke).toHaveBeenCalledWith('blob:download');
   });
   it('bounds waiting downloads to two requests without acquiring their bytes', async () => {
-    vi.useFakeTimers(); const { request, downloads } = await setup();
+    vi.useFakeTimers(); const { request, downloads, asset, read } = await setup();
     const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download'); vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-    await downloads.download(request());
+    const acquire = asset.acquire; let open!: () => void; const gate = new Promise<void>(resolve => { open = resolve; });
+    vi.spyOn(asset, 'acquire').mockImplementationOnce(async (signal, priority) => { await gate; return acquire(signal, priority); });
+    const first = downloads.download(request());
     const second = downloads.download(request()), third = downloads.download(request());
-    const thirdRejected = expect(third).rejects.toMatchObject({ code: 'download_busy' });
+    const secondRejected = expect(second).rejects.toMatchObject({ code: 'download_busy' }), thirdRejected = expect(third).rejects.toMatchObject({ code: 'download_busy' });
     await expect(downloads.download(request())).rejects.toMatchObject({ code: 'download_busy' });
-    expect(create).toHaveBeenCalledOnce(); expect(click).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(60_000); await second; expect(click).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(5_001); await thirdRejected;
+    await vi.advanceTimersByTimeAsync(65_001); await secondRejected; await thirdRejected;
+    expect(read).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
+    open(); await first; expect(click).toHaveBeenCalledOnce();
   });
   it('cancels queued downloads and revokes a retained URL synchronously on access loss', async () => {
     const { request, downloads, scope } = await setup();
