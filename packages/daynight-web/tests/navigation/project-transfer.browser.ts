@@ -8,6 +8,7 @@ const targetId = '00000000-0000-4000-8000-000000000031';
 const time = '2026-10-20T09:00:00Z';
 const personal = { id: personalId, kind: 'personal', name: null };
 const source = { id: sourceId, kind: 'ordinary', name: 'Source Team' };
+const longSourceName = `Source Team ${'LongUnbrokenTeamName'.repeat(8)}`;
 const target = { id: targetId, kind: 'ordinary', name: 'Destination Team' };
 const profile = { id: actorId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
@@ -24,7 +25,7 @@ const install = async (page: Page): Promise<State> => {
   const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, repositoryError: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, longNames: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
   const ownership = { teamId: sourceId, version: 1n };
   const grant = { projectId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time };
-  const access = () => state.transferred ? { projectId, ownerTeam: target, ownership: { teamId: targetId, version: 2n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: grant } : { projectId, ownerTeam: source, ownership, effectiveRole: 'admin', teamRole: state.directOnly ? null : 'admin', canTransfer: !state.directOnly, directGrant: state.directOnly || state.retainAccess ? grant : null };
+  const access = () => state.transferred ? { projectId, ownerTeam: target, ownership: { teamId: targetId, version: 2n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: grant } : { projectId, ownerTeam: state.longNames ? { ...source, name: longSourceName } : source, ownership, effectiveRole: 'admin', teamRole: state.directOnly ? null : 'admin', canTransfer: !state.directOnly, directGrant: state.directOnly || state.retainAccess ? grant : null };
   const team = (ref: typeof source | typeof personal) => ({ ...ref, name: state.longNames && ref.kind === 'ordinary' ? `${ref.name} — ${'Platform Engineering '.repeat(8)}` : ref.name, version: 1n, createdAt: time, updatedAt: time, membership: { teamId: ref.id, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time } });
   const project = { id: projectId, name: 'Transfer project', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time, ownership, settings: { version: 1n, executionWarningMinutes: 60 } };
   await page.route('**/api/v1/**', async (route: Route) => {
@@ -87,6 +88,44 @@ const preview = async (page: Page, targetValue = targetId) => {
   await expect(dialog.getByRole('button', { name: 'Confirm transfer' })).toBeEnabled();
   return dialog;
 };
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`ownership action follows the Team identity at desktop and wraps on narrow screens (${locale})`, async ({ page }) => {
+    const state = await install(page);
+    await page.setViewportSize({ width: 1280, height: 900 }); await start(page);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const panel = page.locator('.project-ownership-panel');
+    const identity = panel.locator('.project-ownership-identity');
+    const button = panel.getByRole('button', { name: locale === 'en' ? 'Transfer project' : '转移项目', exact: true });
+    const infoBox = (await identity.boundingBox())!, buttonBox = (await button.boundingBox())!, panelBox = (await panel.boundingBox())!;
+    expect(Math.abs(buttonBox.x - (infoBox.x + infoBox.width) - 24)).toBeLessThanOrEqual(1);
+    expect(Math.abs(buttonBox.y + buttonBox.height / 2 - infoBox.y - infoBox.height / 2)).toBeLessThanOrEqual(1);
+    expect(panelBox.x + panelBox.width - (buttonBox.x + buttonBox.width)).toBeGreaterThan(24);
+    await button.click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#transfer-target')).toBeFocused();
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消' }).click();
+    await expect(dialog).toHaveCount(0); await expect(button).toBeFocused();
+    expect(state.writes).toHaveLength(0);
+  });
+  test(`long Team identity and action remain visible at 320px (${locale})`, async ({ page }) => {
+    const state = await install(page); state.longNames = true;
+    await page.setViewportSize({ width: 320, height: 900 }); await start(page);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const panel = page.locator('.project-ownership-panel');
+    const identity = panel.locator('.project-ownership-identity');
+    const button = panel.getByRole('button', { name: locale === 'en' ? 'Transfer project' : '转移项目', exact: true });
+    await expect(identity.locator('strong')).toHaveText(longSourceName);
+    await expect(identity.locator('code')).toHaveText(sourceId);
+    await expect(identity).toBeVisible(); await expect(button).toBeVisible();
+    const infoBox = (await identity.boundingBox())!, buttonBox = (await button.boundingBox())!;
+    expect(Math.abs(buttonBox.x - infoBox.x)).toBeLessThanOrEqual(1);
+    expect(buttonBox.y).toBeGreaterThanOrEqual(infoBox.y + infoBox.height);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await identity.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(320);
+  });
+}
 
 for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
   for (const code of ['project_repository_conflict', 'project_repository_identity_unavailable'] as const) {
@@ -229,6 +268,9 @@ test('project-only admin cannot transfer and the existing alert setting remains 
   await expect(page.getByRole('button', { name: 'Transfer project', exact: true })).toHaveCount(0);
   await expect(page.locator('.project-ownership-panel')).toHaveCount(1);
   await expect(page.locator('.project-ownership-panel').getByRole('heading', { name: 'Project ownership' })).toBeVisible();
+  const identityBox = (await page.locator('.project-ownership-identity').boundingBox())!;
+  const hintBox = (await page.getByText('Only an admin of the owner Team can transfer this project.').boundingBox())!;
+  expect(hintBox.y).toBeGreaterThanOrEqual(identityBox.y + identityBox.height);
   expect(state.previews).toHaveLength(0); expect(state.writes).toHaveLength(0);
 });
 
@@ -331,6 +373,7 @@ test('leaving during a submitted transfer and returning retains an unknown resul
   const gate = Promise.withResolvers<void>(); state.hold = gate.promise; state.loseResponse = true;
   await dialog.getByRole('button', { name: 'Confirm transfer' }).click();
   await expect.poll(() => state.writes.length).toBe(1);
+  await expect(page.locator('.project-ownership-panel').getByRole('button', { name: 'Transfer project', exact: true })).toBeDisabled();
   await page.goBack(); await expect(page).toHaveURL(/\/projects$/);
   gate.resolve(); await page.goForward();
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings\\?tab=management$`));
