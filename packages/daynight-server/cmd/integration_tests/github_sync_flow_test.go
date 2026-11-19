@@ -298,7 +298,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version, DROP COLUMN review_enabled, DROP COLUMN review_version`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity`); err != nil {
+		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity, DROP COLUMN repository_version`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `DROP INDEX project_pull_requests_state_number, project_pull_requests_author_number;
@@ -331,7 +331,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE webhook_events DROP COLUMN actor_kind, DROP COLUMN actor_user_id, DROP COLUMN actor_bot_id`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95)`); err != nil || result.RowsAffected() != 17 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95,96)`); err != nil || result.RowsAffected() != 18 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
@@ -340,6 +340,16 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 	})
 	if f.origin != origin || f.callbackURL != callback {
 		t.Fatal("public origin or gateway callback changed after restart")
+	}
+	db, err := pgxpool.New(f.context, f.databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var repositoryVersion int64
+	var migrationCount int
+	if err := db.QueryRow(f.context, `SELECT repository_version,(SELECT count(*) FROM schema_migrations WHERE version=95) FROM projects WHERE id=$1`, project.ID).Scan(&repositoryVersion, &migrationCount); err != nil || repositoryVersion != 1 || migrationCount != 1 {
+		t.Fatalf("upgraded repository version: version=%d migration count=%d error=%v", repositoryVersion, migrationCount, err)
 	}
 	status = requestJSON[api.GitHubProjectAppStatus](t, f, http.MethodGet, base+"/github", nil, http.StatusOK)
 	if !status.SyncEnabled || status.Connection != "not_connected" || status.App != nil || status.Repository == nil || status.Repository.ID != "42" {
