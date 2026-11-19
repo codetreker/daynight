@@ -48,6 +48,18 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 新位置的精确删除使用同一归属解析器，Bot 私有原生副本随其私有资料处理，共享 native home 和 cwd 保留。最小删除责任必须在执行 journal 删除后仍可读取，直至两端确认；不能通过先删整个 Bot 目录丢弃原回执和未完成责任。存储、迁移、接管和 Provider 验证分别完成前，不声明该能力或同机恢复验收成功。
 
+## Codex 原生恢复点
+
+新建 Codex Bot 的 ticket 以 `codexBotRecovery` 固定 Bot ID 与 `bots/<botId>/native/codex/`。Worker 核对路径由原配置根和 Bot 派生，Controller 将服务、owner、Bot、Session 与真实 cwd 交给恢复存储。已有 ticket 不自动改造，迁移后的 Bot 仍遵守原登记与接管屏障。普通 Task/Test 不启用这一存储。
+
+适配器保留冻结 `nativeHome`、`CODEX_HOME` 与当前配置、认证及工具发现来源，不复制凭据或整个用户 home。已验证版本为 Codex 0.169.0；新线程显式请求 `historyMode=legacy`，并仅在首次创建后以 `thread/name/set` 命名为 `Daynight assistant`，使空 rollout 落盘而不发送业务输入；恢复保留原名字，拒绝 paginated 历史及未验证版本。单 rollout 保存原线程与 compact 上下文；子线程、fork、外部媒体或未知记录依赖不属于已验证闭包，发现后报告具体原因并保留旧点，不能标记完整保护。内嵌图片字节随原文件校验。
+
+启动、resume、输入、steer、compact 和设置变更在原生派发前持久标记 `dirty`。完成轮次后暂停新派发，以流式复制检查完整 UTF-8/JSONL、原线程与 cwd、CLI 版本、目标 `task_complete` 或已确认中断的 `turn_aborted` 及复制前后的文件身份和大小。半写或尚未落盘的完成记录在有界时间内等待；非法身份或格式立即失败。副本同步到磁盘后，以原子 manifest 发布摘要、字节数、`recoveryFormatVersion=1` 与 `protectedThroughTurn`。确认空闲设置还须覆盖本次派发之后的 `thread_settings_applied`；RPC 成功本身不替代落盘证据。只有空线程使用 null 水位。
+
+恢复先要求原执行停证与 Controller 存储归属，再核对完整点及相同原生 ID。适配器将不可变快照复制成独立活动文件，向 `thread/resume` 传原 ID 和活动路径，并核对返回 ID、真实 cwd 与实际路径。恢复本身也追加原生材料，不能直接改写唯一快照。结果未知或仍为 `dirty` 时报告 `outcome_unknown`，禁止自动退回旧点或重发旧输入。恢复成功后继续保护活动文件；已发布新点后释放前一点，旧活动文件仅在原 writer 已停止的恢复阶段释放。
+
+Bot 删除在停证之后将同一派生恢复目录纳入既有精确删除计划，保留删除回执和共享 native home。该机制不单独启用完整 `botRecoveryVersion=1`，不证明跨版本、跨机、独立 Worker 接管或所有 Provider 功能恢复。历史越长，复制成本越高；单记录超过 32 MiB 明确失败，不截断恢复材料。取舍见[恢复点决策](../../.agents/notes/implemented/architecture/2026-11-19-codex-bot-recovery-points.md)。
+
 ## 原会话恢复
 
 对已提交执行，先用原 ticket 观察 Controller。可观察且仍在 starting、ready 或 working 的执行继续复用，并撤销先前未完成停机的来源标记，避免后来异常退出获得正常重启豁免；无法观察时读取同一 journal 和持久进程证据。恢复路径不为了获得停证主动杀死一个可能存活的 writer。`confirmControllerProcessesStopped` 核对原进程实例及所属进程组或 Windows Job Object，随后通过 journal 的停证写入和 snapshot CAS 固定原 generation 已停止。Windows 复核以出生身份绑定的原进程句柄完成状态为依据；未 signaled 的退出过渡仍不能确认 stopped，ESRCH 和变化的退出码均不能代替完成观察。仍运行的同出生实例若命令行哈希、父 PID 或 process group 冲突，先报告身份不确定并保留原责任，停止确认不能以 Job 查询代替该实例的完整停证。缺失证明或 native ID 时保留责任并报告，不能新建空白会话。

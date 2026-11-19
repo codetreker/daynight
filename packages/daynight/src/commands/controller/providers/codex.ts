@@ -1,4 +1,6 @@
 import { codexUsageProviderVersion } from "./codex-usage.js";
+import { CodexBotRecovery, CodexBotRecoveryError } from "./codex-bot-recovery.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { assertNativeImageAdmission } from "./image-admission.js";
 import { createOperation } from "../../../api/operation.js";
 import { isOutboxFailure } from "../outbox-diagnostic.js";
@@ -16,7 +18,7 @@ import { codexApprovalDetail } from "./codex-approval-detail.js";
 import { NativeTurns } from "./turns.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import type { InteractionResponse, SessionInteraction } from "../../../session/protocol.js";
 import { NativeRpcError, record, string, type NativeObject } from "./native-rpc.js";
 import { CodexRpc } from "./codex-rpc.js";
@@ -31,6 +33,23 @@ import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } 
 
 type Pending = { nativeId: unknown; interaction: SessionInteraction; result(response: InteractionResponse): unknown; settled?: () => void; rejected?: (error: Error) => void };
 export const openCodexProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
+  const recovery = options.codexBotRecovery ? new CodexBotRecovery({ ...options.codexBotRecovery, cwd: options.cwd }) : undefined;
+  let recoveryPath = "", recoveryVersion = "", protecting = false;
+  let settingsAfter: number | undefined;
+  const protect = async (turnId: string | null) => {
+    if (!recovery) return;
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      try {
+        await recovery.protect({ path: recoveryPath, nativeSessionId: nativeId, providerVersion: recoveryVersion, protectedThroughTurn: turnId, ...(settingsAfter === undefined ? {} : { settingsAfter }) });
+        settingsAfter = undefined; return;
+      }
+      catch (error) {
+        if (!(error instanceof CodexBotRecoveryError) || !error.retryable || closing || nativeExited || Date.now() >= deadline) throw error;
+        await delay(50);
+      }
+    }
+  };
   const config = parseProviderArguments("codex", options.args, options.validateNativeSelection);
   if (options.toolLaunch) {
     if (options.toolLaunch.tool !== "codex" || options.toolLaunch.context !== "web" || options.executable) throw new Error("Conflicting Codex tool launch options.");
@@ -170,7 +189,21 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
           terminalProjections.add(terminal);
         }
       }
-      finishTurn(turn);
+      if (recovery && ["completed", "interrupted", "failed"].includes(string(turn.status))) {
+        protecting = true;
+        const terminal = (async () => {
+          const deadline = Date.now() + 30_000;
+          while (sending || settingsBusy) {
+            if (closing || Date.now() >= deadline) throw new Error("Codex recovery cannot confirm an in-flight dispatch.");
+            await delay(20);
+          }
+          await protect(id); finishTurn(turn);
+        })().catch(error => {
+          transportFailed = true; reportFatal(error instanceof Error ? error : new Error(String(error)));
+          turns.complete(id, error instanceof Error ? error : new Error(String(error)));
+        }).finally(() => { protecting = false; terminalProjections.delete(terminal); state(); });
+        terminalProjections.add(terminal);
+      } else finishTurn(turn);
     }
     if (method === "item/started" || method === "item/completed") {
       const item = record(p.item), id = string(item.id);
@@ -189,9 +222,24 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
   }, { createSpool: maximum => { if (!options.imageRuntime) throw new Error("Native image storage is unavailable."); return options.imageRuntime.createSpool(maximum); }, onFatalError: error => { invalidateImages(); authority?.invalidate(); if (!closing) { transportFailed = true; if (currentTurnId) turns.complete(currentTurnId, error); currentTurnId = null; turnStartedAt = null; activity = "unknown"; expire(); state(); reportFatal(error); } } });
   const nativeRequest: CodexRpc["request"] = (method, params, onLateResponse) => {
-    const dispatch = imageDispatch;
-    if (["turn/start", "turn/steer"].includes(method) && dispatch && dispatch.operationId === record(params).clientUserMessageId) dispatch.verify();
-    return transport.request(method, params, onLateResponse);
+    const request = () => {
+      const dispatch = imageDispatch;
+      if (["turn/start", "turn/steer"].includes(method) && dispatch && dispatch.operationId === record(params).clientUserMessageId) dispatch.verify();
+      return transport.request(method, params, onLateResponse);
+    };
+    if (recovery && ["thread/start", "thread/resume", "thread/name/set", "turn/start", "turn/steer", "thread/compact/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
+      return (async () => {
+        const settingInFlight = settingsBusy && ["thread/settings/update", "turn/settings/update"].includes(method);
+        if (protecting && !settingInFlight) throw new NativeRpcError(-32602, "Codex recovery checkpoint is being protected.");
+        await recovery.markDirty();
+        if (protecting && !settingInFlight) throw new NativeRpcError(-32602, "Codex recovery checkpoint changed before dispatch.");
+        if (method === "thread/settings/update" && recoveryPath) settingsAfter = (await stat(recoveryPath)).size;
+        options.assertNativeDispatch?.();
+        return request();
+      })();
+    }
+    // Read responses carry leases valid through the direct RPC continuation.
+    return request();
   };
   const rpc = {
     request: (method: string, params: unknown, onLateResponse?: Parameters<CodexRpc["request"]>[2]) => authority ? authority.request(method, params, onLateResponse) : nativeRequest(method, params, onLateResponse),
@@ -254,6 +302,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   try {
     const initialized = record(await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } })); rpc.notify("initialized");
     initializedResponse = initialized;
+    recoveryVersion = codexUsageProviderVersion(initialized) ?? "unknown";
+    const resumePath = await recovery?.prepare(options.resumeNativeSessionId, recoveryVersion);
     let remoteControl: unknown = null;
     if (authority && CodexReadAuthority.supports(initialized)) {
       try { remoteControl = await rpc.request("remoteControl/status/read", {}); }
@@ -263,11 +313,20 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
       : {};
     const startParams = { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}), ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...(!options.resumeNativeSessionId && config.effort ? { model_reasoning_effort: config.effort } : {}), ...aliasOverrides } };
+    if (resumePath !== undefined) Object.assign(startParams, { path: resumePath });
+    if (recovery && !options.resumeNativeSessionId) Object.assign(startParams, { historyMode: "legacy" });
     await configObserver?.prepare(startParams);
     options.assertNativeDispatch?.();
     const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", startParams));
     const thread = record(response.thread); nativeId = string(thread.id);
+    recoveryPath = string(thread.path);
+    if (recovery && thread.historyMode !== undefined && thread.historyMode !== "legacy") throw new Error("recovery_material_invalid: Codex Bot recovery requires legacy rollout history.");
+    if (resumePath !== undefined && await realpath(recoveryPath) !== await realpath(resumePath)) throw new Error("recovery_material_invalid: Codex resumed outside the protected active rollout.");
+    if (resumePath !== undefined) recoveryPath = resumePath;
     if (!nativeId || options.resumeNativeSessionId && nativeId !== options.resumeNativeSessionId || await realpath(string(thread.cwd)) !== await realpath(options.cwd)) throw new Error("Native Codex session identity or working directory mismatch.");
+    // Legacy threads are lazy until named or used. Naming materializes the
+    // original empty thread without submitting a synthetic conversation turn.
+    if (recovery && !options.resumeNativeSessionId) await rpc.request("thread/name/set", { threadId: nativeId, name: "Daynight assistant" });
     // Cumulative/context snapshots have no accountable source revision.
     try {
       const providerVersion = codexUsageProviderVersion(initialized);
@@ -283,7 +342,18 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     imageInputs = new CodexImageInputs(options, nativeId);
     imageProjection = new CodexImageProjection(nativeId, options, imageInputs, imageProjector);
     projection = new CodexProjection(nativeId, (entry, metadata) => imageProjector.publish(entry, [], metadata), imageProjection);
-    if (options.resumeNativeSessionId) {
+    if (options.resumeNativeSessionId && recovery) {
+      // The verified legacy history profile exposes complete turns through
+      // thread/read; its paginated item endpoints are unavailable.
+      const history = record(record(await rpc.request("thread/read", { threadId: nativeId, includeTurns: true })).thread);
+      if (history.id !== nativeId || !Array.isArray(history.turns)) throw new Error("recovery_material_invalid: Codex legacy history is unavailable.");
+      for (const raw of history.turns) {
+        const turn = record(raw), id = string(turn.id);
+        if (!id || !Array.isArray(turn.items)) throw new Error("recovery_material_invalid: Codex legacy turn history is incomplete.");
+        for (const item of turn.items) projectItem(item, ["completed", "interrupted", "failed"].includes(string(turn.status)), id);
+        interruptions.completed(turn, true);
+      }
+    } else if (options.resumeNativeSessionId) {
       let cursor: string | null = null, readTurns = false;
       const cursors = new Set<string>();
       try {
@@ -322,6 +392,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         } finally { awaitingInitialSettings = false; }
       }
     }
+    await protect(recovery?.protectedThroughTurn ?? null);
     ready = true; activity = "idle"; state(); recoverImages();
   } catch (error) { await close(); throw error; }
   const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, skill?: { name: string; path: string }): Promise<ProviderReceipt> => {
@@ -379,7 +450,15 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   return {
     nativeSessionId: nativeId, send, acknowledgeImageOccurrences: () => imageProjector.acknowledged(),
     async refreshControls() { if (sending || settingsBusy || observingConfig) throw new NativeRpcError(-32602, "Native controls are busy."); observingConfig = true; state(); try { await controls.refresh(); await refreshImages(); return { disposition: "handled" }; } finally { observingConfig = false; state(); recoverImages(); } },
-    async setSetting(id, value, operationId, revision) { if (nativeExited || closed || sending || settingsBusy || observingConfig) throw new NativeRpcError(-32602, "Native controls are busy."); settingsBusy = true; invalidateImages(); try { await controls.set(id, value, operationId, revision); await refreshImages(); return { disposition: "handled" }; } finally { settingsBusy = false; state(); recoverImages(); } },
+    async setSetting(id, value, operationId, revision) {
+      if (nativeExited || closed || sending || settingsBusy || observingConfig || protecting) throw new NativeRpcError(-32602, "Native controls are busy.");
+      settingsBusy = true; invalidateImages();
+      try {
+        await controls.set(id, value, operationId, revision);
+        if (recovery && currentTurnId === null) await protect(recovery.protectedThroughTurn);
+        await refreshImages(); return { disposition: "handled" };
+      } finally { settingsBusy = false; state(); recoverImages(); }
+    },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (nativeExited || closed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
       const command = controls.command(id, revision);

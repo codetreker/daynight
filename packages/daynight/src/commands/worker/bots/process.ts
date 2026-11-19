@@ -1,4 +1,4 @@
-import { resolveBotControllerStateDirectory } from "./paths.js";
+import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -140,6 +140,8 @@ export const createBotProcess = (options: {
     if (intent === null || intent.sessionId === null || intent.roleConfiguration === null) throw new Error("Bot launch intent is incomplete.");
     const ticket = await readLaunchTicket(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), config = record.definition!.resolvedConfiguration, native = botNativeConfiguration(config);
     const { toolLaunch, toolObservation, ...configuration } = ticket.configuration;
+    if (ticket.codexBotRecovery !== undefined && (ticket.codexBotRecovery.botId !== record.botId
+      || ticket.codexBotRecovery.directory !== resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory)) throw new Error("Bot Codex recovery location conflicts with its original ownership.");
     if (toolLaunch !== undefined && (intent.toolLaunch === undefined || controllerPayloadHash(toolLaunch) !== controllerPayloadHash(intent.toolLaunch))
       || toolObservation !== undefined && (intent.toolObservation === undefined || controllerPayloadHash(toolObservation) !== controllerPayloadHash(intent.toolObservation))) throw new Error("Bot ticket tool selection differs from the original frozen intent.");
     if (config.selection !== undefined) {
@@ -327,6 +329,8 @@ export const createBotProcess = (options: {
           provider: config.provider, cwd: config.cwd, nativeHome, configuration: { agent: config.provider, agentControlMode: "web", model: native.model, args: native.args, recoveryLimit: intent.recoveryLimit,
             ...(intent.toolLaunch === undefined ? {} : { toolLaunch: intent.toolLaunch }), ...(intent.toolObservation === undefined ? {} : { toolObservation: intent.toolObservation }),
             ...(native.model !== null || parseProviderArguments(config.provider, native.args, config.selection !== undefined).effort !== undefined ? { validateNativeSelection: true as const } : {}) },
+          ...(config.provider === "codex" && (previousTicket?.codexBotRecovery !== undefined || previousTicket === null && intent.nativeSessionId === null && resolveBotControllerStateDirectory(options.homeDirectory, record) !== undefined)
+            ? { codexBotRecovery: previousTicket?.codexBotRecovery ?? { botId: record.botId, directory: resolveBotPaths(resolveConfigurationPaths(options.homeDirectory).stateDirectory, record.botId).codexRecoveryDirectory } } : {}),
           initialInput: "none", initialOperationId: intent.initialOperationId, initialPrompt: "", instructions: intent.roleConfiguration.instructions, resumeNativeSessionId: intent.nativeSessionId,
           credentialFile: intent.credentialFile, ipcEndpoint: await prepareControllerIpcEndpoint(options.homeDirectory, intent.launchId, resolveBotControllerStateDirectory(options.homeDirectory, record)), ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date(now()).toISOString() };
         await writeLaunchTicket(options.homeDirectory, ticket, resolveBotControllerStateDirectory(options.homeDirectory, record));
