@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -12,6 +12,14 @@ const time = '2026-10-20T09:00:00Z';
 const task = detailFixture(projectId, '00000000-0000-4000-8000-000000000041', { title: 'Task' });
 const graph = graphFixture([task]);
 const tag = { id: tagId, projectId, name: 'Release', version: 3n, createdAt: time, updatedAt: time, usage: { tasks: 4, goals: 2 } };
+
+async function expectSelectedTabVisible(tabs: Locator) {
+  await expect.poll(() => tabs.evaluate(element => {
+    const selected = element.querySelector('[aria-selected="true"]')!;
+    const container = element.getBoundingClientRect(), tab = selected.getBoundingClientRect();
+    return tab.left >= container.left - 1 && tab.right <= container.right + 1;
+  })).toBe(true);
+}
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
   const gate = Promise.withResolvers<void>();
@@ -234,6 +242,123 @@ for (const width of [1280, 390, 320]) {
     } finally { release(); }
   });
 }
+
+test('selected project section stays visible on direct entry, reload and history restoration', async ({ page }) => {
+  const { release } = await install(page, 'en');
+  try {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(`/projects/${projectId}?tab=tags`);
+    const tabs = page.locator('.project-section-tabs');
+    const tags = tabs.getByRole('tab', { name: 'Tags', exact: true });
+    await expect(tags).toHaveAttribute('aria-selected', 'true');
+    await expectSelectedTabVisible(tabs);
+    await page.reload();
+    await expect(tags).toHaveAttribute('aria-selected', 'true');
+    await expectSelectedTabVisible(tabs);
+    await tabs.getByRole('tab', { name: 'Overview', exact: true }).click();
+    await expectSelectedTabVisible(tabs);
+    await page.goBack();
+    await expect(tags).toHaveAttribute('aria-selected', 'true');
+    await expectSelectedTabVisible(tabs);
+    await page.goForward();
+    await expect(tabs.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expectSelectedTabVisible(tabs);
+    await tabs.getByRole('tab', { name: 'Overview', exact: true }).focus();
+    await page.keyboard.press('End');
+    await expect(tags).toBeFocused();
+    await expect(tags).toHaveAttribute('aria-selected', 'true');
+    await expectSelectedTabVisible(tabs);
+    await page.keyboard.press('Home');
+    await expect(tabs.getByRole('tab', { name: 'Overview', exact: true })).toBeFocused();
+    await expectSelectedTabVisible(tabs);
+    await page.keyboard.press('ArrowLeft');
+    await expect(tags).toBeFocused();
+    await expectSelectedTabVisible(tabs);
+  } finally { release(); }
+});
+
+test('selected project section follows responsive and translated layouts without stealing focus', async ({ page }) => {
+  const { release } = await install(page, 'zh-CN');
+  try {
+    await page.goto(`/projects/${projectId}?tab=tags`);
+    const tabs = page.locator('.project-section-tabs');
+    const search = page.locator('.project-tags-search input');
+    await search.fill('Release');
+    for (const locale of ['zh-CN', 'en']) {
+      // A locale subscriber may update while an input owns focus.
+      await page.locator('.topbar select').evaluate((element: HTMLSelectElement, value) => {
+        element.value = value; element.dispatchEvent(new Event('change', { bubbles: true }));
+      }, locale);
+      for (const width of [1360, 768, 741, 740, 739, 481, 480, 479, 390, 375, 320]) {
+        await page.setViewportSize({ width, height: 640 });
+        await expectSelectedTabVisible(tabs);
+        await expect(search).toBeFocused();
+        await expect(search).toHaveValue('Release');
+        await expect(tabs).toHaveAttribute('aria-orientation', width <= 740 ? 'horizontal' : 'vertical');
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        if (width <= 480) {
+          const rows = await tabs.locator('[role=tab]').evaluateAll(elements => elements.map(element => element.getBoundingClientRect().top));
+          expect(Math.max(...rows) - Math.min(...rows)).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+    // Changing text widths at an unchanged narrow viewport also needs correction.
+    for (const locale of ['zh-CN', 'en']) {
+      await page.locator('.topbar select').evaluate((element: HTMLSelectElement, value) => {
+        element.value = value; element.dispatchEvent(new Event('change', { bubbles: true }));
+      }, locale);
+      await expectSelectedTabVisible(tabs);
+      await expect(search).toBeFocused();
+      await expect(search).toHaveValue('Release');
+    }
+    const settled = await tabs.evaluate(element => element.scrollLeft);
+    expect(settled).toBeGreaterThan(0);
+    await page.setViewportSize({ width: 320, height: 680 });
+    await expectSelectedTabVisible(tabs);
+    expect(await tabs.evaluate(element => element.scrollLeft)).toBe(settled);
+    await tabs.evaluate(element => { element.scrollLeft = 0; });
+    // Sample through rendering frames so a scroll-triggered correction cannot hide.
+    const manual = await tabs.evaluate(async element => {
+      const values = [];
+      for (let frame = 0; frame < 5; frame++) {
+        await new Promise(requestAnimationFrame); values.push(element.scrollLeft);
+      }
+      return values;
+    });
+    expect(manual).toEqual([0, 0, 0, 0, 0]);
+    await page.getByRole('button', { name: 'Edit: Release', exact: true }).click();
+    const draft = page.getByRole('dialog').getByRole('textbox', { name: 'Name', exact: true });
+    await draft.fill('Unsaved name');
+    await page.setViewportSize({ width: 375, height: 640 });
+    await page.evaluate(async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); });
+    await page.setViewportSize({ width: 320, height: 640 });
+    await expectSelectedTabVisible(tabs);
+    await expect(draft).toBeFocused();
+    await expect(draft).toHaveValue('Unsaved name');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  } finally { release(); }
+});
+
+test('passive project tab correction preserves the document scroll position', async ({ page }) => {
+  const { state, release } = await install(page, 'en');
+  state.tags = Array.from({ length: 25 }, (_, index) => ({ ...tag, id: `00000000-0000-4000-8000-${String(100 + index).padStart(12, '0')}`, name: `Release ${index}` }));
+  for (const item of state.tags) state.colors.set(item.id, '#D85656');
+  try {
+    await page.setViewportSize({ width: 321, height: 640 });
+    await page.goto(`/projects/${projectId}?tab=tags`);
+    await expect(page.locator('.project-tags-list .task-tag')).toHaveCount(25);
+    const tabs = page.locator('.project-section-tabs');
+    await expectSelectedTabVisible(tabs);
+    await tabs.evaluate(element => { element.scrollLeft = 0; });
+    await page.evaluate(() => window.scrollTo(0, 300));
+    const before = await page.evaluate(() => window.scrollY);
+    expect(before).toBeGreaterThan(0);
+    await page.setViewportSize({ width: 320, height: 640 });
+    await expectSelectedTabVisible(tabs);
+    expect(await page.evaluate(() => window.scrollY)).toBe(before);
+  } finally { release(); }
+});
 
 test('project section links open a new tab without navigating the source', async ({ page }) => {
   const { release } = await install(page, 'en');
