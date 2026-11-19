@@ -24,10 +24,20 @@ type AssistantTaskInboundScope interface {
 // without locks. A missing event returns ErrWebhookCapturedEventMissing.
 type WebhookInboundSourceReader interface {
 	WebhookCapturedEventReader
-	// PersonalDeliveryDestinations returns, up to limit, the stored destination
-	// configuration documents of the event's deliveries whose personal endpoint
-	// belongs to owner and whose destination origin is origin.
-	PersonalDeliveryDestinations(ctx context.Context, eventID, owner, origin string, limit int) ([][]byte, error)
+	// PersonalDeliveryDestinations returns one page, up to limit and ordered by
+	// delivery ID, of the stored destinations of the event's deliveries whose
+	// personal endpoint belongs to owner and whose destination origin equals
+	// origin ignoring case. Scheme and host are case-insensitive, and the
+	// stored origin keeps the configured case. A non-empty after continues
+	// after that delivery ID; a page shorter than limit is the last.
+	PersonalDeliveryDestinations(ctx context.Context, eventID, owner, origin, after string, limit int) ([]WebhookDeliveryDestination, error)
+}
+
+// WebhookDeliveryDestination is one delivery's stored destination
+// configuration and the delivery ID that continues the next page.
+type WebhookDeliveryDestination struct {
+	DeliveryID    string
+	Configuration []byte
 }
 
 // ProjectAccessReader evaluates the current project read access of a user. A

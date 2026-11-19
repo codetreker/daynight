@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +159,7 @@ type inboundSources struct {
 	provenance   store.WebhookCapturedEventProvenance
 	missing      bool
 	destinations [][]byte
+	pages        []string
 }
 
 func (s *inboundSources) CapturedEventProvenance(_ context.Context, id string) (store.WebhookCapturedEventProvenance, error) {
@@ -169,7 +172,9 @@ func (s *inboundSources) CapturedEventProvenance(_ context.Context, id string) (
 	return s.provenance, nil
 }
 
-func (s *inboundSources) PersonalDeliveryDestinations(_ context.Context, event, owner, origin string, limit int) ([][]byte, error) {
+// PersonalDeliveryDestinations pages s.destinations; the delivery ID of each
+// is its decimal index, zero-padded so IDs order like their positions.
+func (s *inboundSources) PersonalDeliveryDestinations(_ context.Context, event, owner, origin, after string, limit int) ([]store.WebhookDeliveryDestination, error) {
 	if err := s.dao.step("destinations"); err != nil {
 		return nil, err
 	}
@@ -177,7 +182,15 @@ func (s *inboundSources) PersonalDeliveryDestinations(_ context.Context, event, 
 		s.dao.t.Fatalf("destination limit %d", limit)
 	}
 	s.dao.destinationEvent, s.dao.destinationOwner, s.dao.destinationOrigin = event, owner, origin
-	return s.destinations, nil
+	s.pages = append(s.pages, after)
+	var page []store.WebhookDeliveryDestination
+	for i, configuration := range s.destinations {
+		id := fmt.Sprintf("%08d", i)
+		if id > after && len(page) < limit {
+			page = append(page, store.WebhookDeliveryDestination{DeliveryID: id, Configuration: configuration})
+		}
+	}
+	return page, nil
 }
 
 func (d *inboundDAO) ProjectAccess(_ context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
@@ -392,6 +405,43 @@ func TestReceiveUnverifiedDaynightNeedsToken(t *testing.T) {
 				t.Fatal(err, result)
 			}
 		})
+	}
+}
+
+func TestReceiveVerificationPagesThroughDeliveries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		others int
+		pages  []string
+	}{
+		{"target after first page", inboxDeliveryScan, []string{"", fmt.Sprintf("%08d", inboxDeliveryScan-1)}},
+		{"target ends first page", inboxDeliveryScan - 1, []string{""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, d, _ := newInbound(t)
+			d.sources.destinations = nil
+			for range tc.others {
+				d.sources.destinations = append(d.sources.destinations, inboundDestination(inOrigin+core.InboxPathPrefix+inNewID))
+			}
+			d.sources.destinations = append(d.sources.destinations, inboundDestination(inOrigin+core.InboxPathPrefix+inInbox))
+			result, err := s.Receive(context.Background(), daynightInput(t))
+			if err != nil || result.Classification != core.InboundDaynight {
+				t.Fatal(err, result)
+			}
+			if !slices.Equal(d.sources.pages, tc.pages) {
+				t.Fatalf("pages = %q", d.sources.pages)
+			}
+		})
+	}
+	s, _, d, _ := newInbound(t)
+	d.sources.destinations = nil
+	for range inboxDeliveryScan {
+		d.sources.destinations = append(d.sources.destinations, inboundDestination(inOrigin+core.InboxPathPrefix+inNewID))
+	}
+	_, err := s.Receive(context.Background(), daynightInput(t))
+	requireInboundCode(t, err, "unauthenticated")
+	if len(d.sources.pages) != 2 {
+		t.Fatalf("full untargeted page did not read the next page: %q", d.sources.pages)
 	}
 }
 
