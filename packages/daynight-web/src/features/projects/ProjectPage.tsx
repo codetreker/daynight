@@ -773,7 +773,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {projectRead.project !== null && <div className="project-repository">
               <span className="project-repository-value">{projectRead.project.repoUrl}</span>
               <ValueCopyButton key={projectRead.project.id} value={projectRead.project.repoUrl} label={m.copyRepositoryUrl} className="project-repository-copy"
-                feedback={(state, event) => <RepositoryCopyFeedback key={projectRead.project.repoUrl} state={state} event={event} success={m.repositoryUrlCopied} failure={m.copyRepositoryUrlFailed} />} />
+                feedback={(state, event) => <RepositoryCopyFeedback key={projectRead.project?.repoUrl} state={state} event={event} success={m.repositoryUrlCopied} failure={m.copyRepositoryUrlFailed} />} />
             </div>}
           </div>
         </div>
