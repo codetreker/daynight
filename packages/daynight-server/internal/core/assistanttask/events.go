@@ -21,6 +21,10 @@ func eventAttention(kind string) (bool, error) {
 		return false, invalid("Event type is invalid.")
 	}
 }
+func knownEventType(kind string) bool {
+	_, err := eventAttention(kind)
+	return err == nil
+}
 func (m *Module) systemEvent(ctx context.Context, dao store.AssistantTaskDAO, task model.AssistantTask, target, kind string, payload any, now time.Time) (model.AssistantTaskEvent, error) {
 	return m.systemEventID(ctx, dao, task, uuid.NewString(), target, kind, payload, now)
 }

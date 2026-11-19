@@ -14,6 +14,15 @@ type AssistantTaskWriter interface {
 
 type AssistantTaskScope interface{ AssistantTaskDAO() AssistantTaskDAO }
 
+// AssistantTaskRelatedQuery selects appendices related to one notification
+// context. An empty dimension is unknown to the caller: it neither scores nor
+// excludes an appendix.
+type AssistantTaskRelatedQuery struct {
+	OwnerUserID, TaskID                string
+	ProjectID, EventType, ItemCategory string
+	Limit                              int
+}
+
 type AssistantTaskPosition struct {
 	CreatedAt time.Time
 	ID        string
@@ -77,6 +86,15 @@ type AssistantTaskDAO interface {
 	Appendices(context.Context, AssistantTaskQuery) ([]model.AssistantTaskAppendix, error)
 	InsertAppendix(context.Context, model.AssistantTaskAppendix) (bool, error)
 	SaveAppendix(context.Context, model.AssistantTaskAppendix, int64) (bool, error)
+	// InsertAppendixValidation reports false when the outcome record already
+	// validates the appendix, so concurrent duplicates cannot both count.
+	InsertAppendixValidation(context.Context, model.AssistantTaskAppendixValidation) (bool, error)
+	DeleteAppendixValidations(context.Context, string, string, string) error
+	// RelatedAppendices returns non-deleted appendices whose declared scope
+	// admits every queried dimension, ordered by the number of matched declared
+	// dimensions, last validation time (never validated last) and ID, all
+	// descending, and bounded by Limit.
+	RelatedAppendices(context.Context, AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error)
 	Proposal(context.Context, string, string, string) (model.AssistantTaskProposal, error)
 	Proposals(context.Context, AssistantTaskQuery) ([]model.AssistantTaskProposal, error)
 	InsertProposal(context.Context, model.AssistantTaskProposal) (bool, error)

@@ -9,9 +9,9 @@ import { AssistantTaskMarkdown } from './AssistantTaskProposalPanel';
 import { useAssistantTaskContentMessages } from './assistant-task-messages';
 import { useBotRead } from './useBotRead';
 
-const kinds = ['fact', 'guess', 'action', 'unknown', 'question', 'answer', 'note'] as const;
-export type AssistantTaskRecordsProps = { readonly taskId: string; readonly enabled: boolean; readonly bots?: readonly BotDefinition[]; readonly recordId?: string | null };
-export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = null }: AssistantTaskRecordsProps) {
+const kinds = ['fact', 'guess', 'action', 'unknown', 'question', 'answer', 'note', 'outcome'] as const;
+export type AssistantTaskRecordsProps = { readonly taskId: string; readonly enabled: boolean; readonly bots?: readonly BotDefinition[]; readonly recordId?: string | null; readonly onRecords?: (id: string) => void };
+export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = null, onRecords }: AssistantTaskRecordsProps) {
   const m = useAssistantTaskContentMessages();
   const [selection, setSelection] = useState({ taskId, itemId: '', pages: 1 });
   const [kind, setKind] = useState(''), [author, setAuthor] = useState('');
@@ -77,7 +77,9 @@ export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = nu
       const item = items.value?.find(value => value.id === groupId);
       return <section className="assistant-task-panel" key={groupId}><header><h3>{groupId ? item?.key ?? groupId : m.general}</h3>{item ? <span className="assistant-task-badge">{m[item.state]}</span> : null}</header>
         <ol className="assistant-task-records">{entries.map(entry => <li id={`record-${entry.id}`} tabIndex={-1} key={entry.id} className="assistant-task-record">
-          <header><span className="assistant-task-badge" data-kind={entry.kind}>{m[entry.kind]}</span><span>{name(entry.authorBotId ?? 'system')}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString(m.locale)}</time></header><AssistantTaskMarkdown text={entry.text} />
+          <header><span className="assistant-task-badge" data-kind={entry.kind}>{m[entry.kind]}</span><span>{name(entry.authorBotId ?? 'system')}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString(m.locale)}</time></header>
+          {entry.outcome && entry.actionRecordId ? <p className="assistant-task-evidence"><span className="assistant-task-badge" data-outcome={entry.outcome}>{m[entry.outcome]}</span><span>{m.evaluatedAction}</span>{onRecords ? <button className="button quiet" type="button" onClick={() => onRecords(entry.actionRecordId!)}>{m.record.replace('{id}', entry.actionRecordId)}</button> : <code>{entry.actionRecordId}</code>}</p> : null}
+          <AssistantTaskMarkdown text={entry.text} />
           {entry.refs !== null && stringifyAssistantTaskJson(entry.refs) !== '[]' && stringifyAssistantTaskJson(entry.refs) !== '{}' ? <details><summary>{m.references}</summary><pre className="assistant-task-rules">{stringifyAssistantTaskJson(entry.refs, 2)}</pre></details> : null}
         </li>)}</ol>
       </section>;

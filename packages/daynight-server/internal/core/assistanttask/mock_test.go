@@ -75,6 +75,9 @@ type daoStub struct {
 	appendices           func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskAppendix, error)
 	insertAppendix       func(context.Context, model.AssistantTaskAppendix) (bool, error)
 	saveAppendix         func(context.Context, model.AssistantTaskAppendix, int64) (bool, error)
+	insertValidation     func(context.Context, model.AssistantTaskAppendixValidation) (bool, error)
+	deleteValidations    func(context.Context, string, string, string) error
+	relatedAppendices    func(context.Context, store.AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error)
 	proposal             func(context.Context, string, string, string) (model.AssistantTaskProposal, error)
 	proposals            func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskProposal, error)
 	insertProposal       func(context.Context, model.AssistantTaskProposal) (bool, error)
@@ -162,6 +165,18 @@ func (d *daoStub) InsertAppendix(a0 context.Context, a1 model.AssistantTaskAppen
 
 func (d *daoStub) SaveAppendix(a0 context.Context, a1 model.AssistantTaskAppendix, a2 int64) (bool, error) {
 	return d.saveAppendix(a0, a1, a2)
+}
+
+func (d *daoStub) InsertAppendixValidation(a0 context.Context, a1 model.AssistantTaskAppendixValidation) (bool, error) {
+	return d.insertValidation(a0, a1)
+}
+
+func (d *daoStub) DeleteAppendixValidations(a0 context.Context, a1, a2, a3 string) error {
+	return d.deleteValidations(a0, a1, a2, a3)
+}
+
+func (d *daoStub) RelatedAppendices(a0 context.Context, a1 store.AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error) {
+	return d.relatedAppendices(a0, a1)
 }
 
 func (d *daoStub) Proposal(a0 context.Context, a1 string, a2 string, a3 string) (model.AssistantTaskProposal, error) {

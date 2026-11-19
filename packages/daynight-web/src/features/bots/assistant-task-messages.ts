@@ -20,6 +20,7 @@ const en = {
   item: 'Item', allItems: 'All items', general: 'Task-wide records', open: 'Open', closed: 'Closed',
   kind: 'Record type', author: 'Author', allAuthors: 'All authors', system: 'System', unknownAssistant: 'Assistant {id}',
   fact: 'Fact', guess: 'Assessment', action: 'Action', unknown: 'Unknown', question: 'Question', answer: 'Answer', note: 'Note',
+  outcome: 'Outcome', effective: 'Effective', ineffective: 'Ineffective', inconclusive: 'Inconclusive', evaluatedAction: 'Evaluated action',
   recordMissing: 'The referenced record was not found.', references: 'References', resourcesUnavailable: 'Resource unavailable', table: 'Table',
 };
 const zh: typeof en = {
@@ -42,6 +43,7 @@ const zh: typeof en = {
   item: '事项', allItems: '全部事项', general: '任务整体记录', open: '处理中', closed: '已结束',
   kind: '记录类型', author: '作者', allAuthors: '全部作者', system: '系统', unknownAssistant: '助手 {id}',
   fact: '事实', guess: '推测', action: '动作', unknown: '未知', question: '提问', answer: '回答', note: '注意事项',
+  outcome: '结果', effective: '有效', ineffective: '无效', inconclusive: '无法判断', evaluatedAction: '评估的动作',
   recordMissing: '未找到引用的工作记录。', references: '引用', resourcesUnavailable: '资源不可用', table: '表格',
 };
 export const useAssistantTaskContentMessages = () => {

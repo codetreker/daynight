@@ -20,10 +20,14 @@ export type AssistantTask = AssistantTaskClaim & {
   readonly version: string; readonly manualVersion: string; readonly createdAt: string; readonly updatedAt: string;
 };
 export type AssistantTaskManual = { readonly taskId: string; readonly version: string; readonly body: string; readonly rules: AssistantTaskJson; readonly source: 'initial' | 'revision' | 'rollback'; readonly proposalId: string | null; readonly createdAt: string };
-export type AssistantTaskAppendix = { readonly id: string; readonly taskId: string; readonly text: string; readonly sourceRecords: readonly string[]; readonly authorBotId: string | null; readonly state: 'active' | 'edited' | 'deleted'; readonly version: string; readonly createdAt: string; readonly updatedAt: string };
+// The server omits scope for an unrestricted appendix and validation before its first validation.
+export type AssistantTaskAppendix = { readonly id: string; readonly taskId: string; readonly text: string; readonly sourceRecords: readonly string[]; readonly authorBotId: string | null; readonly state: 'active' | 'edited' | 'deleted'; readonly version: string; readonly createdAt: string; readonly updatedAt: string; readonly scope?: AssistantTaskAppendixScope; readonly validation?: AssistantTaskAppendixValidation };
+export type AssistantTaskAppendixScope = { readonly projectIds: readonly string[]; readonly eventTypes: readonly string[]; readonly itemCategories: readonly string[] };
+export type AssistantTaskAppendixValidation = { readonly successCount: string; readonly failureCount: string; readonly lastValidatedAt: string };
 export type AssistantTaskProposal = { readonly id: string; readonly taskId: string; readonly baseVersion: string; readonly body: string; readonly rules: AssistantTaskJson; readonly reason: string; readonly evidenceRecords: readonly string[]; readonly authorBotId: string | null; readonly widens: boolean; readonly status: 'pending' | 'approved' | 'edited' | 'rejected'; readonly decisionNote: string; readonly createdAt: string; readonly decidedAt: string | null };
 export type AssistantTaskItem = { readonly id: string; readonly taskId: string; readonly key: string; readonly episode: string; readonly state: 'open' | 'closed'; readonly category: string; readonly followerBotId: string | null; readonly appState: AssistantTaskJson; readonly version: string; readonly createdAt: string; readonly updatedAt: string };
-export type AssistantTaskRecord = { readonly id: string; readonly taskId: string; readonly itemId: string | null; readonly author: 'bot' | 'system'; readonly authorBotId: string | null; readonly kind: 'fact' | 'guess' | 'action' | 'unknown' | 'question' | 'answer' | 'note'; readonly text: string; readonly refs: AssistantTaskJson; readonly createdAt: string };
+export type AssistantTaskRecord = { readonly id: string; readonly taskId: string; readonly itemId: string | null; readonly author: 'bot' | 'system'; readonly authorBotId: string | null; readonly kind: 'fact' | 'guess' | 'action' | 'unknown' | 'question' | 'answer' | 'note' | 'outcome'; readonly text: string; readonly outcome?: AssistantTaskOutcome; readonly actionRecordId?: string; readonly refs: AssistantTaskJson; readonly createdAt: string };
+export type AssistantTaskOutcome = 'effective' | 'ineffective' | 'inconclusive';
 const eventTypes = ['report', 'escalation', 'result_unknown', 'proposal_pending', 'inquiry_timed_out', 'takeover', 'claim_lost', 'update', 'resolved', 'direct_success', 'proposal_decided', 'appendix_added', 'inquiry', 'answer', 'transfer', 'intervention', 'trigger'] as const;
 export type AssistantTaskEvent = { readonly id: string; readonly taskId: string; readonly targetBotId: string; readonly type: typeof eventTypes[number]; readonly payload: AssistantTaskJson; readonly state: 'pending' | 'delivered' | 'expired'; readonly attention: boolean; readonly createdAt: string; readonly deliveredAt: string | null; readonly seenAt: string | null; readonly ackOperationId: string | null };
 export type AssistantTaskPage<T> = { readonly items: readonly T[]; readonly nextCursor: string | null; readonly observedAt: string };
@@ -145,11 +149,23 @@ export const parseAssistantTaskManual = (value: unknown, taskId: string): Assist
   if ((result.source === 'revision') !== (result.proposalId !== null)) return malformed();
   return result;
 };
+const appendixScope = (value: unknown): AssistantTaskAppendixScope => {
+  const data = fields(value, ['projectIds', 'eventTypes', 'itemCategories']);
+  const result = { projectIds: array(data.projectIds, uuid), eventTypes: array(data.eventTypes, value => text(value, true)), itemCategories: array(data.itemCategories, value => text(value, true)) };
+  return result.projectIds.length + result.eventTypes.length + result.itemCategories.length === 0 ? malformed() : result;
+};
+const appendixValidation = (value: unknown): AssistantTaskAppendixValidation => {
+  const data = fields(value, ['successCount', 'failureCount', 'lastValidatedAt']);
+  const result = { successCount: decimal(data.successCount, true), failureCount: decimal(data.failureCount, true), lastValidatedAt: timestamp(data.lastValidatedAt) };
+  return result.successCount === '0' && result.failureCount === '0' ? malformed() : result;
+};
 export const parseAssistantTaskAppendix = (value: unknown, taskId: string): AssistantTaskAppendix => {
-  const data = fields(value, ['id', 'taskId', 'text', 'sourceRecords', 'authorBotId', 'state', 'version', 'createdAt', 'updatedAt']);
+  const data = fields(value, ['id', 'taskId', 'text', 'sourceRecords', 'authorBotId', 'state', 'version', 'createdAt', 'updatedAt'], ['scope', 'validation']);
   const state = choice(data.state, ['active', 'edited', 'deleted']);
-  const result = { ...entryIdentity(data, taskId), text: text(data.text, state !== 'deleted'), sourceRecords: array(data.sourceRecords, uuid), authorBotId: nullableId(data.authorBotId), state, version: decimal(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
-  if (state === 'deleted' && (result.text !== '' || result.sourceRecords.length !== 0)) return malformed();
+  const result = { ...entryIdentity(data, taskId), text: text(data.text, state !== 'deleted'), sourceRecords: array(data.sourceRecords, uuid), authorBotId: nullableId(data.authorBotId), state, version: decimal(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt),
+    ...(Object.hasOwn(data, 'scope') ? { scope: appendixScope(data.scope) } : {}), ...(Object.hasOwn(data, 'validation') ? { validation: appendixValidation(data.validation) } : {}) };
+  // Deletion clears the content together with the scope and every registered validation.
+  if (state === 'deleted' && (result.text !== '' || result.sourceRecords.length !== 0 || Object.hasOwn(data, 'scope') || Object.hasOwn(data, 'validation'))) return malformed();
   return result;
 };
 export const parseAssistantTaskProposal = (value: unknown, taskId: string): AssistantTaskProposal => {
@@ -163,8 +179,11 @@ export const parseAssistantTaskItem = (value: unknown, taskId: string): Assistan
   return { ...entryIdentity(data, taskId), key: text(data.key, true), episode: decimal(data.episode), state: choice(data.state, ['open', 'closed']), category: text(data.category), followerBotId: nullableId(data.followerBotId), appState: jsonValue(data.appState), version: decimal(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
 };
 export const parseAssistantTaskRecord = (value: unknown, taskId: string): AssistantTaskRecord => {
-  const data = fields(value, ['id', 'taskId', 'itemId', 'author', 'authorBotId', 'kind', 'text', 'refs', 'createdAt']);
-  const result = { ...entryIdentity(data, taskId), itemId: nullableId(data.itemId), author: choice(data.author, ['bot', 'system']), authorBotId: nullableId(data.authorBotId), kind: choice(data.kind, ['fact', 'guess', 'action', 'unknown', 'question', 'answer', 'note']), text: text(data.text, true), refs: jsonValue(data.refs), createdAt: timestamp(data.createdAt) };
+  const data = fields(value, ['id', 'taskId', 'itemId', 'author', 'authorBotId', 'kind', 'text', 'refs', 'createdAt'], ['outcome', 'actionRecordId']);
+  const kind = choice(data.kind, ['fact', 'guess', 'action', 'unknown', 'question', 'answer', 'note', 'outcome']);
+  // Only outcome records carry the evaluation; the server omits both keys on every other kind.
+  const evaluation = kind === 'outcome' ? { outcome: choice(data.outcome, ['effective', 'ineffective', 'inconclusive'] as const), actionRecordId: uuid(data.actionRecordId) } : Object.hasOwn(data, 'outcome') || Object.hasOwn(data, 'actionRecordId') ? malformed() : {};
+  const result = { ...entryIdentity(data, taskId), itemId: nullableId(data.itemId), author: choice(data.author, ['bot', 'system']), authorBotId: nullableId(data.authorBotId), kind, text: text(data.text, true), ...evaluation, refs: jsonValue(data.refs), createdAt: timestamp(data.createdAt) };
   if ((result.author === 'bot') !== (result.authorBotId !== null)) return malformed();
   return result;
 };

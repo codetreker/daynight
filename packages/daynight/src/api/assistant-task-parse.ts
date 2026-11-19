@@ -78,11 +78,26 @@ export const parseAssistantTaskManual = (value: unknown, taskId: string, version
   if (version !== undefined && result.version !== version) return malformed();
   return result;
 };
+// The server sends scope only when it restricts a dimension and validation only
+// after the first registration; absence means unrestricted and unvalidated.
+const appendixScope = (value: unknown): T.AssistantTaskAppendixScope => {
+  const d = fields(value, ["projectIds", "eventTypes", "itemCategories"]);
+  const result = { projectIds: array(d.projectIds, assistantTaskId), eventTypes: array(d.eventTypes, v => text(v, true)), itemCategories: array(d.itemCategories, v => text(v, true)) };
+  return result.projectIds.length + result.eventTypes.length + result.itemCategories.length === 0 ? malformed() : result;
+};
+const appendixValidation = (value: unknown): T.AssistantTaskAppendixValidation => {
+  const d = fields(value, ["successCount", "failureCount", "lastValidatedAt"]);
+  const result = { successCount: assistantTaskInteger(d.successCount, true), failureCount: assistantTaskInteger(d.failureCount, true), lastValidatedAt: timestamp(d.lastValidatedAt) };
+  return result.successCount === "0" && result.failureCount === "0" ? malformed() : result;
+};
 export const parseAssistantTaskAppendix = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskAppendix => {
-  const d = fields(value, ["id", "taskId", "text", "sourceRecords", "authorBotId", "state", "version", "createdAt", "updatedAt"]);
+  const d = fields(value, ["id", "taskId", "text", "sourceRecords", "authorBotId", "state", "version", "createdAt", "updatedAt", "scope", "validation"]);
   const state = choice(d.state, ["active", "edited", "deleted"] as const);
-  const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, state !== "deleted"), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state, version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
-  if (state === "deleted" && (result.text !== "" || result.sourceRecords.length !== 0)) return malformed();
+  const declared = { scope: Object.hasOwn(d, "scope"), validation: Object.hasOwn(d, "validation") };
+  const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, state !== "deleted"), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state, version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt),
+    ...(declared.scope ? { scope: appendixScope(d.scope) } : {}), ...(declared.validation ? { validation: appendixValidation(d.validation) } : {}) };
+  // Deletion clears the content together with the scope and every registered validation.
+  if (state === "deleted" && (result.text !== "" || result.sourceRecords.length !== 0 || declared.scope || declared.validation)) return malformed();
   return result;
 };
 export const parseAssistantTaskProposal = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskProposal => {
@@ -94,8 +109,11 @@ export const parseAssistantTaskItem = (value: unknown, taskId: string, expectedI
   return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), key: text(d.key, true), episode: assistantTaskInteger(d.episode), state: choice(d.state, ["open", "closed"]), category: text(d.category), followerBotId: nullableId(d.followerBotId), appState: json(d.appState), version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
 };
 export const parseAssistantTaskRecord = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskRecord => {
-  const d = fields(value, ["id", "taskId", "itemId", "author", "authorBotId", "kind", "text", "refs", "createdAt"]);
-  return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), author: choice(d.author, ["bot", "system"]), authorBotId: nullableId(d.authorBotId), kind: choice(d.kind, ["fact", "guess", "action", "unknown", "question", "answer", "note"]), text: text(d.text, true), refs: json(d.refs), createdAt: timestamp(d.createdAt) };
+  const d = fields(value, ["id", "taskId", "itemId", "author", "authorBotId", "kind", "text", "outcome", "actionRecordId", "refs", "createdAt"]);
+  const kind = choice(d.kind, ["fact", "guess", "action", "unknown", "question", "answer", "note", "outcome"]);
+  // Only outcome records carry the evaluation; any other record with either key is malformed.
+  const evaluation = kind === "outcome" ? { outcome: choice(d.outcome, ["effective", "ineffective", "inconclusive"] as const), actionRecordId: assistantTaskId(d.actionRecordId) } : Object.hasOwn(d, "outcome") || Object.hasOwn(d, "actionRecordId") ? malformed() : {};
+  return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), author: choice(d.author, ["bot", "system"]), authorBotId: nullableId(d.authorBotId), kind, text: text(d.text, true), ...evaluation, refs: json(d.refs), createdAt: timestamp(d.createdAt) };
 };
 export const parseAssistantTaskEvent = (value: unknown, taskId?: string, expectedId?: string): T.AssistantTaskEvent => {
   const d = fields(value, ["id", "taskId", "targetBotId", "type", "payload", "state", "attention", "createdAt", "deliveredAt", "seenAt", "ackOperationId"]);
@@ -106,6 +124,13 @@ export const parseAssistantTaskInquiry = (value: unknown, taskId: string, expect
   const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), itemId: nullableId(d.itemId), fromBotId: assistantTaskId(d.fromBotId), toBotId: assistantTaskId(d.toBotId), answerBotId: nullableId(d.answerBotId), question: text(d.question, true), answer: text(d.answer), state: choice(d.state, ["open", "answered", "timed_out"] as const), createdAt: timestamp(d.createdAt), deadline: timestamp(d.deadline), answeredAt: nullableTimestamp(d.answeredAt) };
   if ((result.state === "answered") !== (result.answeredAt !== null) || (result.state === "answered") !== (result.answerBotId !== null)) return malformed();
   return result;
+};
+// Related experience is complete for its query: at most five distinct
+// non-deleted appendices of the task and no continuation.
+export const parseAssistantTaskRelatedAppendices = (value: unknown, taskId: string): T.AssistantTaskRelatedAppendices => {
+  const d = fields(value, ["items", "observedAt"]), items = array(d.items, v => parseAssistantTaskAppendix(v, taskId));
+  if (items.length > 5 || items.some(v => v.state === "deleted") || new Set(items.map(v => v.id)).size !== items.length) return malformed();
+  return { items, observedAt: timestamp(d.observedAt) };
 };
 export const parseAssistantTaskPage = <V>(value: unknown, parse: (value: unknown) => V): T.AssistantTaskPage<V> => {
   const d = fields(value, ["items", "nextCursor", "observedAt"]), items = array(d.items, parse);

@@ -28,12 +28,13 @@ func (d *DAO) InsertManual(ctx context.Context, v model.AssistantTaskManual) err
 	return d.execute(ctx, "insert assistant manual", `INSERT INTO assistant_task_manual_versions(owner_user_id,task_id,version,body,rules,source,proposal_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, v.OwnerUserID, v.TaskID, v.Version, v.Body, v.Rules, v.Source, v.ProposalID, v.CreatedAt)
 }
 
-const appendixColumns = `id::text,owner_user_id::text,task_id::text,text,state,request_fingerprint,source_records,author_bot_id::text,version,created_at,updated_at`
+const appendixColumns = `id::text,owner_user_id::text,task_id::text,text,state,request_fingerprint,source_records,author_bot_id::text,version,created_at,updated_at,scope_project_ids,scope_event_types,scope_item_categories,success_count,failure_count,last_validated_at`
 
 func scanAppendix(row pgx.Row) (model.AssistantTaskAppendix, error) {
 	var v model.AssistantTaskAppendix
-	err := row.Scan(&v.ID, &v.OwnerUserID, &v.TaskID, &v.Text, &v.State, &v.RequestFingerprint, &v.SourceRecords, &v.AuthorBotID, &v.Version, &v.CreatedAt, &v.UpdatedAt)
+	err := row.Scan(&v.ID, &v.OwnerUserID, &v.TaskID, &v.Text, &v.State, &v.RequestFingerprint, &v.SourceRecords, &v.AuthorBotID, &v.Version, &v.CreatedAt, &v.UpdatedAt, &v.Scope.ProjectIDs, &v.Scope.EventTypes, &v.Scope.ItemCategories, &v.SuccessCount, &v.FailureCount, &v.LastValidatedAt)
 	v.CreatedAt, v.UpdatedAt = v.CreatedAt.UTC(), v.UpdatedAt.UTC()
+	v.LastValidatedAt = pg.UTCTime(v.LastValidatedAt)
 	return v, err
 }
 func (d *DAO) Appendix(ctx context.Context, owner, task, id string) (model.AssistantTaskAppendix, error) {
@@ -43,14 +44,46 @@ func (d *DAO) Appendices(ctx context.Context, q store.AssistantTaskQuery) ([]mod
 	after, id, limit := page(q)
 	return many(ctx, d.tx, "list assistant appendices", `SELECT `+appendixColumns+` FROM assistant_task_appendix WHERE owner_user_id=$1 AND task_id=$2 AND ($3='' OR state=$3) AND ($4::timestamptz IS NULL OR (created_at,id)>($4,$5::uuid)) ORDER BY created_at,id LIMIT $6`, scanAppendix, q.OwnerUserID, q.TaskID, q.State, after, id, limit)
 }
+
+// scopeSet stores an unrestricted dimension as an empty JSON array, never null.
+func scopeSet(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
 func appendixValues(v model.AssistantTaskAppendix) []any {
-	return []any{v.ID, v.OwnerUserID, v.TaskID, v.Text, v.State, v.RequestFingerprint, v.SourceRecords, v.AuthorBotID, v.Version, v.CreatedAt, v.UpdatedAt}
+	return []any{v.ID, v.OwnerUserID, v.TaskID, v.Text, v.State, v.RequestFingerprint, v.SourceRecords, v.AuthorBotID, v.Version, v.CreatedAt, v.UpdatedAt, scopeSet(v.Scope.ProjectIDs), scopeSet(v.Scope.EventTypes), scopeSet(v.Scope.ItemCategories), v.SuccessCount, v.FailureCount, v.LastValidatedAt}
 }
 func (d *DAO) InsertAppendix(ctx context.Context, v model.AssistantTaskAppendix) (bool, error) {
-	return d.changed(ctx, "insert assistant appendix", `INSERT INTO assistant_task_appendix(id,owner_user_id,task_id,text,state,request_fingerprint,source_records,author_bot_id,version,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING`, appendixValues(v)...)
+	return d.changed(ctx, "insert assistant appendix", `INSERT INTO assistant_task_appendix(id,owner_user_id,task_id,text,state,request_fingerprint,source_records,author_bot_id,version,created_at,updated_at,scope_project_ids,scope_event_types,scope_item_categories,success_count,failure_count,last_validated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT DO NOTHING`, appendixValues(v)...)
 }
 func (d *DAO) SaveAppendix(ctx context.Context, v model.AssistantTaskAppendix, version int64) (bool, error) {
-	return d.changed(ctx, "save assistant appendix", `UPDATE assistant_task_appendix SET text=$4,state=$5,request_fingerprint=$6,source_records=$7,author_bot_id=$8,version=$9,created_at=$10,updated_at=$11 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND version=$12`, append(appendixValues(v), version)...)
+	return d.changed(ctx, "save assistant appendix", `UPDATE assistant_task_appendix SET text=$4,state=$5,request_fingerprint=$6,source_records=$7,author_bot_id=$8,version=$9,created_at=$10,updated_at=$11,scope_project_ids=$12,scope_event_types=$13,scope_item_categories=$14,success_count=$15,failure_count=$16,last_validated_at=$17 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND version=$18`, append(appendixValues(v), version)...)
+}
+func (d *DAO) InsertAppendixValidation(ctx context.Context, v model.AssistantTaskAppendixValidation) (bool, error) {
+	return d.changed(ctx, "insert assistant appendix validation", `INSERT INTO assistant_task_appendix_validations(owner_user_id,task_id,appendix_id,outcome_record_id,outcome,validator_bot_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, v.OwnerUserID, v.TaskID, v.AppendixID, v.OutcomeRecordID, v.Outcome, v.ValidatorBotID, v.CreatedAt)
+}
+func (d *DAO) DeleteAppendixValidations(ctx context.Context, owner, task, appendix string) error {
+	return d.execute(ctx, "delete assistant appendix validations", `DELETE FROM assistant_task_appendix_validations WHERE owner_user_id=$1 AND task_id=$2 AND appendix_id=$3`, owner, task, appendix)
+}
+
+// relatedAppendixSQL treats each dimension alike: an empty query value is
+// neutral, an empty stored set is unrestricted and neutral, and a nonempty set
+// either contains the queried value (one point) or excludes the appendix.
+const relatedAppendixSQL = `SELECT ` + appendixColumns + ` FROM assistant_task_appendix
+WHERE owner_user_id=$1 AND task_id=$2 AND state<>'deleted'
+ AND ($3='' OR scope_project_ids='[]'::jsonb OR scope_project_ids @> jsonb_build_array($3::text))
+ AND ($4='' OR scope_event_types='[]'::jsonb OR scope_event_types @> jsonb_build_array($4::text))
+ AND ($5='' OR scope_item_categories='[]'::jsonb OR scope_item_categories @> jsonb_build_array($5::text))
+ORDER BY (CASE WHEN $3<>'' AND scope_project_ids @> jsonb_build_array($3::text) THEN 1 ELSE 0 END
+ + CASE WHEN $4<>'' AND scope_event_types @> jsonb_build_array($4::text) THEN 1 ELSE 0 END
+ + CASE WHEN $5<>'' AND scope_item_categories @> jsonb_build_array($5::text) THEN 1 ELSE 0 END) DESC,
+ last_validated_at DESC NULLS LAST, id DESC
+LIMIT $6`
+
+func (d *DAO) RelatedAppendices(ctx context.Context, q store.AssistantTaskRelatedQuery) ([]model.AssistantTaskAppendix, error) {
+	return many(ctx, d.tx, "list related assistant appendices", relatedAppendixSQL, scanAppendix, q.OwnerUserID, q.TaskID, q.ProjectID, q.EventType, q.ItemCategory, q.Limit)
 }
 
 const proposalColumns = `id::text,owner_user_id::text,task_id::text,body,reason,status,decision_note,request_fingerprint,base_version,rules,evidence_records,author_bot_id::text,widens,created_at,decided_at`

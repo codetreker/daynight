@@ -96,6 +96,29 @@ describe('assistant task response contracts', () => {
     { trigger: { kind: 'daily', time: '24:00', timeZone: 'UTC' } }, { trigger: { kind: 'daily', time: '12:00', timeZone: 'Local' } },
     { trigger: { kind: 'daily', time: '12:00', timeZone: 'Bad/Zone' } }, { unknown: true }, { updatedAt: '2026-02-30T12:00:00Z' },
   ])('refuses malformed or contradictory tasks %#', patch => expect(() => api.parseAssistantTask({ ...task(), ...patch }, BOT_USER)).toThrow());
+  it('accepts outcome records only with their evaluation and refuses evaluation keys on other kinds', () => {
+    const outcome = { ...record(), kind: 'outcome', outcome: 'effective', actionRecordId: botId(85) };
+    expect(api.parseAssistantTaskRecord(outcome, taskId)).toEqual(outcome);
+    for (const value of ['ineffective', 'inconclusive']) expect(api.parseAssistantTaskRecord({ ...outcome, outcome: value }, taskId).outcome).toBe(value);
+    const { outcome: _outcome, ...withoutOutcome } = outcome, { actionRecordId: _action, ...withoutAction } = outcome;
+    for (const value of [withoutOutcome, withoutAction, { ...outcome, outcome: 'unknown' }, { ...outcome, outcome: null }, { ...outcome, actionRecordId: null }, { ...outcome, actionRecordId: 'not-a-uuid' }, { ...outcome, kind: 'invented' }])
+      expect(() => api.parseAssistantTaskRecord(value, taskId)).toThrow();
+    for (const extra of [{ outcome: 'effective' }, { actionRecordId: botId(85) }, { outcome: 'effective', actionRecordId: botId(85) }])
+      expect(() => api.parseAssistantTaskRecord({ ...record(), kind: 'action', ...extra }, taskId)).toThrow();
+  });
+  it('accepts appendix scope and validation only when the server declares them', () => {
+    const scope = { projectIds: [botId(86)], eventTypes: ['report'], itemCategories: ['build'] };
+    const validation = { successCount: '9007199254740993', failureCount: '0', lastValidatedAt: BOT_TIME };
+    const scoped = { ...appendix(), scope, validation };
+    expect(api.parseAssistantTaskAppendix(scoped, taskId)).toEqual(scoped);
+    expect(api.parseAssistantTaskAppendix(appendix(), taskId)).not.toHaveProperty('scope');
+    for (const value of [
+      { ...appendix(), scope: { projectIds: [], eventTypes: [], itemCategories: [] } }, { ...appendix(), scope: { ...scope, projectIds: ['bad'] } },
+      { ...appendix(), scope: { ...scope, itemCategories: [' '] } }, { ...appendix(), scope: { eventTypes: ['report'] } }, { ...appendix(), scope: null },
+      { ...appendix(), validation: { ...validation, successCount: '0' } }, { ...appendix(), validation: { ...validation, failureCount: 1 } }, { ...appendix(), validation: { ...validation, lastValidatedAt: null } },
+      { ...appendix(), state: 'deleted', text: '', sourceRecords: [], scope }, { ...appendix(), state: 'deleted', text: '', sourceRecords: [], validation },
+    ]) expect(() => api.parseAssistantTaskAppendix(value, taskId)).toThrow();
+  });
   it('validates related resource ownership, precise enums and revisions', () => {
     for (const [parse, value] of [
       [api.parseAssistantTaskManual, manual()], [api.parseAssistantTaskAppendix, appendix()], [api.parseAssistantTaskProposal, proposal()],

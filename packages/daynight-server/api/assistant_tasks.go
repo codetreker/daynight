@@ -73,6 +73,32 @@ type AssistantTaskAppendix struct {
 	Version       int64     `json:"version,string"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
+	// Scope is omitted for an unrestricted appendix and Validation before the
+	// first validation, so clients that predate both keys can still read such
+	// appendices.
+	Scope      *AssistantTaskAppendixScope      `json:"scope,omitempty"`
+	Validation *AssistantTaskAppendixValidation `json:"validation,omitempty"`
+}
+
+// AssistantTaskAppendixScope lists every declared dimension; an empty array
+// leaves that dimension unrestricted.
+type AssistantTaskAppendixScope struct {
+	ProjectIDs     []string `json:"projectIds"`
+	EventTypes     []string `json:"eventTypes"`
+	ItemCategories []string `json:"itemCategories"`
+}
+
+type AssistantTaskAppendixValidation struct {
+	SuccessCount    int64     `json:"successCount,string"`
+	FailureCount    int64     `json:"failureCount,string"`
+	LastValidatedAt time.Time `json:"lastValidatedAt"`
+}
+
+// AssistantTaskRelatedAppendices lists at most five non-deleted appendices in
+// relevance order. It is complete for its query and has no continuation.
+type AssistantTaskRelatedAppendices struct {
+	Items      []AssistantTaskAppendix `json:"items"`
+	ObservedAt time.Time               `json:"observedAt"`
 }
 
 type AssistantTaskProposal struct {
@@ -106,15 +132,20 @@ type AssistantTaskItem struct {
 }
 
 type AssistantTaskRecord struct {
-	ID          string          `json:"id"`
-	TaskID      string          `json:"taskId"`
-	ItemID      *string         `json:"itemId"`
-	Author      string          `json:"author"`
-	AuthorBotID *string         `json:"authorBotId"`
-	Kind        string          `json:"kind"`
-	Text        string          `json:"text"`
-	Refs        json.RawMessage `json:"refs"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	ID          string  `json:"id"`
+	TaskID      string  `json:"taskId"`
+	ItemID      *string `json:"itemId"`
+	Author      string  `json:"author"`
+	AuthorBotID *string `json:"authorBotId"`
+	Kind        string  `json:"kind"`
+	Text        string  `json:"text"`
+	// Outcome and ActionRecordID are present only on outcome records. Other
+	// records omit both keys, so clients that validate records strictly can
+	// reject either key on every other kind.
+	Outcome        *string         `json:"outcome,omitempty"`
+	ActionRecordID *string         `json:"actionRecordId,omitempty"`
+	Refs           json.RawMessage `json:"refs"`
+	CreatedAt      time.Time       `json:"createdAt"`
 }
 
 type AssistantTaskEvent struct {

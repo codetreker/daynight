@@ -21,10 +21,11 @@
 | `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头 |
 | `assistant_task_claim_operations` | `(owner_user_id, task_id, operation_id)` 唯一的成功认领操作回执 |
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
-| `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |
+| `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本；迁移 `098_assistant_task_appendix_validations.sql` 增加以 JSON 数组保存的适用范围（项目 ID、事件类型、事项类别）、成功与失败计数和可空的最近验证时间，既有行范围为空数组、计数为 0 |
+| `assistant_task_appendix_validations` | 附录验证登记：结果记录 ID、结果取值、登记 Bot 与时间；主键 `(appendix_id, outcome_record_id)` 保证同一结果记录对同一附录只登记一次 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
 | `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本 |
-| `assistant_task_records` | 只追加的事实、判断、动作、问答及引用 |
+| `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `094_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
 | `assistant_task_events` | 目标 Bot、负载、投递与关注状态、确认操作身份 |
 | `assistant_task_inquiries` | 双方 Bot、问题与回答、状态和固定截止时间 |
 
@@ -35,6 +36,12 @@
 创建尚无任务行可锁，因此使用按规范 task ID 命名的事务 advisory lock，覆盖初版手册、创建指纹读取和插入。插入继续使用 `ON CONFLICT DO NOTHING` 保护 ID 及应用唯一性。相同请求身份返回原定义，不同内容或已删除身份不重新创建。任务删除保留最小 tombstone，以阻止旧身份恢复；业务材料和操作回执在同一事务中删除。
 
 时间由数据库提供。受保护写入在锁等待后取当前时间，最终返回事务 callback 前再次核验凭据、相关 Bot 和原租约期限；不能用事务起点 `now()` 证明等待后的有效性。认领回执中的 `admittedAt` 是事务内准入时间，不是 COMMIT 时间。公开任务观测的时间与 holder 删除状态来自同次数据库投影，不能给旧数据附上一次较新的时间读取。
+
+结果记录由 core 在任务锁内按 owner 与任务读取被引用记录，确认其类型为 `action` 后写入；跨任务或不存在的引用与类型不符一样被拒绝。请求指纹只在结果记录中追加结果取值与动作记录 ID，迁移前保存的其他记录指纹保持不变，重放仍须完全一致。经验沉淀的其余机制见[经验沉淀设计](assistant-task-learning.md)。
+
+附录范围由 core 校验：项目 ID 为规范 UUID，事件类型属于事件准入使用的已知类型，类别为非空且不超过 200 字节的文本，保留原文而不裁剪首尾空白，以便与事项保存的自由文本类别逐字匹配，每个集合最多 20 项且不重复。追加时只有声明了范围的请求才把规范化范围加入请求指纹，迁移前保存的附录重放指纹不变；用户编辑未提供范围时保留原范围。验证由负责 Bot 在任务锁与当前认领下提交：core 读取同一任务的附录与结果记录，拒绝已删除附录、非结果记录和 `inconclusive`，再插入验证登记；登记表主键冲突时返回 `operation_conflict`，不计数。计数与最近验证时间在同一事务中以附录当前版本为条件写回，验证不推进附录版本，因为版本只表示内容修订。用户删除附录时，同一事务删除其验证登记并清空范围、计数和最近验证时间。
+
+相关经验查询是只读操作，任务所有者及其 Bot 均可调用，不需要认领。core 先校验查询维度：项目 ID 为规范 UUID，事件类型属于已知类型，类别与附录范围类别使用相同的非空、200 字节上限和逐字比较规则；任一维度可省略。DAO 在单条 SQL 中按 owner 与任务筛选未删除附录并完成匹配、排序和截断：附录声明的维度包含查询值时计一分；附录未声明该维度，或查询省略该维度时，不计分也不排除；附录声明了该维度但不包含查询值时排除。结果按分数、最近验证时间（从未验证的排在已验证之后）和 ID 降序，最多 5 项，不在应用层取回全部附录后再过滤。查询省略的维度保持中立，是因为调用方不知道该维度时无法证明附录不适用。
 
 记录写入在任务记录头保护下使用数据库真实时钟，沿用 Thread 的有界前进机制；不能用 `head+1ms` 合成未来时间。成功写入返回实际持久位置，下一页以 `(created_at, id)` 继续。同一事务中的附录、问答和系统记录保持真实顺序。
 
@@ -69,10 +76,11 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `claim-operations/{id}` | GET 历史回执及当前认领 |
 | `manual, manual/versions, manual/versions/{manualVersion}` | GET 当前手册、版本页和历史版本 |
 | `manual/rollback` | POST 用户回退，带任务 `ifVersion` 和目标 `manualVersion` |
-| `appendix, appendix/{id}` | GET 列表；POST 负责 Bot 追加；PATCH/DELETE 用户编辑或删除，带任务 `ifVersion` |
+| `appendix, appendix/{id}, appendix/{id}/validations` | GET 列表；POST 负责 Bot 追加；PATCH/DELETE 用户编辑或删除，带任务 `ifVersion`。追加与编辑可带 `scope` 对象，含可选的 `projectIds`、`eventTypes`、`itemCategories` 数组；编辑省略 `scope` 时保留原范围，删除不接受 `scope`。POST `validations` 由负责 Bot 带认领与 `outcomeRecordId` 登记验证，返回更新后的附录。响应只在范围非空时包含列出三个数组的 `scope`，只在登记过验证后包含 `validation`（十进制字符串 `successCount`、`failureCount` 与 `lastValidatedAt`），使只认识原附录结构的客户端仍可读取未使用这两项的附录 |
+| `appendix/related` | GET 相关经验，可选查询参数 `projectId`、`eventType`、`itemCategory`，每个至多出现一次且不能为空。返回 `items` 与 `observedAt`，`items` 为按相关程度排序的至多 5 个未删除附录，结构与附录列表相同；结果对本次查询是完整的，没有 `nextCursor` |
 | `proposals, proposals/{id}/decision` | GET 列表；POST 负责 Bot 提案；POST 用户决定，带任务 `ifVersion` |
 | `items, items/{id}` | GET 列表/详情；POST/PATCH 负责 Bot 写入，更新另带事项 `ifVersion` |
-| `records` | GET 可按事项分页；POST 有明确作者的追加记录 |
+| `records` | GET 可按事项分页；POST 有明确作者的追加记录。`outcome` 记录另带 `outcome` 与 `actionRecordId`，其他类型提交任一键被拒绝；响应只在结果记录中包含这两个键，使只认识原记录结构的客户端仍可读取没有结果记录的任务 |
 | `events, events/{id}/ack` | GET 可按目标、状态和事件类型分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
 | `inquiries, inquiries/{id}/answer` | GET 列表；POST Bot 提问；POST 负责目标 Bot 回答 |
 

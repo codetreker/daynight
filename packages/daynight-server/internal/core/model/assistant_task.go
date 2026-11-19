@@ -60,6 +60,31 @@ type AssistantTaskAppendix struct {
 	AuthorBotID                                              *string
 	Version                                                  int64
 	CreatedAt, UpdatedAt                                     time.Time
+	// Scope narrows where the experience applies; an empty set leaves that
+	// dimension unrestricted.
+	Scope AssistantTaskAppendixScope
+	// SuccessCount, FailureCount and LastValidatedAt summarize the registered
+	// validations and change only with them, never with the appendix Version.
+	SuccessCount, FailureCount int64
+	LastValidatedAt            *time.Time
+}
+
+type AssistantTaskAppendixScope struct {
+	ProjectIDs, EventTypes, ItemCategories []string
+}
+
+// AssistantTaskRelatedAppendices is the bounded, relevance-ordered result of a
+// related experience query; it has no continuation.
+type AssistantTaskRelatedAppendices struct {
+	Items      []AssistantTaskAppendix
+	ObservedAt time.Time
+}
+
+// AssistantTaskAppendixValidation registers one outcome record as evidence for
+// one appendix; the pair is unique.
+type AssistantTaskAppendixValidation struct {
+	OwnerUserID, TaskID, AppendixID, OutcomeRecordID, Outcome, ValidatorBotID string
+	CreatedAt                                                                 time.Time
 }
 
 type AssistantTaskProposal struct {
@@ -84,8 +109,11 @@ type AssistantTaskItem struct {
 type AssistantTaskRecord struct {
 	ID, OwnerUserID, TaskID, Author, Kind, Text, RequestFingerprint string
 	ItemID, AuthorBotID                                             *string
-	Refs                                                            json.RawMessage
-	CreatedAt                                                       time.Time
+	// Outcome and ActionRecordID are set only on outcome records, which
+	// evaluate one action record of the same task.
+	Outcome, ActionRecordID *string
+	Refs                    json.RawMessage
+	CreatedAt               time.Time
 }
 
 type AssistantTaskEvent struct {

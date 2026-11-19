@@ -134,9 +134,16 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
     listManuals: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/manual/versions`, query, v => P.parseAssistantTaskManual(v, taskId)),
     rollback: (taskId: string, input: { ifVersion: string; manualVersion: string }) => request(`${taskPath(taskId)}/manual/rollback`, "POST", input, v => P.parseAssistantTaskManual(v, taskId)),
     listAppendix: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/appendix`, query, v => P.parseAssistantTaskAppendix(v, taskId)),
+    relatedAppendix: (taskId: string, query: T.AssistantTaskRelatedQuery = {}) => {
+      const params = new URLSearchParams();
+      if (query.projectId !== undefined) params.set("projectId", P.assistantTaskId(query.projectId));
+      for (const key of ["eventType", "itemCategory"] as const) if (query[key] !== undefined) params.set(key, text(query[key], true));
+      return request(`${taskPath(taskId)}/appendix/related${params.size === 0 ? "" : `?${params}`}`, "GET", undefined, v => P.parseAssistantTaskRelatedAppendices(v, taskId));
+    },
     addAppendix: (taskId: string, input: T.AddAssistantTaskAppendixInput) => request(`${taskPath(taskId)}/appendix`, "POST", input, v => P.parseAssistantTaskAppendix(v, taskId, input.id)),
     updateAppendix: (taskId: string, id: string, input: T.UpdateAssistantTaskAppendixInput) => request(entryPath(taskId, "appendix", id), "PATCH", input, v => P.parseAssistantTaskAppendix(v, taskId, id)),
     deleteAppendix: (taskId: string, id: string, ifVersion: string) => request(entryPath(taskId, "appendix", id), "DELETE", { ifVersion }, v => P.parseAssistantTaskAppendix(v, taskId, id)),
+    validateAppendix: (taskId: string, id: string, input: T.ValidateAssistantTaskAppendixInput) => request(`${entryPath(taskId, "appendix", id)}/validations`, "POST", input, v => { const result = P.parseAssistantTaskAppendix(v, taskId, id); if (result.validation === undefined) return malformed(); return result; }),
     listProposals: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/proposals`, query, v => P.parseAssistantTaskProposal(v, taskId)),
     propose: (taskId: string, input: T.ProposeAssistantTaskInput): Promise<T.AssistantTaskProposalResult> => request(`${taskPath(taskId)}/proposals`, "POST", input, v => { const d = fields(v, ["proposal", "rejectedMatches"]); if (!Array.isArray(d.rejectedMatches)) return malformed(); return { proposal: P.parseAssistantTaskProposal(d.proposal, taskId, input.id), rejectedMatches: d.rejectedMatches.map(x => P.parseAssistantTaskProposal(x, taskId)) }; }),
     decide: (taskId: string, id: string, input: T.DecideAssistantTaskInput) => request(`${entryPath(taskId, "proposals", id)}/decision`, "POST", input, v => P.parseAssistantTaskProposal(v, taskId, id)),
@@ -144,7 +151,7 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
     getItem: (taskId: string, id: string) => request(entryPath(taskId, "items", id), "GET", undefined, v => P.parseAssistantTaskItem(v, taskId, id)),
     saveItem: (taskId: string, input: T.SaveAssistantTaskItemInput, id?: string) => request(id === undefined ? `${taskPath(taskId)}/items` : entryPath(taskId, "items", id), id === undefined ? "POST" : "PATCH", input, v => P.parseAssistantTaskItem(v, taskId, id ?? input.id)),
     listRecords: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/records`, query, v => P.parseAssistantTaskRecord(v, taskId)),
-    addRecord: (taskId: string, input: T.AddAssistantTaskRecordInput) => request(`${taskPath(taskId)}/records`, "POST", input, v => P.parseAssistantTaskRecord(v, taskId, input.id)),
+    addRecord: (taskId: string, input: T.AddAssistantTaskRecordInput) => request(`${taskPath(taskId)}/records`, "POST", input, v => { const result = P.parseAssistantTaskRecord(v, taskId, input.id); if (result.kind !== input.kind || result.outcome !== input.outcome || result.actionRecordId !== input.actionRecordId) return malformed(); return result; }),
     listEvents: (taskId?: string, query?: T.AssistantTaskEventQuery) => list(taskId === undefined ? "/assistant-task-events" : `${taskPath(taskId)}/events`, query, v => P.parseAssistantTaskEvent(v, taskId)),
     addEvent: (taskId: string, input: T.AddAssistantTaskEventInput) => request(`${taskPath(taskId)}/events`, "POST", input, v => P.parseAssistantTaskEvent(v, taskId, input.id)),
     ackEvent: (taskId: string, id: string, input: { operationId: string; state?: "delivered" | "expired" }) => request(`${entryPath(taskId, "events", id)}/ack`, "POST", input, v => { const event = P.parseAssistantTaskEvent(v, taskId, id); if (event.ackOperationId !== input.operationId) return malformed(); return event; }),
