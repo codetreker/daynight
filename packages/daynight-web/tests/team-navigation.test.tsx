@@ -377,13 +377,15 @@ describe("Team workspace navigation", () => {
     expect(within(selector).getByRole("menuitemradio", { name: "Personal" })).toHaveAttribute("href", `/teams/${personal}`);
     fireEvent.click(within(selector).getByRole("menuitem", { name: "Retry" })); await within(selector).findByRole("menuitemradio", { name: "Beta" });
   });
-  it("shows a usable Team control when the narrow sidebar is collapsed", async () => {
+  it("opens Team selection from the narrow navigation drawer", async () => {
     mockSidebarMediaQuery(true); install(); render(<AuthenticatedApp />);
     await findByScope("Personal");
+    expect(screen.queryByRole("button", { name: "Switch Team: Personal space, Personal" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
     const control = screen.getByRole("button", { name: "Switch Team: Personal space, Personal" });
     fireEvent.click(control);
     expect(control).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByRole("dialog", { name: "Workspace navigation" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Workspace navigation" })).toBeInTheDocument();
     expect(await screen.findByRole("menuitemradio", { name: "Alpha" })).toBeInTheDocument();
   });
   it("restores a remembered Team by exact ID even when it is absent from the first picker page", async () => {
@@ -1108,7 +1110,7 @@ describe("Team workspace navigation", () => {
     const identity = Promise.withResolvers<Response>(); let meReads = 0;
     install((url) => url === "/api/v1/me" && ++meReads === 2 ? identity.promise : undefined);
     render(<AuthenticatedApp />); await findByScope("Personal");
-    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
     const drawer = screen.getByRole("dialog", { name: "Workspace navigation" });
     const focus = within(drawer).getByRole("link", { name: "My Workers" }); focus.focus();
     const workspace = document.querySelector(".workspace")!;

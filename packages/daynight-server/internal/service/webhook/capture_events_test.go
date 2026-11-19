@@ -24,7 +24,7 @@ func TestCaptureGroupsPersonalAndTeamResponsibilities(t *testing.T) {
 	configuration := []byte(`{"kind":"http","adapterVersion":"1","configuration":{"url":"https://team.example/notify"}}`)
 	team.Endpoint.DestinationConfiguration, team.Endpoint.Origin, team.Endpoint.DestinationRevision = configuration, "https://team.example", 9
 	dao := captureSuccessfulDAO(t, []store.WebhookAudience{personal, second, team}, 1)
-	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
+	if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{captureFact(protocol.Created)}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 1 || len(dao.writes[0].deliveries) != 2 {
@@ -58,7 +58,7 @@ func TestCaptureOriginalProofDoesNotAliasLaterAudienceSnapshots(t *testing.T) {
 	}
 	c := &Capturer{Random: &captureEntropy{}}
 	fact := captureFact(protocol.Created)
-	if err := c.CaptureBatch(t.Context(), dao, []protocol.Fact{fact}); err != nil {
+	if err := c.CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{fact}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 1 || len(dao.writes[0].deliveries) != 1 {
@@ -69,7 +69,7 @@ func TestCaptureOriginalProofDoesNotAliasLaterAudienceSnapshots(t *testing.T) {
 	first.Endpoint.DestinationConfiguration[0] ^= 1
 	fact.TaskVersion++
 	fact.OccurredAt = fact.OccurredAt.Add(time.Second)
-	if err := c.CaptureBatch(t.Context(), dao, []protocol.Fact{fact}); err != nil {
+	if err := c.CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{fact}); err != nil {
 		t.Fatal(err)
 	}
 	if len(dao.writes) != 2 || len(dao.writes[1].deliveries) != 1 {
@@ -105,7 +105,7 @@ func TestCaptureStepLogicalActionAndFinalVersion(t *testing.T) {
 			fact.StepID, fact.Action, fact.TaskVersion = "00000002", tc.action, int64(20+i)
 			tc.configure(&fact)
 			dao := captureSuccessfulDAO(t, []store.WebhookAudience{captureAudience(t, protocol.StepUpdated)}, 1)
-			if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{fact}); err != nil {
+			if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{fact}); err != nil {
 				t.Fatal(err)
 			}
 			event := dao.writes[0].event

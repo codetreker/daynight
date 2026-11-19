@@ -2,16 +2,22 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/jackc/pgx/v5"
 )
 
-var _ store.WebhookCaptureDAO = (*DAO)(nil)
+var (
+	_ store.WebhookCaptureDAO          = (*DAO)(nil)
+	_ store.WebhookCapturedEventReader = (*DAO)(nil)
+)
 
 type projectCapture struct {
 	*DAO
@@ -152,9 +158,10 @@ func (d *DAO) SaveCapture(ctx context.Context, event store.WebhookCapturedEvent,
 		}
 	}
 	_, err := d.tx.Exec(ctx, `INSERT INTO webhook_events
- (id,event_type,wire_version,schema_version,source,subject,project_id,task_id,task_version,task_deleted_at,step_id,message_id,occurred_at,recorded_at,origin_request_id,fact_codec_version,fact_bytes,fact_sha256,original_fact_bytes)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
-		event.ID, event.EventType, event.WireVersion, event.SchemaVersion, event.Source, event.Subject, event.ProjectID, event.TaskID, event.TaskVersion, event.TaskDeletedAt, event.StepID, event.MessageID, event.OccurredAt, event.RecordedAt, event.OriginRequestID, event.FactCodecVersion, event.FactBytes, event.FactSHA256, len(event.FactBytes))
+ (id,event_type,wire_version,schema_version,source,subject,project_id,task_id,task_version,task_deleted_at,step_id,message_id,occurred_at,recorded_at,origin_request_id,fact_codec_version,fact_bytes,fact_sha256,original_fact_bytes,actor_kind,actor_user_id,actor_bot_id)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+		event.ID, event.EventType, event.WireVersion, event.SchemaVersion, event.Source, event.Subject, event.ProjectID, event.TaskID, event.TaskVersion, event.TaskDeletedAt, event.StepID, event.MessageID, event.OccurredAt, event.RecordedAt, event.OriginRequestID, event.FactCodecVersion, event.FactBytes, event.FactSHA256, len(event.FactBytes),
+		nullableString(string(event.Actor.Kind)), nullableString(event.Actor.UserID), nullableString(event.Actor.BotID))
 	if err != nil {
 		return pg.QueryError("save webhook event", err)
 	}
@@ -174,4 +181,41 @@ func (d *DAO) SaveCapture(ctx context.Context, event store.WebhookCapturedEvent,
 		}
 	}
 	return nil
+}
+
+// CapturedEventProvenance reads the stored actor and fact state by event ID.
+// NULL actor columns are the unknown actor of events captured before actors
+// were recorded; any other incomplete combination is invalid stored data.
+func (d *DAO) CapturedEventProvenance(ctx context.Context, eventID string) (store.WebhookCapturedEventProvenance, error) {
+	// Event IDs come from verified request bodies; a malformed ID cannot name
+	// a captured event.
+	if _, err := model.CanonicalID(eventID); err != nil {
+		return store.WebhookCapturedEventProvenance{}, store.ErrWebhookCapturedEventMissing
+	}
+	var out store.WebhookCapturedEventProvenance
+	var kind, userID, botID *string
+	err := d.tx.QueryRow(ctx, `SELECT id::text,actor_kind,actor_user_id::text,actor_bot_id::text,fact_sha256,fact_removed_at FROM webhook_events WHERE id=$1`, eventID).Scan(&out.EventID, &kind, &userID, &botID, &out.FactSHA256, &out.FactRemovedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.WebhookCapturedEventProvenance{}, store.ErrWebhookCapturedEventMissing
+	}
+	if err != nil {
+		return store.WebhookCapturedEventProvenance{}, pg.QueryError("read webhook captured event provenance", err)
+	}
+	if kind == nil {
+		if userID != nil || botID != nil {
+			return store.WebhookCapturedEventProvenance{}, fmt.Errorf("stored webhook event actor has identities without a kind")
+		}
+		return out, nil
+	}
+	out.Actor = wm.Actor{Kind: wm.ActorKind(*kind)}
+	if userID != nil {
+		out.Actor.UserID = *userID
+	}
+	if botID != nil {
+		out.Actor.BotID = *botID
+	}
+	if err := out.Actor.Validate(); err != nil {
+		return store.WebhookCapturedEventProvenance{}, fmt.Errorf("stored webhook event actor: %w", err)
+	}
+	return out, nil
 }

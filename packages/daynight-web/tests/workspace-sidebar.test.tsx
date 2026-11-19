@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectsProvider } from "../src/features/projects/ProjectsProvider";
+import { useWorkspaceDrawer } from "../src/app/sidebar/useWorkspaceDrawer";
 import { WorkspaceSidebar } from "../src/app/sidebar/WorkspaceSidebar";
 import { parseAuthRoute, type AuthRoute } from "../src/app/router";
 import { useBodyScrollLock } from "../src/app/useBodyScrollLock";
@@ -26,15 +27,16 @@ type HarnessProps = {
 };
 const Harness = ({ collapsed = false, routeKey = "/", selectedTeamId = "00000000-0000-4000-8000-000000000701", visibilityTeamId = selectedTeamId, route, webhooksAvailable = true, blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
   const workspace = useRef<HTMLDivElement>(null);
+  const drawer = useWorkspaceDrawer(routeKey, blocked);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} route={route ?? (routeKey === "/" ? { kind: "projects" } : routeKey === "/members" || routeKey === "/settings" ? { kind: routeKey === "/members" ? "teamMembers" : "teamSettings", teamId: selectedTeamId ?? "" } : parseAuthRoute(routeKey))} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: selectedTeamId, visibilityTeamId }} webhooksAvailable={webhooksAvailable} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
-    <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
+    <WorkspaceSidebar drawer={drawer} collapsed={collapsed} onToggle={onToggle} route={route ?? (routeKey === "/" ? { kind: "projects" } : routeKey === "/members" || routeKey === "/settings" ? { kind: routeKey === "/members" ? "teamMembers" : "teamSettings", teamId: selectedTeamId ?? "" } : parseAuthRoute(routeKey))} team={{ personalId: "00000000-0000-4000-8000-000000000701", readyTeamId: selectedTeamId, visibilityTeamId }} webhooksAvailable={webhooksAvailable} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
+    <div ref={workspace} data-testid="workspace" inert={initiallyInert}><button ref={drawer.openerRef} aria-controls="workspace-sidebar" aria-expanded={drawer.active} onClick={drawer.open} hidden={!drawer.narrow}>Open navigation</button><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
 
 const openDrawer = () => {
-  const toggle = screen.getByRole("button", { name: "Expand sidebar" });
+  const toggle = screen.getByRole("button", { name: "Open navigation" });
   toggle.focus();
   fireEvent.click(toggle);
   return { toggle, drawer: screen.getByRole("dialog") };
@@ -189,9 +191,9 @@ describe("workspace sidebar", () => {
     expect(drawer).toHaveAttribute("aria-modal", "true");
     expect(background).toHaveAttribute("inert");
     expect(document.body.style.overflow).toBe("hidden");
-    const first = within(drawer).getByRole("link", { name: "Daynight project home" });
+    const first = within(drawer).getByRole("button", { name: "Close navigation" });
     expect(document.activeElement).toBe(first);
-    const last = within(drawer).getByRole("button", { name: "Collapse sidebar" });
+    const last = within(drawer).getByRole("link", { name: "Test Sessions" });
     first.focus();
     fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(last);
@@ -213,11 +215,11 @@ describe("workspace sidebar", () => {
     const onToggle = vi.fn();
     render(<Harness collapsed onToggle={onToggle} />);
     const { toggle } = openDrawer();
-    fireEvent.click(screen.getByRole("button", { name: "Close navigation" }));
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".sidebar-backdrop")!);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(toggle);
     openDrawer();
-    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close navigation" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(toggle);
     expect(onToggle).not.toHaveBeenCalled();
@@ -229,7 +231,12 @@ describe("workspace sidebar", () => {
     render(<Harness onNavigate={onNavigate} />);
     const { drawer } = openDrawer();
     const projects = within(drawer).getByRole("link", { name: "Projects" });
-    fireEvent.click(projects, { ctrlKey: true });
+    for (const modifier of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+      expect(fireEvent.click(projects, modifier)).toBe(true);
+    }
+    projects.setAttribute("target", "_blank");
+    expect(fireEvent.click(projects)).toBe(true);
+    projects.removeAttribute("target");
     expect(screen.getByRole("dialog")).toBe(drawer);
     expect(onNavigate).not.toHaveBeenCalled();
     fireEvent.click(projects);
@@ -250,7 +257,7 @@ describe("workspace sidebar", () => {
     expect(document.body.style.overflow).not.toBe("hidden");
     expect(screen.getByRole("textbox")).toBe(draft);
     if (change === "blocked") {
-      fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open navigation" }));
       expect(screen.queryByRole("dialog")).toBeNull();
     }
     view.rerender(<Harness />);

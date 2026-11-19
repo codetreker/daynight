@@ -39,15 +39,17 @@ publication workflow retain their exclusions. Bundled CLI source Markdown
 retains CLI selection. The strict version-only CLI manifest exception remains.
 CI workflow, routing and unknown paths select every module, API integration and
 product E2E. Complete merge-base diffs retain deletions and both sides of renames;
-every main push runs them all. Final checks retain failure and cancellation
+every main push selects them all, subject to the [main concurrency policy](../process/2026-11-19-bounded-main-ci-runs.md).
+Final checks retain failure and cancellation
 propagation and explicitly require selected CLI, Go module, startup/shutdown,
 API, Web quality and product E2E jobs to succeed.
 
 This routing originally selected real-shell completion with CLI and assistant
 browser validation with Web. The
 [independent shell/browser workflow](2026-11-12-shell-browser-workflow.md)
-replaces that scheduling: both complete suites run on `main` pushes or manual
-dispatch, outside PR module selection and final `checks`. CLI completion unit
+replaces that scheduling: `main` pushes or manual dispatch trigger both complete
+suites, outside PR module selection and final `checks`, subject to workflow
+concurrency. CLI completion unit
 tests and Web quality retain module selection. The new workflow file follows
 the existing CI-path rule and therefore selects all ordinary application jobs
 when changed in a PR; it does not add a selector exception or alter product E2E.
@@ -71,8 +73,9 @@ module change; full main-push validation remains the shared integration point.
 ## Consequences
 
 Directory ownership gives existing and new files the same scheduling rule.
-Other module-test consumers are validated on main unless their own module
-directory also changes in the PR. Production cross-client integration is checked
+Other module-test consumers are selected for validation on main unless their own
+module directory also changes in the PR; pending main runs can be replaced.
+Production cross-client integration is checked
 by the independent E2E job when its inputs change. API integration validates the
 assembled Go API and its production Server build without coupling that build to
 module coverage. Mixed module changes still select every affected module, and

@@ -25,6 +25,14 @@ Read-only repository resolution uses complete visible-project traversal and retu
 Project only after its snapshot completes. It neither creates nor binds a Project;
 later operations recheck access.
 
+Repository changes use `project_preview_repository` and `project_set_repository`
+with the shared [repository switch transaction](../architecture/2026-11-19-project-repository-switch.md).
+The host presents the addresses, classification and effects before confirmation,
+and forwards the preview's exact versions and nullable target ID. An unverified
+identity also requires the user's explicit choice to treat it as a switch. Both
+tools use the large concurrency budget; the write exposes the confirmed receipt
+and Project reference through the existing outcome envelope.
+
 ## Alternatives
 
 **Make repository identity globally unique.** Existing Projects can intentionally
@@ -42,6 +50,10 @@ Project services.
 would replace the facts the user confirmed and permit a changed destination to
 pass the write precondition. Both preview versions are required with cleanup
 confirmation and preserved through the adapter.
+
+**Refresh repository-change conditions on submission.** Replacing the previewed
+versions, classification or target identity could authorize effects the user did
+not confirm. Conflicts instead require another preview and confirmation.
 
 ## Consequences
 

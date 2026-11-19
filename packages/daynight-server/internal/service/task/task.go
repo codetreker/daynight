@@ -147,6 +147,10 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 			}
 			return err
 		}
+		actor, err := sourceActor(ctx, tx, principal)
+		if err != nil {
+			return err
+		}
 		mutation, err := prepare(tx)
 		if err != nil {
 			if requested != nil {
@@ -224,7 +228,7 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 			}
 			tombstone := applied.Tombstone
 			f := protocol.Fact{Type: protocol.Deleted, ProjectID: tombstone.ProjectID, TaskID: tombstone.ID, TaskVersion: tombstone.Version, OccurredAt: tombstone.DeletedAt, DeletedAt: &tombstone.DeletedAt}
-			return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), []protocol.Fact{f})
+			return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, []protocol.Fact{f})
 		}
 		mutation, err = enforceAssignmentTransition(ctx, tx, mutation)
 		if err != nil {
@@ -279,7 +283,7 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 		if len(facts) == 0 {
 			return nil
 		}
-		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), facts)
+		return s.capturer.CaptureBatch(ctx, tx.CaptureDAO(), actor, facts)
 	})
 	if err != nil {
 		err = projectcore.ProjectWriteError(err)

@@ -304,6 +304,7 @@ func TestThreadHTTPStrictInputsAndRefusals(t *testing.T) {
 
 type taskHTTPThreadScopeMock struct {
 	taskHTTPMockBase
+	BotBarrierDAOFn func() store.BotBarrierDAO
 	CaptureDAOFn    func() store.WebhookCaptureDAO
 	TaskDAOFn       func() store.ThreadTaskDAO
 	CredentialDAOFn func() store.ThreadCredentialDAO
@@ -707,4 +708,9 @@ func TestThreadHTTPAuthenticationAndExecutionAttribution(t *testing.T) {
 			t.Fatal("Thread leaked credentials or discussion to logs")
 		}
 	}
+}
+
+func (mock *taskHTTPThreadScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
 }

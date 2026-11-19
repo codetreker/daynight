@@ -120,6 +120,26 @@ Controller 在所有副作用构造之前取得 permit 并准备 writer；自身
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并以 `thread/turns/list` 分页读取轮次状态、`thread/items/list` 分页读取对应 items；仅当原生明确不支持该方法时回退 `thread/items/list`，此时没有轮次状态就不推断中断。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
+### Linux 稳定出生身份确定方案
+
+Linux 的 `process-proof.ts` 路径使用稳定的内核出生身份。`LC_ALL=C` 继续稳定 `ps` 输出的语言与格式；`lstart` 展示不参与 Linux 身份比较。以下要求由[Session 需求](../spec/task-sessions.md#linux-进程出生身份)拥有，取舍由[出生身份决策](../../.agents/notes/implemented/bug-fix/2026-11-19-linux-process-birth.md)记录。
+
+Linux 采集器以 `/proc/sys/kernel/random/boot_id` 的开机身份和 `/proc/<pid>/stat` 字段 22 的 starttime ticks 组成出生 token。`ProcessProof.startedAt` 承载可判别的 `linux:v1:<boot-id>:<ticks>`，该字段在 Linux 上表示身份而非时间戳；ticks 保留十进制整数精度，不转换成 JavaScript 浮点数或墙钟时间。macOS 的日期文本和 Windows 的原生出生时间表示保持不变。读取器须接受历史平台 token，但识别并严格验证保留的 `linux:` 格式；未知版本、缺失组成部分和损坏值不能按旧日期文本处理。
+
+一次采集共用原调用预算：先读取 boot identity 与 stat，再两次采集命令、父 PID、进程组和状态，最后重新读取 stat 与 boot identity。stat 解析须允许括号和空格出现在进程名称中，不以名称内的空格计算字段位置。前后 boot identity 与 starttime ticks 必须一致，两次 stat 和两次 `ps` 的进程组必须相同。最终 stat 既非 zombie 也无 `PF_EXITING` 时，父 PID 与命令还须一致，全部状态观测均须为非 zombie，前次 stat 也不能含退出标记；任何替换、不可读、格式错误、预算耗尽或运行身份不一致均拒绝采集，不保存部分运行证明。`ps lstart` 即使继续出现在查询输出，也不参与 Linux 出生比较。
+
+最终 stat 为 `Z` 时，采集器只返回该出生实例的 zombie 退出观察，允许退出期间父进程、命令显示及 zombie 状态发生变化。该分支仍要求全部出生和进程组观测一致，不能接受 PID 替换或组变化。`captureProcessProof` 与工具提取子进程拒绝将其作为运行 proof；`inspectProcessProof` 只有在该观察与已保存的原出生 token、进程组匹配时才确认单 PID stopped。完整停止仍独立检查原生子进程及进程组的存活成员。退出会改变运行字段；在已证明该实例成为 zombie 后继续要求这些字段不变，会把真实停止误判为未知。该终态分支不重采样、不延长原预算，也不将退出观察用于发信号。
+
+最终 stat 非 `Z`，但字段 9 的 flags 含 `PF_EXITING`（`0x00000004`）时，采集器返回 exiting 观察。该分支保留同一 boot、ticks 及四次进程组核验，允许退出中的父 PID 与命令显示变化；`captureProcessProof` 和工具提取子进程拒绝将其作为运行 proof。`inspectProcessProof` 仅在观察的出生 token 和进程组与原保存 proof 匹配时被动等待，每次最多 25 毫秒，随后完整重采。等待及所有重采共用进入 Linux 核验时由 `performance.now()` 固定的截止时间，不重置预算。匹配的 zombie 或明确 ESRCH 才确认该原 PID 停止；仍在退出时到期、读取失败或身份不一致继续保留未确认结果。退出标记本身不能证明 stopped，也不授权信号；普通命令冲突不进入该等待路径。
+
+Linux 的 [`PF_EXITING` 定义](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/include/linux/sched.h#L1805)表示退出已经开始。[退出流程](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/kernel/exit.c#L922)先设置该标记，再执行 `exit_mm()`；[`/proc` stat 输出](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/fs/proc/array.c#L598)保留 flags。因此命令地址空间的退出变化可以早于 zombie 展示，已标记退出的原实例需要等待完成，而非继续要求完整运行命令或提前认定停止。
+
+Controller 启动证明、原生子进程证明、Worker/Bot 持久记录、独立 Test 恢复以及工具提取子进程使用相同出生 token 约束。所有持久解析器须保留完整 token，不截断、规范化成日期或丢弃版本。旧 proof 的读取与其能否授权运行操作分开：缺乏稳定 Linux 身份的旧记录继续可读，针对仍可能运行实例的核验须给出明确错误并保留记录；不能仅凭当前 PID 重新采样后覆盖原证明。原 PID 已不存在的权威观察以及原执行已有的有效停证，继续遵循各自停止确认规则，不能凭格式差异宣称原进程已退出。
+
+出生 token 相等不替代运行实例的命令哈希、进程组、执行 ticket 与原生归属校验。不同 ticks 或 boot identity 只证明当前实例不等于原实例，不允许向当前实例发信号。同出生运行实例的命令或组冲突继续保留责任。孤儿重新托管和 zombie 的单实例退出规则、TERM/KILL 前的复核、完整进程组停止及原绝对期限保持原有边界。Linux `/proc` 采集不进入 macOS 或 Windows 路径。
+
+Linux 停止流程在被动等待后可能已不再拥有最初进程组清单中的存活实例。若核验后没有可用于发信号的原实例，须在原截止时间内重新读取组成员；当前组为空即可结束且不发信号。仅当本轮检查的原组实例全部明确为 stopped 时，才允许继续被动等待后代自然退出，每次最多 25 毫秒后重读组成员，不新建宽限期。任何原实例被替换或存在身份冲突都不进入等待；读取失败、到期仍有存活成员则保留未确认结果。该路径不向残留进程发信号、不补采其证明来建立授权；调用者仍须复核全部原实例及整个组为空。此前的非空清单不能代替退出后的观察。
+
 ### Codex 输出消费与 I/O
 
 私有 Codex RPC reader 将每个 OS chunk 以不超过 decoder 的 `bufferBytes`（64 KiB）的 `subarray` 片段交给同一个惰性 decoder，跨片段保留 UTF-8/JSON 状态。每个完整帧串行分发，保留一次微任务让响应消费者取得媒体 lease，再于 `finally` 释放帧引用。每帧和每个片段耗尽时均等待一次 ref'ed `node:timers/promises.setImmediate()`，使已就绪的 IPC、定时器及其他 I/O 在输入尚未耗尽时有执行机会；不复制整块输入或建立待派发队列。

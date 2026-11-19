@@ -316,6 +316,7 @@ func TestReadFailuresSuppressPartiallyLoadedResources(t *testing.T) {
 					}
 					_, err = New().ListRecords(context.Background(), d, userActor(), taskID, PageInput{})
 				case "events":
+					d.retrospectiveTasks = noRetrospectives
 					d.inquiries = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error) { return nil, nil }
 					d.events = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) {
 						return nil, resourceError()

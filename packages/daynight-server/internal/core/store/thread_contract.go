@@ -18,6 +18,8 @@ type ThreadScope interface {
 	CredentialDAO() ThreadCredentialDAO
 	ProjectDAO() ThreadProjectDAO
 	ThreadDAO() ThreadDAO
+	// BotBarrierDAO verifies a declared Bot after Project authorization.
+	BotBarrierDAO() BotBarrierDAO
 }
 
 type ThreadTaskDAO interface {

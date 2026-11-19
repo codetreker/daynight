@@ -21,7 +21,7 @@ func TestCaptureAcceptsProposedFactsBeforeAudienceSelection(t *testing.T) {
 					dao = newCaptureDAOMock(t, "freeze")
 					dao.freeze = func(context.Context, string, []string) ([]store.WebhookAudience, error) { return nil, nil }
 				}
-				if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, []protocol.Fact{fact}); err != nil {
+				if err := (&Capturer{Random: &captureEntropy{}}).CaptureBatch(t.Context(), dao, captureActor, []protocol.Fact{fact}); err != nil {
 					t.Fatal(err)
 				}
 				if !subscribed {
