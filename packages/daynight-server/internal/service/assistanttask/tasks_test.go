@@ -206,6 +206,20 @@ func TestTasksForwardOnlyTransactionBoundOperations(t *testing.T) {
 			return err
 		}},
 		{"ClearAttention", []any{"bot"}, func(s *Tasks) error { return s.ClearAttention(ctx, actor, "bot") }},
+		{"EnableInbox", []any{core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7}}, func(s *Tasks) error {
+			_, err := s.EnableInbox(ctx, actor, core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7})
+			return err
+		}},
+		{"DisableInbox", []any{core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7}}, func(s *Tasks) error {
+			_, err := s.DisableInbox(ctx, actor, core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7})
+			return err
+		}},
+		{"RotateInbox", []any{core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7}}, func(s *Tasks) error {
+			_, err := s.RotateInbox(ctx, actor, core.InboxInput{TaskID: "task", OperationID: "operation", Mode: "overlap", IfVersion: 7})
+			return err
+		}},
+		{"InboxOperation", []any{"task", "operation"}, func(s *Tasks) error { _, err := s.InboxOperation(ctx, actor, "task", "operation"); return err }},
+		{"GetInbox", []any{"task"}, func(s *Tasks) error { _, err := s.GetInbox(ctx, actor, "task"); return err }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
