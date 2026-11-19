@@ -16,6 +16,11 @@ export type BotRecoveryOperation = {
   body: BotRecoveryRegistration | BotRecoveryGrant;
   result: BotRecoveryResult | null;
 };
+export type BotRecoveryRejection = { status: 409; code: "resource_conflict"; requestId: string };
+export type BotRecoveryRejectedOperation = {
+  operation: BotRecoveryOperation & { result: null };
+  rejection: BotRecoveryRejection;
+};
 export type BotRecoveryState = {
   schemaVersion: 1;
   owner: Pick<BotOwner, "serverOrigin" | "ownerUserId">;
@@ -25,6 +30,7 @@ export type BotRecoveryState = {
   current: BotRecoveryResult | null;
   currentOperation: BotRecoveryOperation | null;
   pending: BotRecoveryOperation | null;
+  rejections: BotRecoveryRejectedOperation[];
 };
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
 const invalid = (): never => { throw new Error("Bot recovery state conflicts with its original identity or operation."); };
@@ -32,6 +38,12 @@ const exact = (input: unknown, keys: string[]): Record<string, unknown> => {
   if (input === null || typeof input !== "object" || Array.isArray(input)
     || Object.keys(input).sort().join() !== keys.sort().join()) return invalid();
   return input as Record<string, unknown>;
+};
+const checkedRejection = (input: unknown): BotRecoveryRejection => {
+  const value = exact(input, ["status", "code", "requestId"]);
+  if (value.status !== 409 || value.code !== "resource_conflict" || typeof value.requestId !== "string"
+    || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value.requestId)) return invalid();
+  return { status: 409, code: "resource_conflict", requestId: value.requestId };
 };
 const checkedResult = (operation: Omit<BotRecoveryOperation, "result">, input: unknown): BotRecoveryResult => {
   const result = parseBotRecoveryResult(input), receipt = result.receipt, request = operation.body;
@@ -71,7 +83,8 @@ export const openBotRecoveryStore = (options: {
     if (!directory && entry.size > 256 * 1024) throw new Error("Bot recovery state exceeds its byte limit.");
   };
   const parse = (record: BotRecord, input: unknown): BotRecoveryState => {
-    const value = exact(input, ["schemaVersion", "owner", "botId", "recoveryIdentity", "registration", "current", "currentOperation", "pending"]);
+    const hasRejections = input !== null && typeof input === "object" && Object.hasOwn(input, "rejections");
+    const value = exact(input, ["schemaVersion", "owner", "botId", "recoveryIdentity", "registration", "current", "currentOperation", "pending", ...(hasRejections ? ["rejections"] : [])]);
     const account = exact(value.owner, ["serverOrigin", "ownerUserId"]);
     if (value.schemaVersion !== 1 || value.botId !== record.botId || account.serverOrigin !== owner.serverOrigin || account.ownerUserId !== owner.ownerUserId) return invalid();
     const proof = parseBotRecoveryIdentity({ botRecoveryVersion: 1, serviceOrigin: owner.serverOrigin, recoveryIdentity: value.recoveryIdentity });
@@ -99,8 +112,18 @@ export const openBotRecoveryStore = (options: {
     };
     const pending = parseOperation(value.pending), currentOperation = parseOperation(value.currentOperation);
     if ((current === null) !== (currentOperation === null) || currentOperation !== null && (currentOperation.result === null || !same(currentOperation.result, current))) return invalid();
+    if (hasRejections && !Array.isArray(value.rejections)) return invalid();
+    const rejectedIds = new Set<string>();
+    const rejections: BotRecoveryRejectedOperation[] = (hasRejections ? value.rejections as unknown[] : []).map(input => {
+      const saved = exact(input, ["operation", "rejection"]), operation = parseOperation(saved.operation);
+      if (operation === null || operation.result !== null || rejectedIds.has(operation.body.operationId)
+        || operation.body.operationId === pending?.body.operationId || operation.body.operationId === registration?.receipt.operationId
+        || operation.body.operationId === current?.receipt.operationId) return invalid();
+      rejectedIds.add(operation.body.operationId);
+      return { operation: { ...operation, result: null }, rejection: checkedRejection(saved.rejection) };
+    });
     return { schemaVersion: 1, owner: { serverOrigin: owner.serverOrigin, ownerUserId: owner.ownerUserId }, botId: record.botId,
-      recoveryIdentity: proof.recoveryIdentity, registration, current, currentOperation, pending };
+      recoveryIdentity: proof.recoveryIdentity, registration, current, currentOperation, pending, rejections };
   };
   const read = (record: BotRecord): BotRecoveryState | null => {
     identity(record);
@@ -121,6 +144,7 @@ export const openBotRecoveryStore = (options: {
     catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause; }
     // Publication errors may follow a successful rename. The next decision reads
     // the original file; callers must not infer rollback or replace the operation.
+    if (Buffer.byteLength(JSON.stringify(checked), "utf8") > 256 * 1024) throw new Error("Bot recovery state exceeds its byte limit; the original operation was retained.");
     writeDurableJson(target, checked);
     return read(record)!;
   };
@@ -130,7 +154,7 @@ export const openBotRecoveryStore = (options: {
     bound: read,
     ensureIdentity: (record: BotRecord): BotRecoveryState => read(record) ?? write(record, {
       schemaVersion: 1, owner: { serverOrigin: owner.serverOrigin, ownerUserId: owner.ownerUserId }, botId: record.botId,
-      recoveryIdentity: randomBytes(32).toString("base64url"), registration: null, current: null, currentOperation: null, pending: null,
+      recoveryIdentity: randomBytes(32).toString("base64url"), registration: null, current: null, currentOperation: null, pending: null, rejections: [],
     }),
     /** Persisting intent consumes the one permitted submission, even before HTTP. */
     prepare: (record: BotRecord, operation: Omit<BotRecoveryOperation, "result">): BotRecoveryState => {
@@ -141,8 +165,15 @@ export const openBotRecoveryStore = (options: {
       if (operation.kind === "register" && state.registration !== null
         || operation.kind !== "register" && state.registration === null
         || operation.body.operationId === state.registration?.receipt.operationId
-        || operation.body.operationId === state.current?.receipt.operationId) return invalid();
+        || operation.body.operationId === state.current?.receipt.operationId
+        || state.rejections.some(rejected => rejected.operation.body.operationId === operation.body.operationId)) return invalid();
       return write(record, { ...state, pending: { ...operation, result: null } });
+    },
+    /** The caller has the original submission's complete, authenticated conflict response. */
+    rejectOperation: (record: BotRecord, operationId: string, input: BotRecoveryRejection): BotRecoveryState => {
+      const state = required(record), operation = state.pending, rejection = checkedRejection(input);
+      if (operation === null || operation.body.operationId !== operationId || operation.result !== null) return invalid();
+      return write(record, { ...state, pending: null, rejections: [...state.rejections, { operation: { ...operation, result: null }, rejection }] });
     },
     recordResult: (record: BotRecord, operationId: string, input: BotRecoveryResult): BotRecoveryState => {
       const state = required(record), operation = state.pending;

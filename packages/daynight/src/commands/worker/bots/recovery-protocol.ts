@@ -29,6 +29,14 @@ export type BotRecoveryReceipt = BotRecoveryBinding & {
   grantExpiresAt: string | null; controllerTokenHash: string | null;
 };
 export type BotRecoveryResult = { receipt: BotRecoveryReceipt; current: boolean };
+export type BotRecoveryObservation = {
+  schemaVersion: 1; botId: string; botVersion: string; workerId: string; machine: { id: string; name: string } | null;
+  provider: "codex" | "claude" | "copilot"; sessionId: string | null; testExecutionId: string | null; nativeSessionId: string | null;
+  hostingGeneration: string | null; executionGeneration: string | null; connectionEpoch: string | null;
+  state: "offline" | "connecting" | "recovering" | "idle" | "working" | "abnormal"; reason: string;
+  observedAt: string; workerLastSeenAt: string | null; sessionLastSeenAt: string | null; freshUntil: string | null; currentTurnId: string | null;
+};
+export type BotRecoveryObservationBinding = BotRecoveryBinding & Pick<BotRecoveryObservation, "botVersion" | "workerId" | "provider" | "hostingGeneration"> & { executionGeneration: string };
 
 const identityKeys = ["botRecoveryVersion", "serviceOrigin", "recoveryIdentity"];
 const bindingKeys = ["sessionId", "testExecutionId", "nativeSessionId"];
@@ -58,6 +66,23 @@ const identity = (value: Record<string, unknown>): BotRecoveryIdentity => {
   return { botRecoveryVersion: version(value.botRecoveryVersion), serviceOrigin, recoveryIdentity: secret(value.recoveryIdentity) };
 };
 const binding = (value: Record<string, unknown>): BotRecoveryBinding => ({ sessionId: id(value.sessionId), testExecutionId: id(value.testExecutionId), nativeSessionId: nullableText(value.nativeSessionId) });
+
+/** Validates the complete public observation without assigning input authority. */
+export const parseBotRecoveryObservation = (input: unknown): BotRecoveryObservation => {
+  const value = object(input, ["schemaVersion", "botId", "botVersion", "workerId", "machine", "provider", "sessionId", "testExecutionId", "nativeSessionId", "hostingGeneration", "executionGeneration", "connectionEpoch", "state", "reason", "observedAt", "workerLastSeenAt", "sessionLastSeenAt", "freshUntil", "currentTurnId"]);
+  if (value.provider !== "codex" && value.provider !== "claude" && value.provider !== "copilot") return fail();
+  if (value.state !== "offline" && value.state !== "connecting" && value.state !== "recovering" && value.state !== "idle" && value.state !== "working" && value.state !== "abnormal") return fail();
+  const machine = value.machine === null ? null : object(value.machine, ["id", "name"]);
+  const sessionId = value.sessionId === null ? null : id(value.sessionId), testExecutionId = value.testExecutionId === null ? null : id(value.testExecutionId);
+  if ((sessionId === null) !== (testExecutionId === null)) return fail();
+  return { schemaVersion: version(value.schemaVersion), botId: id(value.botId), botVersion: botVersion(value.botVersion), workerId: id(value.workerId),
+    machine: machine === null ? null : { id: id(machine.id), name: text(machine.name) }, provider: value.provider,
+    sessionId, testExecutionId, nativeSessionId: nullableText(value.nativeSessionId),
+    hostingGeneration: value.hostingGeneration === null ? null : botVersion(value.hostingGeneration), executionGeneration: value.executionGeneration === null ? null : botVersion(value.executionGeneration),
+    connectionEpoch: value.connectionEpoch === null ? null : value.connectionEpoch === "0" ? "0" : botVersion(value.connectionEpoch), state: value.state, reason: text(value.reason),
+    observedAt: timestamp(value.observedAt), workerLastSeenAt: value.workerLastSeenAt === null ? null : timestamp(value.workerLastSeenAt),
+    sessionLastSeenAt: value.sessionLastSeenAt === null ? null : timestamp(value.sessionLastSeenAt), freshUntil: value.freshUntil === null ? null : timestamp(value.freshUntil), currentTurnId: nullableText(value.currentTurnId) };
+};
 
 export const parseBotRecoveryIdentity = (input: unknown): BotRecoveryIdentity => identity(object(input, identityKeys));
 export const parseBotRecoveryRegistration = (input: unknown): BotRecoveryRegistration => {

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as durableJson from "../../../src/platform/durable-json.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { openLocalBotStores } from "../../../src/commands/worker/bots/local-store.js";
-import { openBotRecoveryStore, type BotRecoveryOperation } from "../../../src/commands/worker/bots/recovery-store.js";
+import { openBotRecoveryStore, type BotRecoveryOperation, type BotRecoveryRejectedOperation, type BotRecoveryRejection } from "../../../src/commands/worker/bots/recovery-store.js";
 import type { BotRecoveryGrant, BotRecoveryRegistration, BotRecoveryResult } from "../../../src/commands/worker/bots/recovery-protocol.js";
 import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 import { definition, id, owner } from "./bot-execution-store.fixtures.js";
@@ -58,6 +58,7 @@ const registered = (f: ReturnType<typeof fixture>) => {
   f.store.finishOperation(f.record, operation.body.operationId);
   return operation;
 };
+const rejection: BotRecoveryRejection = { status: 409, code: "resource_conflict", requestId: "bot-recovery-conflict-1" };
 
 describe("durable Bot recovery operations", () => {
   it("retains the exact pending registration and protected identity after Worker replacement", () => {
@@ -155,5 +156,133 @@ describe("durable Bot recovery operations", () => {
     f.store.recordResult(f.record, operation.body.operationId, result(f, operation));
     f.store.finishOperation(f.record, operation.body.operationId);
     expect(() => f.store.prepare(f.record, operation)).toThrow();
+  });
+
+  it("retains an exact rejected operation across Worker replacement without rewriting native execution evidence", () => {
+    const f = fixture(), operation = registration(f);
+    f.local.executions.prepare(f.record); f.local.executions.update(f.record, { launchSubmission: "unknown" });
+    const execution = f.local.executions.get(f.record);
+    f.store.prepare(f.record, operation);
+    const rejected = f.store.rejectOperation(f.record, operation.body.operationId, rejection);
+    expect(rejected).toMatchObject({ pending: null, registration: null, current: null,
+      rejections: [{ operation: { ...operation, result: null }, rejection }] });
+    f.local.close();
+    const reopened = f.open({ ...owner, workerId: id(90) });
+    const original = reopened.local.scan().records[0]!;
+    expect(original).toEqual(f.record);
+    expect(reopened.local.executions.get(original)).toEqual(execution);
+    expect(reopened.store.read(original)).toEqual(rejected);
+    expect(() => reopened.store.prepare(original, operation)).toThrow();
+    const next = { ...operation, body: { ...operation.body, operationId: id(31) } };
+    reopened.store.prepare(original, next);
+    reopened.store.rejectOperation(original, next.body.operationId, { ...rejection, requestId: "bot-recovery-conflict-2" });
+    expect(reopened.store.read(original)?.rejections.map(item => item.operation.body.operationId)).toEqual([operation.body.operationId, next.body.operationId]);
+    expect(() => reopened.store.prepare(original, operation)).toThrow();
+    expect(() => reopened.store.prepare(original, next)).toThrow();
+  });
+
+  it.each(["before publication", "after publication"])("observes the original rejection operation after a failure %s without repeating its write", point => {
+    const f = fixture(), operation = registration(f), original = durableJson.writeDurableJson;
+    const pending = f.store.prepare(f.record, operation);
+    const writes = vi.spyOn(durableJson, "writeDurableJson").mockImplementationOnce((file, value) => {
+      if (point === "after publication") original(file, value);
+      throw new Error("rejection publication result unavailable");
+    });
+    expect(() => f.store.rejectOperation(f.record, operation.body.operationId, rejection)).toThrow("rejection publication result unavailable");
+    expect(writes).toHaveBeenCalledTimes(1);
+    f.local.close();
+    const reopened = f.open(), observed = reopened.store.read(f.record)!;
+    expect(writes).toHaveBeenCalledTimes(1);
+    if (point === "before publication") {
+      expect(observed).toEqual(pending);
+      expect(() => reopened.store.prepare(f.record, { ...operation, body: { ...operation.body, operationId: id(31) } })).toThrow();
+      expect(() => reopened.store.finishOperation(f.record, operation.body.operationId)).toThrow();
+      expect(reopened.store.read(f.record)?.pending?.body).toEqual(operation.body);
+    } else {
+      expect(observed.pending).toBeNull();
+      expect(observed.rejections).toEqual([{ operation: { ...operation, result: null }, rejection }]);
+      expect(() => reopened.store.rejectOperation(f.record, operation.body.operationId, rejection)).toThrow();
+      expect(() => reopened.store.prepare(f.record, operation)).toThrow();
+      expect(writes).toHaveBeenCalledTimes(1);
+      const next = { ...operation, body: { ...operation.body, operationId: id(31) } };
+      reopened.store.prepare(f.record, next);
+      expect(reopened.store.read(f.record)?.rejections).toEqual(observed.rejections);
+      expect(reopened.store.read(f.record)?.pending?.body).toEqual(next.body);
+    }
+  });
+
+  it("reads schema 1 evidence without rejection history and normalizes it on the next authorized write", () => {
+    const f = fixture(), operation = registration(f);
+    const state = f.store.prepare(f.record, operation), { rejections: _rejections, ...legacy } = state;
+    writeFileSync(f.file, JSON.stringify(legacy), { mode: 0o600 });
+    expect(f.store.read(f.record)).toEqual({ ...legacy, rejections: [] });
+    f.store.rejectOperation(f.record, operation.body.operationId, rejection);
+    const saved = JSON.parse(readFileSync(f.file, "utf8"));
+    expect(saved.rejections).toEqual([{ operation: { ...operation, result: null }, rejection }]);
+    expect(saved.pending).toBeNull();
+  });
+
+  it("preserves readable pending evidence when retaining its rejection would exceed the publication budget", () => {
+    const f = fixture(), operation = registration(f), limit = 256 * 1024;
+    const state = f.store.prepare(f.record, operation);
+    const historical: BotRecoveryRejectedOperation = {
+      operation: { ...operation, body: { ...operation.body, operationId: id(100), nativeSessionId: "x" }, result: null }, rejection,
+    };
+    const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
+    // Populate one bounded file in memory; no repeated persistence or stress loop.
+    const count = Math.floor((limit - bytes(state)) / (bytes(historical) + 1)) - 1;
+    state.rejections = Array.from({ length: count }, (_, index) => ({ ...historical,
+      operation: { ...historical.operation, body: { ...historical.operation.body, operationId: id(100 + index) } },
+    }));
+    state.rejections[count - 1]!.operation.body.nativeSessionId = "x".repeat(limit - 8 - bytes(state) + 1);
+    const before = Buffer.from(JSON.stringify(state), "utf8");
+    expect(before.byteLength).toBe(limit - 8);
+    expect(bytes({ ...state, pending: null, rejections: [...state.rejections, { operation: { ...operation, result: null }, rejection }] })).toBeGreaterThan(limit);
+    writeFileSync(f.file, before, { mode: 0o600 });
+    expect(f.store.read(f.record)).toEqual(state);
+    const writes = vi.spyOn(durableJson, "writeDurableJson");
+    expect(() => f.store.rejectOperation(f.record, operation.body.operationId, rejection)).toThrow(/exceeds its byte limit/);
+    expect(writes).not.toHaveBeenCalled();
+    expect(readFileSync(f.file)).toEqual(before);
+    expect(f.store.read(f.record)).toEqual(state);
+    expect(f.store.read(f.record)?.pending?.body).toEqual(operation.body);
+  });
+
+  it.each([
+    { ...rejection, status: 503 },
+    { ...rejection, code: "forbidden" },
+    { ...rejection, requestId: "" },
+    { ...rejection, requestId: "a".repeat(65) },
+    { ...rejection, requestId: "request\nsecret" },
+    { ...rejection, message: "server reflected secret" },
+  ])("refuses unrecognized terminal rejection evidence %# without clearing pending", input => {
+    const f = fixture(), operation = registration(f);
+    f.store.prepare(f.record, operation);
+    const before = readFileSync(f.file, "utf8");
+    expect(() => f.store.rejectOperation(f.record, operation.body.operationId, input as BotRecoveryRejection)).toThrow();
+    expect(readFileSync(f.file, "utf8")).toBe(before);
+    expect(before).not.toContain("server reflected secret");
+  });
+
+  it("does not reject another operation or replace an already confirmed receipt with rejection", () => {
+    const f = fixture(), operation = registration(f);
+    f.store.prepare(f.record, operation);
+    expect(() => f.store.rejectOperation(f.record, id(90), rejection)).toThrow();
+    f.store.recordResult(f.record, operation.body.operationId, result(f, operation));
+    const before = readFileSync(f.file, "utf8");
+    expect(() => f.store.rejectOperation(f.record, operation.body.operationId, rejection)).toThrow();
+    expect(readFileSync(f.file, "utf8")).toBe(before);
+  });
+
+  it("rejects duplicate or foreign-session terminal history when reopening its original evidence", () => {
+    const f = fixture(), operation = registration(f);
+    f.store.prepare(f.record, operation);
+    const state = f.store.rejectOperation(f.record, operation.body.operationId, rejection);
+    writeFileSync(f.file, JSON.stringify({ ...state, rejections: [...state.rejections, ...state.rejections] }), { mode: 0o600 });
+    expect(() => f.store.read(f.record)).toThrow();
+    const foreign = { ...state, rejections: [{ operation: { ...operation, body: { ...operation.body, sessionId: id(90) }, result: null }, rejection }] };
+    writeFileSync(f.file, JSON.stringify(foreign), { mode: 0o600 });
+    expect(() => f.store.read(f.record)).toThrow();
+    expect(readFileSync(f.file, "utf8")).toBe(JSON.stringify(foreign));
   });
 });

@@ -21,14 +21,24 @@ type Request = { action: string; workerId: string; body: BotRecoveryRegistration
 const fixture = async () => {
   const requests: Request[] = [], operations = new Map<string, { receipt: BotRecoveryReceipt; auth: string }>();
   let hostingWorker = id(2), hostingGeneration = "1", botVersion = "2", selected: string | null = null;
-  const fault: { drop: string | null; refuse: string | null; missingQueries: boolean; expired: boolean; parentRevoked: boolean; canSubmit: boolean } = { drop: null, refuse: null, missingQueries: false, expired: false, parentRevoked: false, canSubmit: true };
+  const fault: { drop: string | null; refuse: string | null; missingQueries: boolean; expired: boolean; parentRevoked: boolean; canSubmit: boolean; advanceNative: boolean; conflictResponse: "normal" | "drop" | "malformed"; queryConflict: boolean } = { drop: null, refuse: null, missingQueries: false, expired: false, parentRevoked: false, canSubmit: true, advanceNative: false, conflictResponse: "normal", queryConflict: false };
   const ordinaryReads: string[] = [];
+  const observations: string[] = [];
   let record!: ReturnType<ReturnType<typeof openLocalBotStores>["store"]["get"]>;
   const server = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json"); res.setHeader("Daynight-User-ID", id(1));
     let raw = ""; req.setEncoding("utf8"); req.on("data", chunk => { raw += chunk; });
     req.on("end", () => {
       if (req.method === "GET") {
+        if (req.url!.endsWith("/observation")) {
+          observations.push(req.url!);
+          res.end(JSON.stringify({ schemaVersion: 1, botId: id(3), botVersion, workerId: hostingWorker, machine: null, provider: "codex",
+            sessionId: snapshot.sessionId, testExecutionId: snapshot.testExecutionId, nativeSessionId: snapshot.identity.nativeSessionId,
+            hostingGeneration: operations.size === 0 ? null : hostingGeneration, executionGeneration: snapshot.executionGeneration, connectionEpoch: snapshot.connectionEpoch,
+            state: "recovering", reason: "startup_pending", observedAt: "2026-11-20T00:00:00Z", workerLastSeenAt: null, sessionLastSeenAt: null, freshUntil: null, currentTurnId: null }));
+          if (fault.advanceNative) { fault.advanceNative = false; snapshot = { ...snapshot, identity: { ...snapshot.identity, nativeSessionId: id(11) } }; }
+          return;
+        }
         ordinaryReads.push(req.url!);
         if (fault.parentRevoked) { res.statusCode = 403; res.end(JSON.stringify({ error: { code: "forbidden", message: "Original parent PAT was revoked", requestId: id(90) } })); return; }
         res.end(JSON.stringify({ session: snapshot })); return;
@@ -38,6 +48,7 @@ const fixture = async () => {
       const auth = req.headers.authorization!; requests.push({ action, workerId, body, auth });
       if (fault.refuse === action) { res.statusCode = 403; res.end(JSON.stringify({ error: { code: "forbidden", message: "Current credential denied", requestId: id(90) } })); return; }
       if (action === "operations") {
+        if (fault.queryConflict) { res.statusCode = 409; res.end(JSON.stringify({ error: { code: "resource_conflict", message: "Query conflict", requestId: id(90) } })); return; }
         const operation = operations.get(route[11]!);
         if (operation === undefined || fault.missingQueries) { res.statusCode = 404; res.end(JSON.stringify({ error: { code: "not_found", message: "Unknown operation", requestId: id(90) } })); return; }
         const receipt = operation.receipt;
@@ -50,6 +61,12 @@ const fixture = async () => {
         res.end(JSON.stringify({ ...record!.definition!, version: botVersion, startupResult: report.report.result })); return;
       }
       if (action !== "register" && action !== "grant" && action !== "takeover") { res.statusCode = 404; res.end("{}"); return; }
+      if (body.nativeSessionId !== snapshot.identity.nativeSessionId) {
+        if (fault.conflictResponse === "drop") { req.socket.destroy(); return; }
+        res.statusCode = 409;
+        res.end(fault.conflictResponse === "malformed" ? "{invalid" : JSON.stringify({ error: { code: "resource_conflict", message: "Native binding changed before transaction", requestId: id(90) } }));
+        return;
+      }
       if (action === "register") botVersion = (BigInt(botVersion) + 1n).toString();
       if (action === "takeover") { hostingGeneration = (BigInt(hostingGeneration) + 1n).toString(); hostingWorker = workerId; botVersion = (BigInt(botVersion) + 1n).toString(); }
       const grant = action === "register" ? null : (body as BotRecoveryGrant).grant;
@@ -97,13 +114,104 @@ const fixture = async () => {
     capabilities: { send: true, steer: false, cancel: false, respond: false }, operations: { canSend: false, canCancel: false, canRespond: false } };
   record = { ...record!, intent: { ...record!.intent!, nativeSessionId: id(11) } };
   const binding = { sessionId: snapshot.sessionId, testExecutionId: snapshot.testExecutionId, nativeSessionId: snapshot.identity.nativeSessionId };
-  return { requests, operations, fault, get snapshot() { return snapshot; }, setSnapshot: (value: SessionSnapshot) => { snapshot = value; }, binding, ordinaryReads, owner, record: record!,
+  return { requests, operations, observations, fault, get snapshot() { return snapshot; }, setSnapshot: (value: SessionSnapshot) => { snapshot = value; }, binding, ordinaryReads, owner, record: record!,
     get active() { return active; },
     restart: (workerId = owner.workerId, token = "first-current-token") => { active.local.close(); active = open(workerId, token); expect(active.local.scan().records[0]!.owner).toEqual(owner); return active; },
   };
 };
 
 describe("Bot hosting reconciliation with durable storage and HTTP", () => {
+  it("waits for current local evidence when the service native identity is ahead of the cache", async () => {
+    const f = await fixture();
+    const cached = { ...f.record, intent: { ...f.record.intent!, nativeSessionId: null } };
+    await expect(f.active.sessionApi.grant(cached, signal())).rejects.toThrow("matching current service");
+    expect(f.requests).toEqual([]); expect(f.active.store.read(cached)!.pending).toBeNull();
+    await expect(f.active.sessionApi.grant(f.record, signal())).resolves.toMatchObject({ sessionId: f.binding.sessionId });
+    expect(f.requests.map(request => request.action)).toEqual(["register", "grant"]);
+  });
+
+  it("restores a revoked parent using service null without replacing the Controller's known native identity", async () => {
+    const f = await fixture(); f.fault.parentRevoked = true;
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    const originalIntent = { ...f.record.intent! };
+    await f.active.sessionApi.grant(f.record, signal());
+    expect(f.requests.map(request => request.body.nativeSessionId)).toEqual([null, null]);
+    expect(f.record.intent).toEqual(originalIntent);
+    expect(f.ordinaryReads).toEqual([]); expect(f.fault.parentRevoked).toBe(false);
+    // The same Controller can publish the identity it already owns after renewal.
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: id(11) }, synchronized: true, connectionState: "connected", activity: "idle" });
+    await expect(f.active.sessionApi.report(f.record, { state: "ready", nativeSessionId: id(11) }, signal())).resolves.toMatchObject({ startupResult: { state: "ready" } });
+  });
+
+  it("grants and renews a lazy native Session while both committed and local identities remain null", async () => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    const lazy = { ...f.record, intent: { ...f.record.intent!, nativeSessionId: null } };
+    const first = await f.active.sessionApi.grant(lazy, signal());
+    const renewed = f.restart(id(2), "replacement-current-token");
+    const second = await renewed.sessionApi.grant(lazy, signal());
+    expect(second.token).not.toBe(first.token);
+    expect(f.requests.filter(request => request.action === "grant").map(request => request.body.nativeSessionId)).toEqual([null, null]);
+    expect(lazy.intent.nativeSessionId).toBeNull();
+  });
+
+  it("retains a definite precommit conflict and observes again before a new operation after restart", async () => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    f.fault.advanceNative = true;
+    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toMatchObject({ status: 409, code: "resource_conflict", writeOutcome: "not_committed" });
+    const state = f.active.store.read(f.record)!;
+    expect(state.pending).toBeNull(); expect(state.rejections).toHaveLength(1);
+    const rejected = state.rejections[0]!.operation;
+    expect(rejected.body.nativeSessionId).toBeNull(); expect(f.requests).toHaveLength(1);
+    const before = f.observations.length;
+    await f.restart().sessionApi.grant(f.record, signal());
+    expect(f.observations.length).toBeGreaterThan(before);
+    expect(f.requests.map(request => request.action)).toEqual(["register", "register", "grant"]);
+    expect(f.requests[1]!.body.operationId).not.toBe(rejected.body.operationId);
+    expect(f.active.store.read(f.record)!.rejections).toEqual(state.rejections);
+  });
+
+  it.each(["drop", "malformed"] as const)("keeps a raced binding with a %s response query-only", async conflictResponse => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    f.fault.advanceNative = true; f.fault.conflictResponse = conflictResponse;
+    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toThrow();
+    const pending = f.active.store.read(f.record)!.pending!;
+    const before = f.observations.length;
+    const rebuilt = f.restart();
+    await expect(rebuilt.sessionApi.grant(f.record, signal())).rejects.toMatchObject({ code: "not_found" });
+    expect(f.observations).toHaveLength(before);
+    expect(rebuilt.store.read(f.record)).toMatchObject({ pending, rejections: [] });
+    f.fault.queryConflict = true;
+    await expect(rebuilt.sessionApi.grant(f.record, signal())).rejects.toMatchObject({ status: 409, code: "resource_conflict" });
+    expect(rebuilt.store.read(f.record)).toMatchObject({ pending, rejections: [] });
+    expect(f.requests.map(request => request.action)).toEqual(["register", "operations", "operations"]);
+  });
+
+  it("preserves pending when the definite rejection cannot be published durably", async () => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    f.fault.advanceNative = true;
+    const persist = vi.spyOn(f.active.store, "rejectOperation").mockImplementation(() => { throw new Error("Rejection publication failed"); });
+    await expect(f.active.sessionApi.grant(f.record, signal())).rejects.toThrow("Rejection publication failed");
+    const pending = f.active.store.read(f.record)!.pending!; persist.mockRestore();
+    await expect(f.restart().sessionApi.grant(f.record, signal())).rejects.toMatchObject({ code: "not_found" });
+    expect(f.active.store.read(f.record)).toMatchObject({ pending, rejections: [] });
+    expect(f.requests.map(request => request.action)).toEqual(["register", "operations"]);
+  });
+
+  it("does not prepare a new generation before the service retains the predecessor native identity", async () => {
+    const f = await fixture();
+    f.setSnapshot({ ...f.snapshot, identity: { ...f.snapshot.identity, nativeSessionId: null } });
+    await f.active.sessionApi.grant(f.record, signal());
+    const previous = { generation: "1", instanceId: f.record.intent!.controllerInstanceId, recordId: id(50), stoppedAt: "2026-01-01T00:00:00Z" };
+    const next = { ...f.record, intent: { ...f.record.intent!, executionGeneration: "2", controllerInstanceId: id(51) } };
+    await expect(f.active.sessionApi.grant(next, signal(), previous)).rejects.toThrow("service to retain its original native");
+    expect(f.active.store.read(next)!.pending).toBeNull();
+    expect(f.requests.map(request => request.action)).toEqual(["register", "grant", "operations"]);
+  });
+
   it("registers and restores a revoked parent through the production Session API before ordinary reads", async () => {
     const f = await fixture(); f.fault.parentRevoked = true;
     await expect(f.active.sessionApi.readSession(f.record, signal())).rejects.toMatchObject({ code: "forbidden" });

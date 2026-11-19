@@ -592,7 +592,9 @@ export const createBotProcess = (options: {
       if (execution === null || execution.launchSubmission === "not-submitted" || execution.snapshot?.nativeStopped) return;
       const ticket = await checkedTicket(record);
       if (!await controllerCredentialNeedsRefresh(ticket.credentialFile, now())) return;
-      const grant = await options.sessionApi.grant(sessionRecord(record), signal);
+      const snapshot = remember(record, await observe(ticket, signal));
+      if (!["starting", "ready", "working"].includes(snapshot.lifecycle) || snapshot.nativeStopped) return;
+      const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal);
       current(record); signal.throwIfAborted();
       await writeControllerCredential(ticket.credentialFile, grant);
     }),

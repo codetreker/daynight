@@ -27,15 +27,34 @@ directory. Persisting a request consumes its one submission opportunity. An
 interruption thereafter permits only querying that original operation, including
 when the service has no receipt yet. Historical success and current authorization
 remain separate; a new grant requires its own operation and token after the
-previous result has been resolved.
+previous result has been resolved. A complete, authenticated HTTP 409
+`resource_conflict` response to the original submission proves a rejected
+transaction under the recovery service's error contract. The client durably
+retains that operation and refusal before permitting a later operation with a
+new identity. Query failures, missing receipts, malformed responses and unknown
+transaction outcomes never provide that proof.
 
 The Session API registers recovery for an existing platform Session and switches
-grant and report requests to the versioned recovery API. Recovery binding comes
-from verified durable intent and original Controller observation or stopping
-evidence. An ordinary Session read cannot precede recovery authorization: it
+grant and report requests to the versioned recovery API. Each new operation
+reads the existing account-authorized Bot observation to obtain the committed
+Session binding, while durable intent and fresh authenticated Controller
+observation or stopping evidence establish the original local execution.
+Renewal observes the live Controller before deriving its local evidence.
+An ordinary Session read cannot precede recovery authorization: it
 requires the old parent credential, which a valid same-account replacement PAT
 must be able to supersede. Recovery retains its dedicated proof checks; ordinary
 Session access and synchronized input retain their existing authorization.
+
+The service may still have a null native binding after the Controller creates
+its native Session. A same-generation grant uses that observed service binding
+without clearing the local native identity; the original Controller synchronizes
+it after receiving the grant. Requiring equality would deadlock when the expired
+parent credential prevents that synchronization. A new Controller generation
+still requires the service's original nonnull native binding and complete stop
+proof. Providers that create their native identity on first input may renew a
+same-generation null binding. If that binding advances between observation and
+submission, a confirmed conflict ends only that rejected operation; the next
+attempt reads again and uses a new operation ID and token.
 
 New recovery operations wait until the service acknowledges the current Worker's
 machine report. Both configuration-protocol and ordinary report paths establish
@@ -77,8 +96,20 @@ and a rejected operation, at the cost of retaining unresolved state.
 
 **Read the ordinary Session before requesting recovery.** Its parent-credential
 check prevents a new PAT from reaching the operation that replaces an expired
-parent. Local binding evidence plus the dedicated recovery authorization avoids
-that dependency without relaxing ordinary Session access.
+parent. Account-authorized Bot observation plus local execution evidence and
+dedicated recovery authorization avoids that dependency without relaxing
+ordinary Session access.
+
+**Wait for local and service native IDs to be equal.** Local publication precedes
+relay synchronization, and an expired parent credential can prevent the relay
+from making progress until recovery grants new authority. Conversely, cached
+local state may lag a live Controller. Separate current service binding from
+original local execution evidence and refresh both before new submissions.
+
+**Require a nonnull native ID for every live grant.** Providers may create their
+native Session only on first input. Blocking their renewal prevents the input
+that establishes the ID. Keep same-generation null grants and handle a racing
+binding transition through the service's confirmed transaction refusal.
 
 **Start takeover as soon as local configuration permits execution.** A live
 Controller can be discovered before the new Worker's first report is accepted.
@@ -98,7 +129,10 @@ recreating a native Session. A lock, valid current account and accepted service
 receipt are all necessary; local bytes alone grant no execution authority.
 
 Private recovery state survives restarts and unknown responses, and participates
-in the Bot's precise deletion plan. An unresolved operation can require external
+in the Bot's precise deletion plan. Confirmed refusals retain their original
+requests and request IDs; the existing file byte limit is checked before
+publication, so exhausted history capacity preserves the pending operation and
+the last readable state. An unresolved operation can require external
 reconciliation rather than automatic resubmission. Legacy native-material import,
 cross-machine handoff and a new claim for assistant business tasks are not implied
 by hosting recovery. Provider compatibility remains owned by each adapter's

@@ -94,8 +94,10 @@ test("rejects unsupported native configuration before registration and leaves fa
 test("renews only expiring credentials and retains the observed native identity",async()=>{
   const f=fixture(), signal=new AbortController().signal;
   await f.process.advance(f.current(),signal); await f.process.refreshGrant(f.current(),signal);expect(f.grant).toHaveBeenCalledTimes(1);
+  expect(f.observe).not.toHaveBeenCalled();
   writeFileSync(f.getTicket().credentialFile,JSON.stringify({expiresAt:new Date(Date.now()+60000).toISOString()}));
   await f.process.refreshGrant(f.current(),signal);expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.observe).toHaveBeenCalledOnce();
   expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBe(id(9));expect(f.launch).toHaveBeenCalledTimes(1);
   writeFileSync(f.getTicket().credentialFile,"{}");await expect(f.process.refreshGrant(f.current(),signal)).rejects.toThrow(/expiry/);expect(f.grant).toHaveBeenCalledTimes(2);
 });
@@ -158,6 +160,42 @@ const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, un
     patch: (patch: Partial<ControllerSnapshot>) => { saved = { ...saved, ...patch } as ControllerSnapshot; },
     restart: () => f.createProcess(deps, recoveryLimit) };
 };
+
+test("refreshes authenticated IPC before renewing a credential from a cached starting snapshot", async () => {
+  const f = await recoveryFixture({}, false, true);
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "starting", nativeSessionId: null });
+  f.patch({ lifecycle: "ready", nativeSessionId: id(9), startup: { state: "ready", reasonCode: "ready" } });
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBe(id(9));
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "ready", nativeSessionId: id(9) });
+  expect(f.current().intent!.nativeSessionId).toBeNull();
+  expect(f.launch).toHaveBeenCalledOnce();
+});
+
+test("renews a ready lazy Provider before its native Session exists", async () => {
+  const f = await recoveryFixture({}, false, true, 3, false, "copilot");
+  f.patch({ lifecycle: "ready", nativeSessionId: null, startup: { state: "ready", reasonCode: "ready" } });
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledTimes(2);
+  expect(f.grant.mock.calls[1]![0].intent!.nativeSessionId).toBeNull();
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "ready", nativeSessionId: null });
+});
+
+test("does not renew after failed IPC authentication or a newly observed stopped Controller", async () => {
+  const f = await recoveryFixture({}, false, true);
+  writeFileSync(f.current().intent!.credentialFile, JSON.stringify({ expiresAt: new Date(Date.now() + 60_000).toISOString() }));
+  const conflict = new ControllerIpcIdentityConflictError("Controller fence differs");
+  f.observe.mockRejectedValueOnce(conflict);
+  await expect(f.manager.refreshGrant(f.current(), f.signal)).rejects.toBe(conflict);
+  expect(f.grant).toHaveBeenCalledOnce();
+  f.observe.mockResolvedValueOnce({ ...f.saved(), lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() });
+  await f.manager.refreshGrant(f.current(), f.signal);
+  expect(f.grant).toHaveBeenCalledOnce();
+  expect(f.executions.get(f.current())!.snapshot).toMatchObject({ lifecycle: "stopped", nativeStopped: true });
+});
 
 test("shutdown retains Bot artifacts and restart resumes the original native session with a new generation", async () => {
   const f = await recoveryFixture(), original = f.current().intent!;

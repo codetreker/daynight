@@ -100,6 +100,15 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       if (route === "/api/usage/v1/capabilities") { res.statusCode = 503; return send({ error: { code: "capability_error", message: "Usage is outside this fixture", requestId: randomUUID() } }); }
       if (req.method === "GET" && route.endsWith("/bots")) return send({ items: [], nextCursor: null });
       if (req.method === "GET" && route === `/api/v1/me/bots/${botId}`) return send(bot);
+      if (req.method === "GET" && route === `/api/v1/me/bots/${botId}/observation`) {
+        const observedAt = new Date().toISOString();
+        return send({ schemaVersion: 1, botId, botVersion: bot.version, workerId: hostingGeneration === "1" ? owner.workerId : newWorker,
+          machine: { id: owner.workerId, name: "fixture-machine" }, provider: "codex", sessionId: bot.sessionId, testExecutionId: bot.testExecutionId,
+          nativeSessionId: observedNative, hostingGeneration: receipts.size === 0 ? null : hostingGeneration,
+          executionGeneration: bot.sessionId === null ? null : "1", connectionEpoch: bot.sessionId === null ? null : String(Math.max(epoch, 1)),
+          state: synchronized ? "idle" : "connecting", reason: "fixture_observed", observedAt, workerLastSeenAt: observedAt,
+          sessionLastSeenAt: synchronized ? observedAt : null, freshUntil: null, currentTurnId: null });
+      }
       if (req.method === "GET" && route.startsWith("/api/v1/test-sessions/")) return send({ session: snapshot() });
       if (req.method === "GET" && ["/api/v1/assistant-tasks", "/api/v1/assistant-task-events"].includes(route)) return send({ items: [], nextCursor: null, observedAt: new Date().toISOString() });
       if (route.includes("/recovery/v1/operations/")) {
@@ -108,6 +117,8 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
       }
       if (route.includes("/recovery/v1/") && !route.endsWith("/report")) {
         const kind = route.split("/").at(-1)! as "register" | "grant" | "takeover", workerId = route.split("/")[5]!;
+        expect(body.sessionId).toBe(bot.sessionId); expect(body.testExecutionId).toBe(bot.testExecutionId);
+        expect(body.nativeSessionId).toBe(observedNative);
         if (kind === "register" || kind === "takeover") bot = { ...bot, version: String(BigInt(bot.version) + 1n) };
         if (kind === "takeover") { expect(workerId).toBe(newWorker); hostingGeneration = "2"; bot = { ...bot, startupResult: { state: "pending", code: null } }; }
         if (kind !== "register") {
