@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, expect, test } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { openCodexProvider } from '../../../src/commands/controller/providers/codex.js';
+import { CodexBotRecovery } from '../../../src/commands/controller/providers/codex-bot-recovery.js';
 import { textNativeInput } from '../../../src/commands/controller/providers/native-input.js';
 import type { NativeProvider, ProviderEntry, ProviderOptions, ProviderState } from '../../../src/commands/controller/providers/types.js';
 
@@ -20,13 +21,14 @@ beforeEach(async () => {
 afterEach(async () => { try { for (const provider of opened) await provider.close(); } finally { await rm(directory, { recursive: true, force: true }); } });
 const requests = async () => (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
 const manifest = async () => JSON.parse(await readFile(join(recoveryDirectory, 'manifest.json'), 'utf8'));
-const open = async (resumeNativeSessionId: string | null = null, environment: NodeJS.ProcessEnv = {}) => {
+const open = async (resumeNativeSessionId: string | null = null, environment: NodeJS.ProcessEnv = {}, callbacks: Pick<ProviderOptions, 'onControlConfirmed' | 'onFatalError'> = {}) => {
   const options: ProviderOptions = {
     cwd: directory, model: null, args: [], resumeNativeSessionId,
     executable: fileURLToPath(new URL('./fixtures/codex-bot-native.mjs', import.meta.url)),
     env: { ...process.env, CODEX_HOME: home, CODEX_BOT_REQUEST_LOG: log, CODEX_BOT_CONFIG_SENTINEL: 'current-account-config', ...environment },
     codexBotRecovery: { directory: recoveryDirectory, identity },
     onTimeline: entry => timeline.push(entry), onState: state => states.push(state), onSpawn: () => {},
+    ...callbacks,
   };
   const provider = await openCodexProvider(options); opened.push(provider); return provider;
 };
@@ -64,6 +66,33 @@ test('a confirmed idle settings change remains recoverable with the changed valu
   await close(first);
   await open(nativeId);
   expect(states.at(-1)!.controls!.settings.find(setting => setting.id === 'model')!.value).toBe('other-model');
+});
+
+test('a failed idle setting checkpoint is fatal independently of native confirmation and closes dispatch', async () => {
+  const confirmed: string[] = [], fatals: Error[] = [], events: string[] = [];
+  const provider = await open(null, {}, {
+    onControlConfirmed: id => { confirmed.push(id); events.push('confirmed'); },
+    onFatalError: error => { fatals.push(error); events.push('fatal'); },
+  });
+  const previous = await manifest(), operationId = randomUUID();
+  const storageFailure = Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  const protection = vi.spyOn(CodexBotRecovery.prototype, 'protect').mockRejectedValueOnce(storageFailure);
+  try {
+    await expect(provider.setSetting!('model', 'other-model', operationId, states.at(-1)!.controls!.revision)).rejects.toThrow('Codex Bot recovery could not protect the confirmed setting');
+    expect(confirmed).toEqual([operationId]); expect(events).toEqual(['confirmed', 'fatal']);
+    expect(fatals).toHaveLength(1); expect(fatals[0]!.cause).toBe(storageFailure);
+    expect(states.at(-1)).toMatchObject({ activity: 'unknown', capabilities: { send: false, steer: false, cancel: false, respond: false } });
+    expect(states.at(-1)!.controls!.settings.find(setting => setting.id === 'model')!.value).toBe('other-model');
+    expect(await manifest()).toMatchObject({ dirty: true, point: previous.point });
+    const revision = states.at(-1)!.controls!.revision;
+    const before = await requests();
+    await expect(provider.send(textNativeInput('must not dispatch'), randomUUID(), null)).rejects.toThrow();
+    await expect(provider.setSetting!('model', 'fixture-model', randomUUID(), revision)).rejects.toThrow();
+    await expect(provider.executeCommand!('compact', '', randomUUID(), revision, null)).rejects.toThrow();
+    await provider.refreshControls!().catch(() => {});
+    expect(await requests()).toEqual(before);
+    expect(protection).toHaveBeenCalledTimes(1); expect(fatals).toHaveLength(1);
+  } finally { protection.mockRestore(); }
 });
 
 test('compact completion protects its own turn before a later process resumes', async () => {

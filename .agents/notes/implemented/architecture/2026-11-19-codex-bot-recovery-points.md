@@ -26,7 +26,10 @@ its original identity and terminal turn record, then syncs the immutable snapsho
 and atomically publishes its digest and protected turn. New dispatch waits for
 protection. Confirmed idle settings require a newly persisted
 thread_settings_applied record. Partial records or changing sources cannot advance
-the point.
+the point. Native setting confirmation and recovery protection are separate
+outcomes: a confirmed setting is not rolled back when snapshot publication fails.
+That failure independently terminates the provider and retains the dirty barrier,
+so an earlier setting receipt cannot conceal loss of automatic recovery.
 
 Recovery requires the original execution's stop proof and storage ownership.
 It verifies the same-version profile, identity and digest, marks the attempt

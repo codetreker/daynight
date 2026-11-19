@@ -223,6 +223,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   }, { createSpool: maximum => { if (!options.imageRuntime) throw new Error("Native image storage is unavailable."); return options.imageRuntime.createSpool(maximum); }, onFatalError: error => { invalidateImages(); authority?.invalidate(); if (!closing) { transportFailed = true; if (currentTurnId) turns.complete(currentTurnId, error); currentTurnId = null; turnStartedAt = null; activity = "unknown"; expire(); state(); reportFatal(error); } } });
   const nativeRequest: CodexRpc["request"] = (method, params, onLateResponse) => {
     const request = () => {
+      if (recovery && transportFailed) throw new NativeRpcError(-32602, "Codex Bot recovery is unavailable; native dispatch is closed.");
       const dispatch = imageDispatch;
       if (["turn/start", "turn/steer"].includes(method) && dispatch && dispatch.operationId === record(params).clientUserMessageId) dispatch.verify();
       return transport.request(method, params, onLateResponse);
@@ -451,16 +452,25 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     nativeSessionId: nativeId, send, acknowledgeImageOccurrences: () => imageProjector.acknowledged(),
     async refreshControls() { if (sending || settingsBusy || observingConfig) throw new NativeRpcError(-32602, "Native controls are busy."); observingConfig = true; state(); try { await controls.refresh(); await refreshImages(); return { disposition: "handled" }; } finally { observingConfig = false; state(); recoverImages(); } },
     async setSetting(id, value, operationId, revision) {
-      if (nativeExited || closed || sending || settingsBusy || observingConfig || protecting) throw new NativeRpcError(-32602, "Native controls are busy.");
+      if (nativeExited || closed || transportFailed || sending || settingsBusy || observingConfig || protecting) throw new NativeRpcError(-32602, "Native controls are busy.");
       settingsBusy = true; invalidateImages();
       try {
         await controls.set(id, value, operationId, revision);
-        if (recovery && currentTurnId === null) await protect(recovery.protectedThroughTurn);
+        if (recovery && currentTurnId === null) {
+          try { await protect(recovery.protectedThroughTurn); }
+          catch (cause) {
+            const error = new Error(`Codex Bot recovery could not protect the confirmed setting: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+            // Native confirmation remains valid. Recovery failure must reach the
+            // Controller independently of that operation's confirmed receipt.
+            transportFailed = true; invalidateImages(); authority?.invalidate(); activity = "unknown"; state(); reportFatal(error);
+            throw error;
+          }
+        }
         await refreshImages(); return { disposition: "handled" };
       } finally { settingsBusy = false; state(); recoverImages(); }
     },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
-      if (nativeExited || closed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
+      if (nativeExited || closed || transportFailed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
       const command = controls.command(id, revision);
       if (command.kind === "compact") { if (args.trim()) throw new NativeRpcError(-32602, "Compact does not accept arguments."); options.assertNativeDispatch?.(); await rpc.request("thread/compact/start", { threadId: nativeId }); return { disposition: "handled" }; }
       if (command.kind === "skill") return send(textNativeInput(args), operationId, null, { name: command.name, path: command.path });
