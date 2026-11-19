@@ -33,13 +33,16 @@ export function createLinuxProcessCapture(
       const boundary = text.lastIndexOf(") ");
       if (text.length > 8192 || boundary < 0 || !text.startsWith(`${pid} (`)) throw new Error("Linux process stat cannot be interpreted.");
       const fields = text.slice(boundary + 2).trim().split(/\s+/);
-      const ticks = fields[19];
+      const ticks = fields[19], flags = fields[6];
       if (!/^[A-Za-z]$/.test(fields[0] ?? "") || !/^(0|[1-9][0-9]*)$/.test(fields[1] ?? "")
         || !/^[1-9][0-9]*$/.test(fields[2] ?? "") || ticks === undefined || !/^(0|[1-9][0-9]{0,19})$/.test(ticks)
-        || BigInt(ticks) > 18_446_744_073_709_551_615n) throw new Error("Linux process stat has invalid identity fields.");
+        || BigInt(ticks) > 18_446_744_073_709_551_615n || flags === undefined || !/^(0|[1-9][0-9]{0,9})$/.test(flags)
+        || BigInt(flags) > 4_294_967_295n) throw new Error("Linux process stat has invalid identity fields.");
       const parent = Number(fields[1]), group = Number(fields[2]);
       if (!Number.isSafeInteger(parent) || parent > 2_147_483_647 || !Number.isSafeInteger(group) || group > 2_147_483_647) throw new Error("Linux process stat has invalid process IDs.");
-      return { parent, group, ticks, zombie: fields[0] === "Z" };
+      // PF_EXITING precedes address-space teardown; it permits waiting, not a
+      // stopped conclusion: https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/include/linux/sched.h
+      return { parent, group, ticks, zombie: fields[0] === "Z", exiting: (BigInt(flags) & 4n) !== 0n };
     };
     const ps = async () => {
       const output = await readPs(pid, remaining()); remaining();
@@ -52,12 +55,16 @@ export function createLinuxProcessCapture(
     const first = await ps(), second = await ps();
     const after = stat(await read(`/proc/${pid}/stat`));
     const afterBoot = boot(await read("/proc/sys/kernel/random/boot_id"));
-    if (beforeBoot !== afterBoot || before.ticks !== after.ticks || before.parent !== after.parent || before.group !== after.group
-      || first.parent !== before.parent || second.parent !== after.parent || first.group !== before.group || second.group !== after.group
-      || first.command !== second.command || before.zombie !== first.zombie || first.zombie !== second.zombie || second.zombie !== after.zombie) {
+    // Exit can discard the command before Z appears. PF_EXITING permits waiting
+    // only; a final zombie proves this instance exited. Neither supplies a
+    // running proof, and birth/group fences and descendant checks still apply.
+    if (beforeBoot !== afterBoot || before.ticks !== after.ticks || before.group !== after.group
+      || first.group !== before.group || second.group !== after.group
+      || (!after.zombie && !after.exiting && (before.parent !== after.parent || first.parent !== before.parent || second.parent !== after.parent
+        || first.command !== second.command || before.zombie || before.exiting || first.zombie || second.zombie))) {
       throw new Error("Linux process identity changed during observation; no process proof was captured.");
     }
     remaining();
-    return { proof: { pid, parentPid: after.parent, processGroupId: after.group, startedAt: `linux:v1:${afterBoot}:${after.ticks}`, commandHash: hash(second.command) }, zombie: second.zombie, exiting: false, status: second.status };
+    return { proof: { pid, parentPid: after.parent, processGroupId: after.group, startedAt: `linux:v1:${afterBoot}:${after.ticks}`, commandHash: hash(second.command) }, zombie: after.zombie, exiting: after.exiting && !after.zombie, status: after.zombie ? "Z" : second.status };
   };
 }

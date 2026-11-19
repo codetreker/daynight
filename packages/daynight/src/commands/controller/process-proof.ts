@@ -49,7 +49,25 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
   if (process.platform === "linux" && !isLinuxProcessBirth(proof.startedAt)) throw new Error("The saved Linux process proof lacks a stable kernel birth identity; the live process cannot be authorized for recovery or stopping, and original evidence is retained.");
   let current: ProcessProof, zombie = false, exiting = false, status: string | null = null;
   try {
-    const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;
+    let observed: Awaited<ReturnType<typeof capturePosixProcessState>>;
+    if (process.platform === "linux") {
+      const deadline = performance.now() + timeoutMs;
+      const budget = () => {
+        const left = deadline - performance.now();
+        if (left <= 0) throw new Error("Linux process observation exceeded its deadline; stop remains unconfirmed.");
+        return left;
+      };
+      for (;;) {
+        observed = await capturePosixProcessState(proof.pid, Math.max(1, Math.ceil(budget())));
+        const left = budget();
+        // Linux can clear argv before becoming a zombie. Its kernel exit flag
+        // permits only a bounded wait, never signaling or declaring it stopped.
+        if (!observed.exiting || observed.proof.startedAt !== proof.startedAt
+          || observed.proof.processGroupId !== proof.processGroupId) break;
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, left)));
+      }
+    } else observed = await capturePosixProcessState(proof.pid, timeoutMs);
+    current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;
   }
   catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
   // A zombie's parent and command can change after the original parent exits.

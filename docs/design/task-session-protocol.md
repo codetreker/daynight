@@ -126,11 +126,17 @@ Linux 的 `process-proof.ts` 路径使用稳定的内核出生身份。`LC_ALL=C
 
 Linux 采集器以 `/proc/sys/kernel/random/boot_id` 的开机身份和 `/proc/<pid>/stat` 字段 22 的 starttime ticks 组成出生 token。`ProcessProof.startedAt` 承载可判别的 `linux:v1:<boot-id>:<ticks>`，该字段在 Linux 上表示身份而非时间戳；ticks 保留十进制整数精度，不转换成 JavaScript 浮点数或墙钟时间。macOS 的日期文本和 Windows 的原生出生时间表示保持不变。读取器须接受历史平台 token，但识别并严格验证保留的 `linux:` 格式；未知版本、缺失组成部分和损坏值不能按旧日期文本处理。
 
-一次采集共用原调用预算：先读取 boot identity 与 stat，再采集命令、父 PID、进程组和状态，最后重新读取 stat 与 boot identity。stat 解析须允许括号和空格出现在进程名称中，不以名称内的空格计算字段位置。前后出生身份必须一致，关联信息必须与同次 stat 匹配；命令及进程组也须重复观察一致，退出状态转换不能拼成完整运行证明。任何替换、不可读、格式错误、预算耗尽或不一致均拒绝整个采集，不保存部分身份。`ps lstart` 即使继续出现在查询输出，也不参与 Linux 出生比较。
+一次采集共用原调用预算：先读取 boot identity 与 stat，再两次采集命令、父 PID、进程组和状态，最后重新读取 stat 与 boot identity。stat 解析须允许括号和空格出现在进程名称中，不以名称内的空格计算字段位置。前后 boot identity 与 starttime ticks 必须一致，两次 stat 和两次 `ps` 的进程组必须相同。最终 stat 既非 zombie 也无 `PF_EXITING` 时，父 PID 与命令还须一致，全部状态观测均须为非 zombie，前次 stat 也不能含退出标记；任何替换、不可读、格式错误、预算耗尽或运行身份不一致均拒绝采集，不保存部分运行证明。`ps lstart` 即使继续出现在查询输出，也不参与 Linux 出生比较。
+
+最终 stat 为 `Z` 时，采集器只返回该出生实例的 zombie 退出观察，允许退出期间父进程、命令显示及 zombie 状态发生变化。该分支仍要求全部出生和进程组观测一致，不能接受 PID 替换或组变化。`captureProcessProof` 与工具提取子进程拒绝将其作为运行 proof；`inspectProcessProof` 只有在该观察与已保存的原出生 token、进程组匹配时才确认单 PID stopped。完整停止仍独立检查原生子进程及进程组的存活成员。退出会改变运行字段；在已证明该实例成为 zombie 后继续要求这些字段不变，会把真实停止误判为未知。该终态分支不重采样、不延长原预算，也不将退出观察用于发信号。
+
+最终 stat 非 `Z`，但字段 9 的 flags 含 `PF_EXITING`（`0x00000004`）时，采集器返回 exiting 观察。该分支保留同一 boot、ticks 及四次进程组核验，允许退出中的父 PID 与命令显示变化；`captureProcessProof` 和工具提取子进程拒绝将其作为运行 proof。`inspectProcessProof` 仅在观察的出生 token 和进程组与原保存 proof 匹配时被动等待，每次最多 25 毫秒，随后完整重采。等待及所有重采共用进入 Linux 核验时由 `performance.now()` 固定的截止时间，不重置预算。匹配的 zombie 或明确 ESRCH 才确认该原 PID 停止；仍在退出时到期、读取失败或身份不一致继续保留未确认结果。退出标记本身不能证明 stopped，也不授权信号；普通命令冲突不进入该等待路径。
+
+Linux 的 [`PF_EXITING` 定义](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/include/linux/sched.h#L1805)表示退出已经开始。[退出流程](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/kernel/exit.c#L922)先设置该标记，再执行 `exit_mm()`；[`/proc` stat 输出](https://github.com/torvalds/linux/blob/4405c18c95d2d0f99f6c581ef0ee8591a1aa6ccd/fs/proc/array.c#L598)保留 flags。因此命令地址空间的退出变化可以早于 zombie 展示，已标记退出的原实例需要等待完成，而非继续要求完整运行命令或提前认定停止。
 
 Controller 启动证明、原生子进程证明、Worker/Bot 持久记录、独立 Test 恢复以及工具提取子进程使用相同出生 token 约束。所有持久解析器须保留完整 token，不截断、规范化成日期或丢弃版本。旧 proof 的读取与其能否授权运行操作分开：缺乏稳定 Linux 身份的旧记录继续可读，针对仍可能运行实例的核验须给出明确错误并保留记录；不能仅凭当前 PID 重新采样后覆盖原证明。原 PID 已不存在的权威观察以及原执行已有的有效停证，继续遵循各自停止确认规则，不能凭格式差异宣称原进程已退出。
 
-出生 token 相等不替代命令哈希、进程组、执行 ticket 与原生归属校验。不同 ticks 或 boot identity 只证明当前实例不等于原实例，不允许向当前实例发信号。同出生实例的命令或组冲突继续保留责任。孤儿重新托管和 zombie 的单实例退出规则、TERM/KILL 前的复核、完整进程组停止及原绝对期限保持原有边界。Linux `/proc` 采集不进入 macOS 或 Windows 路径。
+出生 token 相等不替代运行实例的命令哈希、进程组、执行 ticket 与原生归属校验。不同 ticks 或 boot identity 只证明当前实例不等于原实例，不允许向当前实例发信号。同出生运行实例的命令或组冲突继续保留责任。孤儿重新托管和 zombie 的单实例退出规则、TERM/KILL 前的复核、完整进程组停止及原绝对期限保持原有边界。Linux `/proc` 采集不进入 macOS 或 Windows 路径。
 
 ### Codex 输出消费与 I/O
 
