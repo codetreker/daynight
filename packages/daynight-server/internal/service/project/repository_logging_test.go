@@ -133,15 +133,16 @@ func TestRepositorySaveLogsTransactionCompletion(t *testing.T) {
 }
 
 func TestRepositoryLoggerDefaultsWhenUnset(t *testing.T) {
-	var logs bytes.Buffer
+	var configuredLogs, defaultLogs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&defaultLogs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	s := &AppProjects{}
-	custom := slog.New(slog.NewJSONHandler(&logs, nil))
-	s.SetRepositoryLogger(custom)
-	if s.repositoryLogger != custom {
-		t.Fatal("configured repository logger was not retained")
-	}
+	s.SetRepositoryLogger(slog.New(slog.NewJSONHandler(&configuredLogs, nil)))
+	s.logRepository(t.Context(), model.Principal{}, "project", "preview", "unchanged", "", 0, false)
 	s.SetRepositoryLogger(nil)
-	if s.repositoryLogger != slog.Default() {
-		t.Fatal("nil logger did not restore the default")
+	s.logRepository(t.Context(), model.Principal{}, "project", "save", "unchanged", store.TransactionCommitted, 0, true)
+	if !strings.Contains(configuredLogs.String(), `"phase":"preview"`) || strings.Contains(configuredLogs.String(), `"phase":"save"`) || !strings.Contains(defaultLogs.String(), `"phase":"save"`) {
+		t.Fatalf("logger routing: configured=%s default=%s", configuredLogs.String(), defaultLogs.String())
 	}
 }
