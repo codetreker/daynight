@@ -214,6 +214,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	}
 	mutableTables := []string{
 		"assistant_task_appendix",
+		"assistant_task_appendix_validations",
 		"assistant_task_claim_operations",
 		"assistant_task_events",
 		"assistant_task_inquiries",
