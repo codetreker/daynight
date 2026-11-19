@@ -551,3 +551,7 @@ func (f *orderedWrite) ParentTask(context.Context, string) (model.Task, error) {
 	f.t.Fatal("unexpected ParentTask")
 	return model.Task{}, nil
 }
+
+func (s *orderedWrite) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	panic("unexpected Project Goal dependency capability")
+}

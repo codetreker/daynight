@@ -134,8 +134,15 @@ func newTransferBoundaryWriter(t *testing.T, ctx context.Context, projectID stri
 func (s *transferBoundaryWriter) WriteProject(ctx context.Context, projectID string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 	s.t.Helper()
 	s.calls++
-	if s.calls != 1 || ctx != s.ctx || projectID != s.projectID {
+	if s.calls != 1 || projectID != s.projectID {
 		s.t.Fatalf("unexpected Project write: calls=%d same context=%v id=%q want %q", s.calls, ctx == s.ctx, projectID, s.projectID)
+	}
+	deadline, bounded := ctx.Deadline()
+	if !bounded || time.Until(deadline) > projectLifecycleTimeout {
+		s.t.Fatal("transfer has no lifecycle budget")
+	}
+	if s.scope != nil {
+		s.scope.ctx = ctx
 	}
 	if s.enterErr != nil {
 		return s.completion, s.enterErr
@@ -375,4 +382,22 @@ func TestTransferUnavailableAndVersionExhaustion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (s *transferBoundaryScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO { return s }
+func (s *transferBoundaryScope) LockTeam(ctx context.Context) error {
+	if ctx != s.ctx {
+		s.t.Fatal("graph lock context differs from transaction")
+	}
+	return nil
+}
+func (s *transferBoundaryScope) HasProjectEdges(ctx context.Context) (bool, error) {
+	if ctx != s.ctx {
+		s.t.Fatal("graph probe context differs from transaction")
+	}
+	return false, nil
+}
+func (s *transferBoundaryScope) RemoveProjectEdges(context.Context) error {
+	s.t.Fatal("unexpected confirmed removal")
+	return nil
 }

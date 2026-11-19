@@ -14,9 +14,10 @@ type TeamVersion struct {
 	Version int64
 }
 type TransferInput struct {
-	Ownership      model.ProjectOwnership
-	TargetTeam     TeamVersion
-	ExpectedUserID string
+	ConfirmGoalDependencyRemoval bool
+	Ownership                    model.ProjectOwnership
+	TargetTeam                   TeamVersion
+	ExpectedUserID               string
 }
 type TransferPreview struct {
 	SourceTeam, TargetTeam model.TeamRef

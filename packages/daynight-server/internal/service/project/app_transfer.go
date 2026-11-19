@@ -8,6 +8,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
 )
 
@@ -30,7 +31,7 @@ func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string
 	if err != nil {
 		return core.TransferReceipt{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, github.OperationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, projectLifecycleTimeout)
 	defer cancel()
 	var result core.TransferReceipt
 	c, err := s.lifecycle.WriteGitHubProjectTransfer(ctx, id, func(scope store.GitHubProjectTransferScope) error {
@@ -40,6 +41,9 @@ func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string
 			return err
 		}
 		if result.Changed {
+			if err = taskcore.RemoveProjectGoalDependencies(ctx, scope.ProjectGoalDependencyDAO(), input.ConfirmGoalDependencyRemoval); err != nil {
+				return err
+			}
 			dao := scope.GitHubDAO()
 			if _, err = dao.LockBinding(ctx); err != nil {
 				return err
