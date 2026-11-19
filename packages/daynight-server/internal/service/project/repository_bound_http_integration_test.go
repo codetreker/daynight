@@ -3,9 +3,15 @@ package project_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,11 +28,74 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+	githubhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/github"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+	githubservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+type boundHTTPProvider struct {
+	client *remote.Client
+	appID  string
+}
+
+func (p boundHTTPProvider) Acquire(_ context.Context, id string, version int64) (*remote.Client, func(), error) {
+	if id != p.appID || version != 1 {
+		return nil, nil, fmt.Errorf("unexpected App selection")
+	}
+	return p.client, func() {}, nil
+}
+
+func boundHTTPGitHubClient(t *testing.T) *remote.Client {
+	t.Helper()
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations/20/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"token":"token","expires_at":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		case "/installation/repositories":
+			fmt.Fprint(w, `{"repositories":[{"id":31,"full_name":"acme/reused","private":true}]}`)
+		case "/repos/acme/reused":
+			fmt.Fprint(w, `{"id":31,"full_name":"acme/reused","private":true}`)
+		case "/repos/acme/reused/pulls":
+			fmt.Fprint(w, `[]`)
+		case "/repos/acme/reused/installation":
+			fmt.Fprint(w, `{"id":20,"account":{"login":"acme"}}`)
+		default:
+			t.Errorf("unexpected GitHub request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	original := http.DefaultTransport
+	transport := original.(*http.Transport).Clone()
+	transport.Proxy = nil
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if address != "api.github.com:443" {
+			return nil, fmt.Errorf("unexpected upstream %s", address)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	http.DefaultTransport = transport
+	client, err := remote.NewClient(91, key)
+	http.DefaultTransport = original
+	transport.CloseIdleConnections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.CloseIdleConnections)
+	return client
+}
 
 func TestRepositoryHTTPBoundSwitchAndManualReconnect(t *testing.T) {
 	ctx := t.Context()
@@ -124,6 +193,9 @@ func TestRepositoryHTTPBoundSwitchAndManualReconnect(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	projecthttp.RegisterRoutes(mux, projects, auth, logger)
+	githubClient := boundHTTPGitHubClient(t)
+	manager := githubservice.NewProjectAppManager(db, boundHTTPProvider{client: githubClient, appID: appID}, logger)
+	githubhttp.RegisterProjectAppRoutes(mux, manager, auth, logger)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 	client := server.Client()
@@ -173,12 +245,20 @@ func TestRepositoryHTTPBoundSwitchAndManualReconnect(t *testing.T) {
 	if n := signal(); n != 0 {
 		t.Fatalf("old signal during disconnect=%d", n)
 	}
-	connect(4, 2, 31, "https://github.com/acme/reused", "acme/reused")
+	var githubStatus api.GitHubProjectAppStatus
+	githubPath := server.URL + "/api/v1/projects/" + project.ID + "/github"
+	request("POST", githubPath+"/connect", map[string]any{"version": "4", "ownershipVersion": fmt.Sprint(project.Ownership.Version), "appResourceId": appID, "appVersion": "1", "grantId": grantID, "installationId": "20"}, &githubStatus)
+	if githubStatus.Version != "5" || githubStatus.Repository == nil || githubStatus.Repository.ID != "31" || githubStatus.SyncEnabled || githubStatus.App == nil || githubStatus.App.ID != appID {
+		t.Fatalf("HTTP reconnect: %+v", githubStatus)
+	}
 	var newCoverage int
 	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_github_coverage WHERE project_id=$1 AND repository_id=31`, project.ID).Scan(&newCoverage); err != nil || newCoverage != 0 {
 		t.Fatalf("coverage after connect=%d %v", newCoverage, err)
 	}
-	sync(5)
+	request("PATCH", githubPath+"/sync", map[string]any{"version": "5", "syncEnabled": true}, &githubStatus)
+	if githubStatus.Version != "6" || !githubStatus.SyncEnabled {
+		t.Fatalf("HTTP sync: %+v", githubStatus)
+	}
 	if n := signal(); n != 0 {
 		t.Fatalf("old signal after reconnect=%d", n)
 	}
