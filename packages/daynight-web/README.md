@@ -2857,6 +2857,14 @@ attachments are under `.tmp/native-select-browser/results/`. The
 this same configuration and uploads its report and captures. Ordinary PR quality
 does not execute the browser fixture.
 
+The public/auth typography browser configuration exercises the production landing,
+Setup, login, device authorization and OAuth consent pages with controlled API
+responses. It checks shared font roles, English and Chinese, narrow layouts,
+coarse pointers, enlarged text, long identities and accessible actions during
+loading, error and disabled states. Run it with
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/public-auth-typography-playwright.config.ts`.
+Its captures belong to `.tmp/public-auth-typography-results/`.
+
 The setup and landing-header browser configurations separately exercise real
 independent-page consumers, including language and client selection. These
 frontend checks establish rendered and input behavior for their actual browser;

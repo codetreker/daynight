@@ -34,6 +34,16 @@ fixed node boxes accommodate text independently of graph zoom. Overview progress
 rows rearrange at narrow widths; chart axes preserve horizontal scrolling and
 provide room for enlarged labels.
 
+Public landing and Setup pages, and standalone login, invitation, device
+authorization and OAuth consent pages, use the semantic roles at all viewport
+widths. Public reading copy and demo prose use the reading role; commands,
+status, errors and actions use the interface role. Authorization codes use the
+detail heading role, with the input using the section heading role. Account
+actions and command copying reflow to accommodate larger text. The public header
+remains sticky only while it occupies at most half the viewport; larger headers
+scroll with the document. Anchor clearance uses the measured sticky height and
+responds to header content, font and viewport changes.
+
 Fixed geometry that depended on the former 14px root is independent of that root;
 text-related spacing remains relative. The earlier
 [root-independent layout decision](2026-11-19-web-root-independent-layout.md)
@@ -51,6 +61,12 @@ node geometry costs canvas space and can reduce the initial zoom on narrow scree
 
 **Define sizes in each component.** This permits equal semantic roles to drift
 and makes changing a reading size require edits across consumers.
+
+**Keep fixed public-header offsets.** Locale, identity notices and browser font
+preferences can change header height independently of width breakpoints. A fixed
+clearance can hide anchor targets, and a header taller than the viewport can
+prevent access to the page. Measuring the header preserves semantic text sizes
+while leaving room for content.
 
 ## Consequences
 
