@@ -223,3 +223,56 @@ func TestCrossTaskEventPullReclaimsIdleInboxes(t *testing.T) {
 		})
 	}
 }
+
+type wakeStub struct {
+	store.AssistantTaskDAO
+	woke                bool
+	err                 error
+	calls               int
+	bot, subject, owner string
+	since               time.Time
+}
+
+func (s *wakeStub) ReceivedInbound(_ context.Context, owner, bot, subject string, since time.Time) (bool, error) {
+	s.calls++
+	s.owner, s.bot, s.subject, s.since = owner, bot, subject, since
+	return s.woke, s.err
+}
+
+func TestSuppressInboundOnlyForOwnerBotLoops(t *testing.T) {
+	const peer, subject = "55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666"
+	bot := func(user, id string) *InboundActor {
+		return &InboundActor{Kind: InboundActorBot, UserID: ptr(user), BotID: ptr(id)}
+	}
+	for _, tc := range []struct {
+		name        string
+		actor       *InboundActor
+		woke        bool
+		want, query bool
+	}{
+		{"unknown", nil, true, false, false},
+		{"user", &InboundActor{Kind: InboundActorUser, UserID: ptr(ownerID)}, true, false, false},
+		{"system", &InboundActor{Kind: InboundActorSystem}, true, false, false},
+		{"bot without id", &InboundActor{Kind: InboundActorBot, UserID: ptr(ownerID)}, true, false, false},
+		{"bot without user", &InboundActor{Kind: InboundActorBot, BotID: ptr(botID)}, true, false, false},
+		{"other user's bot", bot("33333333-3333-4333-8333-333333333333", peer), true, false, false},
+		{"holder", bot(ownerID, botID), false, true, false},
+		{"reacting peer", bot(ownerID, peer), true, true, true},
+		{"quiet peer", bot(ownerID, peer), false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &wakeStub{woke: tc.woke}
+			got, err := SuppressInbound(context.Background(), d, ownerID, botID, subject, tc.actor, epoch)
+			if err != nil || got != tc.want || (d.calls == 1) != tc.query {
+				t.Fatalf("got %v err %v calls %d", got, err, d.calls)
+			}
+			if tc.query && (d.owner != ownerID || d.bot != peer || d.subject != subject || !d.since.Equal(epoch.Add(-10*time.Minute))) {
+				t.Fatalf("query %+v", d)
+			}
+		})
+	}
+	d := &wakeStub{err: sentinel}
+	if _, err := SuppressInbound(context.Background(), d, ownerID, botID, subject, bot(ownerID, peer), epoch); !errors.Is(err, sentinel) {
+		t.Fatal(err)
+	}
+}
