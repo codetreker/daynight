@@ -39,11 +39,31 @@ type ArchiveOperation struct {
 
 // RetainedArchive owns its exact original bytes and the permit protecting them.
 type RetainedArchive struct {
-	Data      []byte
-	operation *ArchiveOperation
-	closeFn   func() error
-	closeOnce sync.Once
-	closeErr  error
+	Data        []byte
+	operation   *ArchiveOperation
+	timelineCtx context.Context
+	closeFn     func() error
+	closeOnce   sync.Once
+	closeErr    error
+}
+
+// GateContext cancels retained output if its archive or timeline gate is lost.
+func (r *RetainedArchive) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if r.timelineCtx == nil {
+		return r.operation.GateContext(parent)
+	}
+	// MCP may finish the producing tool call before sending its response.
+	held, release := filestorage.GateCleanupContext(r.timelineCtx)
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := context.AfterFunc(held, func() { cancel(context.Cause(held)) })
+	if cause := filestorage.GateError(held); cause != nil {
+		cancel(cause)
+	}
+	return ctx, func() {
+		stop()
+		release()
+		cancel(context.Canceled)
+	}
 }
 
 func (r *RetainedArchive) Close() error {
@@ -194,6 +214,15 @@ func (op *ArchiveOperation) Close() error {
 	return op.closeErr
 }
 
+// GateContext follows the caller's context and cancels if the archive gate is lost.
+// The returned cancel function releases the context without releasing the archive permit.
+func (op *ArchiveOperation) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if op == nil {
+		return ctx, func() {}
+	}
+	return filestorage.GateContext(ctx, op.permit)
+}
+
 func (op *ArchiveOperation) check(mode ArchiveMode) error {
 	if op == nil || op.closed || op.mode != mode {
 		return errors.New("invalid or closed archive operation")
@@ -207,6 +236,8 @@ func (op *ArchiveOperation) PutArchive(ctx context.Context, data []byte) (sp.Arc
 	if err := op.check(ArchiveV1Upload); err != nil {
 		return sp.ArchiveStatus{}, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	out, err := op.execution.putArchive(ctx, op, data)
 	op.markCommit(err)
 	return out, err
