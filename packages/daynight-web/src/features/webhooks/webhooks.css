@@ -215,9 +215,9 @@
 .webhooks .detail-status .quiet,
 .webhook-dialog .detail-status .quiet { color:#8a93a4;font-size:var(--text-interface) }
 .webhooks .tabs,
-.webhook-dialog .tabs { display:flex;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 18px;gap:20px }
+.webhook-dialog .tabs { display:flex;flex-wrap:wrap;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0 18px;gap:0 20px }
 .webhooks .tab,
-.webhook-dialog .tab { background:none;border:0;border-bottom:2px solid transparent;padding:12px 4px 11px;color:#7e899b;font-size:var(--text-interface);white-space:nowrap }
+.webhook-dialog .tab { background:none;border:0;border-bottom:2px solid transparent;padding:12px 4px 11px;color:#7e899b;font-size:var(--text-interface);min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere }
 .webhooks .tab[aria-selected="true"],
 .webhook-dialog .tab[aria-selected="true"] { border-bottom-color:var(--indigo);color:var(--indigo);font-weight:600 }
 .webhooks .tab-panel,
@@ -520,7 +520,7 @@
 .webhooks .tabs,
 .webhook-dialog .tabs { padding:0 8px;gap:4px;justify-content:space-between }
 .webhooks .tab,
-.webhook-dialog .tab { flex:1;min-width:0;white-space:normal;padding:12px 2px 10px }
+.webhook-dialog .tab { flex:1 1 auto;padding:12px 2px 10px }
 .webhooks .tab-panel,
 .webhook-dialog .tab-panel { padding:18px 16px }
 .webhooks .detail-status,

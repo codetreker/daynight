@@ -15,7 +15,7 @@ import (
 
 func TestAssistantTaskMigrationOwnsTablesAndIndexes(t *testing.T) {
 	database := isolatedStore(t)
-	for _, table := range []string{"assistant_tasks", "assistant_task_manual_versions", "assistant_task_appendix", "assistant_task_proposals", "assistant_task_items", "assistant_task_records", "assistant_task_events", "assistant_task_inquiries", "assistant_task_claim_operations"} {
+	for _, table := range []string{"assistant_tasks", "assistant_task_manual_versions", "assistant_task_appendix", "assistant_task_proposals", "assistant_task_items", "assistant_task_records", "assistant_task_events", "assistant_task_inquiries", "assistant_task_claim_operations", "assistant_task_inboxes", "assistant_task_inbox_receipts"} {
 		var name *string
 		if err := database.Pool.QueryRow(t.Context(), `SELECT to_regclass($1)::text`, table).Scan(&name); err != nil || name == nil {
 			t.Fatalf("missing assistant task table %s: %v", table, err)
@@ -25,7 +25,7 @@ func TestAssistantTaskMigrationOwnsTablesAndIndexes(t *testing.T) {
 			t.Fatalf("unexpected business constraints on %s: %d %v", table, constraints, err)
 		}
 	}
-	for _, index := range []string{"assistant_tasks_owner_application", "assistant_task_records_page", "assistant_task_events_target_state", "assistant_task_inquiries_state_deadline", "assistant_task_items_open_key"} {
+	for _, index := range []string{"assistant_tasks_owner_application", "assistant_task_records_page", "assistant_task_events_target_state", "assistant_task_inquiries_state_deadline", "assistant_task_items_open_key", "assistant_task_inboxes_live", "assistant_task_inbox_receipts_wake", "assistant_task_inbox_receipts_expiry", "assistant_task_events_inbound_settled"} {
 		var present bool
 		if err := database.Pool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_index WHERE indexrelid=to_regclass($1) AND indisvalid AND indisready)`, index).Scan(&present); err != nil || !present {
 			t.Fatalf("missing usable index %s: %v", index, err)

@@ -33,7 +33,7 @@ export const ProjectRepository = (props: RepositoryEditorProps) => {
         {state.unknown && !state.dialog && <div className="notice warning" role="alert"><p>{m.unknown}</p><button className="button" type="button" onClick={state.reopen}>{m.check}</button></div>}
       </div>
     </div>
-    {state.dialog && <ManagementDialog title={m.confirm} initialFocus="cancel" busy={state.busy} suspended={!props.active || !state.privateAvailable && !state.unknown} onClose={state.close} footer={<>
+    {state.dialog && <ManagementDialog className="project-settings-dialog" title={m.confirm} initialFocus="cancel" busy={state.busy} suspended={!props.active || !state.privateAvailable && !state.unknown} onClose={state.close} footer={<>
       <button className="button" type="button" data-dialog-cancel disabled={state.busy} onClick={state.close}>{state.unknown ? m.close : m.cancel}</button>
       {state.unknown ? <button className="button primary" type="button" disabled={state.reading} onClick={() => { void state.check(); }}>{state.reading ? m.reading : m.check}</button>
         : preview === null ? <button className="button primary" type="button" disabled={state.reading || !state.editable} onClick={() => { void state.inspect(); }}>{m.retryPreview}</button>

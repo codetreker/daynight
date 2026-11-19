@@ -6,7 +6,7 @@ import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { dialogFocusables } from '../task-detail/focus';
 
-export const ManagementDialog = ({ title, children, footer, onClose, busy = false, suspended = false, initialFocus = 'input', closeOnBackdrop = false, preserveFocus = false, typography = false }: {
+export const ManagementDialog = ({ title, children, footer, onClose, busy = false, suspended = false, initialFocus = 'input', closeOnBackdrop = false, preserveFocus = false, className = '' }: {
   readonly title: string;
   readonly children: ReactNode;
   readonly footer: ReactNode;
@@ -16,7 +16,7 @@ export const ManagementDialog = ({ title, children, footer, onClose, busy = fals
   readonly initialFocus?: 'input' | 'cancel';
   readonly closeOnBackdrop?: boolean;
   readonly preserveFocus?: boolean;
-  readonly typography?: boolean;
+  readonly className?: string;
 }) => {
   const { messages: { auth: { management: { common } } } } = useI18n();
   const titleId = useId();
@@ -72,7 +72,7 @@ export const ManagementDialog = ({ title, children, footer, onClose, busy = fals
     };
   }, [suspended, initialFocus, preserveFocus]);
   return createPortal(<div className="auth-modal-backdrop" hidden={suspended} inert={suspended} onClick={(event) => { if (closeOnBackdrop && !busy && event.target === event.currentTarget) onClose(); }}>
-    <section className={`auth-dialog${typography ? " management-typography" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={busy} tabIndex={-1} ref={dialog} onFocusCapture={event => { if (preserveFocus && event.target instanceof HTMLElement) remembered.current = event.target; }}>
+    <section className={`auth-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={busy} tabIndex={-1} ref={dialog} onFocusCapture={event => { if (preserveFocus && event.target instanceof HTMLElement) remembered.current = event.target; }}>
       <header className="dialog-header"><h2 id={titleId}>{title}</h2><AccountRefreshNotice /><button className="close-button" type="button" ref={close} aria-label={common.closeDialog} disabled={busy} onClick={onClose}>×</button></header>
       <div className="dialog-body">{children}</div>
       <footer className="dialog-footer">{footer}</footer>

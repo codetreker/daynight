@@ -58,7 +58,7 @@ export const SecretDialog = ({ kind, secret, onClose, suspended = false, typogra
       value.current.focus(); value.current.select();
     }
   };
-  return <ManagementDialog typography={typography} title={invitation ? m.invitationTitle : m.tokenTitle} suspended={suspended} onClose={close} footer={<>
+  return <ManagementDialog className={typography ? "management-typography" : ""} title={invitation ? m.invitationTitle : m.tokenTitle} suspended={suspended} onClose={close} footer={<>
     {warning ? <><button className="button" type="button" onClick={() => setWarning(false)}>{m.returnSave}</button><button className="button primary" type="button" onClick={onClose}>{m.confirmClose}</button></>
       : <button className="button primary" type="button" onClick={onClose}>{m.savedClose}</button>}
   </>}>

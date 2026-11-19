@@ -74,10 +74,13 @@ func (d *DAO) SaveTask(ctx context.Context, v model.AssistantTask, c store.Assis
 }
 
 func (d *DAO) DeleteTaskContent(ctx context.Context, owner, task string) error {
-	for _, table := range []string{"assistant_task_claim_operations", "assistant_task_inquiries", "assistant_task_events", "assistant_task_records", "assistant_task_items", "assistant_task_proposals", "assistant_task_appendix", "assistant_task_manual_versions"} {
+	for _, table := range []string{"assistant_task_claim_operations", "assistant_task_inbox_receipts", "assistant_task_inquiries", "assistant_task_events", "assistant_task_records", "assistant_task_items", "assistant_task_proposals", "assistant_task_appendix", "assistant_task_manual_versions"} {
 		if err := d.execute(ctx, "delete assistant task content", `DELETE FROM `+table+` WHERE owner_user_id=$1 AND task_id=$2`, owner, task); err != nil {
 			return err
 		}
+	}
+	if err := d.tombstoneInbox(ctx, owner, task); err != nil {
+		return err
 	}
 	return d.execute(ctx, "clear assistant record head", `UPDATE assistant_tasks SET record_last_created_at=NULL,record_last_id=NULL WHERE owner_user_id=$1 AND id=$2`, owner, task)
 }
