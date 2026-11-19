@@ -92,6 +92,62 @@ func TestArchiveResultFailsIfGateWasLostWhileRequestIsLive(t *testing.T) {
 	}
 }
 
+type responseArchivePermit struct {
+	ctx    context.Context
+	closed int
+}
+
+func (p *responseArchivePermit) GateContext(context.Context) (context.Context, context.CancelFunc) {
+	return p.ctx, func() {}
+}
+
+func (p *responseArchivePermit) Close() error {
+	p.closed++
+	return context.Cause(p.ctx)
+}
+
+type archiveLeaseWriter struct {
+	*httptest.ResponseRecorder
+	loseLease   context.CancelCauseFunc
+	deadline    chan struct{}
+	interrupted bool
+}
+
+func (w *archiveLeaseWriter) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() && !deadline.After(time.Now()) {
+		close(w.deadline)
+	}
+	return nil
+}
+
+func (w *archiveLeaseWriter) Write([]byte) (int, error) {
+	w.loseLease(filestorage.ErrGateLost)
+	select {
+	case <-w.deadline:
+		w.interrupted = true
+	case <-time.After(2 * time.Second):
+	}
+	return 0, context.DeadlineExceeded
+}
+
+func TestArchiveDownloadInterruptsWriteWhenWrappedLeaseIsLost(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/archive/content", nil)
+	ctx, lose := context.WithCancelCause(r.Context())
+	defer lose(context.Canceled)
+	permit := &responseArchivePermit{ctx: ctx}
+	content := archiveContent{Data: []byte(`{"archive":{}}`), Closer: permit}
+	w := &archiveLeaseWriter{ResponseRecorder: httptest.NewRecorder(), loseLease: lose, deadline: make(chan struct{})}
+	routes := NewRoutes(nil, nil, testLogger())
+	abort := func() (value any) {
+		defer func() { value = recover() }()
+		routes.sendArchive(w, r, content.Data, time.Minute, content)
+		return nil
+	}()
+	if abort != http.ErrAbortHandler || !w.interrupted || permit.closed != 1 || r.Context().Err() != nil {
+		t.Fatalf("archive after lease loss: abort=%v interrupted=%t closes=%d requestErr=%v", abort, w.interrupted, permit.closed, r.Context().Err())
+	}
+}
+
 type archiveBrokenReader struct{}
 
 func (archiveBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
