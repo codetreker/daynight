@@ -20,6 +20,15 @@ receipt reads retain their independent purposes. Existing protocol entry points
 use `history_unavailable` with an expiration explanation; versioned directory
 consumers can distinguish the retained `expired_at` fact.
 
+The cleanup-enablement migration gives existing unexpired ready legacy archives
+a one-time seven-day grace floor, including archives published after retention
+metadata was introduced. A retention migration may run long before cleanup is
+enabled, so its earlier grace deadline cannot provide this guarantee. Later
+deadlines and first publication facts survive; changed grace invalidates cached
+expiration. Schema3's persisted ledger policy distinguishes `task_body` from
+legacy content; the schema number alone does not. Expiration tombstones are
+never revived, and migration replay does not renew the grace period.
+
 Reclamation starts only after confirmed expiration commit. It acquires the
 original owner's archive residency permit and joins each exact media lease
 gate outside database transactions. A busy permit leaves the durable intent for
@@ -34,6 +43,11 @@ expired archives still requiring cleanup. Already-expired intents remain
 eligible after their Task or Project is soft deleted.
 
 ## Alternatives
+
+**Keep the retention migration's original grace deadline.** A delayed upgrade
+could start cleanup after that deadline and immediately remove legacy archives.
+The one-time enablement floor ties the reading period to the first version that
+can actually reclaim them.
 
 **Delete the entire Session resource directory.** A resource can retain an
 independent operation or native-resume reference. Namespace ownership alone
