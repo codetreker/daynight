@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
@@ -208,7 +209,7 @@ func TestArchiveCleanupMediaGateAndRestartPreserveIndependentBytes(t *testing.T)
 	sharedPath, _ := core.BlobAddress(target.ProjectID, target.OwnerID, target.SessionID, shared)
 	cleanupPut(t, f, sessionresource.Bucket, exclusivePath, "exclusive")
 	cleanupPut(t, f, sessionresource.Bucket, sharedPath, "shared")
-	cleanupPut(t, f, "attachments", "independent/task.txt", "task attachment")
+	cleanupPut(t, f, attachment.Bucket, "independent/task.txt", "task attachment")
 	botNamespace, _ := sessionarchive.NewNamespace(sessionarchive.Users, target.OwnerID, uuid.NewString())
 	botPath := botNamespace.Directory() + "/cache"
 	cleanupPut(t, f, sessionarchive.Bucket, botPath, "bot cache")
@@ -282,7 +283,7 @@ func TestArchiveCleanupMediaGateAndRestartPreserveIndependentBytes(t *testing.T)
 	cleanupAbsent(t, f, sessionarchive.Bucket, path)
 	cleanupAbsent(t, f, sessionresource.Bucket, exclusivePath)
 	cleanupContent(t, f, sessionresource.Bucket, sharedPath, "shared")
-	cleanupContent(t, f, "attachments", "independent/task.txt", "task attachment")
+	cleanupContent(t, f, attachment.Bucket, "independent/task.txt", "task attachment")
 	cleanupContent(t, f, sessionarchive.Bucket, botPath, "bot cache")
 }
 
