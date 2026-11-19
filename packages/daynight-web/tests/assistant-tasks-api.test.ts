@@ -96,6 +96,17 @@ describe('assistant task response contracts', () => {
     { trigger: { kind: 'daily', time: '24:00', timeZone: 'UTC' } }, { trigger: { kind: 'daily', time: '12:00', timeZone: 'Local' } },
     { trigger: { kind: 'daily', time: '12:00', timeZone: 'Bad/Zone' } }, { unknown: true }, { updatedAt: '2026-02-30T12:00:00Z' },
   ])('refuses malformed or contradictory tasks %#', patch => expect(() => api.parseAssistantTask({ ...task(), ...patch }, BOT_USER)).toThrow());
+  it('reads 30-day metrics and refuses contradictory closure timing', async () => {
+    const metrics = { observedAt: BOT_TIME, windowStart: '2026-01-01T00:00:00Z', windowEnd: BOT_TIME, actionCount: 4, outcomes: { effective: 2, ineffective: 1, inconclusive: 0 }, escalationCount: 1, resultUnknownCount: 0, closureCount: 3, untimedClosureCount: 1, averageResolutionMs: 90_000, recurringItemCount: 1 };
+    const fetch = vi.fn().mockResolvedValueOnce(botResponse(metrics));
+    vi.stubGlobal('fetch', fetch);
+    expect(await api.getAssistantTaskMetrics(taskId, signal(), admission())).toEqual(metrics);
+    expect(String(fetch.mock.calls[0]![0])).toBe(`/api/v1/assistant-tasks/${taskId}/metrics`);
+    const untimed = { ...metrics, closureCount: 0, untimedClosureCount: 0, averageResolutionMs: null };
+    expect(api.parseAssistantTaskMetrics(untimed)).toEqual(untimed);
+    for (const patch of [{ untimedClosureCount: 4 }, { averageResolutionMs: null }, { untimedClosureCount: 3 }, { windowEnd: '2026-01-02T00:00:00Z' }, { windowStart: '2099-01-01T00:00:00Z' }, { actionCount: -1 }, { actionCount: 1.5 }, { outcomes: { effective: 1, ineffective: 0 } }, { extra: 1 }])
+      expect(() => api.parseAssistantTaskMetrics({ ...metrics, ...patch })).toThrow();
+  });
   it('accepts outcome records only with their evaluation and refuses evaluation keys on other kinds', () => {
     const outcome = { ...record(), kind: 'outcome', outcome: 'effective', actionRecordId: botId(85) };
     expect(api.parseAssistantTaskRecord(outcome, taskId)).toEqual(outcome);

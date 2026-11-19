@@ -21,6 +21,9 @@ const en = {
   kind: 'Record type', author: 'Author', allAuthors: 'All authors', system: 'System', unknownAssistant: 'Assistant {id}',
   fact: 'Fact', guess: 'Assessment', action: 'Action', unknown: 'Unknown', question: 'Question', answer: 'Answer', note: 'Note',
   outcome: 'Outcome', effective: 'Effective', ineffective: 'Ineffective', inconclusive: 'Inconclusive', evaluatedAction: 'Evaluated action',
+  metrics: 'Last 30 days', metricsUpdated: 'Updated {time}', metricsError: 'Could not load the 30-day metrics.',
+  actions: 'Actions', escalations: 'Escalations', resultsUnknown: 'Results unknown', closures: 'Closures',
+  averageResolution: 'Average resolution', recurringItems: 'Recurring items', untimedClosures: '{count} closures without a recorded open time are excluded from the average.',
   recordMissing: 'The referenced record was not found.', references: 'References', resourcesUnavailable: 'Resource unavailable', table: 'Table',
 };
 const zh: typeof en = {
@@ -44,6 +47,9 @@ const zh: typeof en = {
   kind: '记录类型', author: '作者', allAuthors: '全部作者', system: '系统', unknownAssistant: '助手 {id}',
   fact: '事实', guess: '推测', action: '动作', unknown: '未知', question: '提问', answer: '回答', note: '注意事项',
   outcome: '结果', effective: '有效', ineffective: '无效', inconclusive: '无法判断', evaluatedAction: '评估的动作',
+  metrics: '最近 30 天', metricsUpdated: '更新于 {time}', metricsError: '无法读取最近 30 天的指标。',
+  actions: '动作', escalations: '升级', resultsUnknown: '结果未知', closures: '关闭次数',
+  averageResolution: '平均解决时长', recurringItems: '复发事项', untimedClosures: '有 {count} 次关闭没有记录打开时间，未计入平均时长。',
   recordMissing: '未找到引用的工作记录。', references: '引用', resourcesUnavailable: '资源不可用', table: '表格',
 };
 export const useAssistantTaskContentMessages = () => {
