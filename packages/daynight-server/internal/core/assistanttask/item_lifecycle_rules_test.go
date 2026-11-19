@@ -92,7 +92,7 @@ func TestItemWritesTrackOpenPeriodsAndRecordClosures(t *testing.T) {
 				t.Fatalf("want one retrospective, got %#v", events)
 			}
 			event := events[0]
-			if !strictID(event.ID) || event.OwnerUserID != ownerID || event.TaskID != taskID || event.TargetBotID != botID || event.Type != "retrospective" || event.Attention || event.State != "pending" || !event.CreatedAt.Equal(epoch) || string(event.Payload) != `{"episode":`+strconv.FormatInt(input.Episode, 10)+`,"itemId":"`+entryID+`","reason":"item_closed"}` {
+			if !strictID(event.ID) || event.OwnerUserID != ownerID || event.TaskID != taskID || event.TargetBotID != botID || event.Type != "retrospective" || event.Attention || event.State != "pending" || !event.CreatedAt.Equal(epoch) || string(event.Payload) != `{"episode":"`+strconv.FormatInt(input.Episode, 10)+`","itemId":"`+entryID+`","reason":"item_closed"}` {
 				t.Fatalf("retrospective: %#v %s", event, event.Payload)
 			}
 			got := closures[0]

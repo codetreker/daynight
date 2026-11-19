@@ -221,6 +221,13 @@ describe("assistant task application JSON", () => {
     await expect(setup(fetch).getItem(taskId, operationId)).rejects.toMatchObject({ code: "invalid_response", outcomeUnconfirmed: false });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it("reads item retrospective events whose episode exceeds the JavaScript safe integer range", async () => {
+    const retrospective = { ...event, type: "retrospective", attention: false, payload: { reason: "item_closed", itemId: operationId, episode: "9007199254740993" } };
+    const value = { items: [retrospective], nextCursor: null, observedAt: now };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(value));
+    const page = await setup(fetch).listEvents(taskId);
+    expect(page.items).toEqual([retrospective]);
+  });
   it("rejects numeric application bigint inputs at the parser and preserves string resource versions", () => {
     expect(() => parseAssistantTaskItem({ ...item, appState: { version: 3n } }, taskId)).toThrow(ProtocolError);
     expect(() => parseAssistantTaskItem({ ...item, appState: { count: Number.MAX_SAFE_INTEGER + 1 } }, taskId)).toThrow(ProtocolError);
