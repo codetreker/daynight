@@ -35,7 +35,7 @@
 }
 
 .native-select[data-density][data-mode="popup"] > .native-select__control {
-  block-size: var(--native-select-height);
+  block-size: max(var(--native-select-height), calc(1.5 * var(--native-select-font-size) + 2px));
   padding-block: 0;
   padding-inline-end: 30px;
   text-overflow: ellipsis;
