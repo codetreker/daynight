@@ -292,7 +292,7 @@ func (e *githubRepositoryIdentityMigrationError) Error() string {
 }
 func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
 
-//go:embed schema/migrations/094_assistant_task_outcomes.sql
+//go:embed schema/migrations/095_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
 type migration struct {
@@ -394,7 +394,7 @@ var schemaMigrations = []migration{
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
-	{version: 94, sql: assistantTaskOutcomesSQL},
+	{version: 95, sql: assistantTaskOutcomesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
