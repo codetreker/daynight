@@ -1,4 +1,4 @@
--- Schema snapshot version: 94
+-- Schema snapshot version: 96
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -585,12 +585,6 @@ CREATE TABLE "project_github_coverage" (
     CONSTRAINT "project_github_coverage_started_at_check" CHECK (("started_at" = "date_trunc"('second'::"text", "started_at")))
 );
 
-CREATE TABLE "project_github_repositories" (
-    "project_id" "uuid" NOT NULL,
-    "repository_id" bigint NOT NULL,
-    "full_name" "text" NOT NULL
-);
-
 CREATE TABLE "project_github_pending_prs" (
     "project_id" "uuid" NOT NULL,
     "number" bigint NOT NULL,
@@ -599,6 +593,12 @@ CREATE TABLE "project_github_pending_prs" (
     "delivery_id" "text" NOT NULL,
     "received_at" timestamp with time zone NOT NULL,
     "next_attempt_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "project_github_repositories" (
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "full_name" "text" NOT NULL
 );
 
 CREATE SEQUENCE "project_grant_versions"
@@ -1459,6 +1459,9 @@ CREATE TABLE "webhook_events" (
     "fact_sha256" "bytea" NOT NULL,
     "original_fact_bytes" integer NOT NULL,
     "fact_removed_at" timestamp with time zone,
+    "actor_kind" "text",
+    "actor_user_id" "uuid",
+    "actor_bot_id" "uuid",
     CONSTRAINT "webhook_events_check" CHECK (("source" = ('urn:daynight:project:'::"text" || ("project_id")::"text"))),
     CONSTRAINT "webhook_events_check1" CHECK (((("event_type" = 'task.thread_posted'::"text") AND ("task_version" IS NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NOT NULL) AND ("subject" = ((('tasks/'::"text" || ("task_id")::"text") || '/thread/'::"text") || ("message_id")::"text"))) OR (("event_type" = 'task.step_updated'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND (("step_id" >= 0) AND ("step_id" <= '4294967295'::bigint)) AND ("step_id" IS NOT NULL) AND ("message_id" IS NULL) AND ("subject" = (('tasks/'::"text" || ("task_id")::"text") || '/steps'::"text"))) OR (("event_type" = 'task.deleted'::"text") AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NOT NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))) OR (("event_type" = ANY (ARRAY['task.created'::"text", 'task.status_changed'::"text", 'task.paused'::"text"])) AND ("task_version" > 0) AND ("task_version" IS NOT NULL) AND ("task_deleted_at" IS NULL) AND ("step_id" IS NULL) AND ("message_id" IS NULL) AND ("subject" = ('tasks/'::"text" || ("task_id")::"text"))))),
     CONSTRAINT "webhook_events_check2" CHECK (((("fact_bytes" IS NOT NULL) AND ("fact_removed_at" IS NULL) AND ("octet_length"("fact_bytes") = "original_fact_bytes") AND ("sha256"("fact_bytes") = "fact_sha256")) OR (("fact_bytes" IS NULL) AND ("fact_removed_at" IS NOT NULL)))),
@@ -1607,6 +1610,8 @@ CREATE TABLE "workers" (
     "archive_sessions" boolean DEFAULT true NOT NULL,
     "alias_value" "text",
     "alias_version" bigint DEFAULT 1 NOT NULL,
+    "review_enabled" boolean DEFAULT false NOT NULL,
+    "review_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "worker_configuration_complete" CHECK (((("configuration_revision" IS NULL) AND ("configuration_updated_at" IS NULL) AND ("desired_configuration" IS NULL)) OR (("configuration_revision" IS NOT NULL) AND ("configuration_updated_at" IS NOT NULL) AND ("desired_configuration" IS NOT NULL) AND ("jsonb_typeof"("desired_configuration") = 'object'::"text")))),
     CONSTRAINT "worker_configuration_observation_object" CHECK ((("configuration_observation" IS NULL) OR ("jsonb_typeof"("configuration_observation") = 'object'::"text"))),
     CONSTRAINT "worker_configuration_observation_revision_nonnegative" CHECK (("configuration_observation_revision" >= 0)),
@@ -1762,14 +1767,14 @@ ALTER TABLE ONLY "private_upload_chunks"
 ALTER TABLE ONLY "project_github_coverage"
     ADD CONSTRAINT "project_github_coverage_pkey" PRIMARY KEY ("project_id", "repository_id", "started_at");
 
-ALTER TABLE ONLY "project_github_repositories"
-    ADD CONSTRAINT "project_github_repositories_pkey" PRIMARY KEY ("project_id", "repository_id");
-
 ALTER TABLE ONLY "project_github_pending_prs"
     ADD CONSTRAINT "project_github_pending_prs_pkey" PRIMARY KEY ("project_id", "number");
 
 ALTER TABLE ONLY "project_github"
     ADD CONSTRAINT "project_github_pkey" PRIMARY KEY ("project_id");
+
+ALTER TABLE ONLY "project_github_repositories"
+    ADD CONSTRAINT "project_github_repositories_pkey" PRIMARY KEY ("project_id", "repository_id");
 
 ALTER TABLE ONLY "project_grants"
     ADD CONSTRAINT "project_grants_pkey" PRIMARY KEY ("project_id", "user_id");

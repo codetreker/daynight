@@ -282,8 +282,8 @@ var sessionArchiveCleanupSQL string
 //go:embed schema/migrations/093_github_repository_sources.sql
 var githubRepositorySourcesSQL string
 
-//go:embed schema/migrations/094_assistant_task_inboxes.sql
-var assistantTaskInboxesSQL string
+//go:embed schema/migrations/094_worker_review_participation.sql
+var workerReviewParticipationSQL string
 
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
@@ -294,6 +294,12 @@ func (e *githubRepositoryIdentityMigrationError) Error() string {
 	return fmt.Sprintf("migration 93: missing trustworthy GitHub repository identity for project %s", e.projectID)
 }
 func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
+
+//go:embed schema/migrations/095_webhook_event_actor.sql
+var webhookEventActorSQL string
+
+//go:embed schema/migrations/096_assistant_task_inboxes.sql
+var assistantTaskInboxesSQL string
 
 type migration struct {
 	version         int64
@@ -394,7 +400,9 @@ var schemaMigrations = []migration{
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
-	{version: 94, sql: assistantTaskInboxesSQL},
+	{version: 94, sql: workerReviewParticipationSQL},
+	{version: 95, sql: webhookEventActorSQL},
+	{version: 96, sql: assistantTaskInboxesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

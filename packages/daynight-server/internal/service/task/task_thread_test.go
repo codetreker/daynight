@@ -16,6 +16,7 @@ import (
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
@@ -750,7 +751,10 @@ func TestThreadOAuthCredentialAdmission(t *testing.T) {
 		}
 		return f.call(ctx, "advance")
 	}
-	capture := taskDeletionCapture(func(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+	capture := taskDeletionCapture(func(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
+		if actor != wm.UserActor(f.principal.UserID) {
+			t.Errorf("OAuth capture actor: %+v", actor)
+		}
 		if dao != f.capture || len(facts) != 1 || facts[0].Type != protocol.ThreadPosted || facts[0].ProjectID != f.project.ID || facts[0].TaskID != f.task.ID || facts[0].MessageID != messageID {
 			t.Errorf("OAuth capture: %+v", facts)
 		}

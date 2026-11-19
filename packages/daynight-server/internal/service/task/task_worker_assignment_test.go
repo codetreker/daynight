@@ -9,18 +9,19 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 type workerCapturerMock struct {
 	taskMockBase
-	CaptureBatchFn func(context.Context, store.WebhookCaptureDAO, []protocol.Fact) error
+	CaptureBatchFn func(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error
 }
 
-func (capture *workerCapturerMock) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (capture *workerCapturerMock) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
 	capture.need("CaptureBatch", capture.CaptureBatchFn != nil)
-	return capture.CaptureBatchFn(ctx, dao, facts)
+	return capture.CaptureBatchFn(ctx, dao, actor, facts)
 }
 
 type workerWriteMock struct {
@@ -171,7 +172,7 @@ func (fixture *workerWriteMock) ExpectUpdate(values store.TaskWrite, returned mo
 func (fixture *workerWriteMock) ExpectCapture(facts []protocol.Fact) {
 	fixture.t.Helper()
 	calls := 0
-	fixture.Capture.CaptureBatchFn = func(ctx context.Context, dao store.WebhookCaptureDAO, actual []protocol.Fact) error {
+	fixture.Capture.CaptureBatchFn = func(ctx context.Context, dao store.WebhookCaptureDAO, _ wm.Actor, actual []protocol.Fact) error {
 		calls++
 		if ctx != fixture.Context || dao != fixture.CaptureDAO || calls != 1 || !reflect.DeepEqual(actual, facts) {
 			fixture.t.Fatalf("worker capture: got %#v, want %#v", actual, facts)
