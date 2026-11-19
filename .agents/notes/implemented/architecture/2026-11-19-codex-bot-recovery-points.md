@@ -20,7 +20,13 @@ It names a new native thread `Daynight assistant` to materialize the otherwise
 lazy empty rollout without submitting a conversation turn. Resume preserves the
 original name.
 
-Before native mutations the adapter marks a durable manifest dirty. After a
+Before native mutations the adapter marks a durable manifest dirty. A manifest
+enters the in-memory durable cache only after publication completes, including
+directory sync on platforms that support it. A publication failure freezes that
+recovery instance: later admission and protection calls fail instead of treating
+an unconfirmed dirty value as a durable barrier. The manifest may already have
+been replaced, so failure neither claims rollback nor deletes snapshots whose
+ownership is uncertain. After a
 terminal turn, including compact or confirmed interruption, it copies and validates the complete rollout,
 its original identity and terminal turn record, then syncs the immutable snapshot
 and atomically publishes its digest and protected turn. New dispatch waits for

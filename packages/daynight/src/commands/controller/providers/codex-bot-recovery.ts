@@ -58,6 +58,7 @@ const validateDependencies = (entry: Record<string, unknown>): void => {
 /** The owner serializes calls under its Controller storage ownership and proves the old writer stopped before prepare. */
 export class CodexBotRecovery {
   private manifest: Manifest | undefined;
+  private publicationFailure: CodexBotRecoveryError | undefined;
   private readonly manifestPath: string;
   get protectedThroughTurn(): string | null { return this.manifest?.point?.protectedThroughTurn ?? null; }
   constructor(private readonly options: CodexBotRecoveryOptions) {
@@ -96,21 +97,37 @@ export class CodexBotRecovery {
   }
 
   private async publish(value: Manifest): Promise<void> {
-    await this.directory();
-    const temporary = path.join(this.options.directory, `manifest-${randomUUID()}.tmp`);
-    const file = await open(temporary, "wx", 0o600);
+    this.assertPublicationConfirmed();
     try {
-      try { await file.writeFile(`${JSON.stringify(value)}\n`); await file.sync(); } finally { await file.close(); }
-      await rename(temporary, this.manifestPath);
+      await this.directory();
+      const temporary = path.join(this.options.directory, `manifest-${randomUUID()}.tmp`);
+      const file = await open(temporary, "wx", 0o600);
+      try {
+        try { await file.writeFile(`${JSON.stringify(value)}\n`); await file.sync(); } finally { await file.close(); }
+        await rename(temporary, this.manifestPath);
+        await this.syncDirectory();
+      } finally { await unlink(temporary).catch(error => { if (!absent(error)) throw error; }); }
       this.manifest = value;
-      if (process.platform !== "win32") {
-        const directory = await open(this.options.directory, "r");
-        try { await directory.sync(); } finally { await directory.close(); }
-      }
-    } finally { await unlink(temporary).catch(error => { if (!absent(error)) throw error; }); }
+    } catch (cause) {
+      // Replacement can be visible without a confirmed durability barrier. An
+      // old cached dirty value or a fresh read cannot authorize native dispatch.
+      this.publicationFailure = new CodexBotRecoveryError("outcome_unknown", "Codex recovery manifest publication is unconfirmed; this execution cannot admit another native operation.", { cause });
+      throw cause;
+    }
+  }
+
+  private assertPublicationConfirmed(): void {
+    if (this.publicationFailure) throw this.publicationFailure;
+  }
+
+  private async syncDirectory(): Promise<void> {
+    if (process.platform === "win32") return;
+    const directory = await open(this.options.directory, "r");
+    try { await directory.sync(); } finally { await directory.close(); }
   }
 
   async markDirty(): Promise<void> {
+    this.assertPublicationConfirmed();
     this.manifest ??= await this.load();
     if (this.manifest?.dirty) return;
     await this.publish(this.manifest ? { ...this.manifest, dirty: true } : {
@@ -121,6 +138,7 @@ export class CodexBotRecovery {
 
   /** A snapshot is immutable. Native resume receives a separate active copy. */
   async prepare(nativeSessionId: string | null, providerVersion: string): Promise<string | undefined> {
+    this.assertPublicationConfirmed();
     version(providerVersion);
     this.manifest = await this.load();
     if (this.manifest?.dirty) throw new CodexBotRecoveryError("outcome_unknown", "The original Codex operation has no verified recovery point; do not replay it.");
@@ -147,6 +165,7 @@ export class CodexBotRecovery {
   }
 
   async protect(input: { path: string; nativeSessionId: string; providerVersion: string; protectedThroughTurn: string | null; settingsAfter?: number }): Promise<void> {
+    this.assertPublicationConfirmed();
     version(input.providerVersion);
     if (!uuid(input.nativeSessionId)) throw invalid("The native Codex Session ID is invalid.");
     if (input.settingsAfter !== undefined && (!Number.isSafeInteger(input.settingsAfter) || input.settingsAfter < 0)) throw invalid("The Codex settings checkpoint offset is invalid.");

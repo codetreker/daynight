@@ -56,6 +56,8 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 启动、resume、输入、steer、compact 和设置变更在原生派发前持久标记 `dirty`。完成轮次后暂停新派发，以流式复制检查完整 UTF-8/JSONL、原线程与 cwd、CLI 版本、目标 `task_complete` 或已确认中断的 `turn_aborted` 及复制前后的文件身份和大小。半写或尚未落盘的完成记录在有界时间内等待；非法身份或格式立即失败。副本同步到磁盘后，以原子 manifest 发布摘要、字节数、`recoveryFormatVersion=1` 与 `protectedThroughTurn`。确认空闲设置还须覆盖本次派发之后的 `thread_settings_applied`；RPC 成功本身不替代落盘证据。原生设置确认与恢复保护是两个独立结果：已确认的设置不因副本发布失败而回滚；保护失败须独立上报致命错误并停止 Provider，保留 dirty 屏障，不能被先前的设置成功回执掩盖。只有空线程使用 null 水位。
 
+manifest 完成发布（包括支持平台上的目录同步）后才进入内存中的持久状态缓存。发布失败会冻结该恢复实例，后续派发前标记、恢复和保护操作均拒绝，不能将已可见但未确认持久化的 `dirty` 当作下次派发的屏障。失败时磁盘 manifest 可能已被替换，因此不宣称回滚，也不删除归属尚未确认的快照。
+
 恢复先要求原执行停证与 Controller 存储归属，再核对完整点及相同原生 ID。适配器将不可变快照复制成独立活动文件，向 `thread/resume` 传原 ID 和活动路径，并核对返回 ID、真实 cwd 与实际路径。恢复本身也追加原生材料，不能直接改写唯一快照。结果未知或仍为 `dirty` 时报告 `outcome_unknown`，禁止自动退回旧点或重发旧输入。恢复成功后继续保护活动文件；已发布新点后释放前一点，旧活动文件仅在原 writer 已停止的恢复阶段释放。
 
 Bot 删除在停证之后将同一派生恢复目录纳入既有精确删除计划，保留删除回执和共享 native home。该机制不单独启用完整 `botRecoveryVersion=1`，不证明跨版本、跨机、独立 Worker 接管或所有 Provider 功能恢复。历史越长，复制成本越高；单记录超过 32 MiB 明确失败，不截断恢复材料。取舍见[恢复点决策](../../.agents/notes/implemented/architecture/2026-11-19-codex-bot-recovery-points.md)。

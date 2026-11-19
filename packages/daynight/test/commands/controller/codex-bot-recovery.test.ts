@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, appendFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -245,4 +245,50 @@ test("capture preserves complete UTF-8 records spanning multiple IO chunks", asy
   await storage.protect(input());
   const active = await new CodexBotRecovery(options).prepare(nativeSessionId, providerVersion);
   expect(await readFile(active!)).toEqual(await readFile(source));
+});
+
+test.each(["initial", "existing"])("an unconfirmed %s dirty publication cannot admit another operation through cached or reloaded state", async mode => {
+  const storage = mode === "initial" ? new CodexBotRecovery(options) : await protect();
+  if (mode === "initial") await storage.prepare(null, providerVersion);
+  const failure = Object.assign(new Error("Directory sync failed"), { code: "EIO" });
+  // Inject the durability failure after real file replacement on every OS.
+  const barrier = vi.spyOn(storage as unknown as { syncDirectory(): Promise<void> }, "syncDirectory").mockImplementationOnce(async () => {
+    expect((await manifest()).dirty).toBe(true);
+    throw failure;
+  });
+  try {
+    await expect(storage.markDirty()).rejects.toBe(failure);
+    const observed = await readFile(join(options.directory, "manifest.json"), "utf8");
+    await expect(storage.markDirty()).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    await expect(storage.prepare(mode === "initial" ? null : nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    await expect(storage.protect(input())).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    expect(await readFile(join(options.directory, "manifest.json"), "utf8")).toBe(observed);
+    expect(barrier).toHaveBeenCalledTimes(1);
+    expect((await readdir(options.directory)).filter(name => name.endsWith(".tmp"))).toEqual([]);
+  } finally { barrier.mockRestore(); }
+});
+
+test("a failed clean publication preserves the prior durable watermark and both possibly owned snapshots", async () => {
+  const storage = await protect(), previous = await manifest();
+  await storage.markDirty();
+  await writeFile(source, rollout("next-turn"));
+  const failure = Object.assign(new Error("Directory close failed after sync"), { code: "EIO" });
+  const barrier = vi.spyOn(storage as unknown as { syncDirectory(): Promise<void> }, "syncDirectory").mockImplementationOnce(async () => {
+    expect(await manifest()).toMatchObject({ dirty: false, point: { protectedThroughTurn: "next-turn" } });
+    throw failure;
+  });
+  try {
+    await expect(storage.protect(input("next-turn"))).rejects.toBe(failure);
+    const observed = await manifest();
+    expect(storage.protectedThroughTurn).toBe(turn);
+    expect(observed.point.file).not.toBe(previous.point.file);
+    expect(await readFile(join(options.directory, previous.point.file), "utf8")).toBe(rollout());
+    expect(await readFile(join(options.directory, observed.point.file), "utf8")).toBe(rollout("next-turn"));
+    await expect(storage.markDirty()).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    await expect(storage.prepare(nativeSessionId, providerVersion)).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    await expect(storage.protect(input("next-turn"))).rejects.toMatchObject({ code: "outcome_unknown", cause: failure });
+    expect(await manifest()).toEqual(observed);
+    expect((await readdir(options.directory)).filter(name => name.startsWith("snapshot-"))).toHaveLength(2);
+    expect(barrier).toHaveBeenCalledTimes(1);
+  } finally { barrier.mockRestore(); }
 });
