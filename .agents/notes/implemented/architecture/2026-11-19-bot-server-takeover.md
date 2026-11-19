@@ -28,6 +28,11 @@ management DTO keep their original Worker binding so strict existing clients
 continue to read internally consistent frozen configuration.
 Hosting generation is distinct from Controller execution generation. The latter
 advances only through its existing previous-generation and stop-proof rules.
+Generation-changing recovery entry points also run the existing lifecycle-managed
+media lease recovery before opening the grant transaction. Orphaned leases must
+not prevent active history retirement after a crash; a busy storage gate preserves
+an active lease. Cleanup failures prevent the grant, and database scopes are
+released before filesystem gates are acquired.
 
 Browser permission projection and command admission require the durable connection
 lease to remain valid. A same-fence relay cache may retain readable content after

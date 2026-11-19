@@ -86,6 +86,8 @@ Worker 保存完整冻结配置并使用它核对登记请求与执行身份。�
 
 `report` 包含 `hostingGeneration` 和原 `report` 对象，先检查恢复证明、当前 Worker 与承载代次，再执行既有版本、fence、native ID 和 ready 同步检查。新恢复接口不参与普通 Task claim 或助手业务 claim 的流转。Worker 目录发现、独占锁、旧进程停证以及真实 Provider resume 仍由对应模块验收；服务端接口存在不自动启用这些能力。
 
+携带 `previousGeneration` 的 `TakeoverBot` 和 `GrantBotRecovery` 在 grant 事务开始前，先经 `service/session` 的既有生命周期包装执行媒体租约恢复。存储 gate 已释放的孤儿租约会被清理，避免崩溃残留阻止 active history 退役；仍被占用的 gate 保留真实活动租约。清理错误阻止 grant，等待文件系统 gate 时不持有数据库 scope。未推进执行代次的恢复授权不增加这一步。
+
 ## 登记与恢复事务
 
 Session 的 `RegisterBot` 用例 验证 PAT、Bot owner、绑定 Worker 和请求结构，按 Bot → Session 顺序取得锁。首次登记要求当前版本与请求相等、角色和 Session 尚未绑定、输入 configuration 与持久配置一致，并要求独立 registration 使用 `initialInput=none` 和相同 Provider。角色全文、revision、digest 随请求提交；服务端校验全文及摘要，但不拥有角色模板。

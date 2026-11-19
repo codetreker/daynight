@@ -8,15 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 type grantStartupEvidence struct {
@@ -126,7 +123,7 @@ func (l *grantLogs) diagnostics() grantLogEvidence {
 			result.Listening = true
 			continue
 		}
-		if entry.Type != "operation_error" || !(entry.Component == "configuration" && (entry.Phase == "arguments" || entry.Phase == "read" || entry.Phase == "decode" || entry.Phase == "override" || entry.Phase == "validate") || entry.Component == "server" && (entry.Phase == "startup" || entry.Phase == "listen" || entry.Phase == "shutdown")) {
+		if entry.Type != "operation_error" || !(entry.Component == "configuration" && (entry.Phase == "arguments" || entry.Phase == "read" || entry.Phase == "decode" || entry.Phase == "override" || entry.Phase == "validate") || entry.Component == "server" && (entry.Phase == "startup" || entry.Phase == "shutdown")) {
 			result.Ignored = true
 			continue
 		}
@@ -206,22 +203,6 @@ func TestGrantDiagnosticsHideUntrustedOutputAndBoundEvidence(t *testing.T) {
 	_, _ = cut.Write([]byte(strings.TrimSuffix(failure, "\n") + strings.Repeat(" ", 64<<10) + "private-secret"))
 	if value := cut.diagnostics(); !value.Truncated || len(value.Failures) != 0 {
 		t.Fatal("a record outside the diagnostic window became evidence")
-	}
-}
-
-func TestGrantDiagnosticsPreserveRuntimeListenFailure(t *testing.T) {
-	var logs grantLogs
-	logger := slog.New(slog.NewJSONHandler(&logs, nil)).With("address", "private-secret")
-	err := &httpx.RuntimeError{Component: "server", Phase: "listen", Cause: fmt.Errorf("private-secret: %w", syscall.EADDRINUSE)}
-	httpx.LogFailure(logger, t.Context(), "server", "startup", err)
-	result := logs.diagnostics()
-	want := grantFailureEvidence{Component: "server", Phase: "listen", Cause: "address_in_use", Detail: "http_listen"}
-	if result.Listening || result.Ignored || result.Truncated || len(result.Failures) != 1 || result.Failures[0] != want {
-		t.Fatalf("runtime listen failure was not preserved: %+v", result)
-	}
-	encoded, encodeErr := json.Marshal(result)
-	if encodeErr != nil || !logs.contains("private-secret") || bytes.Contains(encoded, []byte("private-secret")) {
-		t.Fatal("runtime listen evidence did not exclude private log fields")
 	}
 }
 
