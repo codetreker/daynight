@@ -13,7 +13,11 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell and team, GitHub integration, pull request, and Webhook interfaces use the semantic roles at all viewport widths. Touch fields use a shared minimum that respects larger browser defaults.
+baseline. The shared shell, selection controls, task filters, teams, GitHub
+integration, pull requests, and Webhooks use the semantic roles at all viewport
+widths. Selection text retains the existing touch conditions and a 16 CSS px
+minimum; count badges use the metadata role. Touch fields use a shared minimum
+that respects larger browser defaults.
 The [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses
 and sizes. Fixed geometry that depended on the former 14px root is independent
 of that root; text-related spacing remains relative. The earlier

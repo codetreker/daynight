@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AssistantTaskPendingStrip } from '../src/features/bots/AssistantTaskPendingStrip';
 import { AssistantTaskDetail } from '../src/features/bots/AssistantTaskDetail';
@@ -9,6 +9,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botDefinition, botId, botResponse, botError } from './helpers/bots';
 import type { AssistantTask } from '../src/api/assistant-tasks';
 import { invalidateAuthRequests } from '../src/api/client';
+import { assistantTaskUrl } from '../src/features/bots/assistant-task-data';
 
 const taskId = botId(80), openItem = botId(81), closedItem = botId(82), escalationId = botId(83);
 const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Coordination', purpose: '', scope: '', application: '', kind: 'once', state: 'active', takeover: 'manual', trigger: null, version: '7', manualVersion: '1', claimGeneration: '1', claimState: 'active', holderBotId: botId(1), credentialOperationId: botId(90), claimedAt: BOT_TIME, renewedAt: BOT_TIME, leaseUntil: '2099-01-01T00:00:00Z', observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME };
@@ -19,7 +20,7 @@ const proposal = { id: botId(88), taskId, baseVersion: '1', body: 'Proposed manu
 const paged = (items: unknown[]) => ({ items, nextCursor: null, observedAt: BOT_TIME });
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 function install() {
-  const state = { failEvents: false, closed: false, followerBotId: botId(1) };
+  const state = { failEvents: false, closed: false, followerBotId: botId(1), records: [] as unknown[] };
   const fetch = vi.fn(async (url: string, options?: RequestInit) => {
     if (options?.method && options.method !== 'GET') throw new Error('Pending presentation must not mutate events');
     const path = String(url).split('?')[0]!;
@@ -29,7 +30,8 @@ function install() {
     if (path.endsWith('/proposals')) return botResponse(paged([proposal]));
     if (path.endsWith('/events')) return state.failEvents ? botError(503, 'unavailable') : botResponse(paged([event(escalationId, openItem, 'escalation'), event(botId(84), closedItem, 'result_unknown')]));
     if (path.endsWith('/items')) return botResponse(paged([{ ...item(openItem, state.closed ? 'closed' : 'open'), followerBotId: state.followerBotId }, item(closedItem, 'closed')]));
-    if (path.endsWith('/records') || path.endsWith('/appendix')) return botResponse(paged([]));
+    if (path.endsWith('/records')) return botResponse(paged(state.records));
+    if (path.endsWith('/appendix')) return botResponse(paged([]));
     throw new Error(`Unexpected read ${path}`);
   }); vi.stubGlobal('fetch', fetch);
   return { state, fetch };
@@ -37,7 +39,7 @@ function install() {
 function RoutedPending() {
   const navigation = browserNavigation(), location = useSyncExternalStore(navigation.subscribe, navigation.snapshot), route = parseAuthRoute(location.pathname, location.search);
   return route.kind === 'assistantTask'
-    ? <AssistantTaskDetail taskId={route.taskId} tab={route.tab} {...(route.eventId ? { eventId: route.eventId } : {})} enabled bots={[botDefinition(1)]} onChanged={() => {}} />
+    ? <AssistantTaskDetail taskId={route.taskId} tab={route.tab} {...(route.recordId ? { recordId: route.recordId } : {})} {...(route.eventId ? { eventId: route.eventId } : {})} enabled bots={[botDefinition(1)]} onChanged={() => {}} />
     : <AssistantTaskPendingStrip botId={botId(1)} tasks={[task]} enabled />;
 }
 it('retains seen unresolved escalations, hides closed-item events and focuses the event reached from the strip', async () => {
@@ -52,6 +54,24 @@ it('retains seen unresolved escalations, hides closed-item events and focuses th
   await waitFor(() => expect(text.closest('article')).toHaveFocus());
   expect(screen.queryByText('The send result is unknown.')).toBeNull();
   expect(f.fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+});
+it('reveals an evaluated action on every reference click, including after a filter hides the current target', async () => {
+  const f = install(), action = botId(85), outcome = botId(86);
+  const entry = (id: string, kind: string) => ({ id, taskId, itemId: null, author: 'bot', authorBotId: botId(1), kind, text: `Record text ${kind}`, refs: [], createdAt: BOT_TIME });
+  f.state.records = [entry(action, 'action'), { ...entry(outcome, 'outcome'), outcome: 'effective', actionRecordId: action }];
+  act(() => browserNavigation().navigate(assistantTaskUrl(taskId, 'records')));
+  renderWithLocale(<RoutedPending />, { locale: 'en', taskCache: { viewerId: BOT_USER } });
+  const reference = () => within(screen.getByText('Record text outcome').closest('li')!).getByRole('button', { name: `Record ${action}` });
+  await screen.findByText('Record text outcome');
+  fireEvent.click(reference());
+  expect(browserNavigation().snapshot().search).toBe(`?tab=records&recordId=${action}`);
+  await waitFor(() => expect(screen.getByText('Record text action').closest('li')).toHaveFocus());
+  fireEvent.change(screen.getByRole('combobox', { name: 'Record type' }), { target: { value: 'outcome' } });
+  expect(screen.queryByText('Record text action')).toBeNull();
+  fireEvent.click(reference());
+  expect(browserNavigation().snapshot().search).toBe(`?tab=records&recordId=${action}`);
+  expect(screen.getByRole('combobox', { name: 'Record type' })).toHaveValue('');
+  await waitFor(() => expect(screen.getByText('Record text action').closest('li')).toHaveFocus());
 });
 it('keeps failures recoverable instead of presenting a failed pending read as an empty result', async () => {
   const f = install(); f.state.failEvents = true;
