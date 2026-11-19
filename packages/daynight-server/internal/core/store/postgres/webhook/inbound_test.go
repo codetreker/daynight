@@ -34,6 +34,33 @@ func testPersonalDeliveryDestinationsFilterOwnerAndOrigin(t *testing.T, conn *pg
 			t.Fatalf("owner destinations after %q = %+v err=%v", after, got, err)
 		}
 	}
+	// Endpoint validation keeps an explicit port, so the stored origin is
+	// compared by effective port: the HTTPS default port equals its omission,
+	// while another port remains a different origin.
+	for stored, want := range map[string]int{
+		"https://Example.TEST:443":   1,
+		"https://example.test:00443": 1,
+		"https://example.test:":      1,
+		"https://example.test:8443":  0,
+		"https://example.test:4430":  0,
+		"https://example.test.other": 0,
+	} {
+		if _, err := tx.Exec(ctx, `UPDATE webhook_deliveries SET destination_origin=$2 WHERE id=$1`, f.delivery, stored); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := d.PersonalDeliveryDestinations(ctx, event, f.user, "https://example.test", "", 10); err != nil || len(got) != want {
+			t.Fatalf("stored %q = %+v err=%v", stored, got, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE webhook_deliveries SET destination_origin='https://example.test:08443' WHERE id=$1`, f.delivery); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.PersonalDeliveryDestinations(ctx, event, f.user, "https://example.test:8443", "", 10); err != nil || len(got) != 1 {
+		t.Fatalf("non-default port = %+v err=%v", got, err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE webhook_deliveries SET destination_origin='https://Example.TEST' WHERE id=$1`, f.delivery); err != nil {
+		t.Fatal(err)
+	}
 	type page = []store.WebhookDeliveryDestination
 	for name, read := range map[string]func() (page, error){
 		"other owner": func() (page, error) {
