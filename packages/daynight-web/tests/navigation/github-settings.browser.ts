@@ -81,6 +81,11 @@ for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
     await page.route(url => url.pathname === `/api/v1/projects/${projectId}/github/installation`, route => route.fulfill({ json: { ...candidate, installation: { ...candidate.installation, accountLogin } }, headers: { 'Daynight-User-ID': actorId } }));
     await page.setViewportSize({ width, height: 900 }); await open(page);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const heading = page.getByRole('heading', { name: locale === 'en' ? 'GitHub PR sync' : 'GitHub PR 同步' });
+    await expect(heading).toBeVisible();
+    await expect(heading.locator('..').locator('p')).toHaveCount(0);
+    await expect(page.getByText('Sync PR information and descriptions for this repository.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('同步此仓库的 PR 基本信息与 description。', { exact: true })).toHaveCount(0);
     const opener = page.getByRole('button', { name: locale === 'en' ? 'Connect GitHub App' : '连接 GitHub App' });
     await opener.click();
     const dialog = page.getByRole('dialog');

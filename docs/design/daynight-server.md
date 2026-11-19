@@ -308,7 +308,7 @@ Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_typ
 
 实际转移与删除在原权限、版本、仓库占用及 active claim 准入之后检查 Goal 边清理确认。缺少确认且存在边时返回 `invalid_input`，整次事务回滚，并指引升级客户端或更换入口。原归属的成功空操作不探测或清理边。清理先以项目索引枚举 Goal，分别利用顺向主键前缀和 Goal 反向部分索引定位出入边，按边主键合并去重后删除。仅对实际删除边的不同下游 Goal 各推进一次持久关系修订，包括其他项目内的下游；不锁远端 Project 或 Task，不修改其元数据版本。修订耗尽回滚全部操作。
 
-清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。
+清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。REST 转移与删除适配器共同严格解析单值 `Daynight-Confirm-Goal-Dependency-Removal: true`，将结果透传 TransferInput 或 DeletionInput；缺少 header 透传 false，错误 header 在业务调用前以 `400 invalid_input` 拒绝。既有请求体字段、删除空正文、预览与回执保持原结构，CORS allow-list 允许该请求 header。
 
 ## 写事务与并发
 

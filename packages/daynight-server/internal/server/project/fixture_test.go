@@ -156,7 +156,7 @@ type projectMock struct {
 	TransferPreviewFunc  func(ctx context.Context, p model.Principal, id, target string) (coreproject.TransferPreview, error)
 	TransferFunc         func(ctx context.Context, p model.Principal, id string, input coreproject.TransferInput) (coreproject.TransferReceipt, error)
 	DeletionPreviewFunc  func(ctx context.Context, p model.Principal, id string, page model.PageRequest) (projectservice.DeletionPreview, error)
-	DeleteFunc           func(ctx context.Context, p model.Principal, id string) (projectservice.DeletionReceipt, error)
+	DeleteWithInputFunc  func(ctx context.Context, p model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error)
 }
 
 func (m *projectMock) CreateWithAccess(ctx context.Context, p model.Principal, input coreproject.CreateProject) (model.Project, model.ProjectAccess, error) {
@@ -231,13 +231,13 @@ func (m *projectMock) DeletionPreview(ctx context.Context, p model.Principal, id
 	return m.DeletionPreviewFunc(ctx, p, id, page)
 }
 
-func (m *projectMock) Delete(ctx context.Context, p model.Principal, id string) (projectservice.DeletionReceipt, error) {
-	m.h.invoked("Delete", ctx, p)
-	if m.DeleteFunc == nil {
+func (m *projectMock) DeleteWithInput(ctx context.Context, p model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
+	m.h.invoked("DeleteWithInput", ctx, p)
+	if m.DeleteWithInputFunc == nil {
 		m.h.t.Errorf("unexpected Delete call")
-		panic(fmt.Sprintf("unexpected %s call", "Delete"))
+		panic(fmt.Sprintf("unexpected %s call", "DeleteWithInput"))
 	}
-	return m.DeleteFunc(ctx, p, id)
+	return m.DeleteWithInputFunc(ctx, p, id, input)
 }
 
 type membershipMock struct {

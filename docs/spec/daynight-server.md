@@ -126,7 +126,7 @@ MCP `project_resolve` 接受唯一的 `repoUrl`，按仓库身份规则解析调
 过期同值请求仍冲突，当前版本同值保存返回未改变 Project；实际数值变化只递增一次设置版本并更新 project.updatedAt，
 不改 createdAt 或任务时间。降权/移除、版本冲突或存储失败不能留下部分设置更新。
 
-Project 的 owner Team admin 可以读取删除预览并删除项目。预览返回当前项目身份、可见任务、未完成任务和附件计数，以及按 Task UUID 分页的全部 active Worker claim；离线、暂停或等待均不解除阻塞。Worker 连通性只依据该 claim 对应的最后报告时间：不足 120 秒为 online，有更旧报告为 offline，没有报告为 unknown。预览是当前观察，不作为删除条件。`DELETE` 不接受查询参数、正文、预览版本或名称；删除时重新检查当前权限与所有历史 Task 的 claim。存在 active claim 返回 `409 active_worker_claims`，不改数据。
+Project 的 owner Team admin 可以读取删除预览并删除项目。预览返回当前项目身份、可见任务、未完成任务和附件计数，以及按 Task UUID 分页的全部 active Worker claim；离线、暂停或等待均不解除阻塞。Worker 连通性只依据该 claim 对应的最后报告时间：不足 120 秒为 online，有更旧报告为 offline，没有报告为 unknown。预览是当前观察，不作为删除条件。`DELETE` 不接受查询参数、正文、预览版本或名称；删除时重新检查当前权限与所有历史 Task 的 claim。存在 active claim 返回 `409 active_worker_claims`，不改数据。REST 删除以唯一 header 值 `Daynight-Confirm-Goal-Dependency-Removal: true` 确认永久清理 Goal 验收边；省略代表未确认，空值、其他字面值、重复值或逗号列表返回 `400 invalid_input`。该 header 进入 CORS allow-list，不改变空正文、预览与成功回执合同。
 
 预览返回 `observedAt`、`project:{id,name,repoUrl,ownerTeam}`、`summary:{taskCount,unfinishedTaskCount,attachmentCount}`、`activeClaims` 和可空 `nextCursor`。每条阻塞项包含 `taskId`、`title` 及 `worker:{machineName,platform,phase,paused,connectivity}`。分页默认 50、最大 100，cursor 绑定当前用户和 Project；按条数返回完整阻塞项，不按标题或响应字节缩短页面。
 

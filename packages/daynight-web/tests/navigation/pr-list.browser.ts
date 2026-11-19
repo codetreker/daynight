@@ -21,6 +21,38 @@ const assertFits = async (page: Page) => {
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
 };
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`status icons center within short and multiline cards at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await installPrList(page, locale);
+    state.longContent = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    for (const [filter, first, expected] of [['active', '1248', ['open', 'draft']], ['merged', '1236', ['merged']], ['closed', '1208', ['closed']]] as const) {
+      await page.locator('#pr-filter').selectOption(filter);
+      await expect(page.locator('.pr-row')).toHaveCount(6);
+      await expect(page.locator('.pr-row').first()).toHaveAttribute('id', `pr-row-${first}`);
+      for (const tone of expected) {
+        const rows = page.locator('.pr-row').filter({ has: page.locator(`.pr-status-icon.${tone}`) });
+        expect(await rows.count()).toBeGreaterThanOrEqual(2);
+        const heights: number[] = [];
+        for (const row of await rows.all()) {
+          const geometry = await row.evaluate(element => {
+            const row = element.getBoundingClientRect(), icon = element.querySelector('.pr-status-icon')!.getBoundingClientRect();
+            const main = element.querySelector('.pr-row-main')!.getBoundingClientRect();
+            return { difference: Math.abs(row.top + row.height / 2 - icon.top - icon.height / 2), gap: main.left - icon.right, height: row.height };
+          });
+          expect(geometry.difference).toBeLessThanOrEqual(1);
+          expect(geometry.gap).toBeGreaterThanOrEqual(0);
+          heights.push(geometry.height);
+        }
+        expect(Math.max(...heights)).toBeGreaterThan(Math.min(...heights));
+      }
+      await assertFits(page);
+    }
+    expect(state.unexpected).toEqual([]);
+  });
+}
+
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 390, 320]) {
   test(`PR cards retain geometry and readable long content at ${width}px in ${locale}`, async ({ page }, info) => {
     const state = await installPrList(page, locale);

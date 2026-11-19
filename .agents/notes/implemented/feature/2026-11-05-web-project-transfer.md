@@ -29,6 +29,11 @@ revocation clears unsubmitted private previews without discarding a dispatched
 transfer or its result; its unknown check does not reveal withdrawn Project or
 Team details.
 
+The ownership card places the transfer control beside the content-sized Team
+identity with a 24px gap when space permits. A wrapping row and breakable
+identity keep the complete name and ID readable on narrow screens; the permission
+message remains below the identity.
+
 The [service transfer decision](../../archived/architecture/2026-11-04-project-transfer.md) records the rationale for the transaction and receipt. The [browser Team preference decision](../../archived/feature/2026-11-04-browser-team-preference.md) records the rationale for selection persistence.
 The [stable Project checks decision](../bug-fix/2026-11-05-stable-project-checks.md)
 separates retained presentation from fresh mutation admission.
@@ -41,6 +46,9 @@ original receipt. It cannot safely establish success or authorize replay.
 
 **Use the loaded Team list for return navigation.** Its pages can omit an
 accessible source, so absence would send the actor to Personal incorrectly.
+
+**Push the transfer control to the card edge.** That separates the action from
+the Team identity it affects and wastes the available space between them.
 
 ## Consequences
 
