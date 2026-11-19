@@ -4,10 +4,16 @@ Daynight is a project and task workspace for people and coding agents. It keeps
 work, dependencies, required inputs and resulting artifacts together, with a
 browser dashboard for understanding progress and a command-line client for
 managing tasks. A foreground worker runs automatically claimed tasks through
-Codex, Claude Code or Copilot in browser-controlled Task Sessions. The same
+Codex or Copilot in browser-controlled Task Sessions. The same
 Worker hosts named assistants in ordinary directories, with shared browser
 conversations and Daynight CLI access. The CLI also provides automated GitHub
 pull request review through Copilot CLI.
+
+Claude Code is temporarily unsupported for Daynight-managed Task Sessions,
+Test Sessions and assistants. Its existing adapter and command options remain
+available, but initialization disconnect cleanup is not reliable on macOS.
+Passing CI does not certify Claude Code support; see the
+[support decision](.agents/notes/implemented/testing/2026-11-19-claude-support-suspension.md).
 
 Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
 Open the **[workspace](https://daynight.cc/projects)** to continue your projects,
@@ -181,7 +187,6 @@ Run a provider in the current directory and open the printed Daynight URL:
 
 ```bash
 daynight controller codex
-daynight controller claude
 daynight controller copilot "Explain this project"
 ```
 
@@ -228,8 +233,8 @@ Running native processes keep their launch arguments. The
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 define ownership, retries and recovery boundaries.
 
-Web execution uses a private Controller and the Daynight relay with Codex, Claude
-Code or Copilot. When local mode is omitted, the first bootstrap candidate uses
+Web execution uses a private Controller and the Daynight relay with Codex or
+Copilot. The retained Claude Code adapter is temporarily unsupported. When local mode is omitted, the first bootstrap candidate uses
 `web`. A local bootstrap candidate that explicitly selects `herdr` is refused
 with instructions to adjust it. An explicit cloud `herdr` target is retained
 unchanged and reported as unsupported. Existing Herdr claims and resources are
