@@ -243,6 +243,7 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	capture := &webhook.Capturer{Logger: logger, RequestID: requestid.From}
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
+	app.Projects.SetRepositoryLogger(logger)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
 		cleanup, done := context.WithTimeout(context.Background(), c.Server.ShutdownTimeout)
