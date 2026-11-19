@@ -2,7 +2,7 @@
 .terminal-session { padding: 14px; gap: 10.5px; }
 .terminal-host-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; margin-bottom: 9.1px; }
 .terminal-host-toolbar > label { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; }
-.terminal-host-toolbar time { color: var(--muted, #64748b); font-size: .8rem; overflow-wrap: anywhere; }
+.terminal-host-toolbar time { color: var(--muted, #64748b); font-size: 11.2px; overflow-wrap: anywhere; }
 .terminal-notice { padding: 10.5px; border: 1px solid #d6d3ee; border-radius: 7px; background: #f8f7ff; }
 .terminal-notice p { margin: 0 0 .5rem; }
 .managed-session-records { margin-bottom: 14px; padding-bottom: 10.5px; border-bottom: 1px solid #e0e3eb; min-width: 0; }

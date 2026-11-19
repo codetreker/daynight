@@ -21,9 +21,14 @@ import (
 
 func prepareArchiveSession(t *testing.T, database *postgres.Store) (model.Task, string) {
 	t.Helper()
+	return prepareArchiveSessionForProject(t, database, 1)
+}
+
+func prepareArchiveSessionForProject(t *testing.T, database *postgres.Store, projectNumber int) (model.Task, string) {
+	t.Helper()
 	_, owner, _ := testAuthRecords(t, database)
-	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 2, model.TaskDone)
+	project := queryProject(t, database, projectNumber)
+	task := queryTask(t, database, project.ID, projectNumber+1, model.TaskDone)
 	id, claim := uuid.NewString(), uuid.NewString()
 	sessionDAOTransaction(t, database, func(dao store.SessionDAO) error {
 		return dao.InsertTaskSession(t.Context(), store.SessionRegistration{

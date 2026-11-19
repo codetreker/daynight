@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantTaskApiError, assistantTaskClaimFingerprint, type AssistantTask, type AssistantTaskClient, type AssistantTaskClaimInput, type AssistantTaskClaimKind, type AssistantTaskClaimResult, type AssistantTaskEvent } from "../../../../src/api/assistant-task.js";
+import { AssistantTaskApiError, assistantTaskClaimFingerprint, type AssistantTask, type AssistantTaskClient, type AssistantTaskClaimInput, type AssistantTaskClaimKind, type AssistantTaskClaimResult, type AssistantTaskEvent, type AssistantTaskEventQuery } from "../../../../src/api/assistant-task.js";
 import { withClaimStorage, type ClaimScope } from "../../../../src/commands/assistant-task/state.js";
 import * as claimOperations from "../../../../src/commands/assistant-task/claims.js";
 import { createAssistantTaskRuntime, type AssistantApplicationContext, type AssistantTaskClock, type AssistantTaskRuntime, type AssistantTaskRuntimeOptions } from "../../../../src/commands/worker/bots/assistant-tasks.js";
@@ -55,7 +55,9 @@ const fixture = async (botNumber = 3) => {
   const listEvents = vi.fn<AssistantTaskClient["listEvents"]>(async (taskId, query) => {
     const after = query?.cursor === undefined ? -1 : events.findIndex(event => event.id === query.cursor);
     if (query?.cursor !== undefined && after < 0) throw new Error("Unexpected event cursor");
-    const matching = events.slice(after + 1).filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state) && (query?.targetBotId === undefined || event.targetBotId === query.targetBotId));
+    // Mirrors the server type filters: selecting inbound events also omits paused tasks.
+    const matching = events.slice(after + 1).filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state) && (query?.targetBotId === undefined || event.targetBotId === query.targetBotId)
+      && (query?.type === undefined || event.type === query.type && !(query.type === "inbound" && event.taskId === task.id && task.state === "paused")) && (query?.excludeType === undefined || event.type !== query.excludeType));
     const items = matching.slice(0, query?.limit ?? 200);
     return { items, nextCursor: matching.length > items.length ? items.at(-1)!.id : null, observedAt: new Date(clock.now()).toISOString() };
   });
@@ -576,6 +578,74 @@ describe("assistant-task managed loops", () => {
     expect(f.onError).not.toHaveBeenCalled();
   });
 
+  it("selects other events before paging inbound events and stops inbound reads at the inbound budget", async () => {
+    const f = await fixture(), runtime = f.create(), body = "y".repeat(4096);
+    const inbound = (n: number): AssistantTaskEvent => ({ ...f.event(n), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 4096, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.events = [...Array.from({ length: 40 }, (_, index) => inbound(100 + index)), f.event(60)];
+    const send = f.send.getMockImplementation()!;
+    let selection: (AssistantTaskEventQuery | undefined)[] = [];
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selection = f.listEvents.mock.calls.map(([, query]) => query); return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    const acked = f.ackEvent.mock.calls.map(call => call[1]), admitted = acked.length - 1;
+    expect(acked).toContain(id(60)); expect(admitted).toBeGreaterThan(0); expect(admitted).toBeLessThan(40);
+    expect(acked.filter(eventId => eventId !== id(60))).toEqual(Array.from({ length: admitted }, (_, index) => id(100 + index)));
+    // One read returns the only non-inbound event; inbound reads end at the first deferred event.
+    expect(selection[0]).toEqual({ state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 });
+    expect(selection.slice(1)).toHaveLength(admitted + 1);
+    expect(selection.slice(1).every(query => query?.type === "inbound" && query.excludeType === undefined)).toBe(true);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("leaves inbound events of a paused task pending while other events are delivered", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    f.task = { ...f.task, state: "paused" };
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }, f.event(52)];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52)]);
+    expect(JSON.stringify(f.send.mock.calls[0]![1])).not.toContain(id(51));
+    expect(f.listEvents.mock.calls.map(([, query]) => query)).toEqual([
+      { state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 },
+      { state: "pending", targetBotId: f.bot.botId, type: "inbound", limit: 1 },
+    ]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges a delivered inbound event after its task is paused", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
+    const send = f.send.getMockImplementation()!;
+    let selected = 0;
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selected = f.listEvents.mock.calls.length; f.task = { ...f.task, state: "paused" }; return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51)]);
+    expect(f.listEvents.mock.calls.slice(selected)).toEqual([]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges delivered inbound events without reading a paused task's inbound backlog", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    const inbound = (n: number, taskId: string): AssistantTaskEvent => ({ ...f.event(n), taskId, type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.task = { ...f.task, state: "paused" };
+    f.events = [...Array.from({ length: 5 }, (_, index) => inbound(100 + index, f.task.id)), inbound(51, id(12)), f.event(52)];
+    const send = f.send.getMockImplementation()!;
+    let selected = 0;
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selected = f.listEvents.mock.calls.length; return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52), id(51)]);
+    expect(f.listEvents.mock.calls.slice(selected)).toEqual([]);
+    expect(f.events.filter(event => event.taskId === f.task.id).every(event => event.state === "pending")).toBe(true);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("rejects an event page that conflicts with its type filter", async () => {
+    const f = await fixture(), runtime = f.create();
+    f.events = [f.event(51)];
+    f.listEvents.mockImplementationOnce(async () => ({ items: [{ ...f.event(51), type: "inbound" }], nextCursor: null, observedAt: new Date(f.clock.now()).toISOString() }));
+    await runtime.tick("delivery", signal());
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.onError).toHaveBeenCalledWith("Assistant event page conflicts with its target, state or type filter.", f.bot.botId);
+  });
+
   it("queries and acknowledges only pending events for the local Bot", async () => {
     const f = await fixture(), runtime = f.create();
     f.events = [f.event(51), { ...f.event(52), targetBotId: id(90) }, { ...f.event(53), state: "delivered" }];
@@ -618,7 +688,74 @@ describe("assistant-task managed loops", () => {
     expect(f.readOperation.mock.calls.every(call => call[1].operationId === original.operationId)).toBe(true);
   });
 
-  it("recovers a lost ACK response by reading event state without sending or acknowledging it twice", async () => {
+  it("acknowledges journaled events directly without reading another task's pending backlog", async () => {
+    const f = await fixture(); f.events = [f.event(51), f.event(52)];
+    f.ackEvent.mockImplementationOnce(async (_taskId, eventId, input) => {
+      f.events = f.events.map(event => event.id === eventId ? { ...event, state: "delivered", ackOperationId: input.operationId } : event);
+      // A later backlog of another task, whose reads would fail, must not hold the journal.
+      f.events = [...f.events, ...Array.from({ length: 5 }, (_, index) => ({ ...f.event(100 + index), taskId: id(12) }))];
+      f.listEvents.mockRejectedValue(new Error("ACK recovery must not page pending events"));
+      return { ...f.events[0]!, state: "delivered", ackOperationId: input.operationId };
+    });
+    f.ackEvent.mockRejectedValueOnce(new AssistantTaskApiError(true, "request_failed"));
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.onError).toHaveBeenCalledOnce();
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).not.toHaveBeenCalled();
+    // The retained journal replays its ACKs with the original operation, which the server answers idempotently.
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52), id(51), id(52)]);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[2].operationId)).size).toBe(1);
+    expect(f.onError).toHaveBeenCalledOnce();
+  });
+
+  it.each(["invalid_transition", "operation_conflict", "task_deleted", "not_found"])("settles a journaled event that a confirmed %s refusal shows is no longer pending", async code => {
+    const f = await fixture(), runtime = f.create(); f.events = [f.event(51), f.event(52)];
+    f.ackEvent.mockRejectedValueOnce(new AssistantTaskApiError(false, code, code === "not_found" ? 404 : 409));
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2); expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["transfer", "takeover"])("settles a journaled inbound event retargeted by a %s between Session acceptance and ACK", async kind => {
+    const f = await fixture(), body = "z".repeat(16);
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
+    const send = f.send.getMockImplementation()!, ack = f.ackEvent.getMockImplementation()!;
+    // The server retargets pending inbound events to the new holder and adds claim_lost for the previous one.
+    f.send.mockImplementationOnce(async (bot, command, abort) => {
+      const result = await send(bot, command, abort);
+      f.events = [...f.events.map(event => event.type === "inbound" ? { ...event, targetBotId: id(90) } : event), { ...f.event(52), type: "claim_lost", payload: { reason: kind } }];
+      return result;
+    });
+    f.ackEvent.mockImplementation(async (taskId, eventId, input) => {
+      if (f.events.find(event => event.id === eventId)!.targetBotId !== f.bot.botId) throw new AssistantTaskApiError(false, "forbidden", 403, true);
+      return ack(taskId, eventId, input);
+    });
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.listEvents.mock.calls.at(-1)).toEqual([f.task.id, { state: "pending", targetBotId: f.bot.botId, limit: 1 }]);
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(f.send.mock.calls[1]![1])).toContain(id(52));
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps the journal when the task read also refuses the Bot identity after a forbidden ACK", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    const list = f.listEvents.getMockImplementation()!;
+    f.ackEvent.mockRejectedValue(new AssistantTaskApiError(false, "forbidden", 403, true));
+    f.listEvents.mockImplementation(async (taskId, query) => { if (taskId !== undefined) throw new AssistantTaskApiError(false, "forbidden", 403, true); return list(taskId, query); });
+    const runtime = f.create(); await runtime.tick("delivery", signal());
+    f.events = [...f.events, f.event(52)];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(51)]);
+    expect(f.listEvents.mock.calls.filter(([taskId]) => taskId !== undefined)).toHaveLength(2);
+    expect(f.onError).toHaveBeenCalledTimes(2);
+    expect(f.onError.mock.calls.every(([message]) => String(message).includes("(forbidden)"))).toBe(true);
+  });
+
+  it("replays a lost ACK response with its original operation without sending the notification again", async () => {
     const f = await fixture(); f.events = [f.event(51), f.event(52)];
     f.ackEvent.mockImplementationOnce(async (_taskId, eventId, input) => {
       f.events = f.events.map(event => event.id === eventId ? { ...event, state: "delivered", ackOperationId: input.operationId } : event);
@@ -627,8 +764,8 @@ describe("assistant-task managed loops", () => {
     const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
     await f.create().tick("delivery", signal());
     expect(f.send).toHaveBeenCalledOnce(); expect(f.readOperation).not.toHaveBeenCalled();
-    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
-    expect(f.ackEvent.mock.calls[0]![2].operationId).toBe(f.ackEvent.mock.calls[1]![2].operationId);
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(51), id(52)]);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[2].operationId)).size).toBe(1);
   });
 
   it.each(["interval", "daily"])("does not duplicate a due %s event after runtime reconstruction", async kind => {

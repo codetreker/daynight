@@ -313,6 +313,21 @@ test('keeps the Team switcher touch-sized on a wide coarse-pointer device', asyn
   }
 });
 
+test('project cards fit the narrow shell with a larger browser default font', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Page.setFontSizes', { fontSizes: { standard: 22 } });
+  await install(page);
+  await page.goto(`/teams/${teamId}`);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  await expect(page.locator('.project-card').first()).toBeVisible();
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe('22px');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  const date = page.locator('.project-card time').first();
+  expect(await date.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await cdp.detach();
+});
+
 for (const width of [320, 390, 740]) {
   test(`keeps the navigation opener reachable and restores focus at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: 360 });

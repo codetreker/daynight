@@ -106,15 +106,20 @@ type AssistantTaskItem struct {
 }
 
 type AssistantTaskRecord struct {
-	ID          string          `json:"id"`
-	TaskID      string          `json:"taskId"`
-	ItemID      *string         `json:"itemId"`
-	Author      string          `json:"author"`
-	AuthorBotID *string         `json:"authorBotId"`
-	Kind        string          `json:"kind"`
-	Text        string          `json:"text"`
-	Refs        json.RawMessage `json:"refs"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	ID          string  `json:"id"`
+	TaskID      string  `json:"taskId"`
+	ItemID      *string `json:"itemId"`
+	Author      string  `json:"author"`
+	AuthorBotID *string `json:"authorBotId"`
+	Kind        string  `json:"kind"`
+	Text        string  `json:"text"`
+	// Outcome and ActionRecordID are present only on outcome records. Other
+	// records omit both keys, so clients that validate records strictly can
+	// reject either key on every other kind.
+	Outcome        *string         `json:"outcome,omitempty"`
+	ActionRecordID *string         `json:"actionRecordId,omitempty"`
+	Refs           json.RawMessage `json:"refs"`
+	CreatedAt      time.Time       `json:"createdAt"`
 }
 
 type AssistantTaskEvent struct {
