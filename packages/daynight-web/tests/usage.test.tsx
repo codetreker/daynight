@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { getTaskUsageRecords, getTaskUsageSummaries, getUsageCapabilities, parseUsageSummary, usageMetricKeys } from '../src/api/usage';
-import { TaskUsageSummary, UsageSummaryView } from '../src/features/usage/UsageSummaryView';
+import { TaskNodeUsageSummary, TaskUsageSummary, UsageProjectProvider, UsageSummaryView } from '../src/features/usage/UsageSummaryView';
 import { TaskUsagePanel } from '../src/features/usage/TaskUsagePanel';
 import { TaskDetailPanels } from '../src/features/task-detail/TaskDetailPanels';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -15,6 +15,60 @@ const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn() };
 const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
 const summary = (completeness = 'partial') => ({ metrics: Object.fromEntries(usageMetricKeys.map(key => [key, { known: key === 'outputTokens' ? '9007199254740993' : null, contributingRecords: key === 'outputTokens' ? '1' : '0', unknownRecords: key === 'outputTokens' ? '0' : '1' }])), scope: 'registered_web_executions', completeness, reasonCodes: ['native_recovery_gap'], coverage: { executions: '2', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '1', unavailableExecutions: '0', unregisteredExecutions: '0' }, measurementRecords: '1', lastMeasuredAt: now, observedAt: now, etag: 'etag' });
 const signal = () => new AbortController().signal;
+
+it('omits graph usage without a project context', () => {
+  const view = renderWithLocale(<TaskNodeUsageSummary taskId={task} />, { locale: 'en' });
+  expect(view.container).toBeEmptyDOMElement();
+});
+
+it.each(['failure', 'unsupported', 'no_data', 'unknown'] as const)('omits graph usage during loading and for %s without a reading', async mode => {
+  let release!: (response: Response) => void;
+  const response = new Promise<Response>(resolve => { release = resolve; });
+  const fetch = vi.fn(async (url: string) => url.endsWith('capabilities') ? (mode === 'unsupported' ? response : reply({ protocol: 'daynight.usage.v1' })) : response);
+  vi.stubGlobal('fetch', fetch);
+  const view = renderWithLocale(<UsageProjectProvider projectId={project}><TaskNodeUsageSummary taskId={task} /><TaskUsageSummary projectId={project} taskId={task} compact /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  await waitFor(() => expect(fetch).toHaveBeenCalled());
+  expect(view.container.querySelector('.task-node-usage')).toBeNull();
+  const data = summary(mode === 'no_data' ? 'no_data' : 'partial');
+  data.metrics.outputTokens!.known = null;
+  if (mode === 'no_data') data.measurementRecords = '0';
+  release(mode === 'unsupported' ? new Response('Not found', { status: 404 }) : mode === 'failure' ? reply({ error: { code: 'unavailable', requestId: 'usage.1' } }, 503) : reply({ items: [{ taskId: task, summary: data }] }));
+  if (mode === 'unsupported') await screen.findByText('This service does not support usage');
+  else if (mode === 'failure') await screen.findByRole('button', { name: 'Retry' });
+  else await waitFor(() => expect(view.container.querySelector('.usage-summary-compact')).toHaveTextContent('Token usage: Unknown'));
+  expect(view.container.querySelector('.task-node-usage')).toBeNull();
+});
+
+it('renders graph readings in priority order, retains them on transient failure and recovers after access loss', async () => {
+  let state: 'known' | 'failure' | 'revoked' | 'output' | 'zero' = 'known';
+  const fetch = vi.fn(async (url: string) => {
+    if (url.endsWith('capabilities')) return reply({ protocol: 'daynight.usage.v1' });
+    if (state === 'failure' || state === 'revoked') return reply({ error: { code: 'unavailable', requestId: 'usage.1' } }, state === 'failure' ? 503 : 403);
+    const data = summary();
+    if (state === 'zero') { data.metrics.outputTokens!.known = null; data.metrics.inputTokens!.known = '0'; }
+    else if (state === 'known') { data.metrics.totalTokens!.known = '12345'; }
+    return reply({ items: [{ taskId: task, summary: data }] });
+  });
+  vi.stubGlobal('fetch', fetch);
+  const view = renderWithLocale(<UsageProjectProvider projectId={project}><TaskNodeUsageSummary taskId={task} /></UsageProjectProvider>, { locale: 'en', taskCache: true });
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Total: 12,345 · Partial'));
+  const refresh = async (next: typeof state) => {
+    state = next;
+    const calls = fetch.mock.calls.length;
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await waitFor(() => expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(calls + 2));
+  };
+  await refresh('failure');
+  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Total: 12,345 · Partial');
+  await refresh('revoked');
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toBeNull());
+  await refresh('output');
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Output: 9,007,199,254,740,993 · Partial'));
+  await refresh('zero');
+  await waitFor(() => expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('Known Input: 0 · Partial'));
+  view.setLocale('zh-CN');
+  expect(view.container.querySelector('.task-node-usage')).toHaveTextContent('已知输入: 0 · 部分');
+});
 
 it('preserves exact decimal strings and rejects unsafe number and leading-zero metrics', () => {
   expect(parseUsageSummary(summary()).metrics.outputTokens.known).toBe('9007199254740993');
