@@ -33,7 +33,7 @@ const en = {
   noAuthorMatchesDetail: 'Try a different creator, status, or search.', clearAuthor: 'Clear creator',
   noMatches: 'No matching pull requests', noMatchesDetail: 'Try another title or pull request number.', clear: 'Clear search',
   noSaved: 'No saved pull requests in this view', noSavedDetail: 'No records currently match this status.',
-  updates: 'New pull requests are available. Refresh to include them.', range: 'Showing',
+  range: 'Showing',
 };
 const zh: typeof en = {
   title: 'PR 列表', refresh: '刷新', refreshing: '正在刷新…',
@@ -55,7 +55,7 @@ const zh: typeof en = {
   emptyTitle: '暂无 PR', emptyDetail: '最近一次完整同步已成功，当前没有符合条件的 PR。',
   noAuthorMatchesDetail: '试试其他创建者、状态或搜索条件。', clearAuthor: '清除创建者',
   noMatches: '没有找到匹配的 PR', noMatchesDetail: '试试其他标题或 PR 编号。', clear: '清除搜索',
-  noSaved: '没有符合条件的 PR', noSavedDetail: '此状态下还没有已保存的记录。', updates: '有新的 PR，刷新后可纳入当前列表。', range: '显示',
+  noSaved: '没有符合条件的 PR', noSavedDetail: '此状态下还没有已保存的记录。', range: '显示',
 };
 const filters: readonly PullRequestState[] = ['active', 'merged', 'closed', 'all'];
 
@@ -130,7 +130,6 @@ const Workspace = (props: PullRequestWorkspaceProps) => {
       {status?.poll.lastSuccessAt != null && <span>{m.success}: <time dateTime={status.poll.lastSuccessAt}>{format.dateTime(status.poll.lastSuccessAt)}</time></span>}
       {status?.webhook.lastSuccessAt != null && <span>{m.webhook}: <time dateTime={status.webhook.lastSuccessAt}>{format.dateTime(status.webhook.lastSuccessAt)}</time></span>}
     </div>
-    {read.hasUpdates && <p className="pr-status-note" role="status">{m.updates} <button type="button" onClick={read.refresh} disabled={loading}>{m.refresh}</button></p>}
     <div className="pr-toolbar"><div className="pr-filter-group"><div className="pr-filter-wrap"><label className="sr-only" htmlFor="pr-filter">{m.filter}</label><NativeSelect density="filter" focusTone="task" layout="fill" id="pr-filter" value={read.filter} onChange={event => read.setFilter(event.currentTarget.value as PullRequestState)} disabled={!props.canRead || accessDenied}>{filters.map(filter => <option key={filter} value={filter}>{m[filter]}{known && read.counts !== null ? ` · ${read.counts[filter]}` : ''}</option>)}</NativeSelect></div><PullRequestAuthorPicker selected={read.author} items={authors.items} query={authors.query} loaded={authors.loaded} loading={authors.loading} error={authors.error} nextCursor={authors.nextCursor} rebuilding={authors.rebuilding} disabled={!props.canRead || accessDenied} active={props.active} owner={workspace} onOpen={authors.open} onClose={authors.close} onQueryChange={authors.setQuery} onLoadMore={authors.loadMore} onRetry={authors.retry} onSelect={read.setAuthor} /></div><div className="pr-search-wrap"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10" cy="10" r="6" /><path d="m15 15 5 5" /></svg><label className="sr-only" htmlFor="pr-search">{m.search}</label><input ref={search} id="pr-search" type="search" value={read.query} onChange={event => read.setQuery(event.currentTarget.value)} placeholder={m.placeholder} autoComplete="off" disabled={!props.canRead || accessDenied} /></div></div>
     <div aria-live="polite">{known && page !== null && <p className="pr-results-count">{read.filter === 'active' ? `${m.includesDraft} · ` : ''}{page.total} {m.count}</p>}</div>
     {read.error !== null && page !== null && page.items.length > 0 && <p className="pr-status-note danger" role="alert">{m.failed} <button type="button" onClick={read.reconcile}>{m.retry}</button></p>}
