@@ -195,6 +195,55 @@ it('keeps every independent subscription of a project when saving', async () => 
   ]);
 });
 
+it('keeps a draft bound to its starting endpoint version when a reload finds a concurrent change', async () => {
+  const linked = endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
+  const s = server({ personal: [linked] });
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const view = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={inboxId} inboxEnabled active={active} serviceOrigin={origin} /></TaskCacheProvider>;
+  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Task paused' }));
+  // The user leaves the Inbox tab while another browser tab adds a Beta subscription to the same endpoint.
+  rerender(view(false));
+  s.state.personal = [{ ...linked, configVersion: '5', subscriptions: [...linked.subscriptions, { id: botId(84), projectId: beta, projectName: 'Beta', eventTypes: ['task.deleted'], eligibility: 'eligible' }] }];
+  rerender(view(true));
+  expect(await screen.findByRole('alert')).toHaveTextContent('This subscription changed elsewhere');
+  expect(screen.getByRole('checkbox', { name: 'Task paused' })).toBeChecked();
+  expect(screen.getByRole('button', { name: 'Save subscription' })).toBeDisabled();
+  fireEvent.submit(screen.getByRole('button', { name: 'Save subscription' }).closest('form')!);
+  expect(s.writes).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Discard edits' }));
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: 'Task paused' })).not.toBeChecked();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]).toMatchObject({ method: 'PATCH', body: { ifVersion: '5', subscriptions: [
+    { id: subscriptionId, projectId: alpha, eventTypes: ['task.created', 'task.paused'] },
+    { id: botId(84), projectId: beta, eventTypes: ['task.deleted', 'task.paused'] },
+  ] } });
+});
+
+it('does not turn a create draft into an edit of an endpoint created elsewhere', async () => {
+  const s = server();
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const view = (active: boolean) => <TaskCacheProvider scope={scope}><AssistantTaskSubscriptions task={task} inboxId={inboxId} inboxEnabled active={active} serviceOrigin={origin} /></TaskCacheProvider>;
+  const { rerender } = renderWithLocale(view(true), { locale: 'en' });
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task created' }));
+  rerender(view(false));
+  s.state.personal = [endpoint(personalId, inboxUrl, [{ id: subscriptionId, projectId: beta, projectName: 'Beta', eventTypes: ['task.deleted'], eligibility: 'eligible' }])];
+  rerender(view(true));
+  expect(await screen.findByRole('alert')).toHaveTextContent('This subscription changed elsewhere');
+  expect(screen.getByRole('button', { name: 'Create subscription' })).toBeDisabled();
+  fireEvent.submit(screen.getByRole('button', { name: 'Create subscription' }).closest('form')!);
+  expect(s.writes).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Discard edits' }));
+  expect(screen.getByRole('button', { name: 'Save subscription' })).toBeEnabled();
+  expect(screen.getByRole('checkbox', { name: 'Beta' })).toBeChecked();
+});
+
 it('adopts a created endpoint while the directory refresh fails', async () => {
   const s = server(); mount();
   await screen.findByText('No Webhook endpoint targets this inbox yet.');

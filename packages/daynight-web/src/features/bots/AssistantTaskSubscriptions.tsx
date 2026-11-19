@@ -23,6 +23,7 @@ const en = {
   unknown: 'The result of the Webhook change is unknown. Check the original operation before making another change.', check: 'Check operation',
   error: 'The Webhook request failed.', loadError: 'Could not load Webhook subscriptions.', retry: 'Retry', loading: 'Loading…',
   endpointName: 'Assistant inbox',
+  stale: 'This subscription changed elsewhere after you started editing. Discard your edits to load the current configuration before saving.', discard: 'Discard edits',
 };
 const zh: typeof en = {
   title: 'Daynight 事件订阅',
@@ -37,6 +38,7 @@ const zh: typeof en = {
   unknown: 'Webhook 修改结果未知。再次修改前，请核对原操作。', check: '核对操作',
   error: 'Webhook 请求失败。', loadError: '无法读取 Webhook 订阅。', retry: '重试', loading: '正在加载…',
   endpointName: '助手收件箱',
+  stale: '开始编辑后，这个订阅已在别处被修改。请先放弃当前修改并加载最新配置，再保存。', discard: '放弃修改',
 };
 const useMessages = () => useI18n().locale === 'zh-CN' ? zh : en;
 
@@ -72,6 +74,15 @@ export const targetsAnyInbox = (target: string | null, origin: string): boolean 
     return left.origin === new URL(origin).origin && INBOX_PATH.test(left.pathname);
   } catch { return false; }
 };
+
+type Selection = { readonly projects: readonly string[]; readonly events: readonly WebhookEventType[] };
+/** An edit is bound to the endpoint state it started from; `base` is null when the edit creates the endpoint. */
+type Draft = Selection & { readonly base: WebhookActiveEndpoint | null };
+// The event choices show the union over projects. A project may hold several independent subscriptions; it appears once.
+const selectionOf = (endpoint: WebhookActiveEndpoint | null): Selection => ({ projects: [...new Set(endpoint?.subscriptions.map(item => item.projectId) ?? [])], events: EVENT_TYPES.filter(event => endpoint?.subscriptions.some(item => item.eventTypes.includes(event))) });
+const sameEndpointState = (left: WebhookActiveEndpoint | null, right: WebhookActiveEndpoint | null) => left === null || right === null
+  ? left === right
+  : left.id === right.id && left.configVersion === right.configVersion && left.destinationRevision === right.destinationRevision;
 
 type TeamEndpoint = { readonly team: Team; readonly endpoint: WebhookEndpointSummary };
 type Directory = { readonly projects: readonly Project[]; readonly personal: readonly WebhookActiveEndpoint[]; readonly team: readonly TeamEndpoint[] };
@@ -141,9 +152,9 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const [created, setCreated] = useState<{ readonly url: string; readonly endpointId: string; readonly endpoint: WebhookActiveEndpoint | null } | null>(null);
   const createdRef = useRef(created);
   createdRef.current = created;
+  const matches = useCallback((target: string | null) => inboxUrl === null ? targetsAnyInbox(target, serviceOrigin) : targetsInbox(target, inboxUrl), [inboxUrl, serviceOrigin]);
   useEffect(() => {
     if (!reading || matchKey === null) return;
-    const matches = inboxUrl === null ? (target: string | null) => targetsAnyInbox(target, serviceOrigin) : (target: string | null) => targetsInbox(target, inboxUrl);
     const controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
     const pending = createdRef.current?.url === matchKey && createdRef.current.endpoint === null ? createdRef.current : null;
     void (async () => {
@@ -156,7 +167,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
       } catch (error) { if (!signal.aborted) setLoadError(error); }
     })();
     return () => controller.abort();
-  }, [reading, inboxUrl, matchKey, retired, serviceOrigin, scope, revision]);
+  }, [reading, matches, matchKey, retired, scope, revision]);
   const adopted = created?.url === matchKey ? created : null;
   const loaded = directory?.url === matchKey ? directory.value : null;
   const data = loaded === null || adopted?.endpoint == null || loaded.personal.some(item => item.id === adopted.endpointId) ? loaded : { ...loaded, personal: [...loaded.personal, adopted.endpoint] };
@@ -167,6 +178,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? (() => idle));
   const busy = intent.phase === 'preparing' || intent.phase === 'submitting' || intent.phase === 'unknown' || intent.reconciling;
   const [failure, setFailure] = useState<unknown>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
   // Both a direct submit and a manual reconciliation can confirm a create; either way the endpoint is adopted.
   const confirm = useCallback((state: WebhookIntentState) => {
     if (state.result?.operation.kind === 'endpoint.create' && matchKey !== null && inboxUrl !== null) {
@@ -175,8 +187,16 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
       if (view === undefined) setCreated({ url: matchKey, endpointId: state.result.operation.endpointId, endpoint: null });
       else if (view.lifecycle === 'active' && targetsInbox(view.destination.url, inboxUrl)) setCreated({ url: matchKey, endpointId: view.id, endpoint: view });
     }
-    setRevision(value => value + 1);
-  }, [matchKey, inboxUrl]);
+    // A confirmed change returns the endpoint's new state. Showing it at once keeps an edit started before the refresh
+    // completes bound to the version this panel just wrote, instead of to the version it replaced.
+    const view = state.result?.operation.kind === 'endpoint.create' ? undefined : state.result?.endpoint;
+    if (view !== undefined) {
+      const fresh = (item: WebhookActiveEndpoint): WebhookActiveEndpoint | null => item.id !== view.id ? item : view.lifecycle === 'active' && matches(view.destination.url) ? view : null;
+      setDirectory(old => old === null ? old : { ...old, value: { ...old.value, personal: old.value.personal.flatMap(item => fresh(item) ?? []) } });
+      setCreated(old => old?.endpoint == null || old.endpointId !== view.id ? old : { ...old, endpoint: fresh(old.endpoint) });
+    }
+    setDraft(null); setRevision(value => value + 1);
+  }, [matchKey, inboxUrl, matches]);
   const submit = useCallback(async (input: WebhookIntentInput) => {
     if (controller === null) return false;
     setFailure(null);
@@ -190,36 +210,43 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const reconcile = async () => { const state = await controller?.reconcile(); if (state?.phase === 'confirmed') confirm(state); };
 
   const primary = data?.personal.find(endpoint => endpoint.enabled) ?? data?.personal[0] ?? null;
-  const [draft, setDraft] = useState<{ readonly projects: readonly string[]; readonly events: readonly WebhookEventType[] } | null>(null);
-  // The event choices show the union over projects. Saving applies only the events the user added or removed to each
-  // existing project, so per-project selections made on the Webhook page survive an unchanged save. A project may hold
-  // several independent subscriptions; it appears once here, and saving keeps every one of them by its own id.
-  const baseline = useMemo(() => ({ projects: [...new Set(primary?.subscriptions.map(item => item.projectId) ?? [])], events: EVENT_TYPES.filter(event => primary?.subscriptions.some(item => item.eventTypes.includes(event))) }), [primary]);
-  // An edit in progress survives background reloads; a confirmed save adopts the service's configuration again.
+  // Saving applies only the events the user added or removed to each existing project, so per-project selections made
+  // on the Webhook page survive an unchanged save, and every subscription of a project is kept by its own id.
+  const current = useMemo(() => selectionOf(primary), [primary]);
+  // An edit in progress survives background reloads; a confirmed save or an explicit retry adopts the service's
+  // configuration again.
   const lastRevision = useRef(revision);
   useEffect(() => { if (lastRevision.current !== revision) { lastRevision.current = revision; setDraft(null); } }, [revision]);
-  const selection = draft ?? baseline;
+  // PATCH replaces the whole subscription list under the CAS version it names. A reload that advances the endpoint must
+  // not carry an older draft to the newer version, which would silently drop subscriptions added elsewhere; nor may a
+  // create draft proceed once an endpoint already targets this inbox. The draft keeps its starting state, and a
+  // changed endpoint blocks saving until the user discards the edit.
+  const editing = draft === null ? primary : draft.base;
+  const baseline = useMemo(() => draft === null ? current : selectionOf(draft.base), [draft, current]);
+  const stale = draft !== null && !sameEndpointState(draft.base, primary);
+  const selection: Selection = draft ?? current;
   const [invalid, setInvalid] = useState(false);
-  const toggle = <K extends 'projects' | 'events',>(key: K, value: (typeof selection)[K][number], checked: boolean) => {
+  const toggle = <K extends 'projects' | 'events',>(key: K, value: Selection[K][number], checked: boolean) => {
     setInvalid(false);
-    setDraft(old => { const current = old ?? baseline, list = current[key] as readonly string[]; return { ...current, [key]: checked ? [...list, value] : list.filter(item => item !== value) }; });
+    setDraft(old => { const next = old ?? { base: primary, ...current }, list = next[key] as readonly string[]; return { ...next, [key]: checked ? [...list, value] : list.filter(item => item !== value) }; });
   };
+  const discard = () => { setInvalid(false); setDraft(null); };
   const save = async () => {
-    if (inboxUrl === null || primary === null && awaitingCreated) return;
+    if (inboxUrl === null || stale || editing === null && awaitingCreated) return;
     const added = selection.events.filter(event => !baseline.events.includes(event)), removed = baseline.events.filter(event => !selection.events.includes(event));
     // PATCH replaces the whole subscription list, so each existing subscription of a selected project is resubmitted under
     // its own id. A removed event leaves every one of them; an added event joins the project's first subscription only
     // when none of them carries it yet.
     const subscriptions = [...new Set(selection.projects)].flatMap((projectId): WebhookSubscriptionInput[] => {
-      const existing = primary?.subscriptions.filter(item => item.projectId === projectId) ?? [];
+      const existing = editing?.subscriptions.filter(item => item.projectId === projectId) ?? [];
       if (existing.length === 0) return [{ id: null, projectId, eventTypes: EVENT_TYPES.filter(event => selection.events.includes(event)) }];
       const missing = added.filter(event => !existing.some(item => item.eventTypes.includes(event)));
       return existing.map((item, index) => ({ id: item.id, projectId, eventTypes: [...item.eventTypes.filter(event => !removed.includes(event)), ...(index === 0 ? missing : [])] }));
     }).filter(item => item.eventTypes.length > 0);
     if (selection.events.length === 0 || subscriptions.length === 0) { setInvalid(true); return; }
-    await submit(primary === null
+    await submit(editing === null
       ? { kind: 'endpoint.create', body: { name: `${m.endpointName} · ${task.name}`.slice(0, 100), enabled: true, destination: { kind: 'http', adapterVersion: '1', configuration: { url: inboxUrl } }, subscriptions } }
-      : { kind: 'endpoint.patch', endpointId: primary.id, ifVersion: primary.configVersion, destinationRevision: primary.destinationRevision, body: { subscriptions, ...(primary.enabled ? {} : { enabled: true }) } });
+      : { kind: 'endpoint.patch', endpointId: editing.id, ifVersion: editing.configVersion, destinationRevision: editing.destinationRevision, body: { subscriptions, ...(editing.enabled ? {} : { enabled: true }) } });
   };
   const pause = (endpoint: WebhookActiveEndpoint) => submit({ kind: 'endpoint.patch', endpointId: endpoint.id, ifVersion: endpoint.configVersion, destinationRevision: endpoint.destinationRevision, body: { enabled: false } });
   const remove = (endpoint: WebhookActiveEndpoint) => submit({ kind: 'endpoint.delete', endpointId: endpoint.id, ifVersion: endpoint.configVersion, body: {} });
@@ -245,7 +272,8 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
           {EVENT_TYPES.map(event => <label key={event}><input type="checkbox" checked={selection.events.includes(event)} onChange={changed => toggle('events', event, changed.target.checked)} /><span>{wm.eventDescriptions[event]}</span></label>)}
         </div></fieldset>
         {invalid ? <p className="notice error" role="alert">{m.invalid}</p> : null}
-        <div className="assistant-task-actions"><button className="button primary" type="submit" disabled={busy || (primary === null ? awaitingCreated : !primary.capabilities.manage)}>{primary === null ? m.create : m.save}</button></div>
+        {stale ? <div className="notice warning" role="alert"><p>{m.stale}</p><button className="button" type="button" onClick={discard}>{m.discard}</button></div> : null}
+        <div className="assistant-task-actions"><button className="button primary" type="submit" disabled={busy || stale || (editing === null ? awaitingCreated : !editing.capabilities.manage)}>{editing === null ? m.create : m.save}</button></div>
       </form> : null}
       <h4>{m.linked}</h4>
       {data.personal.length + data.team.length === 0 ? <p className="assistant-task-meta">{m.none}</p> : <ul className="assistant-task-subscription-endpoints">
