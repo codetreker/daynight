@@ -63,6 +63,7 @@ func TestClosedTransactionRetainsDriverCauseAcrossAccessPatterns(t *testing.T) {
 		{"received_inbound", func() error { _, e := d.ReceivedInbound(ctx, f.owner, id, id, time.Time{}); return e }},
 		{"receipt_reclaim", func() error { _, e := d.ReclaimInboxReceipts(ctx, f.owner, f.task.ID, 1); return e }},
 		{"event_reclaim", func() error { _, e := d.ReclaimInboundEvents(ctx, f.owner, f.task.ID, time.Time{}, 1); return e }},
+		{"reclaim_tasks", func() error { _, e := d.InboundReclaimTasks(ctx, f.owner, time.Time{}, 1); return e }},
 		{"record_insert", func() error {
 			_, e := d.InsertRecord(ctx, model.AssistantTaskRecord{OwnerUserID: f.owner, TaskID: f.task.ID})
 			return e

@@ -11,6 +11,7 @@ func TestWebhookCaptureStore(t *testing.T) {
 	suite.run(t, "CaptureBodyCapacityIsEnforcedByPostgreSQL", testCaptureBodyCapacityIsEnforcedByPostgreSQL)
 	suite.run(t, "CaptureRejectsDuplicateEventWithoutAddingResponsibilities", testCaptureRejectsDuplicateEventWithoutAddingResponsibilities)
 	suite.run(t, "CapturedEventProvenanceRoundTripsActorAndFactState", testCapturedEventProvenanceRoundTripsActorAndFactState)
+	suite.run(t, "PersonalDeliveryDestinationsFilterOwnerAndOrigin", testPersonalDeliveryDestinationsFilterOwnerAndOrigin)
 	suite.run(t, "AudiencePartialStreamFailureDiscardsSourceTransaction", testAudiencePartialStreamFailureDiscardsSourceTransaction)
 	suite.run(t, "CapturedAuthorizationEpochDoesNotBecomeContinuousOnRegrant", testCapturedAuthorizationEpochDoesNotBecomeContinuousOnRegrant)
 	suite.run(t, "EligibilityUnionAndCommittedAuthorizationGap/grant", func(t *testing.T, conn *pgx.Conn) {

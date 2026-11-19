@@ -150,4 +150,9 @@ type AssistantTaskInboxDAO interface {
 	// events of the task that left pending, by delivery or expiry, before the
 	// cutoff.
 	ReclaimInboundEvents(ctx context.Context, owner, task string, before time.Time, limit int) (int64, error)
+	// InboundReclaimTasks lists, in ascending ID order and up to limit, the
+	// owner's undeleted assistant tasks that hold a receipt expired by current
+	// database time or a delivered or expired inbound event settled before the
+	// cutoff.
+	InboundReclaimTasks(ctx context.Context, owner string, before time.Time, limit int) ([]string, error)
 }
