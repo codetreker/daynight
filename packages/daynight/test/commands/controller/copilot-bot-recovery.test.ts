@@ -209,4 +209,3 @@ test.skipIf(process.platform === "win32")("native symlinks cannot redirect sourc
   await expect(first.protect(nativeId, turnId, messageId)).rejects.toMatchObject({ code: "recovery_material_invalid" });
   expect(await readdir(outside)).toEqual([]);
 });
-
