@@ -291,6 +291,9 @@ var projectRepositoryVersionSQL string
 //go:embed schema/migrations/096_pr_review_assignment.sql
 var prReviewAssignmentSQL string
 
+//go:embed schema/migrations/099_assistant_task_inboxes.sql
+var assistantTaskInboxesSQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -414,6 +417,7 @@ var schemaMigrations = []migration{
 	{version: 96, sql: prReviewAssignmentSQL},
 	{version: 97, sql: webhookEventActorSQL},
 	{version: 98, sql: assistantTaskOutcomesSQL},
+	{version: 99, sql: assistantTaskInboxesSQL},
 	{version: 102, sql: assistantTaskAppendixValidationsSQL},
 }
 

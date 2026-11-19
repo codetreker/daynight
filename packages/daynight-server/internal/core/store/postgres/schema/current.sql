@@ -67,7 +67,36 @@ CREATE TABLE "assistant_task_events" (
     "seen_at" timestamp with time zone,
     "ack_operation_id" "uuid",
     "ack_fingerprint" "text",
-    "created_at" timestamp with time zone NOT NULL
+    "created_at" timestamp with time zone NOT NULL,
+    "settled_at" timestamp with time zone
+);
+
+CREATE TABLE "assistant_task_inbox_receipts" (
+    "inbox_id" "uuid" NOT NULL,
+    "idempotency_key" "text" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "body_sha256" "text" NOT NULL,
+    "event_id" "uuid",
+    "suppressed" boolean NOT NULL,
+    "target_bot_id" "uuid" NOT NULL,
+    "subject_task_id" "uuid",
+    "received_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_inboxes" (
+    "inbox_id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "state" "text" NOT NULL,
+    "token_digest" "text",
+    "overlap_token_digest" "text",
+    "overlap_until" timestamp with time zone,
+    "suppressed_count" bigint NOT NULL,
+    "version" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "rotated_at" timestamp with time zone
 );
 
 CREATE TABLE "assistant_task_inquiries" (
@@ -1631,6 +1660,12 @@ ALTER TABLE ONLY "assistant_task_claim_operations"
 ALTER TABLE ONLY "assistant_task_events"
     ADD CONSTRAINT "assistant_task_events_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "assistant_task_inbox_receipts"
+    ADD CONSTRAINT "assistant_task_inbox_receipts_pkey" PRIMARY KEY ("inbox_id", "idempotency_key");
+
+ALTER TABLE ONLY "assistant_task_inboxes"
+    ADD CONSTRAINT "assistant_task_inboxes_pkey" PRIMARY KEY ("inbox_id");
+
 ALTER TABLE ONLY "assistant_task_inquiries"
     ADD CONSTRAINT "assistant_task_inquiries_pkey" PRIMARY KEY ("id");
 
@@ -2013,9 +2048,17 @@ CREATE INDEX "assistant_task_appendix_page" ON "assistant_task_appendix" USING "
 
 CREATE INDEX "assistant_task_appendix_validations_task" ON "assistant_task_appendix_validations" USING "btree" ("task_id");
 
+CREATE INDEX "assistant_task_events_inbound_settled" ON "assistant_task_events" USING "btree" ("task_id", "settled_at") WHERE (("type" = 'inbound'::"text") AND ("state" = ANY (ARRAY['delivered'::"text", 'expired'::"text"])));
+
 CREATE INDEX "assistant_task_events_page" ON "assistant_task_events" USING "btree" ("task_id", "created_at", "id");
 
 CREATE INDEX "assistant_task_events_target_state" ON "assistant_task_events" USING "btree" ("target_bot_id", "state");
+
+CREATE INDEX "assistant_task_inbox_receipts_expiry" ON "assistant_task_inbox_receipts" USING "btree" ("task_id", "expires_at");
+
+CREATE INDEX "assistant_task_inbox_receipts_wake" ON "assistant_task_inbox_receipts" USING "btree" ("target_bot_id", "subject_task_id", "received_at");
+
+CREATE UNIQUE INDEX "assistant_task_inboxes_live" ON "assistant_task_inboxes" USING "btree" ("task_id") WHERE ("state" = 'enabled'::"text");
 
 CREATE INDEX "assistant_task_inquiries_page" ON "assistant_task_inquiries" USING "btree" ("task_id", "created_at", "id");
 
