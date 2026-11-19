@@ -51,7 +51,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const [width, repositoryConf
 
 test('same-account check failure closes the mobile drawer and releases its scroll lock', async ({ page, context }) => {
   const state = await install(page); await page.goto('/projects');
-  const opener = page.getByRole('button', { name: 'Expand sidebar', exact: true }); await opener.click();
+  const opener = page.getByRole('button', { name: 'Open navigation', exact: true }); await opener.click();
   const drawer = page.getByRole('dialog', { name: 'Workspace navigation', exact: true }), workspace = page.locator('.workspace'), shell = page.locator('.auth-shell');
   const focused = drawer.getByRole('link', { name: 'My Workers', exact: true }); await focused.focus();
   await expect(workspace).toHaveAttribute('inert', ''); await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');

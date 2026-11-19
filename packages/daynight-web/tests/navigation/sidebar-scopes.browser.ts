@@ -126,7 +126,7 @@ const expectIconState = async (link: Locator, color: string) => {
   await expect(link.locator('.nav-text')).toHaveCSS('color', color);
 };
 
-for (const width of [320, 390, 768, 1360]) {
+for (const width of [320, 390, 740, 741, 1360]) {
   for (const locale of ['en', 'zh-CN']) {
     test(`groups long navigation without overflow at ${width}px in ${locale}`, async ({ page }) => {
       await page.setViewportSize({ width, height: 800 });
@@ -147,11 +147,15 @@ for (const width of [320, 390, 768, 1360]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       const sidebar = page.locator('.sidebar');
       if (width <= 740) {
-        expect((await sidebar.boundingBox())!.width).toBe(60);
-        await expect(sidebar.getByRole('link', { name: chinese ? '进行中的任务' : 'In-progress tasks', exact: true })).toBeVisible();
-        await expectIconColumn(sidebar);
-        await expectTeamSwitchGeometry(sidebar.locator('.team-switch'), 44, false);
-        await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
+        await expect(sidebar).toBeHidden();
+        await expect(sidebar).toHaveAttribute('inert', '');
+        expect(await page.locator('.workspace').evaluate(element => ({ x: element.getBoundingClientRect().x, width: element.getBoundingClientRect().width }))).toEqual({ x: 0, width });
+        const opener = page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation' });
+        await expect(opener).toHaveAttribute('aria-controls', 'workspace-sidebar');
+        await expect(opener).toHaveAttribute('aria-expanded', 'false');
+        const box = (await opener.boundingBox())!;
+        expect([box.width, box.height]).toEqual([44, 44]);
+        await page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(220);
       } else expect((await sidebar.boundingBox())!.width).toBe(190);
       await expectIconColumn(sidebar);
@@ -221,7 +225,7 @@ for (const width of [320, 390, 768, 1360]) {
         await expect(sidebar).toHaveAttribute('role', 'dialog');
         await page.keyboard.press('Escape');
         await expect(sidebar).not.toHaveAttribute('role', 'dialog');
-        await expect(page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' })).toBeFocused();
+        await expect(page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation' })).toBeFocused();
       } else {
         await page.getByRole('button', { name: chinese ? '折叠侧栏' : 'Collapse sidebar' }).click();
         expect((await sidebar.boundingBox())!.width).toBe(68);
@@ -232,7 +236,7 @@ for (const width of [320, 390, 768, 1360]) {
         await expectIconColumn(sidebar);
       }
       expect(reads()).toBe(before);
-      if (width <= 740) await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
+      if (width <= 740) await page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation' }).click();
       const layout = () => tasks.evaluate(link => {
         const row = link.getBoundingClientRect();
         const icon = link.querySelector('.nav-icon')!.getBoundingClientRect();
@@ -245,11 +249,11 @@ for (const width of [320, 390, 768, 1360]) {
       await expect(breadcrumb).toContainText(chinese ? '我的' : 'My');
       await expect(breadcrumb).toContainText(chinese ? '进行中的任务' : 'In-progress tasks');
       await expect(tasks).toHaveAttribute('aria-current', 'page');
-      await expectIconState(tasks, 'rgb(240, 241, 255)');
       if (width <= 740) {
         await expect(sidebar).not.toHaveAttribute('role', 'dialog');
-        await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar' }).click();
+        await page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation' }).click();
       }
+      await expectIconState(tasks, 'rgb(240, 241, 255)');
       expect(await layout()).toEqual(beforeSelection);
     });
   }
@@ -307,4 +311,89 @@ test('keeps the Team switcher touch-sized on a wide coarse-pointer device', asyn
   } finally {
     await context.close();
   }
+});
+
+for (const width of [320, 390, 740]) {
+  test(`keeps the navigation opener reachable and restores focus at ${width}px`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 360 });
+    const reads = await install(page);
+    await page.goto(`/teams/${teamId}`);
+    const opener = page.getByRole('button', { name: 'Open navigation', exact: true });
+    const sidebar = page.locator('.sidebar');
+    const workspace = page.locator('.workspace');
+    await expect(opener).toBeVisible();
+    await expect(sidebar).toBeHidden();
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect(opener).toBeInViewport();
+    const openerBox = (await opener.boundingBox())!;
+    const accountBox = (await page.getByRole('button', { name: /^Account menu:/ }).boundingBox())!;
+    const localeBox = (await page.getByRole('combobox', { name: '语言 / Language' }).boundingBox())!;
+    expect(openerBox.x + openerBox.width).toBeLessThanOrEqual(localeBox.x);
+    expect(localeBox.x + localeBox.width).toBeLessThanOrEqual(accountBox.x);
+    const count = reads();
+    for (const dismiss of ['close', 'backdrop', 'escape'] as const) {
+      await opener.click();
+      const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
+      const close = drawer.getByRole('button', { name: 'Close navigation', exact: true });
+      await expect(close).toBeFocused();
+      if (dismiss === 'close') await page.screenshot({ path: info.outputPath('mobile-drawer.png') });
+      expect(await close.evaluate(element => [element.getBoundingClientRect().width, element.getBoundingClientRect().height])).toEqual([44, 44]);
+      await expect(workspace).toHaveAttribute('inert', '');
+      await page.keyboard.press('Shift+Tab');
+      await expect(drawer.getByRole('link', { name: 'Test Sessions', exact: true })).toBeFocused();
+      await page.keyboard.press('Tab'); await expect(close).toBeFocused();
+      if (dismiss === 'close') await close.click();
+      else if (dismiss === 'backdrop') await page.locator('.sidebar-backdrop').click({ position: { x: width - 8, y: 20 } });
+      else await page.keyboard.press('Escape');
+      await expect(sidebar).toBeHidden();
+      await expect(workspace).not.toHaveAttribute('inert');
+      await expect(opener).toBeFocused();
+      expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
+    }
+    expect(reads()).toBe(count);
+    await opener.click();
+    await page.getByRole('dialog', { name: 'Workspace navigation' }).getByRole('link', { name: 'My Workers', exact: true }).click();
+    await expect(page).toHaveURL(/\/workers$/);
+    await expect(page.getByRole('main')).toBeFocused();
+    await expect(sidebar).toBeHidden();
+    await page.screenshot({ path: info.outputPath('mobile-shell.png'), fullPage: true });
+  });
+}
+
+test('closes the drawer across breakpoints and keeps the desktop collapse preference', async ({ page }) => {
+  await install(page); await page.goto(`/teams/${teamId}`);
+  await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).click();
+  const stored = await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'));
+  const sidebar = page.locator('.sidebar');
+  expect((await sidebar.boundingBox())!.width).toBe(68);
+  await page.setViewportSize({ width: 740, height: 800 });
+  const opener = page.getByRole('button', { name: 'Open navigation', exact: true });
+  await expect(sidebar).toBeHidden(); await opener.click();
+  await expect(page.getByRole('dialog', { name: 'Workspace navigation' })).toBeVisible();
+  await page.setViewportSize({ width: 741, height: 800 });
+  await expect(sidebar).not.toHaveAttribute('role', 'dialog');
+  expect((await sidebar.boundingBox())!.width).toBe(68);
+  await expect(page.locator('.workspace')).not.toHaveAttribute('inert');
+  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
+  expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe(stored);
+  await page.setViewportSize({ width: 740, height: 800 });
+  await expect(sidebar).toBeHidden(); await expect(opener).toHaveAttribute('aria-expanded', 'false');
+  await page.reload(); await expect(sidebar).toBeHidden(); await expect(opener).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('removes the Team popover when crossing the navigation breakpoint', async ({ page }) => {
+  await install(page); await page.goto(`/teams/${teamId}`);
+  const selector = page.locator('.team-switch');
+  await selector.click(); await expect(page.locator('.team-options')).toBeVisible();
+  await page.setViewportSize({ width: 740, height: 800 });
+  await expect(page.locator('.sidebar')).toBeHidden();
+  await expect(page.locator('.team-options')).toBeHidden();
+  const opener = page.getByRole('button', { name: 'Open navigation', exact: true });
+  await expect(opener).toBeFocused(); await opener.click();
+  await selector.click(); await expect(page.locator('.team-options')).toBeVisible();
+  await page.setViewportSize({ width: 741, height: 800 });
+  await expect(page.getByRole('dialog', { name: 'Workspace navigation' })).toHaveCount(0);
+  await expect(page.locator('.team-options')).toBeHidden();
+  await expect(page.locator('.workspace')).not.toHaveAttribute('inert');
+  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
 });
