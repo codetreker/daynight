@@ -1,6 +1,6 @@
 # Session 图片浏览器交互设计
 
-本文定义浏览器图片交互及其接入要求。统一资源客户端、schema3 归档读取、共享图片显示、页内预览及持久图片草稿接入现有 Session 消费者。草稿上传与发送始终消费服务的当前图片能力；生产 Provider 图片 send/steer 尚未取得完整资格时保持关闭，浏览器组件或受控传输通过不能开放该资格。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
+本文定义浏览器图片交互及其接入要求。统一资源客户端、schema3 归档读取、共享图片显示、页内预览及持久图片草稿接入现有 Session 消费者。草稿上传与发送始终消费服务的当前图片能力；生产 Provider 图片 send/steer 只在匹配[已发布资格](session-image-providers.md#已发布资格)时开放，其他组合保持关闭，浏览器组件或受控传输通过不能开放该资格。输入要求由[图片输入与草稿规格](../spec/session-image-input.md)拥有，显示、只读及权限要求由[图片显示与归档规格](../spec/session-image-history.md)拥有，验收边界见[图片验收与容量规格](../spec/session-image-acceptance.md)。
 
 [公共协议与存储设计](session-image-contracts.md)唯一拥有 wire DTO、严格解析、能力、身份、错误及容量合同；本文只定义浏览器内部状态和预览接口，并消费该合同。[来源采集设计](session-image-sources.md)拥有 AST 与来源 IO，[归档设计](session-image-archives.md)拥有记录 reader。本文不扩展 Herdr、Thread、通用文件、富文本、跨设备草稿、图片编辑或轮播。采用原 textarea 与有序附件区，所有入口沿现有 Session resolver。
 
