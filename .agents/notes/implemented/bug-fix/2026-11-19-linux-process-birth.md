@@ -1,0 +1,66 @@
+# Agent Note: Stable Linux Process Birth Identity
+
+Status: implemented
+
+## Problem
+
+Linux `ps lstart` can change for a running process while its kernel starttime
+ticks, command and launch marker remain unchanged. Comparing the displayed
+wall-clock value with the saved proof then rejects an original Controller,
+preventing normal Bot shutdown and recovery. The refusal protects against
+signaling an unproven process, but the birth representation makes legitimate
+ownership impossible to re-establish.
+
+The [locale decision](../../archived/bug-fix/2026-10-28-controller-process-locale.md)
+made POSIX output comparable across localized shells. Its rationale remains
+valid for parsing, especially on macOS; a fixed locale does not make a Linux
+wall-clock rendering stable. The observed drift does not establish whether
+NTP, suspend, manual adjustment or another mechanism changed the clock.
+
+## Decision
+
+The adopted [Session requirements](../../../../docs/spec/task-sessions.md#linux-进程出生身份)
+require Linux boot identity and kernel starttime ticks as the birth identity.
+The [Session design](../../../../docs/design/task-session-protocol.md#linux-稳定出生身份确定方案)
+defines the versioned token, consistent sampling and persistence obligations.
+Runtime integration and product acceptance remain incomplete; adoption of the
+specification does not establish that the running product uses this identity.
+
+Birth identity remains separate from command, process group and execution
+ownership. Historical Linux proofs remain readable, but no current PID lookup
+may upgrade them into permission to signal. The records and unknown process
+responsibility survive refusal. macOS and Windows retain their platform paths.
+
+## Alternatives
+
+**Continue comparing `lstart` under `LC_ALL=C`.** This prevents localized date
+parsing failures but cannot prevent the observed time display from changing.
+
+**Ignore birth mismatches when command or launch marker matches.** These values
+do not prove that the same process instance still occupies a PID. Removing the
+birth check would weaken the protection that correctly rejected an uncertain
+stop.
+
+**Store only starttime ticks.** Ticks identify elapsed time within one boot;
+including boot identity prevents a later boot from satisfying an earlier
+process proof with coincidentally equal PID and ticks.
+
+**Rebuild historical proofs from the live PID.** A newly observed process may
+already be a replacement. Rewriting the original record would manufacture the
+missing relationship instead of proving it.
+
+## Consequences
+
+The accepted contract removes dependence on wall-clock rendering for new Linux
+proofs while retaining independent process and execution checks. Consistent
+sampling adds bounded reads and must reject exits or replacement during the
+observation. Every persistent reader and the extraction child must preserve
+the token; accepting an unknown version as a historical date would defeat the
+format boundary.
+
+Historical executions with incomplete proof can remain blocked. This decision
+does not reconstruct their missing identity or authorize deleting their records.
+Controlled tests must distinguish stable birth from PID reuse and boot changes;
+real Linux Worker/Bot and Controller lifecycle evidence is still required before
+claiming the defect fixed. Platform regressions do not establish untested
+wall-clock scenarios on macOS or Windows.
