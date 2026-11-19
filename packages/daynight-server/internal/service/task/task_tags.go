@@ -23,6 +23,11 @@ func (s *Tasks) ReplaceTags(ctx context.Context, principal model.Principal, proj
 		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
+		// Tag replacement captures no event, but a declared Bot is still verified
+		// so every Task write route applies the same admission.
+		if _, err := sourceActor(ctx, tx, principal); err != nil {
+			return err
+		}
 		current, err := tx.TaskDAO().Task(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskcore.NotFound(err)

@@ -30,14 +30,14 @@ type taskHandler struct {
 
 func TaskRoutes(mux *http.ServeMux, tasks TaskService, observations ObservationService, auth RouteAuthentication, logger *slog.Logger) {
 	handler := &taskHandler{tasks: tasks, observations: observations, logger: logger}
-	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", auth.Require(handler.create))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", auth.Require(declaredBot(logger, taskBotRefusal("task", "create"), handler.create)))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-work", auth.Require(handler.work))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-work", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", auth.Require(handler.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.get))
-	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.update))
-	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.delete))
-	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(handler.setStatus))
+	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(declaredBot(logger, taskBotRefusal("task", "update"), handler.update)))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(declaredBot(logger, taskBotRefusal("task", "delete"), handler.delete)))
+	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(declaredBot(logger, taskBotRefusal("task", "set_status"), handler.setStatus)))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
 	workerRoutes(mux, handler, auth, logger)
 	propertyRoutes(mux, handler, auth, logger)

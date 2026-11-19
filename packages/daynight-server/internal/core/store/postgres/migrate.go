@@ -304,6 +304,9 @@ func (e *githubRepositoryIdentityMigrationError) Error() string {
 }
 func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
 
+//go:embed schema/migrations/097_webhook_event_actor.sql
+var webhookEventActorSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -406,6 +409,7 @@ var schemaMigrations = []migration{
 	{version: 94, sql: workerReviewParticipationSQL},
 	{version: 95, sql: projectRepositoryVersionSQL},
 	{version: 96, sql: prReviewAssignmentSQL},
+	{version: 97, sql: webhookEventActorSQL},
 	{version: 99, sql: assistantTaskInboxesSQL},
 }
 

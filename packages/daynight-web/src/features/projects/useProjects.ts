@@ -1,3 +1,4 @@
+import { subscribeRepositoryChanges } from './repository-changes';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, isAbortError, listProjects } from '../../api/client';
 import type { Project } from '../../api/types';
@@ -179,6 +180,8 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
       else if (state.loadingMore && state.nextCursor !== null) void request(state.nextCursor, true);
     }
   }, [admissionBlocked, request, scopeKey]);
+
+  useEffect(() => subscribeRepositoryChanges(change => { if (change.userId === admission?.userId && stateRef.current.items.some(project => project.id === change.projectId)) void request(null, false, true); }), [admission, request]);
 
   const refresh = useCallback(() => { void request(null, false); }, [request]);
   const loadMore = useCallback(() => {

@@ -25,7 +25,7 @@ func (s *Service) taskQuery(ctx context.Context, principal model.Principal, proj
 		if err = op.CheckProjectAccess(ctx, scope, principal, project); err != nil {
 			return err
 		}
-		load := func(id string) (*sessioncore.Access, error) { return loadSession(ctx, op, scope, id) }
+		load := func(id string) (*sessioncore.Access, error) { return loadTaskReadSession(ctx, op, scope, id) }
 		return work(op, scope, task, load)
 	})
 }
