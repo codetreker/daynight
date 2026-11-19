@@ -226,6 +226,19 @@ func (m *Module) ListEvents(ctx context.Context, dao store.AssistantTaskDAO, act
 		return result, err
 	}
 	if taskID != "" {
+		// A task event pull also reclaims settled inbound material under the
+		// task lock, so an inbox without new requests is still cleaned up.
+		task, err := loadTask(ctx, dao, actor, taskID, true)
+		if err != nil {
+			return result, err
+		}
+		now, err := dao.Now(ctx)
+		if err != nil {
+			return result, err
+		}
+		if err = ReclaimInbound(ctx, dao, task.OwnerUserID, task.ID, now); err != nil {
+			return result, err
+		}
 		return readPage(ctx, dao, actor, taskID, "events", input, dao.Events, func(v model.AssistantTaskEvent) store.AssistantTaskPosition {
 			return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: v.ID}
 		})
