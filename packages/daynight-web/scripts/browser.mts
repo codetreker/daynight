@@ -17,6 +17,7 @@ export const browserConfigs = [
   'playwright.config.ts',
   'team-playwright.config.ts',
   'discussion-identity-playwright.config.ts',
+  'discussion-touch-playwright.config.ts',
   'team-management-identity-playwright.config.ts',
   'project-grants-playwright.config.ts',
   'github-settings-playwright.config.ts',
