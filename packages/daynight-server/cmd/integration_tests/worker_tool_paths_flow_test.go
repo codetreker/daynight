@@ -61,4 +61,5 @@ func serverAPIWorkerToolPathsFlow(t *testing.T, f *fixture) {
 		t.Fatalf("bootstrap changed the saved target: %+v", after)
 	}
 	serverAPIWorkerAliasFlow(t, f, workerID)
+	serverAPIWorkerReviewParticipationFlow(t, f, workerID, report, candidate, headers, reportHeaders)
 }

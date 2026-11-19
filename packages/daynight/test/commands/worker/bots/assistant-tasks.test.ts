@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
@@ -551,6 +552,27 @@ describe("assistant-task managed loops", () => {
       if (command.kind !== "send_message") throw new Error("Wrong notification kind");
       expect(Buffer.byteLength(command.payload.content.filter(part => part.type === "text").map(part => part.text).join(""))).toBeLessThanOrEqual(512 * 1024);
     }
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("delivers an inbound backlog across idle turns without blocking a later assistant task event", async () => {
+    const f = await fixture(), runtime = f.create(), body = "y".repeat(4096);
+    const inbound = (n: number): AssistantTaskEvent => ({ ...f.event(n), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 4096, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.events = [...Array.from({ length: 12 }, (_, index) => inbound(100 + index)), f.event(60)];
+    f.ackEvent.mockImplementation(async (_taskId, eventId, input) => {
+      const index = f.events.findIndex(event => event.id === eventId);
+      const delivered: AssistantTaskEvent = { ...f.events[index]!, state: "delivered", ackOperationId: input.operationId };
+      f.events[index] = delivered; return delivered;
+    });
+    await runtime.tick("delivery", signal());
+    const first = f.ackEvent.mock.calls.map(call => call[1]);
+    expect(f.send).toHaveBeenCalledOnce(); expect(first).toContain(id(60)); expect(first.length).toBeLessThan(13);
+    const text = (n: number) => { const command = f.send.mock.calls[n]![1]; if (command.kind !== "send_message") throw new Error("Wrong notification kind"); return command.payload.content.map(part => part.type === "text" ? part.text : "").join(""); };
+    expect(text(0)).toContain("untrusted-external-data"); expect(text(0)).toContain(`daynight assistant-task manual show ${f.task.id}`);
+    expect(f.events.filter(event => event.state === "pending").map(event => event.id)).toEqual(Array.from({ length: 13 - first.length }, (_, index) => id(100 + first.length - 1 + index)));
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2); expect(f.events.every(event => event.state === "delivered")).toBe(true);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[1])).size).toBe(13);
     expect(f.onError).not.toHaveBeenCalled();
   });
 
