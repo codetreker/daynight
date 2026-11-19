@@ -10,7 +10,6 @@ import { isTerminalTaskStatus } from "../../task/status.js";
 import { PublicDiagnosticError } from "../../platform/diagnostics.js";
 import { CliCancelledError } from "../../cli/cancellation.js";
 import { parseParent } from "./parent.js";
-import { botIdentity } from "../../api/bot-identity.js";
 
 export type TaskCommandDependencies = {
   runServerCommand: typeof runServerCommand;
@@ -64,9 +63,12 @@ const compileDependencies = async (
 // An assistant environment identifies its Bot so the service can record it as
 // the operator of Task, Step and Thread writes. A malformed value is a broken
 // environment; reject it instead of sending or silently dropping the header.
-const withBotIdentity = (dependencies: TaskCommandDependencies, help: string): TaskCommandDependencies => {
+// The validator loads only when the variable is present so help and argument
+// errors stay independent of API modules.
+const withBotIdentity = async (dependencies: TaskCommandDependencies, help: string): Promise<TaskCommandDependencies> => {
   const raw = (dependencies.environment ?? process.env).DAYNIGHT_BOT_ID;
   if (raw === undefined) return dependencies;
+  const { botIdentity } = await import("../../api/bot-identity.js");
   let botId: string;
   try { botId = botIdentity(raw); }
   catch { throw new UsageError("DAYNIGHT_BOT_ID must be a nonzero canonical lowercase UUID. Run task commands from the assigned Bot environment or unset it.", help); }
@@ -84,7 +86,7 @@ export const runTaskCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
-  const dependencies = withBotIdentity(injected, `${command.path.join(" ")} --help`);
+  const dependencies = await withBotIdentity(injected, `${command.path.join(" ")} --help`);
   if (command.path[2] === "goal-dependencies") {
     const { runGoalDependenciesCommand } = await import("./goal-dependencies.js");
     await runGoalDependenciesCommand(command, context, dependencies);
