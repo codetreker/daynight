@@ -129,6 +129,23 @@ it('updates the linked personal endpoint and warns about Team endpoints targetin
   expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull();
 });
 
+it('drops an endpoint whose detail no longer targets this inbox after its summary did', async () => {
+  // Another tab retargets the endpoint to a different inbox between the list read and the detail read.
+  const otherInbox = `${origin}/api/v1/assistant-task-inbox/${botId(82)}`;
+  const retargeted = endpoint(personalId, otherInbox, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
+  const s = server({ personal: [retargeted] });
+  const serve = s.fetch.getMockImplementation()!;
+  s.fetch.mockImplementation(async (url, options) => String(url) === '/api/v1/me/webhooks?limit=100' && (options?.method ?? 'GET') === 'GET'
+    ? botResponse({ items: [summary({ ...retargeted, destination: { ...retargeted.destination, url: inboxUrl, displayUrl: inboxUrl } })], nextCursor: null })
+    : serve(url, options));
+  mount();
+  expect(await screen.findByText('No Webhook endpoint targets this inbox yet.')).toBeVisible();
+  expect(screen.queryByText(`Endpoint ${personalId.slice(-2)}`)).toBeNull();
+  expect(screen.getByRole('checkbox', { name: 'Alpha' })).not.toBeChecked();
+  expect(screen.getByRole('button', { name: 'Create subscription' })).toBeEnabled();
+  expect(s.writes).toHaveLength(0);
+});
+
 it('preserves per-project event selections and applies only the changed events', async () => {
   const linked = endpoint(personalId, inboxUrl, [
     { id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' },

@@ -112,7 +112,10 @@ async function loadDirectory(scope: TaskCacheScope, matches: (target: string | n
     const items = await pages(cursor => listWebhooks(owner, { limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, admission)).catch(error => { if (signal.aborted) throw error; return []; });
     team.push(...items.filter(item => matches(item.destination.url)).map(endpoint => ({ team: entry, endpoint })));
   }
-  return { projects, personal: linked.filter((item): item is WebhookActiveEndpoint => item.lifecycle === 'active'), team };
+  // A list summary and its detail are separate reads, so another tab may retarget the endpoint between them. Only a
+  // detail that still targets this inbox may back actions; otherwise its fresh configVersion would let a save or
+  // cleanup here modify another inbox's subscription without an optimistic-concurrency conflict.
+  return { projects, personal: linked.filter((item): item is WebhookActiveEndpoint => item.lifecycle === 'active' && matches(item.destination.url)), team };
 }
 
 /**
