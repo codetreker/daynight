@@ -129,7 +129,9 @@ place of the upstream model. It retains the original claim, worktree and native
 Session across Worker restart, verifies the resumed assignment and repeated idle
 pings, and checks pause, resumption and claim-bound completion. After the Task
 completes, the same Worker hosts a Bot that reaches the compiled CLI through
-`agentCliAliases`. An auto-takeover assistant task with an enabled inbox is
+`agentCliAliases`. For that Bot the peer presents the Codex 0.169.0 legacy
+rollout profile that Bot recovery verifies, writing the rollout file its
+recovery point captures. An auto-takeover assistant task with an enabled inbox is
 claimed by that Bot; an external JSON body posted with the bearer token becomes
 an `inbound` event, and the Worker renders it as fenced untrusted data into the
 Bot's native Session before acknowledging delivery. Claiming and delivery wait
