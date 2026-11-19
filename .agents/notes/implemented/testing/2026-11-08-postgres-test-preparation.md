@@ -99,6 +99,14 @@ checks Session authentication while the relation is still absent. A failed case
 stops further reuse. Assignee error tests reuse each fault schema for two
 read-only modes.
 
+[Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_boundaries_test.go)
+share one committed Session for the descriptor, missing relations and canceled
+read. The read-only inventory transaction observes committed faults. Cleanup
+deletes the exact invalid descriptor or restores the original relation OID
+and clears cached plans, then reads the clean inventory in a fresh transaction.
+The malformed ready archive has its own schema because it removes the archive
+body constraint. Failed restoration stops fixture reuse.
+
 [Identity profile contention](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_contract_test.go)
 uses one Store per matrix with a distinct identity per case. The tests verify
 that the intended SQL waits on the exact holder before committing or rolling
