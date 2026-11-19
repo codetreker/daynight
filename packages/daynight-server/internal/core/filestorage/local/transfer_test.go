@@ -89,8 +89,8 @@ func TestTransferCleanupRemovesOnlyRecordedNamespace(t *testing.T) {
 	if err := object.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, gateDirectory)); err != nil {
-		t.Fatalf("control namespace: %v", err)
+	if _, err := os.Stat(filepath.Join(root, gateDirectory)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("transfer gate created a control directory: %v", err)
 	}
 }
 

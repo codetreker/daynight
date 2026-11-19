@@ -17,9 +17,8 @@ type imageWorkRegistry struct {
 	work map[string]map[string]*imageWork
 }
 
-// beginImageIO takes the crash-released filesystem gate before a durable lease
-// can exist. A deletion owner may acquire that exact gate to prove stale I/O
-// exited; lease expiry and process-heartbeat guesses are never used as proof.
+// beginImageIO takes the exact storage gate before a durable lease can exist.
+// If gate ownership is lost, the operation context cancels protected I/O.
 func (s *Engine) beginImageIO(parent context.Context, id, lease string) (context.Context, func() error, error) {
 	op, err := s.BeginOperation()
 	if err != nil {
@@ -46,6 +45,7 @@ func (s *Engine) beginImageIO(parent context.Context, id, lease string) (context
 		op.Close()
 		return nil, nil, err
 	}
+	gateCtx, cancelGate := filestorage.GateContext(ctx, gate)
 	w := &imageWork{cancel: cancel, done: make(chan struct{})}
 	s.mediaWork.Lock()
 	if s.mediaWork.work == nil {
@@ -56,7 +56,8 @@ func (s *Engine) beginImageIO(parent context.Context, id, lease string) (context
 	}
 	s.mediaWork.work[id][lease] = w
 	s.mediaWork.Unlock()
-	return ctx, func() error {
+	return gateCtx, func() error {
+		cancelGate()
 		cancel()
 		err := gate.Close()
 		s.mediaWork.Lock()
@@ -72,7 +73,7 @@ func (s *Engine) beginImageIO(parent context.Context, id, lease string) (context
 }
 
 // CancelSessionMedia waits for each local reader/writer's actual exit. The
-// persistent lease and filesystem-gate checks cover other instances separately.
+// durable leases and storage gates coordinate with other instances.
 func (s *Engine) CancelSessionMedia(ctx context.Context, id string) error {
 	s.mediaWork.Lock()
 	work := []*imageWork{}

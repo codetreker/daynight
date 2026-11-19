@@ -5,6 +5,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -52,6 +53,15 @@ type ReadResult[T any] struct {
 func NewReadResult[T any](data T, closer io.Closer) *ReadResult[T] {
 	return &ReadResult[T]{Data: data, closer: closer}
 }
+
+// GateContext ties response delivery to the retained archive permit.
+func (r *ReadResult[T]) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if r == nil {
+		return ctx, func() {}
+	}
+	return filestorage.GateContext(ctx, r.closer)
+}
+
 func (r *ReadResult[T]) Close() error {
 	if r == nil {
 		return nil

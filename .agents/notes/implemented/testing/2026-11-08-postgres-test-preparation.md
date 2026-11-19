@@ -174,7 +174,11 @@ and preference results do not depend on the absolute Bot creation sequence.
 Team deletion, Project creation and ownership transfer matrices reuse one
 Store per parent. Contention cases use independent Teams and Projects, observe
 the actual blocking backend and check committed ownership or its absence. The
-parent verifies pool reuse after the case joins its waiters.
+[repository occupancy race](../../../../packages/daynight-server/internal/core/store/postgres/project_repository_test.go)
+retains the same repository identity across destination Teams and verifies
+the only occupant is the committed winner. It checks rollback or absence for
+the losing Project. The parent verifies pool reuse after the case joins its
+waiters.
 
 The [Project creation Personal Team matrix](../../../../packages/daynight-server/internal/core/store/postgres/project/ownership_contract_test.go)
 uses a fresh owner and Personal Team for each committed membership defect. A
@@ -196,6 +200,13 @@ trigger and function are removed and their absence is checked. Case-specific
 records preserve independent committed-state checks. A failed case stops
 reuse.
 
+The [Tag deletion and Task write matrix](../../../../packages/daynight-server/internal/core/store/postgres/tag_concurrency_witnesses_test.go)
+shares a Store with distinct Project, Task and Tag identities. The actual
+Project row holder blocks the second write until the first commits. The test
+checks both completion receipts and the committed deletion, attachment and
+Task version facts. Each case joins its writer and verifies pool reuse before
+the next case; failure stops reuse.
+
 The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
 share one Store per parent and give each case independent account, Project,
 Task, credential, claim and Session identities. The registration refusal
@@ -204,26 +215,31 @@ escaped registration write. Rotation and aggregate cases retain their real
 committed operations and scoped results. A failed case stops reuse.
 
 The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go),
+[App Config](../../../../packages/daynight-server/internal/core/store/postgres/github/app_config_test.go),
 [retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go),
 and [Work stop](../../../../packages/daynight-server/internal/core/store/postgres/github/app_work_test.go)
 matrices each use one Store per matrix. Signal cases hold installation and
 repository identifiers constant across distinct Apps and read committed pending
-rows by Project. Project retirement cases keep separate App, grant, and Project
-identities. The retirement trigger raises its PostgreSQL exception, and state
-is read back after rollback. The trigger and function are removed and checked
-in the catalog before reuse.
+rows by Project. The Signal and App Config failure cases use independent App
+and Project identities. They commit each catalog fault before the public
+writer starts. The writer invokes the intended operation and rolls back with
+the native PostgreSQL error. Cleanup restores the original catalog identities
+and compares the committed rows with the case baseline.
 
-Each pre-canceled retirement case begins a new transaction and uses fresh
-identifiers. The DAO call receives a canceled context. The transaction is
-rolled back with a live context, the pool is checked for reuse, and the fixture
-remains empty.
+Project retirement cases keep separate App, grant, and Project identities.
+The retirement trigger raises its PostgreSQL exception, and state is read
+back after rollback. The trigger and function are removed and checked in the
+catalog before reuse. Each pre-canceled retirement case begins a new
+transaction and uses fresh identifiers. The DAO call receives a canceled
+context. The transaction is rolled back with a live context, the pool is
+checked for reuse, and the fixture remains empty.
 
 Work stop cases share one committed connection, coverage interval, and pending
 request. The connection is unbound once before the unbound retirement cases.
 Each case injects its catalog fault inside its own transaction and checks the
 driver SQLSTATE and operation phase. After rollback, a fresh pool read checks
-the committed rows and the original catalog identities. A failed retirement
-or Work stop case stops reuse.
+the committed rows and the original catalog identities. A failed fault case
+stops fixture reuse.
 
 [Task write competition](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
 uses distinct Project and Task IDs inside each matrix's store. Actual lock
@@ -268,9 +284,13 @@ that crosses its 100-row page boundary.
 Expiry probes whose SQL samples database time retain actual row lock barriers
 and short test deadlines. The grant test arms expiry after its lock receipt,
 preserving rejection of a stale time sampled before the lock. Private Transfer
-retains the locked, cached token expiry. Deadline probes retain connection
-preparation and actual query observation. The large search fixture keeps its
-complete description but constructs its expected snippet independently.
+retains the locked, cached token expiry. The
+[GitHub Signal deadline test](../../../../packages/daynight-server/internal/core/store/postgres/github_webhook_integration_test.go)
+warms the receiver and observer before starting the request deadline. It
+observes the exact PostgreSQL blocker before timeout, checks the deadline
+error and drains the connection while the holder is still locked. The large
+search fixture keeps its complete description and constructs its expected
+snippet independently.
 
 [Direct Member](../../../../packages/daynight-server/internal/core/store/postgres/direct_member_scope_test.go),
 [Registered Member](../../../../packages/daynight-server/internal/core/store/postgres/registered_member_scope_test.go),
@@ -283,6 +303,13 @@ before the holder commits. The Direct Member target-membership case also
 observes a queued revocation and commits a compatible Session credential read
 within the window. The eligibility and Profile Patch cases join the worker
 before checking that the membership or profile changes were rolled back.
+
+[AssistantTask credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/assistanttask/concurrency_test.go)
+uses the same PostgreSQL clock and connection preparation. The expiry update
+commits before taking the Session row lock because the holder locks the same
+row that stores the credential. The holder leaves that row unchanged. The
+contender waits on the exact holder while the Session is still valid, and
+its fresh read after natural expiry must reject the transaction.
 
 [Session/PAT deletion storage proofs](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go)
 use a stable stored expiry and explicit caller times on either side of it. The

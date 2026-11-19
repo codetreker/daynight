@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -398,5 +399,32 @@ func TestReadResultCloseRetainsErrorAndIsIdempotent(t *testing.T) {
 	}
 	if lease.closes != 1 {
 		t.Fatal("release repeated")
+	}
+}
+
+type lostReadResultLease struct{}
+
+func (lostReadResultLease) Close() error { return nil }
+
+func (lostReadResultLease) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	cancel(filestorage.ErrGateLost)
+	return ctx, func() { cancel(context.Canceled) }
+}
+
+func TestReadResultForwardsRetainedLeaseLoss(t *testing.T) {
+	parent := t.Context()
+	for _, result := range []*ReadResult[int]{nil, NewReadResult(1, nil)} {
+		ctx, cancel := result.GateContext(parent)
+		cancel()
+		if ctx != parent || ctx.Err() != nil {
+			t.Fatalf("result without a lease changed parent context: %v", ctx.Err())
+		}
+	}
+	result := NewReadResult(1, lostReadResultLease{})
+	ctx, cancel := result.GateContext(parent)
+	defer cancel()
+	if !errors.Is(context.Cause(ctx), filestorage.ErrGateLost) || parent.Err() != nil {
+		t.Fatalf("lost archive lease was not forwarded independently of the caller: %v, %v", context.Cause(ctx), parent.Err())
 	}
 }

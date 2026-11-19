@@ -59,7 +59,7 @@ Daynight 将公共存储中的完整原件按原顺序交给原生图片接口�
 
 观察器核对实际发送的thread/start参数，明确model覆盖由原生response确认，未指定模型时使用首次配置默认值；不增加provider开关。未知thread配置覆盖拒绝建立观察，已知权限、effort及Agent CLI alias配置保留。新thread的modelProvider必须匹配选中配置，启动前后路由摘要一致才能建立基线；物理cwd仍由adapter验证。前后相同表示有界一致性，不是原子快照或thread专属endpoint证明。
 
-程序摘要来自verifyToolLaunch已验证、与实际child直接启动路径相符的唯一Windows原生artifact；JS、interpreter和未验证fallback保持未知。Windows0.169.0与既有macOS0.167.0是分别识别的协议兼容入口，不是通用版本许可或receipt/history资格。sdkVersion=null表示无SDK。当前生产目录为空，所以观察成功仍不能开放图片。
+程序摘要来自verifyToolLaunch已验证、与实际child直接启动路径相符的唯一Windows原生artifact；JS、interpreter和未验证fallback保持未知。Windows0.169.0与macOS0.167.0、0.170.0是分别识别的协议兼容入口，不是通用版本许可或receipt/history资格。sdkVersion=null表示无SDK。当前生产目录为空，所以观察成功仍不能开放图片。
 
 设置、模型、cwd、进程与连接变化撤销generation和旧观察。公开controls刷新与确认设置事件可重新读取；同一thread只能回到原路由基线，不能因全局配置变化而套用新backend身份。不同模型必须匹配其自己的资格，活动turn继续受已确认turnModel限制。resume不建立新观察，图片保持unknown；已接受输入、历史、归档及原操作查询仍保留。观察5秒到期后撤销，最多保留一个未完成原生读取，迟到不能恢复观察；后台观察不占用普通文字发送门禁。
 

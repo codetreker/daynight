@@ -105,6 +105,7 @@ type Application struct {
 	TaskObservations TaskObservationOperations
 	TaskInspection   *session.Inspection
 	TaskHistory      *session.History
+	HistoryDirectory *session.GroupDirectory
 	TaskSearch       store.TaskSearchReader
 	TaskSteps        TaskStepsOperations
 	TaskThreads      *task.TaskThreads
@@ -169,6 +170,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		TaskObservations: construct.taskObservations(database, engine),
 		TaskInspection:   inspection,
 		TaskHistory:      session.NewHistory(inspection, sessions),
+		HistoryDirectory: session.NewGroupDirectory(database),
 		TaskSearch:       database,
 		TaskSteps:        construct.taskSteps(database, capturer),
 		TaskThreads:      task.NewTaskThreads(database, capturer),

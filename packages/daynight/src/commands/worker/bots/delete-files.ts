@@ -76,6 +76,10 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   const paths = resolveConfigurationPaths(homeDirectory);
   const protectedPaths = record.definition === null ? [] : [{ directory: record.definition.resolvedConfiguration.cwd, label: "working directory" }];
   const targets = [await capture(botStateDirectory(paths, record.botId), "directory", signal)];
+  const codexRecovery = await capture(resolveBotPaths(paths.stateDirectory, record.botId).codexRecoveryDirectory, "directory", signal);
+  if (!codexRecovery.completed) targets.push(codexRecovery);
+  const claudeRecovery = await capture(resolveBotPaths(paths.stateDirectory, record.botId).claudeRecoveryDirectory, "directory", signal);
+  if (!claudeRecovery.completed) targets.push(claudeRecovery);
   // Preparation can create shims before its launch intent is committed. This
   // private root belongs to the Bot even when no individual alias was recorded.
   const botAliasRoot = path.join(resolveBotPaths(paths.stateDirectory, record.botId).directory, "agent-cli-aliases");

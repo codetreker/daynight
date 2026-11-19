@@ -327,6 +327,8 @@ dialog 设置可访问标题、aria-modal；初始焦点到关闭按钮，Tab/Sh
 
 user 关闭仅在 trigger 仍 connected、可见、非 inert且属于同 owner 时以 preventScroll 聚焦；否则调用 fallbackFocus，优先原工具 summary/原消息可聚焦容器，再当前 timeline；owner 已消失时不抢新界面焦点。原消息被过滤不强制展开/改模式以恢复焦点。身份验证/删除确认等更高层模态打开时暂停图片 host，隐藏敏感图像并把焦点权交给既有上层模态；授权未变且返回同 owner可恢复原预览状态，确认撤权则销毁。暂停必须在上层确认框聚焦之前同步执行：调用 dialog.close() 退出浏览器 top layer，解除预览自己的焦点trap与timeline/body滚动锁，清空显示src但保留经授权的asset/缩放/舞台位置状态，且不运行用户关闭的trigger恢复。仅把img设hidden或把祖先设inert不够，原生modal仍可能屏蔽现有body portal的role=alertdialog。上层模态关闭且同owner仍active、身份已确认后，重新showModal并恢复原asset/缩放/舞台位置，读取复用原lease；若撤权则完全释放而不恢复。该层级通过TaskDetailSurface/TaskConfirmation和既有认证modal owner的“即将打开/已关闭”桥接信号接入，不在确认框已经聚焦之后才依赖effect/MutationObserver补救，也不让多个trap互相抢焦点。
 
+打开预览时，timeline 先按当前 DOM 滚动位置同步阅读锚点。浏览器可以先把触发按钮滚入视口，随后才派发 scroll 事件；这样即使预览期间忽略该事件，关闭后也能保留激活时的阅读位置。
+
 body 使用已有引用计数 `useBodyScrollLock`；另锁定该 owner 的 timeline 内部滚动容器，并保存原 overflow/scrollTop/scrollLeft，以引用计数恢复，不能解除外层 Task 的锁。预览舞台 overflow:auto、overscroll-behavior:contain，移动端触摸只滚舞台；控制区域阻止滚动链到背景，键盘 PageUp/Down/Home/End 作用于舞台。不能在整页禁止 touch-action 导致浏览器缩放不可用。
 
 fit 模式使用可用舞台宽高等比 contain，小图不强制放大；100% 模式使用实际定向 CSS 像素尺寸，舞台从顶部/左侧可到达所有边缘，不用居中 transform 制造负坐标不可达区。模式按钮以 aria-pressed表达选中。尺寸变化、屏幕旋转或软键盘使用 visualViewport 重新计算舞台，但同图已选100%不自动回 fit；仅新图默认 fit。预览不提供图片编辑/裁切。

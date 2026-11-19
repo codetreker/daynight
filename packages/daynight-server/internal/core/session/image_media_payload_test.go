@@ -133,7 +133,7 @@ func TestMediaReadReceiptPersistsOnlyMetadataAndRecoversOnAnotherInstance(t *tes
 		t.Run(action, func(t *testing.T) {
 			f, row, message := readMediaFixture(t, action)
 			relay, access := mediaRelay(t, f)
-			prepared, check, finish, err := relay.prepareReadMediaResponse(t.Context(), message)
+			_, prepared, check, finish, err := relay.prepareReadMediaResponse(t.Context(), message)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -189,7 +189,7 @@ func TestMediaReadReceiptPersistsOnlyMetadataAndRecoversOnAnotherInstance(t *tes
 			_ = json.Unmarshal(message.MediaResult, &result)
 			result.Data = base64.StdEncoding.EncodeToString([]byte("other original!"))
 			changed.MediaResult = encode(result)
-			if _, _, _, err = relay.prepareReadMediaResponse(t.Context(), changed); err == nil {
+			if _, _, _, _, err = relay.prepareReadMediaResponse(t.Context(), changed); err == nil {
 				t.Fatal("completed receipt accepted changed original bytes")
 			}
 		})
@@ -203,7 +203,7 @@ func TestMediaReadPublicationFailureAndCancellationRetainOriginalIdentity(t *tes
 			relay, access := mediaRelay(t, f)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			prepared, check, finish, err := relay.prepareReadMediaResponse(ctx, message)
+			_, prepared, check, finish, err := relay.prepareReadMediaResponse(ctx, message)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -262,7 +262,7 @@ func TestMediaResourceReadUsesExistingOriginalWithoutExtraPublication(t *testing
 	raw := []byte("original")
 	message := sp.ControllerMessage{Type: "image_response", ControllerFence: row.Fence, RequestID: row.RequestID, Action: "read", MediaResult: encode(sp.ImageReadChunk{ResourceID: saved.Resource.ResourceID, SHA256: *saved.Resource.SHA256, ByteLength: *saved.Resource.ByteLength, Offset: "0", Data: base64.StdEncoding.EncodeToString(raw), EOF: true})}
 	relay, access := mediaRelay(t, f)
-	prepared, check, finish, err := relay.prepareReadMediaResponse(t.Context(), message)
+	_, prepared, check, finish, err := relay.prepareReadMediaResponse(t.Context(), message)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,17 +458,17 @@ func TestMediaPayloadMetadataRejectsAmbiguousAndOversizedOriginals(t *testing.T)
 	for _, mutate := range []func(*sp.ControllerMessage){func(m *sp.ControllerMessage) { m.Type = "heartbeat" }, func(m *sp.ControllerMessage) { m.MediaError = &sp.ImageError{Code: "unavailable"} }, func(m *sp.ControllerMessage) { m.MediaResult = []byte(`{}`) }} {
 		candidate := message
 		mutate(&candidate)
-		if _, _, finish, err := relay.prepareReadMediaResponse(t.Context(), candidate); err != nil || finish != nil {
+		if _, _, _, finish, err := relay.prepareReadMediaResponse(t.Context(), candidate); err != nil || finish != nil {
 			t.Fatal("non-payload response started file work", err)
 		}
 	}
 	message.RequestID = uuid.NewString()
-	if _, _, finish, err := relay.prepareReadMediaResponse(t.Context(), message); err != nil || finish != nil {
+	if _, _, _, finish, err := relay.prepareReadMediaResponse(t.Context(), message); err != nil || finish != nil {
 		t.Fatal("unknown identity created a payload owner", err)
 	}
 	message.RequestID = row.RequestID
 	message.Action = "read_prepared"
-	if _, _, _, err := relay.prepareReadMediaResponse(t.Context(), message); err == nil {
+	if _, _, _, _, err := relay.prepareReadMediaResponse(t.Context(), message); err == nil {
 		t.Fatal("changed response action created a payload owner")
 	}
 }
@@ -528,7 +528,7 @@ func TestMediaReadUnknownCompletionReconcilesOriginalSharedChunk(t *testing.T) {
 		t.Run(map[bool]string{false: "unobserved proposal", true: "observed original receipt"}[persisted], func(t *testing.T) {
 			f, row, message := readMediaFixture(t, "read_capture")
 			relay, access := mediaRelay(t, f)
-			prepared, check, finish, err := relay.prepareReadMediaResponse(t.Context(), message)
+			_, prepared, check, finish, err := relay.prepareReadMediaResponse(t.Context(), message)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -560,7 +560,7 @@ func TestMediaReadUnknownCompletionReconcilesOriginalSharedChunk(t *testing.T) {
 				t.Fatal(err)
 			}
 			peer, peerAccess := mediaRelay(t, f)
-			prepared, check, finish, err = peer.prepareReadMediaResponse(t.Context(), message)
+			_, prepared, check, finish, err = peer.prepareReadMediaResponse(t.Context(), message)
 			if err != nil {
 				t.Fatal("original identity could not reconcile after unknown", err)
 			}

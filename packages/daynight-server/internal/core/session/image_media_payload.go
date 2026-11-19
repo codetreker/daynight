@@ -350,17 +350,18 @@ func (s *Execution) recheckMediaFile(ctx context.Context, tx *operationTx, r *re
 
 // mediaFileIO owns an exact cross-process lease through publication and the
 // caller's final transaction. No file operation or gate wait runs inside access.
-func (s *Execution) mediaFileIO(ctx context.Context, access imageStorageAccess, row store.SessionMediaRequest, payload, data []byte) (out []byte, check func(*operationTx, *record) error, finish func() error, result error) {
+func (s *Execution) mediaFileIO(ctx context.Context, access imageStorageAccess, row store.SessionMediaRequest, payload, data []byte) (workCtx context.Context, out []byte, check func(*operationTx, *record) error, finish func() error, result error) {
 	if s.files == nil {
-		return nil, nil, nil, fault("component_unsupported", "Resource storage is unavailable.")
+		return nil, nil, nil, nil, fault("component_unsupported", "Resource storage is unavailable.")
 	}
 	lease := uuid.NewString()
 	ctx, finishIO, e := s.beginImageIO(ctx, row.SessionID, lease)
 	if e != nil {
-		return nil, nil, nil, e
+		return nil, nil, nil, nil, e
 	}
 	var plan mediaFilePlan
 	var payloadGate io.Closer
+	var cancelPayload context.CancelFunc
 	finish = func() error {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
@@ -372,6 +373,7 @@ func (s *Execution) mediaFileIO(ctx context.Context, access imageStorageAccess, 
 			return d.ReleaseSessionResourceLease(cleanup, row.SessionID, lease)
 		})
 		if payloadGate != nil {
+			cancelPayload()
 			err = errors.Join(err, payloadGate.Close())
 		}
 		return errors.Join(err, finishIO())
@@ -387,25 +389,31 @@ func (s *Execution) mediaFileIO(ctx context.Context, access imageStorageAccess, 
 		plan, err = s.planMediaFile(ctx, tx, r, row, payload, data != nil, lease)
 		return err
 	}); e != nil {
-		return nil, nil, finish, e
+		return nil, nil, nil, finish, e
 	}
-	check = func(tx *operationTx, r *record) error { return s.recheckMediaFile(ctx, tx, r, plan) }
+	check = func(tx *operationTx, r *record) error {
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		return s.recheckMediaFile(ctx, tx, r, plan)
+	}
 	if plan.publish {
 		payloadGate, e = s.files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-upload-payload/"+row.SessionID+"/"+plan.uploadID)
 		if e != nil {
-			return nil, nil, finish, e
+			return nil, nil, nil, finish, e
 		}
+		ctx, cancelPayload = filestorage.GateContext(ctx, payloadGate)
 		if e = access(ctx, check); e != nil {
-			return nil, nil, finish, e
+			return nil, nil, nil, finish, e
 		}
 		if e = s.publishImageBytes(ctx, plan.path, bytes.NewReader(data), int64(plan.data.ByteLength), plan.data.SHA256); e != nil {
-			return nil, nil, finish, e
+			return nil, nil, nil, finish, e
 		}
-		return payload, check, finish, nil
+		return ctx, payload, check, finish, nil
 	}
 	object, e := s.files.Open(ctx, sessionresource.Bucket, plan.path)
 	if e != nil {
-		return nil, nil, finish, e
+		return nil, nil, nil, finish, e
 	}
 	if plan.fileOffset > 0 {
 		_, e = io.CopyN(io.Discard, object.Body, plan.fileOffset)
@@ -416,32 +424,32 @@ func (s *Execution) mediaFileIO(ctx context.Context, access imageStorageAccess, 
 	}
 	e = errors.Join(e, object.Body.Close())
 	if e != nil {
-		return nil, nil, finish, e
+		return nil, nil, nil, finish, e
 	}
 	digest := sha256.Sum256(raw)
 	if len(raw) != plan.data.ByteLength || hex.EncodeToString(digest[:]) != plan.data.SHA256 {
-		return nil, nil, finish, fault("resource_conflict", "Original media bytes are missing or corrupt.")
+		return nil, nil, nil, finish, fault("resource_conflict", "Original media bytes are missing or corrupt.")
 	}
 	if data != nil && !bytes.Equal(data, raw) {
-		return nil, nil, finish, conflict()
+		return nil, nil, nil, finish, conflict()
 	}
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(payload, &fields)
 	delete(fields, "$data")
 	fields["data"] = encode(base64.StdEncoding.EncodeToString(raw))
-	return encode(fields), check, finish, nil
+	return ctx, encode(fields), check, finish, nil
 }
 
-func (s *Execution) prepareReadMediaResponse(ctx context.Context, m sp.ControllerMessage) (sp.ControllerMessage, func(*operationTx, *record) error, func() error, error) {
+func (s *Execution) prepareReadMediaResponse(ctx context.Context, m sp.ControllerMessage) (context.Context, sp.ControllerMessage, func(*operationTx, *record) error, func() error, error) {
 	if m.Type != "image_response" || !mediaRead(m.Action) || m.MediaError != nil {
-		return m, nil, nil, nil
+		return ctx, m, nil, nil, nil
 	}
 	payload, has, e := compactMediaPayload(m.MediaResult, true)
 	if e != nil {
-		return m, nil, nil, e
+		return ctx, m, nil, nil, e
 	}
 	if !has {
-		return m, nil, nil, nil
+		return ctx, m, nil, nil, nil
 	}
 	access := func(ctx context.Context, work func(*operationTx, *record) error) error {
 		return s.controller(ctx, m.ControllerFence, func(tx *operationTx, r *record, _ task) error { return work(tx, r) })
@@ -462,22 +470,22 @@ func (s *Execution) prepareReadMediaResponse(ctx context.Context, m sp.Controlle
 		return nil
 	})
 	if errors.Is(e, model.ErrNotFound) {
-		return m, nil, nil, nil
+		return ctx, m, nil, nil, nil
 	}
 	if e != nil {
-		return m, nil, nil, e
+		return ctx, m, nil, nil, e
 	}
 	var wire struct {
 		Data string `json:"data"`
 	}
 	_ = json.Unmarshal(m.MediaResult, &wire)
 	data, _ := base64.StdEncoding.Strict().DecodeString(wire.Data)
-	_, check, finish, e := s.mediaFileIO(ctx, access, row, payload, data)
+	workCtx, _, check, finish, e := s.mediaFileIO(ctx, access, row, payload, data)
 	if e != nil {
-		return m, nil, nil, e
+		return ctx, m, nil, nil, e
 	}
 	m.MediaResult = payload
-	return m, check, finish, nil
+	return workCtx, m, check, finish, nil
 }
 
 func (s *Execution) hydrateMediaOffers(ctx context.Context, f sp.ControllerFence, messages []map[string]any) ([]map[string]any, error) {
@@ -503,7 +511,7 @@ func (s *Execution) hydrateMediaOffers(ctx context.Context, f sp.ControllerFence
 			continue
 		}
 		row := store.SessionMediaRequest{SessionID: f.SessionID, RequestID: msg["requestId"].(string), Action: "write", Fence: f, Body: body}
-		wire, check, finish, e := s.mediaFileIO(ctx, access, row, body, nil)
+		workCtx, wire, check, finish, e := s.mediaFileIO(ctx, access, row, body, nil)
 		if e != nil {
 			// Pending requests retain their durable identity for a later Poll.
 			// Capacity pressure must not terminate unrelated text traffic.
@@ -512,7 +520,7 @@ func (s *Execution) hydrateMediaOffers(ctx context.Context, f sp.ControllerFence
 			}
 			return nil, e
 		}
-		e = access(ctx, check)
+		e = access(workCtx, check)
 		e = errors.Join(e, finish())
 		if e != nil {
 			return nil, e

@@ -81,7 +81,7 @@ export const transferProject = (projectId: string, preview: ProjectTransferPrevi
   const body = `{"ownership":{"teamId":${JSON.stringify(source)},"version":${preview.ownership.version}},"targetTeam":{"id":${JSON.stringify(target)},"version":${preview.targetTeam.version}},"expectedUserId":${JSON.stringify(user)}}`;
   return (async () => {
     const response = await request(`/api/v1/projects/${project}/transfer`, signal, {
-      method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body,
+      method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", "Daynight-Confirm-Goal-Dependency-Removal": "true" }, body,
     }, onDispatch);
     assertResponsePrincipal(response, user, onMismatch);
     if (response.ok && response.status !== 200) throw new ApiError("protocol", response.status);

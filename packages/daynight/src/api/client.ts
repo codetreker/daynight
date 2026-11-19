@@ -1,3 +1,5 @@
+import { parseGoalDependencies, parseGoalDependencyReceipt, validGoalRevision } from "./goal-dependencies.js";
+import type { GoalDependencies, GoalDependencyEdit, GoalDependencyReceipt } from "./goal-dependencies.js";
 import { normalizeTaskTagFilter } from "./task-tag-filter.js";
 import { confirmTaskTagIds, normalizeTaskTagIds } from "./task-tags.js";
 import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
@@ -39,7 +41,7 @@ import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreated
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
-type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly promptSelectors?: string };
+type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly confirmGoalDependencyRemoval?: true; readonly workerConfiguration?: true; readonly workerControlMode?: true; readonly workerToolPaths?: true; readonly workerArchiveSessions?: true; readonly promptSelectors?: string };
 export type WorkerToolPathsCapability = { supported: boolean; serverOrigin?: string; userId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
 
@@ -151,6 +153,8 @@ const safeInvitationFailure = (error: unknown, context: Context): ApiError => {
 export type ApiClient = TaskSessionClient & {
   withExpectedUserId(userId: string): ApiClient;
   webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
+  showGoalDependencies(projectId: string, goalId: string, query?: { readonly limit?: number; readonly cursor?: string }): Promise<GoalDependencies>;
+  editGoalDependencies(projectId: string, goalId: string, input: GoalDependencyEdit): Promise<GoalDependencyReceipt>;
   listTags(projectId: string, query?: TagListQuery): Promise<TagPage>;
   getTag(projectId: string, tagId: string): Promise<Tag>;
   createTag(projectId: string, name: string, color?: string): Promise<Tag>;
@@ -329,7 +333,7 @@ export const createApiClient = (options: {
   const validRequestId = (value: string): boolean => typeof value === "string" && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value);
 
 
-  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null; readonly archiveSessionsHeader: string | null };
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null; readonly controlModeHeader: string | null; readonly toolPathsHeader: string | null; readonly archiveSessionsHeader: string | null; readonly historyDirectoryHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
     | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly requirePrincipalOnUnauthorized?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
@@ -431,7 +435,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -510,7 +514,7 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), archiveSessionsHeader: response.headers.get("Daynight-Worker-Archive-Sessions"), ...(principalId === undefined ? {} : { principalId }) };
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), locationHeader: response.headers.get("Location"), configurationHeader: response.headers.get("Daynight-Worker-Configuration"), controlModeHeader: response.headers.get("Daynight-Worker-Control-Mode"), toolPathsHeader: response.headers.get("Daynight-Worker-Tool-Paths"), archiveSessionsHeader: response.headers.get("Daynight-Worker-Archive-Sessions"), historyDirectoryHeader: response.headers.get("Daynight-Task-History-Directory-Version"), ...(principalId === undefined ? {} : { principalId }) };
       const source = chunks.join("");
       if (invitationIdentityMismatch) jsonObjectSources(source);
       const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
@@ -767,7 +771,7 @@ export const createApiClient = (options: {
   return {
     withExpectedUserId: userId => createApiClient({ ...options, expectedUserId: userId }),
     ...createTaskSessionClient(
-      (input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }), ...(expectedUserId === undefined ? {} : { requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }) }, [200], undefined, true, input.timeoutMs),
+      (input, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId }, input.path, "GET", { kind: "json", parse: (value, metadata) => { if (input.historyDirectoryVersion === 1 && metadata.historyDirectoryHeader !== "1") throw new ProtocolError("The server did not confirm Task history directory version 1."); return parse(value); }, ...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }), ...(expectedUserId === undefined ? {} : { requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }) }, [200], undefined, true, input.timeoutMs),
       (input, body, parse) => exchange({ operation: input.operation, projectId: input.projectId, taskId: input.taskId, sentRequestId: body.requestId }, input.path, "POST", { kind: "json", parse: (value, metadata) => parse(value, metadata.locationHeader), requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true }, [202], { kind: "json", value: body, maxBytes: 2 * 1_048_576 }, true),
     ),
     webhookRequest: async <T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T> => {
@@ -789,6 +793,18 @@ export const createApiClient = (options: {
         const serverError = code !== undefined && allowed.includes(code) ? { code, message: "Webhook request failed.", requestId: error.requestId !== undefined && error.requestId === error.responseRequestId && validRequestId(error.requestId) ? error.requestId : "unavailable" } : undefined;
         throw new ApiError(context, error.phase, { cause: safeInvitationCause(error.cause), ...(error.status === undefined ? {} : { status: error.status }), ...(serverError === undefined ? {} : { serverError }), confirmedRefusal: error.confirmedRefusal, outcomeUnconfirmed: error.outcomeUnconfirmed, ...(error.confirmedMutationId === undefined ? {} : { confirmedMutationId: error.confirmedMutationId }) });
       }
+    },
+    showGoalDependencies: (projectId, goalId, query = {}) => {
+      const project = resourceId(projectId), goal = resourceId(goalId), limit = query.limit ?? 20;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("Goal dependency limit must be from 1 to 50.");
+      if (query.cursor !== undefined && !isNonemptyText(query.cursor)) throw new Error("Cursor must be nonempty Unicode text without NUL.");
+      const params = new URLSearchParams({ limit: String(limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
+      return exchange({ operation: "goal-dependencies.show", projectId: project, taskId: goal }, `${resourcePath("projects", project, "tasks", goal, "goal-dependencies")}?${params}`, "GET", { kind: "json", parse: value => parseGoalDependencies(value, goal, limit) }, [200]);
+    },
+    editGoalDependencies: (projectId, goalId, input) => {
+      const project = resourceId(projectId), goal = resourceId(goalId);
+      if (!validGoalRevision(input.ifRevision)) throw new Error("Goal dependency revision must be a canonical positive int64 string.");
+      return exchange({ operation: "goal-dependencies.edit", projectId: project, taskId: goal }, resourcePath("projects", project, "tasks", goal, "goal-dependencies"), "PATCH", { kind: "json", parse: value => parseGoalDependencyReceipt(value, goal, input.ifRevision), confirmMutation: result => result.goalId }, [200], { kind: "json", value: input });
     },
     listTags: async (projectId, input = {}) => {
       const project = resourceId(projectId), context = { operation: "tag.list", projectId: project };
@@ -1216,7 +1232,7 @@ export const createApiClient = (options: {
       const user = resourceId(userId), project = resourceId(projectId), target = resourceId(preview.targetTeam.id), source = resourceId(preview.ownership.teamId);
       taskVersion(preview.ownership.version); taskVersion(preview.targetTeam.version);
       if (preview.sourceTeam.id !== source) throw new Error("Transfer preview has inconsistent source ownership.");
-      return exchange({ operation: "project.transfer", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}/transfer`, "POST", {
+      return exchange({ operation: "project.transfer", projectId: project, sentRequestId: requestId, confirmGoalDependencyRemoval: true }, `/projects/${encodeURIComponent(project)}/transfer`, "POST", {
         kind: "json", requirePrincipal: true, checkPrincipalOnError: true,
         onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
         parse: (value) => parseProjectTransferReceipt(value, project, user, preview), confirmMutation: (result) => result.projectId,
@@ -1247,7 +1263,7 @@ export const createApiClient = (options: {
     },
     deleteProject: (userId, projectId, requestId) => {
       const user = resourceId(userId), project = resourceId(projectId);
-      return exchange({ operation: "project.delete", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}`, "DELETE", {
+      return exchange({ operation: "project.delete", projectId: project, sentRequestId: requestId, confirmGoalDependencyRemoval: true }, `/projects/${encodeURIComponent(project)}`, "DELETE", {
         kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
         onPrincipal: (actual, success) => { if (!success && actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
         decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
