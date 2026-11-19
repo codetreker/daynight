@@ -226,12 +226,18 @@ func (mock *taskHTTPSnapshotScopeMock) ObservedAt(p0 context.Context) (time.Time
 
 type taskHTTPProjectScopeMock struct {
 	taskHTTPMockBase
-	CaptureDAOFn              func() store.WebhookCaptureDAO
-	ProjectDAOFn              func() store.ProjectWriteDAO
-	TaskDAOFn                 func() store.TaskWriteDAO
-	SessionDAOFn              func() store.ProjectSessionDAO
-	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
-	GoalDependencyDAOFn       func() store.GoalDependencyDAO
+	CaptureDAOFn               func() store.WebhookCaptureDAO
+	ProjectDAOFn               func() store.ProjectWriteDAO
+	TaskDAOFn                  func() store.TaskWriteDAO
+	SessionDAOFn               func() store.ProjectSessionDAO
+	WorkerClaimAdmissionDAOFn  func() store.WorkerClaimAdmissionDAO
+	GoalDependencyDAOFn        func() store.GoalDependencyDAO
+	ProjectGoalDependencyDAOFn func() store.ProjectGoalDependencyDAO
+}
+
+func (mock *taskHTTPProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
+	return mock.ProjectGoalDependencyDAOFn()
 }
 
 func (mock *taskHTTPProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {

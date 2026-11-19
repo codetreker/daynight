@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-type taskProjectionFault struct {
+type taskReaderFault struct {
 	name, ddl, restore, state string
 	scanColumn                int
 }
@@ -37,7 +37,7 @@ func taskProjectionView(title, createdAt, updatedAt string) string {
 func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 	runTaskProjectionFaults(t, "read task graph", func(ctx context.Context, reader store.TaskReader, projectID string) ([]model.GraphTask, error) {
 		return reader.TaskGraphTasks(ctx, projectID, readerID(11), readerGraphSelection(), 160)
-	}, []taskProjectionFault{
+	}, []taskReaderFault{
 		{name: "query", ddl: hideTaskProjection, restore: restoreTaskProjection, state: "42P01"},
 		{name: "decode", ddl: taskProjectionView("title", "1::bigint AS created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 7},
 		{
@@ -53,7 +53,7 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 	runTaskProjectionFaults(t, "read task sync", func(ctx context.Context, reader store.TaskReader, projectID string) ([]model.TaskViewRecord, error) {
 		return reader.TaskSyncTasks(ctx, projectID, nil, 160)
-	}, []taskProjectionFault{
+	}, []taskReaderFault{
 		{name: "query", ddl: hideTaskProjection, restore: restoreTaskProjection, state: "42P01"},
 		{name: "missing-title", ddl: taskProjectionView("NULL::text AS title", "created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 3},
 		{name: "decode", ddl: taskProjectionView("title", "1::bigint AS created_at", "updated_at"), restore: restoreTaskProjectionView, scanColumn: 8},
@@ -81,7 +81,7 @@ func taskProjectionRelations(t *testing.T, ctx context.Context, db *postgres.Sto
 	return oids
 }
 
-func runTaskProjectionFaults[T any](t *testing.T, phase string, read func(context.Context, store.TaskReader, string) ([]T, error), faults []taskProjectionFault) {
+func runTaskProjectionFaults[T any](t *testing.T, phase string, read func(context.Context, store.TaskReader, string) ([]T, error), faults []taskReaderFault) {
 	t.Helper()
 	db := readerStore(t)
 	project := readerProject(t, db, 1)
@@ -102,18 +102,13 @@ func runTaskProjectionFaults[T any](t *testing.T, phase string, read func(contex
 	oids := taskProjectionRelations(t, t.Context(), db)
 	for _, fault := range faults {
 		if !t.Run(fault.name, func(t *testing.T) {
-			ctx, stop := context.WithTimeout(t.Context(), 15*time.Second)
-			defer stop()
-			if _, err := db.Pool.Exec(ctx, fault.ddl); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if _, err := db.Pool.Exec(ctx, fault.restore); err != nil {
-					t.Fatal(err)
+			fault.run(t, db, func(ctx context.Context) {
+				rows, err := snapshot(ctx)
+				if len(rows) != 0 {
+					t.Fatalf("faulted task projection returned partial rows: %v", rows)
 				}
-				db.Pool.Reset()
+				fault.requireCause(t, err, phase)
+			}, func(ctx context.Context) {
 				if restored := taskProjectionRelations(t, ctx, db); restored != oids {
 					t.Fatalf("restored task projection relation OIDs = %v, want %v", restored, oids)
 				}
@@ -122,28 +117,50 @@ func runTaskProjectionFaults[T any](t *testing.T, phase string, read func(contex
 					t.Fatalf("task projection after restoration = %v, %v, want %v", after, err, before)
 				}
 			})
-			// A replacement view can change the result type of an already prepared query.
-			db.Pool.Reset()
-			rows, err := snapshot(ctx)
-			var transaction *store.TransactionError
-			var cause *store.Error
-			if len(rows) != 0 || !errors.As(err, &transaction) || !errors.As(transaction.Cause, &cause) ||
-				cause.Phase != phase || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
-				t.Fatalf("task projection failure was hidden or leaked: rows=%v error=%v", rows, err)
-			}
-			if fault.state != "" {
-				var pg *pgconn.PgError
-				if !errors.As(err, &pg) || pg.Code != fault.state {
-					t.Fatalf("task projection error = %v, want SQLSTATE %s", err, fault.state)
-				}
-			} else {
-				var scan pgx.ScanArgError
-				if !errors.As(err, &scan) || scan.ColumnIndex != fault.scanColumn {
-					t.Fatalf("task projection error = %v, want scan error at column %d", err, fault.scanColumn)
-				}
-			}
 		}) {
 			return
+		}
+	}
+}
+
+func (fault taskReaderFault) run(t *testing.T, db *postgres.Store, check, verifyRestored func(context.Context)) {
+	t.Helper()
+	ctx, stop := context.WithTimeout(t.Context(), 15*time.Second)
+	defer stop()
+	if _, err := db.Pool.Exec(ctx, fault.ddl); err != nil {
+		t.Fatalf("install %s fault: %v", fault.name, err)
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := db.Pool.Exec(cleanup, fault.restore); err != nil {
+			t.Fatalf("restore %s fault: %v", fault.name, err)
+		}
+		db.Pool.Reset()
+		verifyRestored(cleanup)
+	}()
+	// A replacement view can change the result type of an already prepared query.
+	db.Pool.Reset()
+	check(ctx)
+}
+
+func (fault taskReaderFault) requireCause(t *testing.T, err error, phase string) {
+	t.Helper()
+	var transaction *store.TransactionError
+	var cause *store.Error
+	if !errors.As(err, &transaction) || !errors.As(transaction.Cause, &cause) ||
+		cause.Phase != phase || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
+		t.Fatalf("%s failure was hidden or leaked: %v", fault.name, err)
+	}
+	if fault.state != "" {
+		var pg *pgconn.PgError
+		if !errors.As(err, &pg) || pg.Code != fault.state {
+			t.Fatalf("%s error = %v, want SQLSTATE %s", fault.name, err, fault.state)
+		}
+	} else {
+		var scan pgx.ScanArgError
+		if !errors.As(err, &scan) || scan.ColumnIndex != fault.scanColumn {
+			t.Fatalf("%s error = %v, want scan error at column %d", fault.name, err, fault.scanColumn)
 		}
 	}
 }

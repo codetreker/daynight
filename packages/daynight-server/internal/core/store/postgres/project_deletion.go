@@ -13,6 +13,7 @@ import (
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -40,6 +41,9 @@ func (s *Store) WriteProjectDeletion(ctx context.Context, id string, operation f
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&locked); err != nil {
 			return pg.QueryError("lock project for deletion", err)
 		}
+		if err := pg.LockGoalDependencyTeam(ctx, tx, id); err != nil {
+			return err
+		}
 		// Task rows are intentionally locked regardless of their deleted_at value.
 		rows, err := tx.Query(ctx, `SELECT id FROM tasks WHERE project_id=$1 ORDER BY id FOR UPDATE`, id)
 		if err != nil {
@@ -66,6 +70,9 @@ func (s *Store) WriteProjectDeletion(ctx context.Context, id string, operation f
 func (s *deletionSnapshot) ProjectDAO() store.ProjectReader          { return project.NewReader(s.tx) }
 func (s *deletionScope) ProjectDAO() store.ProjectDeletionDAO        { return &s.projectDeletion }
 func (s *deletionScope) EligibilityDAO() store.WebhookEligibilityDAO { return eligibility.New(s.tx) }
+func (s *deletionScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	return task.NewProjectGoalDependencyWriter(s.tx, s.projectID)
+}
 func (s *deletionScope) SessionDAO() store.ProjectSessionRetirementDAO {
 	return session.NewProjectRetirementDAO(s.tx, s.projectID)
 }

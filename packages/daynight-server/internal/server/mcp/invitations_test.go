@@ -512,7 +512,7 @@ func mcpOrgAcceptProject(t *testing.T, tx *httpTestStore, actor model.Principal,
 		}
 		dao.ConsumeInvitationCall = mcpOrgConsumeInvitation(t, consume, v.ID, actor.UserID, v.CreatedAt, "Project invitation consumption time")
 	}
-	mcpOrgWriteProject(t, tx, project.ID, dao, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: project.ID, UserID: actor.UserID}))
+	mcpOrgWriteProject(t, tx, project.ID, dao, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: project.ID, UserID: actor.UserID}), nil)
 }
 
 func (d mcpOrgTeamReader) TeamAccess(ctx context.Context, user, id string) error {
