@@ -50,7 +50,7 @@ live 和 archive 游标分域；首次读取按真实可用来源选择，续页
 | `taskHistoryDirectoryVersion=1` | 目录提供链分组与期限字段；不改变旧目录响应。 |
 | `groupId`、`graphVersion`、`taskId`、`claimId`、`sessionId` | groupId 为该图版本中派生的链代表 Task ID 或独立 Task ID，不是持久组资源；图版本变化必须重置。每项保留原执行身份，不指向后继 claim。 |
 | `scopeEndedAt`、`firstArchivedAt`、`legacyGraceStartedAt`、`expiresAt` | UTC RFC3339 时间或明确 null；null 的未知原因另有说明，不代表已过期。 |
-| `archiveState` | `pending`、`failed`、`ready`、`partial`、`expired`；`partial` 必须可读且有缺口说明。期限未知另由 `retentionState=unknown` 表达，不覆盖归档状态。 |
+| `archiveState` | `pending`、`unavailable`、`failed`、`ready`、`partial`、`expired`；`unavailable` 保留 Herdr 已完成的不可用回执及其真实原因，不能显示为仍待归档；无原因的旧回执使用 `archive_unavailable`。`partial` 必须可读且有缺口说明。期限未知另由 `retentionState=unknown` 表达，不覆盖归档状态。 |
 | `retentionState` | `waiting`（成员未结束）、`unknown`（必需时间缺失）、`scheduled`（有期限）、`expired`；实际过期由服务端撤销资格确认。 |
 | `expiredAt`、`reason` | 过期实际生效时间与可解释原因；过期摘要不携带已删除正文。 |
 

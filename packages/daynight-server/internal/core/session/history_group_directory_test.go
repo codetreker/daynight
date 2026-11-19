@@ -439,3 +439,43 @@ func TestHistoryDirectoryPreservesTerminalRecordingAndCorruptDataFailures(t *tes
 		t.Fatal("ready archive without chain accepted")
 	}
 }
+
+func TestHistoryDirectoryTerminalUnavailableIsFinalAndKeepsOriginalIdentity(t *testing.T) {
+	unavailable, emptyReason := "unavailable", ""
+	disabled, noSample := "recording_not_enabled", "ended_before_first_sample"
+	ended := "2026-11-01T00:00:00Z"
+	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name, wantState, wantReason string
+		state, reason               *string
+	}{
+		{name: "recording disabled", state: &unavailable, reason: &disabled, wantState: "unavailable", wantReason: "recording_not_enabled"},
+		{name: "ended before sample", state: &unavailable, reason: &noSample, wantState: "unavailable", wantReason: "ended_before_first_sample"},
+		{name: "legacy missing reason", state: &unavailable, wantState: "unavailable", wantReason: "archive_unavailable"},
+		{name: "legacy empty reason", state: &unavailable, reason: &emptyReason, wantState: "unavailable", wantReason: "archive_unavailable"},
+		{name: "no archive receipt", wantState: "pending", wantReason: "not_applicable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			row := store.HistoryDirectorySession{
+				TerminalHistoryRow:  store.TerminalHistoryRow{ID: directoryOther, Claim: "original-claim", Backend: "herdr", Created: at, State: test.state},
+				ExecutionGeneration: "3", EndedAt: &ended, ArchiveReason: test.reason,
+				Retention: &store.ArchiveRetention{FirstSucceededAt: &at, GraceUntil: &at, ExpiresAt: &at, ExpiredAt: &at},
+			}
+			members := []store.ArchiveRetentionMember{{TaskID: directoryTask, Version: 1, Status: "done", CompletedAt: &at}}
+			worker := &model.WorkerClaim{ClaimID: "successor-claim", AgentControlMode: model.AgentControlModeHerdr}
+			out, err := projectHistorySession(row, members, worker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.ArchiveState != test.wantState || out.RetentionReason != test.wantReason {
+				t.Fatalf("archive outcome changed: %#v", out)
+			}
+			if out.SessionID != directoryOther || out.ClaimID != "original-claim" || out.ExecutionGeneration != "3" || out.AgentControlMode != "herdr" || out.ContentKind != "terminal_recording" || out.CurrentBinding || out.EndedAt == nil || *out.EndedAt != ended {
+				t.Fatalf("terminal execution identity changed: %#v", out)
+			}
+			if out.RetentionState != "unknown" || out.ScopeEndedAt != nil || out.FirstArchivedAt != nil || out.LegacyGraceStartedAt != nil || out.ExpiresAt != nil || out.ExpiredAt != nil {
+				t.Fatalf("Web retention leaked into terminal history: %#v", out)
+			}
+		})
+	}
+}

@@ -245,6 +245,12 @@ func projectHistorySession(row store.HistoryDirectorySession, members []store.Ar
 	if storedState == "ready" || storedState == "failed" {
 		out.ArchiveState = storedState
 	}
+	if row.Backend == "herdr" && row.State != nil && storedState == "unavailable" {
+		out.ArchiveState, out.RetentionReason = "unavailable", "archive_unavailable"
+		if row.ArchiveReason != nil && *row.ArchiveReason != "" {
+			out.RetentionReason = *row.ArchiveReason
+		}
+	}
 	if storedState == "ready" && row.Completeness != nil && *row.Completeness == "partial" {
 		out.ArchiveState = "partial"
 	}

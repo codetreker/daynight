@@ -70,7 +70,7 @@ service 的后台清理器在应用启动后扫描每页最多 32 个原 Session
 
 `GroupDirectory` 在同一只读 repeatable-read 快照内复查凭据与项目权限，调用 core 目录规则及 PostgreSQL DAO。当前 Task 权限继承项目；有效删除视图进一步排除失效资源。每页游标绑定账号、项目、入口、目标与目录事实摘要。摘要包含项目任务版本、原 Session 身份及目录可见归档事实，排除心跳；后续页事实变化返回 `reset_required`，客户端重新读取首屏。`graphVersion` 是该摘要的精确十进制表示，不是递增计数。每种展开独立分页，成员和 Session 不内嵌在组页。
 
-Session 页用同快照的当前完整链及首次归档、宽限和实际过期事实调用 `CalculateArchiveRetention`，不更新数据库或沿用缓存期限。`archiveState` 为 `pending|failed|ready|partial|expired`，`completeness` 保留缺口标记。`retentionState` 为 `waiting|unknown|scheduled|expired`，`reason` 区分未结束、时间缺失、待归档及已过期。`scopeEndedAt`、`firstArchivedAt`、`legacyGraceStartedAt`、`expiresAt` 和 `expiredAt` 保留真实时间或 null；宽限起点由持久化宽限下限减七天得到。只有 `expired_at` 已提交才显示 expired，超过候选期限不伪造删除完成。Herdr 保留终端录像类型，期限原因是 `not_applicable`，不套用 Web TTL。内容继续由原 Session 的既有读取入口授权并提供，此目录不搬运正文。
+Session 页用同快照的当前完整链及首次归档、宽限和实际过期事实调用 `CalculateArchiveRetention`，不更新数据库或沿用缓存期限。`archiveState` 为 `pending|unavailable|failed|ready|partial|expired`，`completeness` 保留缺口标记。`retentionState` 为 `waiting|unknown|scheduled|expired`，`reason` 区分未结束、时间缺失、待归档及已过期。`scopeEndedAt`、`firstArchivedAt`、`legacyGraceStartedAt`、`expiresAt` 和 `expiredAt` 保留真实时间或 null；宽限起点由持久化宽限下限减七天得到。只有 `expired_at` 已提交才显示 expired，超过候选期限不伪造删除完成。Herdr 保留终端录像类型，不套用 Web TTL；没有归档记录时保持 `pending`，已持久化的不可用回执显示 `unavailable`，`reason` 优先保留回执的真实原因，缺少时兼容持久化 `error_code`（如 `recording_not_enabled`、`ended_before_first_sample`），缺少原因时为 `archive_unavailable`。其它 Herdr 状态的期限原因是 `not_applicable`。内容继续由原 Session 的既有读取入口授权并提供，此目录不搬运正文。
 
 组查询计算当前连通分量；成员及期限查询只遍历目标链。Session 查询只投影执行代次和末次终止时间，不返回完整快照或终端运行记录。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
 

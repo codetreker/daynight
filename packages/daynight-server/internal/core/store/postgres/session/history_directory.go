@@ -51,7 +51,7 @@ func (d *historyDirectory) Fence(ctx context.Context, project string) (string, e
 	var value string
 	err := d.tx.QueryRow(ctx, `SELECT md5(jsonb_build_array(
  (SELECT jsonb_build_array(count(*)::text,COALESCE(sum(version::numeric),0)::text) FROM tasks WHERE project_id=$1),
- COALESCE((SELECT jsonb_agg(jsonb_build_array(s.id,s.task_id,s.claim_id,s.backend,s.created_at,s.snapshot->>'executionGeneration',s.terminal_state->'Envelope'->>'executionGeneration',s.terminal_state->'Runs'->-1->>'stoppedAt',a.state,a.sha256,a.byte_length,a.completeness,r.first_succeeded_at,r.grace_until,r.expired_at) ORDER BY s.id)
+ COALESCE((SELECT jsonb_agg(jsonb_build_array(s.id,s.task_id,s.claim_id,s.backend,s.created_at,s.snapshot->>'executionGeneration',s.terminal_state->'Envelope'->>'executionGeneration',s.terminal_state->'Runs'->-1->>'stoppedAt',a.state,a.sha256,a.byte_length,a.completeness,COALESCE(a.receipt->>'reason',a.error_code),r.first_succeeded_at,r.grace_until,r.expired_at) ORDER BY s.id)
  FROM task_sessions s JOIN task_resource_rows t ON t.id=s.task_id AND t.project_id=s.project_id
  LEFT JOIN session_archives a ON a.session_id=s.id LEFT JOIN session_archive_retention r ON r.session_id=s.id
  WHERE s.project_id=$1 AND s.scope='task' AND t.type='task' AND t.effective_deleted_at IS NULL),'[]'::jsonb))::text)`, project).Scan(&value)
@@ -155,7 +155,7 @@ func (d *historyDirectory) Sessions(ctx context.Context, project, task string, a
 	rows, err := d.tx.Query(ctx, `SELECT s.id::text,s.claim_id::text,s.backend,s.created_at,
  COALESCE(CASE WHEN s.backend='herdr' THEN s.terminal_state->'Envelope'->>'executionGeneration' ELSE s.snapshot->>'executionGeneration' END,''),
  CASE WHEN s.backend='herdr' THEN s.terminal_state->'Runs'->-1->>'stoppedAt' END,
- a.state,a.sha256,a.byte_length::text,a.completeness,r.session_id::text,r.first_succeeded_at,r.grace_until,r.expires_at,r.expired_at,COALESCE(r.reason,''),COALESCE(r.version,0)
+ a.state,a.sha256,a.byte_length::text,a.completeness,COALESCE(a.receipt->>'reason',a.error_code),r.session_id::text,r.first_succeeded_at,r.grace_until,r.expires_at,r.expired_at,COALESCE(r.reason,''),COALESCE(r.version,0)
  FROM task_sessions s JOIN task_resource_rows t ON t.id=s.task_id AND t.project_id=s.project_id
  LEFT JOIN session_archives a ON a.session_id=s.id LEFT JOIN session_archive_retention r ON r.session_id=s.id
  WHERE s.project_id=$1 AND s.task_id=$2 AND s.scope='task' AND t.type='task' AND t.effective_deleted_at IS NULL
@@ -169,7 +169,7 @@ func (d *historyDirectory) Sessions(ctx context.Context, project, task string, a
 		var v store.HistoryDirectorySession
 		var r store.ArchiveRetention
 		var id *string
-		if err := rows.Scan(&v.ID, &v.Claim, &v.Backend, &v.Created, &v.ExecutionGeneration, &v.EndedAt, &v.State, &v.Hash, &v.Size, &v.Completeness, &id, &r.FirstSucceededAt, &r.GraceUntil, &r.ExpiresAt, &r.ExpiredAt, &r.Reason, &r.Version); err != nil {
+		if err := rows.Scan(&v.ID, &v.Claim, &v.Backend, &v.Created, &v.ExecutionGeneration, &v.EndedAt, &v.State, &v.Hash, &v.Size, &v.Completeness, &v.ArchiveReason, &id, &r.FirstSucceededAt, &r.GraceUntil, &r.ExpiresAt, &r.ExpiredAt, &r.Reason, &r.Version); err != nil {
 			return nil, pg.QueryError("scan history directory session", err)
 		}
 		if id != nil {

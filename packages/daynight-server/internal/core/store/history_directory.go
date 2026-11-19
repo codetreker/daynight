@@ -39,7 +39,10 @@ type HistoryDirectorySession struct {
 	TerminalHistoryRow
 	ExecutionGeneration string
 	EndedAt             *string
-	Retention           *ArchiveRetention
+	// ArchiveReason prefers the original finalization receipt's reason and
+	// falls back to the archive status error code for older records.
+	ArchiveReason *string
+	Retention     *ArchiveRetention
 }
 
 // Limits are the exact row count, including any caller-requested lookahead.

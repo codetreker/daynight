@@ -287,3 +287,68 @@ func TestHistoryDirectoryBoundedChainQuery(t *testing.T) {
 	}
 	t.Logf("100-member chain group and retention queries: %s", time.Since(started))
 }
+
+func TestHistoryDirectoryUnavailableReceiptsPreserveReasons(t *testing.T) {
+	db := isolatedStore(t)
+	task, original := prepareArchiveSession(t, db)
+	for _, scenario := range []struct {
+		name                           string
+		receiptReason, errorCode, want *string
+	}{
+		{name: "receipt", receiptReason: historyReason("recording_not_enabled"), errorCode: historyReason("ended_before_first_sample"), want: historyReason("recording_not_enabled")},
+		{name: "archive status fallback", errorCode: historyReason("ended_before_first_sample"), want: historyReason("ended_before_first_sample")},
+		{name: "unknown reason"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			id, finalization := uuid.NewString(), uuid.NewString()
+			mustQueryExec(t, db, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot,backend,terminal_state)
+ SELECT $2,project_id,task_id,$2,owner_user_id,$2,registration,NULL,'herdr','{"Envelope":{"executionGeneration":"2"},"Runs":[]}' FROM task_sessions WHERE id=$1`, original, id)
+			mustQueryExec(t, db, `INSERT INTO session_archives(session_id,state,schema_version,finalization_id,receipt,error_code)
+ VALUES($1,'unavailable',2,$2::uuid,jsonb_build_object('finalizationId',$2::uuid::text,'disposition','unavailable','reason',$3::text),$4)`, id, finalization, scenario.receiptReason, scenario.errorCode)
+			read := func() string {
+				t.Helper()
+				var fence string
+				if err := db.ReadHistoryDirectory(t.Context(), func(scope store.HistoryDirectoryScope) error {
+					dao := scope.HistoryDirectoryDAO()
+					var err error
+					fence, err = dao.Fence(t.Context(), task.ProjectID)
+					if err != nil {
+						return err
+					}
+					rows, err := dao.Sessions(t.Context(), task.ProjectID, task.ID, nil, 20)
+					if err != nil {
+						return err
+					}
+					for _, row := range rows {
+						if row.ID != id {
+							continue
+						}
+						if row.Claim != id || row.State == nil || *row.State != "unavailable" || !reflect.DeepEqual(row.ArchiveReason, scenario.want) || len(row.Snapshot) != 0 || len(row.Terminal) != 0 {
+							t.Fatalf("unavailable directory lost original disposition: %+v", row)
+						}
+						return nil
+					}
+					t.Fatal("unavailable Session omitted")
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return fence
+			}
+			before := read()
+			// A reason correction alone changes visible directory facts even when
+			// the Session identity and archive disposition remain unchanged.
+			next := "recording_not_enabled"
+			if scenario.want != nil && *scenario.want == next {
+				next = "ended_before_first_sample"
+			}
+			mustQueryExec(t, db, `UPDATE session_archives SET receipt=jsonb_set(receipt,'{reason}',to_jsonb($2::text)) WHERE session_id=$1`, id, next)
+			scenario.want = &next
+			if after := read(); before == after {
+				t.Fatal("reason correction did not invalidate directory fence")
+			}
+		})
+	}
+}
+
+func historyReason(value string) *string { return &value }

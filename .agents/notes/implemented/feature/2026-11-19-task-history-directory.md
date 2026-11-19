@@ -37,8 +37,8 @@ directory instead derives groups from the existing authoritative graph.
 ## Consequences
 
 Older readers retain their exact response shape. New readers can distinguish
-missing times, pending uploads, readable partial archives and confirmed expiry
-without redirecting to a newer claim. Independent expansion pages avoid returning
+missing times, pending uploads, finalized unavailable recordings, readable partial archives and confirmed expiry
+without redirecting to a newer claim. Finalized unavailable recordings retain their persisted reason; legacy receipts without a reason use `archive_unavailable`. Independent expansion pages avoid returning
 an entire chain's execution history in one response.
 
 The fact digest scans Project history metadata, and derived connected components
