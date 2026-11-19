@@ -29,6 +29,7 @@ import { createControllerJobLeases, type ControllerJobLeases } from "../backends
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
+import { assertBotMigrationExecutable } from "./migration-state.js";
 
 export class BotAdmissionBlockedError extends Error {
   constructor(options?: ErrorOptions) {
@@ -131,6 +132,7 @@ export const createBotProcess = (options: {
   const current = (input: BotRecord, stopping = false): BotRecord => {
     const record = options.store.get(input.owner, input.botId);
     if (record === null || !stopping && record.observed.deletion !== null || record.definition === null) throw new Error("Bot execution requires its original active definition.");
+    assertBotMigrationExecutable(record);
     return record;
   };
   const checkedTicket = async (record: BotRecord): Promise<ControllerLaunchTicket> => {
@@ -373,6 +375,8 @@ export const createBotProcess = (options: {
   const shutdown = async (input: BotRecord, signal: AbortSignal): Promise<void> => {
     const retained = options.store.get(input.owner, input.botId);
     if (retained === null) throw new Error("Bot shutdown lost its original inventory record.");
+    // Migration required proven stop and fences every launch until takeover.
+    if (retained.migration !== undefined) return;
     if (retained.intent === null) return;
     const record = current(retained, true);
     const execution = options.executions.get(record);
@@ -498,6 +502,7 @@ export const createBotProcess = (options: {
   };
   const stopForDeletion = async (input: BotRecord, signal: AbortSignal): Promise<BotDeletionStop | null> => {
     signal.throwIfAborted();
+    assertBotMigrationExecutable(input);
     let record = deletionRecord(input);
     const preparation = pendingCleanup.get(record.botId);
     if (preparation !== undefined) { await preparation.retryCleanup(); pendingCleanup.delete(record.botId); }
@@ -540,6 +545,7 @@ export const createBotProcess = (options: {
      * A persisted deletion receipt lets the caller skip stop after journal removal.
      */
     withDeletion: <T>(record: BotRecord, signal: AbortSignal, action: (stop: () => Promise<BotDeletionStop | null>) => Promise<T>): Promise<T> => serialize(record.botId, async () => {
+      assertBotMigrationExecutable(record);
       signal.throwIfAborted(); deletionRecord(record);
       let active = true;
       try { return await action(() => {
@@ -555,7 +561,7 @@ export const createBotProcess = (options: {
       catch (cause) {
         const latest = options.store.get(record.owner, record.botId);
         const blocked = latest !== null && initialUnsubmitted(latest) ? blockedAdmission(cause) : undefined;
-        if (blocked === undefined && latest?.intent !== null && latest !== null && options.executions.get(latest) !== null) {
+        if (blocked === undefined && latest?.intent !== null && latest !== null && latest.migration === undefined && options.executions.get(latest) !== null) {
           options.executions.update(latest, { lastError: cause instanceof Error ? cause.message : "Bot recovery is unavailable." });
         }
         throw blocked === undefined || blocked === cause ? cause : new BotAdmissionBlockedError({ cause });

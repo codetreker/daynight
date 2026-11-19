@@ -1,5 +1,5 @@
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -21,8 +21,10 @@ const fixture = async () => {
   vi.spyOn(botStores, "openBotStore").mockImplementation((_file, options) => openStore(createMemoryDatabase(), options));
   vi.spyOn(executionStores, "openBotExecutionStore").mockImplementation((_file, options) => openExecutions(createMemoryDatabase(), options));
   const paths = resolveWorkerPaths(home); await mkdir(paths.workerDirectory, { recursive: true });
-  // Existing-index admission opens the controlled SQLite collaborators below.
-  await writeFile(paths.databaseFile, "");
+  // Routing checks the source migration receipt independently of the controlled
+  // inventory collaborators, so retain a real current-format source database.
+  const source = openStore(paths.databaseFile, { onMigration: () => {} });
+  source.close();
   let configuration: ExecutionConfiguration | null = null;
   const options = { homeDirectory: home, packageDirectory: home, workingDirectory: home, paths,
     owner: { serverOrigin: "https://daynight.example", ownerUserId: "00000000-0000-4000-8000-000000000001", workerId: "00000000-0000-4000-8000-000000000002" },

@@ -51,7 +51,7 @@ export const createWorkerBotHost = (options: {
       return value;
     } });
     const deletion = createBotDeletion({ ...options, store, executions, process: botProcess, sessionApi, remote });
-    const assistantTasks = createAssistantTaskRuntime({ owner: options.owner, bots: () => store.list(options.owner),
+    const assistantTasks = createAssistantTaskRuntime({ owner: options.owner, bots: () => store.list(options.owner).filter(record => record.migration === undefined),
       stateDirectory: botId => prepareBotStateDirectory(options.paths, botId),
       healthy: async (record, signal) => {
         try {
@@ -110,6 +110,7 @@ export const createWorkerBotHost = (options: {
         return JSON.stringify(current) === JSON.stringify(options.configuration()) ? sample : undefined;
       },
       activeToolSelections: (): ActiveToolSelection[] => store.list(options.owner).flatMap(record => {
+        if (record.migration !== undefined) return [];
         const intent = record.intent, tool = record.definition?.resolvedConfiguration.provider;
         if (intent === null || tool !== "codex" && tool !== "copilot") return [];
         const execution = executions!.get(record);

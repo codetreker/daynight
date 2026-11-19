@@ -97,6 +97,7 @@ export const createManagedAssistantRuntime = (options: {
       signal.throwIfAborted();
       const record = options.store.get(owner, botId);
       if (record === null) continue;
+      if (record.migration !== undefined) { error(botId, new Error("Bot migration is committed; recovery identity registration and Provider verification are pending.")); continue; }
       const previous = jobs.get(botId);
       if (previous !== undefined) { scheduled.push(previous); continue; }
       if (record.observed.deletion === null && record.intent === null && !options.canAdmitNewExecution()) continue;
@@ -136,7 +137,7 @@ export const createManagedAssistantRuntime = (options: {
           catch (cause) { if (!combined.aborted) throw cause; }
         }
       };
-      const grants = maintainControllerGrants({ list: () => options.store.list(owner).filter(record => record.observed.deletion === null), key: record => record.botId,
+      const grants = maintainControllerGrants({ list: () => options.store.list(owner).filter(record => record.observed.deletion === null && record.migration === undefined), key: record => record.botId,
         refresh: async (record, grantSignal) => { const latest = await refresh(record, grantSignal); if (latest !== null) await options.process.refreshGrant(latest, grantSignal); },
         signal: combined, onError: (message, botId) => error(botId, new Error(message)) });
       const discoveryWork = discovery();

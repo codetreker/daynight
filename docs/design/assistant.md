@@ -66,7 +66,7 @@ Worker 保存完整冻结配置并使用它核对登记请求与执行身份。�
 
 `botRecoveryVersion=1` 的[数据归属、迁移和接管要求](../spec/assistant.md#bot-本地存储与恢复合同)由 Bot 存储、Worker 对账和服务端生命周期共同实现。Bot 本机目录持有 SQLite、执行意图、票据、journal、业务认领凭据及 Provider 恢复材料；公共 Worker 库存只保留可重建索引。服务端继续使用现有数据库与资源存储，按 owner、Bot 和 Session 隔离。两端能力都可用前，既有 Worker 绑定和父 PAT 校验继续生效。
 
-迁移协调器取得 Bot 独占锁后核验原执行已停止，再复制一致 SQLite 快照及已提交 WAL，核对身份和资源摘要后原子切换唯一写入位置。持久迁移阶段区分本地切换、恢复身份登记和远端回执确认，任一阶段未知都不能由下一阶段的现象推定成功。Provider 适配器分别拥有最小恢复文件集、版本兼容和原线程恢复证据；时间线缓存不能替代原生恢复材料。
+迁移协调器在原 Worker、Bot 与 Controller 存储锁下核验原执行已停止，再复制一致 SQLite 快照及已提交 WAL，核对身份和资源摘要后切换唯一写入位置。原 Worker 库事务将源行移除与迁移摘要回执一起提交；原票据和 journal 停证保持不变，由独立映射定位副本。持久迁移阶段区分本地切换、恢复身份登记和远端回执确认，任一阶段未知都不能由下一阶段的现象推定成功。本地提交后的 `registration_pending` 阻止旧路径执行，机制与只读历史入口由 [Worker 执行层设计](worker-bot-runtime.md#bot-专属位置与迁移责任)拥有。Provider 适配器分别拥有最小恢复文件集、版本兼容和原线程恢复证据；时间线缓存不能替代原生恢复材料。
 
 新 Worker 的对账入口先发现本地 Bot，再核对服务、当前账号和恢复身份；按新 Worker 过滤的远端清单不能遮蔽旧绑定。接管在服务端事务内核对 `expectedHostingGeneration`、Bot 未删除及访问权，原子推进承载 Worker 和授权，并拒绝旧承载代次写入。`hostingGeneration` 与 Controller 的 `executionGeneration` 分开：接回存活 Controller 不制造新原生执行；启动新进程仍需原 writer 停证和已知 native ID。新账号认证只用于重新核验并签发当前授权，不延长已失效父 PAT 的权限。
 

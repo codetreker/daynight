@@ -30,6 +30,8 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
     const record = JSON.parse(value) as BotRecord;
     if (!same(record.owner, owner) || record.botId !== record.observed.id) throw new Error("Stored Bot inventory identity is inconsistent.");
     parseBot(record.observed, owner);
+    if (record.migration !== undefined && (record.migration.state !== "registration_pending" || typeof record.migration.manifestPath !== "string"
+      || !path.isAbsolute(record.migration.manifestPath) || /[\0\r\n]/.test(record.migration.manifestPath))) throw new Error("Bot migration ownership is invalid.");
     if (record.definition !== null) {
       const definition = parseBot(record.definition, owner);
       if (definition.deletion !== null || definition.id !== record.botId) throw new Error("Stored Bot definition is inconsistent.");
@@ -81,6 +83,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
     return row === undefined ? null : parseRecord(row.record, owner);
   });
   const put = (record: BotRecord): BotRecord => {
+    if (format === workerStoreFormat && db.prepare(`SELECT 1 FROM bot_migrations WHERE ${predicate} AND bot_id = @botId`).get(key(record.owner, record.botId)) !== undefined) throw new Error("Legacy Bot authority has migrated; its original Worker rows cannot be recreated.");
     const serialized = JSON.stringify(record);
     parseRecord(serialized, record.owner);
     db.prepare(`INSERT INTO bots(server_origin, owner_user_id, worker_id, bot_id, record) VALUES (@serverOrigin, @ownerUserId, @workerId, @botId, @record)
@@ -153,10 +156,12 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       if (intent !== null && observed.deletion === null) {
         if (observed.testExecutionId !== null && observed.testExecutionId !== intent.registration.testExecutionId) throw new Error("Bot registered execution differs from the durable launch intent.");
         if (intent.sessionId !== null && observed.sessionId !== intent.sessionId) throw new Error("Bot stable session binding cannot change.");
-        if (observed.sessionId !== null) intent.sessionId = observed.sessionId;
-        if (observed.roleConfiguration !== null) intent.roleConfiguration = observed.roleConfiguration;
+        if (previous?.migration === undefined) {
+          if (observed.sessionId !== null) intent.sessionId = observed.sessionId;
+          if (observed.roleConfiguration !== null) intent.roleConfiguration = observed.roleConfiguration;
+        }
       }
-      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }) });
+      return put({ owner: parseBotOwner(owner), botId: observed.id, observed, definition, intent, observedAt, ...(previous?.cleanup === undefined ? {} : { cleanup: previous.cleanup }), ...(previous?.migration === undefined ? {} : { migration: previous.migration }) });
     }),
     /** Persist the first registration identity before any register, ticket write or spawn. */
     prepare: (owner: BotOwner, botId: string, input: { homeDirectory: string; recoveryLimit: number; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation }): BotLaunchIntent => atomic(() => {
