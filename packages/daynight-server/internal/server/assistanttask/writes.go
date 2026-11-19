@@ -178,8 +178,8 @@ func (h *handler) saveItem(w http.ResponseWriter, r *http.Request, a core.Actor,
 	return itemResponse(value), err
 }
 func (h *handler) addRecord(w http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
-	p := decode(w, r, "id", "claimToken", "claimGeneration", "itemId", "kind", "text", "refs")
-	input := core.RecordInput{Mutation: p.mutation(taskID, "", false), ItemID: p.optionalID("itemId"), Kind: p.text("kind", true), Text: p.text("text", true), Refs: p.raw("refs")}
+	p := decode(w, r, "id", "claimToken", "claimGeneration", "itemId", "kind", "text", "outcome", "actionRecordId", "refs")
+	input := core.RecordInput{Mutation: p.mutation(taskID, "", false), ItemID: p.optionalID("itemId"), Kind: p.text("kind", true), Text: p.text("text", true), Outcome: p.optionalText("outcome"), ActionRecordID: p.optionalID("actionRecordId"), Refs: p.raw("refs")}
 	if p.err != nil {
 		return nil, p.err
 	}
