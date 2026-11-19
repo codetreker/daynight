@@ -108,3 +108,38 @@ test('expires all presentations together while retaining timestamped location on
   await expect.poll(() => control.reads.get(bot.id) ?? 0).toBeGreaterThan(1);
   expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
 });
+
+for (const width of [1440, 320]) {
+  test(`preserves the Session description for the composer without duplicating visible status at ${width}px`, async ({ page }, info) => {
+    const bot = definition(1);
+    await install(page, [bot], new Map([[bot.id, observation(bot)]]));
+    await page.setViewportSize({ width, height: 900 }); await page.goto(`/bots/${bot.id}`);
+    const input = page.getByRole('textbox', { name: 'Message', exact: true });
+    await expect(input).toBeEnabled();
+    await expect(input).toHaveAccessibleDescription('Ready');
+    const descriptionId = await input.getAttribute('aria-describedby');
+    expect(descriptionId).toBeTruthy();
+    const description = page.locator('.bot-session-description .session-status');
+    await expect(description).toHaveCount(1);
+    await expect(description).toHaveAttribute('id', descriptionId!);
+    await expect(description).toHaveAttribute('role', 'status');
+    await expect(description).toHaveText('Ready');
+    const visibleStatus = page.locator('.bot-header-state .bot-status');
+    await expect(visibleStatus).toHaveCount(1);
+    await expect(visibleStatus.locator('> span').first()).toHaveText('Online · idle');
+    await expect(page.locator('.bot-header-state')).not.toContainText('Ready');
+    const geometry = await page.locator('.bot-session-description').evaluate(node => {
+      const element = node as HTMLElement, style = getComputedStyle(element);
+      const header = element.closest('header')!;
+      const rect = () => ({ header: header.getBoundingClientRect().toJSON(), title: header.querySelector('h2')!.getBoundingClientRect().toJSON() });
+      const before = rect(), hidden = { position: style.position, overflow: style.overflow, clipPath: style.clipPath, width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height, ariaHidden: element.getAttribute('aria-hidden') };
+      element.style.display = 'none'; const withoutDescription = rect(); element.style.removeProperty('display');
+      return { hidden, before, withoutDescription };
+    });
+    expect(geometry.hidden).toEqual({ position: 'absolute', overflow: 'hidden', clipPath: 'inset(50%)', width: 1, height: 1, ariaHidden: null });
+    expect(geometry.withoutDescription).toEqual(geometry.before);
+    await expect(input).toHaveAccessibleDescription('Ready');
+    expect(await page.evaluate(id => [...document.querySelectorAll('[id]')].filter(node => node.id === id).length, descriptionId)).toBe(1);
+    await info.attach('composer-status-description', { body: JSON.stringify({ width, descriptionId, accessibleDescription: 'Ready', visibleBotStatus: 'Online · idle', geometry }), contentType: 'application/json' });
+  });
+}

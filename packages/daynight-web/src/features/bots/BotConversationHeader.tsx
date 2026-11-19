@@ -48,6 +48,8 @@ export function BotConversationHeader({ target, session }: { readonly target: Bo
       <div className="bot-conversation-title">
         <h2 title={target.name}>{target.name}</h2>
         <div className="bot-header-state">{session?.provider}{target.bot ? <BotStatus bot={target.bot} observation={target.observation} /> : null}</div>
+        {/* The composer describes its own Session capability independently of Bot availability. */}
+        {session ? <div className="bot-session-description">{session.activity}</div> : null}
       </div>
     </div>
     <div className="bot-header-actions">

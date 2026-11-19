@@ -25,7 +25,7 @@ it.each([
   const read = observation({ state });
   const view = renderWithLocale(<><div data-testid="list"><BotStatus bot={botDefinition()} observation={read} compact /></div><header><BotConversationHeader target={target(read)} session={session} /></header>{details(read)}</>, { locale: 'en' });
   expect(screen.getAllByText(english)).toHaveLength(3);
-  expect(screen.queryByText('Unrelated Session activity')).toBeNull();
+  expect(screen.getByText('Unrelated Session activity').closest('.bot-session-description')).not.toBeNull();
   expect(screen.queryByText('Connected')).toBeNull();
   expect(within(screen.getByTestId('list')).getByText('Original workstation')).toBeVisible();
   view.setLocale('zh-CN');

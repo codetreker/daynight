@@ -45,6 +45,7 @@
 .bot-conversation-title h2 { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-detail-heading); font-weight: 600; }
 .bot-header-state { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; margin-top: 4px; color: var(--muted); font-size: var(--text-interface); overflow-wrap: anywhere; }
 .bot-header-state strong { font-weight: 400; }
+.bot-session-description { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bot-header-state .session-status { font-size: inherit; }
 .bot-header-actions, .bot-conversation .session-header > .bot-header-actions { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: 4px; }
 .bot-header-back, .bot-header-details, .bot-header-more > .button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; }
