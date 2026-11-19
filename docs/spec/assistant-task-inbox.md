@@ -25,7 +25,7 @@ Daynight 出站事件不使用令牌，依靠下文的核验证明来源。因�
 
 公开接口为 `POST /api/v1/assistant-task-inbox/{inboxId}`。它不使用登录凭据、Cookie 或 CORS。外部发送方通过 `Authorization: Bearer <token>` 或查询参数 `token` 提供令牌，最多出现一种；应优先使用请求头，避免令牌进入代理或 CDN 的 URL 日志。不带令牌的请求只有通过 Daynight 事件核验才被接收，否则视为令牌缺失。带有令牌的请求同样执行 Daynight 事件核验，以决定分类。
 
-请求正文最多 64 KiB，媒体类型须为 `application/json`、以 `+json` 结尾的 JSON 类型或 UTF-8 `text/plain`。JSON 正文必须是合法 JSON；文本正文必须是合法 UTF-8。
+请求正文最多 64 KiB，媒体类型须为 `application/json`、以 `+json` 结尾的 JSON 类型或 UTF-8 `text/plain`。JSON 正文必须是合法 JSON；文本正文必须是合法 UTF-8。任何正文都不得包含 NUL 字节，因为事件负载以 JSON 文档保存，无法表示该字符。
 
 | 结果 | 状态码 |
 | --- | --- |
