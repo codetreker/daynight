@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -188,5 +189,29 @@ func TestGoalRelationValidation(t *testing.T) {
 		if err := ValidateGoalDependencyEdit(input); relationCode(err) != "invalid_input" {
 			t.Fatalf("invalid %+v: %v", input, err)
 		}
+	}
+}
+
+func TestGoalDependencyCandidatesRequireAdmissionOnlyForEndpoints(t *testing.T) {
+	endpoint := GoalDependencyEndpoint{ProjectID: relationProject, GoalID: relationUpstream}
+	for _, tc := range []struct {
+		name  string
+		input GoalDependencyEdit
+		want  []store.GoalEndpoint
+	}{
+		{"add", relationAdd(), []store.GoalEndpoint{endpoint}},
+		{"remove hidden edge", GoalDependencyEdit{IfRevision: 1, Mode: "edit", Remove: []string{relationEdge}}, []store.GoalEndpoint{}},
+		{"retain hidden edge", GoalDependencyEdit{IfRevision: 1, Mode: "replace", Prerequisites: []GoalDependencyReference{{EdgeID: relationEdge}}}, []store.GoalEndpoint{}},
+		{"retain and add", GoalDependencyEdit{IfRevision: 1, Mode: "replace", Prerequisites: []GoalDependencyReference{{EdgeID: relationEdge}, {ProjectID: endpoint.ProjectID, GoalID: endpoint.GoalID}}}, []store.GoalEndpoint{endpoint}},
+		{"clear", GoalDependencyEdit{IfRevision: 1, Mode: "replace", Prerequisites: []GoalDependencyReference{}}, []store.GoalEndpoint{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateGoalDependencyEdit(tc.input); err != nil {
+				t.Fatal(err)
+			}
+			if got := GoalDependencyCandidates(tc.input); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("admission endpoints = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }

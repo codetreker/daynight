@@ -77,10 +77,7 @@ func (s *Tasks) ShowGoalDependencies(ctx context.Context, principal model.Princi
 		}
 		if len(targets) > request.Limit {
 			targets = targets[:request.Limit]
-			cursor, err := query.EncodeGoalCursor(scope, targets[len(targets)-1].GoalID)
-			if err != nil {
-				return err
-			}
+			cursor := query.EncodeGoalCursor(scope, targets[len(targets)-1].GoalID)
 			result.NextCursor = &cursor
 		}
 		result.Successors = targets

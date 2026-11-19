@@ -12,10 +12,7 @@ func TestGoalPageCursorBindsIdentityResourceAndLimit(t *testing.T) {
 	if got, err := GoalPageAfter(nil, scope); err != nil || got != "" {
 		t.Fatalf("first page %q %v", got, err)
 	}
-	cursor, err := EncodeGoalCursor(scope, after)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cursor := EncodeGoalCursor(scope, after)
 	if got, err := GoalPageAfter(&cursor, scope); err != nil || got != after {
 		t.Fatalf("continuation %q %v", got, err)
 	}

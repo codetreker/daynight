@@ -48,10 +48,9 @@ func GoalPageAfter(cursor *string, scope GoalPageScope) (string, error) {
 	}
 	return id, nil
 }
-func EncodeGoalCursor(scope GoalPageScope, after string) (string, error) {
-	data, err := json.Marshal(goalCursor{Version: 1, Kind: "goal-successors", ProjectID: scope.ProjectID, GoalID: scope.GoalID, UserID: scope.UserID, Limit: scope.Limit, After: after})
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(data), nil
+func EncodeGoalCursor(scope GoalPageScope, after string) string {
+	// Our fixed cursor schema contains only strings and integers, so JSON
+	// encoding cannot fail.
+	data, _ := json.Marshal(goalCursor{Version: 1, Kind: "goal-successors", ProjectID: scope.ProjectID, GoalID: scope.GoalID, UserID: scope.UserID, Limit: scope.Limit, After: after})
+	return base64.RawURLEncoding.EncodeToString(data)
 }

@@ -314,7 +314,7 @@ func TestGoalRelationsRejectBeforeStore(t *testing.T) {
 	if _, err := svc.EditGoalDependencies(t.Context(), relationTestActor, relationTestProject, relationTestGoal, taskcore.GoalDependencyEdit{}); err == nil {
 		t.Fatal("invalid edit accepted")
 	}
-	cursor, _ := query.EncodeGoalCursor(query.GoalPageScope{ProjectID: relationTestProject, GoalID: relationTestOther, UserID: relationTestActor.UserID, Limit: 20}, relationTestEdge)
+	cursor := query.EncodeGoalCursor(query.GoalPageScope{ProjectID: relationTestProject, GoalID: relationTestOther, UserID: relationTestActor.UserID, Limit: 20}, relationTestEdge)
 	if _, err := svc.ShowGoalDependencies(t.Context(), relationTestActor, relationTestProject, relationTestGoal, model.PageRequest{Cursor: &cursor}); err == nil {
 		t.Fatal("cursor crossed Goal")
 	}
