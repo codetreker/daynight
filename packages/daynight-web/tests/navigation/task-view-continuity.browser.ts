@@ -500,9 +500,12 @@ test('overview progress rows fit their content at desktop and narrow widths', as
         return element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1 &&
           children.every((child, i) => child.scrollWidth <= child.clientWidth + 1 && child.scrollHeight <= child.clientHeight + 1 &&
             boxes[i]!.left >= rowBox.left - 1 && boxes[i]!.right <= rowBox.right + 1 && boxes[i]!.top >= rowBox.top - 1 && boxes[i]!.bottom <= rowBox.bottom + 1 &&
-            (i === 0 || boxes[i - 1]!.right <= boxes[i]!.left + 1));
+            boxes.every((other, j) => i === j || boxes[i]!.right <= other.left + 1 || other.right <= boxes[i]!.left + 1 ||
+              boxes[i]!.bottom <= other.top + 1 || other.bottom <= boxes[i]!.top + 1));
       }))).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      expect(await rows.first().locator('.overview-progress-title').evaluate(element => getComputedStyle(element).fontSize)).toBe('14px');
+      expect(await page.locator('.project-overview .stat-label').first().evaluate(element => getComputedStyle(element).fontSize)).toBe('14px');
       if (width === 320) {
         expect((await rows.filter({ hasText: 'A long English title' }).boundingBox())!.height).toBeGreaterThan(60);
         expect((await rows.filter({ hasText: '这是一个较长的中文' }).boundingBox())!.height).toBeGreaterThan(60);
