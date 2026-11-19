@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { clearTimeout as clearNativeTimeout, setTimeout as setNativeTimeout } from "node:timers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiClient, createOperation, DEFAULT_OPERATION_LIMITS, parseApiJson, stringifyApiJson } from "../../../src/api/index.js";
 import type { AddTaskStepInput, Project, StepsResource, TaskStep } from "../../../src/api/types.js";
@@ -223,15 +224,47 @@ describe("Step Add refusal, unknown and factual observation", () => {
   });
 
   it.each(["request-timeout", "response-cap"] as const)("permits exactly one observation after live-operation %s", async (kind) => {
-    const f = fixture(kind === "request-timeout" ? { requestMs: 20, totalMs: 1000 } : { responseBytes: 512 }); let posted = false;
+    let elapsed = 0;
+    const clock = kind === "request-timeout" ? vi.spyOn((await import("node:perf_hooks")).performance, "now").mockImplementation(() => elapsed) : undefined;
+    if (clock !== undefined) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const f = fixture(kind === "request-timeout" ? { requestMs: 20, totalMs: 1000 } : { responseBytes: 512 });
+    let postStarted!: (signal: AbortSignal) => void;
+    const dispatched = new Promise<AbortSignal>((resolve) => { postStarted = resolve; });
+    const bounded = async <T>(promise: Promise<T>, message: string): Promise<T> => {
+      let timer: ReturnType<typeof setNativeTimeout> | undefined;
+      try {
+        return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setNativeTimeout(() => reject(new Error(message)), 10_000); })]);
+      } finally { clearNativeTimeout(timer); }
+    };
     f.fetch.mockImplementation(async (_url, options) => {
-      if (posted) return json({ ...previous, steps: [] });
-      posted = true;
+      if (options!.method === "GET") return json({ ...previous, steps: [] });
       if (kind === "response-cap") return new Response("X".repeat(1024), { status: 201, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
-      return new Promise((_resolve, reject) => options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true }));
+      return new Promise((_resolve, reject) => {
+        const signal = options!.signal!;
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        postStarted(signal);
+      });
     });
-    const error = await failure(f, f.args(["--if-version=1"])); expect(f.fetch).toHaveBeenCalledTimes(2); expect(formatError(error)).toContain("target=absent"); expect(formatError(error)).toContain("outcome=unknown"); expect(f.context.stdout).not.toHaveBeenCalled();
-  });
+    try {
+      const pending = failure(f, f.args(["--if-version=1"]));
+      if (kind === "request-timeout") {
+        const signal = await bounded(Promise.race([
+          dispatched,
+          pending.then(() => { throw new Error("Step Add finished before POST dispatch"); }),
+        ]), "POST dispatch timed out");
+        expect(f.fetch).toHaveBeenCalledOnce(); expect(signal.aborted).toBe(false); expect(f.operation.signal.aborted).toBe(false);
+        elapsed = 20; await vi.advanceTimersByTimeAsync(20);
+        expect(signal.reason).toMatchObject({ kind: "request_timeout" }); expect(f.operation.signal.aborted).toBe(false);
+      }
+      const error = await bounded(pending, "Step Add did not finish");
+      expect(f.fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["POST", "GET"]);
+      const original = new Headers(f.fetch.mock.calls[0]![1]!.headers).get("X-Request-ID");
+      expect(new Headers(f.fetch.mock.calls[1]![1]!.headers).get("X-Request-ID")).toBe(`${original}.r1`);
+      expect(formatError(error)).toContain("target=absent"); expect(formatError(error)).toContain("outcome=unknown"); expect(f.context.stdout).not.toHaveBeenCalled();
+    } finally {
+      f.operation.dispose(); clock?.mockRestore(); if (clock !== undefined) vi.useRealTimers();
+    }
+  }, 30_000);
   it("does not regenerate a generated identity or replay a collision", async () => {
     const f = fixture(); let sent: AddTaskStepInput | undefined;
     f.fetch.mockImplementation(async (_url, options) => { sent = parseApiJson(String(options!.body)) as AddTaskStepInput; return json({ error: { code: "step_id_conflict", message: "Step ID exists.", requestId: "conflict" } }, 409); });
