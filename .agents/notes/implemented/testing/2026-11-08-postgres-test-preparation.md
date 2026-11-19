@@ -226,6 +226,12 @@ clock passage is unnecessary for this storage proof. The
 independently requires fresh clock sampling after Bot/Session admission barriers
 for both credentials and committed replay.
 
+The Microsoft Identity and Release Worker failure matrices each replay their
+historical prefix once. Each case still executes the real target migration
+and checks its SQLSTATE, affected state, and full ledger. The cases remove
+only the injected row, field mutation, or trigger and function, then verify
+restoration before the next case.
+
 ## Alternatives
 
 **Share operational pools or mutable schemas across the package.** Destructive
