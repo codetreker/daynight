@@ -892,6 +892,82 @@ for (const kind of ['standalone', 'goal'] as const) for (const locale of ['en', 
   });
 }
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`usage detail stays usable in each surface at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    const metrics = Object.fromEntries(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens', 'providerTotalTokens'].map(key => [key, '9007199254740993']));
+    const summaryMetrics = Object.fromEntries(Object.keys(metrics).filter(key => key !== 'providerTotalTokens').map(key => [key, { known: '9007199254740993', contributingRecords: '1', unknownRecords: '0' }]));
+    const summary = { metrics: summaryMetrics, scope: 'registered_web_executions', completeness: 'partial', reasonCodes: [], coverage: { executions: '1', supportedExecutions: '1', collectingExecutions: '0', completeExecutions: '0', partialExecutions: '1', unsupportedExecutions: '0', unavailableExecutions: '0', unregisteredExecutions: '0' }, measurementRecords: '1', lastMeasuredAt: time, observedAt: time, etag: 'etag' };
+    const requests: string[] = [];
+    await page.route('**/api/**/usage/v1/**', async route => {
+      const url = new URL(route.request().url()); requests.push(url.pathname + url.search);
+      const send = (body: unknown) => route.fulfill({ json: body, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      if (url.pathname.endsWith('/capabilities')) return send({ protocol: 'daynight.usage.v1' });
+      if (url.pathname.endsWith('/task-summaries')) return send({ items: [{ taskId, summary }], observedAt: time, etag: 'batch' });
+      if (url.pathname.endsWith('/records')) {
+        const kind = url.searchParams.get('kind');
+        return send({ items: Array.from({ length: 8 }, (_, i) => ({ id: `20000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`, recordKind: kind, sessionId: taskId, stateId: null, executionGeneration: '1', provider: 'provider-with-a-very-long-name', model: 'model-with-a-very-long-name-that-must-wrap-on-narrow-screens', sourceKey: kind === 'measurement' ? 'a-very-long-source-key-that-must-wrap-on-narrow-screens' : null, profileId: 'test-profile', providerVersion: '1', collectionState: 'complete', aggregationRole: 'counted', finality: 'final', disposition: 'active', metrics, reasonCodes: [], observedAt: time, updatedAt: time })), nextCursor: 'next', snapshotToken: 'snapshot', observedAt: time });
+      }
+      return route.abort();
+    });
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+    const dialog = page.locator('.task-detail-dialog');
+    await dialog.getByRole('tab', { name: locale === 'en' ? 'Usage' : '用量', exact: true }).click();
+    const check = async (surface: Locator) => {
+      const panel = surface.locator('.task-detail-panel-usage');
+      await expect(panel.locator('.usage-record')).toHaveCount(8);
+      expect(await panel.evaluate(el => { el.scrollTop = el.scrollHeight; return el.scrollTop > 0 && el.scrollWidth <= el.clientWidth && document.documentElement.scrollWidth <= innerWidth; })).toBe(true);
+      expect(await panel.locator('.usage-filters').evaluate((el, narrow) => {
+        const fields = [...el.querySelectorAll<HTMLElement>('label')];
+        const controls = [...el.querySelectorAll<HTMLElement>('input, select, button')];
+        const boxes = fields.map(field => field.getBoundingClientRect());
+        return narrow ? controls.every(control => control.getBoundingClientRect().height >= 44) : boxes.every(box => Math.abs(box.bottom - boxes[0]!.bottom) < 2);
+      }, width === 320)).toBe(true);
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Next page' : '下一页' })).toBeVisible();
+      const provider = panel.getByLabel('Provider'); await provider.fill('provider');
+      const filtered = page.waitForResponse(response => response.url().includes('/records?') && response.url().includes('provider=provider'));
+      await provider.press('Enter'); await filtered;
+      const measurement = page.waitForResponse(response => response.url().includes('/records?') && response.url().includes('kind=measurement'));
+      await panel.getByLabel(locale === 'en' ? 'View' : '查看').selectOption('measurement'); await measurement;
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' })).toBeEnabled();
+      await expect(panel.getByText('9,007,199,254,740,993').first()).toBeVisible();
+      const details = panel.locator('details').first();
+      if (await details.getAttribute('open') === null) await details.locator('summary').click();
+      await expect(panel.locator('details[open] code').first()).toBeVisible();
+      await panel.getByRole('button', { name: locale === 'en' ? 'Next page' : '下一页' }).click();
+      await expect.poll(() => requests.some(value => value.includes('cursor=next'))).toBe(true);
+      await panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' }).focus();
+      await expect(panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' })).toBeFocused();
+    };
+    await check(dialog);
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+    await check(dialog);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+    await check(page.locator('.task-detail-page'));
+  });
+}
+
+test('unsupported service shows one neutral usage explanation without a records request', async ({ page }) => {
+  await install(page);
+  let records = 0;
+  await page.route('**/api/**/usage/v1/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/records')) records++;
+    return route.fulfill({ status: 404, json: { error: { code: 'not_found', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+  });
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=usage`);
+  const surface = page.locator('.task-detail-page');
+  await expect(surface.getByText('This service does not support usage')).toHaveCount(1);
+  await expect(surface.locator('.usage-filters, .usage-pagination, .usage-error')).toHaveCount(0);
+  expect(records).toBe(0);
+  await surface.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await expect(surface.locator('.task-detail-heading').getByText('This service does not support usage')).toHaveCount(0);
+});
 for (const entry of ['dialog', 'page'] as const) for (const width of [320, 1280]) {
   test(`task detail keeps usage inside its tab in ${entry} at ${width}px`, async ({ page }, info) => {
     const zh = width === 320;

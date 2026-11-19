@@ -162,7 +162,9 @@ Detail 与用量页签。图节点也复用同一读取状态，仅在有可显�
 承载用量页签，Card 的入口直接定位该页签。明细分开读取 execution_state 和
 measurement，过滤后重启分页，延迟的旧过滤响应被取消。明细按页替换，服务端
 游标绑定 snapshotToken；reset_required/cursor_expired 保留已读页并要求从第一页
-重读，不能悄悄把两个集合拼接。摘要和分页各自显示观察时点。
+重读，不能悄悄把两个集合拼接。能力状态独立于摘要结果，协商成功后才请求明细；
+明确不支持时页签只呈现中性说明。详情容器拥有页签滚动和留白，筛选控件按可用宽度
+换行。摘要和分页各自显示观察时点。
 
 `features/usage-aggregate/` 直接读取服务端 Chain/Goal 汇总，不从可见图节点或
 Task 摘要再相加。Chain/Goal 图通过原生展开入口惰性加载，Goal Detail 提供用量
