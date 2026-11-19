@@ -1,4 +1,4 @@
-import { isUsageUnsupported, TaskUsageSummaryContent } from '../usage/UsageSummaryView';
+import { usageCompactMetric, UsageSummaryView, usageWords } from '../usage/UsageSummaryView';
 import { useTaskUsage } from '../usage/useTaskUsage';
 import { navigate, taskDetailUrl } from '../../app/router';
 import { memo, useCallback, useId, useLayoutEffect, useRef, type MouseEvent, type ReactNode } from 'react';
@@ -38,7 +38,8 @@ type TaskRowProps = {
 export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instanceId, assignee, goal, onOpenTask, onOpenSession }: TaskRowProps) => {
   const { locale, messages: { workspace: { standalone, project }, common, graph, inspection: { detail } }, format } = useI18n();
   const usage = useTaskUsage(projectId, model.id, tagsActive);
-  const usageUnsupported = isUsageUnsupported(usage.error);
+  const usageSummary = usage.summary !== null && usageCompactMetric(usage.summary) !== null ? usage.summary : null;
+  const usageHref = taskDetailUrl(projectId, model.id, { tab: 'usage', path: null });
   const execution = useTaskExecution(model);
   const completion = useCompletionTime(completedAtFor(model));
   const hint = useCompletionHint(completion);
@@ -120,14 +121,18 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
             event.preventDefault(); goal.onOpen(event.currentTarget);
           }}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg><span>{goal.title}</span><span aria-hidden="true">↗</span></a>}
         </div>
-        {!usageUnsupported && <TaskUsageSummaryContent state={usage} compact href={taskDetailUrl(projectId, model.id, { tab: 'usage', path: null })} onOpen={() => navigate(taskDetailUrl(projectId, model.id, { tab: 'usage', path: null }))} />}
+        {usageSummary !== null && <section className="task-usage-summary" aria-label={usageWords(locale === 'zh-CN').title} data-task-row-selectable>
+          <a className="usage-summary-link" href={usageHref} onClick={event => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+            event.preventDefault(); navigate(usageHref);
+          }}><UsageSummaryView summary={usageSummary} compact /></a>
+        </section>}
         {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
       </div>
       <div className="task-row-status">
         {model.paused && <TaskPausedBadge />}
         <TaskSessionStatus title={model.title} status={model.status} observation={model.session} allowAgents={model.allowAgents} showTaskStatus={false}
           {...(onOpenSession === undefined ? {} : { onActivate: (event: MouseEvent<HTMLButtonElement>) => onOpenSession(model.id, event.currentTarget) })} />
-        {usageUnsupported && <span className="task-row-usage-unsupported">{locale === 'zh-CN' ? '无LLM用量' : 'No LLM usage'}</span>}
         <span className={`root-status graph-status-${model.status}`}>{common.status[model.status]}</span>
         {model.ready && <span className="task-ready">{project.ready}</span>}
         {model.blocked && <span className="graph-blocked-badge">{project.blocked}</span>}
