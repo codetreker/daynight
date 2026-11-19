@@ -14,7 +14,7 @@
 
 ## 存储与事务
 
-迁移 `071_assistant_tasks.sql` 增加下列独立资源，`096_assistant_task_inboxes.sql` 增加收件箱的两张表与入站事件结算时间；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
+迁移 `071_assistant_tasks.sql` 增加下列独立资源，`098_assistant_task_inboxes.sql` 增加收件箱的两张表与入站事件结算时间；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
 
 | 表 | 持久职责 |
 | --- | --- |
