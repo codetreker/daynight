@@ -248,11 +248,11 @@ for (const width of [320, 390, 740, 741, 1360]) {
       await expect(page).toHaveURL(/\/my-tasks$/);
       await expect(breadcrumb).toContainText(chinese ? '我的' : 'My');
       await expect(breadcrumb).toContainText(chinese ? '进行中的任务' : 'In-progress tasks');
-      await expect(tasks).toHaveAttribute('aria-current', 'page');
       if (width <= 740) {
         await expect(sidebar).not.toHaveAttribute('role', 'dialog');
         await page.getByRole('button', { name: chinese ? '打开导航' : 'Open navigation' }).click();
       }
+      await expect(tasks).toHaveAttribute('aria-current', 'page');
       await expectIconState(tasks, 'rgb(240, 241, 255)');
       expect(await layout()).toEqual(beforeSelection);
     });
