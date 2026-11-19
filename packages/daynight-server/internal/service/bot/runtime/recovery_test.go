@@ -441,3 +441,51 @@ func TestRecoveryCannotReinstateAnOlderControllerToken(t *testing.T) {
 		t.Fatalf("historical token reused: %v", err)
 	}
 }
+
+func TestRecoveryReceiptEncodingFailureDoesNotWritePartialOperation(t *testing.T) {
+	f := newRecoveryFixture(t)
+	invalidExpiry := time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	receipt := sc.BotRecoveryReceipt{OperationID: uuid.NewString(), Kind: "grant", GrantExpiresAt: &invalidExpiry}
+	err := saveRecoveryOperation(t.Context(), f, f.bot.ID, receipt, []byte("original-request-hash"))
+	var encodingError *json.MarshalerError
+	if !errors.As(err, &encodingError) || f.saved != nil || len(f.stages) != 0 {
+		t.Fatalf("invalid receipt was written or lost its encoding error: err=%v saved=%+v stages=%v", err, f.saved, f.stages)
+	}
+}
+
+func TestRecoveryReportFailurePreservesStartupAndStopsFollowupWork(t *testing.T) {
+	for _, failure := range []string{"startup", "version", "fence", "worker"} {
+		t.Run(failure, func(t *testing.T) {
+			f := newRecoveryFixture(t)
+			v := f.record.Snapshot
+			code := "provider_unavailable"
+			input := sc.BotRecoveryReport{BotRecoveryIdentity: f.identity, HostingGeneration: 1, Report: sc.BotReport{BotVersion: f.bot.Version, Fence: &v.ControllerFence, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, NativeSessionID: v.Identity.NativeSessionID, Result: model.BotStartupResult{State: "failed", Code: &code}}}
+			worker := f.bot.Recovery.WorkerID
+			switch failure {
+			case "startup":
+				f.failStage = "startup"
+			case "version":
+				input.Report.BotVersion--
+			case "fence":
+				input.Report.Fence.ConnectionEpoch = "2"
+			case "worker":
+				worker = uuid.NewString()
+			}
+			out, err := f.service.ReportBotRecovery(t.Context(), f.p, worker, f.bot.ID, input)
+			if err == nil || f.bot.StartupResult.State != "" || f.credentials != 1 || f.grant != nil || f.saved != nil || f.advanced != 0 {
+				t.Fatalf("failed report changed startup or continued work: out=%+v err=%v stages=%v", out, err, f.stages)
+			}
+			if failure == "startup" {
+				if !errors.Is(err, f.failure) || f.stages[len(f.stages)-1] != "startup" {
+					t.Fatalf("startup persistence failure lost its cause or continued: err=%v stages=%v", err, f.stages)
+				}
+			} else {
+				for _, stage := range f.stages {
+					if stage == "startup" {
+						t.Fatalf("rejected report wrote startup: %v", f.stages)
+					}
+				}
+			}
+		})
+	}
+}

@@ -255,18 +255,13 @@ func (s *Recovery) BotRecoveryOperation(ctx context.Context, p model.Principal, 
 }
 
 func (s *Recovery) ReportBotRecovery(ctx context.Context, p model.Principal, workerID, id string, input sessioncore.BotRecoveryReport) (model.Bot, error) {
-	execution := sessioncore.NewBotExecution(s.engine, func(ctx context.Context, principal model.Principal, worker, botID string, prepare func(model.Bot) error, check func(model.Bot, *sessioncore.Access) error, work func(*sessioncore.Operation, store.SessionScope, model.Bot, *sessioncore.Access, func(model.Principal) error) error) error {
+	execution := sessioncore.NewBotExecution(s.engine, func(ctx context.Context, principal model.Principal, worker, botID string, prepare func(model.Bot) error, _ func(model.Bot, *sessioncore.Access) error, work func(*sessioncore.Operation, store.SessionScope, model.Bot, *sessioncore.Access, func(model.Principal) error) error) error {
 		return s.run(ctx, principal, worker, botID, input.BotRecoveryIdentity, false, func(op *sessioncore.Operation, scope store.SessionScope, bot model.Bot, a *sessioncore.Access, _ []byte) error {
 			if input.HostingGeneration < 1 || bot.Recovery.HostingGeneration != input.HostingGeneration || bot.Recovery.WorkerID != worker {
 				return recoveryFault("resource_conflict", "Bot hosting generation has changed.")
 			}
 			if prepare != nil {
 				if err := prepare(bot); err != nil {
-					return err
-				}
-			}
-			if check != nil {
-				if err := check(bot, a); err != nil {
 					return err
 				}
 			}
