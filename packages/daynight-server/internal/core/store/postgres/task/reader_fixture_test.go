@@ -60,18 +60,23 @@ func readerAssigneeUser(t *testing.T, database *postgres.Store, projectID string
 
 func readerAssigneeRead(t *testing.T, db *postgres.Store, project string, ids []string) ([]model.TaskAssigneeFact, error) {
 	t.Helper()
+	return readTaskAssignees(t.Context(), db, project, ids)
+}
+
+func readTaskAssignees(ctx context.Context, db *postgres.Store, project string, ids []string) ([]model.TaskAssigneeFact, error) {
 	var facts []model.TaskAssigneeFact
-	err := db.ReadSnapshot(t.Context(), func(snapshot SnapshotScope) error {
+	err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
 		if ids == nil {
-			facts, err = snapshot.TaskDAO().TaskAssignees(t.Context(), project)
+			facts, err = snapshot.TaskDAO().TaskAssignees(ctx, project)
 		} else {
-			facts, err = snapshot.TaskDAO().ResolveTaskAssignees(t.Context(), project, ids)
+			facts, err = snapshot.TaskDAO().ResolveTaskAssignees(ctx, project, ids)
 		}
 		return err
 	})
 	return facts, err
 }
+
 func readerAssertAssignees(t *testing.T, facts []model.TaskAssigneeFact, expected map[string]bool, unresolved []string) {
 	t.Helper()
 	if facts == nil || len(facts) != len(expected)+len(unresolved) {
