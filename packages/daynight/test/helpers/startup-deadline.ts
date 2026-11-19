@@ -5,6 +5,9 @@ import { setImmediate, setTimeout as delay } from "node:timers/promises";
 
 const startupTimeoutMs = 30_000;
 
+export const hasInitializeRequest = (requests: string[]): boolean =>
+  requests.map(request => JSON.parse(request)).some(request => request.method === "initialize");
+
 export const stopStartupChildren = async (children: readonly ChildProcess[]): Promise<void> => {
   await Promise.all(children.map(async child => {
     if (child.exitCode !== null || child.signalCode !== null) return;
@@ -43,7 +46,11 @@ export const captureStartupDeadline = () => {
       const deadline = Date.now() + 10_000;
       while (true) {
         let requests: string[];
-        try { requests = (await readFile(log, "utf8")).trim().split("\n"); }
+        try {
+          const lines = (await readFile(log, "utf8")).split("\n");
+          lines.pop(); // The final segment has not been terminated by a newline.
+          requests = lines.map(line => line.trim()).filter(Boolean);
+        }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
           requests = [];

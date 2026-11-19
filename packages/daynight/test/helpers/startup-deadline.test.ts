@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { captureStartupDeadline } from "./startup-deadline.js";
+import { captureStartupDeadline, hasInitializeRequest } from "./startup-deadline.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -15,6 +15,38 @@ const requestLog = async (): Promise<string> => {
   const root = await mkdtemp(path.join(base, "case-")); roots.push(root);
   return path.join(root, "requests.log");
 };
+
+test("startup expiry waits for a complete JSONL request", async () => {
+  const log = await requestLog();
+  await writeFile(log, '{"method":"initialize');
+  const deadline = captureStartupDeadline(), callback = vi.fn();
+  const timer = setTimeout(callback, 30_000);
+  let observed!: () => void;
+  const partialRead = new Promise<void>(resolve => { observed = resolve; });
+  try {
+    const expiring = deadline.expireAfterRequest(log, requests => {
+      const received = hasInitializeRequest(requests);
+      observed();
+      return received;
+    });
+    await Promise.race([partialRead, expiring.then(() => { throw new Error("Expired before the request was complete."); })]);
+    expect(callback).not.toHaveBeenCalled();
+    await appendFile(log, '"}\n');
+    await expiring;
+    expect(callback).toHaveBeenCalledOnce();
+  } finally { clearTimeout(timer); deadline.restore(); }
+});
+
+test("startup expiry propagates malformed complete JSONL records", async () => {
+  const log = await requestLog();
+  await writeFile(log, '{"method":"initialize"}\n{"broken":\n');
+  const deadline = captureStartupDeadline(), callback = vi.fn();
+  const timer = setTimeout(callback, 30_000);
+  try {
+    await expect(deadline.expireAfterRequest(log, hasInitializeRequest)).rejects.toBeInstanceOf(SyntaxError);
+    expect(callback).not.toHaveBeenCalled();
+  } finally { clearTimeout(timer); deadline.restore(); }
+});
 
 test("startup expiry waits for native receipt, preserves callback arguments and leaves other timers alone", async () => {
   const log = await requestLog(), events: string[] = [];
