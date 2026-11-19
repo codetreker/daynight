@@ -280,7 +280,7 @@ var sessionArchiveCleanupSQL string
 //go:embed schema/migrations/094_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
-//go:embed schema/migrations/098_assistant_task_item_lifecycle.sql
+//go:embed schema/migrations/099_assistant_task_item_lifecycle.sql
 var assistantTaskItemLifecycleSQL string
 
 //go:embed schema/migrations/100_assistant_task_retrospectives.sql
@@ -385,7 +385,7 @@ var schemaMigrations = []migration{
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 94, sql: assistantTaskOutcomesSQL},
-	{version: 98, sql: assistantTaskItemLifecycleSQL},
+	{version: 99, sql: assistantTaskItemLifecycleSQL},
 	{version: 100, sql: assistantTaskRetrospectivesSQL},
 }
 
