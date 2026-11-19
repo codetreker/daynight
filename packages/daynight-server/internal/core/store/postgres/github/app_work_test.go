@@ -773,7 +773,7 @@ func TestRepositorySourcesIsolateLegacyReadsAndLeasePublications(t *testing.T) {
 		t.Fatalf("same-number rows: old=%q new=%q err=%v", oldTitle, newTitle, err)
 	}
 	r := github.NewReader(tx)
-	detail, err := r.PullRequest(ctx, f.project, 42)
+	detail, err := r.PullRequest(ctx, f.project, 42, nil)
 	if err != nil || detail.Title != "legacy" {
 		t.Fatalf("legacy detail: %+v %v", detail, err)
 	}
@@ -794,7 +794,7 @@ func TestRepositorySourcesIsolateLegacyReadsAndLeasePublications(t *testing.T) {
 		t.Fatalf("legacy statistics: %+v %v", stats, err)
 	}
 	mustExec(t, tx, `UPDATE project_github SET enabled=false,sync_enabled=false WHERE project_id=$1`, f.project)
-	if detail, err := r.PullRequest(ctx, f.project, 42); err != nil || detail.Title != "legacy" {
+	if detail, err := r.PullRequest(ctx, f.project, 42, nil); err != nil || detail.Title != "legacy" {
 		t.Fatalf("disconnected legacy detail: %+v %v", detail, err)
 	}
 	if ok, err := w.Publish(ctx, lease, []githubpr.PullRequest{active}); err != nil || ok {

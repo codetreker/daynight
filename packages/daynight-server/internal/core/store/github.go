@@ -8,22 +8,34 @@ import (
 )
 
 // GitHubReadDAO reads resource facts in the caller's snapshot.
+// A nil repository selector reads the Project's fixed legacy source; it never
+// follows the current connection. Explicit selectors address Project-owned sources.
 type GitHubReadDAO interface {
 	Connection(context.Context, string) (githubpr.Connection, error)
+	Repository(context.Context, string, int64) (githubpr.Repository, error)
+	Repositories(context.Context, GitHubRepositoriesQuery) ([]githubpr.Repository, error)
 	Authors(context.Context, GitHubAuthorQuery) (GitHubAuthorPage, error)
-	PullRequest(context.Context, string, int64) (githubpr.PullRequest, error)
+	PullRequest(context.Context, string, int64, *int64) (githubpr.PullRequest, error)
 	PullRequests(context.Context, GitHubPRQuery) (GitHubPRPage, error)
 	PullRequestCounts(context.Context, GitHubPRCountsQuery) (GitHubPRCounts, error)
 	PullRequestStatistics(context.Context, GitHubPRStatisticsQuery) (GitHubPRStatistics, error)
 }
 
+// GitHubRepositoriesQuery selects one ascending source page plus its continuation row.
+type GitHubRepositoriesQuery struct {
+	ProjectID         string
+	Limit             int
+	AfterRepositoryID *int64
+}
+
 // GitHubPRStatisticsQuery describes validated, ascending half-open time segments.
 // DateIndices parallels Boundaries; -1 denotes a gap or the final boundary.
 type GitHubPRStatisticsQuery struct {
-	ProjectID   string
-	AuthorID    *int64
-	Boundaries  []time.Time
-	DateIndices []int32
+	RepositoryID *int64
+	ProjectID    string
+	AuthorID     *int64
+	Boundaries   []time.Time
+	DateIndices  []int32
 }
 
 // A nil DateIndex combines all records outside the named date segments.
@@ -40,6 +52,7 @@ type GitHubPRStatistics struct {
 
 // GitHubAuthorQuery selects a bounded page of canonical saved authors.
 type GitHubAuthorQuery struct {
+	RepositoryID     *int64
 	ProjectID, Query string
 	Limit            int
 	AnchorNameKey    *string
@@ -52,8 +65,9 @@ type GitHubAuthorPage struct {
 }
 
 type GitHubPRQuery struct {
-	ProjectID string
-	AuthorID  *int64
+	RepositoryID *int64
+	ProjectID    string
+	AuthorID     *int64
 	// State is active, closed, merged or all; validation belongs to core.
 	State, Query              string
 	Limit                     int
@@ -70,8 +84,9 @@ type GitHubPRPage struct {
 }
 
 type GitHubPRCountsQuery struct {
-	ProjectID string
-	AuthorID  *int64
+	RepositoryID *int64
+	ProjectID    string
+	AuthorID     *int64
 }
 
 type GitHubPRCounts struct{ Active, Closed, Merged, All, ProjectTotal int64 }

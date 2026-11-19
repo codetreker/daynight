@@ -178,19 +178,19 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 	}
 	tx := begin(t, db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	r := github.NewReader(tx)
-	detail, err := r.PullRequest(ctx, id, 9)
+	detail, err := r.PullRequest(ctx, id, 9, nil)
 	if err != nil || detail.Description == nil || *detail.Description != body || detail.AuthorID != nil || detail.AuthorLogin != nil || detail.HeadRepositoryID != nil || detail.HeadRepositoryFullName != nil || detail.HeadRef != nil {
 		t.Fatalf("detail: %+v %v", detail, err)
 	}
-	emptyDetail, err := r.PullRequest(ctx, id, 8)
+	emptyDetail, err := r.PullRequest(ctx, id, 8, nil)
 	if err != nil || emptyDetail.Description == nil || *emptyDetail.Description != "" {
 		t.Fatalf("empty: %+v %v", emptyDetail, err)
 	}
-	nullDetail, err := r.PullRequest(ctx, id, 7)
+	nullDetail, err := r.PullRequest(ctx, id, 7, nil)
 	if err != nil || nullDetail.Description != nil {
 		t.Fatalf("null: %+v %v", nullDetail, err)
 	}
-	if _, err = r.PullRequest(ctx, other, 8); !errors.Is(err, model.ErrNotFound) {
+	if _, err = r.PullRequest(ctx, other, 8, nil); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing: %v", err)
 	}
 	counts, err := r.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id})
@@ -539,16 +539,16 @@ func TestPullRequestRequiresFixedLegacySource(t *testing.T) {
 	ctx := t.Context()
 	tx := begin(t, db, pgx.TxOptions{})
 	r := github.NewReader(tx)
-	if _, err := r.PullRequest(ctx, id, 42); !errors.Is(err, model.ErrNotFound) {
+	if _, err := r.PullRequest(ctx, id, 42, nil); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing connection: %v", err)
 	}
 	mustExec(t, tx, `INSERT INTO project_github(project_id) VALUES($1)`, id)
 	mustExec(t, tx, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,30,42,42,'url','current','open',false,'main','sha',now(),now(),now(),1)`, id)
-	if _, err := r.PullRequest(ctx, id, 42); !errors.Is(err, model.ErrNotFound) {
+	if _, err := r.PullRequest(ctx, id, 42, nil); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("unfixed legacy source returned a current PR: %v", err)
 	}
 	mustExec(t, tx, `ALTER TABLE project_github RENAME TO inaccessible_project_github`)
-	if _, err := r.PullRequest(ctx, id, 42); err == nil || errors.Is(err, model.ErrNotFound) {
+	if _, err := r.PullRequest(ctx, id, 42, nil); err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("connection read failure was hidden as not found: %v", err)
 	}
 }

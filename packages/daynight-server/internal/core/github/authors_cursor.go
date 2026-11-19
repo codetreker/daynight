@@ -15,20 +15,21 @@ import (
 )
 
 type authorCursorJSON struct {
-	V         int    `json:"v"`
-	ProjectID string `json:"projectId"`
-	Q         string `json:"q"`
-	Limit     int    `json:"limit"`
-	Revision  string `json:"revision"`
-	NameKey   string `json:"nameKey"`
-	AuthorID  string `json:"authorId"`
+	RepositoryID *string `json:"repositoryId,omitempty"`
+	V            int     `json:"v"`
+	ProjectID    string  `json:"projectId"`
+	Q            string  `json:"q"`
+	Limit        int     `json:"limit"`
+	Revision     string  `json:"revision"`
+	NameKey      string  `json:"nameKey"`
+	AuthorID     string  `json:"authorId"`
 }
 type authorCursor struct {
 	revision, authorID int64
 	nameKey            string
 }
 
-var authorCursorKeys = map[string]bool{"v": true, "projectId": true, "q": true, "limit": true, "revision": true, "nameKey": true, "authorId": true}
+var authorCursorKeys = map[string]bool{"v": true, "projectId": true, "q": true, "limit": true, "revision": true, "nameKey": true, "authorId": true, "repositoryId": true}
 
 func decodeAuthorCursor(encoded, id string, request AuthorsRequest) (*authorCursor, error) {
 	bad := func() (*authorCursor, error) { return nil, invalid("Cursor is invalid for this directory.") }
@@ -60,7 +61,7 @@ func decodeAuthorCursor(encoded, id string, request AuthorsRequest) (*authorCurs
 			return bad()
 		}
 	}
-	if _, e = d.Token(); e != nil || d.Decode(new(any)) != io.EOF || len(seen) != 7 {
+	if _, e = d.Token(); e != nil || d.Decode(new(any)) != io.EOF {
 		return bad()
 	}
 	var c authorCursorJSON
@@ -77,13 +78,32 @@ func decodeAuthorCursor(encoded, id string, request AuthorsRequest) (*authorCurs
 	if !ok {
 		return bad()
 	}
-	if c.V != 1 || c.ProjectID != id || c.Q != request.Query || c.Limit != request.Limit || !utf8.ValidString(c.NameKey) || containsNUL(c.NameKey) {
+	expectedFields, expectedVersion := 7, 1
+	if request.RepositoryID != nil {
+		expectedFields, expectedVersion = 8, 2
+		if c.RepositoryID == nil {
+			return bad()
+		}
+		repositoryID, ok := number(*c.RepositoryID, false)
+		if !ok || repositoryID != *request.RepositoryID {
+			return bad()
+		}
+	} else if c.RepositoryID != nil {
+		return bad()
+	}
+	if len(seen) != expectedFields || c.V != expectedVersion || c.ProjectID != id || c.Q != request.Query || c.Limit != request.Limit || !utf8.ValidString(c.NameKey) || containsNUL(c.NameKey) {
 		return bad()
 	}
 	return &authorCursor{revision, authorID, c.NameKey}, nil
 }
 func encodeAuthorCursor(id string, request AuthorsRequest, revision int64, author githubpr.Author) (*string, error) {
-	b, e := json.Marshal(authorCursorJSON{1, id, request.Query, request.Limit, strconv.FormatInt(revision, 10), author.NameKey, strconv.FormatInt(author.ID, 10)})
+	c := authorCursorJSON{V: 1, ProjectID: id, Q: request.Query, Limit: request.Limit, Revision: strconv.FormatInt(revision, 10), NameKey: author.NameKey, AuthorID: strconv.FormatInt(author.ID, 10)}
+	if request.RepositoryID != nil {
+		c.V = 2
+		repositoryID := strconv.FormatInt(*request.RepositoryID, 10)
+		c.RepositoryID = &repositoryID
+	}
+	b, e := json.Marshal(c)
 	if e != nil {
 		return nil, e
 	}

@@ -33,20 +33,23 @@ func (authStub) Require(f httpx.AuthenticatedHandler) http.HandlerFunc {
 }
 
 type readerStub struct {
-	calls            int
-	input            coregithub.ListRequest
-	number           int64
-	id               string
-	ctx              context.Context
-	status           coregithub.Status
-	page             coregithub.Page
-	detail           coregithub.Detail
-	authorsInput     coregithub.AuthorsRequest
-	authorsPage      coregithub.AuthorsPage
-	statisticsInput  coregithub.StatisticsRequest
-	statisticsResult coregithub.Statistics
-	principal        model.Principal
-	err              error
+	calls             int
+	input             coregithub.ListRequest
+	number            int64
+	repositoryID      *int64
+	repositoriesInput coregithub.RepositoriesRequest
+	repositoriesPage  coregithub.RepositoriesPage
+	id                string
+	ctx               context.Context
+	status            coregithub.Status
+	page              coregithub.Page
+	detail            coregithub.Detail
+	authorsInput      coregithub.AuthorsRequest
+	authorsPage       coregithub.AuthorsPage
+	statisticsInput   coregithub.StatisticsRequest
+	statisticsResult  coregithub.Statistics
+	principal         model.Principal
+	err               error
 }
 
 func (s *readerStub) Statistics(ctx context.Context, p model.Principal, id string, in coregithub.StatisticsRequest) (coregithub.Statistics, error) {
@@ -74,12 +77,18 @@ func (s *readerStub) List(ctx context.Context, p model.Principal, id string, in 
 	s.input = in
 	return s.page, s.err
 }
-func (s *readerStub) Detail(ctx context.Context, p model.Principal, id string, n int64) (coregithub.Detail, error) {
+func (s *readerStub) Detail(ctx context.Context, p model.Principal, id string, n int64, repositoryID *int64) (coregithub.Detail, error) {
 	s.calls++
 	s.id = id
 	s.ctx = ctx
 	s.number = n
+	s.repositoryID = repositoryID
 	return s.detail, s.err
+}
+func (s *readerStub) Repositories(ctx context.Context, p model.Principal, id string, in coregithub.RepositoriesRequest) (coregithub.RepositoriesPage, error) {
+	s.calls++
+	s.id, s.ctx, s.principal, s.repositoriesInput = id, ctx, p, in
+	return s.repositoriesPage, s.err
 }
 func newMux(s *readerStub) *http.ServeMux {
 	m := http.NewServeMux()

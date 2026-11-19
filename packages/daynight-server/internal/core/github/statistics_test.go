@@ -130,6 +130,33 @@ func TestStatisticsAvailability(t *testing.T) {
 		})
 	}
 }
+
+func TestHistoricalSourceAvailability(t *testing.T) {
+	current, historical := int64(1), int64(2)
+	generation := int64(3)
+	now := time.Now()
+	connection := githubpr.Connection{InstallationID: &current, RepositoryID: &current, LegacyRepositoryID: &historical, Enabled: true, SyncEnabled: true, Generation: generation}
+	if got := sourceStatisticsAvailability(connection, &current, true, 0); got != "initializing" {
+		t.Fatalf("current=%s", got)
+	}
+	if got := sourceStatisticsAvailability(connection, &historical, true, 0); got != "no_saved_data" {
+		t.Fatalf("historical=%s", got)
+	}
+	connection.LastFullGeneration, connection.LastFullSuccessAt = &generation, &now
+	if got := sourceStatisticsAvailability(connection, &historical, true, 0); got != "no_saved_data" {
+		t.Fatalf("historical borrowed success: %s", got)
+	}
+	connection.InstallationID = nil
+	if got := statisticsAvailability(connection, true, 0); got != "not_connected" {
+		t.Fatalf("implicit availability changed: %s", got)
+	}
+	if got := sourceStatisticsAvailability(connection, &historical, true, 0); got != "no_saved_data" {
+		t.Fatalf("historical borrowed connection: %s", got)
+	}
+	if got := sourceStatisticsAvailability(connection, &historical, true, 1); got != "ready" {
+		t.Fatalf("saved historical=%s", got)
+	}
+}
 func TestStatisticsFailures(t *testing.T) {
 	ctx := context.Background()
 	cause := errors.New("failure")
