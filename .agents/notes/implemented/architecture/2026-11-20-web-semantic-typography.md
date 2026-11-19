@@ -17,13 +17,15 @@ baseline. The shared shell, selection controls, task filters and rows, personal
 task groups, Goal summaries, task search, Markdown reading surfaces, dependency
 graphs, project overview, statistics, Worker pages and configuration, Worker
 Prompt editors, usage panels, project settings, teams, GitHub integration, pull
-requests, and Webhooks use semantic roles at all viewport widths. Selection text
-retains the existing touch conditions and a 16 CSS px minimum; count badges use
-the metadata role. Markdown code and tables use the interface role; Bot
-first-paragraph emphasis retains its weight without a separate size. The
-[UI standard](../../../../docs/ui-design.md#web-typography)
+requests, Webhooks, and Session controls and timeline details use semantic roles
+at all viewport widths. Selection text retains the existing touch conditions and
+a 16 CSS px minimum; count badges use the metadata role. Markdown code and tables
+use the interface role; Bot first-paragraph emphasis retains its weight without a
+separate size. The [UI standard](../../../../docs/ui-design.md#web-typography)
 owns role uses and sizes. Touch fields use the shared `--text-touch-field` size
 to preserve a 16 CSS px minimum while responding to larger browser font preferences.
+Terminal recordings use a shared `--text-terminal` base, multiplied by their
+independent zoom scale; reading-role changes do not affect terminal output.
 
 Business states, errors, controls, tool paths, and code use the interface role;
 IDs, times, versions, and secondary counts use metadata. Feature-owned form
