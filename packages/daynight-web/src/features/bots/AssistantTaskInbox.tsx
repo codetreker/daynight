@@ -46,14 +46,15 @@ const zh: typeof en = {
 const useInboxMessages = () => { const { locale } = useI18n(); return { ...(locale === 'zh-CN' ? zh : en), locale }; };
 
 /** Owner management of the assistant task inbox. The token exists only in this mounted panel after the request that generated it. */
-export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown> }) {
+export function AssistantTaskInbox({ task, enabled, disabled, onChanged, serviceOrigin }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown>; readonly serviceOrigin?: string }) {
   const m = useInboxMessages(), scope = useTaskCacheScope(), admission = assistantTaskAdmission(scope), taskId = task.id, heading = useId(), modeName = useId();
   const load = useCallback((scope: TaskCacheScope, signal: AbortSignal) => getAssistantTaskInbox(taskId, signal, assistantTaskAdmission(scope)), [taskId]);
   const read = useBotRead(`assistant-task-inbox:${taskId}`, enabled, load);
   const reload = async () => { read.refresh(); await onChanged(); };
   const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation);
   const [token, setToken] = useState<string | null>(null), [dialog, setDialog] = useState<'rotate' | 'disable' | null>(null);
-  // The disabled inbox no longer reports its id; keep the one disabled here so its endpoints can still be cleaned up.
+  // A disabled inbox no longer reports its id. The id disabled by this mount narrows the cleanup list to that inbox;
+  // otherwise the subscription panel lists every personal endpoint aimed at an inbox of this site.
   const [retiredInboxId, setRetiredInboxId] = useState<string | null>(null);
   const inbox = read.value, overlapActive = inbox?.overlapUntil != null;
   const [mode, setMode] = useState<AssistantTaskInboxRotation>('overlap');
@@ -84,7 +85,7 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
       </dl>
       <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode(overlapActive ? 'immediate' : 'overlap'); setDialog('rotate'); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog('disable')} /></div>
     </> : null}
-    {inbox ? <AssistantTaskSubscriptions task={task} inboxId={inbox.enabled ? inbox.inboxId : retiredInboxId} inboxEnabled={inbox.enabled} active={enabled} /> : null}
+    {inbox ? <AssistantTaskSubscriptions task={task} inboxId={inbox.enabled ? inbox.inboxId : retiredInboxId} inboxEnabled={inbox.enabled} active={enabled} {...(serviceOrigin === undefined ? {} : { serviceOrigin })} /> : null}
     {dialog ? <AssistantTaskDialog title={dialog === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); void (async () => {
       const operationId = crypto.randomUUID();
       const ok = dialog === 'rotate'

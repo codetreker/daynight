@@ -19,6 +19,7 @@ const en = {
   personal: 'Personal', team: 'Team', enabled: 'Enabled', paused: 'Paused', open: 'Open', pause: 'Pause', delete: 'Delete',
   teamWarning: 'A Team endpoint targets this inbox. Team endpoints cannot pass the Daynight source check, so their deliveries are rejected for a missing token. Use the personal subscription here instead.',
   disabledWarning: 'The inbox is disabled. Deliveries to these endpoints are rejected and end. Pause or delete the endpoints that still target it.',
+  retiredWarning: 'The inbox is disabled. These personal endpoints target an assistant inbox on this site; deliveries to a disabled inbox are rejected and end. Pause or delete the ones that targeted this inbox.',
   unknown: 'The result of the Webhook change is unknown. Check the original operation before making another change.', check: 'Check operation',
   error: 'The Webhook request failed.', loadError: 'Could not load Webhook subscriptions.', retry: 'Retry', loading: 'Loading…',
   endpointName: 'Assistant inbox',
@@ -32,6 +33,7 @@ const zh: typeof en = {
   personal: '个人', team: '团队', enabled: '已启用', paused: '已暂停', open: '打开', pause: '暂停', delete: '删除',
   teamWarning: '有团队端点指向这个收件箱。团队端点无法通过 Daynight 来源核验，其投递会因缺少令牌被拒绝。请改用这里的个人订阅。',
   disabledWarning: '收件箱已停用，投向这些端点的事件会被拒绝并结束。请暂停或删除仍指向它的端点。',
+  retiredWarning: '收件箱已停用。以下个人端点指向本站的助手收件箱；投向已停用收件箱的事件会被拒绝并结束。请暂停或删除其中原本指向这个收件箱的端点。',
   unknown: 'Webhook 修改结果未知。再次修改前，请核对原操作。', check: '核对操作',
   error: 'Webhook 请求失败。', loadError: '无法读取 Webhook 订阅。', retry: '重试', loading: '正在加载…',
   endpointName: '助手收件箱',
@@ -58,6 +60,16 @@ export const targetsInbox = (target: string | null, inboxUrl: string): boolean =
   } catch { return false; }
 };
 
+const INBOX_PATH = /^\/api\/v1\/assistant-task-inbox\/[^/]+\/*$/;
+/** Matches any assistant inbox of this deployment; used when a disabled inbox no longer reports which id it had. */
+export const targetsAnyInbox = (target: string | null, origin: string): boolean => {
+  if (target === null) return false;
+  try {
+    const left = new URL(target);
+    return left.origin === new URL(origin).origin && INBOX_PATH.test(left.pathname);
+  } catch { return false; }
+};
+
 type TeamEndpoint = { readonly team: Team; readonly endpoint: WebhookEndpointSummary };
 type Directory = { readonly projects: readonly Project[]; readonly personal: readonly WebhookActiveEndpoint[]; readonly team: readonly TeamEndpoint[] };
 
@@ -74,18 +86,18 @@ const pages = async <T,>(read: (cursor: string | null) => Promise<{ readonly ite
 };
 const webhookAdmission = (scope: TaskCacheScope): WebhookAdmission => ({ userId: scope.userId, onPrincipalMismatch: scope.principalMismatch, ready: signal => scope.ready(signal) });
 
-async function loadDirectory(scope: TaskCacheScope, inboxUrl: string, signal: AbortSignal): Promise<Directory> {
+async function loadDirectory(scope: TaskCacheScope, matches: (target: string | null) => boolean, includeTeam: boolean, signal: AbortSignal): Promise<Directory> {
   const admission = webhookAdmission(scope), personal: WebhookOwner = { kind: 'personal', id: scope.userId };
   const projects = await pages(cursor => listProjects({ limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }));
   const summaries = await pages(cursor => listWebhooks(personal, { limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, admission));
-  const linked = await Promise.all(summaries.filter(item => targetsInbox(item.destination.url, inboxUrl)).map(item => getWebhook(personal, item.id, signal, admission)));
-  const teams = (await pages(cursor => listTeams(cursor, scope.userId, signal, scope.principalMismatch))).filter(team => team.kind === 'ordinary');
+  const linked = await Promise.all(summaries.filter(item => matches(item.destination.url)).map(item => getWebhook(personal, item.id, signal, admission)));
+  const teams = includeTeam ? (await pages(cursor => listTeams(cursor, scope.userId, signal, scope.principalMismatch))).filter(team => team.kind === 'ordinary') : [];
   const team: TeamEndpoint[] = [];
   for (const entry of teams) {
     const owner: WebhookOwner = { kind: 'team', id: entry.id };
     // A Team endpoint the user cannot read is not something the user can act on; it does not block the personal subscription.
     const items = await pages(cursor => listWebhooks(owner, { limit: 100, ...(cursor === null ? {} : { cursor }) }, signal, admission)).catch(error => { if (signal.aborted) throw error; return []; });
-    team.push(...items.filter(item => targetsInbox(item.destination.url, inboxUrl)).map(endpoint => ({ team: entry, endpoint })));
+    team.push(...items.filter(item => matches(item.destination.url)).map(endpoint => ({ team: entry, endpoint })));
   }
   return { projects, personal: linked.filter((item): item is WebhookActiveEndpoint => item.lifecycle === 'active'), team };
 }
@@ -99,22 +111,27 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
 }) {
   const m = useMessages(), wm = useWebhookMessages(), scope = useTaskCacheScope(), heading = useId();
   const selfSubscribe = canSelfSubscribe(serviceOrigin), inboxUrl = inboxId === null ? null : assistantTaskInboxUrl(inboxId, serviceOrigin);
-  const reading = active && selfSubscribe && inboxUrl !== null;
+  // A disabled inbox reports no id. Unless this mount disabled it, the panel cannot tell which inbox it was, so it
+  // lists every personal endpoint aimed at an inbox of this site and lets the user clean up the dead ones.
+  const retired = !inboxEnabled && inboxUrl === null;
+  const matchKey = inboxUrl ?? (retired ? `any:${serviceOrigin}` : null);
+  const reading = active && selfSubscribe && matchKey !== null;
   const [directory, setDirectory] = useState<{ readonly url: string; readonly value: Directory } | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null), [revision, setRevision] = useState(0);
   useEffect(() => {
-    if (!reading || inboxUrl === null) return;
+    if (!reading || matchKey === null) return;
+    const matches = inboxUrl === null ? (target: string | null) => targetsAnyInbox(target, serviceOrigin) : (target: string | null) => targetsInbox(target, inboxUrl);
     const controller = new AbortController(), signal = AbortSignal.any([controller.signal, scope.signal]);
     void (async () => {
       try {
         await scope.ready(signal);
-        const value = await loadDirectory(scope, inboxUrl, signal);
-        if (!signal.aborted) { setDirectory({ url: inboxUrl, value }); setLoadError(null); }
+        const value = await loadDirectory(scope, matches, !retired, signal);
+        if (!signal.aborted) { setDirectory({ url: matchKey, value }); setLoadError(null); }
       } catch (error) { if (!signal.aborted) setLoadError(error); }
     })();
     return () => controller.abort();
-  }, [reading, inboxUrl, scope, revision]);
-  const data = directory?.url === inboxUrl ? directory.value : null;
+  }, [reading, inboxUrl, matchKey, retired, serviceOrigin, scope, revision]);
+  const data = directory?.url === matchKey ? directory.value : null;
 
   const controller = useMemo(() => selfSubscribe && !scope.isInvalidated ? new WebhookIntentController({ serviceOrigin, owner: { kind: 'personal', id: scope.userId }, admission: webhookAdmission(scope), signal: scope.signal }) : null, [selfSubscribe, serviceOrigin, scope]);
   useEffect(() => () => controller?.dispose(), [controller]);
@@ -157,7 +174,9 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const remove = (endpoint: WebhookActiveEndpoint) => submit({ kind: 'endpoint.delete', endpointId: endpoint.id, ifVersion: endpoint.configVersion, body: {} });
 
   if (!selfSubscribe) return <section className="assistant-task-panel assistant-task-subscriptions" aria-labelledby={heading}><header><h3 id={heading}>{m.title}</h3></header><p className="notice">{m.local}</p></section>;
-  if (inboxUrl === null) return null;
+  if (matchKey === null) return null;
+  // With no known inbox id, an empty list means there is nothing to clean up.
+  if (retired && data !== null && data.personal.length + data.team.length === 0 && loadError === null) return null;
   const actionable = data?.personal.filter(endpoint => endpoint.capabilities.manage) ?? [];
   const projectNames = new Map<string, string>([...(primary?.subscriptions.map(item => [item.projectId, item.projectName ?? item.projectId] as const) ?? []), ...(data?.projects.map(project => [project.id, project.name] as const) ?? [])]);
   return <section className="assistant-task-panel assistant-task-subscriptions" aria-labelledby={heading}>
@@ -166,7 +185,7 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
     {loadError !== null ? <div className="notice error" role="alert"><p>{m.loadError}</p><button className="button" type="button" onClick={() => setRevision(value => value + 1)}>{m.retry}</button></div> : null}
     {data === null ? loadError === null ? <p role="status">{m.loading}</p> : null : <>
       {data.team.length > 0 ? <p className="notice warning" role="alert">{m.teamWarning}</p> : null}
-      {!inboxEnabled && data.personal.length > 0 ? <p className="notice warning" role="alert">{m.disabledWarning}</p> : null}
+      {!inboxEnabled && data.personal.length > 0 ? <p className="notice warning" role="alert">{retired ? m.retiredWarning : m.disabledWarning}</p> : null}
       {inboxEnabled ? <form className="assistant-task-form assistant-task-subscription-form" onSubmit={event => { event.preventDefault(); void save(); }}>
         <fieldset><legend>{m.projects}</legend><div className="assistant-task-subscription-checks">
           {projectNames.size === 0 ? <span className="assistant-task-meta">{m.noProjects}</span> : [...projectNames].map(([id, name]) => <label key={id}><input type="checkbox" checked={selection.projects.includes(id)} onChange={event => toggle('projects', id, event.target.checked)} /><span>{name}</span></label>)}

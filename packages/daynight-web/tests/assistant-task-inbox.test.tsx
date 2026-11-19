@@ -8,6 +8,8 @@ import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-ca
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botError, botId, botResponse } from './helpers/bots';
 
+vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), listProjects: vi.fn(async () => ({ items: [], nextCursor: null })) }));
+
 const taskId = botId(90), inboxId = botId(91), operationId = botId(92);
 const token = `dnib_${'A'.repeat(43)}`, rotated = `dnib_${'B'.repeat(43)}`;
 const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Inbox task', purpose: '', scope: '', application: '', kind: 'continuous', state: 'active', takeover: 'manual', trigger: null, version: '7', manualVersion: '1', claimGeneration: '0', claimState: 'unowned', holderBotId: null, credentialOperationId: null, claimedAt: null, renewedAt: null, leaseUntil: null, observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME };
@@ -102,6 +104,25 @@ it('requires confirmation before disabling and offers enabling again', async () 
   await waitFor(() => expect(s.writes).toEqual([{ path: `/api/v1/assistant-tasks/${taskId}/inbox/disable`, input: { operationId: expect.any(String), ifVersion: '7' } }]));
   expect(await screen.findByRole('button', { name: 'Enable inbox' })).toBeVisible();
   expect(screen.queryByText(/assistant-task-inbox/)).toBeNull();
+});
+
+it('prompts to clean up endpoints of an inbox that was disabled before this panel mounted', async () => {
+  const origin = 'https://daynight.example', target = `${origin}/api/v1/assistant-task-inbox/${inboxId}`, endpointId = botId(93);
+  const endpoint = { id: endpointId, owner: { kind: 'personal', id: BOT_USER }, lifecycle: 'active', configVersion: '4', deletedAt: null, name: 'Assistant inbox', enabled: true, destinationRevision: '2',
+    destination: { kind: 'http', adapterVersion: '1', url: target, displayUrl: target }, signing: { scheme: 'standard-webhooks-v1', activeKeyId: botId(94), overlapUntil: null },
+    subscriptions: [], capabilities: { manage: true, readSecret: true, redeliver: true }, createdAt: BOT_TIME, updatedAt: BOT_TIME };
+  vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+    const path = String(url);
+    if (path === `/api/v1/assistant-tasks/${taskId}/inbox`) return botResponse(off);
+    if (path === '/api/v1/me/webhooks?limit=100') return botResponse({ items: [{ id: endpointId, owner: endpoint.owner, name: endpoint.name, enabled: true, configVersion: '4', destination: endpoint.destination, projectCount: 0, eventTypeCount: 0, lastAttemptAt: null, lastResult: null }], nextCursor: null });
+    if (path === `/api/v1/me/webhooks/${endpointId}`) return botResponse(endpoint);
+    return botError(404, 'not_found');
+  }));
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  renderWithLocale(<TaskCacheProvider scope={scope}><AssistantTaskInbox task={task} enabled disabled={false} onChanged={vi.fn(async () => undefined)} serviceOrigin={origin} /></TaskCacheProvider>, { locale: 'en' });
+  expect(await screen.findByRole('alert')).toHaveTextContent('The inbox is disabled.');
+  expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled();
 });
 
 it('keeps the inbox state on refused writes and reports read failures', async () => {

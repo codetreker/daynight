@@ -4,7 +4,7 @@ import type { AssistantTask } from '../src/api/assistant-tasks';
 import { invalidateAuthRequests } from '../src/api/client';
 import type { Team } from '../src/api/teams';
 import type { Project } from '../src/api/types';
-import { AssistantTaskSubscriptions, canSelfSubscribe, targetsInbox } from '../src/features/bots/AssistantTaskSubscriptions';
+import { AssistantTaskSubscriptions, canSelfSubscribe, targetsAnyInbox, targetsInbox } from '../src/features/bots/AssistantTaskSubscriptions';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botError, botId, botResponse } from './helpers/bots';
@@ -139,6 +139,36 @@ it('prompts to pause or delete endpoints that still target a disabled inbox', as
   await waitFor(() => expect(s.writes).toHaveLength(2));
   expect(s.writes[1]!.method).toBe('DELETE');
   await waitFor(() => expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(1));
+});
+
+it('lists endpoints aimed at any inbox of this site when the disabled inbox id is unknown', async () => {
+  const elsewhere = `${origin}/api/v1/assistant-task-inbox/${botId(81)}/`;
+  server({ personal: [endpoint(personalId, inboxUrl, []), endpoint(otherId, elsewhere, [], false), endpoint(botId(82), 'https://hooks.example/api/v1/assistant-task-inbox/x', [])], team: [endpoint(teamEndpointId, inboxUrl, [])] });
+  directories.teams = [team];
+  mount({ inboxId: null, inboxEnabled: false });
+  expect(await screen.findByRole('alert')).toHaveTextContent('These personal endpoints target an assistant inbox on this site');
+  const list = screen.getByRole('list');
+  expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+  expect(within(list).getAllByRole('button', { name: 'Delete' })).toHaveLength(2);
+  expect(within(list).getAllByRole('button', { name: 'Pause' })).toHaveLength(1);
+  expect(screen.queryByText(/Team endpoint/)).toBeNull();
+  expect(targetsAnyInbox(elsewhere, origin)).toBe(true);
+  expect(targetsAnyInbox(`${origin}/api/v1/assistant-task-inbox/`, origin)).toBe(false);
+  expect(targetsAnyInbox('not a url', origin)).toBe(false);
+  expect(targetsAnyInbox(null, origin)).toBe(false);
+});
+
+it('renders nothing for a disabled inbox with an unknown id and no endpoint to clean up', async () => {
+  const s = server({ personal: [endpoint(personalId, 'https://hooks.example/receive', [])] });
+  mount({ inboxId: null, inboxEnabled: false });
+  await waitFor(() => expect(s.fetch).toHaveBeenCalled());
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  expect(screen.queryByRole('heading', { name: 'Daynight event subscription' })).toBeNull();
+});
+
+it('renders nothing before an inbox has ever been enabled while it is still enabled without an id', () => {
+  mount({ inboxId: null, inboxEnabled: true });
+  expect(screen.queryByRole('heading', { name: 'Daynight event subscription' })).toBeNull();
 });
 
 it('shows a rejected Webhook change and a failed directory read with retry', async () => {
