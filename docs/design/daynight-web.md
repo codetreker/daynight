@@ -178,7 +178,7 @@ sudo 清理控件以目标字段的存在性判定服务是否提供配置，不
 
 ### 个人 Worker Prompt 编辑
 
-共享编辑器的 `.worker-prompt` 建立名为 `worker-prompt` 的 inline-size 查询容器。内容宽度不超过620px时，编辑区和说明区按 DOM 顺序单列排列；超过620px时保留双列。断点跟随扣除站点及设置导航后的实际可用宽度，尺寸变化只调整 CSS 布局，保留编辑节点、焦点和草稿。取舍见[容器布局决策](../../.agents/notes/implemented/bug-fix/2026-11-19-prompt-container-layout.md)。
+个人 Prompt 的[容器布局规格](../spec/worker-prompt-layout.md)要求三个入口按实际内容空间切换排版。已确定的布局方案以共享编辑器外层 `.worker-prompt` 为名为 `worker-prompt` 的 inline-size 查询容器，由宿主分配宽度，内部 `.worker-prompt-layout` 消费尺寸查询。实际内容宽度不超过620px时，编辑区和说明区按 DOM 顺序单列排列；超过620px时沿用编辑区与说明区的双列分配。容器必须位于被切换的 grid 外层，使查询宽度来自宿主而不依赖该 grid 的列布局。尺寸变化只调整 CSS 排版，保持编辑节点、焦点、选区和草稿，不引入 JavaScript 宽度监听或改变保存流程。取舍见[容器布局决策](../../.agents/notes/implemented/bug-fix/2026-11-19-prompt-container-layout.md)，实现是否满足约定由规格中的真实几何与交互标准判定。
 
 `features/worker-prompts/` 共用三个个人资源的 API、纯状态转换、hook 和编辑器。账号、项目和 Worker 入口提供资源目标；项目请求等待 `ProjectAccessSession`，普通成员不继承共享设置的管理员限制。Worker prompt 与运行配置分别位于同级页签，读取、校验和保存互不阻塞；[页签组织决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-detail-prompt-tab.md)记录其协调取舍。
 
