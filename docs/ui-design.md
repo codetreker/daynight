@@ -238,3 +238,5 @@ Use [BarChart](../packages/daynight-web/src/ui/bar-chart/index.tsx) for ordered,
 nonnegative integer series. Callers provide full labels, values, a stable axis
 maximum and value formatting. The component provides complete readings on hover,
 touch and keyboard, with one Tab stop and arrow, Home and End navigation.
+The axis label row accommodates its line height and top spacing so labels fit
+without vertical overflow, while narrow charts remain horizontally scrollable.

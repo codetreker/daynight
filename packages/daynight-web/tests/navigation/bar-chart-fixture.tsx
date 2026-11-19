@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BarChart, type BarChartPoint } from '../../src/ui/bar-chart';
+import '../../src/styles/app.css';
 
 const original: BarChartPoint[] = Array.from({ length: 30 }, (_, i) => ({ key: `k${i}`, label: `Category ${i} with a complete long label`, axisLabel: `Short ${i}`, value: BigInt(i) * 10000000000000000n }));
 function Host() {
