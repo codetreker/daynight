@@ -127,6 +127,8 @@ The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
 The [PR read design](../../docs/design/github-pr-reading.md) defines the optional
 author filter, scoped counts, project total and compatible cursor versions.
+The [PR review assignment design](../../docs/design/pr-review-assignment.md)
+defines server reconciliation and the account-scoped assignment read.
 The [single-Project executor](../../docs/design/github-sync-executor.md) performs synchronization;
 the [connection and scheduler design](../../docs/design/github-connection-runtime.md)
 describes management, scheduling and resource lifecycle. Independent App
@@ -1033,12 +1035,12 @@ Project members can read retained PR sources through
 ascending repository IDs. IDs are decimal strings; the current ID and next
 cursor can be null. The cursor is bound to the Project.
 
-The `pull-requests` list and number-detail routes,
+The `pull-requests` list, number-detail and review-assignment routes,
 `pull-request-authors` and `pull-request-statistics` accept optional
 `repositoryId` as a canonical positive int64 decimal string. Explicit reads
 require a source saved for that Project. List, author and statistics responses
-then include `repository:{repositoryId,fullName}`. Omitting the selector
-preserves the original response and reads the fixed legacy source. Explicit
+then include `repository:{repositoryId,fullName}`. Omitting the selector reads
+the fixed legacy source and preserves existing response forms. Explicit
 cursors are source-bound; legacy cursors remain valid only on omitted-source
 requests. Historical statistics do not use another repository's current sync
 progress. The [PR reading design](../../docs/design/github-pr-reading.md)

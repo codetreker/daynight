@@ -285,6 +285,9 @@ var githubRepositorySourcesSQL string
 //go:embed schema/migrations/094_worker_review_participation.sql
 var workerReviewParticipationSQL string
 
+//go:embed schema/migrations/095_pr_review_assignment.sql
+var prReviewAssignmentSQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -395,6 +398,7 @@ var schemaMigrations = []migration{
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
 	{version: 94, sql: workerReviewParticipationSQL},
+	{version: 95, sql: prReviewAssignmentSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
