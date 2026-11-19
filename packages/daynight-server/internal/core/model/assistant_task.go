@@ -73,6 +73,13 @@ type AssistantTaskAppendixScope struct {
 	ProjectIDs, EventTypes, ItemCategories []string
 }
 
+// AssistantTaskRelatedAppendices is the bounded, relevance-ordered result of a
+// related experience query; it has no continuation.
+type AssistantTaskRelatedAppendices struct {
+	Items      []AssistantTaskAppendix
+	ObservedAt time.Time
+}
+
 // AssistantTaskAppendixValidation registers one outcome record as evidence for
 // one appendix; the pair is unique.
 type AssistantTaskAppendixValidation struct {

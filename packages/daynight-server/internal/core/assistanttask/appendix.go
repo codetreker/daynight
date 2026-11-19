@@ -15,6 +15,14 @@ const (
 	MaxAppendixCategoryBytes = 200
 )
 
+// MaxRelatedAppendices bounds a related experience query so a notification
+// can carry its summaries without paging.
+const MaxRelatedAppendices = 5
+
+func appendixCategoryValid(value string) bool {
+	return textValid(value, true) && len(value) <= MaxAppendixCategoryBytes
+}
+
 // appendixScope validates a declared scope and returns it with non-nil sets.
 // A nil scope is the unrestricted scope. Item categories are compared verbatim
 // with the free-text categories items store, so a scope category is only
@@ -32,9 +40,7 @@ func appendixScope(scope *model.AssistantTaskAppendixScope) (model.AssistantTask
 	}{
 		{scope.ProjectIDs, &result.ProjectIDs, strictID},
 		{scope.EventTypes, &result.EventTypes, knownEventType},
-		{scope.ItemCategories, &result.ItemCategories, func(value string) bool {
-			return textValid(value, true) && len(value) <= MaxAppendixCategoryBytes
-		}},
+		{scope.ItemCategories, &result.ItemCategories, appendixCategoryValid},
 	}
 	for _, check := range checks {
 		if len(check.values) > MaxAppendixScopeEntries {
@@ -50,6 +56,31 @@ func appendixScope(scope *model.AssistantTaskAppendixScope) (model.AssistantTask
 		*check.target = append(*check.target, check.values...)
 	}
 	return result, nil
+}
+
+// RelatedAppendix reads the non-deleted appendices of a task that apply to a
+// notification context. Each declared scope dimension that contains the
+// queried value scores one point, an undeclared dimension or an omitted query
+// value is neutral, and a declared dimension without the queried value
+// excludes the appendix. Results are ordered by score, last validation time and
+// ID, all descending, and bounded by MaxRelatedAppendices. The database ranks
+// the appendices, so the query never materializes a task's full appendix set.
+func (m *Module) RelatedAppendix(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input RelatedAppendixInput) (model.AssistantTaskRelatedAppendices, error) {
+	result := model.AssistantTaskRelatedAppendices{Items: []model.AssistantTaskAppendix{}}
+	if input.ProjectID != "" && !strictID(input.ProjectID) || input.EventType != "" && !knownEventType(input.EventType) || input.ItemCategory != "" && !appendixCategoryValid(input.ItemCategory) {
+		return result, invalid("Related appendix queries require a canonical project ID, a known event type and a nonblank item category of at most 200 bytes when given.")
+	}
+	task, err := loadTask(ctx, dao, actor, taskID, false)
+	if err != nil {
+		return result, err
+	}
+	items, err := dao.RelatedAppendices(ctx, store.AssistantTaskRelatedQuery{OwnerUserID: task.OwnerUserID, TaskID: task.ID, ProjectID: input.ProjectID, EventType: input.EventType, ItemCategory: input.ItemCategory, Limit: MaxRelatedAppendices})
+	if err != nil {
+		return result, err
+	}
+	result.Items = append(result.Items, items...)
+	result.ObservedAt, err = finish(ctx, dao, actor, nil)
+	return result, err
 }
 
 // ValidateAppendix registers one same-task outcome record as evidence for an
