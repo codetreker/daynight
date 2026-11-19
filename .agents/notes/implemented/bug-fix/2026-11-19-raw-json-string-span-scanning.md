@@ -15,12 +15,15 @@ necessary regression proofs.
 
 ## Decision
 
-After validating a RawMessage, the encoder uses `bytes.IndexAny` inside an
-unescaped string to locate the next quote, backslash, HTML character, or literal
-U+2028/U+2029. The search returns a byte offset; ordinary spans retain their
+After validating a RawMessage, the encoder uses `bytes.IndexAny` in the ordinary
+byte branch of its unescaped-string switch to locate the next quote, backslash,
+HTML character, or literal U+2028/U+2029. Quotes, backslashes, HTML bytes and the
+UTF-8 lead byte 0xe2 retain their existing handling without another search.
+The search returns a byte offset; ordinary spans retain their
 original bytes, including invalid UTF-8 accepted by `encoding/json` for raw
 messages. Validated JSON guarantees a closing quote, so every such search finds
-an event. Existing escape and string-state handling consumes that event.
+an event after the current ordinary byte. The next iteration's existing escape
+and string-state handling consumes that event.
 
 The search visits each ordinary span once and does not allocate a complete
 escaped representation. The [bounded batching decision](../testing/2026-11-08-bounded-raw-json-batching.md)
@@ -36,7 +39,13 @@ Span search removes that repeated dispatch from the production path.
 
 **Search separately for each event and take the earliest position.** Repeated
 searches can revisit a long remaining suffix for every occurrence of another
-event. A single search for the event set preserves linear scanning.
+event. Bounding those searches introduces chunk and lookahead handling. A single
+search for the event set preserves linear scanning with the existing state machine.
+
+**Search before every unescaped string byte is dispatched.** Both unconditional
+search and an additional first-byte guard increased instrumented dense-escape
+cost. Searching only in the existing ordinary-byte branch avoids dispatching
+those escape events twice.
 
 **Marshal the complete raw value first.** This creates memory proportional to
 the escaped output before enforcing the budget, losing bounded intermediate
@@ -49,8 +58,10 @@ proof instead of reducing its production cost.
 ## Consequences
 
 Ordinary strings avoid per-byte state dispatch; dense escape sequences still
-require per-event handling. Standard-library search retains its own CPU cost,
-and this mechanism does not promise equal gains for every input distribution.
+require per-event handling. Standard-library rune search retains its own CPU cost
+and can be slower for Unicode-heavy input without instrumentation. The measured
+Worker capacity path is ASCII-heavy; this mechanism does not promise gains for
+every input distribution or eliminate historical host variability.
 Oracle comparisons cover byte offsets, invalid UTF-8, backslash parity,
 structure transitions, and sparse and dense events. Partial writes accompanied
 by an error preserve the accepted count, exact prefix, and immediate stop.

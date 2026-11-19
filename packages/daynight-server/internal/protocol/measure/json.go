@@ -97,12 +97,6 @@ func raw(w io.Writer, b []byte) error {
 	start := 0
 	in, escaped := false, false
 	for i := 0; i < len(b); i++ {
-		if in && !escaped {
-			// Valid JSON guarantees a closing quote. Search by rune, retaining
-			// byte offsets and the original bytes of ordinary (even invalid UTF-8)
-			// spans; only these events affect escaping or string state.
-			i += bytes.IndexAny(b[i:], "\"\\<>&\u2028\u2029")
-		}
 		c := b[i]
 		if !in && (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
 			if err := rawSpan(output, b[start:i]); err != nil {
@@ -120,6 +114,7 @@ func raw(w io.Writer, b []byte) error {
 				replacement = "\\u003e"
 			case '&':
 				replacement = "\\u0026"
+			case '"', '\\':
 			case 0xe2:
 				if i+2 < len(b) && b[i+1] == 0x80 {
 					switch b[i+2] {
@@ -129,6 +124,12 @@ func raw(w io.Writer, b []byte) error {
 						replacement, size = "\\u2029", 3
 					}
 				}
+			default:
+				// The current byte is ordinary and valid JSON guarantees a later
+				// closing quote. Preserve raw bytes (including invalid UTF-8), then
+				// let the next iteration handle the event at its byte offset.
+				i += bytes.IndexAny(b[i:], "\"\\<>&\u2028\u2029") - 1
+				continue
 			}
 		}
 		if replacement != "" {
