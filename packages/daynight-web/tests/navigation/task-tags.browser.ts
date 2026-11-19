@@ -1290,7 +1290,7 @@ test('the same tag color is consistent across standalone, chain and Goal task ro
 });
 
 
-const filterGeometry = (toolbar: Locator) => toolbar.locator('.task-assignee-filter > button, .task-status-multifilter > button, .task-status-filter select, .tag-filter > summary').evaluateAll(elements => elements.map(element => {
+const filterGeometry = (toolbar: Locator) => toolbar.locator('.task-assignee-filter > button:visible, .task-status-multifilter > button:visible, .task-status-filter select:visible, .tag-filter > summary:visible').evaluateAll(elements => elements.map(element => {
   const rect = element.getBoundingClientRect(), style = getComputedStyle(element), arrow = element.querySelector('svg')?.getBoundingClientRect();
   const label = element.querySelector('.select-trigger__label')?.getBoundingClientRect();
   const count = element.querySelector('.select-trigger__count');
@@ -1316,18 +1316,20 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
     const observations: unknown[] = [];
     for (const width of [1280, 801, 800, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
-      const enlarged = coarse || width <= 800, expected = { height: enlarged ? 44 : 32, fontSize: enlarged ? '16px' : '11px' };
+      const enlarged = coarse || width <= 800, expected = { height: enlarged ? 44 : 32, fontSize: enlarged ? '16px' : '14px' };
       for (const view of ['goals', 'standalone', 'chains']) {
         await page.locator(`#project-task-tab-${view}`).click();
         const geometry = await filterGeometry(toolbar);
         if (width === 1280 && view === 'goals') await info.attach('initial-toolbar-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
-        expect(geometry).toHaveLength(view === 'goals' ? 4 : 3);
+        expect(geometry).toHaveLength(4);
         for (const entry of geometry) {
           expect(entry).toMatchObject(expected); expect(entry.width).toBeGreaterThanOrEqual(enlarged ? 44 : 1);
           expect(entry.left).toBeGreaterThanOrEqual(0); expect(entry.right).toBeLessThanOrEqual(width + 1);
           if (entry.arrowGap !== null) expect(entry.arrowGap).toBeGreaterThanOrEqual(8);
         }
-        if (width === 1280) for (const entry of geometry) { expect(entry.top).toBe(geometry[0]!.top); expect(entry.bottom).toBe(geometry[0]!.bottom); }
+        for (const [index, entry] of geometry.entries()) for (const other of geometry.slice(index + 1)) {
+          expect(entry.right <= other.left || other.right <= entry.left || entry.bottom <= other.top || other.bottom <= entry.top).toBe(true);
+        }
         observations.push({ width, view, coarse, geometry });
       }
       const status = toolbar.locator('.task-status-multifilter > button');
@@ -1345,16 +1347,26 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
       await expect(tag).toHaveAttribute('open', '');
       for (const count of [0, 1, 2]) {
         if (count > 0) await tag.locator('.tag-filter-options input').nth(count - 1).check();
-        const entry = (await filterGeometry(toolbar))[2]!;
+        const entry = (await filterGeometry(toolbar))[3]!;
         expect(entry).toMatchObject(expected);
-        if (count > 0) expect(entry).toMatchObject({ countHeight: enlarged ? 20 : 18, countFont: enlarged ? '12px' : '10px' });
+        if (count > 0) expect(entry).toMatchObject({ countHeight: enlarged ? 20 : 18, countFont: '12px' });
       }
       const tagPanel = tag.locator('.tag-filter-panel');
       await expect(tagPanel).toHaveCSS('font-size', '14px');
+      if (width === 1280) {
+        await page.evaluate(() => { document.documentElement.style.fontSize = '20px'; });
+        const input = tagPanel.locator('input[type=search]');
+        const field = await input.evaluate(element => {
+          const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+          return { height: box.height, line: parseFloat(style.lineHeight), padding: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom), border: parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth) };
+        });
+        expect(field.height - field.padding - field.border).toBeGreaterThanOrEqual(field.line - 0.02);
+        await page.evaluate(() => { document.documentElement.style.fontSize = ''; });
+      }
       const panelBox = await tagPanel.boundingBox();
       expect(panelBox!.x).toBeGreaterThanOrEqual(0); expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(width + 1);
       await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
-      expect((await filterGeometry(toolbar))[2]).toMatchObject({ outlineWidth: '3px', outlineColor: 'rgb(52, 64, 84)' });
+      expect((await filterGeometry(toolbar))[3]).toMatchObject({ outlineWidth: '3px', outlineColor: 'rgb(52, 64, 84)' });
       const remove = toolbar.locator('.tag-filter-selected button');
       while (await remove.count()) await remove.first().click();
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);

@@ -37,7 +37,7 @@ beforeEach(() => {
   vi.mocked(getProject).mockReset().mockResolvedValue(project);
   vi.mocked(getTaskSync).mockReset();
 });
-afterEach(() => { for (const value of scopes.splice(0)) value.dispose(); });
+afterEach(() => { vi.useRealTimers(); for (const value of scopes.splice(0)) value.dispose(); });
 
 it.each([
   ['en', 'Copy repository URL', 'Copied', 'Could not copy repository URL. Try again.'],
@@ -60,7 +60,7 @@ it.each([
   expect(await screen.findByRole('alert')).toHaveTextContent(failure);
   expect(button).toBeEnabled();
   await user.keyboard(' ');
-  expect(await screen.findByText(success)).toHaveAttribute('role', 'status');
+  expect(await screen.findByText(success, { selector: '[role="status"]' })).toBeVisible();
   expect(clipboard.mock.calls).toEqual([[repoUrl], [repoUrl]]);
   expect(window.location.href).toBe(location);
 });
@@ -83,10 +83,11 @@ it('disables duplicate copying and ignores completion after the repository URL c
   fireEvent(window, new Event('focus'));
   await screen.findByText(repoUrl);
   expect(button).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Copy repository URL' })).toBe(button);
   await act(async () => pending.resolve());
-  expect(screen.queryByText('Copied')).toBeNull();
+  expect(screen.queryByText('Copied', { selector: '[role="status"]' })).toBeNull();
   fireEvent.click(button);
-  expect(await screen.findByText('Copied')).toHaveAttribute('role', 'status');
+  expect(await screen.findByText('Copied', { selector: '[role="status"]' })).toBeVisible();
   expect(clipboard.mock.calls).toEqual([[project.repoUrl], [repoUrl]]);
 });
 
@@ -96,8 +97,9 @@ it('clears successful copy feedback when switching to another project with the s
   vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
   const current = scope();
   const view = render(page(current));
-  fireEvent.click(await screen.findByRole('button', { name: 'Copy repository URL' }));
-  await screen.findByText('Copied');
+  const button = await screen.findByRole('button', { name: 'Copy repository URL' });
+  fireEvent.click(button);
+  await screen.findByText('Copied', { selector: '[role="status"]' });
   const nextId = '00000000-0000-4000-8000-000000000032';
   vi.mocked(getProject).mockResolvedValue({ ...project, id: nextId, name: 'Next project' });
   vi.mocked(getProjectAccess).mockImplementation(async (id, _signal, admission) => directAccessFixture(id, admission.userId));
@@ -105,7 +107,58 @@ it('clears successful copy feedback when switching to another project with the s
   view.rerender(page(current, nextId));
   await screen.findByRole('heading', { name: 'Next project' });
   expect(screen.getByRole('button', { name: 'Copy repository URL' })).toBeEnabled();
-  expect(screen.queryByText('Copied')).toBeNull();
+  expect(screen.queryByText('Copied', { selector: '[role="status"]' })).toBeNull();
+});
+
+it('expires each successful copy after its own three seconds and clears it on a new attempt', async () => {
+  userEvent.setup();
+  const pending = Promise.withResolvers<void>();
+  const clipboard = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce().mockResolvedValueOnce().mockReturnValueOnce(pending.promise);
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  const view = render(page(scope()));
+  const button = await screen.findByRole('button', { name: 'Copy repository URL' });
+  const repository = button.parentElement!;
+  vi.useFakeTimers();
+  await act(async () => { fireEvent.click(button); });
+  expect(within(repository).getByRole('status')).toHaveTextContent('Copied');
+  act(() => vi.advanceTimersByTime(2999));
+  expect(within(repository).getByRole('status')).toHaveTextContent('Copied');
+  await act(async () => { fireEvent.click(button); });
+  act(() => vi.advanceTimersByTime(1));
+  expect(within(repository).getByRole('status')).toHaveTextContent('Copied');
+  act(() => vi.advanceTimersByTime(2998));
+  expect(within(repository).getByRole('status')).toHaveTextContent('Copied');
+  await act(async () => { fireEvent.click(button); });
+  expect(within(repository).queryByRole('status')).toBeNull();
+  expect(button).toBeDisabled();
+  await act(async () => pending.resolve());
+  expect(within(repository).getByRole('status')).toHaveTextContent('Copied');
+  act(() => vi.advanceTimersByTime(2999));
+  expect(within(repository).getByRole('status')).toHaveTextContent('Copied');
+  act(() => vi.advanceTimersByTime(1));
+  expect(within(repository).queryByRole('status')).toBeNull();
+  expect(within(repository).getByText('Copied')).toHaveAttribute('aria-hidden', 'true');
+  view.unmount();
+  act(() => vi.advanceTimersByTime(3000));
+  expect(clipboard).toHaveBeenCalledTimes(3);
+});
+
+it('clears successful feedback when the repository URL changes', async () => {
+  userEvent.setup();
+  vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  render(page(scope()));
+  const button = await screen.findByRole('button', { name: 'Copy repository URL' });
+  fireEvent.click(button);
+  await screen.findByText('Copied', { selector: '[role="status"]' });
+  button.focus();
+  const repoUrl = 'https://github.com/example/changed.git';
+  vi.mocked(getProject).mockResolvedValue({ ...project, repoUrl });
+  fireEvent(window, new Event('focus'));
+  await screen.findByText(repoUrl);
+  expect(screen.queryByText('Copied', { selector: '[role="status"]' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Copy repository URL' })).toBe(button);
+  expect(button).toHaveFocus();
 });
 
 it('has no copy entry before project data is readable', async () => {

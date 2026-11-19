@@ -27,6 +27,7 @@ import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
 import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim, readSessionStartupReport } from "./task-properties.js";
 import { resourcePath } from "./resource-path.js";
+import { botIdentity, botIdentityHeaders } from "./bot-identity.js";
 import { isTaskCreationStatus, isTaskStatus } from "../task/status.js";
 import { canonicalStepId, confirmAddedTaskStep, confirmDeletedTaskStep, confirmMovedTaskStep, confirmUpdatedTaskStep, decodeStepsJsonSource, parseStepResource, parseStepsResource, TASK_STEPS_RESPONSE_BYTES } from "./task-steps.js";
 import { decodeThreadJsonSource, parseThreadMessage, parseThreadPage, THREAD_MESSAGE_BYTES } from "./thread.js";
@@ -38,6 +39,8 @@ import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseProjectDeletionPreview, parseProjectDeletionReceipt, parseProjectDeletionError, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import { parseProjectRepositoryPreview, parseProjectRepositoryReceipt, parseProjectRepositoryError } from "./project-repository.js";
+import type { ProjectRepositoryPreview, ProjectRepositoryReceipt } from "./types.js";
 import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
@@ -194,6 +197,8 @@ export type ApiClient = TaskSessionClient & {
   revokeTeamInvitation(userId: string, teamId: string, invitationId: string, requestId: string): Promise<TeamInvitationRevokeReceipt>;
   previewProjectTransfer(userId: string, projectId: string, targetTeamId: string): Promise<ProjectTransferPreview>;
   transferProject(userId: string, projectId: string, preview: ProjectTransferPreview, requestId: string): Promise<ProjectTransferReceipt>;
+  previewProjectRepository(userId: string, projectId: string, repoUrl: string): Promise<ProjectRepositoryPreview>;
+  setProjectRepository(userId: string, projectId: string, preview: ProjectRepositoryPreview, treatUnverifiedAsSwitch: boolean, requestId: string): Promise<ProjectRepositoryReceipt>;
   previewProjectDeletion(userId: string, projectId: string): Promise<ProjectDeletionPreview>;
   deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
@@ -261,6 +266,11 @@ const safeInvitationCause = (input: unknown, seen = new WeakSet<object>(), depth
   return result;
 };
 
+// Webhook events record the Bot that performed a Task, Step or Thread write so
+// an assistant's inbox can suppress its own changes. Only these writes carry
+// the Bot identity; reads and other resources never send it.
+const botWriteOperations = new Set(["task.create", "task.update", "task.delete", "task.set-status", "worker.complete", "task.set-property", "task.remove-property", "task.step.add", "task.step.update", "task.step.set-status", "task.step.move", "task.step.delete", "task.thread.post"]);
+
 const attachmentPrefix = (projectId: string, taskId: string): string => `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/attachments`;
 const encodeAttachmentPath = (path: string): string => path.split("/").map(encodeURIComponent).join("/");
 
@@ -274,11 +284,13 @@ export const createApiClient = (options: {
   readonly workerToolPaths?: WorkerToolPathsCapability;
   readonly workerArchiveSessions?: WorkerToolPathsCapability;
   readonly onToolPathsBudget?: (result: NonNullable<ToolPathsReportBudget>) => void | Promise<void>;
+  readonly botId?: string;
 }): ApiClient => {
   const origin = new URL(options.serverUrl);
   if (!/^https?:$/.test(origin.protocol) || origin.username !== "" || origin.password !== "" || origin.pathname !== "/" || origin.search !== "" || origin.hash !== "") throw new Error("serverUrl must be an HTTP(S) service origin without credentials, path, query or fragment.");
   const serverToken = options.serverToken === undefined ? undefined : validateServerToken(options.serverToken);
   const expectedUserId = options.expectedUserId === undefined ? undefined : resourceId(options.expectedUserId);
+  const botId = options.botId === undefined ? undefined : botIdentity(options.botId);
   if (serverToken !== undefined) validateTokenTransport(origin.origin);
   const operation = options.operation;
   const workerControlMode = options.workerControlMode ?? { supported: false };
@@ -435,7 +447,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { "Daynight-Worker-Protocol": "2", ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }) },
+        headers: { "Daynight-Worker-Protocol": "2", ...(context.confirmGoalDependencyRemoval === true ? { "Daynight-Confirm-Goal-Dependency-Removal": "true" } : {}), ...(context.workerConfiguration === true ? { "Daynight-Worker-Configuration": context.promptSelectors === undefined ? "1" : "2" } : {}), ...(context.promptSelectors === undefined ? {} : { "Daynight-Worker-Prompts": context.promptSelectors }), ...(context.workerToolPaths === true ? { "Daynight-Worker-Tool-Paths": "2" } : {}), ...(context.workerArchiveSessions === true ? { "Daynight-Worker-Archive-Sessions": "1" } : {}), Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }), ...(context.sentRequestId === undefined ? {} : { "X-Request-ID": context.sentRequestId }), ...botIdentityHeaders(botWriteOperations.has(context.operation) ? botId : undefined) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),
@@ -1219,6 +1231,30 @@ export const createApiClient = (options: {
         if (project.ownership.teamId !== team) throw new ProtocolError("Project does not belong to the requested Team.");
         return project;
       }, (project) => project.id), (project) => project.id, { teamId: team }, true, user);
+    },
+    previewProjectRepository: (userId, projectId, repoUrl) => {
+      const user = resourceId(userId), project = resourceId(projectId);
+      return exchange({ operation: "project.repository-preview", projectId: project }, `/projects/${encodeURIComponent(project)}/repository/preview`, "POST", {
+        kind: "json", readOnly: true, requirePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+        parse: (value) => parseProjectRepositoryPreview(value, project, repoUrl),
+      }, [200], { kind: "json", value: { repoUrl, expectedUserId: user } }, true);
+    },
+    setProjectRepository: (userId, projectId, preview, treatUnverifiedAsSwitch, requestId) => {
+      const user = resourceId(userId), project = resourceId(projectId);
+      const observed = parseProjectRepositoryPreview(preview, project, preview.repoUrl);
+      if (treatUnverifiedAsSwitch !== (observed.classification === "unverified")) throw new Error("An unverified repository requires explicit confirmation as a switch.");
+      return exchange({ operation: "project.set-repository", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}/repository`, "PATCH", {
+        kind: "json", requirePrincipal: true, checkFailurePrincipal: true, checkPrincipalOnError: true,
+        onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+        parse: (value) => parseProjectRepositoryReceipt(value, project, observed), parseError: parseProjectRepositoryError, confirmMutation: (result) => result.projectId,
+        classifyRefusal: (status, error, responseId) => {
+          if (responseId !== requestId || error.requestId !== requestId) return false;
+          return status === 401 && error.code === "unauthenticated" || status === 400 && error.code === "invalid_input" || status === 403 && error.code === "forbidden" || status === 404 && error.code === "not_found" || status === 409 && ["identity_mismatch", "version_conflict", "version_exhausted", "project_repository_conflict"].includes(error.code);
+        },
+      }, [200], { kind: "json", value: { repoUrl: observed.repoUrl, expectedUserId: user, repositoryVersion: observed.repositoryVersion, ownershipVersion: observed.ownershipVersion, classification: observed.classification, targetGitHubRepositoryId: observed.targetGitHubRepositoryId, treatUnverifiedAsSwitch } }, true);
     },
     previewProjectTransfer: (userId, projectId, targetTeamId) => {
       const user = resourceId(userId), project = resourceId(projectId), target = resourceId(targetTeamId);

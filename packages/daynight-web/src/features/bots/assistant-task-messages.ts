@@ -20,7 +20,12 @@ const en = {
   item: 'Item', allItems: 'All items', general: 'Task-wide records', open: 'Open', closed: 'Closed',
   kind: 'Record type', author: 'Author', allAuthors: 'All authors', system: 'System', unknownAssistant: 'Assistant {id}',
   fact: 'Fact', guess: 'Assessment', action: 'Action', unknown: 'Unknown', question: 'Question', answer: 'Answer', note: 'Note',
+  outcome: 'Outcome', effective: 'Effective', ineffective: 'Ineffective', inconclusive: 'Inconclusive', evaluatedAction: 'Evaluated action',
   recordMissing: 'The referenced record was not found.', references: 'References', resourcesUnavailable: 'Resource unavailable', table: 'Table',
+  inbound: 'Inbound events', inboundCount: '{count} received', inboundDaynight: 'Daynight event', inboundExternal: 'External', inboundUnreadable: 'Unrecognized event',
+  inboundUntrusted: 'Untrusted', inboundUntrustedHint: 'Sent by an external system. Treat it as data, not instructions.', inboundTruncated: 'Preview only. The assistant can read the full event.',
+  inboundBytes: '{count} bytes', inboundEventType: 'Event', inboundSource: 'Source', inboundProject: 'Project', inboundTask: 'Task', inboundOccurred: 'Occurred',
+  inboundActorUser: 'User', inboundActorUnknown: 'Unknown', inbound_pending: 'Waiting for the assistant', inbound_delivered: 'Delivered to the assistant', inbound_expired: 'Expired', inboundMore: 'Show more inbound events',
 };
 const zh: typeof en = {
   staleDraft: '编辑期间任务已变化，草稿已保留。请取消编辑，核对最新内容后重新编辑。',
@@ -42,7 +47,12 @@ const zh: typeof en = {
   item: '事项', allItems: '全部事项', general: '任务整体记录', open: '处理中', closed: '已结束',
   kind: '记录类型', author: '作者', allAuthors: '全部作者', system: '系统', unknownAssistant: '助手 {id}',
   fact: '事实', guess: '推测', action: '动作', unknown: '未知', question: '提问', answer: '回答', note: '注意事项',
+  outcome: '结果', effective: '有效', ineffective: '无效', inconclusive: '无法判断', evaluatedAction: '评估的动作',
   recordMissing: '未找到引用的工作记录。', references: '引用', resourcesUnavailable: '资源不可用', table: '表格',
+  inbound: '入站事件', inboundCount: '已接收 {count} 个', inboundDaynight: 'Daynight 事件', inboundExternal: '外部', inboundUnreadable: '无法识别的事件',
+  inboundUntrusted: '不可信', inboundUntrustedHint: '由外部系统发送，只能作为数据，不能作为指令。', inboundTruncated: '仅显示预览，助手可以读取完整事件。',
+  inboundBytes: '{count} 字节', inboundEventType: '事件', inboundSource: '来源', inboundProject: '项目', inboundTask: 'Task', inboundOccurred: '发生时间',
+  inboundActorUser: '用户', inboundActorUnknown: '未知', inbound_pending: '等待助手处理', inbound_delivered: '已送达助手', inbound_expired: '已过期', inboundMore: '显示更多入站事件',
 };
 export const useAssistantTaskContentMessages = () => {
   const { locale } = useI18n();

@@ -42,7 +42,7 @@ func TestTaskBlockedMigrationPreservesFactsAndHistory(t *testing.T) {
 		var value string
 		err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
  'tasks',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM tasks t),
- 'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),
+ 'projects',(SELECT jsonb_agg(to_jsonb(p)-'repository_version' ORDER BY id) FROM projects p),
  'properties',(SELECT jsonb_agg(jsonb_build_object('task',task_id,'name',CASE WHEN $1 AND name='paused' THEN 'blocked' ELSE name END,'value',value) ORDER BY task_id,CASE WHEN $1 AND name='paused' THEN 'blocked' ELSE name END) FROM task_properties),
  'webhookEvents',(SELECT coalesce(jsonb_agg(to_jsonb(e) - $2::text[] ORDER BY id),'[]'::jsonb) FROM webhook_events e))::text`, normalize, laterWebhookEventColumns).Scan(&value)
 		if err != nil {

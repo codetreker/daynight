@@ -26,6 +26,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/reviewassignment"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -55,6 +56,7 @@ type App struct {
 	webhookRuntime       *webhookRuntime
 	githubRuntime        *githubRuntime
 	archiveCleanup       *sessionservice.ArchiveCleanupRunner
+	reviewAssignment     *reviewassignment.Runner
 	OAuthProfile         *OAuthProfile
 	OAuthError           error
 	PreviewSSOError      error
@@ -248,6 +250,7 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	}
 	capture := &webhook.Capturer{Logger: logger, RequestID: requestid.From}
 	app := NewModules(c, database.Transactions, database.Ready, files, client, capture)
+	app.Projects.SetRepositoryLogger(logger)
 	app.files, app.persistence = files, database
 	failOpen := func(cause error) (*App, error) {
 		cleanup, done := context.WithTimeout(context.Background(), c.Server.ShutdownTimeout)
@@ -305,6 +308,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 		return failOpen(err)
 	}
 	if err := app.assembleGitHub(database.Transactions, logger); err != nil {
+		return failOpen(err)
+	}
+	if err := app.assembleReviewAssignment(database.Transactions, logger); err != nil {
 		return failOpen(err)
 	}
 	if err := app.assembleArchiveCleanup(database.Transactions, files, logger); err != nil {
