@@ -292,10 +292,12 @@ func (s *Execution) scheduleCapture(tx *operationTx, r *record, capture store.Se
 			}
 			err = worker.copyCapture(ioContext, model.Principal{UserID: owner}, project, taskID, fence.SessionID, capture)
 			if failure := imageFailureEvidence(err); failure != nil {
-				cleanup, stop := context.WithTimeout(context.WithoutCancel(ioContext), 5*time.Second)
+				cleanupParent, cancelCleanupGate := filestorage.GateCleanupContext(ioContext)
+				cleanup, stop := context.WithTimeout(cleanupParent, 5*time.Second)
 				settleErr := worker.settleCaptureFailure(cleanup, model.Principal{UserID: owner}, project, taskID, fence.SessionID, capture, failure)
 				err = errors.Join(err, settleErr)
 				stop()
+				cancelCleanupGate()
 			}
 			err = errors.Join(err, finish())
 			if err != nil {
@@ -314,6 +316,8 @@ func (s *Execution) settleCaptureFailure(ctx context.Context, p model.Principal,
 		return err
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	ctx, cancelGate := filestorage.GateContext(ctx, gate)
+	defer cancelGate()
 	hasUpload := false
 	err = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
 		d, e := resourceDAO(tx)

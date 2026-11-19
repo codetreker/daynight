@@ -12,16 +12,9 @@ type Snapshot = {
   readonly status: GitHubStatus | null; readonly page: PullRequestPage | null; readonly counts: Counts | null; readonly projectTotal: string | null;
   readonly statusError: ApiError | null; readonly error: ApiError | null; readonly loading: boolean;
   readonly author: PullRequestAuthor | null; readonly filter: PullRequestState; readonly query: string; readonly pageNumber: number;
-  readonly hasUpdates: boolean; readonly refreshKey: number;
+  readonly refreshKey: number;
 };
-const empty = (): Snapshot => ({ status: null, page: null, counts: null, projectTotal: null, statusError: null, error: null, loading: false, author: null, filter: 'active', query: '', pageNumber: 1, hasUpdates: false, refreshKey: 0 });
-const MAX_NUMBER = 9_223_372_036_854_775_807n;
-const firstPageCursor = (projectId: string, filter: PullRequestState, query: string, upper: string, authorId: string | null): string | null => {
-  if (BigInt(upper) === MAX_NUMBER) return null;
-  const json = JSON.stringify({ v: authorId === null ? 1 : 2, projectId, state: filter, q: query, limit: 6, upperNumber: upper, anchorNumber: String(BigInt(upper) + 1n), direction: 'next', ...(authorId === null ? {} : { authorId }) });
-  return btoa(String.fromCharCode(...new TextEncoder().encode(json))).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
-};
-
+const empty = (): Snapshot => ({ status: null, page: null, counts: null, projectTotal: null, statusError: null, error: null, loading: false, author: null, filter: 'active', query: '', pageNumber: 1, refreshKey: 0 });
 /** Keeps one authorized Project's cursor workspace in memory while its tab is hidden. */
 export const usePullRequests = (options: PullRequestsOptions) => {
   const { userId, projectId, canRead, active } = options;
@@ -31,12 +24,12 @@ export const usePullRequests = (options: PullRequestsOptions) => {
   const permitted = useCallback(() => currentKey.current === key && current.current.canRead && current.current.active && document.visibilityState !== 'hidden', [key]);
   const scope = useMemo(() => createReadSession({ userId, projectId, isAllowed: permitted,
     onPrincipalMismatch: () => current.current.onPrincipalMismatch(), onAccessError: error => current.current.onAccessError?.(error) }), [userId, projectId, permitted]);
-  const session = useMemo(() => ({ key, snapshot: empty(), cursor: null as string | null, targetPage: 1, upper: null as string | null, initialized: false, generation: 0, pending: null as AbortController | null, pageRevision: null as string | null, countRevision: null as string | null, projectRevision: null as string | null }), [key]);
+  const session = useMemo(() => ({ key, snapshot: empty(), cursor: null as string | null, target: null as { cursor: string | null; page: number; direction: 'next' | 'previous' | 'refresh' } | null, generation: 0, pending: null as AbortController | null, pageRevision: null as string | null, countRevision: null as string | null, projectRevision: null as string | null }), [key]);
   const [, render] = useState(0);
   const publish = useCallback((snapshot: Snapshot) => { session.snapshot = snapshot; render(value => value + 1); }, [session]);
   const cancel = useCallback(() => { session.generation += 1; session.pending?.abort(); session.pending = null; }, [session]);
   const clear = useCallback((error?: ApiError) => {
-    cancel(); session.initialized = false; session.cursor = null; session.targetPage = 1; session.upper = null; session.pageRevision = null; session.countRevision = null; session.projectRevision = null;
+    cancel(); session.cursor = null; session.target = null; session.pageRevision = null; session.countRevision = null; session.projectRevision = null;
     publish(error === undefined ? empty() : { ...empty(), error });
   }, [cancel, publish, session]);
   useLayoutEffect(() => scope.subscribe(clear), [scope, clear]);
@@ -52,7 +45,7 @@ export const usePullRequests = (options: PullRequestsOptions) => {
   }, [scope, canRead]);
   useLayoutEffect(() => () => { if (currentKey.current !== key) scope.revoke(); }, [scope, key]);
 
-  const run = useCallback((replace: boolean) => {
+  const run = useCallback((replace: boolean, explicit = false) => {
     if (!permitted() || !replace && session.pending !== null) return;
     if (!scope.isAllowed()) {
       if (session.pending !== null) return;
@@ -67,9 +60,9 @@ export const usePullRequests = (options: PullRequestsOptions) => {
     const controller = new AbortController(), generation = ++session.generation, token = scope.capture();
     session.pending = controller;
     const admitted = () => permitted() && session.generation === generation && scope.current(token);
-    const initial = session.snapshot, initialized = session.initialized, upper = session.upper, cursor = session.cursor, targetPage = session.targetPage;
+    const initial = session.snapshot, target = session.target, cursor = target === null ? session.cursor : target.cursor, targetPage = target?.page ?? initial.pageNumber;
     const authorId = initial.author?.id ?? null;
-    publish({ ...initial, loading: true, error: null, statusError: null });
+    if (explicit || initial.page === null) publish({ ...initial, loading: true });
     let recoverAuth = false;
     const load = async <T,>(read: (signal: AbortSignal, onDispatch: () => void) => Promise<T>, apply: (value: T) => void, failure: 'error' | 'statusError') => {
       try {
@@ -89,8 +82,6 @@ export const usePullRequests = (options: PullRequestsOptions) => {
       }
     };
     const admission = (onDispatch: () => void) => ({ userId, onPrincipalMismatch: () => {}, onDispatch });
-    const pageCursor = initialized && cursor === null && upper !== null ? firstPageCursor(projectId, initial.filter, initial.query, upper, authorId) : cursor;
-    const syntheticFirstPage = cursor === null && pageCursor !== null;
     const updateCounts = (page: PullRequestPage) => {
       if (session.projectRevision === null || BigInt(page.revision) >= BigInt(session.projectRevision)) {
         session.projectRevision = page.revision;
@@ -107,25 +98,17 @@ export const usePullRequests = (options: PullRequestsOptions) => {
         const previous = session.snapshot.status;
         if (previous === null || BigInt(status.revision) >= BigInt(previous.revision)) publish({ ...session.snapshot, status, statusError: null });
       }, 'statusError'),
-      load((signal, dispatch) => getPullRequests(projectId, { ...query, cursor: pageCursor }, signal, admission(dispatch)), page => {
+      load((signal, dispatch) => getPullRequests(projectId, { ...query, cursor }, signal, admission(dispatch)), page => {
         if (session.pageRevision !== null && BigInt(page.revision) < BigInt(session.pageRevision) || session.projectRevision !== null && BigInt(page.revision) < BigInt(session.projectRevision)) {
           if (session.snapshot.page === null) publish({ ...session.snapshot, error: new ApiError('protocol') });
           return;
         }
         session.pageRevision = page.revision; updateCounts(page);
-        if (initialized && upper === null && page.items.length > 0) { publish({ ...session.snapshot, hasUpdates: true }); return; }
-        if (!initialized) { session.upper = page.items[0]?.number ?? null; session.initialized = true; }
-        const visible = syntheticFirstPage ? { ...page, previousCursor: null } : page;
-        publish({ ...session.snapshot, page: visible, pageNumber: targetPage, error: null, refreshKey: session.snapshot.refreshKey + 1 });
+        session.cursor = target?.direction === 'previous' && page.items.length > 0 && page.previousCursor === null ? null : cursor;
+        session.target = null;
+        publish({ ...session.snapshot, page, pageNumber: targetPage, error: null, refreshKey: session.snapshot.refreshKey + 1 });
       }, 'error'),
     ];
-    if (initialized && upper !== null && BigInt(upper) !== MAX_NUMBER) reads.push(
-      load((signal, dispatch) => getPullRequests(projectId, { ...query, cursor: null }, signal, admission(dispatch)), page => {
-        if (session.pageRevision !== null && BigInt(page.revision) < BigInt(session.pageRevision) || session.projectRevision !== null && BigInt(page.revision) < BigInt(session.projectRevision)) return;
-        updateCounts(page);
-        if (page.items.some(item => BigInt(item.number) > BigInt(upper))) publish({ ...session.snapshot, hasUpdates: true });
-      }, 'error'),
-    );
     void Promise.all(reads).finally(() => {
       if (session.pending === controller) session.pending = null;
       if (!admitted()) return;
@@ -135,16 +118,15 @@ export const usePullRequests = (options: PullRequestsOptions) => {
   }, [session, userId, projectId, permitted, cancel, publish, scope]);
 
   const reset = useCallback((filter: PullRequestState, query: string, author: PullRequestAuthor | null, authorChanged: boolean) => {
-    cancel(); session.cursor = null; session.targetPage = 1; session.upper = null; session.initialized = false;
+    cancel(); session.cursor = null; session.target = null;
     if (authorChanged) session.countRevision = null;
-    publish({ ...session.snapshot, author, filter, query, page: null, counts: authorChanged ? null : session.snapshot.counts, error: null, pageNumber: 1, hasUpdates: false });
+    publish({ ...session.snapshot, author, filter, query, page: null, counts: authorChanged ? null : session.snapshot.counts, error: null, pageNumber: 1 });
     run(true);
   }, [cancel, session, publish, run]);
   const refresh = useCallback(() => {
-    cancel(); session.cursor = null; session.targetPage = 1; session.upper = null; session.initialized = false;
-    publish({ ...session.snapshot, hasUpdates: false }); run(true);
+    cancel(); session.target = { cursor: null, page: 1, direction: 'refresh' }; run(true, true);
   }, [cancel, session, publish, run]);
-  const reconcile = useCallback(() => run(false), [run]);
+  const reconcile = useCallback(() => run(true, true), [run]);
   const setFilter = useCallback((filter: PullRequestState) => { if (scope.isAllowed() && filter !== session.snapshot.filter) reset(filter, session.snapshot.query, session.snapshot.author, false); }, [reset, session, scope]);
   const setQuery = useCallback((query: string) => { if (scope.isAllowed() && query !== session.snapshot.query) reset(session.snapshot.filter, query, session.snapshot.author, false); }, [reset, session, scope]);
   const setAuthor = useCallback((author: PullRequestAuthor | null) => {
@@ -155,9 +137,8 @@ export const usePullRequests = (options: PullRequestsOptions) => {
   const move = useCallback((direction: 'next' | 'previous') => {
     const cursor = session.snapshot.page?.[direction === 'next' ? 'nextCursor' : 'previousCursor'];
     if (cursor === undefined || cursor === null || session.snapshot.loading) return;
-    cancel(); session.cursor = cursor;
-    session.targetPage = Math.max(1, session.snapshot.pageNumber + (direction === 'next' ? 1 : -1));
-    run(true);
+    cancel(); session.target = { cursor, page: Math.max(1, session.snapshot.pageNumber + (direction === 'next' ? 1 : -1)), direction };
+    run(true, true);
   }, [cancel, run, session]);
   const next = useCallback(() => move('next'), [move]), previous = useCallback(() => move('previous'), [move]);
 

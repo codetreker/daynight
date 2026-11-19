@@ -23,12 +23,31 @@ const channel = new ClaudeLiveChannel(process, async (method, raw, signal) => {
   const value = object(raw);
   if (method === "open") {
     if (native || stopping) throw new Error("Claude helper cannot open another native session.");
-    const options = value as unknown as Options;
+    const { daynightSessionMirror, ...configuration } = value;
+    const options = configuration as unknown as Options;
     const sdkPath = fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk")), sdkVersion = String(JSON.parse(await readFile(path.join(path.dirname(sdkPath), "package.json"), "utf8")).version);
     const effectiveSettings = await resolveSettings({ ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.settingSources === undefined ? {} : { settingSources: options.settingSources }), ...(options.managedSettings === undefined ? {} : { managedSettings: options.managedSettings }) }).then(value => value.effective, () => null);
     let profileResolve!: () => void, profileReject!: (error: unknown) => void;
     const profileReady = new Promise<void>((resolve, reject) => { profileResolve = resolve; profileReject = reject; }); void profileReady.catch(() => {});
     native = query({ prompt: input, options: { ...options,
+      ...(daynightSessionMirror === true ? { sessionStore: {
+        async append(key, entries) {
+          const text = JSON.stringify({ key, entries });
+          if (Buffer.byteLength(text) > 32 * 1024 * 1024) throw new Error("Claude recovery mirror batch exceeds its 32 MiB transfer limit.");
+          const id = randomUUID(); await channel.call("mirror", { action: "begin", id });
+          let offset = 0;
+          // UTF-16 slices end on whole code points and fit comfortably inside one IPC frame.
+          for (let at = 0; at < text.length;) {
+            let end = Math.min(at + 16_384, text.length);
+            if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--;
+            const chunk = text.slice(at, end);
+            await channel.call("mirror", { action: "chunk", id, offset, text: chunk });
+            offset += Buffer.byteLength(chunk); at = end;
+          }
+          await channel.call("mirror", { action: "commit", id });
+        },
+        async load() { throw new Error("Claude Bot recovery must use its validated local transcript and original configuration."); },
+      } satisfies NonNullable<Options["sessionStore"]>, sessionStoreFlush: "batched" as const } : {}),
       hooks: { SessionStart: [{ hooks: [async event => { await channel.call("sessionStart", event); return {}; }] }] },
       spawnClaudeCodeProcess: args => {
         const backend = claudeBackend(args.env, effectiveSettings, options.settings);

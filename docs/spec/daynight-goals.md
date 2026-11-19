@@ -8,6 +8,10 @@ HTTP 和 MCP 创建接受 `type=goal`；省略类型创建普通 Task。类型�
 
 Goal 默认 `todo`，负责人默认创建者；显式 `assignedTo:null` 表示未分配。Goal 可在 `todo`、`in_progress`、`done`、`cancelled` 间转换，同状态在版本检查后不写入。存在 Goal 验收依赖时，进入 `done` 要求所有直接前置 Goal 为 `done`；已有已完成的下游 Goal 依赖它时，拒绝离开 `done`。取消的前置不能满足完成条件。进入 `in_progress` 记录新的 startedAt；返回 `todo` 清空三个状态时间；进入 done 或 cancelled 保留可空 startedAt，分别记录 completedAt 或 cancelledAt 并清空另一终态时间。Goal 的 ready 始终为 false，不支持普通 Task 依赖、Steps、自动执行、平台要求或 Worker claim；可使用 `pullRequests`、Thread 和附件。
 
+Goal 验收关系由下游持有，与普通 Task 依赖和 Parent 分开管理。同项目或当前 owner Team 相同的跨项目 Goal 可以建立关系；有权编辑下游且可读新增前置才可添加。拒绝自依赖、普通 Task 端点、不可用目标、跨 Team 和环。直接前置最多 30 条，编辑和完整替换原子生效；替换必须显式给出整个集合，空集合表示清空。已完成下游只能保留或新增已完成前置。
+
+关系读取在同一只读快照取得修订、完成阻塞、前置和直接下游。可读前置含 Project、Goal、标题、状态与项目内／外部类别；不可读前置只表示存在关系，编辑者取得不暴露目标身份的 edge UUID，可单独移除。不可读下游在分页前排除，不泄露身份或数量。下游默认每页 20 条、最多 50 条，每页重新授权。关系修订为独立的正 int64；首次实际修改从逻辑值 1 推进为 2，清空后保留，空操作不推进。写入先比较调用者的原修订，冲突和提交未知都不自动重放。关系变化不修改 Task 元数据版本，旧 detail、sync、图和 ready 投影保持原合同。公开读取与编辑见[Goal 依赖 REST 协议](goal-dependencies.md)，事务机制见[Goal 关系设计](../design/goal-dependencies.md)。
+
 普通子 Task 实际从其他状态进入 `in_progress` 时，无论由人工状态修改还是 Worker 领取触发，若其当前 Parent Goal 为 `todo`，服务端在同一事务中将 Goal 推进为 `in_progress`，按 Goal 自身生命周期更新起点、终态时间、更新时间和版本；任一写入失败时两者均不提交。Goal 已为 `in_progress`、`done` 或 `cancelled` 时保持原状态。没有 Parent 的 Task 正常开始；同状态请求、运行中修改其他字段或归属不触发该规则。子 Task 后续回退、完成、取消或释放领取不自动改变 Goal 状态，也不扫描或补改历史数据。Goal 的变更可由正常读取和增量同步观察，不产生执行 Task Webhook。
 
 Goal 按直接可见普通子 Task 汇总真实总数、done、cancelled 和未结束数量；Web 完成进度使用 done / (total - cancelled)，统计本身不派生 Goal 状态。完成进度的零分母及轨道遵守 [Web 进度规则](daynight-web.md#项目整体进度)。完成或取消 Goal 不改变、隐藏或停止孩子，但阻止后续自动领取；已有 claim 沿用自身规则。被其他未删除 Goal 引用的 Goal 不能直接删除。无入边时，删除 Goal 同事务移除其验收出边、推进实际变化的关系修订，软删除容器并轮换项目缓存 epoch；保留孩子的 Parent、状态、版本、普通 Task 依赖和执行归属；孩子及其资料从正常入口不可见，原执行由下次成功库存观察进入既有停止和归档流程。删除成功只表示删除已提交，不表示进程已停止。

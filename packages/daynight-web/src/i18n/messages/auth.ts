@@ -315,7 +315,6 @@ export type AuthMessages = {
     readonly settings: {
       readonly eyebrow: string;
       readonly title: string;
-      readonly scopeHint: string;
       readonly alertTitle: string;
       readonly description: string;
       readonly scope: string;

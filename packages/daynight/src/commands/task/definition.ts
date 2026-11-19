@@ -46,6 +46,19 @@ export const taskDefinition: CommandDefinition = {
   commands: [
     ...taskSessionDefinitions,
     {
+      name: "goal-dependencies", description: "Read and edit Goal acceptance dependencies",
+      options: [helpOption],
+      commands: [
+        { name: "show", description: "Show Goal prerequisites and a page of successors", arguments: [{ name: "goal-id", description: "Downstream Goal UUID" }], options: [{ names: ["--limit"], description: "Successor page size, 1–50 (default 20)", value: { name: "count", kind: "text" } }, { names: ["--cursor"], description: "Continue successors", value: { name: "cursor", kind: "text" } }, projectOption, jsonOption, helpOption], details: "Reads one page. Only editors receive the revision and edge IDs, including IDs for hidden prerequisites. Successor pages are not a frozen snapshot. Older servers may not provide this route." },
+        ...(["add", "remove", "replace"] as const).map(name => ({ name, description: `${name} Goal prerequisites`, arguments: [{ name: "goal-id", description: "Downstream Goal UUID" }], options: [
+          ...(name === "remove" ? [] : [{ names: ["--target"], description: "Project UUID/Goal UUID; repeat for multiple targets", value: { name: "project-id/goal-id", kind: "text" as const }, repeatable: true }]),
+          ...(name === "add" ? [] : [{ names: ["--edge"], description: name === "remove" ? "Edge UUID to remove; repeat" : "Existing edge UUID to retain; repeat", value: { name: "edge-id", kind: "text" as const }, repeatable: true }]),
+          ...(name === "replace" ? [{ names: ["--clear"], description: "Explicitly clear all prerequisites" }] : []),
+          { names: ["--if-revision"], description: "Exact observed relationship revision", value: { name: "revision", kind: "text" as const } }, projectOption, jsonOption, helpOption,
+        ], details: "Without --if-revision, read the current relationship revision once before one write. Conflicts and unknown outcomes are never retried. Replace requires targets or retained edges, or --clear to explicitly empty the set." })),
+      ],
+    },
+    {
       name: "create",
       description: "Create a Task or Goal",
       options: [{ ...titleOption, required: true }, descriptionOption, typeOption, parentOption, { names: ["--status"], description: "Initial status (Task: proposed or todo; Goal: todo, in_progress, done or cancelled)", value: { name: "status", kind: "text", choices: taskStatuses } }, assignedToOption, { names: ["--clear-assigned-to"], description: "Create without an assignee" }, requiredPlatformOption, dependencyOption, externalDependencyOption, tagOption, forceOption, projectOption, helpOption],

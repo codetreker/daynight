@@ -103,6 +103,10 @@ func (mock *taskSnapshotScopeMock) UserCandidateDAO() store.UserCandidateReader 
 	return mock.UserCandidateDAOFn()
 }
 
+func (mock *taskSnapshotScopeMock) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (mock *taskSnapshotScopeMock) CredentialDAO() store.CredentialReader {
 	mock.need("CredentialDAO", mock.CredentialDAOFn != nil)
 	return mock.CredentialDAOFn()
@@ -165,6 +169,10 @@ type taskProjectScopeMock struct {
 func (mock *taskProjectScopeMock) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
 	mock.need("ProjectGoalDependencyDAO", mock.ProjectGoalDependencyDAOFn != nil)
 	return mock.ProjectGoalDependencyDAOFn()
+}
+
+func (mock *taskProjectScopeMock) GoalRelationDAO() store.GoalRelationEditor {
+	panic("unexpected GoalRelationDAO access")
 }
 
 func (mock *taskProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {

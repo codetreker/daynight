@@ -240,6 +240,8 @@ func (s *Execution) ArchiveContentReserved(ctx context.Context, p model.Principa
 }
 
 func (s *Execution) archiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
 	legacyPath := ""

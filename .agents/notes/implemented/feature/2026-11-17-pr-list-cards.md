@@ -30,4 +30,5 @@ visual density and grouping inconsistent with the adjacent Task list.
 PR and Task entries share a reading rhythm without conflating their state
 semantics. PR styles retain their own maintenance responsibility, including
 responsive geometry and accessible focus; shared Task row changes do not
-automatically propagate to the PR list.
+automatically propagate to the PR list. The [status icon alignment decision](../bug-fix/2026-11-19-pr-status-icon-alignment.md)
+describes the independent vertical alignment of the icon.
