@@ -1,4 +1,4 @@
-import { useCallback, useId, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 import { type AssistantTask, type AssistantTaskInboxRotation, assistantTaskInboxUrl, disableAssistantTaskInbox, enableAssistantTaskInbox, getAssistantTaskInbox, getAssistantTaskInboxOperation, rotateAssistantTaskInbox } from '../../api/assistant-tasks';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
@@ -23,6 +23,7 @@ const en = {
   overlapBlocked: 'The previous token is still in its overlap period. Rotate immediately instead.',
   immediateMode: 'Revoke the previous token now', immediateHint: 'Use this when the token may have leaked.',
   disableTitle: 'Disable inbox', disableConfirm: 'Disable this inbox? Every token is revoked and this URL stops accepting messages permanently. Enabling again creates a new URL. Disable or delete Webhook endpoints that point to this inbox.',
+  changed: 'This task changed after you opened this confirmation. Close it and review the current inbox before trying again.',
   confirm: 'Confirm', cancel: 'Cancel', error: 'Could not load the inbox.', retry: 'Retry', loading: 'Loading…',
 };
 const zh: typeof en = {
@@ -40,26 +41,37 @@ const zh: typeof en = {
   overlapBlocked: '旧令牌仍在重叠有效期内，只能立即轮换。',
   immediateMode: '立即废止旧令牌', immediateHint: '用于令牌可能已经泄露的情况。',
   disableTitle: '停用收件箱', disableConfirm: '停用这个收件箱？全部令牌将被废止，该地址永久停止接收消息；再次开启会生成新的地址。请停用或删除指向这个收件箱的 Webhook 端点。',
+  changed: '打开此确认后任务已经发生变化。请关闭它并查看当前收件箱后再操作。',
   confirm: '确认', cancel: '取消', error: '无法读取收件箱。', retry: '重试', loading: '正在加载…',
 };
 const useInboxMessages = () => { const { locale } = useI18n(); return { ...(locale === 'zh-CN' ? zh : en), locale }; };
 
-/** Owner management of the assistant task inbox. The token exists only in this mounted panel after the request that generated it. */
+/**
+ * Owner management of the assistant task inbox. The token exists only in this mounted panel after the request that generated it.
+ * A confirmation submits the task version it was opened against, so a concurrent inbox change becomes a conflict instead of being overwritten.
+ */
 export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { readonly task: AssistantTask; readonly enabled: boolean; readonly disabled: boolean; readonly onChanged: () => Promise<unknown> }) {
   const m = useInboxMessages(), scope = useTaskCacheScope(), admission = assistantTaskAdmission(scope), taskId = task.id, heading = useId(), modeName = useId();
   const load = useCallback((scope: TaskCacheScope, signal: AbortSignal) => getAssistantTaskInbox(taskId, signal, assistantTaskAdmission(scope)), [taskId]);
   const read = useBotRead(`assistant-task-inbox:${taskId}`, enabled, load);
   const reload = async () => { read.refresh(); await onChanged(); };
   const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation);
-  const [token, setToken] = useState<string | null>(null), [dialog, setDialog] = useState<'rotate' | 'disable' | null>(null);
+  const [token, setToken] = useState<string | null>(null), [dialog, setDialog] = useState<{ readonly kind: 'rotate' | 'disable'; readonly version: string } | null>(null);
+  const owner = useRef({ scope, taskId }); owner.current = { scope, taskId };
   const inbox = read.value, overlapActive = inbox?.overlapUntil != null;
   const [mode, setMode] = useState<AssistantTaskInboxRotation>('overlap');
-  const blocked = disabled || mutation.blocked;
+  const blocked = disabled || mutation.blocked, changed = dialog !== null && dialog.version !== task.version;
+  // Hiding the tab stops new writes, but a token from a completed request is unrecoverable elsewhere,
+  // so it stays visible while this panel remains mounted for the same identity and task.
   const issue = async (operation: (signal: AbortSignal, admission: ReturnType<typeof assistantTaskAdmission>) => Promise<{ readonly token: string | null }>) => {
+    const origin = { scope, taskId };
     let issued: string | null = null;
     const ok = await mutation.run(async signal => { issued = (await operation(signal, admission)).token; });
-    if (ok) setToken(issued);
-    return ok;
+    const retained = issued !== null && !origin.scope.isInvalidated && owner.current.scope === origin.scope && owner.current.taskId === origin.taskId;
+    if (ok || retained) setToken(issued);
+    // A retained result skipped the mutation's own reload; refresh the task so later writes use its new version.
+    if (!ok && retained) void onChanged().catch(() => undefined);
+    return ok || retained;
   };
   return <section className="assistant-task-panel assistant-task-inbox" aria-labelledby={heading}>
     <header><h3 id={heading}>{m.title}</h3>{inbox ? <span className="assistant-task-badge">{inbox.enabled ? m.enabled : m.disabled}</span> : null}</header>
@@ -79,20 +91,20 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
         {([[m.created, inbox.createdAt], [m.rotated, inbox.rotatedAt], [m.overlap, inbox.overlapUntil]] as const).map(([label, date]) => <div key={label}><dt>{label}</dt><dd>{date ? <time dateTime={date}>{new Date(date).toLocaleString(m.locale)}</time> : m.never}</dd></div>)}
         <div><dt>{m.suppressed}</dt><dd>{inbox.suppressedCount}</dd></div>
       </dl>
-      <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode(overlapActive ? 'immediate' : 'overlap'); setDialog('rotate'); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog('disable')} /></div>
+      <div className="assistant-task-actions"><InboxAction label={m.rotate} disabled={blocked} onClick={() => { setMode(overlapActive ? 'immediate' : 'overlap'); setDialog({ kind: 'rotate', version: task.version }); }} /><InboxAction label={m.disable} danger disabled={blocked} onClick={() => setDialog({ kind: 'disable', version: task.version })} /></div>
     </> : null}
-    {dialog ? <AssistantTaskDialog title={dialog === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); void (async () => {
-      const operationId = crypto.randomUUID();
-      const ok = dialog === 'rotate'
-        ? await issue((signal, access) => rotateAssistantTaskInbox(taskId, { operationId, ifVersion: task.version, mode }, signal, access))
-        : await mutation.run(async signal => { await disableAssistantTaskInbox(taskId, { operationId, ifVersion: task.version }, signal, admission); });
-      if (ok) { setDialog(null); if (dialog === 'disable') setToken(null); }
+    {dialog ? <AssistantTaskDialog title={dialog.kind === 'rotate' ? m.rotateTitle : m.disableTitle} onClose={() => setDialog(null)}><form onSubmit={event => { event.preventDefault(); if (changed) return; void (async () => {
+      const operationId = crypto.randomUUID(), ifVersion = dialog.version;
+      const ok = dialog.kind === 'rotate'
+        ? await issue((signal, access) => rotateAssistantTaskInbox(taskId, { operationId, ifVersion, mode }, signal, access))
+        : await mutation.run(async signal => { await disableAssistantTaskInbox(taskId, { operationId, ifVersion }, signal, admission); });
+      if (ok) { setDialog(null); if (dialog.kind === 'disable') setToken(null); }
     })(); }}>
-      <div className="dialog-body assistant-task-form">{dialog === 'rotate' ? <fieldset className="assistant-task-inbox-modes"><legend>{m.rotateMode}</legend>
+      <div className="dialog-body assistant-task-form">{dialog.kind === 'rotate' ? <fieldset className="assistant-task-inbox-modes"><legend>{m.rotateMode}</legend>
         <label><input type="radio" name={modeName} value="overlap" checked={mode === 'overlap'} disabled={overlapActive} onChange={() => setMode('overlap')} /><span><strong>{m.overlapMode}</strong><span className="assistant-task-meta">{overlapActive ? m.overlapBlocked : m.overlapHint}</span></span></label>
         <label><input type="radio" name={modeName} value="immediate" checked={mode === 'immediate'} onChange={() => setMode('immediate')} /><span><strong>{m.immediateMode}</strong><span className="assistant-task-meta">{m.immediateHint}</span></span></label>
-      </fieldset> : <p>{m.disableConfirm}</p>}{mutation.notice}</div>
-      <footer className="dialog-footer"><button type="button" className="button" onClick={() => setDialog(null)}>{m.cancel}</button><button type="submit" className={`button ${dialog === 'disable' ? 'danger' : 'primary'}`} disabled={blocked}>{dialog === 'disable' ? m.disable : m.confirm}</button></footer>
+      </fieldset> : <p>{m.disableConfirm}</p>}{changed ? <div className="notice error" role="alert">{m.changed}</div> : null}{mutation.notice}</div>
+      <footer className="dialog-footer"><button type="button" className="button" onClick={() => setDialog(null)}>{m.cancel}</button><button type="submit" className={`button ${dialog.kind === 'disable' ? 'danger' : 'primary'}`} disabled={blocked || changed}>{dialog.kind === 'disable' ? m.disable : m.confirm}</button></footer>
     </form></AssistantTaskDialog> : null}
   </section>;
 }
