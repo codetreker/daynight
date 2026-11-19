@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useWorkerNames } from '../worker-names/useWorkerNames';
 import type { PersonalTaskItem } from '../../api/personal-tasks';
 import { useCurrentAccount } from '../../app/CurrentAccountContext';
 import { taskDetailUrl } from '../../app/router';
@@ -15,9 +16,13 @@ const Content = ({ item, open, active }: { readonly item: PersonalTaskItem; read
   const account = useCurrentAccount();
   const scope = useTaskCacheScope();
   const session = usePersonalTaskObservation(item.task.id);
+  const names = useWorkerNames(item.task.worker === null ? [] : [item.task.worker]);
   if (account.user.id !== scope.userId || scope.isInvalidated) return null;
   const { task, project } = item;
-  const model = personalTaskRowModel(item, scope.userId, session);
+  let model = personalTaskRowModel(item, scope.userId, session);
+  if (task.worker !== null && (model.worker.kind === 'active' || model.worker.kind === 'historical')) {
+    model = { ...model, worker: { ...model.worker, currentName: names.name(task.worker.userId, task.worker.workerId, task.worker.machine.name) } };
+  }
   const admitted = active && !account.admissionBlocked;
   const href = (id: string) => taskDetailUrl(project.id, id, { tab: 'overview', path: null });
   return <TaskRow model={model} projectId={project.id} tagsActive={admitted} href={href(task.id)} instanceId={`personal-task-${project.id}-${task.id}`}

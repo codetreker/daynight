@@ -22,6 +22,7 @@ export const graph: GraphMessages = {
   noMachineRecord: 'No machine record',
   claimMachine: ({ name }) => `Claim machine: ${name}`,
   recordedMachine: ({ name }) => `Recorded machine: ${name}`,
+  currentWorkerName: ({ name }) => `Worker: ${name}`,
   childTasks: ({ count: value }) => `Tasks · ${number(value)}`,
   representativeTaskDetails: 'View task details',
   representativeTaskDetailsLabel: ({ title }) => `${title}, View task details`,

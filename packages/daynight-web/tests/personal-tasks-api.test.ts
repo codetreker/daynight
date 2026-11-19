@@ -118,3 +118,22 @@ describe('personal task response', () => {
     expect(mismatch).toHaveBeenCalledOnce();
   });
 });
+
+
+describe('personal task worker identity negotiation', () => {
+  it('requires the claim account only after negotiation and preserves the machine', async () => {
+    const base = page(), row = item();
+    const worker = { workerId: workerId(6), userId: workerId(8), state: 'completed', machine: { id: workerId(7), name: 'Historical machine' } };
+    const value = { ...base, items: [{ ...row, task: { ...row.task, worker } }] };
+    expect(parsePersonalTaskPage(value, true).items[0]?.task.worker).toEqual(worker);
+    expect(() => parsePersonalTaskPage(value)).toThrow();
+    const { userId: _userId, ...legacy } = worker;
+    expect(() => parsePersonalTaskPage({ ...value, items: [{ ...row, task: { ...row.task, worker: legacy } }] }, true)).toThrow();
+    const fetch = vi.fn().mockResolvedValue(wireResponse(value, { headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Identity': '1' } }));
+    vi.stubGlobal('fetch', fetch);
+    expect((await listPersonalTasks(null, new AbortController().signal, { userId: WORKER_USER, onPrincipalMismatch: vi.fn() })).items[0]?.task.worker).toEqual(worker);
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).get('Daynight-Worker-Identity')).toBe('1');
+    fetch.mockResolvedValue(wireResponse(base, { headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Identity': '2' } }));
+    await expect(listPersonalTasks(null, new AbortController().signal, { userId: WORKER_USER, onPrincipalMismatch: vi.fn() })).rejects.toMatchObject({ kind: 'protocol' });
+  });
+});

@@ -3,14 +3,14 @@ import { StandaloneTaskRow } from "./StandaloneTaskRow";
 import type { PaginationState } from "./usePagination";
 import { useLayoutEffect, useRef } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
-import type { TaskSummary, WorkerClaim } from "../../api/types";
+import type { TaskSummary, WorkerMachine } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 
 type StandaloneListProps = {
   readonly projectId: string;
   readonly index: GraphIndex;
   readonly summaries: ReadonlyMap<string, TaskSummary>;
-  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
+  readonly workerMachines: ReadonlyMap<string, WorkerMachine>;
   readonly taskIds: readonly string[];
   readonly allTaskIds: readonly string[];
   readonly onSelectTask: (id: string, trigger: HTMLElement) => void;

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type ComponentProps } from 'react';
-import type { TaskSummary, WorkerClaim } from '../../api/types';
+import type { TaskSummary, WorkerMachine } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from '../task-graph/model';
 import { ProjectListGraphHost } from '../task-graph/ProjectListGraphHost';
@@ -24,7 +24,7 @@ export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoa
   readonly graphError?: unknown;
   readonly onRefreshGraph?: () => void;
   readonly pagination?: PaginationState;
-  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, 'state' | 'machine'>>;
+  readonly workerMachines: ReadonlyMap<string, WorkerMachine>;
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenListChain: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
 } & GraphProps) => {
