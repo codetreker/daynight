@@ -52,6 +52,12 @@ type AppendixInput struct {
 	// an unrestricted scope and an update keeps the current scope.
 	Scope *model.AssistantTaskAppendixScope
 }
+
+// RelatedAppendixInput names the notification context of a related
+// experience query; an empty dimension is unknown and neutral.
+type RelatedAppendixInput struct {
+	ProjectID, EventType, ItemCategory string
+}
 type AppendixValidationInput struct {
 	Mutation
 	OutcomeRecordID string

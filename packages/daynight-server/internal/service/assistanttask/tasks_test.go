@@ -140,6 +140,10 @@ func TestTasksForwardOnlyTransactionBoundOperations(t *testing.T) {
 			_, err := s.ListAppendix(ctx, actor, "task", core.PageInput{Limit: 200, Cursor: "cursor", State: "active", ItemID: "item", TargetBotID: "bot"})
 			return err
 		}},
+		{"RelatedAppendix", []any{"task", core.RelatedAppendixInput{ProjectID: "project", EventType: "report", ItemCategory: "build"}}, func(s *Tasks) error {
+			_, err := s.RelatedAppendix(ctx, actor, "task", core.RelatedAppendixInput{ProjectID: "project", EventType: "report", ItemCategory: "build"})
+			return err
+		}},
 		{"AddAppendix", []any{core.AppendixInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, Text: "appendix"}}, func(s *Tasks) error {
 			_, err := s.AddAppendix(ctx, actor, core.AppendixInput{Mutation: core.Mutation{TaskID: "task", ID: "appendix", ClaimToken: "token", ClaimGeneration: 7}, Text: "appendix"})
 			return err

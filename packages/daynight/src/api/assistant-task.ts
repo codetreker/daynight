@@ -135,6 +135,12 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
     listManuals: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/manual/versions`, query, v => P.parseAssistantTaskManual(v, taskId)),
     rollback: (taskId: string, input: { ifVersion: string; manualVersion: string }) => request(`${taskPath(taskId)}/manual/rollback`, "POST", input, v => P.parseAssistantTaskManual(v, taskId)),
     listAppendix: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/appendix`, query, v => P.parseAssistantTaskAppendix(v, taskId)),
+    relatedAppendix: (taskId: string, query: T.AssistantTaskRelatedQuery = {}) => {
+      const params = new URLSearchParams();
+      if (query.projectId !== undefined) params.set("projectId", P.assistantTaskId(query.projectId));
+      for (const key of ["eventType", "itemCategory"] as const) if (query[key] !== undefined) params.set(key, text(query[key], true));
+      return request(`${taskPath(taskId)}/appendix/related${params.size === 0 ? "" : `?${params}`}`, "GET", undefined, v => P.parseAssistantTaskRelatedAppendices(v, taskId));
+    },
     addAppendix: (taskId: string, input: T.AddAssistantTaskAppendixInput) => request(`${taskPath(taskId)}/appendix`, "POST", input, v => P.parseAssistantTaskAppendix(v, taskId, input.id)),
     updateAppendix: (taskId: string, id: string, input: T.UpdateAssistantTaskAppendixInput) => request(entryPath(taskId, "appendix", id), "PATCH", input, v => P.parseAssistantTaskAppendix(v, taskId, id)),
     deleteAppendix: (taskId: string, id: string, ifVersion: string) => request(entryPath(taskId, "appendix", id), "DELETE", { ifVersion }, v => P.parseAssistantTaskAppendix(v, taskId, id)),

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, type Operation } from "../../src/api/operation.js";
-import { AssistantTaskApiError, assistantTaskClaimFingerprint, createAssistantTaskClient, parseAssistantTask, parseAssistantTaskClaimResult, parseAssistantTaskPage, parseAssistantTaskManual, parseAssistantTaskAppendix, parseAssistantTaskProposal, parseAssistantTaskItem, parseAssistantTaskRecord, parseAssistantTaskEvent, parseAssistantTaskInquiry } from "../../src/api/assistant-task.js";
+import { AssistantTaskApiError, assistantTaskClaimFingerprint, createAssistantTaskClient, parseAssistantTask, parseAssistantTaskClaimResult, parseAssistantTaskPage, parseAssistantTaskManual, parseAssistantTaskAppendix, parseAssistantTaskRelatedAppendices, parseAssistantTaskProposal, parseAssistantTaskItem, parseAssistantTaskRecord, parseAssistantTaskEvent, parseAssistantTaskInquiry } from "../../src/api/assistant-task.js";
 import { ProtocolError } from "../../src/api/validation.js";
 const owner = "11111111-1111-4111-8111-111111111111", taskId = "22222222-2222-4222-8222-222222222222", operationId = "33333333-3333-4333-8333-333333333333", botId = "44444444-4444-4444-8444-444444444444", other = "55555555-5555-4555-8555-555555555555";
 const now = "2026-11-13T10:00:00.123456Z", until = "2026-11-13T10:05:00.123456Z";
@@ -296,6 +296,29 @@ describe("assistant task appendix scope and validation", () => {
     await client.updateAppendix(taskId, operationId, { ifVersion: "2", text: "Experience", scope: {} });
     expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual({ ...credential, id: operationId, text: "Experience", sourceRecords: [], scope });
     expect(JSON.parse(fetch.mock.calls[1]![1]!.body as string)).toEqual({ ifVersion: "2", text: "Experience", scope: {} });
+  });
+  it("reads related appendices with only the given context dimensions", async () => {
+    const related = { items: [{ ...appendix, scope }, { ...appendix, id: other, state: "edited", validation }], observedAt: now };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response(related));
+    const client = setup(fetch);
+    expect(await client.relatedAppendix(taskId)).toEqual(related);
+    expect(await client.relatedAppendix(taskId, { projectId: other, eventType: "report", itemCategory: " build & deploy " })).toEqual(related);
+    expect(fetch.mock.calls.map(call => String(call[0]))).toEqual([
+      `http://localhost:3000/api/v1/assistant-tasks/${taskId}/appendix/related`,
+      `http://localhost:3000/api/v1/assistant-tasks/${taskId}/appendix/related?projectId=${other}&eventType=report&itemCategory=+build+%26+deploy+`,
+    ]);
+    expect(fetch.mock.calls.every(call => call[1]?.method === "GET" && call[1]?.body === undefined)).toBe(true);
+    expect(() => client.relatedAppendix(taskId, { projectId: "bad" })).toThrow();
+    expect(() => client.relatedAppendix(taskId, { itemCategory: "" })).toThrow();
+  });
+  it("refuses related results that are not a bounded set of live appendices", () => {
+    const item = (n: number) => ({ ...appendix, id: `00000000-0000-4000-8000-00000000000${n}` });
+    expect(parseAssistantTaskRelatedAppendices({ items: [1, 2, 3, 4, 5].map(item), observedAt: now }, taskId).items).toHaveLength(5);
+    for (const malformed of [
+      { items: [1, 2, 3, 4, 5, 6].map(item), observedAt: now }, { items: [appendix, appendix], observedAt: now },
+      { items: [{ ...appendix, state: "deleted", text: "" }], observedAt: now }, { items: [{ ...appendix, taskId: other }], observedAt: now },
+      { items: [], nextCursor: null, observedAt: now }, { items: [] },
+    ]) expect(() => parseAssistantTaskRelatedAppendices(malformed, taskId)).toThrow(ProtocolError);
   });
   it("posts one validation and requires the counted appendix in the response", async () => {
     const counted = { ...appendix, validation };

@@ -35,6 +35,9 @@ export type AssistantTaskOutcome = "effective" | "ineffective" | "inconclusive";
 export type AssistantTaskRecord = { id: string; taskId: string; itemId: string | null; author: "bot" | "system"; authorBotId: string | null; kind: string; text: string; outcome?: AssistantTaskOutcome; actionRecordId?: string; refs: JsonValue; createdAt: string };
 export type AssistantTaskEvent = { id: string; taskId: string; targetBotId: string; type: string; payload: JsonValue; state: "pending" | "delivered" | "expired"; attention: boolean; createdAt: string; deliveredAt: string | null; seenAt: string | null; ackOperationId: string | null };
 export type AssistantTaskInquiry = { id: string; taskId: string; itemId: string | null; fromBotId: string; toBotId: string; answerBotId: string | null; question: string; answer: string; state: "open" | "answered" | "timed_out"; createdAt: string; deadline: string; answeredAt: string | null };
+// An omitted dimension is unknown to the caller and neutral in the ranking.
+export type AssistantTaskRelatedQuery = { projectId?: string; eventType?: string; itemCategory?: string };
+export type AssistantTaskRelatedAppendices = { items: AssistantTaskAppendix[]; observedAt: string };
 export type AssistantTaskPage<T> = { items: T[]; nextCursor: string | null; observedAt: string };
 export type AssistantTaskQuery = { limit?: number; cursor?: string; state?: string; itemId?: string; targetBotId?: string };
 /** Event pages accept one type filter: `type` keeps that type and `excludeType` drops it. Selecting `inbound` also omits events of paused tasks. */
