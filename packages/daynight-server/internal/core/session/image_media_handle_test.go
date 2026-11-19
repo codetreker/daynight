@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,9 +39,10 @@ func (d *mediaHandleDAO) ReleaseSessionResourceLease(ctx context.Context, id, le
 
 type mediaHandleStorage struct {
 	filestorage.Storage
-	outside  func()
-	putError error
-	afterPut func()
+	outside     func()
+	putError    error
+	afterPut    func()
+	payloadGate func(io.Closer) io.Closer
 }
 
 func (s mediaHandleStorage) Open(ctx context.Context, b, p string) (filestorage.Object, error) {
@@ -60,7 +62,20 @@ func (s mediaHandleStorage) Put(ctx context.Context, b, p string, r io.Reader) (
 }
 func (s mediaHandleStorage) AcquireGate(ctx context.Context, d filestorage.GateDomain, key string) (io.Closer, error) {
 	s.outside()
-	return s.Storage.AcquireGate(ctx, d, key)
+	permit, err := s.Storage.AcquireGate(ctx, d, key)
+	if err == nil && s.payloadGate != nil && strings.HasPrefix(key, "session-upload-payload/") {
+		permit = s.payloadGate(permit)
+	}
+	return permit, err
+}
+
+type mediaHandlePermit struct {
+	io.Closer
+	bind func(context.Context) (context.Context, context.CancelFunc)
+}
+
+func (p mediaHandlePermit) GateContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return p.bind(ctx)
 }
 
 func TestHandleRejectsMalformedReadResponseBeforeControllerAccess(t *testing.T) {
@@ -79,7 +94,7 @@ func TestHandleRejectsMalformedReadResponseBeforeControllerAccess(t *testing.T) 
 }
 
 func TestHandleReadResponseRequiresDurablePublicationAndFinalAdmission(t *testing.T) {
-	for _, kind := range []string{"durable receipt", "publication failure", "deletion raced publication", "cancelled after publication"} {
+	for _, kind := range []string{"durable receipt", "publication failure", "deletion raced publication", "cancelled after publication", "payload gate lost after publication"} {
 		t.Run(kind, func(t *testing.T) {
 			f, row, message := readMediaFixture(t, "read_capture")
 			dao := &mediaHandleDAO{imageRuleDAO: f.d}
@@ -101,11 +116,26 @@ func TestHandleReadResponseRequiresDurablePublicationAndFinalAdmission(t *testin
 				files.afterPut = func() { f.d.usage.DeleteEpoch++ }
 			case "cancelled after publication":
 				files.afterPut = cancel
+			case "payload gate lost after publication":
+				var loseGate context.CancelCauseFunc
+				files.payloadGate = func(permit io.Closer) io.Closer {
+					return mediaHandlePermit{Closer: permit, bind: func(parent context.Context) (context.Context, context.CancelFunc) {
+						protected, lose := context.WithCancelCause(parent)
+						loseGate = lose
+						return protected, func() { lose(context.Canceled) }
+					}}
+				}
+				files.afterPut = func() {
+					if loseGate == nil {
+						t.Fatal("publication did not bind its payload gate")
+					}
+					loseGate(filestorage.ErrGateLost)
+				}
 			}
 			relay := &Execution{Engine: NewEngine(files)}
 			completedScopes := 0
 			relay.controllerRun = func(ctx context.Context, fence sp.ControllerFence, work func(*Access) error) error {
-				if err := ctx.Err(); err != nil {
+				if err := context.Cause(ctx); err != nil {
 					return err
 				}
 				if fence != f.r.Snapshot.ControllerFence {
@@ -154,6 +184,9 @@ func TestHandleReadResponseRequiresDurablePublicationAndFinalAdmission(t *testin
 				}
 				if kind == "cancelled after publication" && !errors.Is(err, context.Canceled) {
 					t.Fatal("Handle hid cancellation", err)
+				}
+				if kind == "payload gate lost after publication" && (!errors.Is(err, filestorage.ErrGateLost) || ctx.Err() != nil) {
+					t.Fatal("Handle did not stop under the lost gate independently of the request", err, ctx.Err())
 				}
 			}
 			if dao.releases != 1 || len(f.d.leases) != 0 || f.d.uploads[f.spec.UploadID].StorageReleased || !bytes.Equal(saved.Body, row.Body) || completedScopes == 0 {

@@ -224,6 +224,8 @@ func (s *Execution) TerminalArchiveContentReserved(ctx context.Context, p model.
 }
 
 func (s *Execution) terminalArchiveContent(ctx context.Context, op *ArchiveOperation) (json.RawMessage, error) {
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	var out json.RawMessage
 	err := s.terminalHistoryAccess(ctx, p, project, taskID, id, false, func(tx *operationTx, r *terminalArchiveRecord) error {

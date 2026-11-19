@@ -38,6 +38,28 @@ type uploadLease struct {
 	err                 error
 }
 
+// UploadLeaseContext binds work to both the user and Task upload permits.
+func UploadLeaseContext(ctx context.Context, held io.Closer) (context.Context, context.CancelFunc) {
+	if lease, ok := held.(*uploadLease); ok {
+		return lease.gateContext(ctx)
+	}
+	return filestorage.GateContext(ctx, held)
+}
+
+func (l *uploadLease) gateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	cancels := make([]context.CancelFunc, 0, len(l.permits))
+	for _, permit := range l.permits {
+		var cancel context.CancelFunc
+		parent, cancel = filestorage.GateContext(parent, permit)
+		cancels = append(cancels, cancel)
+	}
+	return parent, func() {
+		for i := len(cancels) - 1; i >= 0; i-- {
+			cancels[i]()
+		}
+	}
+}
+
 func (l *uploadLease) Close() error {
 	l.once.Do(func() {
 		l.mu.Lock()
@@ -52,7 +74,7 @@ func (l *uploadLease) Close() error {
 }
 
 // AcquireUploadLease requires the caller to have already authorized the operation.
-// The shared storage root coordinates user and Task limits across instances.
+// The storage gates coordinate user and Task limits across instances.
 func (s *Attachments) AcquireUploadLease(ctx context.Context, principal model.Principal, projectID, taskID string) (io.Closer, error) {
 	user, err := model.CanonicalID(principal.UserID)
 	if err != nil {

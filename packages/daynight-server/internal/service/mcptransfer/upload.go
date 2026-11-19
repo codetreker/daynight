@@ -239,6 +239,8 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 	if !attachmentservice.RetainUploadLease(ctx, lease) {
 		defer func() { err = errors.Join(err, lease.Close()) }()
 	}
+	ctx, cancelUpload := attachmentservice.UploadLeaseContext(ctx, lease)
+	defer cancelUpload()
 	p, e := s.lifecycle.AcquirePermit(ctx, a, in.TransferID)
 	if e != nil {
 		return nil, e
@@ -345,6 +347,9 @@ type chunkStream struct {
 
 func (s *chunkStream) Read(b []byte) (int, error) {
 	for {
+		if s.ctx.Err() != nil {
+			return 0, context.Cause(s.ctx)
+		}
 		if s.current != nil {
 			n, e := s.current.Read(b)
 			s.remaining -= int64(n)
@@ -441,6 +446,8 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	if !attachmentservice.RetainUploadLease(ctx, lease) {
 		defer func() { err = errors.Join(err, lease.Close()) }()
 	}
+	ctx, cancelUpload := attachmentservice.UploadLeaseContext(ctx, lease)
+	defer cancelUpload()
 	p, e := s.lifecycle.AcquirePermit(ctx, a, in.TransferID)
 	if e != nil {
 		if errors.Is(e, transfer.ErrState) {
@@ -482,7 +489,9 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 		return map[string]any{"transferId": r.ID, "writeOutcome": "not_committed"}, e
 	}
 	defer func() { err = errors.Join(err, admission.Close()) }()
-	opCtx, cancel := context.WithCancel(p.Context)
+	targetCtx, cancelTarget := filestorage.GateContext(p.Context, admission)
+	defer cancelTarget()
+	opCtx, cancel := context.WithCancel(targetCtx)
 	done := make(chan error, 1)
 	opID := uuid.NewString()
 	go func() {

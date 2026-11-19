@@ -300,6 +300,8 @@ func (op *ArchiveOperation) PrepareArchive(ctx context.Context, in sp.ArchivePre
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	if _, err = sp.DecodeArchivePrepareRequest(encode(in)); err != nil {
 		return out, fault("invalid_input", "Invalid archive preparation.")
 	}
@@ -415,6 +417,8 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	limit := int64(sp.MaxArchiveTimelineBytes)
 	if purpose == "history" {
 		limit = sp.MaxArchiveHistoryBytes
@@ -436,6 +440,7 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 	var chunk store.ArchiveBundleChunk
 	var epoch int64
 	leaseID := uuid.NewString()
+	archiveCtx := ctx
 	var finish func() error
 	ctx, finish, err = op.execution.beginImageIO(ctx, op.id, leaseID)
 	if err != nil {
@@ -444,14 +449,18 @@ func (op *ArchiveOperation) putArchiveFile(ctx context.Context, purpose, fileID 
 	leaseAcquired := false
 	defer func() {
 		if invalid := definiteArchiveValidation(err); invalid != nil {
-			err = errors.Join(err, op.failArchiveFile(context.WithoutCancel(ctx), file, invalid.cause))
+			cleanup, cancelCleanupGate := filestorage.GateCleanupContext(ctx)
+			err = errors.Join(err, op.failArchiveFile(cleanup, file, invalid.cause))
+			cancelCleanupGate()
 		}
 		err = joinImageCleanup(err, finish)
 		if leaseAcquired {
 			releaseErr := op.execution.releaseImageLease(context.WithoutCancel(ctx), op.principal, op.project, op.task, op.id, leaseID)
 			err = errors.Join(err, releaseErr)
 			if purpose == "history" && releaseErr == nil {
-				cleanupErr := op.cleanupRetiredHistory(context.WithoutCancel(ctx))
+				cleanup, cancelCleanupGate := filestorage.GateCleanupContext(archiveCtx)
+				cleanupErr := op.cleanupRetiredHistory(cleanup)
+				cancelCleanupGate()
 				if err != nil {
 					err = errors.Join(err, cleanupErr)
 				} else if cleanupErr != nil {
@@ -846,6 +855,8 @@ func (op *ArchiveOperation) SealArchive(ctx context.Context) (out sp.ArchivePrep
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	if err = op.SettleExpiredUploads(ctx); err != nil {
 		return out, err
 	}
@@ -941,6 +952,8 @@ func (op *ArchiveOperation) PutArchiveManifest(ctx context.Context, data []byte)
 	if err = op.check(ArchiveV1Upload); err != nil {
 		return out, err
 	}
+	ctx, cancelGate := op.GateContext(ctx)
+	defer cancelGate()
 	manifest, e := sp.DecodeArchiveManifest(data)
 	if e != nil {
 		return out, fault("invalid_input", "Invalid archive manifest.")
@@ -1104,14 +1117,17 @@ func (s *Execution) ArchiveTimelineContentReserved(ctx context.Context, p model.
 }
 
 func (s *Execution) archiveTimelineContent(ctx context.Context, op *ArchiveOperation, fileID string, manifest *sp.ArchiveManifest, manifestHash string) (out *RetainedArchive, result error) {
+	ctx, cancelGate := op.GateContext(ctx)
 	p, project, taskID, id := op.principal, op.project, op.task, op.id
 	leaseID := uuid.NewString()
 	ctx, finish, err := s.beginImageIO(ctx, id, leaseID)
 	if err != nil {
+		cancelGate()
 		return nil, errors.Join(err, op.Close())
 	}
 	leaseAcquired := false
 	cleanup := func() error {
+		defer cancelGate()
 		err := finish()
 		if leaseAcquired {
 			err = errors.Join(err, s.releaseImageLease(context.WithoutCancel(ctx), p, project, taskID, id, leaseID))
@@ -1190,7 +1206,7 @@ func (s *Execution) archiveTimelineContent(ctx context.Context, op *ArchiveOpera
 	if err != nil {
 		return nil, err
 	}
-	if err = ctx.Err(); err != nil {
+	if err = context.Cause(ctx); err != nil {
 		return nil, err
 	}
 	timeline, err := sp.DecodeArchiveTimeline(data)
@@ -1247,10 +1263,10 @@ func (s *Execution) archiveTimelineContent(ctx context.Context, op *ArchiveOpera
 	if err != nil {
 		return nil, err
 	}
-	if err = ctx.Err(); err != nil {
+	if err = context.Cause(ctx); err != nil {
 		return nil, err
 	}
-	return &RetainedArchive{Data: data, operation: op, closeFn: cleanup}, nil
+	return &RetainedArchive{Data: data, operation: op, timelineCtx: ctx, closeFn: cleanup}, nil
 }
 
 func archiveFileBucket(file store.ArchiveBundleFile) string {

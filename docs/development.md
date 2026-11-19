@@ -772,7 +772,8 @@ API examples, logs, updates and volume removal.
 Read [server organization rules](daynight-server.md) before adding to, modifying
 or reviewing daynight-server. Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS
 and pnpm 11.28.6. From `packages/daynight-server/`, set
-`DAYNIGHT_TEST_DATABASE_URL` to an isolated database and run:
+`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL` to isolated
+PostgreSQL and Redis instances, then run:
 
 ```bash
 bash scripts/check.sh

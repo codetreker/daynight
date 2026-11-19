@@ -870,9 +870,11 @@ pnpm web:test
 pnpm web:build
 pnpm web:test:browser
 
-# Go 服务：模块与命令生命周期校验（显式提供隔离 PG URL）
-DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
-DAYNIGHT_TEST_DATABASE_URL=... bash scripts/startup-shutdown.sh
+# Go 服务模块与命令生命周期校验使用隔离的 PostgreSQL 和 Redis
+export DAYNIGHT_TEST_DATABASE_URL=...
+export DAYNIGHT_TEST_REDIS_URL=...
+bash scripts/check.sh
+bash scripts/startup-shutdown.sh
 ```
 
 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，

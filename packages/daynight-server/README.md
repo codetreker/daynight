@@ -901,7 +901,7 @@ diagnostics and cause categories.
 | Environment variable | Meaning | Default |
 |---|---|---|
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
-| `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
+| `DAYNIGHT_REDIS_URL` | `redis` or `rediss` URL for monitoring and storage leases. An empty value selects standalone storage gates and disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
@@ -1178,10 +1178,10 @@ on the separate listener are excluded.
 
 Complete server validation runs both the module and startup/shutdown checks.
 Install root workspace dependencies with `pnpm install --frozen-lockfile` first.
-Both checks require `DAYNIGHT_TEST_DATABASE_URL` to identify an isolated
-PostgreSQL instance. The module check also requires `DAYNIGHT_TEST_REDIS_URL`
-for an isolated Redis instance; it owns SQL, Redis and other module mechanisms,
-while the startup/shutdown check owns command lifecycle mechanisms.
+Both checks require `DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL`
+for isolated PostgreSQL and Redis instances. The module check owns SQL,
+Redis and other module mechanisms. The startup/shutdown check owns the
+command lifecycle, including Redis lease expiry after a writer process exits.
 Database-independent suites have focused commands below.
 The regular Session HTTP selection uses Go dependencies and local transport
 fixtures without database, gateway, CLI or Web preparation. For disposable
@@ -3121,13 +3121,23 @@ Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
 reason references before deduplication. Public summaries contain fixed reason
 codes and projection quality, never private references or hidden counts.
 
-Set `DAYNIGHT_REDIS_URL` to a valid `redis` or `rediss` URL to enable monitoring.
-The only supported URL query parameter is `db`; connection and retry limits are
-fixed.
-If it is empty, the monitoring API returns 503 while existing business APIs and
-readiness continue; a nonempty invalid URL fails configuration validation.
-The Redis connection is owned only by monitoring and is closed during shutdown.
+`DAYNIGHT_REDIS_URL` enables monitoring and Redis storage gates, each with a
+separate client closed during shutdown. Use a valid `redis` or `rediss` URL.
+The only supported query parameter is `db`. An empty value returns 503 for
+monitoring and selects process-local storage gates for one Server instance.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
+
+For shared file storage, point all Server instances at the same Redis database
+with `noeviction`. Give each independently operated storage deployment its own
+Redis database. Redis stores gate keys with short TTLs. PostgreSQL and the
+file store retain business data. Redis errors fail operations that need a
+lease, while `/readyz` continues to check PostgreSQL. Stop all previous
+Server instances that share the storage before switching lock backends.
+Once the old processes exit, operators can remove the legacy
+`storage/.daynight-gates` directory. A Redis restart or failover can discard
+lease keys before their TTL. The server verifies ownership before publishing
+or deleting a file. Use the writable Redis endpoint. A file operation that
+has already passed this check can still finish after Redis loses the key.
 
 ### Monitoring format transition
 
