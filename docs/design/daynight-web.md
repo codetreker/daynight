@@ -218,6 +218,8 @@ sudo 清理控件以目标字段的存在性判定服务是否提供配置，不
 
 ### 项目详情 `/projects/{projectId}`
 
+`ProjectSectionTabs` 在已提交的 section、项目、语言或排列方向变化后的布局阶段测量活动项。横向布局中，活动项超出页签条边界才按差值及 4px 内侧间距写入该容器的 `scrollLeft`，由浏览器钳制滚动范围。`ResizeObserver` 观察容器及每个页签的尺寸，覆盖容器收窄、文字及字体布局变化，并在依赖变化或卸载时断开。被动校正不移动焦点、不滚动祖先；方向键保留导航成功提交后的聚焦回调。没有 scroll 订阅或轮询，手动浏览其他页签不会持续被拉回。取舍见[活动页签可见性决策](../../.agents/notes/implemented/bug-fix/2026-11-19-project-active-tab-visibility.md)。
+
 ```text
 ← 项目                         最近刷新时间   [刷新]
 项目名称  仓库地址
