@@ -85,12 +85,21 @@
 @container session-composer-surface (min-width: 276px) and (min-width: 17.25rem) {
   .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) { grid-template-columns: minmax(0, 1fr) auto; }
 }
-@container session-composer-surface (min-width: 276px) and (min-width: 17.25rem) and ((width < 325px) or (width < 20.3125rem)) {
+@container session-composer-surface (min-width: 276px) and (min-width: 17.25rem) and (width < 325px) {
   .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-controls-toolbar { gap: 1px; }
   .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-control-trigger { padding-inline: 2px; }
   .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-model-trigger { min-width: 44px; }
 }
-@container session-composer-surface (max-width: 235px) or (max-width: 14.6875rem) {
+@container session-composer-surface (min-width: 276px) and (min-width: 17.25rem) and (width < 20.3125rem) {
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-controls-toolbar { gap: 1px; }
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-control-trigger { padding-inline: 2px; }
+  .session-composer-footer-default:has(.session-add-images):not(:has(> .session-composer-activity)):not([data-submit-wide]) .session-model-trigger { min-width: 44px; }
+}
+@container session-composer-surface (max-width: 235px) {
+  .session-composer-footer-default .session-controls-toolbar:has(.session-add-images) { display: grid; grid-template-columns: minmax(0, 1fr) max-content; justify-items: start; }
+  .session-composer-footer-default .session-controls-toolbar:has(.session-add-images) .session-model-trigger { width: 100%; }
+}
+@container session-composer-surface (max-width: 14.6875rem) {
   .session-composer-footer-default .session-controls-toolbar:has(.session-add-images) { display: grid; grid-template-columns: minmax(0, 1fr) max-content; justify-items: start; }
   .session-composer-footer-default .session-controls-toolbar:has(.session-add-images) .session-model-trigger { width: 100%; }
 }
