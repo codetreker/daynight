@@ -113,6 +113,18 @@ it('keeps the inbox state on refused writes and reports read failures', async ()
   expect(await screen.findByRole('button', { name: 'Rotate token' })).toBeVisible();
 });
 
+it('checks an unknown inbox write against the inbox operation receipt', async () => {
+  server(off); mount();
+  const enable = await screen.findByRole('button', { name: 'Enable inbox' });
+  vi.mocked(fetch).mockImplementationOnce(async () => { throw new TypeError('network'); });
+  fireEvent.click(enable);
+  fireEvent.click(await screen.findByRole('button', { name: 'Check current result' }));
+  expect(await screen.findByText(/Current data was read/)).toBeVisible();
+  const urls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+  expect(urls.some(url => url.startsWith(`/api/v1/assistant-tasks/${taskId}/inbox-operations/`))).toBe(true);
+  expect(urls.some(url => url.includes('/claim-operations/'))).toBe(false);
+});
+
 it('validates inbox payloads and rejects malformed tokens or inconsistent state', async () => {
   const admission = { userId: BOT_USER, onPrincipalMismatch: vi.fn() }, signal = new AbortController().signal;
   vi.stubGlobal('fetch', vi.fn(async () => botResponse({ ...off, enabled: true })));

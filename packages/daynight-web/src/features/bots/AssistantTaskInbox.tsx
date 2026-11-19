@@ -1,5 +1,5 @@
 import { useCallback, useId, useState } from 'react';
-import { type AssistantTask, type AssistantTaskInboxRotation, assistantTaskInboxUrl, disableAssistantTaskInbox, enableAssistantTaskInbox, getAssistantTaskInbox, rotateAssistantTaskInbox } from '../../api/assistant-tasks';
+import { type AssistantTask, type AssistantTaskInboxRotation, assistantTaskInboxUrl, disableAssistantTaskInbox, enableAssistantTaskInbox, getAssistantTaskInbox, getAssistantTaskInboxOperation, rotateAssistantTaskInbox } from '../../api/assistant-tasks';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -50,7 +50,7 @@ export function AssistantTaskInbox({ task, enabled, disabled, onChanged }: { rea
   const load = useCallback((scope: TaskCacheScope, signal: AbortSignal) => getAssistantTaskInbox(taskId, signal, assistantTaskAdmission(scope)), [taskId]);
   const read = useBotRead(`assistant-task-inbox:${taskId}`, enabled, load);
   const reload = async () => { read.refresh(); await onChanged(); };
-  const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload);
+  const mutation = useAssistantTaskMutation(`assistant-task-inbox:${taskId}`, enabled && !read.stale && !!read.value, reload, getAssistantTaskInboxOperation);
   const [token, setToken] = useState<string | null>(null), [dialog, setDialog] = useState<'rotate' | 'disable' | null>(null);
   const inbox = read.value, overlapActive = inbox?.overlapUntil != null;
   const [mode, setMode] = useState<AssistantTaskInboxRotation>('overlap');
