@@ -122,10 +122,9 @@ func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			user, principal, _ := testAuthRecords(t, database)
-			expires := time.Now().UTC().Add(time.Second)
-			if kind == model.SessionCredential {
-				mustQueryExec(t, database, `UPDATE sessions SET expires_at=$2 WHERE id=$1`, principal.CredentialID, expires)
-			} else {
+			table := "sessions"
+			if kind == model.OAuthCredential {
+				table = "oauth_access_tokens"
 				var issued coreoauth.IssuedFamily
 				_, err := database.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
 					var err error
@@ -136,7 +135,6 @@ func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
 					t.Fatal(err)
 				}
 				principal = model.Principal{Kind: kind, UserID: user.ID, CredentialID: issued.AccessID}
-				mustQueryExec(t, database, `UPDATE oauth_access_tokens SET expires_at=$2 WHERE id=$1`, issued.AccessID, expires)
 			}
 			before := authorizationReceiverRow(t, ctx, database, "users", "id", user.ID)
 			holder, err := database.Pool.Begin(ctx)
@@ -147,31 +145,12 @@ func TestProfilePatchRechecksExpiryAfterUserRowWait(t *testing.T) {
 			if _, err = holder.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, user.ID); err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan error, 1)
 			name := "expired after contention"
-			go func() {
-				_, err := identityservice.New(database, nil, "https://example.test/auth/callback").PatchUser(ctx, principal, model.UserProfilePatch{Name: model.ProfileField{Present: true, Value: &name}})
-				done <- err
-			}()
-			waitIdentityLock(t, ctx, database, "UPDATE users SET %")
-			for {
-				var expired bool
-				if err := database.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired); err != nil {
-					t.Fatal(err)
-				}
-				if expired {
-					break
-				}
-				select {
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				case <-time.After(5 * time.Millisecond):
-				}
-			}
-			if err := holder.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			err = <-done
+			err = expireCredentialDuringRowWait(t, ctx, database.Pool, holder, table, principal.CredentialID,
+				"UPDATE users SET ", func(ctx context.Context) error {
+					_, err := identityservice.New(database, nil, "https://example.test/auth/callback").PatchUser(ctx, principal, model.UserProfilePatch{Name: model.ProfileField{Present: true, Value: &name}})
+					return err
+				})
 			var fault *model.Fault
 			if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
 				t.Fatalf("expired user wait accepted: %v", err)
