@@ -13,9 +13,11 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell, public landing and Setup pages, and standalone login,
-invitation, device authorization and OAuth consent pages use the semantic roles
-at all viewport widths. Public reading copy and demo prose use the reading role;
+baseline. The shared shell, selection controls, task filter presentation, public
+landing and Setup pages, and standalone login, invitation, device authorization
+and OAuth consent pages use the semantic roles at all viewport widths. Selection
+text retains the existing touch conditions and a 16 CSS px minimum; count badges
+use the metadata role. Public reading copy and demo prose use the reading role;
 commands, status, errors and actions use the interface role. Authorization codes
 use the detail heading role, with the input using the section heading role.
 Account actions and command copying reflow to accommodate larger text.
