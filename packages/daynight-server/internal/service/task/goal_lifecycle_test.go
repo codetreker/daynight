@@ -119,6 +119,9 @@ func TestGoalLifecycleErrorPreservesCompletionFacts(t *testing.T) {
 			if errors.As(err, &unknown) != test.unknown || !errors.Is(err, cause) {
 				t.Fatalf("lost transaction outcome or cause: %v", err)
 			}
+			if test.unknown && err.Error() != "The write outcome is unknown. Read the current resource before deciding on another operation." {
+				t.Fatalf("unknown outcome diagnostic changed: %q", err.Error())
+			}
 			var actual *store.TransactionError
 			if !errors.As(err, &actual) || actual != &test.tx {
 				t.Fatalf("lost transaction facts: %v", err)

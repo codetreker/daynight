@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestGoalDependencyDAOReadsAndRemoval(t *testing.T) {
@@ -221,4 +223,89 @@ func TestGoalDependencyTeamLockCancellationAndIndependence(t *testing.T) {
 		t.Fatal(err)
 	}
 	testutil.AssertPoolReusable(t, db.Pool)
+}
+
+func TestGoalDependencyRemovalDatabaseFailuresRollBack(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	for _, scenario := range []struct {
+		name, triggerSQL, triggerTable, code, phase string
+		revision                                    *int64
+	}{
+		{
+			name: "edge deletion",
+			triggerSQL: `CREATE FUNCTION refuse_goal_removal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1011', MESSAGE='edge removal failure'; END $$;
+				CREATE TRIGGER refuse_goal_removal BEFORE DELETE ON task_dependencies FOR EACH ROW EXECUTE FUNCTION refuse_goal_removal()`,
+			triggerTable: "task_dependencies", code: "P1011", phase: "remove outgoing goal dependencies",
+		},
+		{
+			name: "first revision",
+			triggerSQL: `CREATE FUNCTION refuse_goal_removal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+				IF EXISTS(SELECT 1 FROM task_dependencies WHERE task_id=NEW.goal_id AND dependency_type='goal') THEN RAISE EXCEPTION USING ERRCODE='P1099', MESSAGE='edge not removed before revision'; END IF;
+				RAISE EXCEPTION USING ERRCODE='P1012', MESSAGE='revision insert failure'; END $$;
+				CREATE TRIGGER refuse_goal_removal BEFORE INSERT ON goal_dependency_revisions FOR EACH ROW EXECUTE FUNCTION refuse_goal_removal()`,
+			triggerTable: "goal_dependency_revisions", code: "P1012", phase: "create goal dependency revision",
+		},
+		{
+			name: "existing revision",
+			triggerSQL: `CREATE FUNCTION refuse_goal_removal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+				IF EXISTS(SELECT 1 FROM task_dependencies WHERE task_id=NEW.goal_id AND dependency_type='goal') THEN RAISE EXCEPTION USING ERRCODE='P1099', MESSAGE='edge not removed before revision'; END IF;
+				RAISE EXCEPTION USING ERRCODE='P1013', MESSAGE='revision update failure'; END $$;
+				CREATE TRIGGER refuse_goal_removal BEFORE UPDATE ON goal_dependency_revisions FOR EACH ROW EXECUTE FUNCTION refuse_goal_removal()`,
+			triggerTable: "goal_dependency_revisions", code: "P1013", phase: "advance goal dependency revision", revision: new(int64(7)),
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			db := isolatedStore(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			project := queryProject(t, db, 1)
+			source, target := queryID(11), queryID(12)
+			mustQueryExec(t, db, `INSERT INTO tasks(id,project_id,type,title,status) VALUES($1,$3,'goal','source','todo'),($2,$3,'goal','target','done')`, source, target, project.ID)
+			mustQueryExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,dependency_type,goal_edge_id) VALUES($1,$2,$3,'goal',$4)`, project.ID, source, target, queryID(13))
+			if scenario.revision != nil {
+				mustQueryExec(t, db, `INSERT INTO goal_dependency_revisions(goal_id,revision) VALUES($1,$2)`, source, *scenario.revision)
+			}
+			mustQueryExec(t, db, scenario.triggerSQL)
+			completion, err := db.WriteProject(ctx, project.ID, func(scope store.ProjectWriteScope) error {
+				dao := scope.GoalDependencyDAO()
+				if err := dao.LockTeam(ctx); err != nil {
+					return err
+				}
+				if _, err := scope.(*ProjectTx).tx.Exec(ctx, `UPDATE tasks SET title='uncommitted' WHERE id=$1`, source); err != nil {
+					return err
+				}
+				return dao.RemoveOutgoing(ctx, source)
+			})
+			var driver *pgconn.PgError
+			var storage *store.Error
+			var transaction *store.TransactionError
+			failed, state := store.DatabaseErrorFacts(err)
+			if completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &driver) || driver.Code != scenario.code || !errors.As(err, &transaction) || !errors.As(transaction.Cause, &storage) || storage.Phase != scenario.phase || !failed || state != scenario.code {
+				t.Fatalf("failure lost database cause or rollback outcome: completion=%+v err=%v", completion, err)
+			}
+			var title string
+			var edges int
+			var revision *int64
+			if err := db.Pool.QueryRow(ctx, `SELECT title,(SELECT count(*) FROM task_dependencies WHERE task_id=$1 AND dependency_type='goal'),(SELECT revision FROM goal_dependency_revisions WHERE goal_id=$1) FROM tasks WHERE id=$1`, source).Scan(&title, &edges, &revision); err != nil {
+				t.Fatal(err)
+			}
+			if title != "source" || edges != 1 || (revision == nil) != (scenario.revision == nil) || (revision != nil && *revision != *scenario.revision) {
+				t.Fatalf("failure changed persistent state: title=%q edges=%d revision=%v", title, edges, revision)
+			}
+			if strings.Contains(err.Error(), driver.Message) {
+				t.Fatal("database diagnostic was exposed by the error")
+			}
+			mustQueryExec(t, db, "DROP TRIGGER refuse_goal_removal ON "+scenario.triggerTable+"; DROP FUNCTION refuse_goal_removal()")
+			assertFaultTriggerRemoved(t, db, "refuse_goal_removal", scenario.triggerTable)
+			if err := writeProjectForTest(db, ctx, project.ID, func(scope store.ProjectWriteScope) error {
+				dao := scope.GoalDependencyDAO()
+				if err := dao.LockTeam(ctx); err != nil {
+					return err
+				}
+				return dao.RemoveOutgoing(ctx, source)
+			}); err != nil {
+				t.Fatalf("removal after fault cleanup: %v", err)
+			}
+		})
+	}
 }
