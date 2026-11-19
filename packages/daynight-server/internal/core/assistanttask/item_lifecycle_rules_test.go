@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func TestItemWritesTrackOpenPeriodsAndRecordClosures(t *testing.T) {
@@ -61,6 +63,14 @@ func TestItemWritesTrackOpenPeriodsAndRecordClosures(t *testing.T) {
 				closures = append(closures, closure)
 				return nil
 			}
+			var events []model.AssistantTaskEvent
+			d.insertEvent = func(_ context.Context, event model.AssistantTaskEvent) (bool, error) {
+				if len(closures) == 0 {
+					t.Fatal("retrospective written before the closure")
+				}
+				events = append(events, event)
+				return true, nil
+			}
 			expectTaskWrite(t, d, task, true)
 			result, err := New().SaveItem(context.Background(), d, botActor(), input)
 			if err != nil {
@@ -70,13 +80,20 @@ func TestItemWritesTrackOpenPeriodsAndRecordClosures(t *testing.T) {
 				t.Fatalf("lifecycle times: opened=%v closed=%v", written.OpenedAt, written.ClosedAt)
 			}
 			if !c.closure {
-				if len(closures) != 0 {
-					t.Fatalf("unexpected closures: %#v", closures)
+				if len(closures) != 0 || len(events) != 0 {
+					t.Fatalf("unexpected closures or events: %#v %#v", closures, events)
 				}
 				return
 			}
 			if len(closures) != 1 {
 				t.Fatalf("want one closure, got %#v", closures)
+			}
+			if len(events) != 1 {
+				t.Fatalf("want one retrospective, got %#v", events)
+			}
+			event := events[0]
+			if !strictID(event.ID) || event.OwnerUserID != ownerID || event.TaskID != taskID || event.TargetBotID != botID || event.Type != "retrospective" || event.Attention || event.State != "pending" || !event.CreatedAt.Equal(epoch) || string(event.Payload) != `{"episode":"`+strconv.FormatInt(input.Episode, 10)+`","itemId":"`+entryID+`","reason":"item_closed"}` {
+				t.Fatalf("retrospective: %#v %s", event, event.Payload)
 			}
 			got := closures[0]
 			if got.ID == "" || !strictID(got.ID) || got.OwnerUserID != ownerID || got.TaskID != taskID || got.ItemID != entryID || got.Episode != input.Episode || !got.ClosedAt.Equal(epoch) || !reflect.DeepEqual(got.OpenedAt, c.closureOpened) {
@@ -87,7 +104,7 @@ func TestItemWritesTrackOpenPeriodsAndRecordClosures(t *testing.T) {
 }
 
 func TestItemCloseFailuresDoNotCompleteTheWrite(t *testing.T) {
-	for _, name := range []string{"save-conflict", "closure-failure"} {
+	for _, name := range []string{"save-conflict", "closure-failure", "event-failure", "event-identity"} {
 		t.Run(name, func(t *testing.T) {
 			d := baseDAO(t, baseTask())
 			input := itemInput()
@@ -102,13 +119,34 @@ func TestItemCloseFailuresDoNotCompleteTheWrite(t *testing.T) {
 				if name == "save-conflict" {
 					t.Fatal("closure recorded for a rejected item write")
 				}
-				return sentinel
+				if name == "closure-failure" {
+					return sentinel
+				}
+				return nil
+			}
+			d.insertEvent = func(context.Context, model.AssistantTaskEvent) (bool, error) {
+				if name == "save-conflict" || name == "closure-failure" {
+					t.Fatal("retrospective emitted for a failed close")
+				}
+				if name == "event-identity" {
+					return false, nil
+				}
+				return false, sentinel
+			}
+			d.saveTask = func(context.Context, model.AssistantTask, store.AssistantTaskCondition) (bool, error) {
+				t.Fatal("item write completed after a failed close")
+				return false, nil
 			}
 			_, err := New().SaveItem(context.Background(), d, botActor(), input)
-			if name == "save-conflict" {
+			switch name {
+			case "save-conflict":
 				requireCode(t, err, "version_conflict")
-			} else if !errors.Is(err, sentinel) {
-				t.Fatalf("closure failure was not returned: %v", err)
+			case "event-identity":
+				requireCode(t, err, "operation_conflict")
+			default:
+				if !errors.Is(err, sentinel) {
+					t.Fatalf("close failure was not returned: %v", err)
+				}
 			}
 		})
 	}

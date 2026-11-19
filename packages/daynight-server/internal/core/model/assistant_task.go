@@ -13,8 +13,11 @@ type AssistantTask struct {
 	Version, ManualVersion, ClaimGeneration            int64
 	HolderBotID, ClaimTokenHash, CredentialOperationID *string
 	ClaimedAt, RenewedAt, LeaseUntil                   *time.Time
-	HolderDeleted                                      bool
-	CreatedAt, UpdatedAt, ObservedAt                   time.Time
+	// LastRetrospectiveAt is maintained only by periodic retrospectives and is
+	// not part of ordinary task writes.
+	LastRetrospectiveAt              *time.Time
+	HolderDeleted                    bool
+	CreatedAt, UpdatedAt, ObservedAt time.Time
 }
 
 type AssistantTaskClaim struct {

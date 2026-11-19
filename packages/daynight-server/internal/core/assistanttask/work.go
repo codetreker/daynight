@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -80,6 +81,13 @@ func (m *Module) SaveItem(ctx context.Context, dao store.AssistantTaskDAO, actor
 			// opening time is the one read with the previous state.
 			closure := model.AssistantTaskItemClosure{ID: uuid.NewString(), OwnerUserID: task.OwnerUserID, TaskID: task.ID, ItemID: result.ID, Episode: result.Episode, OpenedAt: old.OpenedAt, ClosedAt: now}
 			if err = dao.InsertItemClosure(ctx, closure); err != nil {
+				return result, err
+			}
+			// Item writes require the live holder of an active task, so the
+			// retrospective always targets that holder and never a paused task.
+			// The episode is a decimal string like the item API's, because
+			// int64 values exceed the range that JavaScript consumers parse.
+			if _, err = m.systemEvent(ctx, dao, task, *task.HolderBotID, "retrospective", map[string]any{"reason": "item_closed", "itemId": result.ID, "episode": strconv.FormatInt(result.Episode, 10)}, now); err != nil {
 				return result, err
 			}
 		}

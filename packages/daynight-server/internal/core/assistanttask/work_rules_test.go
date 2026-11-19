@@ -43,6 +43,7 @@ func TestItemWritesRetainApplicationStateAndUseItemVersion(t *testing.T) {
 					return true, nil
 				}
 				d.insertItemClosure = func(context.Context, model.AssistantTaskItemClosure) error { return nil }
+				d.insertEvent = func(context.Context, model.AssistantTaskEvent) (bool, error) { return true, nil }
 			} else {
 				d.insertItem = func(_ context.Context, item model.AssistantTaskItem) (bool, error) {
 					if item.Version != 1 {

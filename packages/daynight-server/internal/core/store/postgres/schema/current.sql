@@ -1,4 +1,4 @@
--- Schema snapshot version: 100
+-- Schema snapshot version: 101
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -168,7 +168,8 @@ CREATE TABLE "assistant_tasks" (
     "record_last_created_at" timestamp with time zone,
     "record_last_id" "uuid",
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "last_retrospective_at" timestamp with time zone
 );
 
 CREATE TABLE "bot_configuration_preferences" (
