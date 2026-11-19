@@ -14,6 +14,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 
+vi.mock('../src/features/goal-detail/useGoalDependencies', () => ({ useGoalDependencies: () => ({ page: null, unavailable: false, error: null, pending: false, hasPrevious: false, refresh: () => {}, next: () => {}, previous: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => null }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));
