@@ -133,7 +133,10 @@ completes, the same Worker hosts a Bot that reaches the compiled CLI through
 claimed by that Bot; an external JSON body posted with the bearer token becomes
 an `inbound` event, and the Worker renders it as fenced untrusted data into the
 Bot's native Session before acknowledging delivery. Claiming and delivery wait
-for the Worker's minute-loop cadence. The peer does not
+for the Worker's minute-loop cadence. Each Worker run has a seven-minute process
+limit so the restarted run covers the rest of the patrol and the inbox journey,
+including a delivery that lands on a later minute-loop tick, while staying below
+the test deadline. The peer does not
 establish autonomous behavior by a real model. On an explicit version-conflict
 response to completion, the fixture reads the Task again and rechecks the original
 active assignment and authorization before another attempt. It makes at most

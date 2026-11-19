@@ -67,7 +67,10 @@ step. The original five-minute process limit expired on CI during the expanded
 sequential authentication journey, before the per-test deadline, and was raised
 to seven minutes. The assistant inbox journey then added up to two Worker
 assistant-task minute-loop waits (takeover and delivery), raising it to ten
-minutes. Each larger bound preserves the complete assertions and independent recovery deadline while
+minutes. The Worker fixture's per-run process limit rose from three to seven
+minutes for the same reason: the restarted run hosts the inbox Bot after the
+patrol, and delivery can land on the minute-loop tick where a three-minute limit
+would stop the Worker. Each larger bound preserves the complete assertions and independent recovery deadline while
 leaving less normal cleanup time within the journey step at the process limit.
 The Redis container has no published port or persistent volume and is included
 in the exact owner-checked cleanup and absence proof. Existing receipts without

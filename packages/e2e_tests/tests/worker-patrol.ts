@@ -64,7 +64,7 @@ export const verifyWorkerPatrol = async (server: { serverUrl: string; serverToke
     const start = async () => {
       exited = false;
       worker = await startOwnedFixture({ repository: checkout, runDirectory, command: process.execPath, args: [topology.cliEntry, "worker", "run"], options: { cwd: root,
-        env: { ...cliEnvironment, DN_CONFIG_DIR: workerConfigDirectory, ...(process.env.DAYNIGHT_E2E_WORKER_GIT_DIR ? { PATH: `${process.env.DAYNIGHT_E2E_WORKER_GIT_DIR}${path.delimiter}${process.env.PATH}` } : {}), CODEX_HOME: path.join(root, "native"), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 180_000,
+        env: { ...cliEnvironment, DN_CONFIG_DIR: workerConfigDirectory, ...(process.env.DAYNIGHT_E2E_WORKER_GIT_DIR ? { PATH: `${process.env.DAYNIGHT_E2E_WORKER_GIT_DIR}${path.delimiter}${process.env.PATH}` } : {}), CODEX_HOME: path.join(root, "native"), DAYNIGHT_WORKER_PEER_LOG: log }, timeoutMs: 420_000,
         onOutput: (_channel, chunk) => { output += chunk; } } });
       void worker.finished.then(() => { exited = true; }, () => { exited = true; });
     };
