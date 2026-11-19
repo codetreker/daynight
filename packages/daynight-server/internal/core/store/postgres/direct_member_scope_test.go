@@ -230,7 +230,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			table := map[model.CredentialKind]string{model.SessionCredential: "sessions", model.PATCredential: "personal_access_tokens", model.OAuthCredential: "oauth_access_tokens"}[kind]
 			// The row holder already occupies one connection. Warm one each for
 			// the member operation, revocation, and compatible reader/observer.
-			expires := armCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)
+			expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)
 			done := make(chan error, 1)
 			go func() {
 				_, err := directMembers(db).AddMember(ctx, actor, team.ID, directMemberInput(actor, target.UniAuthID, model.ProjectMemberRole))
@@ -255,7 +255,7 @@ func TestDirectMemberScopeRechecksExpiryAfterTargetMemberWait(t *testing.T) {
 			if err != nil || c.Outcome != store.TransactionCommitted {
 				t.Fatalf("compatible Session credential reader blocked behind revocation: %#v %v", c, err)
 			}
-			waitForCredentialExpiry(t, ctx, db.Pool, expires)
+			testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}

@@ -15,7 +15,7 @@ flowchart LR
   S --> H
 ```
 
-`internal/server/worker` 负责方法、路径、查询拒绝、请求解析和响应编码；`internal/protocol/monitoring` 持有共享闭合结构、规范化与编码边界。`service/worker` 以认证 principal、当前账号和 Worker 可见窗口组织 PostgreSQL 读取、监控存储和投影；`core/worker` 校验执行关联并处理当前权限及响应预算。`core/store` 提供不暴露 Redis 驱动的 `MonitoringStore`；`core/store/redis` 拥有连接、帧和 Redis 命令。组件装配只为监控创建并关闭 Redis 客户端，正常业务和 readiness 不依赖它。
+`internal/server/worker` 负责方法、路径、查询拒绝、请求解析和响应编码；`internal/protocol/monitoring` 持有共享闭合结构、规范化与编码边界。`service/worker` 以认证 principal、当前账号和 Worker 可见窗口组织 PostgreSQL 读取、监控存储和投影；`core/worker` 校验执行关联并处理当前权限及响应预算。`core/store` 提供不暴露 Redis 驱动的 `MonitoringStore`；`core/store/redis` 拥有连接、帧和 Redis 命令。组件装配为监控与[存储 gate](daynight-task-attachments.md#storage-接口与本地实现)创建和关闭独立的 Redis 客户端。readiness 继续检查数据库。
 
 执行观测中的 claim 关联需要与当前账号、Worker 和活跃 claim 匹配。清理和资源责任是经过 Worker 准入的自报事实：已完成、撤回或重领的旧 claim 不再能证明当前执行所有权。读取依据当前项目访问及任务存在、未删除状态投影名称和 ID；被隐藏的明细及其关联错误、工作区路径和原因一并过滤。总体容量及其可选 active/retained 互斥分解和单独上报的无身份清理阻塞事实保留。项目级失败使用项目 scope，可表达没有 Task 的失败。监控关联不授予任何业务权限。
 
@@ -53,6 +53,6 @@ Redis 和 PostgreSQL 不共享事务。服务先进行资源准入，再读取�
 
 ## 配置与验证
 
-`DAYNIGHT_REDIS_URL` 为空时监控端点返回 `503 monitoring_unavailable`；非空值须为合法 `redis` 或 `rediss` URL；查询参数只接受 `db`，连接预算和重试策略固定。监控独享连接及其关闭生命周期，故障不会使已有 PostgreSQL API 或 readiness 不可用。日志保留错误链与组件、阶段、request ID 等安全诊断，以 `protocol=direct` 和 `sample_id` 标识直接来源，以 `protocol=legacy-cas`、run ID 和 sequence 标识旧写入；样本 ID 不声明真实运行身份。日志不记录 Redis URL 或完整状态。连接及验证命令见 [Server README](../../packages/daynight-server/README.md#validate)。
+`DAYNIGHT_REDIS_URL` 为空时监控端点返回 `503 monitoring_unavailable`；非空值须为合法 `redis` 或 `rediss` URL；查询参数只接受 `db`，连接预算和重试策略固定。监控独享连接及其关闭生命周期。Redis 故障影响监控和需要存储 gate 的业务操作，PostgreSQL readiness 继续独立反映数据库状态。日志保留错误链与组件、阶段、request ID 等安全诊断，以 `protocol=direct` 和 `sample_id` 标识直接来源，以 `protocol=legacy-cas`、run ID 和 sequence 标识旧写入；样本 ID 不声明真实运行身份。日志不记录 Redis URL 或完整状态。连接及验证命令见 [Server README](../../packages/daynight-server/README.md#validate)。
 
 HTTP、service 和 core 测试隔离直接下层，验证解析、准入、当前权限、取消、错误与真实编码预算。Redis DAO 使用独立的真实 Redis 验证 CAS 顺序、重复和拒绝不续期、直接保存与续期、缺席与损坏、并发、OOM、结果未知及 deadline；PostgreSQL DAO 使用独立实例验证当前权限来源。服务端验证不能代替生产者采集或完整产品链路的验收。

@@ -40,6 +40,10 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityOwnership(t, pool); after != beforeOwnership {
 		t.Fatal("migration changed account credentials or ownership")
 	}
+	var repositoryVersion int64
+	if err := pool.QueryRow(ctx, `SELECT repository_version FROM projects WHERE id=$1`, queryID(20)).Scan(&repositoryVersion); err != nil || repositoryVersion != 1 {
+		t.Fatalf("migrated repository version: %d %v", repositoryVersion, err)
+	}
 	assertMicrosoftSessionPreviewUnset(t, pool)
 	var identities []string
 	if err := pool.QueryRow(ctx, `SELECT array_agg(uniauth_id ORDER BY id) FROM users`).Scan(&identities); err != nil {
@@ -162,7 +166,7 @@ func microsoftIdentityOwnership(t *testing.T, pool *pgxpool.Pool) string {
 	if err := pool.QueryRow(t.Context(), `SELECT jsonb_build_object(
  'teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),
  'members',(SELECT jsonb_agg(to_jsonb(t) ORDER BY team_id,user_id) FROM team_members t),
- 'projects',(SELECT jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity' ORDER BY id) FROM projects t),
+ 'projects',(SELECT jsonb_agg(to_jsonb(t)-'tag_catalog_epoch'-'repository_identity'-'repository_version' ORDER BY id) FROM projects t),
  'ownership',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id) FROM project_ownership t),
  'grants',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id,user_id) FROM project_grants t),
  'sessions',(SELECT jsonb_agg(to_jsonb(t)-'preview_token_hash' ORDER BY id) FROM sessions t),

@@ -22,11 +22,12 @@ const fixture = async (options: { interactive?: boolean; answer?: string; failur
   const base = path.resolve("../../.tmp"); await mkdir(base, { recursive: true });
   const dir = await mkdtemp(path.join(base, "project-delete-")); dirs.push(dir); vi.stubEnv("DN_CONFIG_DIR", dir);
   await writeFile(path.join(dir, "config.yml"), "serverUrl: http://localhost:8787\nserverToken: test-token\n");
-  const calls: { url: URL; method: string; body: unknown }[] = [];
+  const calls: { url: URL; method: string; body: unknown; headers: Headers; warningShown: boolean }[] = [];
+  let warningShown = false;
   let page = 0;
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     const u = new URL(String(url)), method = init!.method!, requestId = new Headers(init!.headers).get("X-Request-ID");
-    calls.push({ url: u, method, body: init!.body });
+    calls.push({ url: u, method, body: init!.body, headers: new Headers(init!.headers), warningShown });
     const headers: Record<string, string> = { "content-type": "application/json", "Daynight-User-ID": userId };
     if (u.pathname.endsWith("/me")) return new Response(stringifyApiJson(me), { headers });
     if (u.pathname.endsWith("/deletion-preview")) {
@@ -52,7 +53,7 @@ const fixture = async (options: { interactive?: boolean; answer?: string; failur
   });
   const ask = vi.fn(async (_question: string, _signal: AbortSignal) => options.answer ?? JSON.stringify(name));
   const stdoutBytes = vi.fn(async (_value: Uint8Array) => { if (options.outputFailure) throw new Error("output failed"); });
-  const context = { version: "0", packageDirectory: "unused", homeDirectory: () => dir, workingDirectory: () => dir, stdout: vi.fn(), stderr: vi.fn(), stdoutBytes, prompt: { isInteractive: options.interactive ?? true, ask, close: vi.fn(), select: vi.fn(), selectMany: vi.fn() } };
+  const context = { version: "0", packageDirectory: "unused", homeDirectory: () => dir, workingDirectory: () => dir, stdout: vi.fn(), stderr: vi.fn((value: string) => { if (value.includes("permanently removes all Goal dependencies")) warningShown = true; }), stdoutBytes, prompt: { isInteractive: options.interactive ?? true, ask, close: vi.fn(), select: vi.fn(), selectMany: vi.fn() } };
   const dependencies = { runServerCommand: ((ctx, command) => runServerCommand(ctx, command, { fetch })) as typeof runServerCommand };
   return { calls, context, dependencies, ask, stdoutBytes };
 };
@@ -66,12 +67,16 @@ describe("project deletion", () => {
     expect(f.ask.mock.calls[0]![0]).toContain(JSON.stringify(name).replace("\\u001b", "\\u001b"));
     expect(f.calls.map(({ method }) => method)).toEqual(["GET", "GET", "GET", "DELETE"]);
     expect(f.calls.at(-1)!.body).toBeUndefined(); expect(f.calls.at(-1)!.url.search).toBe("");
+    expect(f.calls.slice(0, -1).every(x => !x.headers.has("Daynight-Confirm-Goal-Dependency-Removal"))).toBe(true);
+    expect(f.calls.at(-1)!.headers.get("Daynight-Confirm-Goal-Dependency-Removal")).toBe("true");
+    expect(f.calls.at(-1)!.warningShown).toBe(true);
     expect(JSON.parse(Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString())).toEqual({ projectId, deleted: true });
     expect(f.context.stderr.mock.calls[0]![0]).not.toContain("\u001b");
+    expect(f.context.stderr.mock.calls[0]![0]).toMatch(/permanently removes all Goal dependencies.*within and across Projects/);
   });
-  it("rejects without IO when noninteractive confirmation is missing", async () => {
-    const f = await fixture({ interactive: false });
-    await expect(runProjectCommand(args, f.context, f.dependencies)).rejects.toThrow(/interactive confirmation/);
+  it.each([true, false])("rejects without IO when confirmation is missing (interactive=%s)", async (interactive) => {
+    const f = await fixture({ interactive });
+    await expect(runProjectCommand(args, f.context, f.dependencies)).rejects.toThrow(/requires --confirm/);
     expect(f.calls).toEqual([]);
   });
   it("allows explicit noninteractive confirmation", async () => {
@@ -97,6 +102,12 @@ describe("project deletion", () => {
   it("does not write on incorrect literal", async () => {
     const f = await fixture({ answer: JSON.stringify(name.trim()) });
     await expect(runProjectCommand([...args, "--confirm"], f.context, f.dependencies)).rejects.toThrow(/name did not match/);
+    expect(f.calls.filter(({ method }) => method === "DELETE")).toHaveLength(0);
+  });
+  it("does not write when the interactive confirmation is cancelled", async () => {
+    const f = await fixture();
+    f.ask.mockRejectedValueOnce(new Error("cancelled"));
+    await expect(runProjectCommand([...args, "--confirm"], f.context, f.dependencies)).rejects.toThrow(/cancelled/);
     expect(f.calls.filter(({ method }) => method === "DELETE")).toHaveLength(0);
   });
   it("reads all pages and refuses a blocking active claim before deletion", async () => {

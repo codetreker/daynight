@@ -17,7 +17,7 @@ func TestEventAttentionFollowsUserDecisionNeeds(t *testing.T) {
 		attention bool
 	}{
 		{"report", true}, {"escalation", true}, {"result_unknown", true}, {"proposal_pending", true}, {"inquiry_timed_out", true}, {"takeover", true}, {"claim_lost", true},
-		{"update", false}, {"resolved", false}, {"direct_success", false}, {"proposal_decided", false}, {"appendix_added", false}, {"inquiry", false}, {"answer", false}, {"transfer", false}, {"intervention", false}, {"trigger", false}, {"retrospective", false},
+		{"update", false}, {"resolved", false}, {"direct_success", false}, {"proposal_decided", false}, {"appendix_added", false}, {"inquiry", false}, {"answer", false}, {"transfer", false}, {"intervention", false}, {"trigger", false}, {"retrospective", false}, {"inbound", false},
 	} {
 		got, err := eventAttention(tc.kind)
 		if err != nil || got != tc.attention {
@@ -44,7 +44,7 @@ func TestAddEventUsesResponsibleBotAndPreservesApplicationPayload(t *testing.T) 
 }
 
 func TestAddEventRejectsSystemTypesAndForeignTargets(t *testing.T) {
-	for _, kind := range []string{"claim_lost", "proposal_pending", "answer", "retrospective", "report"} {
+	for _, kind := range []string{"claim_lost", "proposal_pending", "answer", "retrospective", "inbound", "report"} {
 		d := baseDAO(t, baseTask())
 		_, err := New().AddEvent(context.Background(), d, botActor(), EventInput{Mutation: mutation(), TargetBotID: targetID, Type: kind})
 		requireCode(t, err, "forbidden")

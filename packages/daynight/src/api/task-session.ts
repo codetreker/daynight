@@ -34,6 +34,7 @@ export type TaskSessionRequest = {
   readonly path: string;
   readonly responseBytes?: number;
   readonly timeoutMs?: number;
+  readonly historyDirectoryVersion?: 1;
 };
 export type TaskSessionReader = <T>(request: TaskSessionRequest, parse: (value: unknown) => T) => Promise<T>;
 

@@ -111,3 +111,18 @@ it('keeps frozen and successor references until the final local content referenc
   expect((await db.readBlob(state.owner, 'original'))?.references).toEqual([`draft:${state.editable!.draftId}:second`]); expect(state.owner.allocatedBytes).toBe(5);
   state = await db.saveDraft(state.owner, { ...write(state.editable!, 'keep'), items: [] }); expect(await db.readBlob(state.owner, 'original')).toBeNull(); expect(state.owner.allocatedBytes).toBe(0);
 });
+
+it('retains only the original release request answered by another durable reference', async () => {
+  const db = store(); let state = await prepare(db); let upload = state.uploads[0]!;
+  const query = await db.beginUploadRequest(state.owner, upload.uploadId, upload.storeVersion, { kind: 'query' });
+  await expect(db.retainRelease(state.owner, upload.uploadId, query.requestSequence)).rejects.toMatchObject({ code: 'invalid' });
+  state = await db.saveDraft(state.owner, { ...write(state.editable!, 'keep text'), items: [] }); upload = state.uploads[0]!;
+  const release = await db.beginUploadRequest(state.owner, upload.uploadId, upload.storeVersion, { kind: 'release' });
+  const later = await db.beginUploadRequest(state.owner, upload.uploadId, release.storeVersion, { kind: 'query' });
+  expect(await db.retainRelease(state.owner, upload.uploadId, release.requestSequence)).toEqual(later);
+  const retained = await db.retainRelease(state.owner, upload.uploadId, later.requestSequence);
+  expect(retained).toMatchObject({ releaseIntent: true, releaseRetained: true, pendingAction: null, outcomeUnknown: false, observedSequence: later.requestSequence });
+  expect(await db.retainRelease(state.owner, upload.uploadId, later.requestSequence)).toEqual(retained);
+  await expect(db.retainRelease(state.owner, 'missing', 1)).rejects.toMatchObject({ code: 'invalid' });
+  expect(await db.readBlob(state.owner, 'original')).toBeNull();
+});

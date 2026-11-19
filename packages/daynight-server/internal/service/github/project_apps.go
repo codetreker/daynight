@@ -107,7 +107,7 @@ func (m *ProjectAppManager) Discover(ctx context.Context, p model.Principal, id 
 	if err != nil {
 		return core.InstallationCandidate{}, err
 	}
-	if current.Connection.Version != f.Connection.Version || current.Project.RepoURL != f.Project.RepoURL {
+	if current.Connection.Version != f.Connection.Version || current.Project.RepoURL != f.Project.RepoURL || current.RepositoryVersion != f.RepositoryVersion {
 		return core.InstallationCandidate{}, &model.Fault{Code: "version_conflict", Message: "Project connection changed during discovery."}
 	}
 	return out, nil
@@ -152,6 +152,7 @@ func (m *ProjectAppManager) Connect(ctx context.Context, p model.Principal, id s
 	if err != nil {
 		return core.ProjectAppStatus{}, err
 	}
+	in.RepositoryVersion = f.RepositoryVersion
 	return m.write(ctx, p, id, "connect", in, 0, false, f.Project.RepoURL, candidate)
 }
 

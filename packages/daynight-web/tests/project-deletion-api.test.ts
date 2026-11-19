@@ -20,6 +20,7 @@ describe("project deletion API", () => {
     const fetch = vi.fn().mockResolvedValue(response(body)); vi.stubGlobal("fetch", fetch);
     expect(await previewProjectDeletion(project, { limit: 50, cursor: "a+b" }, user, signal(), vi.fn())).toEqual(body);
     expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${project}/deletion-preview?limit=50&cursor=a%2Bb`);
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).has("Daynight-Confirm-Goal-Dependency-Removal")).toBe(false);
   });
   it("rejects malformed or wrong-target previews", async () => {
     for (const bad of [
@@ -39,6 +40,7 @@ describe("project deletion API", () => {
     expect(fetch).toHaveBeenCalledOnce(); expect(dispatched).toHaveBeenCalledOnce();
     expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${project}`);
     expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: "DELETE" }); expect(fetch.mock.calls[0]?.[1].body).toBeUndefined();
+    expect(new Headers(fetch.mock.calls[0]?.[1].headers).get("Daynight-Confirm-Goal-Dependency-Removal")).toBe("true");
     for (const receipt of [{ projectId: team, deleted: true }, { projectId: project, deleted: false }, { projectId: project, deleted: true, extra: 1 }]) {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(receipt)));
       await expect(deleteProject(project, user, signal(), vi.fn(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });

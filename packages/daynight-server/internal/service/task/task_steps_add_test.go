@@ -605,6 +605,11 @@ func (f *strictStepWrite) GoalDependencyDAO() store.GoalDependencyDAO {
 	f.t.Fatal("unexpected GoalDependencyDAO call")
 	return nil
 }
+
+func (f *strictStepWrite) GoalRelationDAO() store.GoalRelationEditor {
+	f.t.Fatal("unexpected GoalRelationDAO call")
+	return nil
+}
 func (f *strictStepWrite) TaskTagDAO() store.TaskTagWriteDAO {
 	f.t.Fatal("unexpected TaskTagDAO call")
 	return nil

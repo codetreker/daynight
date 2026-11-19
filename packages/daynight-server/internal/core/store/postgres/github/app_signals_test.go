@@ -251,38 +251,53 @@ func TestAppWebhookOldUUIDDoesNotReviveAfterReregistration(t *testing.T) {
 }
 
 func TestAppSignalDatabaseFailurePaths(t *testing.T) {
-	for _, tc := range []struct {
-		name, mutation string
-		access         bool
+	db, _ := dbFixture(t)
+	const hideOwnership = `ALTER TABLE project_ownership RENAME TO unavailable_ownership`
+	const restoreOwnership = `ALTER TABLE unavailable_ownership RENAME TO project_ownership`
+	for i, test := range []struct {
+		fault  appCatalogFault
+		access bool
 	}{
-		{"PR connection query", `ALTER TABLE project_ownership RENAME TO unavailable_ownership`, false},
-		{"access connection query", `ALTER TABLE project_ownership RENAME TO unavailable_ownership`, true},
-		{"PR pending write", `ALTER TABLE project_github_pending_prs RENAME TO unavailable_pending`, false},
-		{"access hint write", `ALTER TABLE project_github RENAME COLUMN access_hint_id TO unavailable_hint`, true},
+		{appCatalogFault{"PR connection query", hideOwnership, restoreOwnership, "42P01", "lock App signal connections"}, false},
+		{appCatalogFault{"access connection query", hideOwnership, restoreOwnership, "42P01", "lock App signal connections"}, true},
+		{appCatalogFault{"PR pending write", `ALTER TABLE project_github_pending_prs RENAME TO unavailable_pending`,
+			`ALTER TABLE unavailable_pending RENAME TO project_github_pending_prs`, "42P01", "record App pull request signal"}, false},
+		{appCatalogFault{"access hint write", `ALTER TABLE project_github RENAME COLUMN access_hint_id TO unavailable_hint`,
+			`ALTER TABLE project_github RENAME COLUMN unavailable_hint TO access_hint_id`, "42703", "record App access signal"}, true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAppSignalFixture(t)
-			ctx := t.Context()
-			if _, err := f.db.Pool.Exec(ctx, tc.mutation); err != nil {
-				t.Fatal(err)
-			}
-			var called bool
-			completion, err := f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(w store.GitHubAppSignalWriter) error {
-				called = true
-				if tc.access {
-					_, err := w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "access", ReceivedAt: time.Now().UTC()})
-					return err
+		if !t.Run(test.fault.name, func(t *testing.T) {
+			f := seedAppSignalFixture(t, db, 10+int64(i))
+			read := func(ctx context.Context) string {
+				var connection string
+				var intact bool
+				err := db.Pool.QueryRow(ctx, `SELECT to_jsonb(c)::text, revision=0 AND NOT EXISTS
+ (SELECT FROM project_github_pending_prs WHERE project_id=c.project_id)
+ FROM project_github c WHERE c.project_id=$1`, f.project).Scan(&connection, &intact)
+				if err != nil || !intact {
+					t.Fatalf("failed signal changed committed connection or pending rows: %v, %v", intact, err)
 				}
-				_, err := w.SignalPullRequest(ctx, signalInput())
-				return err
+				return connection
+			}
+			before := read(t.Context())
+			test.fault.run(t, db, func(ctx context.Context) (store.Completion, int, error) {
+				calls := 0
+				completion, err := db.WriteGitHubAppSignals(ctx, f.app, 1, func(w store.GitHubAppSignalWriter) error {
+					calls++
+					if test.access {
+						_, err := w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "access", ReceivedAt: time.Now().UTC()})
+						return err
+					}
+					_, err := w.SignalPullRequest(ctx, signalInput())
+					return err
+				})
+				return completion, calls, err
+			}, func(ctx context.Context) {
+				if after := read(ctx); after != before {
+					t.Fatal("failed signal changed the connection")
+				}
 			})
-			if !called || err == nil || completion.Outcome != store.TransactionNotCommitted {
-				t.Fatalf("called=%t completion=%+v error=%v", called, completion, err)
-			}
-			var revision int64
-			if err := f.db.Pool.QueryRow(ctx, `SELECT revision FROM project_github WHERE project_id=$1`, f.project).Scan(&revision); err != nil || revision != 0 {
-				t.Fatalf("failed signal changed connection revision: %d %v", revision, err)
-			}
-		})
+		}) {
+			return
+		}
 	}
 }

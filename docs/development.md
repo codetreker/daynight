@@ -577,6 +577,14 @@ wait. The fixture holds only the subsequent retry so IPC cancellation reaches
 the waiting Controller before a second synchronous acquisition. The
 [Controller storage contention decision](../.agents/notes/implemented/testing/2026-11-18-controller-storage-contention-cancel.md)
 owns the cancellation boundary.
+The Controller IPC waiter-capacity regression observes all 32 authenticated
+response-waiter registrations before probing rejection. Its controlled schedule
+holds duplicate client frames to verify that first native dispatch alone does
+not establish capacity. Finalization cancels and joins requests and the
+Controller before deleting the SQLite fixture; the ordinary test deadline stays
+unchanged. The
+[IPC admission decision](../.agents/notes/implemented/testing/2026-11-19-ipc-waiter-admission-barrier.md)
+owns the ordering proof and its historical attribution limits.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
@@ -687,9 +695,23 @@ Windows development installation and nonempty Agent CLI alias mappings currently
 fail explicitly; ordinary Windows CLI operation and `DN_CONFIG_DIR` remain supported.
 
 Each installation builds the CLI and copies its production dependencies into an
-independent `.tmp/dev-builds/build-*/` snapshot. The installed symlink changes
-atomically after verifying the snapshot's version. `--build-info` reports the
-source checkout, commit, dirty state, version, build time and snapshot directory.
+independent `.tmp/dev-builds/build-*/` snapshot. Resolved physical packages use
+numbered `.dev-store/<id>/` roots, with links to their copied JavaScript
+dependencies. Dependency file symlinks are materialized; dependency links do not
+point back to the source checkout's mutable `node_modules`.
+
+The installer checks only the snapshot's version before atomically replacing
+the installed symlink. It does not load sharp, better-sqlite3 or Koffi during
+verification. Numbered roots can break native relative library lookup, so a
+snapshot that fails to load sharp can pass installation and replace a usable
+entry. Successful installation does not establish native dependency readiness.
+The [native dependency requirements](spec/development-snapshot-native-layout.md)
+define the required named package layout, native checks before publication and
+preservation of the previous entry on native failure; those protections are not
+implemented by the current installer.
+
+`--build-info` reports the source checkout, commit, dirty state, version, build
+time and snapshot directory.
 Running processes and resolved Agent aliases keep their original snapshot when
 the entry is reinstalled. Keep its snapshot and fixed Node executable available
 while any execution can use them. Removing a worktree also removes its snapshots;
@@ -795,7 +817,8 @@ API examples, logs, updates and volume removal.
 Read [server organization rules](daynight-server.md) before adding to, modifying
 or reviewing daynight-server. Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS
 and pnpm 11.28.6. From `packages/daynight-server/`, set
-`DAYNIGHT_TEST_DATABASE_URL` to an isolated database and run:
+`DAYNIGHT_TEST_DATABASE_URL` and `DAYNIGHT_TEST_REDIS_URL` to isolated
+PostgreSQL and Redis instances, then run:
 
 ```bash
 bash scripts/check.sh

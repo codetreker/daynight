@@ -14,6 +14,7 @@ type GitHubProjectAppFacts struct {
 	Connection             githubpr.Connection
 	AppResourceID, GrantID *string
 	CredentialVersion      *int64
+	RepositoryVersion      int64
 }
 
 // GitHubProjectApp contains the Team usage projection and proof conditions.

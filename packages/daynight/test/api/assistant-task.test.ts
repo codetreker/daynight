@@ -100,6 +100,17 @@ describe("assistant task HTTP client", () => {
     expect(String(fetch.mock.calls[0]![0])).toContain("cursor=a%2Bb%26c");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it("passes one event type filter and refuses combined filters before sending", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response({ items: [], nextCursor: null, observedAt: now }));
+    const client = setup(fetch);
+    await client.listEvents(taskId, { type: "inbound", state: "pending" });
+    await client.listEvents(undefined, { excludeType: "inbound", cursor: "next" });
+    expect(String(fetch.mock.calls[0]![0])).toBe(`http://localhost:3000/api/v1/assistant-tasks/${taskId}/events?state=pending&type=inbound`);
+    expect(String(fetch.mock.calls[1]![0])).toBe("http://localhost:3000/api/v1/assistant-task-events?cursor=next&excludeType=inbound");
+    const combined = { type: "inbound", excludeType: "inbound" } as unknown as Parameters<ReturnType<typeof createAssistantTaskClient>["listEvents"]>[1];
+    await expect(async () => client.listEvents(undefined, combined)).rejects.toThrow("type and excludeType cannot be combined.");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it("reads the original operation without replaying and checks its fingerprint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
     await setup(fetch).getClaimOperation(taskId, operationId, { requestFingerprint: receipt.operation.requestFingerprint });

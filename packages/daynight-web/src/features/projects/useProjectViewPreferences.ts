@@ -1,4 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { parseRoute } from "../../app/router";
+import { isBodyScrollLocked } from "../../app/useBodyScrollLock";
 import { canonicalId } from "../../api/validation";
 import type { AssigneeFilter } from "../task-assignment/TaskAssigneeFilter";
 import type { TaskStatus } from "../../api/types";
@@ -47,7 +49,7 @@ const graphDirectionPreference = (value: unknown): GraphDirection => {
 
 const scrollPreference = (value: unknown): number => {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new Error("Invalid project task list scroll position.");
+    throw new Error("Invalid project scroll position.");
   }
   return value;
 };
@@ -172,32 +174,118 @@ export const useGraphDirection = (projectId: string, rootId: string) => {
   return { direction: current.direction, onDirectionChange, issue: current.writeIssue ?? current.initialIssue };
 };
 
-export const useTaskListScroll = (projectId: string, active: boolean) => {
-  const key = `daynight:task-list-scroll:${projectId}`;
-  const [initial] = useState(() => readPreference(key, scrollPreference));
-  const position = useRef(initial.value === undefined ? 0 : initial.value);
-  const [writeIssue, setWriteIssue] = useState<PreferenceIssue | null>(null);
-  const savePosition = useCallback(() => {
-    if (!active || window.scrollY === position.current) return;
-    position.current = window.scrollY;
-    try {
-      window.localStorage.setItem(key, JSON.stringify(position.current));
-      setWriteIssue(null);
-    } catch (cause) {
-      setWriteIssue({ kind: "write", cause });
-    }
-  }, [key, active]);
+const scrollExtent = () => Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
 
+// A single position belongs to the project page, not to an individual panel.
+export const useProjectScroll = (projectId: string, userId: string, section: ProjectSection, ready: boolean, explicitTarget: boolean, view: TaskView) => {
+  const key = `daynight:project-scroll:${JSON.stringify([projectId, userId])}`;
+  const load = () => {
+    const initial = readPreference(key, scrollPreference);
+    return { key, initial, initialSection: section, initialView: view, pending: initial.value !== undefined && !explicitTarget, position: initial.value, lastY: window.scrollY, extent: scrollExtent(), lockedScroll: false, layoutChanged: false };
+  };
+  const state = useRef<ReturnType<typeof load> | null>(null);
+  if (state.current === null || state.current.key !== key) state.current = load();
   useLayoutEffect(() => {
-    if (!active) return;
-    window.scrollTo({ top: position.current, behavior: "instant" });
-    window.addEventListener("scroll", savePosition, { passive: true });
-    window.addEventListener("pagehide", savePosition);
-    return () => {
-      window.removeEventListener("scroll", savePosition);
-      window.removeEventListener("pagehide", savePosition);
+    const current = state.current!;
+    if (section !== current.initialSection || section === "tasks" && view !== current.initialView || explicitTarget) current.pending = false;
+  }, [key, section, view, explicitTarget]);
+  const context = useRef({ ready, projectId });
+  context.current = { ready, projectId };
+  const [write, setWrite] = useState<{ key: string; issue: PreferenceIssue | null }>({ key, issue: null });
+  const savePosition = useCallback(() => {
+    const current = state.current!;
+    if (current.key !== key || current.pending || !context.current.ready || document.visibilityState === "hidden" || isBodyScrollLocked()) return;
+    const route = parseRoute(window.location.pathname, window.location.search);
+    if (route.kind !== "project" || route.projectId !== context.current.projectId) return;
+    const y = window.scrollY;
+    if (!Number.isFinite(y) || y < 0 || current.position === y) return;
+    current.position = y;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(y));
+      setWrite({ key, issue: null });
+    } catch (cause) {
+      setWrite({ key, issue: { kind: "write", cause } });
+    }
+  }, [key]);
+  const cancelRestore = useCallback(() => { state.current!.pending = false; }, []);
+  useLayoutEffect(() => {
+    window.history.scrollRestoration = "manual";
+    const current = state.current!;
+    const scroll = () => {
+      const y = window.scrollY, extent = scrollExtent();
+      const locked = isBodyScrollLocked();
+      // A geometry change can clamp or anchor the viewport without user input.
+      // A scroll with stable geometry also covers assistive technology and
+      // overlay scrollbars, which need not deliver a pointer event to the page.
+      if (current.pending && !locked && !current.lockedScroll && !current.layoutChanged && extent === current.extent && y !== current.lastY) current.pending = false;
+      current.lockedScroll = locked;
+      current.lastY = y;
+      current.extent = extent;
+      savePosition();
     };
-  }, [active, savePosition]);
-
-  return { savePosition, issue: writeIssue ?? initial.issue };
+    let resizeFrame: number | null = null;
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      const extent = scrollExtent();
+      if (extent === current.extent) return;
+      current.extent = extent;
+      current.layoutChanged = true;
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => { current.layoutChanged = false; resizeFrame = null; });
+    });
+    resize?.observe(document.documentElement);
+    resize?.observe(document.body);
+    const lockObserver = new MutationObserver(() => {
+      if (!current.lockedScroll || isBodyScrollLocked()) return;
+      current.lockedScroll = false;
+      current.lastY = window.scrollY;
+      current.extent = scrollExtent();
+    });
+    lockObserver.observe(document.body, { attributes: true, attributeFilter: ["style"] });
+    const intent = () => { if (!isBodyScrollLocked()) current.pending = false; };
+    const keydown = (event: KeyboardEvent) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key) &&
+          !(event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable=true]"))) intent();
+    };
+    const pointer = (event: PointerEvent) => {
+      if (event.clientX >= window.innerWidth - 20 && !(event.target instanceof Element && event.target.closest("a, button, input, select, textarea, [role=button]"))) intent();
+    };
+    window.addEventListener("scroll", scroll, { passive: true });
+    window.addEventListener("pagehide", savePosition);
+    window.addEventListener("wheel", intent, { passive: true });
+    window.addEventListener("touchmove", intent, { passive: true });
+    window.addEventListener("keydown", keydown);
+    window.addEventListener("pointerdown", pointer);
+    return () => {
+      window.removeEventListener("scroll", scroll);
+      window.removeEventListener("pagehide", savePosition);
+      window.removeEventListener("wheel", intent);
+      window.removeEventListener("touchmove", intent);
+      window.removeEventListener("keydown", keydown);
+      window.removeEventListener("pointerdown", pointer);
+      resize?.disconnect();
+      lockObserver.disconnect();
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+    };
+  }, [key, savePosition]);
+  useLayoutEffect(() => {
+    const current = state.current!;
+    if (!ready) return;
+    const restore = () => {
+      if (!current.pending || !context.current.ready || isBodyScrollLocked() || document.visibilityState === "hidden") return;
+      current.pending = false;
+      window.scrollTo({ top: current.position!, behavior: "instant" });
+      current.lastY = window.scrollY;
+      current.extent = scrollExtent();
+      savePosition();
+    };
+    restore();
+    // A fullscreen overlay can temporarily freeze the page. Wait for its release
+    // rather than recording its synthetic offset or consuming the restore.
+    const observer = new MutationObserver(restore);
+    observer.observe(document.body, { attributes: true, attributeFilter: ["style"] });
+    document.addEventListener("visibilitychange", restore);
+    if (!current.pending) savePosition();
+    return () => { observer.disconnect(); document.removeEventListener("visibilitychange", restore); };
+  }, [key, ready, section, savePosition]);
+  return { savePosition, cancelRestore, issue: (write.key === key ? write.issue : null) ?? state.current.initial.issue };
 };

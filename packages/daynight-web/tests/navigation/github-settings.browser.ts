@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const projectId = '00000000-0000-4000-8000-000000000101';
@@ -74,6 +74,135 @@ const background = async (page: Page): Promise<Page> => {
   await page.bringToFront(); return other;
 };
 
+const expectRepositoryActionsInsidePanel = async (page: Page) => {
+  const row = page.locator('.github-repository');
+  await expect(row).toBeVisible();
+  const geometry = await row.evaluate(element => {
+    const panel = element.closest('.panel-body')!;
+    const bounds = panel.getBoundingClientRect(), style = getComputedStyle(panel);
+    const left = bounds.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+    const right = bounds.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+    const buttons = [...element.querySelectorAll('button')].map(button => {
+      const box = button.getBoundingClientRect();
+      let unclipped = box.left >= 0 && box.right <= innerWidth;
+      for (let ancestor = button.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        if (getComputedStyle(ancestor).overflowX !== 'visible') {
+          const clip = ancestor.getBoundingClientRect();
+          unclipped &&= box.left >= clip.left - 1 && box.right <= clip.right + 1;
+        }
+      }
+      return { label: button.textContent, left: box.left, right: box.right, textFits: button.scrollWidth <= button.clientWidth, unclipped };
+    });
+    const name = element.querySelector('.github-repository-name strong')!;
+    return { left, right, width: right - left, direction: getComputedStyle(element).flexDirection,
+      repositoryFits: name.getBoundingClientRect().left >= left - 1 && name.getBoundingClientRect().right <= right + 1, buttons };
+  });
+  expect(geometry.repositoryFits).toBe(true);
+  expect(geometry.buttons.length).toBeGreaterThan(0);
+  for (const button of geometry.buttons) {
+    expect(button.left, button.label ?? '').toBeGreaterThanOrEqual(geometry.left - 1);
+    expect(button.right, button.label ?? '').toBeLessThanOrEqual(geometry.right + 1);
+    expect(button.textFits, button.label ?? '').toBe(true);
+    expect(button.unclipped, button.label ?? '').toBe(true);
+  }
+  return geometry;
+};
+
+const cancelConnectionDialog = async (page: Page, opener: Locator, keyboard: boolean) => {
+  if (keyboard) { await opener.focus(); await page.keyboard.press('Enter'); }
+  else await opener.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  if (keyboard) await page.keyboard.press('Escape');
+  else await dialog.locator('[data-dialog-cancel]').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+};
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`repository layout follows its content width in ${locale}`, async ({ page }, testInfo) => {
+    const state = await install(page);
+    state.status = { ...baseStatus(), connection: 'connected', installation: candidate.installation,
+      repository: { ...candidate.repository, fullName: `platform-engineering/${'long-name-'.repeat(12)}client` } };
+    await page.setViewportSize({ width: 1360, height: 900 }); await open(page);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const container = page.locator('.github-settings > .panel-body');
+    const observations = [];
+    // Restrict the real component's available size without changing its layout rules.
+    for (const width of [481, 480, 479, 640]) {
+      await container.evaluate((element, contentWidth) => {
+        (element as HTMLElement).style.boxSizing = 'content-box';
+        (element as HTMLElement).style.width = `${contentWidth}px`;
+      }, width);
+      const geometry = await expectRepositoryActionsInsidePanel(page);
+      expect(geometry.width).toBeCloseTo(width, 0);
+      expect(geometry.direction).toBe(width <= 480 ? 'column' : 'row');
+      observations.push(geometry);
+      await cancelConnectionDialog(page, page.locator('#github-connection-action'), true);
+    }
+    expect(state.writes).toHaveLength(0);
+    await testInfo.attach('repository-container-geometry', { contentType: 'application/json', body: JSON.stringify(observations) });
+  });
+  for (const width of [320, 375, 390, 768, 1360]) {
+    test(`repository connection actions stay reachable at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+      const state = await install(page);
+      const fullName = `platform-engineering/${'long-repository-name-'.repeat(8)}client`;
+      await page.route(url => url.pathname === `/api/v1/projects/${projectId}`, route => route.fulfill({
+        body: stringifyWireJson({ ...project, repoUrl: `https://github.com/${fullName}` }),
+        headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId },
+      }));
+      await page.route(url => url.pathname === `/api/v1/teams/${teamId}/github/apps`, route => route.fulfill({
+        body: stringifyWireJson({ items: state.status.connection === 'not_connected' ? [] : [grant], nextCursor: null }),
+        headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId },
+      }));
+      await page.setViewportSize({ width, height: 900 }); await open(page);
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      const observations = [];
+      for (const connection of ['not_connected', 'connected', 'unavailable'] as const) {
+        state.status = { ...baseStatus(), connection, repository: connection === 'not_connected' ? null : { ...candidate.repository, fullName },
+          installation: connection === 'not_connected' ? null : candidate.installation };
+        await page.reload();
+        const actions = page.locator('.github-repository-actions button');
+        await expect(actions).toHaveCount(connection === 'not_connected' ? 1 : 2);
+        observations.push({ connection, ...await expectRepositoryActionsInsidePanel(page) });
+        const opener = actions.first();
+        if (width === 768 && locale === 'en' && connection === 'not_connected') {
+          await page.locator('#github-settings-title').focus();
+          await page.keyboard.press('Tab');
+          await expect(opener).toBeFocused();
+        } else await opener.focus();
+        await page.keyboard.press('Enter');
+        const dialog = page.getByRole('dialog');
+        await expect(dialog).toBeVisible();
+        if (connection === 'not_connected') {
+          await expect(dialog.locator('#github-app-grant')).toHaveCount(0);
+          await expect(dialog.locator('.button.primary')).toBeDisabled();
+          await expect(dialog.getByText(teamId, { exact: true })).toBeVisible();
+        } else {
+          await expect(dialog.locator('#github-app-grant')).toBeEnabled();
+          await dialog.locator('#github-app-grant').selectOption(grantId);
+          await expect(dialog.locator('#github-installation')).toHaveValue(candidate.installation.id);
+        }
+        await page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
+        await cancelConnectionDialog(page, opener, false);
+        if (connection !== 'not_connected') await cancelConnectionDialog(page, actions.last(), false);
+      }
+      const toggle = page.locator('.sidebar-toggle');
+      await toggle.click();
+      if (width <= 740) {
+        await expect(page.locator('#workspace-sidebar')).toHaveAttribute('role', 'dialog');
+        await page.keyboard.press('Escape');
+        await expect(toggle).toBeFocused();
+      }
+      observations.push({ sidebarToggled: true, ...await expectRepositoryActionsInsidePanel(page) });
+      await cancelConnectionDialog(page, page.locator('#github-connection-action'), true);
+      expect(state.writes).toHaveLength(0);
+      await testInfo.attach('repository-action-geometry', { contentType: 'application/json', body: JSON.stringify(observations) });
+    });
+  }
+}
+
 for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
   test(`native installation menu cancellation preserves confirmation at ${width}px in ${locale}`, async ({ page }, testInfo) => {
     const state = await install(page);
@@ -81,6 +210,11 @@ for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
     await page.route(url => url.pathname === `/api/v1/projects/${projectId}/github/installation`, route => route.fulfill({ json: { ...candidate, installation: { ...candidate.installation, accountLogin } }, headers: { 'Daynight-User-ID': actorId } }));
     await page.setViewportSize({ width, height: 900 }); await open(page);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const heading = page.getByRole('heading', { name: locale === 'en' ? 'GitHub PR sync' : 'GitHub PR 同步' });
+    await expect(heading).toBeVisible();
+    await expect(heading.locator('..').locator('p')).toHaveCount(0);
+    await expect(page.getByText('Sync PR information and descriptions for this repository.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('同步此仓库的 PR 基本信息与 description。', { exact: true })).toHaveCount(0);
     const opener = page.getByRole('button', { name: locale === 'en' ? 'Connect GitHub App' : '连接 GitHub App' });
     await opener.click();
     const dialog = page.getByRole('dialog');
@@ -168,7 +302,8 @@ test('rejects invalid intervals, preserves conflicts, and responds to permission
   await expect(field).toHaveValue('14'); await expect(page.getByText(/Currently saved: 9 minutes/).first()).toBeVisible();
   state.conflict = false; state.role = 'member';
   const other = await background(page);
-  await expect(page.getByText('Team administrators manage the connection; Project administrators manage sync and polling.')).toBeVisible();
+  await expect(page.locator('.github-sync-readonly')).toHaveText('Disabled');
+  await expect(page.getByRole('switch', { name: 'PR sync' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Save interval' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Connect GitHub App' })).toHaveCount(0);
   await other.close();
@@ -287,6 +422,34 @@ test('switch writes independently of the interval draft and retains server confi
   await expect(page.getByRole('switch', { name: 'PR 同步' })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`connected sync controls omit redundant explanations in ${locale}`, async ({ page }) => {
+    const state = await install(page);
+    state.status = { ...baseStatus(), connection: 'connected', installation: candidate.installation, repository: candidate.repository };
+    await open(page);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const panel = page.locator('.github-settings');
+    const toggle = panel.getByRole('switch', { name: locale === 'en' ? 'PR sync' : 'PR 同步', exact: true });
+    for (const width of [1280, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const text of [
+        'Team administrators manage the connection; Project administrators manage sync and polling.',
+        'Periodic polling and Webhook updates',
+        'Team 管理员管理连接；项目管理员管理同步和轮询间隔。',
+        '周期轮询与 Webhook 更新',
+      ]) await expect(panel.getByText(text, { exact: true })).toHaveCount(0);
+      await expect(toggle).toBeEnabled();
+      await toggle.click();
+      await expect(toggle).toBeChecked({ checked: width === 1280 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+    expect(state.writes.map(({ path, body }) => ({ path, body }))).toEqual([
+      { path: `/api/v1/projects/${projectId}/github/sync`, body: '{"version":"1","syncEnabled":true}' },
+      { path: `/api/v1/projects/${projectId}/github/sync`, body: '{"version":"2","syncEnabled":false}' },
+    ]);
+  });
+}
 
 test('an unknown switch write retains the guard until reread and is not replayed', async ({ page }) => {
   const state = await install(page); state.status = { ...baseStatus(), connection: 'connected', installation: candidate.installation, repository: candidate.repository };

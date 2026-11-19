@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,11 +190,16 @@ FROM projects p JOIN project_ownership o ON o.project_id=p.id JOIN teams t ON t.
 
 func TestProjectRepositoryConcurrentOccupancy(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
 	for _, pair := range [][2]bool{{false, false}, {true, true}, {false, true}, {true, false}} {
-		t.Run(fmt.Sprintf("transfer=%t/%t", pair[0], pair[1]), func(t *testing.T) {
-			s, actor, target := storeTeamFixture(t)
+		if !t.Run(fmt.Sprintf("transfer=%t/%t", pair[0], pair[1]), func(t *testing.T) {
+			actor, target := testutil.TeamFixture(t, s)
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-			defer cancel()
+			var writers sync.WaitGroup
+			defer func() {
+				cancel()
+				writers.Wait()
+			}()
 			projects := [2]model.Project{}
 			for i, transfer := range pair {
 				if !transfer {
@@ -247,7 +253,7 @@ func TestProjectRepositoryConcurrentOccupancy(t *testing.T) {
 					return barrier(tx)
 				})
 			}
-			go func() { first <- operation(0, true) }()
+			writers.Go(func() { first <- operation(0, true) })
 			var pid uint32
 			select {
 			case pid = <-ready:
@@ -256,7 +262,7 @@ func TestProjectRepositoryConcurrentOccupancy(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			go func() { second <- operation(1, false) }()
+			writers.Go(func() { second <- operation(1, false) })
 			query := "SELECT id::text,personal_user_id::text FROM teams WHERE"
 			if pair[1] {
 				query = "SELECT id::text,name,personal_user_id::text,version FROM teams WHERE"
@@ -267,9 +273,13 @@ func TestProjectRepositoryConcurrentOccupancy(t *testing.T) {
 				t.Fatal(err)
 			}
 			repositoryFault(t, receiveQueryResult(t, ctx, second), "project_repository_conflict")
-			var count int
-			if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM project_ownership o JOIN projects p ON p.id=o.project_id WHERE o.team_id=$1 AND p.deleted_at IS NULL AND p.repository_identity='github.com/Org/Repo'`, target.ID).Scan(&count); err != nil || count != 1 {
-				t.Fatalf("occupants=%d err=%v", count, err)
+			writers.Wait()
+			testutil.AssertPoolReusable(t, s.Pool)
+			var occupants []string
+			if err := s.Pool.QueryRow(ctx, `SELECT array_agg(p.id::text ORDER BY p.id)
+ FROM project_ownership o JOIN projects p ON p.id=o.project_id
+ WHERE o.team_id=$1 AND p.deleted_at IS NULL AND p.repository_identity='github.com/Org/Repo'`, target.ID).Scan(&occupants); err != nil || len(occupants) != 1 || occupants[0] != projects[0].ID {
+				t.Fatalf("occupants=%v want winner=%s error=%v", occupants, projects[0].ID, err)
 			}
 			if pair[1] {
 				var team string
@@ -283,6 +293,8 @@ func TestProjectRepositoryConcurrentOccupancy(t *testing.T) {
 					t.Fatalf("loser Project persisted: %d %v", count, err)
 				}
 			}
-		})
+		}) {
+			return
+		}
 	}
 }
