@@ -297,6 +297,8 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `DROP TABLE project_pr_review_assignments`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_inbox_receipts, assistant_task_inboxes;
 			DROP INDEX assistant_task_events_inbound_settled;
 			ALTER TABLE assistant_task_events DROP COLUMN settled_at`); err != nil {
