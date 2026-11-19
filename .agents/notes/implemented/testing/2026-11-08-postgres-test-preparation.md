@@ -138,6 +138,12 @@ verify PostgreSQL SQLSTATE `42P01`, and the native preference matrix still
 rolls back to its savepoint before reading defaults. The tested version gates
 and preference results do not depend on the absolute Bot creation sequence.
 
+Team deletion, Project creation and ownership transfer matrices reuse one
+Store per parent with independent case Teams and Projects. Each case observes
+the actual blocking backend and checks committed ownership or its absence.
+The parent verifies pool reuse after the case joins its waiters. Failure stops
+fixture reuse.
+
 The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
 share one Store per parent and give each case independent account, Project,
 Task, credential, claim and Session identities. The registration refusal

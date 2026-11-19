@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,28 +12,35 @@ import (
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 )
 
 func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	s := isolatedStore(t)
 	for _, rollback := range []bool{false, true} {
-		t.Run(map[bool]string{false: "commit", true: "rollback"}[rollback], func(t *testing.T) {
-			s, actor, team := storeTeamFixture(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+		if !t.Run(map[bool]string{false: "commit", true: "rollback"}[rollback], func(t *testing.T) {
+			actor, team := testutil.TeamFixture(t, s)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			var workers sync.WaitGroup
+			defer func() {
+				cancel()
+				workers.Wait()
+			}()
 			done := make(chan error, 1)
 			projectID := uuid.NewString()
 			abort := errors.New("abort deletion")
-			err := testWriteTeam(s, ctx, team.ID, func(tx TeamWriteDAO) error {
+			_, err := s.WriteTeam(ctx, team.ID, func(scope TeamWriteScope) error {
+				tx := scope.TeamDAO()
 				if err := tx.Delete(ctx); err != nil {
 					return err
 				}
-				go func() {
+				workers.Go(func() {
 					_, _, err := s.CreateProjectInTeam(ctx, actor, projectID, "Project", "host:repo", &team.ID)
 					done <- err
-				}()
-				waitForQueryLock(t, s, "SELECT id::text,personal_user_id::text FROM teams WHERE")
+				})
+				testutil.WaitTransferTeamLock(t, ctx, s.Pool, "SELECT id::text,personal_user_id::text FROM teams WHERE", scope.(teamWriteScope).tx.Conn().PgConn().PID())
 				if rollback {
 					return abort
 				}
@@ -56,7 +64,10 @@ func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
 			if projects != want || ownerships != want || grants != want {
 				t.Fatalf("Team deletion/creation left inconsistent Project resources: projects=%d ownerships=%d grants=%d want=%d", projects, ownerships, grants, want)
 			}
-		})
+		}) {
+			return
+		}
+		testutil.AssertPoolReusable(t, s.Pool)
 	}
 }
 
