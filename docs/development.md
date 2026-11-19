@@ -695,8 +695,19 @@ Windows development installation and nonempty Agent CLI alias mappings currently
 fail explicitly; ordinary Windows CLI operation and `DN_CONFIG_DIR` remain supported.
 
 Each installation builds the CLI and copies its production dependencies into an
-independent `.tmp/dev-builds/build-*/` snapshot. The installed symlink changes
-atomically after verifying the snapshot's version. `--build-info` reports the
+independent `.tmp/dev-builds/build-*/` snapshot. Each resolved physical package
+has its own `.dev-store/<id>/node_modules/<package-name>/` directory, with links
+to its dependencies inside the snapshot. This preserves package names needed by
+native shared-library lookup and keeps different versions and peer resolutions
+separate. Dependency file symlinks are materialized; no dependency link points
+back to the source checkout's mutable `node_modules`.
+
+Before atomically replacing the installed symlink, the installer verifies the
+snapshot's version and runs separate Node processes that process a tiny in-memory
+image with sharp, query an in-memory better-sqlite3 database, and load Koffi.
+A native verification failure names the module and leaves the previous entry and
+snapshot available. These checks require no `LD_LIBRARY_PATH` workaround or
+system libvips installation. `--build-info` reports the
 source checkout, commit, dirty state, version, build time and snapshot directory.
 Running processes and resolved Agent aliases keep their original snapshot when
 the entry is reinstalled. Keep its snapshot and fixed Node executable available
