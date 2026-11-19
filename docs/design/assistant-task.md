@@ -73,10 +73,14 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `proposals, proposals/{id}/decision` | GET 列表；POST 负责 Bot 提案；POST 用户决定，带任务 `ifVersion` |
 | `items, items/{id}` | GET 列表/详情；POST/PATCH 负责 Bot 写入，更新另带事项 `ifVersion` |
 | `records` | GET 可按事项分页；POST 有明确作者的追加记录 |
-| `events, events/{id}/ack` | GET 可按目标和状态分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
+| `events, events/{id}/ack` | GET 可按目标、状态和事件类型分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
 | `inquiries, inquiries/{id}/answer` | GET 列表；POST Bot 提问；POST 负责目标 Bot 回答 |
 
-跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。
+跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。
+
+两种事件拉取都接受一个类型筛选：`type` 只保留该类型，`excludeType` 排除该类型，二者不能同时出现，取值须为已知事件类型，其他资源拒绝这两个参数。`type=inbound` 时，服务端在同一条数据库查询中排除暂停任务的事件；这些事件保持 pending，任务恢复后重新可选，Worker 不需要逐个读取再跳过。分页游标绑定所选筛选，换用不同筛选续读会被拒绝。
+
+所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。
 
 ## 验证责任
 
