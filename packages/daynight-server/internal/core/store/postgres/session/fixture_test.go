@@ -225,6 +225,8 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"bot_configuration_preferences",
 		"bot_effort_preferences",
 		"bot_model_preferences",
+		"bot_recovery",
+		"bot_recovery_operations",
 		"bot_worker_preferences",
 		"bots",
 		"device_authorization_limits",
