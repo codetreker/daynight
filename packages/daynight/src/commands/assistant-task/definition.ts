@@ -16,6 +16,12 @@ const item = option("--item", "Associated item UUID");
 const body = option("--body", "Complete manual Markdown body", true);
 const rules = option("--rules", "Rules JSON (default: {})");
 const source = { ...option("--source-record", "Evidence record UUID; repeat to reference several records"), repeatable: true };
+const scope = [
+  { ...option("--scope-project", "Project UUID the experience applies to; repeat for several"), repeatable: true },
+  { ...option("--scope-event-type", "Assistant task event type the experience applies to; repeat for several"), repeatable: true },
+  { ...option("--scope-category", "Item category the experience applies to; repeat for several"), repeatable: true },
+];
+const scopeDetails = "Scope options restrict where the experience applies; a dimension without values stays unrestricted. Each dimension accepts at most 20 distinct values.";
 const common = [json, help];
 const write = [operation, ...common];
 const page = [limit, cursor];
@@ -50,9 +56,10 @@ export const assistantTaskDefinition: CommandDefinition = {
     ]),
     group("appendix", "Read, append and maintain evidence-backed experience", [
       leaf("list", "Read one page of appendices", [...page, state(["active", "edited", "deleted"]), ...common]),
-      leaf("add", "Append experience as the responsible Bot", [option("--text", "Experience text", true), source, ...write]),
-      leaf("update", "Edit an appendix as its user", [version, option("--text", "Replacement text", true), { ...source, description: "Replace evidence record references; repeat for several. Omission preserves them" }, { names: ["--clear-source-records"], description: "Explicitly remove every evidence record reference; conflicts with --source-record" }, ...write], [task, id("appendix")]),
-      leaf("delete", "Delete an appendix as its user", [version, ...write], [task, id("appendix")]),
+      leaf("add", "Append experience as the responsible Bot", [option("--text", "Experience text", true), source, ...scope, ...write], [task], scopeDetails),
+      leaf("update", "Edit an appendix as its user", [version, option("--text", "Replacement text", true), { ...source, description: "Replace evidence record references; repeat for several. Omission preserves them" }, { names: ["--clear-source-records"], description: "Explicitly remove every evidence record reference; conflicts with --source-record" }, ...scope, { names: ["--clear-scope"], description: "Explicitly make the appendix unrestricted; conflicts with the scope options" }, ...write], [task, id("appendix")], scopeDetails + " Any scope option replaces the whole scope; omitting all of them preserves it."),
+      leaf("delete", "Delete an appendix as its user", [version, ...write], [task, id("appendix")], "Deletion also removes the appendix scope and every registered validation."),
+      leaf("validate", "Register an outcome record as evidence for an appendix as the responsible Bot", [option("--outcome-record", "Outcome record UUID of this task", true), ...write], [task, id("appendix")], "An effective outcome counts as a success and an ineffective one as a failure; an inconclusive outcome is refused. One outcome record validates an appendix at most once."),
     ]),
     leaf("propose", "Propose a manual revision as the responsible Bot", [option("--base-version", "Observed manual version", true), body, rules, option("--reason", "Reason for the revision", true), { ...option("--evidence-record", "Evidence record UUID; repeat for several records"), repeatable: true }, ...write]),
     group("proposal", "Read and decide manual revision proposals", [

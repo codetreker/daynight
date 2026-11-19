@@ -22,7 +22,11 @@ export type AssistantTaskClaimInput = {
 };
 export type AssistantTaskClaimExpectation = { kind?: AssistantTaskClaimKind; actorBotId?: string | null; requestFingerprint?: string };
 export type AssistantTaskManual = { taskId: string; version: string; body: string; rules: JsonValue; source: string; proposalId: string | null; createdAt: string };
-export type AssistantTaskAppendix = { id: string; taskId: string; text: string; sourceRecords: string[]; authorBotId: string | null; state: "active" | "edited" | "deleted"; version: string; createdAt: string; updatedAt: string };
+// Empty scope sets leave a dimension unrestricted. The server omits scope for an
+// unrestricted appendix and validation before its first registered validation.
+export type AssistantTaskAppendixScope = { projectIds: string[]; eventTypes: string[]; itemCategories: string[] };
+export type AssistantTaskAppendixValidation = { successCount: string; failureCount: string; lastValidatedAt: string };
+export type AssistantTaskAppendix = { id: string; taskId: string; text: string; sourceRecords: string[]; authorBotId: string | null; state: "active" | "edited" | "deleted"; version: string; createdAt: string; updatedAt: string; scope?: AssistantTaskAppendixScope; validation?: AssistantTaskAppendixValidation };
 export type AssistantTaskProposal = { id: string; taskId: string; baseVersion: string; body: string; rules: JsonValue; reason: string; evidenceRecords: string[]; authorBotId: string | null; widens: boolean; status: "pending" | "approved" | "edited" | "rejected"; decisionNote: string; createdAt: string; decidedAt: string | null };
 export type AssistantTaskProposalResult = { proposal: AssistantTaskProposal; rejectedMatches: AssistantTaskProposal[] };
 export type AssistantTaskItem = { id: string; taskId: string; key: string; episode: string; state: "open" | "closed"; category: string; followerBotId: string | null; appState: JsonValue; version: string; createdAt: string; updatedAt: string };
@@ -36,8 +40,9 @@ export type AssistantTaskQuery = { limit?: number; cursor?: string; state?: stri
 export type AssistantTaskCredential = { claimToken: string; claimGeneration: string };
 export type CreateAssistantTaskInput = { id: string; name: string; purpose: string; scope: string; kind: "continuous" | "once"; takeover: "manual" | "auto"; application?: string; trigger?: JsonValue; manual: { body: string; rules: JsonValue } };
 export type UpdateAssistantTaskInput = { ifVersion: string; name?: string; purpose?: string; scope?: string; takeover?: "manual" | "auto"; trigger?: JsonValue; state?: "active" | "paused" };
-export type AddAssistantTaskAppendixInput = AssistantTaskCredential & { id: string; text: string; sourceRecords: string[] };
-export type UpdateAssistantTaskAppendixInput = { ifVersion: string; text: string; sourceRecords?: string[] };
+export type AddAssistantTaskAppendixInput = AssistantTaskCredential & { id: string; text: string; sourceRecords: string[]; scope?: Partial<AssistantTaskAppendixScope> };
+export type UpdateAssistantTaskAppendixInput = { ifVersion: string; text: string; sourceRecords?: string[]; scope?: Partial<AssistantTaskAppendixScope> };
+export type ValidateAssistantTaskAppendixInput = AssistantTaskCredential & { outcomeRecordId: string };
 export type ProposeAssistantTaskInput = AssistantTaskCredential & { id: string; baseVersion: string; body: string; rules: JsonValue; reason: string; evidenceRecords: string[] };
 export type DecideAssistantTaskInput = { ifVersion: string; decision: "approved" | "edited" | "rejected"; note?: string; body?: string; rules?: JsonValue };
 export type SaveAssistantTaskItemInput = AssistantTaskCredential & { id?: string; ifVersion?: string; key: string; episode: string; state: "open" | "closed"; category: string; appState: JsonValue };

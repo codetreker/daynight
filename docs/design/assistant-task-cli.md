@@ -10,6 +10,8 @@
 
 `record add --kind outcome` 必须同时提供 `--outcome` 与 `--action-record`，其他记录类型提供任一选项时在网络请求前以用法错误拒绝。结果记录与负责 Bot 的其他工作记录一样使用已保存凭据；写入响应必须回显相同的类型、结果取值和动作记录 ID，否则视为无效响应。记录解析只在 `outcome` 记录中接受这两个字段，列表输出原样显示它们。
 
+`appendix add` 与 `appendix update` 用可重复的 `--scope-project`、`--scope-event-type` 和 `--scope-category` 声明适用范围；只要提供其中任一选项，就提交完整的 `scope`，未给值的维度为空数组，表示不限定。`appendix update` 省略全部范围选项时保留原范围，`--clear-scope` 显式提交空范围，与范围选项同时出现时在网络请求前以用法错误拒绝。`appendix validate <task-id> <appendix-id> --outcome-record <id>` 是 Bot 操作，使用已保存凭据登记一次验证；响应必须是同一附录且带有 `validation`，否则视为无效响应。重复登记由服务端以 `operation_conflict` 拒绝，CLI 不重试。附录解析只在服务端声明时接受 `scope` 与 `validation`，已删除附录携带任一字段视为无效响应；列表原样显示二者，缺少时表示不限定、尚未验证。
+
 用户凭据始终来自已有配置。`DAYNIGHT_BOT_ID` 仅为协作身份，通过 `X-Daynight-Bot-Id` 提交；服务端校验它与登录用户的关系。Bot 专属操作在缺少该身份时先于网络请求拒绝。用户专属操作在设置该身份时拒绝，不能通过移除 Bot 身份绕过用户决定权限。
 
 写入接受 `--operation-id`，未提供时只生成一次。认领及事件确认发送协议操作 ID；创建和追加使用该值作为资源 ID。版本更新、决定、回答、删除和清除关注没有服务端操作 ID 字段，该值仅用于 CLI 诊断，不承诺额外幂等性。版本条件来自显式 `--if-version`，不会用新读版本替换调用者的决定。所有写入只提交一次。

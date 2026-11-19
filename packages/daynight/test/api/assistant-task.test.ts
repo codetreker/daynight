@@ -262,3 +262,40 @@ describe("assistant task outcome records", () => {
     expect(await setup(fetch).listRecords(taskId)).toEqual(page);
   });
 });
+
+describe("assistant task appendix scope and validation", () => {
+  const scope = { projectIds: [other], eventTypes: ["report"], itemCategories: ["build"] };
+  const validation = { successCount: "9223372036854775807", failureCount: "0", lastValidatedAt: now };
+  const credential = { claimToken, claimGeneration: "1" };
+  it("accepts scope and validation only when the server declares them", () => {
+    const scoped = { ...appendix, scope, validation };
+    expect(parseAssistantTaskAppendix(scoped, taskId)).toEqual(scoped);
+    expect(parseAssistantTaskAppendix(appendix, taskId)).not.toHaveProperty("validation");
+    const deleted = { ...appendix, state: "deleted", text: "" };
+    for (const malformed of [
+      { ...appendix, scope: { projectIds: [], eventTypes: [], itemCategories: [] } }, { ...appendix, scope: { ...scope, projectIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"] } }, { ...appendix, scope: { ...scope, itemCategories: [""] } },
+      { ...appendix, scope: { eventTypes: ["report"] } }, { ...appendix, scope: null }, { ...appendix, validation: { ...validation, successCount: "0" } },
+      { ...appendix, validation: { ...validation, lastValidatedAt: null } }, { ...appendix, validation: { ...validation, failureCount: 1 } }, { ...deleted, scope }, { ...deleted, validation },
+    ]) expect(() => parseAssistantTaskAppendix(malformed, taskId)).toThrow(ProtocolError);
+  });
+  it("sends a scope with the addition and edit", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response({ ...appendix, scope }));
+    const client = setup(fetch);
+    await client.addAppendix(taskId, { ...credential, id: operationId, text: "Experience", sourceRecords: [], scope });
+    await client.updateAppendix(taskId, operationId, { ifVersion: "2", text: "Experience", scope: {} });
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual({ ...credential, id: operationId, text: "Experience", sourceRecords: [], scope });
+    expect(JSON.parse(fetch.mock.calls[1]![1]!.body as string)).toEqual({ ifVersion: "2", text: "Experience", scope: {} });
+  });
+  it("posts one validation and requires the counted appendix in the response", async () => {
+    const counted = { ...appendix, validation };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(counted));
+    expect(await setup(fetch).validateAppendix(taskId, operationId, { ...credential, outcomeRecordId: other })).toEqual(counted);
+    expect(String(fetch.mock.calls[0]![0])).toBe(`http://localhost:3000/api/v1/assistant-tasks/${taskId}/appendix/${operationId}/validations`);
+    expect(fetch.mock.calls[0]![1]!.method).toBe("POST");
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual({ ...credential, outcomeRecordId: other });
+    for (const stored of [appendix, { ...counted, id: other }]) {
+      const mismatch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(stored));
+      await expect(setup(mismatch).validateAppendix(taskId, operationId, { ...credential, outcomeRecordId: other })).rejects.toMatchObject({ code: "invalid_response" });
+    }
+  });
+});

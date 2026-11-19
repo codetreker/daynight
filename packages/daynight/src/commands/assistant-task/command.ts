@@ -29,10 +29,10 @@ const defaults: AssistantTaskCommandDependencies = {
   environment: process.env,
 };
 const userActions = new Set(["create", "update", "pause", "resume", "delete", "manual rollback", "appendix update", "appendix delete", "proposal decide", "events clear-attention"]);
-const botActions = new Set(["claim", "bind", "renew", "appendix add", "propose", "record add", "item add", "item update", "ask", "answer", "events add", "events ack"]);
+const botActions = new Set(["claim", "bind", "renew", "appendix add", "appendix validate", "propose", "record add", "item add", "item update", "ask", "answer", "events add", "events ack"]);
 const claimActions = new Set(["claim", "bind", "renew", "release", "transfer"]);
 const readActions = new Set(["list", "show", "claim-operation show", "manual show", "manual list", "appendix list", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull"]);
-const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record", "--action-record"]);
+const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record", "--action-record", "--scope-project", "--outcome-record"]);
 const integerOptions = new Set(["--if-version", "--base-version", "--manual-version", "--version", "--episode", "--expected-generation"]);
 const jsonOptions = new Set(["--rules", "--trigger", "--app-state", "--refs", "--payload"]);
 const output = (value: unknown, json: boolean): string => json ? `${JSON.stringify(value)}\n` : `${terminalText(JSON.stringify(value, null, 2))}\n`;
@@ -72,9 +72,13 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
   if (action === "update" && !["--name", "--purpose", "--scope", "--takeover", "--trigger"].some(key => command.options.has(key))) throw new UsageError("Update requires at least one changed field.", help);
   if (action === "proposal decide" && option("--decision") !== "edited" && (option("--body") !== undefined || option("--rules") !== undefined)) throw new UsageError("Only an edited decision accepts --body or --rules.", help);
   if (action === "appendix update" && command.options.has("--source-record") && command.options.has("--clear-source-records")) throw new UsageError("--source-record and --clear-source-records cannot be combined.", help);
+  const scopeOptions = ["--scope-project", "--scope-event-type", "--scope-category"].filter(key => command.options.has(key));
+  if (action === "appendix update" && scopeOptions.length > 0 && command.options.has("--clear-scope")) throw new UsageError("Scope options and --clear-scope cannot be combined.", help);
   if (action === "record add" && option("--kind") === "outcome" && !(command.options.has("--outcome") && command.options.has("--action-record"))) throw new UsageError("An outcome record requires --outcome and --action-record.", help);
   if (action === "record add" && option("--kind") !== "outcome" && (command.options.has("--outcome") || command.options.has("--action-record"))) throw new UsageError("Only outcome records accept --outcome or --action-record.", help);
   const value = (key: string, fallback: JsonValue = null): JsonValue => values.get(key) ?? fallback;
+  // A scope is sent only when declared; --clear-scope declares an unrestricted one.
+  const appendixScope = scopeOptions.length > 0 || command.options.has("--clear-scope") ? { scope: { projectIds: repeated("--scope-project"), eventTypes: repeated("--scope-event-type"), itemCategories: repeated("--scope-category") } } : {};
   const query: AssistantTaskQuery = {
     ...(option("--limit") === undefined ? {} : { limit: Number(option("--limit")) }),
     ...(option("--cursor") === undefined ? {} : { cursor: option("--cursor")! }),
@@ -108,8 +112,9 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
           case "manual list": return api.listManuals(taskId!, query);
           case "manual rollback": return api.rollback(taskId!, { ifVersion: option("--if-version")!, manualVersion: option("--manual-version")! });
           case "appendix list": return api.listAppendix(taskId!, query);
-          case "appendix add": return api.addAppendix(taskId!, { ...await credential(), id: operationId!, text: option("--text")!, sourceRecords: repeated("--source-record") });
-          case "appendix update": return api.updateAppendix(taskId!, resourceId!, { ifVersion: option("--if-version")!, text: option("--text")!, ...(command.options.has("--source-record") || command.options.has("--clear-source-records") ? { sourceRecords: repeated("--source-record") } : {}) });
+          case "appendix add": return api.addAppendix(taskId!, { ...await credential(), id: operationId!, text: option("--text")!, sourceRecords: repeated("--source-record"), ...appendixScope });
+          case "appendix update": return api.updateAppendix(taskId!, resourceId!, { ifVersion: option("--if-version")!, text: option("--text")!, ...(command.options.has("--source-record") || command.options.has("--clear-source-records") ? { sourceRecords: repeated("--source-record") } : {}), ...appendixScope });
+          case "appendix validate": return api.validateAppendix(taskId!, resourceId!, { ...await credential(), outcomeRecordId: option("--outcome-record")! });
           case "appendix delete": return api.deleteAppendix(taskId!, resourceId!, option("--if-version")!);
           case "propose": return api.propose(taskId!, { ...await credential(), id: operationId!, baseVersion: option("--base-version")!, body: option("--body")!, rules: value("--rules", {}), reason: option("--reason")!, evidenceRecords: repeated("--evidence-record") });
           case "proposal list": return api.listProposals(taskId!, query);
