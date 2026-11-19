@@ -202,3 +202,25 @@ func TestAssistantTaskInboundRejectsBacklogAndReclaims(t *testing.T) {
 		t.Fatalf("one call reclaimed beyond its bound: %d events remain", got)
 	}
 }
+
+// The inbound scope exposes the webhook source and project access readers on
+// the receive transaction, so a missing event or project surfaces each
+// reader's documented absence error instead of a generic query failure.
+func TestAssistantTaskInboundScopeExposesSourceReaders(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	completion, err := database.WriteAssistantTaskInbound(ctx, func(scope store.AssistantTaskInboundScope) error {
+		if _, err := scope.WebhookInboundSources().CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
+			return errors.Join(errors.New("missing captured event"), err)
+		}
+		if _, err := scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: uuid.NewString()}, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			return errors.Join(errors.New("missing project"), err)
+		}
+		return nil
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatal(completion, err)
+	}
+}
