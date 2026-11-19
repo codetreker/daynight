@@ -58,3 +58,17 @@ func TestConfiguredFileStorageSharesRedisGate(t *testing.T) {
 		t.Fatalf("check legacy gate directory: %v", err)
 	}
 }
+
+func TestConfiguredFileStorageRejectsInvalidDependencies(t *testing.T) {
+	root := t.TempDir()
+	if files, err := openFileStorage(root, "invalid Redis URL"); files != nil || err == nil {
+		t.Fatalf("invalid Redis URL returned files=%v, error=%v", files, err)
+	}
+	occupied := filepath.Join(root, "occupied")
+	if err := os.WriteFile(occupied, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if files, err := openFileStorage(occupied, "redis://127.0.0.1:1"); files != nil || err == nil {
+		t.Fatalf("invalid root returned files=%v, error=%v", files, err)
+	}
+}

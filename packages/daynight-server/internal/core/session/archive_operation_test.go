@@ -78,6 +78,70 @@ func TestArchiveOwnerAndInstanceAdmission(t *testing.T) {
 	}
 }
 
+type lostArchivePermit struct{}
+
+func (lostArchivePermit) Close() error { return nil }
+
+func (lostArchivePermit) GateContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	cancel(filestorage.ErrGateLost)
+	return ctx, func() { cancel(context.Canceled) }
+}
+
+func TestArchiveGateContextWithoutPermit(t *testing.T) {
+	for _, op := range []*ArchiveOperation{nil, {}} {
+		parent := t.Context()
+		ctx, stop := op.GateContext(parent)
+		stop()
+		if ctx != parent || ctx.Err() != nil {
+			t.Fatalf("archive without a permit changed the caller context: %v", ctx.Err())
+		}
+	}
+}
+
+func TestRetainedArchiveGateContext(t *testing.T) {
+	t.Run("original archive gate", func(t *testing.T) {
+		archive := &RetainedArchive{operation: &ArchiveOperation{permit: lostArchivePermit{}}}
+		parent := t.Context()
+		ctx, stop := archive.GateContext(parent)
+		defer stop()
+		if !errors.Is(context.Cause(ctx), filestorage.ErrGateLost) || parent.Err() != nil {
+			t.Fatalf("expected archive gate loss with a live caller: output=%v caller=%v", context.Cause(ctx), parent.Err())
+		}
+	})
+	t.Run("timeline gate lost during output", func(t *testing.T) {
+		parent := t.Context()
+		timeline, lose := context.WithCancelCause(parent)
+		defer lose(context.Canceled)
+		archive := &RetainedArchive{timelineCtx: timeline}
+		ctx, stop := archive.GateContext(parent)
+		defer stop()
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("live timeline gate cancelled output: %v", err)
+		}
+		lose(filestorage.ErrGateLost)
+		select {
+		case <-ctx.Done():
+			if !errors.Is(context.Cause(ctx), filestorage.ErrGateLost) || parent.Err() != nil {
+				t.Fatalf("expected timeline gate loss with a live caller: output=%v caller=%v", context.Cause(ctx), parent.Err())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeline gate loss did not cancel output")
+		}
+	})
+	t.Run("timeline gate already lost", func(t *testing.T) {
+		parent := t.Context()
+		timeline, lose := context.WithCancelCause(parent)
+		lose(filestorage.ErrGateLost)
+		archive := &RetainedArchive{timelineCtx: timeline}
+		ctx, stop := archive.GateContext(parent)
+		defer stop()
+		if !errors.Is(context.Cause(ctx), filestorage.ErrGateLost) {
+			t.Fatalf("output could start after timeline gate loss: %v", context.Cause(ctx))
+		}
+	})
+}
+
 func TestArchivePreflightAdmissionIsBounded(t *testing.T) {
 	s := archiveAdmissionFixture(t, t.TempDir())
 	entered := make(chan struct{})
