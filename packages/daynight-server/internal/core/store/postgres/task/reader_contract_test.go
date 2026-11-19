@@ -661,35 +661,6 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	}
 }
 
-func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
-	for _, test := range []struct{ name, ddl string }{
-		{"query", "DROP VIEW task_resource_rows; DROP TABLE tasks"},
-		{"missing-title", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,NULL::text AS title,status,version,created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
-		{"decode", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
-		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			s := readerStore(t)
-			project := readerProject(t, s, 1)
-			readerTask(t, s, project.ID, 11, model.TaskTodo)
-			readerExec(t, s, test.ddl)
-			err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
-				_, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
-				return err
-			})
-			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
-				t.Fatalf("sync failure hidden or leaked: %v", err)
-			}
-			if test.name == "iteration" {
-				var pgErr *pgconn.PgError
-				if !errors.As(err, &pgErr) || pgErr.Code != "P1003" {
-					t.Fatalf("driver cause lost: %v", err)
-				}
-			}
-		})
-	}
-}
-
 func testTaskSyncPropertiesBatchQueriesAndEmptyWindow(t *testing.T, database *postgres.Store) {
 	ctx := context.Background()
 	project := readerProject(t, database, 1)

@@ -99,6 +99,14 @@ checks Session authentication while the relation is still absent. A failed case
 stops further reuse. Assignee error tests reuse each fault schema for two
 read-only modes.
 
+[Task Graph and Sync projection faults](../../../../packages/daynight-server/internal/core/store/postgres/task/projection_faults_test.go)
+use a separate Store per matrix. Committed renames preserve the Task table and
+projection view identities. Replacement views expose the selected native scan
+or iteration error in the production snapshot. Resetting connections after
+each catalog change ensures a cached plan does not substitute a different
+error. Cleanup restores the original OIDs, removes temporary objects and
+checks the original snapshot before reuse.
+
 [Project App root failures](../../../../packages/daynight-server/internal/core/store/postgres/github_project_app_scope_test.go)
 share one Store for missing ownership or Team rows and the three catalog
 faults. The write scope sees each committed fault. After restoring the
