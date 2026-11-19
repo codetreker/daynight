@@ -52,7 +52,7 @@ func TestProjectAppScopeLostCommitReceipt(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	p := model.Principal{Kind: model.SessionCredential, UserID: actor, CredentialID: uuid.NewString()}
-	in := core.ProjectAppConnect{ProjectAppSelection: core.ProjectAppSelection{AppResourceID: app, GrantID: grant, AppVersion: 1, OwnershipVersion: 1}, Version: 1, InstallationID: 7}
+	in := core.ProjectAppConnect{ProjectAppSelection: core.ProjectAppSelection{AppResourceID: app, GrantID: grant, AppVersion: 1, OwnershipVersion: 1}, Version: 1, InstallationID: 7, RepositoryVersion: 1}
 	proof := core.InstallationCandidate{Installation: githubpr.InstallationObservation{ID: 7, AccountLogin: "o"}, Repository: githubpr.RepositoryObservation{ID: 8, FullName: "o/r"}}
 	armed.Store(true)
 	c, err := (&Store{Pool: pool}).WriteGitHubProjectApp(ctx, project, actor, app, func(d store.GitHubProjectAppWriteDAO) error {
