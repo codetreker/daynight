@@ -62,9 +62,16 @@ native evidence actually delivered and the model answered correctly: PNG, JPEG
 and WebP; eight images per message; 16384 pixels wide or high; 33554432 pixels;
 one frame; and per-model byte limits of 10461350 / 20904114
 (`gpt-6-astra`) and 10442582 / 20883253 (`gpt-6.2-astra`) for one image and a
-whole message. `evidenceId` names the evidence package attached to the owning
-Daynight task and `evidenceSha256` pins its bytes; the package records the
-probe, generator, grader, raw results and identity readback.
+whole message. `evidenceId` names the native evidence package attached to the
+owning Daynight task and `evidenceSha256` pins its bytes; the package records
+the probe, generator, grader, raw results and identity readback. That package
+is native app-server evidence only: it fixes identity, limits and the steer
+decision but is not product-chain acceptance. The acceptance specification
+still requires product evidence for the same combination (upload, native
+delivery, model answer, history, preview, download, archive and reading the
+original after the Controller stops); that evidence lives in the combination's
+acceptance report rather than in the row, and the rows ship only after it
+passes.
 
 ## Alternatives
 

@@ -93,9 +93,11 @@ unchanged complete acceptance requirements.
 
 Qualification maintenance requires versioned evidence, exact observed identities
 and runtime invalidation. Backend identity cannot be guessed from a display name,
-and no configuration override can manufacture support. Each registry entry
-requires its real product and native evidence; combinations without an entry
-keep that remaining work visible without weakening the admission mechanism.
+and no configuration override can manufacture support. A later registry entry
+requires its real product and native evidence; the empty registry makes that
+remaining work visible without weakening the admission mechanism. The
+[Codex macOS runtime decision](2026-11-19-codex-macos-image-runtime.md) records
+the first entries and how their native and product evidence are bound.
 
 Original uploads and native-produced transformed images remain separate immutable
 sources when both are published. Existing correlation, source ownership, pin
