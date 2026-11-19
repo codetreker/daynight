@@ -14,12 +14,13 @@ const version = '9007199254740993';
 
 type State = {
   role: 'admin' | 'member'; classification: 'unchanged' | 'same_repository' | 'different_repository' | 'unverified';
-  result: 'success' | 'conflict' | 'occupied' | 'unknown'; repoUrl: string; repositoryVersion: string;
-  previews: Record<string, unknown>[]; writes: Record<string, unknown>[]; reads: string[]; hold: Promise<void> | null;
+  result: 'success' | 'conflict' | 'occupied' | 'unknown' | 'unknown_unchanged'; repoUrl: string; repositoryVersion: string;
+  githubConnected: boolean; githubRepositoryName: string | null;
+  previews: Record<string, unknown>[]; writes: Record<string, unknown>[]; reads: string[]; hold: Promise<void> | null; holdGitHub: Promise<void> | null;
 };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { role: 'admin', classification: 'same_repository', result: 'success', repoUrl: oldAddress, repositoryVersion: version, previews: [], writes: [], reads: [], hold: null };
+  const state: State = { role: 'admin', classification: 'same_repository', result: 'success', repoUrl: oldAddress, repositoryVersion: version, githubConnected: false, githubRepositoryName: null, previews: [], writes: [], reads: [], hold: null, holdGitHub: null };
   const team = { id: teamId, kind: 'personal', name: null };
   const ownership = { teamId, version: 1n };
   const grant = () => ({ projectId, userId: actorId, role: state.role, version: 1n, createdAt: time, updatedAt: time });
@@ -46,14 +47,19 @@ const install = async (page: Page): Promise<State> => {
       if (state.hold !== null) await state.hold;
       if (state.result === 'conflict') { state.repositoryVersion = String(BigInt(state.repositoryVersion) + 1n); return reject('version_conflict'); }
       if (state.result === 'occupied') return reject('project_repository_conflict');
+      if (state.result === 'unknown_unchanged') return route.abort('failed');
       state.repoUrl = body.repoUrl as string; state.repositoryVersion = String(BigInt(state.repositoryVersion) + 1n);
+      if (state.classification === 'different_repository') { state.githubConnected = false; state.githubRepositoryName = 'example/next-project'; }
       if (state.result === 'unknown') return route.abort('failed');
       return send({ projectId, repoUrl: state.repoUrl, repositoryVersion: state.repositoryVersion, changed: true, bindingsInvalidated: state.classification === 'unverified' || state.classification === 'different_repository' });
     }
     if (path === `/api/v1/me/projects/${projectId}/worker-prompt`) return send({ scope: 'project', scopeId: projectId, revision: '0', text: '', updatedAt: null });
     if (path === `/api/v1/projects/${projectId}/invitations`) return send({ items: [] });
     if (path === `/api/v1/teams/${teamId}/github/apps`) return send({ items: [], nextCursor: null });
-    if (path === `/api/v1/projects/${projectId}/github`) return send({ projectId, version: '1', revision: '0', serviceAvailable: true, syncEnabled: false, connection: 'not_connected', repository: null, installation: null, canManageConnection: true, app: null, grantId: null, pollIntervalMinutes: 5, initializing: false, poll: { running: false, lastAttemptAt: null, lastSuccessAt: null, nextAttemptAt: null, error: null }, webhook: { running: false, lastReceivedAt: null, lastAttemptAt: null, lastSuccessAt: null, error: null } });
+    if (path === `/api/v1/projects/${projectId}/github`) {
+      if (state.holdGitHub !== null) await state.holdGitHub;
+      return send({ projectId, version: '1', revision: '0', serviceAvailable: true, syncEnabled: false, connection: state.githubConnected ? 'connected' : 'not_connected', repository: state.githubRepositoryName === null ? null : { id: state.githubConnected ? '41' : '42', fullName: state.githubRepositoryName, private: false }, installation: state.githubConnected ? { id: '1', accountLogin: 'example' } : null, canManageConnection: true, app: state.githubConnected ? { id: '00000000-0000-4000-8000-000000000022', githubAppId: '2', name: 'Repository App', githubSlug: 'repository-app' } : null, grantId: state.githubConnected ? '00000000-0000-4000-8000-000000000023' : null, pollIntervalMinutes: 5, initializing: false, poll: { running: false, lastAttemptAt: null, lastSuccessAt: null, nextAttemptAt: null, error: null }, webhook: { running: false, lastReceivedAt: null, lastAttemptAt: null, lastSuccessAt: null, error: null } });
+    }
     if (path === `/api/v1/projects/${projectId}/pull-requests`) return send({ projectId, revision: '0', items: [], total: '0', counts: { active: '0', closed: '0', merged: '0', all: '0' }, nextCursor: null, previousCursor: null });
     return send({ error: { code: 'not_found', message: 'not_found', requestId: 'repository-browser-test' } }, 404);
   });
@@ -116,6 +122,36 @@ test('a direct project administrator saves the precise preview once and refreshe
   await expect(page.getByRole('region', { name: 'Repository address', exact: true }).getByText(sameAddress, { exact: true })).toBeVisible();
   expect(state.writes[0]).toEqual({ repoUrl: sameAddress, expectedUserId: actorId, repositoryVersion: version, ownershipVersion: '1', classification: 'same_repository', targetGitHubRepositoryId: null, treatUnverifiedAsSwitch: false });
   expect(state.reads.filter(path => path === `/api/v1/projects/${projectId}`).length).toBeGreaterThan(before);
+});
+
+test('switching repositories preserves an execution draft and refreshes the hidden GitHub tab', async ({ page }) => {
+  const state = await install(page); state.classification = 'different_repository'; state.githubConnected = true; state.githubRepositoryName = 'example/project';
+  const settingsTab = (name: string) => page.getByRole('navigation', { name: 'Project settings sections' }).getByRole('link', { name });
+  await page.goto(`/projects/${projectId}/settings`);
+  const threshold = page.getByLabel('Alert threshold', { exact: true });
+  await expect(threshold).toHaveValue('60'); await threshold.fill('75');
+  await settingsTab('GitHub integration').click();
+  await expect(page.locator('.github-repository-name strong')).toHaveText('example/project');
+  const before = state.reads.filter(path => path === `/api/v1/projects/${projectId}/github`).length;
+  await settingsTab('Project management').click();
+  const dialog = await open(page, nextAddress);
+  await dialog.getByRole('button', { name: 'Confirm repository switch', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('region', { name: 'Repository address', exact: true }).getByText(nextAddress, { exact: true })).toBeVisible();
+  await settingsTab('Execution & alerts').click();
+  await expect(threshold).toHaveValue('75');
+  await expect(threshold).toBeEditable();
+  const refresh = Promise.withResolvers<void>(); state.holdGitHub = refresh.promise;
+  try {
+    await settingsTab('GitHub integration').click();
+    await expect.poll(() => state.reads.filter(path => path === `/api/v1/projects/${projectId}/github`).length).toBeGreaterThan(before);
+    await expect(page.getByText('Loading GitHub sync status…', { exact: true })).toBeVisible();
+    await expect(page.locator('.github-repository-name strong')).toHaveCount(0);
+  } finally { refresh.resolve(); }
+  await expect(page.locator('.github-repository-name strong')).toHaveText('example/next-project');
+  await expect(page.getByRole('heading', { name: 'Connect a repository', exact: true })).toBeVisible();
+  expect(state.reads.filter(path => path === `/api/v1/projects/${projectId}/github`).length).toBeGreaterThan(before);
+  expect(state.writes).toHaveLength(1);
 });
 
 test('different repositories display binding effects and save without an unknown acknowledgement', async ({ page }) => {
@@ -186,15 +222,15 @@ test('occupied repository refusal preserves an editable draft', async ({ page })
   expect(state.writes).toHaveLength(1);
 });
 
-test('a lost save response permits readback without replaying or claiming original success', async ({ page }) => {
-  const state = await install(page); state.result = 'unknown'; await page.goto(base);
+for (const committed of [false, true]) test(`a lost save response permits readback without replaying or claiming original success (committed: ${committed})`, async ({ page }) => {
+  const state = await install(page); state.result = committed ? 'unknown' : 'unknown_unchanged'; await page.goto(base);
   const dialog = await open(page);
   await dialog.getByRole('button', { name: 'Save address', exact: true }).click();
   await expect(dialog).toContainText('The save outcome is unknown.');
   await expect(dialog.getByRole('button', { name: 'Save address', exact: true })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Check current address', exact: true }).click();
   await expect(dialog).toContainText('Current address observed');
-  await expect(dialog).toContainText(sameAddress);
+  await expect(dialog).toContainText(committed ? sameAddress : oldAddress);
   await expect(dialog).toContainText('it cannot confirm the original operation');
   await expect(page.getByText('Repository address saved.', { exact: true })).toHaveCount(0);
   expect(state.writes).toHaveLength(1);
