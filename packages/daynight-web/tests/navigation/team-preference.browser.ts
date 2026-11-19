@@ -67,7 +67,7 @@ const install = async (page: Page): Promise<Fixture> => {
 const selected = (page: Page, id: string) => page.evaluate((k) => localStorage.getItem(k), key(id));
 const put = (page: Page, id: string, value: string) => page.evaluate(([k, v]) => localStorage.setItem(k!, v!), [key(id), value]);
 const openPicker = async (page: Page) => {
-  if (!(await page.locator('.sidebar').isVisible())) await page.getByRole('button', { name: /^(Open navigation|打开导航)$/, exact: true }).click();
+  if (await page.evaluate(() => matchMedia('(max-width: 740px)').matches) && !(await page.locator('.sidebar').isVisible())) await page.getByRole('button', { name: /^(Open navigation|打开导航)$/, exact: true }).click();
   await page.locator('.team-selector .team-switch').click();
 };
 const heading = (page: Page, name: string) => name === 'Team settings' || name === 'Projects shared with me'
