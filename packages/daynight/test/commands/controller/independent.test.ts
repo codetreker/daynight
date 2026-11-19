@@ -879,12 +879,24 @@ test.skipIf(process.platform !== "win32")("capture failure terminates the real W
   await writeFile(path.join(dist, "main.js"), `require('node:fs').writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setTimeout(() => process.exit(9), 20000);`);
   let spawned: import("node:child_process").ChildProcess | undefined, spawnedClose: Promise<void> | undefined;
   f.spawn.mockImplementation((...args: Parameters<typeof childProcess.spawn>) => { spawned = childProcess.spawn(...args); spawnedClose = new Promise(resolve => spawned!.once("close", () => resolve())); return spawned; });
-  f.request.mockImplementation((...args: Parameters<typeof localClient.requestController>) => localClient.requestController(...args));
-  f.capture.mockImplementationOnce(async () => { await vi.waitFor(async () => expect(await readFile(ready, "utf8")).toMatch(/^\d+$/), { timeout: 5000, interval: 25 }); throw capture; });
+  const actualNow = Date.now.bind(Date); let clockAdvance = 0, unavailableObservations = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => actualNow() + clockAdvance);
+  f.request.mockImplementation(async (...args: Parameters<typeof localClient.requestController>) => {
+    try { return await localClient.requestController(...args); }
+    catch (error) {
+      if (args[1].kind === "observe" && error instanceof localClient.ControllerIpcOutcomeUnknownError) {
+        unavailableObservations++;
+        clockAdvance += 12_500;
+      }
+      throw error;
+    }
+  });
+  f.capture.mockImplementationOnce(async () => { await vi.waitFor(async () => expect(await readFile(ready, "utf8")).toMatch(/^\d+$/), { timeout: 5000, interval: 25 }); vi.spyOn(spawned!, "kill"); throw capture; });
   try {
     const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
     expect(error).toBeInstanceOf(AggregateError); expect(error.errors[0]).toBe(capture);
     expect(error.errors[1].message).toContain("complete stopping remains unconfirmed");
+    expect(unavailableObservations).toBe(1); expect(f.acquireJob).not.toHaveBeenCalled(); expect(spawned!.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
     expect(spawned).toBeDefined(); expect(spawned!.exitCode !== null || spawned!.signalCode !== null).toBe(true);
     expect(spawned!.exitCode).not.toBe(9); expect(f.stop).not.toHaveBeenCalled(); expect(f.record).not.toHaveBeenCalled();
   } finally {
@@ -1482,6 +1494,12 @@ test.skipIf(process.platform === "win32")("retained authenticated snapshot stops
   const processProof = await vi.importActual<typeof import("../../../src/commands/controller/process-proof.js")>("../../../src/commands/controller/process-proof.js");
   const launchObservation = await vi.importActual<typeof import("../../../src/commands/controller/launch-observation.js")>("../../../src/commands/controller/launch-observation.js");
   const lifecycle = await vi.importActual<typeof import("../../../src/commands/controller/lifecycle-store.js")>("../../../src/commands/controller/lifecycle-store.js");
+  const exitWaits: number[] = [];
+  const originalTimeout = globalThis.setTimeout;
+  vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, milliseconds, ...args) => {
+    if (milliseconds === 2500) { exitWaits.push(milliseconds); return originalTimeout(handler, 25, ...args); }
+    return originalTimeout(handler, milliseconds, ...args);
+  });
   const { readLaunchTicket } = await import("../../../src/commands/controller/launch-ticket.js");
   const { resolveConfigurationPaths } = await import("../../../src/config/paths.js");
   const dist = path.join(v.home, "dist"), ready = path.join(v.home, "saved-snapshot-child-ready"), evidence = path.join(v.home, "saved-snapshot.json"); await mkdir(dist);
@@ -1537,6 +1555,7 @@ setTimeout(() => process.exit(9), 10000).unref();
   });
   try {
     const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, { ...v.context, packageDirectory: v.home }).catch(error => error);
+    expect(exitWaits).toEqual([2500]);
     expect(launchObservation.isControllerJournalIoFailure(error)).toBe(true); expect(error.journalCause).toMatchObject({ cause: { code: "SQLITE_CANTOPEN" } });
     expect(nativeWasRunning).toBe(true); expect(f.stop).toHaveBeenCalledOnce(); expect(f.confirm).toHaveBeenCalledOnce();
     expect(await processProof.confirmControllerProcessesStopped(controllerProof!, [nativeProof!])).toBe(true);
