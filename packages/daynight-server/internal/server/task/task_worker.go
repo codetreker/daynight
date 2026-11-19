@@ -21,8 +21,8 @@ import (
 
 func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentication, logger *slog.Logger) {
 	path := "/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim"
-	mux.HandleFunc("POST "+path, auth.Require(handler.claimWorker))
-	mux.HandleFunc("PATCH "+path, auth.Require(handler.updateWorker))
+	mux.HandleFunc("POST "+path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", "claim"), handler.claimWorker)))
+	mux.HandleFunc("PATCH "+path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", "update"), handler.updateWorker)))
 	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST, PATCH")))
 	for _, operation := range []struct {
 		path    string
@@ -31,7 +31,7 @@ func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth RouteAuthentica
 		{"release", handler.releaseWorker},
 		{"withdraw", handler.withdrawWorker},
 	} {
-		mux.HandleFunc("POST "+path+"/"+operation.path, auth.Require(operation.handler))
+		mux.HandleFunc("POST "+path+"/"+operation.path, auth.Require(declaredBot(logger, taskBotRefusal("worker_claim", operation.path), operation.handler)))
 		mux.HandleFunc(path+"/"+operation.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	}
 }
