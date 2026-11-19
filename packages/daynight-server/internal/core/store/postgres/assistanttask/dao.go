@@ -31,11 +31,7 @@ func (d *DAO) Credential(ctx context.Context, p model.Principal) error {
 }
 
 func (d *DAO) Bot(ctx context.Context, id string) (model.Bot, error) {
-	var locked string
-	if err := d.tx.QueryRow(ctx, `SELECT id::text FROM bots WHERE id=$1 FOR SHARE`, id).Scan(&locked); err != nil {
-		return model.Bot{}, pg.QueryError("lock assistant Bot", err)
-	}
-	return botpg.NewReader(d.tx).Bot(ctx, id)
+	return botpg.NewBarrier(d.tx).Bot(ctx, id)
 }
 
 func (d *DAO) Now(ctx context.Context) (time.Time, error) {

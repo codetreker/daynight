@@ -372,7 +372,8 @@ installed CLI changes. They write `.tmp/completion-module-evidence.json` and
 `.tmp/completion-evidence.json`, respectively, unless the receipt path is overridden.
 The dedicated Ubuntu 24.04 job in the
 [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
-runs both suites on every `main` push and through `workflow_dispatch`.
+is triggered by `main` pushes and `workflow_dispatch` to run both suites; main
+concurrency can replace a pending run before it starts.
 Its result belongs to that workflow's checked-out revision and does not gate
 ordinary PR `checks`. The `daynight-completion-acceptance` artifact contains
 both available JSON receipts. Upload runs after the module harness starts,
@@ -419,7 +420,8 @@ records the original parallel model; the [independent macOS validation decision]
 owns the current macOS topology and its allocation trade-off. The
 [Windows shard decision](../.agents/notes/implemented/testing/2026-11-11-windows-cli-verified-shards.md)
 owns the Windows ordinary allocation and completeness checks.
-Main pushes run every module. The checkout includes the required history.
+Main pushes select every module, subject to workflow concurrency. The checkout
+includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
 reads the selected file sequentially and records its byte count, SHA-256 and
@@ -1368,16 +1370,19 @@ gate. Routine CI excludes stress
 workloads. The [test-writing rules](writing_tests.md) own test boundaries, while the
 [product E2E guide](../packages/e2e_tests/README.md) owns startup and recovery.
 
-Workflow concurrency cancels an older PR run for the same ref. Each main run
-has its own group by workflow, ref, full commit SHA and run ID, so later runs
-do not replace or cancel it; runner availability still controls job scheduling.
+Workflow concurrency cancels an older PR run for the same ref. Each workflow has
+its own group for main: the running run continues, and a new pending run replaces
+the older pending run. Intermediate commits can therefore be skipped; runner
+availability still controls job scheduling. Manual shell/browser runs on main
+share that workflow's main group.
 Documentation-only PRs run routing tests and
 the gate. Every main push selects all modules, API integration and product E2E.
 npm publication performs its own CLI validation at the frozen release commit.
 
 The separate [`shell and browser acceptance` workflow](../.github/workflows/shell-browser.yml)
-contains `verify-completion` and `verify-web-browser`. It runs both jobs on every
-`main` push and on `workflow_dispatch`, without module detection or a PR trigger.
+contains `verify-completion` and `verify-web-browser`. A `main` push or
+`workflow_dispatch` triggers both jobs, without module detection or a PR trigger;
+main concurrency can replace a pending run before either job starts.
 Each job checks out its event's source and installs its own locked dependencies.
 Shell validation retains the Bash 4.2, modern Bash and zsh behavior matrix and
 artifact acceptance. Browser validation retains the complete assistant suite,
