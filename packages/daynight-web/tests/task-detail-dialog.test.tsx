@@ -709,6 +709,19 @@ describe('task detail dialog', () => {
     expect(within(predecessors).getByRole('button', { name: /任务 2.*外部依赖/ })).toBeVisible();
   });
 
+  it('keeps unsupported usage inside its tab and out of the dialog header', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
+    await open();
+    const title = await screen.findByRole('heading', { name: '任务 1' });
+    const header = title.closest('.task-detail-dialog')!.querySelector<HTMLElement>('.task-detail-heading')!;
+    expect(header.querySelector('.task-usage-summary')).toBeNull();
+    expect(within(header).queryByText('此服务不支持用量查询')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: '用量' }));
+    const usage = screen.getByRole('tabpanel', { name: '用量' });
+    expect(await within(usage).findByText('此服务不支持用量查询')).toBeVisible();
+    expect(header.querySelector('.task-usage-summary')).toBeNull();
+  });
+
   it('opens on overview and keeps task-scoped attachments in their own mounted panel', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
     await open();

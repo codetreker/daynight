@@ -46,9 +46,10 @@ export const UsageSummaryView = ({ summary, compact = false }: { readonly summar
 const UsageProjectContext = createContext<string | null>(null);
 export const UsageProjectProvider = ({ projectId, children }: { readonly projectId: string; readonly children: ReactNode }) => <UsageProjectContext value={projectId}>{children}</UsageProjectContext>;
 const GraphUsageSummary = ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => {
-  const { summary, error } = useTaskUsage(projectId, taskId), { locale } = useI18n(), zh = locale === 'zh-CN', m = usageWords(zh);
-  const reading = summary === null ? null : usageCompactReading(summary, locale);
-  const text = reading === null ? error === null ? m.title + '…' : m.error : `${reading.label}: ${reading.value} · ${reading.state}`;
+  const { summary } = useTaskUsage(projectId, taskId), { locale } = useI18n();
+  if (summary === null || (summary.metrics.totalTokens.known === null && summary.metrics.outputTokens.known === null && summary.metrics.inputTokens.known === null)) return null;
+  const reading = usageCompactReading(summary, locale);
+  const text = `${reading.label}: ${reading.value} · ${reading.state}`;
   return <span className="task-node-usage" title={text}>
     {text}
   </span>;
@@ -60,10 +61,10 @@ export const UsageError = ({ error, retry }: { readonly error: unknown; readonly
 };
 export const isUsageUnsupported = (error: unknown): boolean => error instanceof ApiError && error.code === 'usage_unsupported';
 
-type TaskUsageSummaryProps = { readonly compact?: boolean; readonly href?: string; readonly onOpen?: (trigger: HTMLElement) => void; readonly hideUnsupported?: boolean };
-export const TaskUsageSummaryContent = ({ state, compact = false, onOpen, href, hideUnsupported = false }: TaskUsageSummaryProps & { readonly state: ReturnType<typeof useTaskUsage> }) => {
+type TaskUsageSummaryProps = { readonly compact?: boolean; readonly href?: string; readonly onOpen?: (trigger: HTMLElement) => void };
+export const TaskUsageSummaryContent = ({ state, compact = false, onOpen, href }: TaskUsageSummaryProps & { readonly state: ReturnType<typeof useTaskUsage> }) => {
   const { locale } = useI18n(), m = usageWords(locale === 'zh-CN');
-  if (isUsageUnsupported(state.error)) return hideUnsupported ? null : <section className="task-usage-summary" aria-label={m.title}><span>{m.unsupported}</span></section>;
+  if (isUsageUnsupported(state.error)) return <section className="task-usage-summary" aria-label={m.title}><span>{m.unsupported}</span></section>;
   const content = state.summary !== null ? <UsageSummaryView summary={state.summary} compact={compact} /> : <span>{state.pending ? m.loading : m.unknown}</span>;
   return <section className="task-usage-summary" aria-label={m.title} data-task-row-selectable>
     {href === undefined ? content : <a className="usage-summary-link" href={href} onClick={event => { if (onOpen !== undefined && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) { event.preventDefault(); onOpen(event.currentTarget); } }}>{content}</a>}

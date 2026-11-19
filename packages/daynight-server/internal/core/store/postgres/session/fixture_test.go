@@ -256,6 +256,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"session_archive_chunks",
 		"session_archive_files",
 		"session_archive_migrations",
+		"session_archive_retention",
 		"session_archives",
 		"session_events",
 		"session_image_captures",

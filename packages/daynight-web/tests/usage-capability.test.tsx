@@ -1,9 +1,7 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { ApiError } from '../src/api/client';
 import { usageMetricKeys } from '../src/api/usage';
 import { TaskUsagePanel } from '../src/features/usage/TaskUsagePanel';
-import { TaskUsageSummaryContent } from '../src/features/usage/UsageSummaryView';
 import { useTaskUsage } from '../src/features/usage/useTaskUsage';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
@@ -54,16 +52,6 @@ it('keeps negotiated support through a temporary recheck failure and revokes it 
   fetch.mockImplementation(async () => new Response('not found', { status: 404 }));
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
   await screen.findByText('unsupported');
-});
-
-it('hides only the unsupported summary when requested', () => {
-  const state = { summary: null, pending: false, error: new ApiError('server', 404, 'usage_unsupported'), capability: 'unsupported' as const, retry: vi.fn() };
-  const view = renderWithLocale(<TaskUsageSummaryContent state={state} hideUnsupported />, { locale: 'en' });
-  expect(screen.queryByText('This service does not support usage')).toBeNull();
-  view.rerender(<TaskUsageSummaryContent state={state} />);
-  expect(screen.getByText('This service does not support usage')).toBeVisible();
-  view.rerender(<TaskUsageSummaryContent state={{ ...state, error: new ApiError('server', 503, 'unavailable'), capability: 'error' }} hideUnsupported />);
-  expect(screen.getByRole('alert')).toHaveTextContent('Usage unavailable');
 });
 
 it.each([401, 403, 404])('clears records when summary access is denied (%i), ignores late responses, and reloads after access returns', async status => {

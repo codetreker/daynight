@@ -165,16 +165,27 @@ matrix owns its own schema so the all-table empty check still detects any
 escaped registration write. Rotation and aggregate cases retain their real
 committed operations and scoped results. A failed case stops reuse.
 
-The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go)
-and [project retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go)
-matrices each use one Store. Cases keep distinct App, grant, and Project
-identities with mutations restricted to their own rows. Signal tests hold the
-installation and repository identifiers constant across Apps and read committed
-pending rows by Project. Retirement cases finish their transaction before the
-next case. The trigger fault is observed as its PostgreSQL exception, the
-affected state is read back after rollback, and the trigger and function are
-removed and checked in the catalog before reuse. A failed case or transaction
-release stops the matrix.
+The GitHub [signal](../../../../packages/daynight-server/internal/core/store/postgres/github/app_signals_test.go),
+[retirement](../../../../packages/daynight-server/internal/core/store/postgres/github/app_lifecycle_test.go),
+and [Work stop](../../../../packages/daynight-server/internal/core/store/postgres/github/app_work_test.go)
+matrices each use one Store per matrix. Signal cases hold installation and
+repository identifiers constant across distinct Apps and read committed pending
+rows by Project. Project retirement cases keep separate App, grant, and Project
+identities. The retirement trigger raises its PostgreSQL exception, and state
+is read back after rollback. The trigger and function are removed and checked
+in the catalog before reuse.
+
+Each pre-canceled retirement case begins a new transaction and uses fresh
+identifiers. The DAO call receives a canceled context. The transaction is
+rolled back with a live context, the pool is checked for reuse, and the fixture
+remains empty.
+
+Work stop cases share one committed connection, coverage interval, and pending
+request. The connection is unbound once before the unbound retirement cases.
+Each case injects its catalog fault inside its own transaction and checks the
+driver SQLSTATE and operation phase. After rollback, a fresh pool read checks
+the committed rows and the original catalog identities. A failed retirement
+or Work stop case stops reuse.
 
 [Task write competition](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
 uses distinct Project and Task IDs inside each matrix's store. Actual lock
