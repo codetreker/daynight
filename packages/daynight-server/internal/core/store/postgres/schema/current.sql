@@ -1,4 +1,4 @@
--- Schema snapshot version: 97
+-- Schema snapshot version: 98
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -616,6 +616,15 @@ CREATE TABLE "project_ownership" (
     CONSTRAINT "project_ownership_version_check" CHECK (("version" > 0))
 );
 
+CREATE TABLE "project_pr_review_assignments" (
+    "user_id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "github_pr_id" bigint NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "assigned_at" timestamp with time zone NOT NULL
+);
+
 CREATE TABLE "project_pull_requests" (
     "project_id" "uuid" NOT NULL,
     "number" bigint NOT NULL,
@@ -666,6 +675,7 @@ CREATE TABLE "projects" (
     "deleted_at" timestamp with time zone,
     "tag_catalog_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "repository_identity" "text" COLLATE "pg_catalog"."C",
+    "repository_version" bigint DEFAULT 1 NOT NULL,
     CONSTRAINT "projects_execution_warning_minutes_check" CHECK (("execution_warning_minutes" > 0)),
     CONSTRAINT "projects_name_check" CHECK (("btrim"("name") <> ''::"text")),
     CONSTRAINT "projects_repo_url_check" CHECK (("btrim"("repo_url") <> ''::"text")),
@@ -1752,6 +1762,9 @@ ALTER TABLE ONLY "project_invitations"
 ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
 
+ALTER TABLE ONLY "project_pr_review_assignments"
+    ADD CONSTRAINT "project_pr_review_assignments_pkey" PRIMARY KEY ("user_id", "project_id", "repository_id", "github_pr_id");
+
 ALTER TABLE ONLY "project_pull_requests"
     ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "repository_id", "number");
 
@@ -2217,6 +2230,8 @@ CREATE INDEX "webhook_subscriptions_acl" ON "webhook_subscriptions" USING "btree
 CREATE INDEX "webhook_subscriptions_deleted" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "deleted_at", "id") WHERE ("deleted_at" IS NOT NULL);
 
 CREATE INDEX "webhook_subscriptions_endpoint" ON "webhook_subscriptions" USING "btree" ("endpoint_id", "id") WHERE ("deleted_at" IS NULL);
+
+CREATE INDEX "workers_review_participants" ON "workers" USING "btree" ("user_id", "worker_id") WHERE "review_enabled";
 
 CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_at" DESC, "worker_id");
 

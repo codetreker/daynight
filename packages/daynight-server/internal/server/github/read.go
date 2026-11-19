@@ -23,6 +23,7 @@ import (
 type ReadOperations interface {
 	List(context.Context, model.Principal, string, coregithub.ListRequest) (coregithub.Page, error)
 	Detail(context.Context, model.Principal, string, int64, *int64) (coregithub.Detail, error)
+	ReviewAssignment(context.Context, model.Principal, string, int64, *int64) (coregithub.ReviewAssignmentResult, error)
 	Repositories(context.Context, model.Principal, string, coregithub.RepositoriesRequest) (coregithub.RepositoriesPage, error)
 	Authors(context.Context, model.Principal, string, coregithub.AuthorsRequest) (coregithub.AuthorsPage, error)
 	Statistics(context.Context, model.Principal, string, coregithub.StatisticsRequest) (coregithub.Statistics, error)
@@ -41,11 +42,13 @@ func RegisterPullRequestRoutes(mux *http.ServeMux, reader ReadOperations, auth R
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests", auth.Require(h.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-repositories", auth.Require(h.repositories))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(h.detail))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(h.reviewAssignment))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-authors", auth.Require(h.authors))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-statistics", auth.Require(h.statistics))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-repositories", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests/{number}/review-assignment", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-authors", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-statistics", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 }

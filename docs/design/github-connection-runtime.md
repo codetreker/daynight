@@ -15,3 +15,5 @@
 将每个 App 的 HTTPS Webhook 指向 `/api/v1/github/apps/{localAppId}/webhook` 并订阅 `pull_request`、`installation` 和 `installation_repositories`。反向代理须允许 26,214,400 字节的请求体。入口使用对应活 App 的 secret 验证原始字节，并在八秒预算内持久化提示；相关事件确认提交返回 202（包括零匹配），合法无关事件返回 204，失败或提交结果未知返回 503。入口不请求 GitHub，也不保存事件正文。提示按当前绑定和授权路由；周期同步补齐丢失的事实。细节见[Webhook 接收](github-app-webhook.md)。
 
 同步配置和执行日志关联操作身份与结果，不记录凭据或 PR 正文。关闭回执表示数据库停止准入已提交，不表示在途远端请求均已退出。
+
+项目仓库实际切换时，项目事务先关闭旧来源覆盖区间并退役项目侧连接与同步工作，再保存新身份；其他项目和 App 安装不受影响。连接的网络证明绑定项目地址版本，地址 A→B→A 也会使旧证明失效。历史来源及 PR 保持可读；新连接由管理员手工建立。历史 PR 的 Reviewer 归属保持独立，切换与归属写入的并发规则见[归属设计](pr-review-assignment.md)。
