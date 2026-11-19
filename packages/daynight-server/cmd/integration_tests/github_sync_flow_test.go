@@ -296,12 +296,12 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err = tx.Exec(f.context, `UPDATE project_github SET enabled=true, sync_enabled=true, app_id=13, installation_id=99, app_resource_id=NULL, team_grant_id=NULL, credential_version=NULL, installation_account_login='example', access_state='available' WHERE project_id=$1`, project.ID); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(f.context, `DROP TABLE project_pr_review_assignments`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := tx.Exec(f.context, `DROP TABLE assistant_task_inbox_receipts, assistant_task_inboxes;
 			DROP INDEX assistant_task_events_inbound_settled;
 			ALTER TABLE assistant_task_events DROP COLUMN settled_at`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tx.Exec(f.context, `DROP TABLE project_pr_review_assignments`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version, DROP COLUMN review_enabled, DROP COLUMN review_version`); err != nil {
