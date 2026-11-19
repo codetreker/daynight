@@ -202,3 +202,29 @@ func TestAssistantTaskInboundRejectsBacklogAndReclaims(t *testing.T) {
 		t.Fatalf("one call reclaimed beyond its bound: %d events remain", got)
 	}
 }
+
+// The receive scope binds the webhook and project readers to its own
+// transaction: an unknown captured event and an unknown project report their
+// documented absence instead of an error that would abort the receive.
+func TestAssistantTaskInboundScopeBindsVerificationReaders(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
+	ctx := t.Context()
+	completion, err := database.WriteAssistantTaskInbound(ctx, func(scope store.AssistantTaskInboundScope) error {
+		sources := scope.WebhookInboundSources()
+		if _, err := sources.CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
+			return errors.Join(errors.New("unknown captured event was not missing"), err)
+		}
+		destinations, err := sources.PersonalDeliveryDestinations(ctx, uuid.NewString(), uuid.NewString(), "https://daynight.example", 1)
+		if err != nil || len(destinations) != 0 {
+			return errors.Join(errors.New("unknown event had delivery destinations"), err)
+		}
+		if _, err := scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: uuid.NewString()}, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			return errors.Join(errors.New("unknown project was not reported missing"), err)
+		}
+		return nil
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatal(completion, err)
+	}
+}
