@@ -46,6 +46,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
   const reloadAfterRevocation = useRef(false);
   const confirmedNeedsRead = useRef(false);
   const pendingSettingsRead = useRef(false);
+  const repositoryRefreshPending = useRef(false);
   const confirmedReadInFlight = useRef(false);
   const generation = useRef(0);
   const submitting = useRef(false);
@@ -179,6 +180,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     }
   };
   const clearPrivateDraft = () => {
+    repositoryRefreshPending.current = false;
     ++draftGeneration.current; discardedDraftGeneration.current = draftGeneration.current; cancelledDraftGeneration.current = null;
     draftVersion.current = null; draftConflictRef.current = false; setDraftConflict(false);
     projectRef.current = null; draftRef.current = "";
@@ -192,7 +194,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     reconciliationNotice.current = null; rejectedDraft.current = false; setReconciliationRequired(false); setWriteError(null);
     releaseResolvedRetention();
   };
-  const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null, retainDraft = false) => {
+  const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null) => {
     if (access.session.scope.hasIdentityMismatch) return;
     readController.current?.abort();
     const read = new AbortController(); readController.current = read;
@@ -206,7 +208,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     // A return read may replace a submitted draft after confirmation or under
     // the existing conflict/unknown reconciliation rules, not after other rejections.
     const returning = returnRead.current;
-    const preserveDraft = retainDraft || (returning && submitting.current && admission.current?.confirmed === false && reconciliationNotice.current === null && !uncertainRef.current)
+    const preserveDraft = repositoryRefreshPending.current || (returning && submitting.current && admission.current?.confirmed === false && reconciliationNotice.current === null && !uncertainRef.current)
       || (!submitting.current && (returning || confirmedNeedsRead.current || reconciliationNotice.current !== null || uncertainRef.current));
     const preserveError = returning || confirmedNeedsRead.current || reconciliationNotice.current !== null;
     const originalDraft = draftGeneration.current;
@@ -272,6 +274,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       if (reconciliationNotice.current !== null && nextNotice === reconciliationNotice.current) {
         reconciliationNotice.current = null; setReconciliationRequired(false); setWriteError(null);
       }
+      repositoryRefreshPending.current = false;
       finishRead("succeeded");
       releaseResolvedRetention();
     } catch (failure) {
@@ -303,7 +306,9 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     releaseResolvedRetention();
   }), [projectId, access.session]);
   useEffect(() => subscribeRepositoryChanges(change => {
-    if (change.projectId === projectId && change.userId === userId && controller.current !== null) void load(controller.current.signal, null, true);
+    if (change.projectId !== projectId || change.userId !== userId || controller.current === null) return;
+    repositoryRefreshPending.current = true;
+    void load(controller.current.signal);
   }), [projectId, userId, access.session]);
   useEffect(() => {
     const active = new AbortController(); controller.current = active;
@@ -497,7 +502,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     ++draftGeneration.current;
     discardedDraftGeneration.current = null; cancelledDraftGeneration.current = null;
     if (projectRef.current !== null && !draftConflictRef.current) {
-      if (!returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && value === String(projectRef.current.settings.executionWarningMinutes)) draftVersion.current = null;
+      if (!repositoryRefreshPending.current && !returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && value === String(projectRef.current.settings.executionWarningMinutes)) draftVersion.current = null;
       else draftVersion.current ??= confirmedNeedsRead.current && confirmedFloor.current !== null ? confirmedFloor.current : projectRef.current.settings.version;
     }
     draftRef.current = value; setDraft(value); setInvalid(false);
@@ -546,6 +551,8 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       } else if (confirmedNeedsRead.current) {
         if (access.ready) void load(controller.current!.signal, "saved");
         else void access.session.revalidate();
+      } else if (repositoryRefreshPending.current) {
+        void load(controller.current!.signal);
       } else if (writeError !== null) { setWriteError(null); void load(controller.current!.signal); }
       else if (error === null && project !== null && !uncertain) void access.session.revalidate();
       else { setWriteError(null); void load(controller.current!.signal, uncertain ? "reconciled" : null); }

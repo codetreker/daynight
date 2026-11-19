@@ -26,7 +26,10 @@ versions as strings. Repository writes join the existing Project management
 guard. Its unknown result remains guarded after readback because current state
 cannot identify the original operation. Account- and Project-bound change
 notifications refresh the affected readers through their existing controllers,
-which preserves independent settings and Worker drafts. The
+which preserves independent settings and Worker drafts. Settings refresh intent
+survives read failure and cancellation until an authorized read merges the
+resource, so recovery cannot discard a draft or replace its concurrency version.
+Access revocation still clears private state. The
 [settings design](../../../../docs/design/project-settings.md#仓库改址) owns
 Web presentation and read ownership.
 
