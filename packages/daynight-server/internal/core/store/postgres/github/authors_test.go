@@ -21,9 +21,10 @@ func TestAuthorsCanonicalSearchAndPagination(t *testing.T) {
 	observed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	insert := func(project string, number int, state string, id *int64, login *string, at time.Time, revision int64) {
 		t.Helper()
+		ensureLegacySource(t, setup, project)
 		mustExec(t, setup, `INSERT INTO project_pull_requests
-		 (project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,author_id,author_login,observed_at,revision)
-		 VALUES ($1,$2,$2,'url','title',$3,false,'main','sha',$4,$4,$5,$6,$4,$7)`, project, number, state, at, id, login, revision)
+		 (project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,author_id,author_login,observed_at,revision)
+		 VALUES ($1,30,$2,$2,'url','title',$3,false,'main','sha',$4,$4,$5,$6,$4,$7)`, project, number, state, at, id, login, revision)
 	}
 	// An older alias must not match, even though its PR number and revision are higher.
 	insert(project, 50, "open", ptr(int64(1)), ptr("OldAlias"), observed, 20)
@@ -88,9 +89,10 @@ func TestAuthorsCanonicalSearchAndPagination(t *testing.T) {
 	}
 	// An invalid saved identity is not silently discarded by a search.
 	invalid := begin(t, db, pgx.TxOptions{})
+	ensureLegacySource(t, invalid, project)
 	mustExec(t, invalid, `INSERT INTO project_pull_requests
-	 (project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,author_id,observed_at,revision)
-	 VALUES ($1,100,100,'url','title','open',false,'main','sha',$2,$2,100,$2,1)`, project, observed)
+	 (project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,author_id,observed_at,revision)
+	 VALUES ($1,30,100,100,'url','title','open',false,'main','sha',$2,$2,100,$2,1)`, project, observed)
 	if err := invalid.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

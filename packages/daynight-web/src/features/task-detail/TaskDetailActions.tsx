@@ -17,6 +17,7 @@ export const TaskDetailActions = ({ popout, copyUrl, canDelete, onDelete, menuLa
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const initial = useRef<'first' | 'last'>('first');
+  const popoutSpace = useRef(false);
   const menuId = useId();
   const [copyResult, setCopyResult] = useState<{ generation: number; state: 'pending' | 'copied' | 'failed' } | null>(null);
   const copyIdentity = useRef({ url: copyUrl, generation: 0, pending: false });
@@ -93,7 +94,14 @@ export const TaskDetailActions = ({ popout, copyUrl, canDelete, onDelete, menuLa
         options[next]?.focus();
       }
     }}>
-      {popout !== undefined && <a className="task-detail-action-item task-detail-popout" role="menuitem" tabIndex={-1} href={popout} target="_blank" rel="noopener noreferrer" onClick={() => close(true)} onAuxClick={() => close(true)}>
+      {popout !== undefined && <a className="task-detail-action-item task-detail-popout" role="menuitem" tabIndex={-1} href={popout} target="_blank" rel="noopener noreferrer" onClick={() => close(true)} onAuxClick={() => close(true)} onKeyDown={(event) => {
+        if (event.key === ' ') { event.preventDefault(); if (!event.repeat) popoutSpace.current = true; }
+      }} onKeyUp={(event) => {
+        if (event.key !== ' ') return;
+        event.preventDefault();
+        // Release before restoring focus so a held Space cannot activate the trigger.
+        if (popoutSpace.current) { popoutSpace.current = false; event.currentTarget.click(); }
+      }} onBlur={() => { popoutSpace.current = false; }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg><span>{m.openInNewTab}</span>
       </a>}
       {copyUrl !== undefined && <button className="task-detail-action-item" type="button" role="menuitem" tabIndex={-1} disabled={copyState === 'pending'} onClick={() => { void copy(); close(true); }}>

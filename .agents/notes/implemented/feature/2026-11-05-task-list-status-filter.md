@@ -43,7 +43,9 @@ records the rationale for the existing identity and profile semantics. The [task
 [chain status](../../archived/bug-fix/2026-10-22-task-chain-status.md), [Overview progress](../../archived/feature/2026-10-26-project-overview-progress.md),
 [status ordering](../../archived/bug-fix/2026-10-28-project-status-order.md), and
 [shared scroll](../../archived/bug-fix/2026-11-03-shared-task-list-scroll.md) decisions
-record the original choices behind the other behavior, which remains unchanged.
+record the original choices behind the other behavior. The
+[project shared-scroll decision](../bug-fix/2026-11-19-project-shared-scroll.md)
+replaces the separate section offsets while preserving shared filtering.
 The [Web specification](../../../../docs/spec/daynight-web.md)
 owns observable behavior and the [Web design](../../../../docs/design/daynight-web.md)
 owns current composition.

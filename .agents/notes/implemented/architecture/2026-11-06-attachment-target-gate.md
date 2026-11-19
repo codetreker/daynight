@@ -16,10 +16,11 @@ Delete through transaction completion, and across Open until it has matching
 metadata and an open file object from the same serialized state. All transports
 use the same protected use case. A prior failed operation can still have left
 those two resources inconsistent.
-The local storage gate uses separate target and private domains, each with 256
-persistent lock-file stripes and process-local admission. Advisory file locks
-coordinate instances sharing a root and remain held independently of database
-locks. Lock files are control objects and are not removed during object cleanup.
+The original implementation used 256 persistent lock-file stripes for each
+of the target and private domains and process-local admission. Advisory file
+locks coordinated instances sharing a root independently of database locks.
+[Redis storage gates](2026-11-19-redis-storage-gates.md) now own the lock
+mechanism and its lease lifetime.
 The private domain permits later transfer operations to acquire their namespace
 permit before the target permit. The [attachment design](../../../../docs/design/daynight-task-attachments.md)
 owns the current storage and failure semantics.
@@ -43,8 +44,7 @@ The target gate preserves that lifecycle without claiming cross-store rollback.
 
 ## Consequences
 
-Successful operations on one target cannot interleave their file and metadata
-publication. An already opened file remains readable after a later replacement.
+A valid target permit serializes file and metadata publication. An already opened file remains readable after a later replacement.
 Stripe collisions serialize some unrelated operations, and each storage backend
 must supply equivalent cross-process admission. A failed operation may still have
 changed the file without a matching metadata commit; the gate does not repair it.

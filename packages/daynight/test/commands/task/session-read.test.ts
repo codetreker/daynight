@@ -10,9 +10,9 @@ import { actorId, inspection, project, projectId, sessionId, taskId } from "../.
 
 const operations: Operation[] = [];
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); });
-const fixture = (body: unknown, status = 200) => {
+const fixture = (body: unknown, status = 200, headers: Record<string, string> = {}) => {
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(stringifyApiJson(body), {
-    status, headers: { "content-type": "application/json", "Daynight-User-ID": actorId },
+    status, headers: { "content-type": "application/json", "Daynight-User-ID": actorId, ...headers },
   }));
   const operation = createOperation(); operations.push(operation);
   const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
@@ -99,6 +99,77 @@ describe("Task Session read commands", () => {
     expect(await f.run(["list", taskId, "--project", projectId, "--limit", "7", "--cursor", "current-page"])).toBe(0);
     expect(f.stdout.join("")).toContain(`daynight task session list ${taskId} --project ${projectId} --limit 7 --cursor 'older-sessions'`);
     expect(new URL(String(f.fetch.mock.calls[0]![0])).searchParams.get("cursor")).toBe("current-page");
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
+
+  const historyItem = {
+    taskId, sessionId, claimId: inspection.fence.claimId, executionGeneration: "9007199254740993",
+    agentControlMode: "web", contentKind: "native_timeline", createdAt: "2026-11-10T01:02:03Z",
+    endedAt: null, currentBinding: false, archiveState: "expired", completeness: "partial",
+    expiresAt: "2026-11-17T01:02:03Z", expiredAt: "2026-11-17T01:02:04Z", reason: "history_expired",
+    retentionState: "expired", scopeEndedAt: null, firstArchivedAt: null, legacyGraceStartedAt: null,
+  };
+  const historyDirectory = { version: 1, graphVersion: "18446744073709551615", items: [historyItem], nextCursor: "history-next", observedAt: "2026-11-19T01:02:03Z" };
+  const historyHeaders = { "Daynight-Task-History-Directory-Version": "1" };
+
+  it("prints versioned retention facts and keeps the directory version in continuation", async () => {
+    const f = fixture(historyDirectory, 200, historyHeaders);
+    expect(await f.run(["list", taskId, "--project", projectId, "--directory-version", "1", "--limit", "7", "--cursor", "history-before"])).toBe(0);
+    const output = f.stdout.join("");
+    expect(output).toContain("graph version: 18446744073709551615");
+    expect(output).toContain("Archive: expired; completeness: partial");
+    expect(output).toContain("Session history has expired");
+    expect(output).toContain(`show ${taskId} ${sessionId}`);
+    expect(output).toContain("--directory-version 1 --limit 7 --cursor 'history-next'");
+    const url = new URL(String(f.fetch.mock.calls[0]![0]));
+    expect(url.pathname).toBe(`/api/v1/projects/${projectId}/history-directory/tasks/${taskId}/sessions`);
+    expect(url.searchParams.get("cursor")).toBe("history-before");
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.stderr).toEqual([]);
+  });
+
+  it("preserves the complete versioned JSON without claiming that partial archive content was read", async () => {
+    const f = fixture(historyDirectory, 200, historyHeaders);
+    expect(await f.run(["list", taskId, "--project", projectId, "--directory-version", "1", "--json"])).toBe(0);
+    expect(JSON.parse(f.stdout.join(""))).toEqual(historyDirectory);
+    expect(f.stderr).toEqual([]);
+  });
+
+  it("distinguishes pending archival and escapes persisted reasons", async () => {
+    const f = fixture({ ...historyDirectory, items: [{ ...historyItem, archiveState: "pending", retentionState: "waiting", reason: "pending\u001b[31m", expiresAt: null, expiredAt: null }] }, 200, historyHeaders);
+    expect(await f.run(["list", taskId, "--project", projectId, "--directory-version", "1"])).toBe(0);
+    expect(f.stdout.join("")).toContain("History is pending archival.");
+    expect(f.stdout.join("")).toContain("pending\\u001b[31m");
+    expect(f.stdout.join("")).not.toContain("\u001b");
+  });
+
+  it.each(["0", "2", "auto", "legacy"])("rejects unsupported directory selection %s before requests", async version => {
+    const f = fixture(null);
+    expect(await f.run(["list", taskId, "--directory-version", version])).toBe(2);
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["read", "entry"])("reports expiry for the original Session in %s without a replacement read", async command => {
+    const f = fixture({ error: { code: "history_unavailable", message: "Session history has expired.", requestId: "expired-history" } }, 409);
+    expect(await f.run([command, taskId, sessionId, "--project", projectId, "--json", ...(command === "entry" ? ["--cursor", "old-content"] : [])])).toBe(1);
+    expect(f.stdout).toEqual([]);
+    expect(f.stderr.join("")).toContain("Session history has expired.");
+    expect(f.stderr.join("")).toContain(`sessionId=${sessionId}`);
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not label other unavailable history as expired", async () => {
+    const f = fixture({ error: { code: "history_unavailable", message: "No archive exists.", requestId: "unavailable-history" } }, 409);
+    expect(await f.run(["read", taskId, sessionId, "--project", projectId])).toBe(1);
+    expect(f.stderr.join("")).toContain("History is unavailable");
+    expect(f.stderr.join("")).not.toContain("has expired");
+  });
+
+  it.each([[403, "forbidden"], [409, "reset_required"], [404, "not_found"]] as const)("preserves versioned directory refusal %s/%s without legacy fallback", async (status, code) => {
+    const f = fixture({ error: { code, message: "Directory refused.", requestId: "directory-refusal" } }, status);
+    expect(await f.run(["list", taskId, "--project", projectId, "--directory-version", "1", "--json"])).toBe(1);
+    expect(f.stdout).toEqual([]);
+    expect(f.stderr.join("")).toContain(`code=${code}`);
     expect(f.fetch).toHaveBeenCalledOnce();
   });
 

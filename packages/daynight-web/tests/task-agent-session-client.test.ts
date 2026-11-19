@@ -320,6 +320,33 @@ describe('task session transport lifecycle', () => {
     update({ ...entry, revision: '3', content: [{ type: 'text', text: 'Image removed.' }] }, '2');
     expect(scope.valid).toBe(true); expect(asset.canRead()).toBe(false);
   });
+  it('reads descriptors for live image parts that arrive without a resource event', async () => {
+    const f = fixture(), resource = { resourceId: '00000012-1111-4111-8111-111111111111', name: 'sent.png', status: 'available' as const, mediaType: 'image/png', byteLength: '68', sha256: 'a'.repeat(64), error: null };
+    const entry: TimelineEntry = { entryId: '00000014-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'user_message', content: [{ type: 'image', imageId: '00000013-1111-4111-8111-111111111111', resourceId: resource.resourceId, label: 'Native image' }] };
+    await ready(f);
+    const page = { sessionId: f.s.sessionId, historyEpoch: f.s.historyEpoch, items: [entry], resources: [resource], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '1' };
+    vi.mocked(f.api.timeline).mockClear().mockResolvedValue(page);
+    const update = (payload: TimelineEntry, eventSeq: string) => f.receive({ protocol: f.s.protocol, type: 'event', cursor: eventSeq, event: { protocol: f.s.protocol, ...sessionBinding(f.s), sessionId: f.s.sessionId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: f.s.historyEpoch, eventSeq, kind: 'timeline_upsert', payload } });
+    update(entry, '1');
+    await vi.waitFor(() => expect(f.client.snapshot().state.resources.get(resource.resourceId)).toEqual(resource));
+    expect(f.api.timeline).toHaveBeenCalledOnce(); expect(f.api.timeline).toHaveBeenCalledWith(f.s.sessionId, 'tail', null, expect.any(AbortSignal));
+    expect(f.client.snapshot()).toMatchObject({ connected: true, historyError: null });
+    update({ ...entry, revision: '2', content: [...entry.content, { type: 'text', text: 'Same image.' }] }, '2');
+    await Promise.resolve();
+    expect(f.api.timeline).toHaveBeenCalledOnce();
+  });
+  it('requests one descriptor read per live entry revision when the page omits the resource', async () => {
+    const f = fixture(), resourceId = '00000012-1111-4111-8111-111111111111';
+    const entry: TimelineEntry = { entryId: '00000014-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'user_message', content: [{ type: 'image', imageId: '00000013-1111-4111-8111-111111111111', resourceId, label: 'Native image' }] };
+    await ready(f);
+    vi.mocked(f.api.timeline).mockClear().mockRejectedValue(new ApiError('server', 503, 'controller_offline'));
+    const update = (eventSeq: string) => f.receive({ protocol: f.s.protocol, type: 'event', cursor: eventSeq, event: { protocol: f.s.protocol, ...sessionBinding(f.s), sessionId: f.s.sessionId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: f.s.historyEpoch, eventSeq, kind: 'timeline_upsert', payload: entry } });
+    update('1');
+    await vi.waitFor(() => expect(f.api.timeline).toHaveBeenCalledOnce());
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(f.client.snapshot().state.resources.has(resourceId)).toBe(false);
+    expect(f.client.snapshot()).toMatchObject({ connected: true, historyError: null });
+  });
   it.each([
     { completeBefore: false, originalSeq: '1', through: '50', valid: true },
     { completeBefore: true, originalSeq: '1', through: '50', valid: false },

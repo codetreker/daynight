@@ -39,6 +39,11 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 			t.Fatalf("initial %s must be null: %+v", key, initial)
 		}
 	}
+	sources := read(base + "/pull-request-repositories")
+	sourceItems, ok := sources["items"].([]any)
+	if sources["currentRepositoryId"] != nil || sources["nextCursor"] != nil || !ok || len(sourceItems) != 0 {
+		t.Fatalf("initial repository directory differs: %+v", sources)
+	}
 
 	db, err := pgxpool.New(f.context, f.databaseURL)
 	if err != nil {
@@ -46,19 +51,23 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	}
 	defer db.Close()
 	_, err = db.Exec(f.context, `INSERT INTO project_github
-		(project_id,version,generation,revision,enabled,repository_id,repository_full_name,repository_private,poll_interval_minutes,access_state,last_full_generation,last_full_success_at)
-		VALUES ($1,3,2,7,false,9007199254740993,'owner/repository',true,5,'unknown',1,'2026-01-02T03:04:05Z')`, project.ID)
+		(project_id,version,generation,revision,enabled,repository_id,legacy_repository_id,repository_full_name,repository_private,poll_interval_minutes,access_state,last_full_generation,last_full_success_at)
+		VALUES ($1,3,2,7,false,9007199254740993,9007199254740993,'owner/repository',true,5,'unknown',1,'2026-01-02T03:04:05Z')`, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(f.context, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,9007199254740993,'owner/repository')`, project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = db.Exec(f.context, `INSERT INTO project_pull_requests
-		(project_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision)
+		(project_id,repository_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision)
 		VALUES
-		($1,9007199254740993,9007199254740995,'https://github.com/owner/repository/pull/9007199254740993','First PR',9007199254740997,'author','open',true,'main',9007199254740999,'fork/repository','feature','abcdef','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',$2,'2026-01-03T00:00:00Z',7),
-		($1,4,104,'https://github.com/owner/repository/pull/4','Author closed PR',9007199254740997,'author','closed',false,'main',NULL,NULL,NULL,'345678','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
-		($1,3,103,'https://github.com/owner/repository/pull/3','Author second PR',9007199254740997,'author','open',false,'main',NULL,NULL,NULL,'234567','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
-		($1,2,102,'https://github.com/owner/repository/pull/2','Second PR',NULL,NULL,'open',false,'main',NULL,NULL,NULL,'123456','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
-		($1,1,101,'https://github.com/owner/repository/pull/1','Closed PR',9007199254740998,'zeta','closed',false,'main',NULL,NULL,NULL,'789abc','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7)`, project.ID, "正文\n**original**\n")
+		($1,9007199254740993,9007199254740993,9007199254740995,'https://github.com/owner/repository/pull/9007199254740993','First PR',9007199254740997,'author','open',true,'main',9007199254740999,'fork/repository','feature','abcdef','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',$2,'2026-01-03T00:00:00Z',7),
+		($1,9007199254740993,4,104,'https://github.com/owner/repository/pull/4','Author closed PR',9007199254740997,'author','closed',false,'main',NULL,NULL,NULL,'345678','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
+		($1,9007199254740993,3,103,'https://github.com/owner/repository/pull/3','Author second PR',9007199254740997,'author','open',false,'main',NULL,NULL,NULL,'234567','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
+		($1,9007199254740993,2,102,'https://github.com/owner/repository/pull/2','Second PR',NULL,NULL,'open',false,'main',NULL,NULL,NULL,'123456','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7),
+		($1,9007199254740993,1,101,'https://github.com/owner/repository/pull/1','Closed PR',9007199254740998,'zeta','closed',false,'main',NULL,NULL,NULL,'789abc','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',NULL,'2026-01-03T00:00:00Z',7)`, project.ID, "正文\n**original**\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,9 +274,17 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 		t.Fatal(err)
 	}
 	other := createProject(t, f, "Other GitHub PR reads")
+	_, err = db.Exec(f.context, `INSERT INTO project_github(project_id,repository_id,legacy_repository_id,repository_full_name) VALUES($1,9007199254740993,9007199254740993,'owner/repository')`, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(f.context, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,9007199254740993,'owner/repository')`, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = db.Exec(f.context, `INSERT INTO project_pull_requests
-		(project_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision)
-		SELECT $2,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision
+		(project_id,repository_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision)
+		SELECT $2,repository_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_repository_id,head_repository_full_name,head_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision
 		FROM project_pull_requests WHERE project_id=$1 AND number=4`, project.ID, other.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -300,4 +317,5 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	if otherStats["projectId"] != other.ID || otherStats["projectTotal"] != "1" || !ok || len(otherDaily) != 30 || otherDaily[29] != "1" {
 		t.Fatalf("other project statistics differ: %+v", otherStats)
 	}
+	serverAPIGitHubRepositoryReadNormalFlow(t, f, project.ID, db)
 }

@@ -164,7 +164,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 决定；同 Team 活跃身份唯一性由共享 core 规则和 Team 行锁保护。不同 Team 可持有同仓库项目。
 Project 仓库创建后不可修改，软删除保留历史并释放占用。
 
-依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；当前没有公开 Goal 边写入入口。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
+依赖表为不同关系保留类型字段。普通 Task 的所有投影、图、就绪、同步和写入只处理 `dependency_type='task'`，写入显式指定该类型。`goal_edge_id` 在普通边上为空；Goal 关系通过独立的 [REST 资源](../spec/goal-dependencies.md)读写。常量默认值使升级前的边与短期继续运行的旧实例写入保持普通边类型。
 
 任务和关系使用 `projects`、`tasks`、`task_dependencies`，属性使用独立 `task_properties` 表；账号级 Worker 观测使用 `workers`。属性主键为 `(task_id,name)`，value 保存完整 JSON 文本，不重复 project_id，不具有独立版本、时间或删除标记。完整任务先取得可见父行，再在同一快照批量加载属性；图查询保持显式精简投影。其他主键分别为 `id`、`id`、`(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
 检查、非自身依赖检查及主键唯一性保证可局部表达的约束。索引支持以下访问：
@@ -298,7 +298,7 @@ POST/PATCH 按最终 D/E 验证分类，完整写入始终携带分类，详见[
 
 ### Goal 验收依赖的生命周期保护
 
-Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际移除出边从逻辑值 1 推进到 2，空操作不推进。当前状态、直接删除与项目生命周期入口保护已有边，尚未公开 Goal 关系写入。
+Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_type='goal'` 隔离。顺向查询复用原主键；跨项目反向查询和边 ID 分别使用 Goal 部分索引。`goal_dependency_revisions` 保留每个 Goal 的关系修订；首次实际修改出边从逻辑值 1 推进到 2，空操作不推进，清空不删除修订。状态、直接删除与项目生命周期入口保护已有边；独立关系服务提供授权读取与编辑，机制见[Goal 关系设计](goal-dependencies.md)。公开关系路由独立于旧 Task 投影。
 
 显式状态与删除先读取不可变类型；识别为 Goal 后进入受图锁影响的分支，使用五秒预算覆盖后续连接池、锁、查询与提交。类型预判使用调用方原 context，不受该分支预算限制。写入先锁本地 Project，读取当前 owner Team，再取得该 Team 的事务级图锁，之后锁定并重读 Goal、检查权限与版本。进入 `done` 要求全部直接前置为 `done`；离开 `done` 时若有已完成下游则拒绝。直接删除拒绝未删除 Goal 的入边；无入边时同事务移除出边、推进关系修订并软删除。拒绝不公开对端身份；事务失败保留原结果及提交未知语义。普通 Task 写入及子 Task 自动开始 Parent 保持原项目事务，不取得图锁。
 
@@ -308,7 +308,7 @@ Goal 验收边与普通 Task 边共用 `task_dependencies`，以 `dependency_typ
 
 实际转移与删除在原权限、版本、仓库占用及 active claim 准入之后检查 Goal 边清理确认。缺少确认且存在边时返回 `invalid_input`，整次事务回滚，并指引升级客户端或更换入口。原归属的成功空操作不探测或清理边。清理先以项目索引枚举 Goal，分别利用顺向主键前缀和 Goal 反向部分索引定位出入边，按边主键合并去重后删除。仅对实际删除边的不同下游 Goal 各推进一次持久关系修订，包括其他项目内的下游；不锁远端 Project 或 Task，不修改其元数据版本。修订耗尽回滚全部操作。
 
-清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。
+清理与原 ownership 或删除标记、缓存 epoch、GitHub App 断连及影响修订、Webhook eligibility 和 Session 撤回持久写入在同一事务提交。普通 Task 历史边、无关 Goal 边和无变化操作保持原值；失败或提交未知继续沿用原 Completion 与回执规则。服务的显式清理确认输入独立于协议，旧删除方法代表未确认调用。REST 转移与删除适配器共同严格解析单值 `Daynight-Confirm-Goal-Dependency-Removal: true`，将结果透传 TransferInput 或 DeletionInput；缺少 header 透传 false，错误 header 在业务调用前以 `400 invalid_input` 拒绝。既有请求体字段、删除空正文、预览与回执保持原结构，CORS allow-list 允许该请求 header。
 
 ## 写事务与并发
 
@@ -361,6 +361,8 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 该设计以同 project 写入吞吐量换取明确的串行规则。采用 `SERIALIZABLE` 可以提供
 另一种并发控制，但还需要全操作重试及冲突响应策略；project 已经是依赖范围，因此
 以 project 行锁组织写入更直接。若出现单 project 写入瓶颈，再根据观测重新评估。
+
+MCP 的只读 `project_transfer_preview(projectId,toTeam)` 复用项目转移预览准入，再读取 Project 名称，返回项目身份、来源和目标 Team、精确十进制字符串 ownership 与目标 Team 版本，以及永久清理范围。预览不枚举或计数关系；确认覆盖事务提交时所有相关 Goal 边，包括其他项目的入边和出边。宿主展示项目、两侧 Team 和影响，取得用户对本次转移及清理的明确答复后，才调用 `project_transfer`，同时提交 `confirm:true`、`confirmGoalDependencyRemoval:true`、预览原值 `ifVersion` 和 `ifTargetVersion`。清理确认要求两个版本均存在，适配器保持原值并交给既有事务检查。无答复或拒绝时宿主不调用写工具；冲突须重新预览和确认，结果未知不自动重放。stateless MCP 不发起服务端确认请求。旧工具请求缺少清理声明时沿用服务端拒绝规则，无边及同归属空操作保持可用。完整调用方法由嵌入的 `daynight://manuals/concepts.md` 维护。
 
 ## HTTP 传输准入
 
@@ -415,7 +417,8 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `POST /api/v1/projects/{projectId}/tasks` | 创建普通 Task 或 Goal，默认分别为 `proposed` 和 `todo` |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
-| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
+| `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及普通 Task 依赖 |
+| `GET/PATCH /api/v1/projects/{projectId}/tasks/{taskId}/goal-dependencies` | 独立授权投影与关系修订编辑 |
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标五状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
@@ -425,6 +428,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |
 | `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
 | `GET, PUT /api/v1/me/workers/{workerId}/configuration` | 独立于任务状态的目标 CAS 与实际应用观测，查询不续活 |
+| `GET, PUT /api/v1/me/workers/{workerId}/review-participation` | 独立的账号级参与设置及版本 CAS，默认关闭；[设计](worker-review-participation.md)拥有字段和写入边界 |
 
 创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
 目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。
