@@ -133,12 +133,12 @@
 .team-delete-chevron { width: 9px; height: 9px; flex: none; border-right: 2px solid #556176; border-bottom: 2px solid #556176; transform: rotate(45deg); margin: 0 3px 4px; }
 .team-delete[open] .team-delete-chevron { transform: rotate(225deg); margin: 4px 3px 0; }
 .team-delete > .panel-body { border-top: 1px solid var(--line); }
-.team-delete > .panel-body p { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; margin-bottom: 16px; }
+.team-delete > .panel-body p { color: var(--muted); font-size: var(--text-interface); overflow-wrap: anywhere; margin-bottom: 16px; }
 .team-settings-details { margin: 0; }
-.team-settings-context { color: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-settings-context { color: var(--muted); font-size: var(--text-interface); white-space: pre-wrap; overflow-wrap: anywhere; }
 .team-settings-nav .button { min-height: 38px; }
 .team-settings-details > div + div { margin-top: 20px; }
-.team-settings-details dt { font-size: 12px; font-weight: 600; color: #4c5870; margin-bottom: 8px; }
+.team-settings-details dt { font-size: var(--text-interface); font-weight: 600; color: #4c5870; margin-bottom: 8px; }
 .team-settings-details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .team-settings-name { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .team-settings-name span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -409,7 +409,7 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .team-member-actions { grid-column: 3; grid-row: 1; justify-self: end; }
 .team-member-actions .button { min-height: 32px; }
 .team-member-actions .button.quiet[aria-disabled="true"] { color: #9299a9; background: none; cursor: not-allowed; }
-.team-member-leave-tip { position: fixed; z-index: 45; width: max-content; max-width: min(320px, calc(100vw - 16px)); border: 1px solid #414b64; border-radius: 6px; padding: 8px 11px; background: #303a50; color: #fff; box-shadow: 0 5px 18px #17244722; font-size: 11px; line-height: 1.7; white-space: normal; overflow-wrap: anywhere; pointer-events: none; }
+.team-member-leave-tip { position: fixed; z-index: 45; width: max-content; max-width: min(320px, calc(100vw - 16px)); border: 1px solid #414b64; border-radius: 6px; padding: 8px 11px; background: #303a50; color: #fff; box-shadow: 0 5px 18px #17244722; font-size: var(--text-interface); line-height: 1.7; white-space: normal; overflow-wrap: anywhere; pointer-events: none; }
 @media (max-width: 600px) {
   .team-members-list { grid-template-columns: minmax(136px, 1fr) minmax(0, max-content); column-gap: 4px; }
   .team-member-row { padding: 16px; }
@@ -485,3 +485,17 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .project-deletion-details dt { font-weight: 600; }
 @media (max-width: 480px) { .project-deletion-details { grid-template-columns: minmax(0, 1fr); gap: 3.5px; } }
 .project-deletion-challenge { overflow-wrap: anywhere; white-space: pre-wrap; font-weight: 600; }
+
+.team-member-row .person-name, .team-member-row .person-meta,
+.team-github-apps .empty-inline, .management-typography .dialog-body,
+.management-typography .field label, .management-typography .field :is(input, textarea),
+.management-typography .field .hint, .management-typography .credential :is(code, textarea),
+.management-typography .one-time { font-size: var(--text-interface); }
+.management-typography .dialog-header h2 { font-size: var(--text-detail-heading); }
+@media (max-width: 800px), (pointer: coarse) {
+  .management-typography .field :is(input, textarea), .management-typography .credential textarea { font-size: var(--text-touch-field); }
+}
+
+.team-invitations :is(.person-name, .row-detail, .row .button, .empty-inline),
+.team-invitations-loading, .team-loading { font-size: var(--text-interface); }
+.team-invitations .person-meta { font-size: var(--text-metadata); }
