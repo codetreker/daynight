@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type projectRetirement struct {
@@ -20,6 +21,10 @@ type projectRetirement struct {
 }
 
 func NewProjectRetirement(tx pgx.Tx, id string) store.GitHubProjectRetirementDAO {
+	return &projectRetirement{tx: tx, id: id}
+}
+
+func NewRepositorySwitch(tx pgx.Tx, id string) store.GitHubRepositorySwitchDAO {
 	return &projectRetirement{tx: tx, id: id}
 }
 
@@ -119,6 +124,67 @@ func (d *projectRetirement) AdvanceImpact(ctx context.Context) error {
 		return nil
 	}
 	return NewConnectionStopWriter(d.tx, *d.appID).AdvanceImpact(ctx)
+}
+
+// SaveSwitch applies the core's complete disconnected state. The old coverage
+// boundary is captured while the old repository identity is still locked.
+func (d *projectRetirement) SaveSwitch(ctx context.Context, w store.GitHubRepositorySwitchWrite) (bool, error) {
+	if !d.locked {
+		return false, errors.New("switching connection has not been locked")
+	}
+	if d.exists {
+		if err := closeConnectionCoverage(ctx, d.tx, d.id); err != nil {
+			return false, err
+		}
+	}
+	if _, err := d.tx.Exec(ctx, `DELETE FROM project_github_pending_prs WHERE project_id=$1`, d.id); err != nil {
+		return false, pg.QueryError("clear switching connection pending", err)
+	}
+	c := w.Connection
+	args := []any{d.id, c.Version, c.Generation, c.Revision, c.Enabled, c.SyncEnabled,
+		c.AppID, c.InstallationID, c.RepositoryID, c.LegacyRepositoryID, c.InstallationAccountLogin,
+		c.RepositoryFullName, c.RepositoryPrivate, c.PollIntervalMinutes, c.AccessState, c.AccessReason,
+		c.AccessCheckedAt, c.NextAccessCheckAt, c.AccessHintID, c.AccessDeliveryID, c.NextPollAt,
+		c.NotBefore, c.LastPollAttemptAt, c.LastFullSuccessAt, c.LastFullGeneration, c.PollErrorCode,
+		c.PollErrorMessage, c.PollErrorAt, c.LastWebhookReceivedAt, c.LastWebhookAttemptAt,
+		c.LastWebhookSuccessAt, c.WebhookErrorCode, c.WebhookErrorMessage, c.WebhookErrorAt,
+		c.ClaimToken, c.ClaimUntil, c.ClaimKind, w.AppResourceID, w.GrantID, w.CredentialVersion}
+	var result pgconn.CommandTag
+	var err error
+	if d.exists {
+		args = append(args, w.ExpectedVersion, w.ExpectedGeneration, w.ExpectedRevision)
+		result, err = d.tx.Exec(ctx, `UPDATE project_github SET version=$2,generation=$3,revision=$4,enabled=$5,sync_enabled=$6,
+            app_id=$7,installation_id=$8,repository_id=$9,legacy_repository_id=$10,installation_account_login=$11,
+            repository_full_name=$12,repository_private=$13,poll_interval_minutes=$14,access_state=$15,access_reason=$16,
+            access_checked_at=$17,next_access_check_at=$18,access_hint_id=$19,access_delivery_id=$20,next_poll_at=$21,
+            not_before=$22,last_poll_attempt_at=$23,last_full_success_at=$24,last_full_generation=$25,poll_error_code=$26,
+            poll_error_message=$27,poll_error_at=$28,last_webhook_received_at=$29,last_webhook_attempt_at=$30,
+            last_webhook_success_at=$31,webhook_error_code=$32,webhook_error_message=$33,webhook_error_at=$34,
+            claim_token=$35,claim_until=$36,claim_kind=$37,app_resource_id=$38,team_grant_id=$39,credential_version=$40,
+            updated_at=statement_timestamp() WHERE project_id=$1 AND version=$41 AND generation=$42 AND revision=$43`, args...)
+	} else {
+		result, err = d.tx.Exec(ctx, `INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,
+            app_id,installation_id,repository_id,legacy_repository_id,installation_account_login,repository_full_name,repository_private,
+            poll_interval_minutes,access_state,access_reason,access_checked_at,next_access_check_at,access_hint_id,access_delivery_id,
+            next_poll_at,not_before,last_poll_attempt_at,last_full_success_at,last_full_generation,poll_error_code,poll_error_message,
+            poll_error_at,last_webhook_received_at,last_webhook_attempt_at,last_webhook_success_at,webhook_error_code,webhook_error_message,
+            webhook_error_at,claim_token,claim_until,claim_kind,app_resource_id,team_grant_id,credential_version)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40)
+            ON CONFLICT(project_id) DO NOTHING`, args...)
+	}
+	if err != nil {
+		return false, pg.QueryError("save switching connection", err)
+	}
+	if result.RowsAffected() != 1 {
+		return false, nil
+	}
+	if w.Source != nil {
+		if _, err = d.tx.Exec(ctx, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,$2,$3)
+ ON CONFLICT(project_id,repository_id) DO UPDATE SET full_name=EXCLUDED.full_name`, d.id, w.Source.RepositoryID, w.Source.FullName); err != nil {
+			return false, pg.QueryError("save switching repository source", err)
+		}
+	}
+	return true, nil
 }
 
 type teamRetirement struct {

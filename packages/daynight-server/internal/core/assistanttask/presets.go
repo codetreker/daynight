@@ -78,7 +78,7 @@ func (m *Module) EnablePreset(ctx context.Context, dao store.AssistantTaskDAO, a
 		}
 	}
 	if assign {
-		if err = dao.TransferOpenItems(ctx, task.OwnerUserID, task.ID, task.HolderBotID); err != nil {
+		if err = moveFollowers(ctx, dao, task); err != nil {
 			return zero, err
 		}
 		if _, err = m.systemEvent(ctx, dao, task, target, "transfer", map[string]any{"generation": task.ClaimGeneration, "previousLeaseUntil": previous.LeaseUntil}, now); err != nil {

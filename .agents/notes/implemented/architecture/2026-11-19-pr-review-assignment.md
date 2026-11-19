@@ -23,7 +23,9 @@ returns only the caller's assignment and current Worker status.
 The [assignment design](../../../../docs/design/pr-review-assignment.md) owns
 the data, lifecycle, transaction and HTTP details. The separate
 [participation decision](../feature/2026-11-19-worker-review-participation.md)
-owns the account's Worker preference and version.
+owns the account's Worker preference and version. The
+[repository switching decision](2026-11-19-project-repository-switch.md)
+owns the change to the Project's repository and Worker selections.
 
 ## Alternatives
 
@@ -42,8 +44,10 @@ separate resource preserves existing representations and isolates observations.
 
 ## Consequences
 
-Assignments survive restarts and transient eligibility changes, and concurrent
-reconciliation cannot replace the first committed owner. Eligibility changes
+Assignments survive restarts, repository switches and transient eligibility
+changes, and concurrent reconciliation cannot replace the first committed
+owner. Switching back to a retained repository exposes its existing assignment;
+the same PR number in another repository is independent. Eligibility changes
 may take a later scan to appear; scans and the partial Worker index add database
 work. The service records responsibility only: execution, capacity, manual
 reassignment and delivery of review feedback require separate mechanisms.

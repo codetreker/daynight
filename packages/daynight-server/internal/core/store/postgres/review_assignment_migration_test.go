@@ -8,7 +8,7 @@ import (
 func TestReviewAssignmentMigrationRollbackAndUpgrade(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	idx := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 95 })
+	idx := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 96 })
 	if idx < 0 {
 		t.Fatal("migration missing")
 	}
@@ -22,7 +22,7 @@ func TestReviewAssignmentMigrationRollbackAndUpgrade(t *testing.T) {
 	}
 	var table bool
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT to_regclass('project_pr_review_assignments') IS NOT NULL,(SELECT count(*) FROM schema_migrations WHERE version=95)`).Scan(&table, &count); err != nil || table || count != 0 {
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('project_pr_review_assignments') IS NOT NULL,(SELECT count(*) FROM schema_migrations WHERE version=96)`).Scan(&table, &count); err != nil || table || count != 0 {
 		t.Fatalf("rollback: table %v ledger %d: %v", table, count, err)
 	}
 	mustQueryExec(t, db, `DROP INDEX workers_review_participants`)

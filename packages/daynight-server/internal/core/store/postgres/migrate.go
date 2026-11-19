@@ -285,7 +285,10 @@ var githubRepositorySourcesSQL string
 //go:embed schema/migrations/094_worker_review_participation.sql
 var workerReviewParticipationSQL string
 
-//go:embed schema/migrations/095_pr_review_assignment.sql
+//go:embed schema/migrations/095_project_repository_version.sql
+var projectRepositoryVersionSQL string
+
+//go:embed schema/migrations/096_pr_review_assignment.sql
 var prReviewAssignmentSQL string
 
 type githubRepositoryIdentityMigrationError struct {
@@ -398,7 +401,8 @@ var schemaMigrations = []migration{
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
 	{version: 94, sql: workerReviewParticipationSQL},
-	{version: 95, sql: prReviewAssignmentSQL},
+	{version: 95, sql: projectRepositoryVersionSQL},
+	{version: 96, sql: prReviewAssignmentSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
