@@ -10,11 +10,21 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
-func TestBotObservationPersistsCurrentHostBeyondInventoryExpiry(t *testing.T) {
+func TestBotObservation(t *testing.T) {
 	database := openFixtureStore(t)
+	t.Run("session identity and lease", func(t *testing.T) { testBotObservationSession(t, database) })
+	t.Run("missing facts and ownership", func(t *testing.T) { testBotObservationMissing(t, database) })
+	t.Run("failures", func(t *testing.T) { testBotObservationFailures(t, database) })
+	// The shared fixture uses a fixed credential hash. Commit only after the
+	// independent rollback fixtures have released it.
+	t.Run("persistent location", func(t *testing.T) { testBotObservationLocation(t, database) })
+}
+
+func testBotObservationLocation(t *testing.T, database *postgres.Store) {
 	f := newFixtureInStore(t, database)
 	bot := f.ready(t, f.candidate)
 	at := time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
@@ -68,8 +78,8 @@ func TestBotObservationPersistsCurrentHostBeyondInventoryExpiry(t *testing.T) {
 	}
 }
 
-func TestBotObservationMapsOnlyBoundSessionIdentityAndLease(t *testing.T) {
-	f := newFixture(t)
+func testBotObservationSession(t *testing.T, database *postgres.Store) {
+	f := newFixtureInStore(t, database)
 	bot := f.ready(t, f.candidate)
 	at := time.Date(2026, 11, 20, 5, 6, 7, 8000, time.UTC)
 	expiry, instance := at.Add(30*time.Second), uuid.NewString()
@@ -116,8 +126,8 @@ func TestBotObservationMapsOnlyBoundSessionIdentityAndLease(t *testing.T) {
 	}
 }
 
-func TestBotObservationKeepsMissingFactsAndOwnershipDistinct(t *testing.T) {
-	f := newFixture(t)
+func testBotObservationMissing(t *testing.T, database *postgres.Store) {
+	f := newFixtureInStore(t, database)
 	bot := f.insert(t, f.candidate)
 	got, err := f.reader.BotObservation(t.Context(), bot.OwnerUserID, bot.ID)
 	if err != nil || got.Session != nil || got.Worker == nil {
@@ -142,10 +152,10 @@ func TestBotObservationKeepsMissingFactsAndOwnershipDistinct(t *testing.T) {
 	}
 }
 
-func TestBotObservationPropagatesDecodeAndQueryFailures(t *testing.T) {
+func testBotObservationFailures(t *testing.T, database *postgres.Store) {
 	for _, kind := range []string{"worker", "session", "cancelled", "closed"} {
 		t.Run(kind, func(t *testing.T) {
-			f := newFixture(t)
+			f := newFixtureInStore(t, database)
 			bot := f.ready(t, f.candidate)
 			ctx := t.Context()
 			switch kind {
