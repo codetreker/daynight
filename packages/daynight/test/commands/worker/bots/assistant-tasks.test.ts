@@ -618,6 +618,23 @@ describe("assistant-task managed loops", () => {
     expect(f.onError).not.toHaveBeenCalled();
   });
 
+  it("acknowledges delivered inbound events without reading a paused task's inbound backlog", async () => {
+    const f = await fixture(), runtime = f.create(), body = "z".repeat(16);
+    const inbound = (n: number, taskId: string): AssistantTaskEvent => ({ ...f.event(n), taskId, type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } });
+    f.task = { ...f.task, state: "paused" };
+    f.events = [...Array.from({ length: 5 }, (_, index) => inbound(100 + index, f.task.id)), inbound(51, id(12)), f.event(52)];
+    const send = f.send.getMockImplementation()!;
+    let selected = 0;
+    f.send.mockImplementationOnce(async (bot, command, abort) => { selected = f.listEvents.mock.calls.length; return send(bot, command, abort); });
+    await runtime.tick("delivery", signal());
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(52), id(51)]);
+    const acknowledgment = f.listEvents.mock.calls.slice(selected).map(([, query]) => query);
+    expect(acknowledgment[0]).toEqual({ state: "pending", targetBotId: f.bot.botId, excludeType: "inbound", limit: 1 });
+    expect(acknowledgment.slice(1)).toEqual([{ state: "pending", targetBotId: f.bot.botId, type: "inbound", limit: 1 }]);
+    expect(f.events.filter(event => event.taskId === f.task.id).every(event => event.state === "pending")).toBe(true);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
   it("rejects an event page that conflicts with its type filter", async () => {
     const f = await fixture(), runtime = f.create();
     f.events = [f.event(51)];

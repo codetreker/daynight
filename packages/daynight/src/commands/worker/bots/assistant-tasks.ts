@@ -237,11 +237,14 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       // Pending-only reads exclude delivered history. Each page and ACK has its own
       // bounded API operation; a lost ACK response never creates a new Session command.
       // The journal does not record event types. Non-inbound events are acknowledged
-      // first without reading the inbound backlog; any remaining event is then found
-      // in an unfiltered read, which still includes inbound events of a task paused
-      // after the notification was sent.
+      // first without reading the inbound backlog. Delivered inbound events were the
+      // earliest pending inbound events of non-paused tasks, so the server-filtered
+      // inbound read reaches them before any later backlog and never reads a paused
+      // task's backlog. Only an event still unacknowledged after both passes, such
+      // as one whose task was paused after the notification was sent, needs the
+      // unfiltered read.
       const remaining = new Set(delivery.events.map(event => `${event.taskId}/${event.id}`));
-      for (const filter of [{ excludeType: INBOUND_EVENT_TYPE }, {}] satisfies EventTypeFilter[]) {
+      for (const filter of [{ excludeType: INBOUND_EVENT_TYPE }, { type: INBOUND_EVENT_TYPE }, {}] satisfies EventTypeFilter[]) {
         if (!remaining.size) break;
         for await (const event of pendingEvents(bot, signal, filter)) {
           const key = `${event.taskId}/${event.id}`;
