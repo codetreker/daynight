@@ -23,7 +23,8 @@
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
 | `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
-| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本 |
+| `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本；迁移 `096_assistant_task_item_lifecycle.sql` 增加可空的本次打开时间与最近关闭时间，既有行两者为空 |
+| `assistant_task_item_closures` | 迁移 `096_assistant_task_item_lifecycle.sql` 新增的只追加关闭登记：事项 ID、episode、本次打开时间（可空）与关闭时间 |
 | `assistant_task_records` | 只追加的事实、判断、动作、问答、结果及引用；迁移 `094_assistant_task_outcomes.sql` 增加可空的结果取值与被评价动作记录 ID，既有行两者为空 |
 | `assistant_task_events` | 目标 Bot、负载、投递与关注状态、确认操作身份 |
 | `assistant_task_inquiries` | 双方 Bot、问题与回答、状态和固定截止时间 |
@@ -36,7 +37,11 @@
 
 时间由数据库提供。受保护写入在锁等待后取当前时间，最终返回事务 callback 前再次核验凭据、相关 Bot 和原租约期限；不能用事务起点 `now()` 证明等待后的有效性。认领回执中的 `admittedAt` 是事务内准入时间，不是 COMMIT 时间。公开任务观测的时间与 holder 删除状态来自同次数据库投影，不能给旧数据附上一次较新的时间读取。
 
-结果记录由 core 在任务锁内按 owner 与任务读取被引用记录，确认其类型为 `action` 后写入；跨任务或不存在的引用与类型不符一样被拒绝。请求指纹只在结果记录中追加结果取值与动作记录 ID，迁移前保存的其他记录指纹保持不变，重放仍须完全一致。经验沉淀的其余机制见[经验沉淀设计](assistant-task-learning.md)。
+结果记录由 core 在任务锁内按 owner 与任务读取被引用记录，确认其类型为 `action` 后写入；跨任务或不存在的引用与类型不符一样被拒绝。请求指纹只在结果记录中追加结果取值与动作记录 ID，迁移前保存的其他记录指纹保持不变，重放仍须完全一致。
+
+事项写入在任务锁内比较新旧状态：以 `open` 创建或从 `closed` 变为 `open` 时，以数据库时间写入本次打开时间；从 `open` 变为 `closed` 时写入最近关闭时间，并在同一事务中追加一条关闭登记，复制本次打开时间；其他更新保留两个时间。迁移不回填既有事项，因为已有数据无法证明真实的打开时刻，这些事项此后的关闭登记打开时间为空。任务删除时关闭登记与其他业务材料一同删除。
+
+经验沉淀的其余机制见[经验沉淀设计](assistant-task-learning.md)。
 
 记录写入在任务记录头保护下使用数据库真实时钟，沿用 Thread 的有界前进机制；不能用 `head+1ms` 合成未来时间。成功写入返回实际持久位置，下一页以 `(created_at, id)` 继续。同一事务中的附录、问答和系统记录保持真实顺序。
 

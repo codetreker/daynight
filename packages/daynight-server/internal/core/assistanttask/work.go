@@ -61,6 +61,13 @@ func (m *Module) SaveItem(ctx context.Context, dao store.AssistantTaskDAO, actor
 		result.AppState = appState
 		result.FollowerBotID = task.HolderBotID
 		result.UpdatedAt = now
+		closing := old.State == "open" && result.State == "closed"
+		switch {
+		case old.State == "closed" && result.State == "open":
+			result.OpenedAt = &now
+		case closing:
+			result.ClosedAt = &now
+		}
 		ok, err := dao.SaveItem(ctx, result, old.Version)
 		if err != nil {
 			return result, err
@@ -68,11 +75,22 @@ func (m *Module) SaveItem(ctx context.Context, dao store.AssistantTaskDAO, actor
 		if !ok {
 			return result, conflict()
 		}
+		if closing {
+			// The task lock serializes item writes, so the closed period's
+			// opening time is the one read with the previous state.
+			closure := model.AssistantTaskItemClosure{ID: uuid.NewString(), OwnerUserID: task.OwnerUserID, TaskID: task.ID, ItemID: result.ID, Episode: result.Episode, OpenedAt: old.OpenedAt, ClosedAt: now}
+			if err = dao.InsertItemClosure(ctx, closure); err != nil {
+				return result, err
+			}
+		}
 	} else {
 		if input.ItemVersion != nil {
 			return result, model.ErrNotFound
 		}
 		result = model.AssistantTaskItem{ID: input.ID, OwnerUserID: task.OwnerUserID, TaskID: task.ID, Key: input.Key, Episode: input.Episode, State: input.State, Category: input.Category, AppState: appState, FollowerBotID: task.HolderBotID, Version: 1, RequestFingerprint: hash, CreatedAt: now, UpdatedAt: now}
+		if result.State == "open" {
+			result.OpenedAt = &now
+		}
 		ok, err := dao.InsertItem(ctx, result)
 		if err != nil {
 			return result, err
