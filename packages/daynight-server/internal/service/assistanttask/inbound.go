@@ -11,6 +11,7 @@ import (
 	"mime"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -106,7 +107,7 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 		}
 	}
 	dao := scope.AssistantTaskDAO()
-	inbox, task, err := s.lockInbox(ctx, dao, input.InboxID)
+	inbox, task, admitted, err := s.lockInbox(ctx, dao, input.InboxID)
 	if err != nil {
 		return result, err
 	}
@@ -117,8 +118,11 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 	if input.Token != nil && !core.VerifyInboxToken(inbox, *input.Token, now) {
 		return result, errInboxUnauthorized
 	}
+	// The responsible Bot must be the one whose deletion barrier this
+	// transaction holds; a holder change between the unlocked read and the
+	// task lock is retryable like any other unavailable recipient.
 	target, ok := core.ResponsibleBot(task, now)
-	if !ok {
+	if !ok || target != admitted {
 		return result, errInboxUnavailable
 	}
 	verified, err := s.verifyDaynight(ctx, scope, inbox, input)
@@ -169,6 +173,9 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 			if err = suppressInbound(ctx, dao, receipt); err != nil {
 				return ReceiveResult{}, err
 			}
+			if err = admissionHolds(ctx, dao, task); err != nil {
+				return ReceiveResult{}, err
+			}
 			result.Suppressed = true
 			return result, nil
 		}
@@ -193,8 +200,26 @@ func (s *Inbox) receive(ctx context.Context, scope store.AssistantTaskInboundSco
 	if err = core.ReclaimInbound(ctx, dao, task.OwnerUserID, task.ID, now); err != nil {
 		return ReceiveResult{}, err
 	}
+	if err = admissionHolds(ctx, dao, task); err != nil {
+		return ReceiveResult{}, err
+	}
 	result.EventID = &event.ID
 	return result, nil
+}
+
+// admissionHolds rechecks, with fresh database time after the writes, the
+// lease that admitted the responsible Bot. The task lock keeps the lease and
+// the Bot deletion barrier keeps the Bot live, so only natural expiry remains;
+// an expired admission rolls the reception back as retryable.
+func admissionHolds(ctx context.Context, dao store.AssistantTaskDAO, task model.AssistantTask) error {
+	now, err := dao.Now(ctx)
+	if err != nil {
+		return err
+	}
+	if task.LeaseUntil == nil || !now.Before(*task.LeaseUntil) {
+		return errInboxUnavailable
+	}
+	return nil
 }
 
 // suppressInbound records a suppressed request: its receipt makes a retry
@@ -228,43 +253,74 @@ func insertReceipt(ctx context.Context, dao store.AssistantTaskDAO, receipt mode
 	return nil
 }
 
-// lockInbox reads the inbox without a lock to find its task, then locks the
-// task and the inbox in the same order as inbox management.
-func (s *Inbox) lockInbox(ctx context.Context, dao store.AssistantTaskDAO, id string) (model.AssistantTaskInbox, model.AssistantTask, error) {
+// lockInbox reads the inbox and its task without locks to find the task's
+// holder Bot, takes that Bot's shared deletion barrier, then locks the task and
+// the inbox. This keeps the Bot-before-task order of declared Bot writes and
+// the task-then-inbox order of inbox management. It returns the Bot whose
+// barrier is held and found live, or "" when the task had no holder or the
+// holder is absent or deleted; the caller decides availability after its
+// authentication checks.
+func (s *Inbox) lockInbox(ctx context.Context, dao store.AssistantTaskDAO, id string) (model.AssistantTaskInbox, model.AssistantTask, string, error) {
+	var inbox model.AssistantTaskInbox
+	var task model.AssistantTask
 	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id || parsed == uuid.Nil {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, errInboxMissing
+		return inbox, task, "", errInboxMissing
 	}
 	identity, err := dao.InboxIdentity(ctx, id)
 	if errors.Is(err, model.ErrNotFound) {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, errInboxMissing
+		return inbox, task, "", errInboxMissing
 	}
 	if err != nil {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, err
+		return inbox, task, "", err
 	}
 	if identity.State != model.AssistantTaskInboxEnabled {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, errInboxGone
+		return inbox, task, "", errInboxGone
 	}
-	task, err := dao.Task(ctx, identity.OwnerUserID, identity.TaskID, true)
+	peek, err := liveTask(ctx, dao, identity, false)
+	if err != nil {
+		return inbox, task, "", err
+	}
+	admitted := ""
+	if peek.HolderBotID != nil {
+		err = botcore.RequireOwnedBot(ctx, dao, identity.OwnerUserID, *peek.HolderBotID)
+		var fault *model.Fault
+		switch {
+		case err == nil:
+			admitted = *peek.HolderBotID
+		case !errors.As(err, &fault):
+			return inbox, task, "", err
+		}
+	}
+	if task, err = liveTask(ctx, dao, identity, true); err != nil {
+		return inbox, task, "", err
+	}
+	inbox, err = dao.LockInbox(ctx, task.OwnerUserID, task.ID, id)
 	if errors.Is(err, model.ErrNotFound) {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, errInboxGone
+		return inbox, task, "", errInboxGone
 	}
 	if err != nil {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, err
-	}
-	if task.OwnerUserID != identity.OwnerUserID || task.State == "deleted" {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, errInboxGone
-	}
-	inbox, err := dao.LockInbox(ctx, task.OwnerUserID, task.ID, id)
-	if errors.Is(err, model.ErrNotFound) {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, errInboxGone
-	}
-	if err != nil {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, err
+		return inbox, task, "", err
 	}
 	if inbox.State != model.AssistantTaskInboxEnabled {
-		return model.AssistantTaskInbox{}, model.AssistantTask{}, errInboxGone
+		return inbox, task, "", errInboxGone
 	}
-	return inbox, task, nil
+	return inbox, task, admitted, nil
+}
+
+// liveTask reads the inbox's task, locked or not, and reports a missing,
+// deleted or reassigned task as a gone inbox.
+func liveTask(ctx context.Context, dao store.AssistantTaskDAO, identity model.AssistantTaskInbox, lock bool) (model.AssistantTask, error) {
+	task, err := dao.Task(ctx, identity.OwnerUserID, identity.TaskID, lock)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.AssistantTask{}, errInboxGone
+	}
+	if err != nil {
+		return model.AssistantTask{}, err
+	}
+	if task.OwnerUserID != identity.OwnerUserID || task.State == "deleted" {
+		return model.AssistantTask{}, errInboxGone
+	}
+	return task, nil
 }
 
 type verifiedEvent struct {

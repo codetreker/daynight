@@ -60,6 +60,17 @@ type inboundDAO struct {
 	wakeBot, wakeSubject                                  string
 	wakeSince                                             time.Time
 	suppressedCount                                       int
+	// lockedTask, when set, is the projection after the task lock; task is
+	// the earlier unlocked projection.
+	lockedTask *model.AssistantTask
+	// botDeleted and botMissing describe the holder seen under its barrier;
+	// botID records the barrier taken.
+	botDeleted, botMissing bool
+	botID                  string
+	// nowCalls counts database time reads; later reads return recheckAt
+	// when it is set.
+	nowCalls  int
+	recheckAt time.Time
 }
 
 func (d *inboundDAO) step(name string) error {
@@ -81,17 +92,49 @@ func (d *inboundDAO) InboxIdentity(_ context.Context, id string) (model.Assistan
 }
 
 func (d *inboundDAO) Task(_ context.Context, owner, id string, lock bool) (model.AssistantTask, error) {
-	if err := d.step("task"); err != nil {
+	name := "peek"
+	if lock {
+		name = "task"
+	}
+	if err := d.step(name); err != nil {
 		return model.AssistantTask{}, err
 	}
-	if owner != inOwner || id != inTask || !lock {
+	if owner != inOwner || id != inTask || d.taskLocked {
 		d.t.Fatalf("task read %s %s %v", owner, id, lock)
 	}
-	d.taskLocked = true
+	if lock && d.calls[len(d.calls)-2] != "peek" && d.calls[len(d.calls)-2] != "bot" {
+		d.t.Fatal("task locked before the unlocked holder read")
+	}
 	if d.taskMissing {
 		return model.AssistantTask{}, model.ErrNotFound
 	}
+	if !lock {
+		return d.task, nil
+	}
+	d.taskLocked = true
+	if d.lockedTask != nil {
+		return *d.lockedTask, nil
+	}
 	return d.task, nil
+}
+
+// Bot takes the holder's deletion barrier, which must precede the task lock.
+func (d *inboundDAO) Bot(_ context.Context, id string) (model.Bot, error) {
+	if err := d.step("bot"); err != nil {
+		return model.Bot{}, err
+	}
+	if d.taskLocked {
+		d.t.Fatal("Bot barrier taken after the task lock")
+	}
+	d.botID = id
+	if d.botMissing {
+		return model.Bot{}, model.ErrNotFound
+	}
+	bot := model.Bot{ID: id, OwnerUserID: inOwner}
+	if d.botDeleted {
+		bot.Deletion = &model.BotDeletion{DeletionID: "deletion"}
+	}
+	return bot, nil
 }
 
 func (d *inboundDAO) LockInbox(_ context.Context, owner, task, inbox string) (model.AssistantTaskInbox, error) {
@@ -107,7 +150,16 @@ func (d *inboundDAO) LockInbox(_ context.Context, owner, task, inbox string) (mo
 	return d.locked, nil
 }
 
-func (d *inboundDAO) Now(context.Context) (time.Time, error) { return inEpoch, d.step("now") }
+func (d *inboundDAO) Now(context.Context) (time.Time, error) {
+	d.nowCalls++
+	if d.nowCalls > 1 {
+		if !d.recheckAt.IsZero() {
+			return d.recheckAt, d.step("recheck")
+		}
+		return inEpoch, d.step("recheck")
+	}
+	return inEpoch, d.step("now")
+}
 
 func (d *inboundDAO) InboxReceipt(_ context.Context, owner, inbox, key string) (model.AssistantTaskInboxReceipt, error) {
 	if err := d.step("receipt"); err != nil {
@@ -242,6 +294,7 @@ type inboundWriter struct {
 
 func (w *inboundWriter) WriteAssistantTaskInbound(_ context.Context, call func(store.AssistantTaskInboundScope) error) (store.Completion, error) {
 	w.runs++
+	w.d.taskLocked, w.d.nowCalls = false, 0
 	err := call(inboundScope{w.d})
 	if w.outcome != "" {
 		return store.Completion{Outcome: w.outcome}, w.err
@@ -328,7 +381,7 @@ func TestReceiveExternalWritesEventReceiptAndReclaims(t *testing.T) {
 	if d.reclaimedReceipts != 1 || d.reclaimedEvents != 1 || !d.reclaimBefore.Equal(inEpoch.Add(-30*24*time.Hour)) {
 		t.Fatalf("reclamation %d %d %v", d.reclaimedReceipts, d.reclaimedEvents, d.reclaimBefore)
 	}
-	want := "identity,task,lock,now,receipt,pending,event,insert-receipt,reclaim-receipts,reclaim-events"
+	want := "identity,peek,bot,task,lock,now,receipt,pending,event,insert-receipt,reclaim-receipts,reclaim-events,recheck"
 	if got := strings.Join(d.calls, ","); got != want {
 		t.Fatalf("calls %s", got)
 	}
@@ -506,6 +559,22 @@ func TestReceiveInboxStateAndTokenRules(t *testing.T) {
 			_ = other
 		}, "unauthenticated"},
 		{"lease expired", func(d *inboundDAO, _ *ReceiveInput, _ string) { d.task.LeaseUntil = &expired }, "service_unavailable"},
+		{"holder deleted", func(d *inboundDAO, _ *ReceiveInput, _ string) { d.botDeleted = true }, "service_unavailable"},
+		{"holder missing", func(d *inboundDAO, _ *ReceiveInput, _ string) { d.botMissing = true }, "service_unavailable"},
+		{"holder changed before the lock", func(d *inboundDAO, _ *ReceiveInput, _ string) {
+			changed := d.task
+			changed.HolderBotID = ptrString(inPeer)
+			d.lockedTask = &changed
+		}, "service_unavailable"},
+		{"holder assigned before the lock", func(d *inboundDAO, _ *ReceiveInput, _ string) {
+			assigned := d.task
+			d.lockedTask = &assigned
+			d.task.HolderBotID = nil
+		}, "service_unavailable"},
+		{"token checked before holder", func(d *inboundDAO, in *ReceiveInput, _ string) {
+			other, _, _ := core.NewInboxToken()
+			in.Token, d.botDeleted = &other, true
+		}, "unauthenticated"},
 		{"unowned", func(d *inboundDAO, _ *ReceiveInput, _ string) { d.task.HolderBotID, d.task.LeaseUntil = nil, nil }, "service_unavailable"},
 		{"header mismatch", func(_ *inboundDAO, in *ReceiveInput, _ string) { in.WebhookID = "other" }, "invalid_input"},
 		{"invalid key", func(_ *inboundDAO, in *ReceiveInput, _ string) { in.IdempotencyKey = "has space" }, "invalid_input"},
@@ -555,7 +624,7 @@ func TestReceiveIdempotentReplayAndConflict(t *testing.T) {
 }
 
 func TestReceiveStorageFailuresStopBeforeLaterSteps(t *testing.T) {
-	for _, step := range []string{"identity", "task", "lock", "now", "receipt", "pending", "event", "insert-receipt", "reclaim-receipts", "reclaim-events"} {
+	for _, step := range []string{"identity", "peek", "bot", "task", "lock", "now", "receipt", "pending", "event", "insert-receipt", "reclaim-receipts", "reclaim-events", "recheck"} {
 		t.Run(step, func(t *testing.T) {
 			s, w, d, token := newInbound(t)
 			d.fail = step
@@ -564,6 +633,39 @@ func TestReceiveStorageFailuresStopBeforeLaterSteps(t *testing.T) {
 				t.Fatalf("err=%v calls=%v", err, d.calls)
 			}
 		})
+	}
+}
+
+// A lease that expires during reception rolls the request back as retryable
+// for both an event and a suppressed receipt.
+func TestReceiveRechecksLeaseBeforeCompleting(t *testing.T) {
+	s, w, d, token := newInbound(t)
+	d.recheckAt = *d.task.LeaseUntil
+	_, err := s.Receive(context.Background(), externalInput(token))
+	requireInboundCode(t, err, "service_unavailable")
+	if w.runs != 1 || d.calls[len(d.calls)-1] != "recheck" {
+		t.Fatal(d.calls)
+	}
+	s, _, d, _ = newInbound(t)
+	d.woke, d.recheckAt = true, d.task.LeaseUntil.Add(time.Second)
+	_, err = s.Receive(context.Background(), daynightInput(t))
+	requireInboundCode(t, err, "service_unavailable")
+	if d.suppressedCount != 1 || d.calls[len(d.calls)-1] != "recheck" {
+		t.Fatal(d.calls)
+	}
+}
+
+func TestReceiveBarrierUsesTheOwnersHolder(t *testing.T) {
+	s, _, d, token := newInbound(t)
+	if _, err := s.Receive(context.Background(), externalInput(token)); err != nil || d.botID != inBot {
+		t.Fatal(err, d.botID)
+	}
+	s, _, d, token = newInbound(t)
+	d.task.HolderBotID, d.task.LeaseUntil = nil, nil
+	_, err := s.Receive(context.Background(), externalInput(token))
+	requireInboundCode(t, err, "service_unavailable")
+	if slices.Contains(d.calls, "bot") {
+		t.Fatal("barrier taken without a holder", d.calls)
 	}
 }
 
