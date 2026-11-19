@@ -71,7 +71,7 @@ func RegisterRoutes(mux *http.ServeMux, tasks operations, auth authentication, l
 				httpx.ResourceMethodNotAllowed(logger, allowed)(w, r, p)
 				return
 			}
-			botID, err := botIdentity(r)
+			botID, err := httpx.BotIdentity(r)
 			actor := core.Actor{Principal: p, BotID: botID}
 			taskID, id := r.PathValue("taskId"), r.PathValue("id")
 			if err == nil && taskID != "" {

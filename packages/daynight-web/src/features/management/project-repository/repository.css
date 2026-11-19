@@ -1,0 +1,7 @@
+.repository-card .field { margin-top: 20px; }
+.repository-card .repository-current { color: var(--ink); overflow-wrap: anywhere; }
+.repository-card .settings-actions { margin-top: 16px; }
+.repository-card [aria-live] > .notice { margin: 15px 0 0; }
+.repository-impact { margin: 6px 0 0; padding-inline-start: 18px; line-height: 1.65; }
+.repository-ack { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; cursor: pointer; }
+.repository-ack input { flex: 0 0 auto; margin: 2px 0 0; }

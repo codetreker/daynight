@@ -405,6 +405,9 @@ func (s *mcpThreadWriteScope) TaskDAO() store.ThreadTaskDAO             { return
 func (s *mcpThreadWriteScope) CredentialDAO() store.ThreadCredentialDAO { return s }
 func (s *mcpThreadWriteScope) ProjectDAO() store.ThreadProjectDAO       { return s }
 func (s *mcpThreadWriteScope) ThreadDAO() store.ThreadDAO               { return s }
+func (s *mcpThreadWriteScope) BotBarrierDAO() store.BotBarrierDAO {
+	panic("MCP thread writes do not declare a Bot")
+}
 func (s *mcpThreadWriteScope) CaptureDAO() store.WebhookCaptureDAO {
 	return &mcpThreadCapture{p: s.p}
 }

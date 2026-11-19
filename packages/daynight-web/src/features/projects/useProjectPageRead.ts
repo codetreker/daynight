@@ -1,3 +1,4 @@
+import { subscribeRepositoryChanges } from './repository-changes';
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, isAbortError } from "../../api/client";
 import { getProject } from "../../api/project-settings";
@@ -79,6 +80,7 @@ export const useProjectPageRead = (projectId: string) => {
   useEffect(() => {
     void session.revalidate();
     void read();
+    const unsubscribeRepository = subscribeRepositoryChanges(change => { if (change.userId === session.scope.userId && change.projectId === projectId) void read(); });
     const unsubscribeRetry = session.subscribeProjectReadRetry(automatic => { if (!automatic) session.scope.retryProjectVerification(projectId); void read(false, automatic); });
     const withdraw = (error: unknown) => {
       ++sequence.current; active.current?.abort();
@@ -100,7 +102,7 @@ export const useProjectPageRead = (projectId: string) => {
     document.addEventListener("visibilitychange", refresh);
     const timer = setInterval(refresh, 30_000);
     return () => {
-      ++sequence.current; active.current?.abort(); unsubscribe(); unsubscribeRetry(); unsubscribeWithdrawal(); clearInterval(timer);
+      ++sequence.current; active.current?.abort(); unsubscribe(); unsubscribeRepository(); unsubscribeRetry(); unsubscribeWithdrawal(); clearInterval(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
