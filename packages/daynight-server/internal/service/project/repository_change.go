@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"reflect"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 )
 
 type RepositoryObserver interface {
@@ -21,6 +24,41 @@ type RepositoryObserver interface {
 
 func (s *AppProjects) SetRepositoryObserver(observer RepositoryObserver) {
 	s.repositoryObserver = observer
+}
+
+// SetRepositoryLogger configures diagnostics before repository operations start.
+func (s *AppProjects) SetRepositoryLogger(logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	s.repositoryLogger = logger
+}
+
+func (s *AppProjects) logRepository(ctx context.Context, principal model.Principal, id, phase, classification string, outcome store.TransactionOutcome, count int, countKnown bool) {
+	logger := s.repositoryLogger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	args := []any{"component", "project_repository", "project_id", id, "user_id", principal.UserID, "request_id", requestid.From(ctx), "phase", phase}
+	if classification != "" {
+		args = append(args, "classification", classification)
+	}
+	if outcome != "" {
+		args = append(args, "commit_outcome", outcome)
+		switch outcome {
+		case store.TransactionCommitted:
+			if countKnown {
+				args = append(args, "affected_worker_configuration_rows", count)
+			}
+		case store.TransactionNotCommitted:
+			args = append(args, "affected_worker_configuration_rows", 0)
+		case store.TransactionUnknown:
+			if countKnown {
+				args = append(args, "provisional_worker_configuration_rows", count)
+			}
+		}
+	}
+	logger.InfoContext(ctx, "Project repository operation", args...)
 }
 
 type repositorySnapshot struct {
@@ -106,6 +144,7 @@ func (s *AppProjects) RepositoryPreview(ctx context.Context, p model.Principal, 
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	out, _, _, err := s.previewRepository(ctx, p, id, address, identity)
+	s.logRepository(ctx, p, id, "preview", out.Classification, "", 0, false)
 	return out, err
 }
 func relevantGitHubFacts(a, b repositorySnapshot) bool {
@@ -128,6 +167,7 @@ func (s *AppProjects) SetRepository(ctx context.Context, p model.Principal, id s
 	if input.Classification != "unchanged" && input.Classification != "same_repository" && input.Classification != "different_repository" && input.Classification != "unverified" || input.TreatUnverifiedAsSwitch && input.Classification != "unverified" || input.Classification == "unverified" && !input.TreatUnverifiedAsSwitch {
 		return core.RepositoryReceipt{}, &model.Fault{Code: "invalid_input", Message: "Invalid repository classification or unverified confirmation."}
 	}
+	s.logRepository(ctx, p, id, "prepare", input.Classification, "", 0, false)
 	if s.repositoryStore == nil {
 		return core.RepositoryReceipt{}, errors.New("repository store unavailable")
 	}
@@ -141,6 +181,7 @@ func (s *AppProjects) SetRepository(ctx context.Context, p model.Principal, id s
 		return core.RepositoryReceipt{}, repositoryConflict()
 	}
 	var out core.RepositoryReceipt
+	workerRows, workerRowsKnown := 0, false
 	c, err := s.repositoryStore.WriteProjectRepository(ctx, id, p.UserID, func(scope store.ProjectRepositoryWriteScope) error {
 		dao := scope.ProjectRepositoryDAO()
 		github := scope.GitHubSwitchDAO()
@@ -156,6 +197,7 @@ func (s *AppProjects) SetRepository(ctx context.Context, p model.Principal, id s
 		}
 		out = core.RepositoryReceipt{ProjectID: id, RepoURL: input.RepoURL, RepositoryVersion: now.project.Version}
 		if input.Classification == "unchanged" {
+			workerRowsKnown = true
 			return nil
 		}
 		if now.project.Version == math.MaxInt64 {
@@ -194,13 +236,23 @@ func (s *AppProjects) SetRepository(ctx context.Context, p model.Principal, id s
 			if e = github.AdvanceImpact(ctx); e != nil {
 				return e
 			}
-			if e = worker.RemoveProjectSelections(ctx, scope.WorkerSelectionsDAO(), id); e != nil {
+			workerRows, e = worker.RemoveProjectSelectionsCount(ctx, scope.WorkerSelectionsDAO(), id)
+			if e != nil {
 				return e
 			}
 		}
+		workerRowsKnown = true
 		out.RepositoryVersion, out.Changed, out.BindingsInvalidated = version, true, preview.BindingsInvalidated
 		return nil
 	})
+	outcome := c.Outcome
+	if outcome != store.TransactionCommitted && outcome != store.TransactionNotCommitted && outcome != store.TransactionUnknown {
+		outcome = store.TransactionUnknown
+	}
+	if facts := operation.CompletionFacts(err); facts.Outcome != "" && facts.Outcome != outcome {
+		outcome = store.TransactionUnknown
+	}
+	s.logRepository(ctx, p, id, "save", input.Classification, outcome, workerRows, workerRowsKnown)
 	if err = completed(c, err, nil); err != nil {
 		return core.RepositoryReceipt{}, core.ProjectWriteError(err)
 	}

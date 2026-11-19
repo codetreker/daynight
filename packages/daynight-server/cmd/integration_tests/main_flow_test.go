@@ -95,6 +95,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 			}
 		}
 	})
+	t.Run("MCP project repository", func(t *testing.T) { serverAPIMCPProjectRepositoryNormalFlow(t, f) })
 	t.Run("explicit preview SSO", func(t *testing.T) { serverAPIPreviewSSONormalFlow(t, f) })
 	t.Run("public application authorization", func(t *testing.T) { serverAPIPublicApplicationNormalFlow(t, f) })
 	t.Run("application work materials", func(t *testing.T) { serverAPIApplicationMaterialNormalFlow(t, f) })
