@@ -11,13 +11,12 @@ import type { createWorkerToolInspector } from "../native-selection.js";
 import type { FrozenToolObservation } from "../types.js";
 import type { ExecutionConfiguration } from "../types.js";
 import { createBotDeletion } from "./delete.js";
-import { openBotExecutionStore } from "./execution-store.js";
+import { openLocalBotStores } from "./local-store.js";
 import { createAssistantHostCollector, type AssistantHostSample } from "./host-capabilities.js";
 import { createBotProcess } from "./process.js";
 import { createBotRemote } from "./remote.js";
 import { createManagedAssistantRuntime } from "./runtime.js";
 import { createBotSessionApi } from "./session-api.js";
-import { openBotStore } from "./store.js";
 import type { BotOwner } from "./types.js";
 import { createAssistantTaskRuntime } from "./assistant-tasks.js";
 import { createAssistantTaskSessionTransport } from "./assistant-task-session.js";
@@ -27,7 +26,7 @@ import { ASSISTANT_TASK_OPERATION_BYTES, ASSISTANT_TASK_RESPONSE_BYTES } from ".
 import { createWatchdogApplication } from "./apps/watchdog.js";
 import { createWatchdogTransport } from "./apps/watchdog-transport.js";
 
-/** The Worker lock protects both stores until all Bot jobs and writers have joined. */
+/** Storage locks remain held until all Bot jobs and writers have joined. */
 export const createWorkerBotHost = (options: {
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   toolLaunchForHost?: (agent: "codex" | "copilot") => ResolvedToolLaunch | undefined;
@@ -41,10 +40,9 @@ export const createWorkerBotHost = (options: {
   pollIntervalMs(): number | null; recoveryLimit(): number | null; emit(event: WorkerEvent): void;
 }) => {
   const migration = { onMigration: (event: Parameters<typeof workerSqliteMigrationEvent>[0]): undefined => { options.emit(workerSqliteMigrationEvent(event)); } };
-  const store = openBotStore(options.paths.databaseFile, migration);
-  let executions: ReturnType<typeof openBotExecutionStore> | undefined;
+  const local = openLocalBotStores({ stateDirectory: options.paths.stateDirectory, legacyDatabaseFile: options.paths.databaseFile, owner: options.owner, ...migration });
+  const { store, executions } = local;
   try {
-    executions = openBotExecutionStore(options.paths.databaseFile, migration);
     const remote = createBotRemote({ owner: options.owner, serverToken: options.serverToken });
     const sessionApi = createBotSessionApi({ owner: options.owner, serverToken: options.serverToken });
     const botProcess = createBotProcess({ ...options, store, executions, sessionApi, recoveryLimit: () => {

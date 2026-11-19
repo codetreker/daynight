@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
@@ -473,7 +474,7 @@ test("journal close keeps committed ownership removal distinct from a close fail
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} }), originalClose = Database.prototype.close;
   let fail = true;
   const closing = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
-    if (this.name === f.file && fail) { fail = false; throw new Error("Injected close failure"); }
+    if (sqliteDisplayFilename(this.name) === f.file && fail) { fail = false; throw new Error("Injected close failure"); }
     return originalClose.call(this);
   });
   try {

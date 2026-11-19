@@ -3,7 +3,7 @@ import type { BotDeletionStop } from "./session-api.js";
 import type { BotDeletionTarget } from "./delete-files.js";
 import { randomUUID } from "node:crypto";
 import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
-import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
+import { assertCurrentSqlite, type SqliteFormat } from "../../../platform/sqlite-format.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import { workerStoreFormat } from "../store-format.js";
 import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
@@ -18,13 +18,14 @@ const time = (value: number): number => { if (!Number.isSafeInteger(value) || va
 const key = (owner: BotOwner, botId: string) => ({ ...parseBotOwner(owner), botId: botUUID(botId, "Bot ID") });
 const predicate = "server_origin = @serverOrigin AND owner_user_id = @ownerUserId AND worker_id = @workerId";
 
-/** The caller holds the Worker instance lock throughout inventory and execution access. */
-export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowCreate: true,
+/** The caller holds the owning Bot lock, or the Worker lock for legacy storage. */
+export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter; format?: SqliteFormat; storageStateDirectory?: string } = {}) => {
+  const format = options.format ?? workerStoreFormat;
+  const db = openSqliteDatabase({ file: databaseFile, format, allowCreate: true,
     ...(options.busyTimeoutMs === undefined ? {} : { timeoutMs: options.busyTimeoutMs }),
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
-  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).immediate();
-  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return action(); }).deferred();
+  const atomic = <T>(action: () => T): T => db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).immediate();
+  const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(() => { assertCurrentSqlite(db, format); return action(); }).deferred();
   const parseRecord = (value: string, owner: BotOwner): BotRecord => {
     const record = JSON.parse(value) as BotRecord;
     if (!same(record.owner, owner) || record.botId !== record.observed.id) throw new Error("Stored Bot inventory identity is inconsistent.");
@@ -126,7 +127,7 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       db.prepare(`DELETE FROM bot_executions WHERE ${predicate} AND bot_id = @botId`).run(key(record.owner, record.botId));
       return put(record);
     }),
-    close: (): void => closeSqliteDatabase(db, { file: databaseFile, format: workerStoreFormat }),
+    close: (): void => closeSqliteDatabase(db, { file: databaseFile, format }),
     get,
     list: (owner: BotOwner): BotRecord[] => read(() => {
       const identity = parseBotOwner(owner);
@@ -166,11 +167,11 @@ export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busy
       if (!path.isAbsolute(input.homeDirectory) || /[\0\r\n]/.test(input.homeDirectory)) throw new Error("Bot home directory must be absolute.");
       if (!Number.isSafeInteger(input.recoveryLimit) || input.recoveryLimit < 0) throw new Error("Bot recovery limit must be a nonnegative safe integer.");
       const executionId = randomUUID(), launchId = randomUUID(), controllerInstanceId = randomUUID();
-      const directory = controllerExecutionDirectory(input.homeDirectory, executionId);
+      const directory = controllerExecutionDirectory(input.homeDirectory, executionId, options.storageStateDirectory);
       record.intent = { botVersion: record.observed.version,
         registration: { protocol: "daynight.session.v1", schemaVersion: 1, projectionVersion: 1, registrationId: randomUUID(), testExecutionId: executionId, controllerId: randomUUID(), controllerInstanceId, provider: record.definition.resolvedConfiguration.provider, initialInput: "none" },
         launchId, executionId, controllerInstanceId, initialOperationId: randomUUID(), sessionId: null, executionGeneration: "1", nativeSessionId: null,
-        ticketPath: controllerTicketPath(input.homeDirectory, launchId), journalPath: path.join(directory, "journal.sqlite"), credentialFile: path.join(directory, "credential.json"), recoveryLimit: input.recoveryLimit, roleConfiguration: record.definition.roleConfiguration,
+        ticketPath: controllerTicketPath(input.homeDirectory, launchId, options.storageStateDirectory), journalPath: path.join(directory, "journal.sqlite"), credentialFile: path.join(directory, "credential.json"), recoveryLimit: input.recoveryLimit, roleConfiguration: record.definition.roleConfiguration,
         ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }), ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }) };
       return put(record).intent!;
     }),

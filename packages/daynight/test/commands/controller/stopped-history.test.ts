@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, open } from "node:fs/promises";
@@ -92,7 +93,7 @@ test("a failed stopped ACK rollback retains both errors and does not invent an o
     const db = new Database(f.journalPath);
     try { db.prepare("UPDATE outbox_totals SET byte_length=1 WHERE id=1").run(); } finally { db.close(); }
     vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-      if (this.name === f.journalPath && sql === "ROLLBACK") throw rollbackFailure;
+      if (sqliteDisplayFilename(this.name) === f.journalPath && sql === "ROLLBACK") throw rollbackFailure;
       return exec.call(this, sql);
     });
     return acknowledged(batch);

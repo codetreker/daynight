@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../platform/sqlite-filename.js";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join, dirname, resolve, basename } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -222,7 +223,7 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   const publishMigrationResource = (db: Database.Database, permit: ControllerStoragePermit, value: PendingResource, bytes?: Uint8Array): void => {
     if (!db.inTransaction) throw new Error("Resource migration requires the journal migration transaction.");
     assertControllerStoragePermit(permit, journal);
-    if (!db.memory && db.name !== journal) throw new Error("Resource migration permit belongs to another database.");
+    if (!db.memory && sqliteDisplayFilename(db.name) !== journal) throw new Error("Resource migration permit belongs to another database.");
     publishResource(value, bytes, false);
   };
   const writeResource = (resource: SessionResource, bytes: Uint8Array) => saveResource({ resource, data: null }, bytes);

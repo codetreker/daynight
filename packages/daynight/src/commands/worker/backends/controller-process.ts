@@ -11,8 +11,8 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
 
-export const prepareControllerLaunchStorage = (homeDirectory: string, ticket: ControllerLaunchTicket): void => {
-  const journalFile = path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId), "journal.sqlite");
+export const prepareControllerLaunchStorage = (homeDirectory: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): void => {
+  const journalFile = path.join(controllerExecutionDirectory(homeDirectory, ticket.executionId, storageStateDirectory), "journal.sqlite");
   let permit: ReturnType<typeof acquireControllerStoragePermit>;
   try { permit = acquireControllerStoragePermit(journalFile); }
   catch (cause) {
@@ -60,6 +60,7 @@ export const observeControllerProcess = async (ticket: ControllerLaunchTicket, s
  */
 export const launchControllerProcess = async (options: {
   homeDirectory: string;
+  storageStateDirectory?: string;
   packageDirectory: string;
   ticket: ControllerLaunchTicket;
   env: NodeJS.ProcessEnv;
@@ -70,8 +71,8 @@ export const launchControllerProcess = async (options: {
 }): Promise<ControllerSnapshot> => {
   const { ticket, signal } = options;
   signal.throwIfAborted();
-  prepareControllerLaunchStorage(options.homeDirectory, ticket);
-  const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId);
+  prepareControllerLaunchStorage(options.homeDirectory, ticket, options.storageStateDirectory);
+  const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId, options.storageStateDirectory);
   const log = await open(path.join(directory, "controller.log"), "a", 0o600);
   try {
     signal.throwIfAborted();
@@ -82,7 +83,7 @@ export const launchControllerProcess = async (options: {
     let child: ChildProcess;
     try {
       child = spawn(process.execPath, [path.join(options.packageDirectory, "dist", "main.js"), "controller", ticket.provider, "--launch-id", ticket.launchId], {
-        cwd: ticket.cwd, env: options.env, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true,
+        cwd: ticket.cwd, env: { ...options.env, DAYNIGHT_CONTROLLER_STORAGE_DIR: options.storageStateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true,
       });
     } catch (cause) {
       throw new ControllerStartupError({ state: "failed", reasonCode: "controller_launch_failed" }, "The operating system rejected the controller launch.", { cause });

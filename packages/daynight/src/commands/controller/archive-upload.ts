@@ -1,3 +1,4 @@
+import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import { ArchiveRepairRequiredError, ArchiveRequestError, archiveRepairCode, type ArchiveProbeResult } from "./archive-error.js";
 import Database from "better-sqlite3";
 import path from "node:path";
@@ -21,12 +22,12 @@ import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from ".
 
 const stoppedSnapshot = (db: Database.Database, ticket: ControllerLaunchTicket): ControllerSnapshot => {
   const version = Number(db.pragma("user_version", { simple: true }));
-  if (version < 2 || version > currentSqliteVersion(controllerJournalFormat)) throw new SqliteAccessError("unsupported-version", { database: controllerJournalFormat.name, file: db.name, phase: "archive-admission", fromVersion: version, toVersion: currentSqliteVersion(controllerJournalFormat) });
+  if (version < 2 || version > currentSqliteVersion(controllerJournalFormat)) throw new SqliteAccessError("unsupported-version", { database: controllerJournalFormat.name, file: sqliteDisplayFilename(db.name), phase: "archive-admission", fromVersion: version, toVersion: currentSqliteVersion(controllerJournalFormat) });
   inspectSqlite(db, controllerJournalFormat);
   const row = db.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string } | undefined;
   let observed: ControllerSnapshot | null;
   try { observed = row === undefined ? null : JSON.parse(row.snapshot) as ControllerSnapshot; }
-  catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: db.name, phase: "archive-decode" }, { cause }); }
+  catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: sqliteDisplayFilename(db.name), phase: "archive-decode" }, { cause }); }
   if (!observed || row?.ticket_hash !== controllerPayloadHash(ticket) || !observed.nativeStopped || observed.lifecycle !== "stopped" || observed.sessionId !== ticket.sessionId || observed.executionGeneration !== ticket.executionGeneration || observed.controllerInstanceId !== ticket.controllerInstanceId || observed.executionId !== ticket.executionId || observed.claimId !== ticket.claimId || observed.testExecutionId !== ticket.testExecutionId) throw new Error("Session archive requires the original stopped controller generation.");
   return observed;
 };
@@ -34,9 +35,9 @@ const withClosedJournal = <T>(db: Database.Database, action: () => T): T => {
   let result: T | undefined, failed = false, failure: unknown;
   try { result = action(); } catch (cause) { failed = true; failure = cause; }
   const outcome = failed ? failure instanceof SqliteAccessError ? failure.outcome : sqliteTransactionOutcome(failure) : "committed";
-  try { closeSqliteDatabase(db, { file: db.name, format: controllerJournalFormat }, outcome); }
+  try { closeSqliteDatabase(db, { file: sqliteDisplayFilename(db.name), format: controllerJournalFormat }, outcome); }
   catch (close) {
-    throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: db.name, phase: "archive-close" }, {
+    throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: sqliteDisplayFilename(db.name), phase: "archive-close" }, {
       cause: failed ? new AggregateError([failure, close], "Archive journal operation and shutdown failed.", { cause: failure }) : close,
       outcome, connectionClosed: !db.open,
     });
@@ -51,7 +52,7 @@ const withClosedJournal = <T>(db: Database.Database, action: () => T): T => {
 /** Metadata admission only. A receipt is an opportunity to reconcile, never proof of success. */
 export const probeStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; signal?: AbortSignal }): Promise<ArchiveProbeResult> => {
   options.signal?.throwIfAborted();
-  const db = new Database(options.journalPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+  const db = new Database(sqliteFilename(options.journalPath), { readonly: true, fileMustExist: true, timeout: 1000 });
   const result = withClosedJournal(db, () => db.transaction((): ArchiveProbeResult => {
     stoppedSnapshot(db, options.ticket);
     if (existsSync(`${options.journalPath}.archive-receipt-${options.ticket.executionGeneration}.json`)) return { kind: "attempt" };
@@ -148,12 +149,12 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   };
   const status = async (): Promise<SessionArchiveStatus> => parseSessionArchiveStatus((await call("GET", "", true) as { archive: unknown }).archive);
   let original: Database.Database;
-  try { original = new Database(journalPath, { readonly: true, fileMustExist: true }); }
+  try { original = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true }); }
   catch (cause) { throw new SqliteAccessError("invalid-format", { database: controllerJournalFormat.name, file: journalPath, phase: "archive-open" }, { cause, connectionClosed: true }); }
   const observed = withClosedJournal(original, () => original.transaction(() => stoppedSnapshot(original, ticket)).deferred());
   const assertOriginal = (db: Database.Database): void => { if (JSON.stringify(stoppedSnapshot(db, ticket)) !== JSON.stringify(observed)) throw new Error("The stopped controller evidence changed before archival."); };
   const inspectOriginal = <T>(inspect: (db: Database.Database) => T): T => {
-    const current = new Database(journalPath, { readonly: true, fileMustExist: true });
+    const current = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true });
     return withClosedJournal(current, () => current.transaction(() => { assertOriginal(current); assertJournalMigrationAllowed(current, inspectSqlite(current, controllerJournalFormat)); return inspect(current); }).deferred());
   };
   const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, assertOriginal }, action);

@@ -51,6 +51,17 @@ test("does not spawn when durable submission fails", async () => {
   expect(native.spawn).not.toHaveBeenCalled();
 });
 
+test("prepares and observes the dedicated journal and passes its location without changing CLI authentication", async () => {
+  const f = await fixture(), storageStateDirectory = path.join(f.options.homeDirectory, "bots", randomUUID());
+  const directory = controllerExecutionDirectory(f.options.homeDirectory, f.options.ticket.executionId, storageStateDirectory);
+  await mkdir(directory, { recursive: true });
+  await launchControllerProcess({ ...f.options, storageStateDirectory });
+  expect(native.prepare).toHaveBeenCalledWith(expect.objectContaining({ journalFile: path.join(directory, "journal.sqlite") }), expect.anything());
+  expect(native.reconcile).toHaveBeenCalledWith(expect.objectContaining({ journalFile: path.join(directory, "journal.sqlite") }));
+  expect(native.spawn.mock.calls[0]![2].env).toEqual({ ...f.options.env, DAYNIGHT_CONTROLLER_STORAGE_DIR: storageStateDirectory });
+  expect(f.options.env).not.toHaveProperty("DAYNIGHT_CONTROLLER_STORAGE_DIR");
+});
+
 test("keeps a synchronous submission check and spawn in the same event-loop turn", async () => {
   const f = await fixture();
   let admission = true, admittedAtSpawn = false;

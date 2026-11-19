@@ -21,6 +21,20 @@ const fixture = async () => {
   return { root, nativeHome, cwd, nativeSessionId, transcriptPath, indexDirectory, record, write };
 };
 
+test("indexes and releases a transcript under a deep Bot execution directory", async () => {
+  const f = await fixture(), indexDirectory = path.join(f.root, "a".repeat(100), "b".repeat(100), "native-index");
+  expect(indexDirectory.length).toBeGreaterThan(300);
+  await mkdir(indexDirectory, { recursive: true, mode: 0o700 });
+  await f.write([f.record("user", null, "user", "retained content")]);
+  const reader = await openClaudeTranscript({ ...f, indexDirectory });
+  try {
+    const page = await reader.nextPage();
+    expect(page.records.map(record => record.value.uuid)).toEqual(["user"]);
+    await reader.acknowledge(page.cursor);
+  } finally { await reader.close(); }
+  expect(await readdir(indexDirectory)).toEqual([]);
+});
+
 test("selects the root parent chain and assistant siblings independently of physical page boundaries", async () => {
   const f = await fixture();
   await f.write([

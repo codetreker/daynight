@@ -1,3 +1,4 @@
+import { sqliteFilename } from "../../../platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -76,7 +77,7 @@ class TranscriptIndex {
   readonly db: Database.Database;
   private ordinal = 0;
   constructor(readonly filename: string, private readonly options: ClaudeTranscriptOptions, private readonly cwd: string) {
-    this.db = new Database(filename);
+    this.db = new Database(sqliteFilename(filename));
     try {
     this.db.pragma("journal_mode = DELETE"); this.db.pragma("synchronous = FULL"); this.db.pragma("cache_size = -2048"); this.db.pragma("mmap_size = 0");
     this.db.exec(`

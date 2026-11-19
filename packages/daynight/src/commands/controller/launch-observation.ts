@@ -1,3 +1,4 @@
+import { sqliteFilename } from "../../platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { ControllerBootstrapReplacedError } from "./bootstrap-error.js";
 export { ControllerBootstrapReplacedError } from "./bootstrap-error.js";
@@ -73,7 +74,7 @@ export const hasUnsafeControllerObservationFailure = (error: unknown): boolean =
 // A bootstrap observation must never initialize or migrate the original journal.
 const readExitedJournal = (file: string, ticket: ControllerLaunchTicket, process: ProcessProof, timeoutMs: number): ControllerLaunchObservation => {
   if (sqliteDatabaseIsMissing(file)) return { kind: "pre-writer-exited", process, journal: "missing" };
-  const db = new Database(file, { readonly: true, fileMustExist: true, timeout: timeoutMs });
+  const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: timeoutMs });
   let result: ControllerLaunchObservation | undefined, failure: unknown, failed = false;
   try {
     result = db.transaction(() => {

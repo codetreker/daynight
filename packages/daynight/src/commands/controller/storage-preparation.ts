@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { chmodSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import path from "node:path";
@@ -78,10 +79,10 @@ export const observeControllerStorage = (observation: ControllerStorageObservati
 
 const physicalStorageMetrics = (db: Database.Database, metrics: StorageMetrics): void => {
   if (!db.memory) {
-    Object.assign(metrics, controllerJournalPhysicalBytes(db.name, db));
+    Object.assign(metrics, controllerJournalPhysicalBytes(sqliteDisplayFilename(db.name), db));
     let oldFileCount = 0, oldFileBytes = 0;
     for (const kind of ["entries", "timeline", "legacy-sql"] as const) {
-      const directory = path.join(`${db.name}.pending-content`, kind);
+      const directory = path.join(`${sqliteDisplayFilename(db.name)}.pending-content`, kind);
       let stat;
       try { stat = lstatSync(directory); }
       catch (cause) { if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue; throw cause; }

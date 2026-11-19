@@ -264,12 +264,13 @@ test.skipIf(process.platform !== "darwin")("waits through a real same-birth comm
   await waiting;
 }, 20_000);
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean; dedicatedStorage?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
   await mkdir(cwd); vi.stubEnv("DN_CONFIG_DIR", state);
-  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture"));
+  const botId = randomUUID(), storageStateDirectory = options.dedicatedStorage ? path.join(state, "bots", botId) : undefined;
+  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture", process.platform, storageStateDirectory));
   const packageDirectory = path.join(home, "package"), dist = path.resolve(import.meta.dirname, "../../../dist");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
   const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
@@ -294,7 +295,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, argv: process.argv.slice(2) }) + '\\n');
 const { runController } = await import(${JSON.stringify(runtimeURL)});
-await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5] });
+await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5], storageStateDirectory: process.env.DAYNIGHT_CONTROLLER_STORAGE_DIR });
 `);
   const http = options.hosted ? createServer() : null;
   const relay = http === null ? new WebSocketServer({ host: "127.0.0.1", port: 0 }) : new WebSocketServer({ server: http });
@@ -302,9 +303,9 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   else { http.listen(0, "127.0.0.1"); await once(http, "listening"); }
   const address = http?.address() ?? relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
-  const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
-  const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
-  let bot: BotDefinition = { id: randomUUID(), ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
+  const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {}, ...(storageStateDirectory === undefined ? {} : { storageStateDirectory }) });
+  let bot: BotDefinition = { id: botId, ownerUserId: owner.ownerUserId, workerId: owner.workerId, version: "1", name: "Name only", creationOrder: "1", requestedOverrides: {},
     resolvedConfiguration: { workerId: owner.workerId, cwd, provider: "codex", model: null, args: options.args ?? [] }, roleConfiguration: null, sessionId: null, testExecutionId: null,
     startupResult: { state: "pending", code: null }, deletion: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   store.observe(owner, bot, Date.now());
@@ -415,13 +416,13 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
       } catch (error) { relayErrors.push(error); socket.close(1008); }
     });
   });
-  const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(path.join(controllerExecutionDirectory(home, intent.executionId), "journal.sqlite")); };
+  const journal = () => { const intent = current().intent; return intent === null ? null : readControllerSnapshot(intent.journalPath); };
   const collectEvidence = async () => {
     const record = current(), intent = record.intent;
     const saved = journal();
-    const childState = resolveConfigurationPaths(home, path, { DN_CONFIG_DIR: state }).stateDirectory;
+    const childState = storageStateDirectory ?? resolveConfigurationPaths(home, path, { DN_CONFIG_DIR: state }).stateDirectory;
     const expectedTicket = intent === null ? null : path.join(childState, "controller", "launches", `${intent.launchId}.json`);
-    const parentTicket = intent === null ? null : controllerTicketPath(home, intent.launchId);
+    const parentTicket = intent === null ? null : controllerTicketPath(home, intent.launchId, storageStateDirectory);
     const directory = intent === null ? null : path.join(childState, "controller", "executions", intent.executionId);
     const expectedJournal = directory === null ? null : readControllerSnapshot(path.join(directory, "journal.sqlite"));
     const summarize = (snapshot: typeof saved) => snapshot === null ? null : { lifecycle: snapshot.lifecycle, startup: snapshot.startup,
@@ -626,12 +627,14 @@ test("keeps A/B version, host, models and native Bot launches on their selected 
 }, 180_000);
 
 test.each([false, true])("launches one real Controller with no user turn after unknown parent observation=%s, then observes the same writer after browser disconnect", async interruptedObservation => {
-  const f = await fixture(), signal = AbortSignal.timeout(60_000);
+  const f = await fixture({ dedicatedStorage: true }), signal = AbortSignal.timeout(60_000);
   if (interruptedObservation) vi.spyOn(processProof, "captureProcessProof").mockRejectedValueOnce(new Error("Fixture parent observation interrupted"));
   await launchAndObserveReady(f, signal);
   const ticket = await f.process.readTicket(f.current());
   expect(ticket).toMatchObject({ initialInput: "none", initialPrompt: "", cwd: f.cwd, instructions: f.current().intent!.roleConfiguration!.instructions });
   expect(ticket).not.toHaveProperty("claimId"); expect(existsSync(path.join(f.cwd, ".git"))).toBe(false);
+  expect(f.current().intent!.journalPath.startsWith(path.join(f.home, "state", "bots", f.current().botId) + path.sep)).toBe(true);
+  expect(existsSync(path.join(f.home, "state", "controller"))).toBe(false);
   expect((await f.requests()).filter(request => request.method === "thread/start")).toHaveLength(1);
   expect((await f.requests()).find(request => request.method === "thread/start")?.params).toMatchObject({ developerInstructions: ticket.instructions });
   expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);

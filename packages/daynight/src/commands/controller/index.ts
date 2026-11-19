@@ -44,7 +44,7 @@ export const runControllerCommand = async (args: readonly string[], context: Cli
   if (launchId !== undefined) {
     if (typeof launchId !== "string" || canonicalId(launchId) !== launchId) throw new UsageError("Controller launch ID must be a canonical UUID.");
     if (command.options.size !== 1 || command.values.length) throw new UsageError("--launch-id cannot be combined with a prompt or provider options.");
-    await (await import("./runtime.js")).runController({ homeDirectory: context.homeDirectory(), provider, launchId }); return;
+    await (await import("./runtime.js")).runController({ homeDirectory: context.homeDirectory(), provider, launchId, ...(process.env.DAYNIGHT_CONTROLLER_STORAGE_DIR === undefined ? {} : { storageStateDirectory: process.env.DAYNIGHT_CONTROLLER_STORAGE_DIR }) }); return;
   }
   const nativeArgs: string[] = [];
   for (const [name, value] of command.options) {

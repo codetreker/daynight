@@ -1,3 +1,4 @@
+import { sqliteFilename, sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import { imageQualificationFingerprint } from "./providers/image-qualification.js";
 import { openUsageStore } from "./usage/store.js";
 import { createNativeInputPublication } from "./media/native-publication.js";
@@ -452,7 +453,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }),
     close: (): void => {
       if (closed) return;
-      try { if (quarantined) { closeSqliteDatabase(db, { file: db.name, format: controllerJournalFormat }, "unknown"); return; } closeJournal(db, db.name, () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
+      try { if (quarantined) { closeSqliteDatabase(db, { file: sqliteDisplayFilename(db.name), format: controllerJournalFormat }, "unknown"); return; } closeJournal(db, sqliteDisplayFilename(db.name), () => { runSqliteImmediate(db, () => { assertCurrentSqlite(db, controllerJournalFormat); db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid); }); }); }
       finally { closed = !db.open; }
     },
   };
@@ -519,7 +520,7 @@ const readControllerStopRow = (file: string, deadline?: number, strictReadOnly =
     remaining();
     if (!path.isAbsolute(file)) throw new TypeError("The SQLite database path must be absolute.");
     if (sqliteDatabaseIsMissing(file)) { remaining(); return null; }
-    const db = new Database(file, { readonly: true, fileMustExist: true, timeout: remaining() });
+    const db = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
     let result: ControllerStopRow | null = null;
     closeJournal(db, file, () => {
       db.pragma(`busy_timeout = ${remaining()}`); remaining();
@@ -624,7 +625,7 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
   };
   remaining();
   if (sqliteDatabaseIsMissing(file)) throw new Error("Original controller stop evidence is unavailable.");
-  const inspection = new Database(file, { readonly: true, fileMustExist: true, timeout: remaining() });
+  const inspection = new Database(sqliteFilename(file), { readonly: true, fileMustExist: true, timeout: remaining() });
   let needsUpgrade = false;
   closeJournal(inspection, file, () => { needsUpgrade = inspection.transaction(() => inspectSqlite(inspection, controllerJournalFormat).kind !== "current").deferred(); }, "not-started");
   if (needsUpgrade) {
@@ -645,7 +646,7 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
   if (process.platform === "win32" && lease === undefined) throw new Error("Windows Job stop proof and original Job lease are unavailable; complete process-tree stop is unconfirmed.");
   if (!await (lease === undefined ? confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline) : confirmControllerProcessesStopped(observed.controllerProcess, observed.nativeProcesses, deadline, lease))) throw new Error("The original controller or its descendants are still running.");
   let db: Database.Database;
-  try { db = new Database(file, { fileMustExist: true, ...(deadline === undefined ? {} : { timeout: remaining() }) }); }
+  try { db = new Database(sqliteFilename(file), { fileMustExist: true, ...(deadline === undefined ? {} : { timeout: remaining() }) }); }
   catch (error) { return failedAtDeadline(error, "not-started", true); }
   let stopped: ControllerSnapshot | undefined;
   try {
