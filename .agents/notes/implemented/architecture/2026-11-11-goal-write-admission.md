@@ -25,7 +25,7 @@ existing missing-inventory cleanup and owner-only archive paths remain responsib
 for stopping and recording execution. The [Goal requirements](../../../../docs/spec/daynight-goals.md)
 and [server design](../../../../docs/design/daynight-server.md) own the contract. The
 [child-start decision](../feature/2026-11-13-start-goal-with-child.md) adds an atomic
-start transition without changing terminal Goal claim admission.
+start transition without changing terminal Goal claim admission. The [Goal dependency lifecycle decision](2026-11-19-goal-dependency-lifecycle.md) adds Team-scoped serialization for explicit Goal status and direct deletion to protect acceptance relationships.
 
 ## Alternatives
 

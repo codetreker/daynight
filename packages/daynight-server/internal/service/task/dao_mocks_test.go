@@ -158,6 +158,12 @@ type taskProjectScopeMock struct {
 	TaskDAOFn                 func() store.TaskWriteDAO
 	SessionDAOFn              func() store.ProjectSessionDAO
 	WorkerClaimAdmissionDAOFn func() store.WorkerClaimAdmissionDAO
+	GoalDependencyDAOFn       func() store.GoalDependencyDAO
+}
+
+func (mock *taskProjectScopeMock) GoalDependencyDAO() store.GoalDependencyDAO {
+	mock.need("GoalDependencyDAO", mock.GoalDependencyDAOFn != nil)
+	return mock.GoalDependencyDAOFn()
 }
 
 func (mock *taskProjectScopeMock) EligibilityDAO() store.WebhookEligibilityDAO {

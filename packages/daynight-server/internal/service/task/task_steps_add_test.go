@@ -601,6 +601,10 @@ func (f *strictStepWrite) ParentTask(context.Context, string) (model.Task, error
 }
 
 func (f *strictStepWrite) TagDAO() store.TagWriteDAO { f.t.Fatal("unexpected TagDAO call"); return nil }
+func (f *strictStepWrite) GoalDependencyDAO() store.GoalDependencyDAO {
+	f.t.Fatal("unexpected GoalDependencyDAO call")
+	return nil
+}
 func (f *strictStepWrite) TaskTagDAO() store.TaskTagWriteDAO {
 	f.t.Fatal("unexpected TaskTagDAO call")
 	return nil

@@ -46,6 +46,9 @@ func (tx *ProjectTx) CaptureDAO() WebhookCaptureDAO {
 func (tx *ProjectTx) TagDAO() TagWriteDAO         { return tag.NewWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) TaskTagDAO() TaskTagWriteDAO { return task.NewTagWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) TaskDAO() TaskWriteDAO       { return task.NewWriter(tx.tx, tx.projectID) }
+func (tx *ProjectTx) GoalDependencyDAO() GoalDependencyDAO {
+	return task.NewGoalDependencyWriter(tx.tx, tx.projectID)
+}
 func (tx *ProjectTx) SessionDAO() ProjectSessionDAO {
 	return session.NewProjectDAO(tx.tx, tx.projectID)
 }

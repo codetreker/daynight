@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -50,6 +51,45 @@ func taskError(t *testing.T, client *sdk.ClientSession, name string, args map[st
 
 func taskResourceFault(code string) error {
 	return &model.Fault{Code: code, Message: "Task operation refused."}
+}
+
+func TestMCPGoalLifecycleFaultsAndUnknownCommit(t *testing.T) {
+	for _, code := range []string{"goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced", "write_outcome_unknown"} {
+		t.Run(code, func(t *testing.T) {
+			f := newTaskResourceFixture(t)
+			current := taskFixtureTask()
+			var failure error = taskResourceFault(code)
+			if code == "write_outcome_unknown" {
+				failure = &taskservice.GoalWriteUnknown{Cause: &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true}}
+			}
+			args := map[string]any{"projectId": f.project, "taskId": current.ID, "ifVersion": "1"}
+			name := "task_set_status"
+			if code == "goal_dependency_referenced" {
+				name = "task_delete"
+				f.operations.wantCalls["Delete"]++
+				f.operations.DeleteFunc = func(_ context.Context, _ model.Principal, _, id string, input taskcore.DeleteTask) error {
+					if id != current.ID || input.Version != 1 {
+						t.Error("delete input changed")
+					}
+					return failure
+				}
+			} else {
+				args["status"] = "done"
+				expectTaskStatus(t, f, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone}, current, failure)
+			}
+			result, envelope := callTaskResource(t, f.client, name, args)
+			fault := object(t, envelope["error"])
+			if !result.IsError || fault["code"] != code {
+				t.Fatalf("Goal lifecycle refusal: %#v", envelope)
+			}
+			if code == "write_outcome_unknown" && fault["writeOutcome"] != "unknown" {
+				t.Fatalf("MCP lost unknown completion: %#v", envelope)
+			}
+			if strings.Contains(fmt.Sprint(envelope), "private-endpoint") {
+				t.Fatalf("Goal refusal leaked endpoint: %#v", envelope)
+			}
+		})
+	}
 }
 func taskResourceStatus(value model.TaskStatus) *model.TaskStatus { return &value }
 func taskResourceString(value string) *string                     { return &value }

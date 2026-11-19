@@ -16,7 +16,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestTaskHTTPStatusResultsAndSafeDiagnostics(t *testing.T) {
@@ -55,6 +57,57 @@ func TestTaskHTTPStatusResultsAndSafeDiagnostics(t *testing.T) {
 			}
 			if strings.Contains(logs.String(), "secret") || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Daynight-User-ID") != testUserID {
 				t.Fatalf("unsafe status metadata: headers=%v logs=%s", response.Header(), &logs)
+			}
+		})
+	}
+}
+
+func TestGoalLifecycleUnknownCommitUsesServiceUnavailable(t *testing.T) {
+	for _, deletion := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deletion), func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			failure := &taskservice.GoalWriteUnknown{Cause: &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true}}
+			var response *httptest.ResponseRecorder
+			if deletion {
+				h.Tasks.DeleteFunc = func(context.Context, model.Principal, string, string, taskcore.DeleteTask) error { return failure }
+				response = projectRequest(h, http.MethodDelete, taskCollection(testProjectID)+"/"+testTaskID, `{"version":1}`)
+			} else {
+				h.Tasks.SetStatusFunc = func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error) {
+					return model.Task{}, failure
+				}
+				response = projectRequest(h, http.MethodPut, taskCollection(testProjectID)+"/"+testTaskID+"/status", `{"version":1,"status":"done"}`)
+			}
+			fault := decodeResponse[api.ErrorResponse](t, response, http.StatusServiceUnavailable)
+			if fault.Error.Code != "write_outcome_unknown" || !strings.Contains(logs.String(), `"tx_outcome":"unknown"`) {
+				t.Fatalf("unknown commit: %+v %s", fault, &logs)
+			}
+		})
+	}
+}
+
+func TestGoalLifecycleFaultsUseConflictWithoutEndpointDetails(t *testing.T) {
+	for _, code := range []string{"goal_dependency_unsatisfied", "goal_dependency_done_successor", "goal_dependency_referenced"} {
+		t.Run(code, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := newHTTPFixture(t, &logs)
+			failure := &model.Fault{Code: code, Message: "Goal dependency operation refused."}
+			var response *httptest.ResponseRecorder
+			if code == "goal_dependency_referenced" {
+				h.Tasks.DeleteFunc = func(context.Context, model.Principal, string, string, taskcore.DeleteTask) error { return failure }
+				response = projectRequest(h, http.MethodDelete, taskCollection(testProjectID)+"/"+testTaskID, `{"version":1}`)
+			} else {
+				h.Tasks.SetStatusFunc = func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error) {
+					return model.Task{}, failure
+				}
+				response = projectRequest(h, http.MethodPut, taskCollection(testProjectID)+"/"+testTaskID+"/status", `{"version":1,"status":"done"}`)
+			}
+			fault := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
+			if fault.Error.Code != code || fault.Error.Details != nil {
+				t.Fatalf("Goal refusal leaked details: %+v", fault)
+			}
+			if !strings.Contains(logs.String(), `"error_code":"`+code+`"`) {
+				t.Fatalf("Goal refusal not classified: %s", &logs)
 			}
 		})
 	}

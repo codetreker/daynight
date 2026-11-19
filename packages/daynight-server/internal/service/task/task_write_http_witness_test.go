@@ -141,8 +141,48 @@ func (f *writeWitness) invoke() (model.Task, error) {
 
 type writeWitnessStore struct{ f *writeWitness }
 
-func (s *writeWitnessStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
-	panic(s.f.unexpected("ReadSnapshot"))
+func (s *writeWitnessStore) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
+	if s.f.method != "status" || ctx.Value(writeWitnessContextKey{}) != s.f.ctx.Value(writeWitnessContextKey{}) {
+		panic(s.f.unexpected("ReadSnapshot"))
+	}
+	if ctx != s.f.ctx {
+		s.f.t.Fatal("lifecycle preflight changed caller context")
+	}
+	return run(&writeWitnessSnapshot{f: s.f})
+}
+
+type writeWitnessSnapshot struct {
+	store.SnapshotScope
+	f *writeWitness
+}
+
+func (s *writeWitnessSnapshot) ProjectDAO() store.ProjectReader {
+	return &writeWitnessProjectReader{f: s.f}
+}
+func (s *writeWitnessSnapshot) TaskDAO() store.TaskReader { return &writeWitnessTaskReader{f: s.f} }
+
+type writeWitnessProjectReader struct {
+	store.ProjectReader
+	f *writeWitness
+}
+
+func (r *writeWitnessProjectReader) ProjectAccess(_ context.Context, principal model.Principal, project string) (model.ProjectAccess, error) {
+	if principal != r.f.principal || project != r.f.project.ID {
+		r.f.t.Fatal("preflight changed principal or project")
+	}
+	return model.ProjectAccess{ProjectID: project, UserID: principal.UserID, Role: model.ProjectAdmin}, nil
+}
+
+type writeWitnessTaskReader struct {
+	store.TaskReader
+	f *writeWitness
+}
+
+func (r *writeWitnessTaskReader) TaskHeader(_ context.Context, project, id string) (model.TaskHeader, error) {
+	if project != r.f.project.ID || id != r.f.target.ID {
+		r.f.t.Fatal("preflight changed target")
+	}
+	return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
 }
 func (s *writeWitnessStore) WriteProject(ctx context.Context, project string, run func(store.ProjectWriteScope) error) (store.Completion, error) {
 	f := s.f
@@ -175,6 +215,9 @@ func (s *writeWitnessScope) EligibilityDAO() store.WebhookEligibilityDAO {
 }
 func (s *writeWitnessScope) CaptureDAO() store.WebhookCaptureDAO { panic(s.f.unexpected("CaptureDAO")) }
 func (s *writeWitnessScope) SessionDAO() store.ProjectSessionDAO { panic(s.f.unexpected("SessionDAO")) }
+func (s *writeWitnessScope) GoalDependencyDAO() store.GoalDependencyDAO {
+	panic(s.f.unexpected("GoalDependencyDAO"))
+}
 
 type writeWitnessProjectDAO struct{ f *writeWitness }
 type writeWitnessTaskDAO struct{ f *writeWitness }

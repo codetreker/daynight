@@ -271,6 +271,9 @@ var sessionArchiveRetentionSQL string
 //go:embed schema/migrations/090_dependency_types.sql
 var dependencyTypesSQL string
 
+//go:embed schema/migrations/091_goal_dependencies.sql
+var goalDependenciesSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -367,6 +370,7 @@ var schemaMigrations = []migration{
 	{version: 88, sql: githubCoverageSQL},
 	{version: 89, sql: sessionArchiveRetentionSQL},
 	{version: 90, sql: dependencyTypesSQL},
+	{version: 91, sql: goalDependenciesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

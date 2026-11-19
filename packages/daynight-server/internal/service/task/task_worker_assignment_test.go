@@ -94,6 +94,25 @@ func workerMockWrite(t *testing.T, current model.Task, principal model.Principal
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("preflight-task"), TaskHeaderFn: func(ctx context.Context, projectID, id string) (model.TaskHeader, error) {
+		if ctx != fixture.Context || projectID != current.ProjectID || id != current.ID {
+			t.Fatal("worker preflight changed Task identity or context")
+		}
+		return model.TaskHeader{ProjectID: projectID, ID: id, Type: model.TaskTypeTask}, nil
+	}}
+	projectReader := &projectReaderMock{taskMockBase: base.withLabel("preflight-project"), ProjectAccessFn: func(ctx context.Context, p model.Principal, projectID string) (model.ProjectAccess, error) {
+		if ctx != fixture.Context || p != principal || projectID != current.ProjectID {
+			t.Fatal("worker preflight changed authorization")
+		}
+		return model.ProjectAccess{ProjectID: projectID, UserID: p.UserID, Role: model.ProjectMemberRole}, nil
+	}}
+	snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("preflight"), ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+	fixture.Store.ReadSnapshotFn = func(ctx context.Context, run func(store.SnapshotScope) error) error {
+		if ctx != fixture.Context {
+			t.Fatal("worker preflight changed context")
+		}
+		return run(snapshot)
+	}
 	t.Cleanup(func() {
 		counts := map[string]int{}
 		for _, call := range base.trace.snapshot() {
