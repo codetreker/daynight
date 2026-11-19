@@ -41,7 +41,7 @@ const fixture = (operation = createOperation()) => {
     getObservedTask: vi.fn<ApiClient["getObservedTask"]>().mockResolvedValue(observe(task)),
     listObservedTasks: vi.fn<ApiClient["listObservedTasks"]>().mockResolvedValue({ items: [observe(task)], partial: false, unsupported: false }),
     getObservedTaskGraph: vi.fn<ApiClient["getObservedTaskGraph"]>().mockResolvedValue(observeGraph(graph)),
-    previewProjectTransfer: vi.fn(), transferProject: vi.fn(), previewProjectDeletion: vi.fn(), deleteProject: vi.fn(),
+    previewProjectTransfer: vi.fn(), transferProject: vi.fn(), previewProjectRepository: vi.fn(), setProjectRepository: vi.fn(), previewProjectDeletion: vi.fn(), deleteProject: vi.fn(),
     updateTaskStep: async () => { throw new Error("Unused Step API method"); },
     setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
     moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),

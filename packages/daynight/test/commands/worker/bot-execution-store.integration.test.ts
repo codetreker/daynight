@@ -33,13 +33,14 @@ const formatTenFixture = () => {
 };
 
 describe("Bot execution file persistence and migration", () => {
-  it("retains unknown submission and process ownership when the Worker reopens", () => {
+  it.each([proof.startedAt, "linux:v1:876b21c9-30d7-48c0-a2ab-287291e903a7:9007199254740993"])("retains unknown submission and process ownership when the Worker reopens (%s)", startedAt => {
+    const retainedProof = { ...proof, startedAt };
     const f = fixture(); expect(f.store.get(f.record)).toBeNull();
     expect(f.store.prepare(f.record)).toMatchObject({ launchId: f.record.intent!.launchId, executionId: f.record.intent!.executionId, executionGeneration: "1", launchSubmission: "not-submitted", controllerProcess: null, snapshot: null, aliasDirectory: null, lastError: null, startup: null });
     const aliasDirectory = path.join(f.home, "aliases");
-    f.store.update(f.record, { aliasDirectory, launchSubmission: "unknown" }); f.store.update(f.record, { controllerProcess: proof, lastError: "IPC unavailable" });
+    f.store.update(f.record, { aliasDirectory, launchSubmission: "unknown" }); f.store.update(f.record, { controllerProcess: retainedProof, lastError: "IPC unavailable" });
     const reopened = f.open();
-    expect(reopened.prepare(f.record)).toMatchObject({ launchSubmission: "unknown", controllerProcess: proof, aliasDirectory, lastError: "IPC unavailable" });
+    expect(reopened.prepare(f.record)).toMatchObject({ launchSubmission: "unknown", controllerProcess: retainedProof, aliasDirectory, lastError: "IPC unavailable" });
     expect(() => reopened.update(f.record, { launchSubmission: "not-submitted" })).toThrow(/submission/i);
     expect(reopened.get(f.record)?.launchSubmission).toBe("unknown");
   });

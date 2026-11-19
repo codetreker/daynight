@@ -509,7 +509,7 @@ describe('Worker pages in the authenticated workspace', () => {
     render(<AuthenticatedApp />);
     await screen.findByRole('heading', { name: 'Worker A' });
     const main = screen.getByRole('main');
-    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     act(() => navigate(`/workers/${secondWorker}`));
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -522,6 +522,7 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(breadcrumb.getByRole('link', { name: 'My Workers' })).toHaveAttribute('href', '/workers');
     expect(breadcrumb.getByText('Worker')).toHaveAttribute('aria-current', 'page');
     expect(document.title).toBe('Worker · Daynight');
-    expect(within(screen.getByRole('complementary', { name: 'Workspace navigation' })).getByRole('link', { name: 'My Workers' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+    expect(within(screen.getByRole('dialog', { name: 'Workspace navigation' })).getByRole('link', { name: 'My Workers' })).toHaveAttribute('aria-current', 'page');
   });
 });
