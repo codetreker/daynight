@@ -135,12 +135,15 @@ describe("Bot private file deletion", () => {
     await mkdir(botPaths.codexRecoveryDirectory, { recursive: true });
     await writeFile(path.join(botPaths.codexRecoveryDirectory, "manifest.json"), "private recovery manifest");
     await writeFile(path.join(botPaths.codexRecoveryDirectory, "snapshot.jsonl"), "private recovery history");
+    await mkdir(botPaths.claudeRecoveryDirectory, { recursive: true });
+    await writeFile(path.join(botPaths.claudeRecoveryDirectory, "mirror.sqlite"), "private Claude recovery history");
     const targets = await captureBotDeletionFiles(f.home, f.record, f.execution, signal());
     expect(targets.filter(target => target.path === botPaths.codexRecoveryDirectory)).toHaveLength(1);
+    expect(targets.filter(target => target.path === botPaths.claudeRecoveryDirectory)).toHaveLength(1);
     expect(targets.some(target => target.path === f.ticketValue.nativeHome)).toBe(false);
     for (const target of targets) await removeBotDeletionFile(target, signal());
     for (const file of retained) expect(await readFile(file, "utf8")).toBe("retained");
-    for (const file of [f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias, botPaths.codexRecoveryDirectory]) {
+    for (const file of [f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias, botPaths.codexRecoveryDirectory, botPaths.claudeRecoveryDirectory]) {
       await expect(lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
     }
   });

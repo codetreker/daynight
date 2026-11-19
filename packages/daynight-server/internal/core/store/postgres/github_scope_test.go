@@ -15,8 +15,9 @@ func TestGitHubResourcesShareProjectSnapshot(t *testing.T) {
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
 	ctx := t.Context()
-	mustQueryExec(t, database, `INSERT INTO project_github(project_id,version,revision) VALUES($1,2,1)`, project.ID)
-	mustQueryExec(t, database, `INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,1,1,'url','first','open',false,'main','sha',now(),now(),now(),1)`, project.ID)
+	mustQueryExec(t, database, `INSERT INTO project_github(project_id,version,revision,repository_id,legacy_repository_id,repository_full_name) VALUES($1,2,1,10,10,'owner/repo')`, project.ID)
+	mustQueryExec(t, database, `INSERT INTO project_github_repositories(project_id,repository_id,full_name) VALUES($1,10,'owner/repo')`, project.ID)
+	mustQueryExec(t, database, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,10,1,1,'url','first','open',false,'main','sha',now(),now(),now(),1)`, project.ID)
 	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
 		if _, err := scope.ProjectDAO().Project(ctx, project.ID); err != nil {
 			return err
@@ -26,7 +27,7 @@ func TestGitHubResourcesShareProjectSnapshot(t *testing.T) {
 			return err
 		}
 		mustQueryExec(t, database, `UPDATE project_github SET revision=2 WHERE project_id=$1`, project.ID)
-		mustQueryExec(t, database, `INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,2,2,'url','second','open',false,'main','sha',now(),now(),now(),2)`, project.ID)
+		mustQueryExec(t, database, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,10,2,2,'url','second','open',false,'main','sha',now(),now(),now(),2)`, project.ID)
 		counts, err := scope.GitHubDAO().PullRequestCounts(ctx, GitHubPRCountsQuery{ProjectID: project.ID})
 		if err != nil {
 			return err
