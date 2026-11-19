@@ -2556,7 +2556,7 @@ The Go module check uses its own unit-test Web resource overlay; see the
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
-its Node tooling tests, including native select ownership, the coverage checker
+its Node tooling tests, including native select and typography ownership, the coverage checker
 and asset publication. `scripts/native-select-policy.test.mts` exercises the
 real policy against controlled valid and invalid trees and the complete production
 `src/` tree. It verifies native JSX and React creation, import aliases, static
@@ -2568,6 +2568,23 @@ ASTs and the explicit `css-tree` dependency parse all production TS/TSX and CSS,
 including unreferenced inputs; failures include relative paths and line numbers.
 No legacy exemption list is used. Static ownership does not establish rendered
 geometry or system-menu behavior.
+
+`scripts/typography-policy.test.mts` checks valid and invalid stylesheet and inline
+font declarations, location diagnostics, source enumeration and the production
+tree. The harness also runs `scripts/typography-policy.mts` against every CSS,
+TS and TSX file under `src/`. Run that scan independently with
+`pnpm --filter @codetreker/daynight-web test:typography-policy`. The
+[UI standard](../../docs/ui-design.md#web-typography) owns shared role definitions,
+registered selection parameters, terminal scaling, the external diagram boundary
+and static-analysis limits. Fixed sizes, numeric fallbacks, unknown aliases and
+local role overrides fail, including declarations superseded by later rules.
+Browser checks remain responsible for reflow, clipping and interaction continuity.
+The `typography-ownership-playwright.config.ts` configuration exercises remaining
+shared notices, task controls, attachment metadata and Bot creation against the
+production shell, with controlled API responses. It checks English and Chinese,
+desktop and 320px layouts, larger browser fonts, draft selection, dialog focus and
+readable metadata. Its generated reports and captures belong to
+`.tmp/typography-j/`; they are not product resources.
 
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,

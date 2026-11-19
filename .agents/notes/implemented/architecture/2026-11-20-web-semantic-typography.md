@@ -28,9 +28,10 @@ Terminal recordings use a shared `--text-terminal` base, multiplied by their
 independent zoom scale; reading-role changes do not affect terminal output.
 
 Business states, errors, controls, tool paths, and code use the interface role;
-IDs, times, versions, and secondary counts use metadata. Feature-owned form
-rules and explicit project dialog classes override the remaining shared legacy
-form sizes, including Portal states, without changing unrelated consumers.
+IDs, times, versions, and secondary counts use metadata. Shared forms, Portal
+dialogs, account notices, attachment controls, Goal details and Bot management
+use the same roles. Superseded fixed declarations are removed or mapped to their
+semantic role, so later overrides cannot conceal a competing size definition.
 Narrow layouts wrap and rearrange controls, while dense panels retain local
 scrolling where needed. Webhook detail tabs wrap within the available panel width
 so increased browser fonts do not hide navigation. Graph layout coordinates grow
@@ -53,6 +54,16 @@ text-related spacing remains relative. The earlier
 [root-independent layout decision](2026-11-19-web-root-independent-layout.md)
 records the preparatory changes.
 
+The Web harness enforces size ownership using the existing CSS and TypeScript
+parsers across the complete production source tree. The central stylesheet owns
+role values; the shared selection components own their registered size aliases.
+The checker rejects local role overrides, fixed font sizes, numeric fallbacks,
+unknown aliases and invalid font shorthands, with source locations. Terminal
+base-size multiplication and typed Mermaid theme configuration are rendering
+mechanisms with explicit rules; their files remain subject to normal checks.
+The [UI standard](../../../../docs/ui-design.md#web-typography) owns the exact
+exceptions and static evaluation limits.
+
 ## Alternatives
 
 **Keep a fixed root font size.** This would prevent the browser's default font
@@ -66,6 +77,11 @@ node geometry costs canvas space and can reduce the initial zoom on narrow scree
 **Define sizes in each component.** This permits equal semantic roles to drift
 and makes changing a reading size require edits across consumers.
 
+**Exempt files or ignore declarations overridden by later rules.** A new
+declaration could silently enter a supposedly migrated file, and cascade changes
+could reactivate an obsolete constant. Inspecting all declarations keeps size
+ownership independent of file identity and current selector precedence.
+
 **Keep fixed public-header offsets.** Locale, identity notices and browser font
 preferences can change header height independently of width breakpoints. A fixed
 clearance can hide anchor targets, and a header taller than the viewport can
@@ -74,9 +90,12 @@ while leaving room for content.
 
 ## Consequences
 
-The migrated consumers and inherited interface baseline respond to browser font
-preferences; fixed layouts retain their intended geometry. Existing font sizes
-in other feature consumers remain until those consumers migrate, so these shared
-definitions and migrations do not establish whole-site consistency. Narrow
-layouts must accommodate text without reducing its role size. Touch fields retain
-their minimum readable size even when the browser's default font is smaller.
+First-party consumers and the inherited interface baseline respond to browser
+font preferences; fixed layouts retain their intended geometry. The harness
+prevents production declarations from introducing another size owner. Its
+static evaluation does not execute arbitrary runtime functions or dynamically
+computed property names, and cannot prove browser geometry or correct semantic
+role selection. Narrow layouts must accommodate text without reducing its role
+size. Touch fields retain their minimum readable size even when the browser's
+default font is smaller. Browser validation remains necessary for controls,
+attachment panes and dialogs whose text grows under the shared roles.
