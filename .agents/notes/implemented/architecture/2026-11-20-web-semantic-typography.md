@@ -14,16 +14,30 @@ The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
 baseline. The shared shell, selection controls, task filter presentation, public
-landing and Setup pages, and standalone login, invitation, device authorization
-and OAuth consent pages use the semantic roles at all viewport widths. Selection
-text retains the existing touch conditions and a 16 CSS px minimum; count badges
-use the metadata role. Public reading copy and demo prose use the reading role;
-commands, status, errors and actions use the interface role. Authorization codes
-use the detail heading role, with the input using the section heading role.
-Account actions and command copying reflow to accommodate larger text.
+landing and Setup pages, standalone login, invitation, device authorization and
+OAuth consent pages, Worker pages and configuration, Worker Prompt editors,
+usage panels, and project settings use semantic roles at all viewport widths.
 The [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses
-and sizes. Fixed geometry that depended on the former 14px root is independent
-of that root; text-related spacing remains relative. The earlier
+and sizes.
+
+Selection text retains the existing touch conditions and a 16 CSS px minimum;
+count badges use the metadata role. Touch fields use the shared
+`--text-touch-field` size to preserve a 16 CSS px minimum while responding to
+larger browser font preferences.
+
+Public reading copy and demo prose use the reading role. Business states,
+errors, controls, commands, tool paths, and code use the interface role; IDs,
+times, versions, and secondary counts use metadata. Authorization codes use the
+detail heading role, with the input using the section heading role.
+Feature-owned form rules and explicit project dialog classes override the
+remaining shared legacy form sizes, including Portal states, without changing
+unrelated consumers. Narrow layouts wrap and rearrange controls, including
+account actions and command copying, while dense panels retain local scrolling
+where needed. Graph node usage text belongs to the graph layout and retains
+that consumer's independent migration boundary.
+
+Fixed geometry that depended on the former 14px root is independent of that root;
+text-related spacing remains relative. The earlier
 [root-independent layout decision](2026-11-19-web-root-independent-layout.md)
 records the preparatory changes.
 
@@ -38,8 +52,9 @@ and makes changing a reading size require edits across consumers.
 
 ## Consequences
 
-The shell and inherited interface baseline respond to browser font preferences;
-fixed layouts retain their intended geometry. Existing feature-specific font
-sizes remain until those consumers migrate, so the shared definitions alone do
-not establish whole-site consistency. Narrow layouts must accommodate text
-without reducing its role size.
+The migrated consumers and inherited interface baseline respond to browser font
+preferences; fixed layouts retain their intended geometry. Existing font sizes
+in other feature consumers remain until those consumers migrate, so these shared
+definitions and migrations do not establish whole-site consistency. Narrow
+layouts must accommodate text without reducing its role size. Touch fields retain
+their minimum readable size even when the browser's default font is smaller.
