@@ -360,6 +360,81 @@ test('passive project tab correction preserves the document scroll position', as
   } finally { release(); }
 });
 
+test('selected project tab remains visible while tags load and after a read failure', async ({ page }) => {
+  const { release } = await install(page, 'en');
+  const response = Promise.withResolvers<void>();
+  let started = false;
+  await page.route(url => url.pathname === `/api/v1/projects/${projectId}/tags`, async route => {
+    started = true;
+    await response.promise;
+    await route.fulfill({ status: 500, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID }, body: stringifyWireJson({ error: { code: 'internal_error', message: 'Read failed', requestId: 'tags-read-failure' } }) });
+  });
+  try {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.goto(`/projects/${projectId}?tab=tags`);
+    const tabs = page.locator('.project-section-tabs');
+    await expect.poll(() => started).toBe(true);
+    await expect(page.getByText('Loading tags…', { exact: true })).toBeVisible();
+    await expect(tabs.getByRole('tab', { name: 'Tags', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expectSelectedTabVisible(tabs);
+    response.resolve();
+    await expect(page.getByRole('alert').getByText('Could not load tags.', { exact: true })).toBeVisible();
+    await expectSelectedTabVisible(tabs);
+    await expect(tabs.getByRole('tab', { name: 'Tags', exact: true })).toHaveAttribute('aria-selected', 'true');
+  } finally { response.resolve(); release(); }
+});
+
+test.describe('touch project tab navigation', () => {
+  test.use({ hasTouch: true, viewport: { width: 320, height: 640 } });
+  test('retains selection through touch, tab traversal and read-only permission checks', async ({ page }) => {
+    const { state, release } = await install(page, 'en');
+    const accessResponse = Promise.withResolvers<void>();
+    let denied = false, checking = false;
+    await page.route(`**/api/v1/projects/${projectId}/tags`, async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      denied = true;
+      await route.fulfill({ status: 403, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID }, body: stringifyWireJson({ error: { code: 'permission_denied', message: 'Write denied', requestId: 'tags-write-denied' } }) });
+    });
+    await page.route(`**/api/v1/projects/${projectId}/access`, async route => {
+      if (!denied) return route.fallback();
+      checking = true; await accessResponse.promise;
+      return route.fallback();
+    });
+    try {
+      await page.goto(`/projects/${projectId}?tab=overview`);
+      const tabs = page.locator('.project-section-tabs');
+      const tags = tabs.getByRole('tab', { name: 'Tags', exact: true });
+      await tags.tap();
+      await expect(tags).toHaveAttribute('aria-selected', 'true');
+      await expectSelectedTabVisible(tabs);
+      await tags.focus();
+      await page.keyboard.press('Tab');
+      expect(await tabs.evaluate(element => element.contains(document.activeElement))).toBe(false);
+      await page.keyboard.press('Shift+Tab');
+      await expect(tags).toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      expect(await tabs.evaluate(element => element.contains(document.activeElement))).toBe(false);
+      await page.keyboard.press('Tab');
+      await expect(tags).toBeFocused();
+      await expectSelectedTabVisible(tabs);
+      await page.getByRole('button', { name: 'New tag', exact: true }).tap();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('Rejected write');
+      await dialog.getByRole('button', { name: 'Save', exact: true }).tap();
+      await expect.poll(() => checking).toBe(true);
+      await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).tap();
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'New tag', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Edit: Release', exact: true })).toBeDisabled();
+      await expect(page.getByText('You do not have permission to manage tags.', { exact: true })).toBeVisible();
+      await expect(tags).toHaveAttribute('aria-selected', 'true');
+      await expectSelectedTabVisible(tabs);
+      expect(state.tags.map(item => item.name)).toEqual(['Release']);
+    } finally { accessResponse.resolve(); release(); }
+  });
+});
+
 test('project section links open a new tab without navigating the source', async ({ page }) => {
   const { release } = await install(page, 'en');
   try {
