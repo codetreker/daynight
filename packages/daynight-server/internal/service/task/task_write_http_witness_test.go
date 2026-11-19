@@ -406,6 +406,10 @@ func (d *writeWitnessProjectDAO) RepositoryOccupied(context.Context, string, str
 	panic(d.f.unexpected("ProjectWriteDAO.RepositoryOccupied"))
 }
 
+func (s *writeWitnessScope) BotBarrierDAO() store.BotBarrierDAO {
+	panic(s.f.unexpected("BotBarrierDAO"))
+}
+
 func (s *writeWitnessScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	panic(s.f.unexpected("WorkerClaimAdmissionDAO"))
 }

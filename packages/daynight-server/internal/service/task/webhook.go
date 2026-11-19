@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	wm "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/model"
@@ -17,10 +18,36 @@ type Capturer interface {
 	CaptureBatch(context.Context, store.WebhookCaptureDAO, wm.Actor, []protocol.Fact) error
 }
 
+type declaredBotKey struct{}
+
+// WithDeclaredBot attaches the Bot identity that a Task, Step or Thread write
+// request declares for its authenticated user. The declaration is a
+// cooperation signal within one user, not a security boundary: it changes
+// only the stored event actor after the write transaction verifies it.
+func WithDeclaredBot(ctx context.Context, botID string) context.Context {
+	return context.WithValue(ctx, declaredBotKey{}, botID)
+}
+
+// DeclaredBot returns the Bot identity attached by WithDeclaredBot.
+func DeclaredBot(ctx context.Context) (string, bool) {
+	botID, declared := ctx.Value(declaredBotKey{}).(string)
+	return botID, declared
+}
+
 // sourceActor records the authenticated credential owner of a Task, Step or
-// Thread write. Bot attribution requires the source transaction to verify the
-// Bot first and then supply wm.BotActor instead.
-func sourceActor(principal model.Principal) wm.Actor { return wm.UserActor(principal.UserID) }
+// Thread write, or the declared Bot after verifying it under the shared Bot
+// deletion barrier. Callers run it after their Project admission and before
+// any Task Session lock: Bot deletion locks the Bot before its Sessions.
+func sourceActor(ctx context.Context, scope interface{ BotBarrierDAO() store.BotBarrierDAO }, principal model.Principal) (wm.Actor, error) {
+	botID, declared := DeclaredBot(ctx)
+	if !declared {
+		return wm.UserActor(principal.UserID), nil
+	}
+	if err := botcore.AdmitDeclaredBot(ctx, scope.BotBarrierDAO(), principal, botID); err != nil {
+		return wm.Actor{}, err
+	}
+	return wm.BotActor(principal.UserID, botID), nil
+}
 
 func capturer(optional []Capturer) Capturer {
 	if len(optional) != 0 && optional[0] != nil {

@@ -26,6 +26,10 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
+		actor, err := sourceActor(ctx, tx, principal)
+		if err != nil {
+			return err
+		}
 		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
 		if err != nil {
 			return err
@@ -53,7 +57,7 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 		if err := tx.TaskDAO().TouchTask(ctx, taskID, observed); err != nil {
 			return err
 		}
-		return s.captureStep(ctx, tx, sourceActor(principal), projectID, taskID, stepID, "deleted", observed, nil, nil, nil, nil)
+		return s.captureStep(ctx, tx, actor, projectID, taskID, stepID, "deleted", observed, nil, nil, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

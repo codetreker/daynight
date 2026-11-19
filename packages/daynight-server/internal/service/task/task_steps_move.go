@@ -36,6 +36,10 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 		if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
+		actor, err := sourceActor(ctx, tx, principal)
+		if err != nil {
+			return err
+		}
 		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
 		if err != nil {
 			return err
@@ -68,7 +72,7 @@ func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, project
 			return err
 		}
 		from, to := int64(mutation.From), int64(mutation.To)
-		return s.captureStep(ctx, tx, sourceActor(principal), projectID, taskID, stepID, "moved", observed, &from, &to, nil, nil)
+		return s.captureStep(ctx, tx, actor, projectID, taskID, stepID, "moved", observed, &from, &to, nil, nil)
 	})
 	return finishStepsWrite(result, projectLocked, completion, err)
 }

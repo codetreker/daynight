@@ -32,6 +32,7 @@ type sourceCapture struct {
 	trace *[]string
 	facts []protocol.Fact
 	cause error
+	actor *wm.Actor
 }
 
 func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) error {
@@ -39,8 +40,12 @@ func (c *sourceCapture) CaptureBatch(ctx context.Context, dao store.WebhookCaptu
 	if ctx.Value(sourceContextKey{}) != c || dao != c.dao {
 		c.t.Fatal("source capture escaped its context or transaction DAO")
 	}
-	if actor != wm.UserActor(sourceUserID) {
-		c.t.Fatalf("source capture actor = %+v, want the credential user", actor)
+	want := wm.UserActor(sourceUserID)
+	if c.actor != nil {
+		want = *c.actor
+	}
+	if actor != want {
+		c.t.Fatalf("source capture actor = %+v, want %+v", actor, want)
 	}
 	c.calls = append(c.calls, "capture")
 	*c.trace = append(*c.trace, "capture")
@@ -261,12 +266,19 @@ type sourceWriteScope struct {
 	projects sourceProjectDAO
 	sessions sourceSessionDAO
 	capture  store.WebhookCaptureDAO
+	bots     store.BotBarrierDAO
 }
 
 func (s sourceWriteScope) TaskDAO() store.TaskWriteDAO         { return s.tasks }
 func (s sourceWriteScope) ProjectDAO() store.ProjectWriteDAO   { return s.projects }
 func (s sourceWriteScope) SessionDAO() store.ProjectSessionDAO { return s.sessions }
 func (s sourceWriteScope) CaptureDAO() store.WebhookCaptureDAO { return s.capture }
+func (s sourceWriteScope) BotBarrierDAO() store.BotBarrierDAO {
+	if s.bots == nil {
+		s.tasks.t.Fatal("unexpected Bot barrier")
+	}
+	return s.bots
+}
 func (s sourceWriteScope) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	if !s.tasks.allowClock {
 		s.tasks.t.Fatal("unexpected claim admission")
