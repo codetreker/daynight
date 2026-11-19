@@ -564,7 +564,7 @@ Goal relationship revisions, and Goal lookup indexes to the shared dependency
 store. Existing rows and writes from already running old
 instances retain the ordinary Task type. New ordinary reads and writes filter
 that type. Existing Goal status and direct deletion operations enforce the stored Goal
-relationships; these migrations do not expose Goal edge writes.
+relationships. The internal Goal relationship service provides authorized snapshot reads and atomic edits without changing ordinary Task DTOs. The [relationship design](../../docs/design/goal-dependencies.md) describes its authorization, revisions, graph admission and transaction outcomes. Migrations alone do not expose Goal edge writes.
 
 An old binary cannot restart against the newer migration ledger. Before Goal
 edge writes are enabled, stop every old instance that accesses this table,
