@@ -4,21 +4,21 @@
 .auth-shell .sidebar { height: 100vh; height: 100dvh; padding: 26px 14px 18px; overflow-y: auto; }
 .auth-shell .sidebar-main { flex: 1; min-height: 0; overflow-y: auto; }
 .auth-shell .sidebar .brand { padding: 0 12px 32px; white-space: nowrap; }
-.auth-shell .sidebar .brand-name { overflow: hidden; }
-.auth-shell .sidebar .nav-button { width: 100%; font-size: 12px; gap: 10px; }
+.auth-shell .sidebar .brand-name { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
+.auth-shell .sidebar .nav-button { width: 100%; font-size: var(--text-interface); gap: 10px; }
 .auth-shell .sidebar .nav-icon { flex: none; display: grid; place-items: center; width: 18px; height: 18px; line-height: 0; }
 .auth-shell .sidebar .nav-icon svg { display: block; width: 18px; height: 18px; color: inherit; }
 .auth-shell .sidebar-projects { margin: 4px 0 0 22px; border-left: 1px solid #ffffff1a; padding-left: 8px; }
 .auth-shell .sidebar-projects[hidden] { display: none; }
 .auth-shell .sidebar-project-list { list-style: none; margin: 0; padding: 0; }
-.auth-shell .sidebar-project-link { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 8px; border-radius: 6px; color: #b1bdd0; font-size: 12px; text-decoration: none; }
+.auth-shell .sidebar-project-link { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 8px; border-radius: 6px; color: #b1bdd0; font-size: var(--text-interface); text-decoration: none; }
 .auth-shell .sidebar-project-link:hover { color: #fff; background: #ffffff0a; }
 .auth-shell .sidebar-project-link[aria-current] { color: #f0f1ff; background: #ffffff12; }
 .auth-shell .sidebar-project-link:focus-visible, .auth-shell .sidebar-project-action:focus-visible { outline: 2px solid #a3a3ff; outline-offset: -2px; }
 .auth-shell .sidebar-project-marker { flex: none; width: 5px; height: 5px; border-radius: 50%; background: #78869d; }
 .auth-shell .sidebar-project-link[aria-current] .sidebar-project-marker { background: #a3a3ff; }
 .auth-shell .sidebar-project-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.auth-shell .sidebar-project-state { margin: 0; padding: 8px; color: #b1bdd0; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.auth-shell .sidebar-project-state { margin: 0; padding: 8px; color: #b1bdd0; font-size: var(--text-interface); line-height: 1.6; overflow-wrap: anywhere; }
 .auth-shell .sidebar-project-state p { margin: 0 0 5px; }
 .auth-shell .sidebar-project-action { padding: 3px 0; border: 0; background: transparent; color: #c8c8ff; font: inherit; text-align: left; cursor: pointer; }
 .auth-shell .sidebar-project-action:hover { color: #fff; }
@@ -26,8 +26,8 @@
 .auth-shell .sidebar-bottom { display: block; flex: none; padding: 14px 0 0; overflow-wrap: anywhere; }
 .auth-shell .sidebar-group + .sidebar-group { border-top: 1px solid #ffffff1a; margin-top: 16px; padding-top: 16px; }
 .auth-shell .sidebar .nav-label { margin: 0; padding: 0 14px 8px; }
-.auth-shell .sidebar-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 12px; padding: 8px; border: 1px solid #ffffff24; border-radius: 6px; background: transparent; color: #b1bdd0; font-size: 11px; }
-.auth-shell .sidebar-toggle > :first-child { font-size: 23px; line-height: 20px; }
+.auth-shell .sidebar-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 12px; padding: 8px; border: 1px solid #ffffff24; border-radius: 6px; background: transparent; color: #b1bdd0; font-size: var(--text-interface); }
+.auth-shell .sidebar-toggle > :first-child { font-size: var(--text-detail-heading); line-height: 1; }
 .auth-shell .sidebar-toggle:hover { background: #ffffff0a; color: #fff; }
 .auth-shell.sidebar-collapsed .sidebar { padding: 26px 10px 18px; }
 .auth-shell.sidebar-collapsed .sidebar .brand { padding: 0 0 32px; justify-content: center; }
@@ -56,12 +56,12 @@
 }
 
 .auth-shell .team-selector { margin: 0 0 20px; }
-.auth-shell .team-switch { display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 5px 8px; border: 1px solid #ffffff24; border-radius: 7px; background: transparent; color: #eef0fa; text-align: left; font: inherit; cursor: pointer; }
+.auth-shell .team-switch { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 5px 8px; border: 1px solid #ffffff24; border-radius: 7px; background: transparent; color: #eef0fa; text-align: left; font: inherit; cursor: pointer; }
 .auth-shell .team-switch:focus-visible, .auth-shell .team-options a:focus-visible, .auth-shell .team-options button:focus-visible { outline: 2px solid #a3a3ff; outline-offset: 2px; }
-.auth-shell .team-avatar { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: #7373df30; color: #c5c5ff; font-size: 12px; }
-.auth-shell .team-switch-text { flex: 1; min-width: 0; font-size: 12px; }
+.auth-shell .team-avatar { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: #7373df30; color: #c5c5ff; font-size: var(--text-metadata); }
+.auth-shell .team-switch-text { flex: 1; min-width: 0; font-size: var(--text-interface); }
 .auth-shell .team-switch-name { display: block; overflow: hidden; white-space: pre; text-overflow: ellipsis; }
-.auth-shell .team-options { position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: 292px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid #ffffff24; border-radius: 8px; background: #252e45; box-shadow: 0 12px 36px #07101f55; color: #e4e9f4; font-size: 12px; overflow-wrap: anywhere; }
+.auth-shell .team-options { position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: 292px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid #ffffff24; border-radius: 8px; background: #252e45; box-shadow: 0 12px 36px #07101f55; color: #e4e9f4; font-size: var(--text-interface); overflow-wrap: anywhere; }
 .auth-shell .team-options a, .auth-shell .team-options button { display: block; width: 100%; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; text-decoration: none; font: inherit; white-space: pre-wrap; cursor: pointer; }
 .auth-shell .team-options a:hover, .auth-shell .team-options a[aria-current] { background: #ffffff19; }
 .auth-shell .team-options p { margin: 5px; }
@@ -75,10 +75,10 @@
 .auth-shell .team-switch:hover, .auth-shell .team-switch[aria-expanded="true"] { background: #ffffff0d; }
 .auth-shell .team-chevron { display: block; flex: none; width: 12px; height: 12px; color: #a7b0c2; }
 @media (max-width: 740px), (pointer: coarse) {
-  .auth-shell .team-switch { min-width: 44px; height: 44px; }
+  .auth-shell .team-switch { min-width: 44px; min-height: 44px; }
 }
 .auth-shell .team-options .team-option { display: flex; align-items: center; gap: 10px; padding: 9px 10px; min-height: 44px; white-space: normal; }
-.auth-shell .team-options .menu-avatar { display: grid; place-items: center; flex: none; width: 27px; height: 27px; border: 1px solid #ffffff15; background: #7373df30; border-radius: 6px; color: #c5c5ff; font-size: 11px; }
+.auth-shell .team-options .menu-avatar { display: grid; place-items: center; flex: none; width: 27px; height: 27px; border: 1px solid #ffffff15; background: #7373df30; border-radius: 6px; color: #c5c5ff; font-size: var(--text-metadata); }
 .auth-shell .team-options .menu-personal .menu-avatar { border-radius: 50%; }
 .auth-shell .team-options .menu-name { min-width: 0; flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .auth-shell .team-options .check { flex: none; color: #b9b9ff; width: 16px; text-align: center; }
@@ -86,10 +86,10 @@
 .auth-shell .team-options :is(a, button):is(:hover, :focus-visible) { background: #ffffff19; outline-offset: -2px; }
 .auth-shell .team-options hr { border: 0; border-top: 1px solid #ffffff17; margin: 5px 3px; }
 .auth-shell .team-options .menu-action { display: flex; align-items: center; gap: 10px; }
-.auth-shell .team-options .menu-action > span:first-child { width: 27px; text-align: center; font-size: 17px; color: #b7bfd1; }
-.auth-shell .team-options .menu-state { padding: 10px; color: #b9c4d7; font-size: 11px; line-height: 1.7; }
+.auth-shell .team-options .menu-action > span:first-child { width: 27px; text-align: center; font-size: var(--text-section-heading); color: #b7bfd1; }
+.auth-shell .team-options .menu-state { padding: 10px; color: #b9c4d7; font-size: var(--text-interface); line-height: 1.7; }
 .auth-shell .team-options .menu-state p { margin: 0 0 7px; }
-.auth-shell .team-options .menu-state button { padding: 4px 8px; border: 1px solid #ffffff22; width: auto; font-size: 11px; }
+.auth-shell .team-options .menu-state button { padding: 4px 8px; border: 1px solid #ffffff22; width: auto; font-size: var(--text-interface); }
 .auth-shell .team-options .menu-state.error { color: #f2bfbd; }
 .auth-shell .team-options .menu-loading { display: flex; align-items: center; gap: 9px; }
 .auth-shell .team-options .spinner { width: 15px; height: 15px; border-color: #ffffff20; border-top-color: #a3a3ff; }

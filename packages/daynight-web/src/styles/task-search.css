@@ -4,7 +4,7 @@
 .task-search-input-wrap:focus-within { outline: 2px solid var(--task-focus); outline-offset: 1px; }
 .task-search-input-wrap input { border: 0; outline: 0; background: transparent; padding: 9.8px 0; width: 100%; min-width: 0; font: inherit; font-size: 12px; color: inherit; }
 .task-search-input-wrap input::-webkit-search-cancel-button { display: none; }
-.task-search-clear { border: 0; background: transparent; font-size: 1.3rem; cursor: pointer; color: inherit; }
+.task-search-clear { border: 0; background: transparent; font-size: 18.2px; cursor: pointer; color: inherit; }
 .task-search-help-button { min-width: 37.8px; }
 .task-search-help, .task-search-error { margin-top: 10.5px; padding: 14px; border: 1px solid var(--border, #d5dbe5); border-radius: 7.7px; overflow-wrap: anywhere; }
 .task-search-help h3, .task-search-help p, .task-search-error p { margin: 0 0 .5rem; }
@@ -17,10 +17,10 @@
 .task-search-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9.1px; }
 .task-search-result { display: flex; align-items: center; gap: 14px; width: 100%; min-width: 0; padding: 14px; border: 1px solid; border-radius: 7.7px; text-align: left; cursor: pointer; font: inherit; color: inherit; }
 .task-search-result-body { flex: 1; display: grid; gap: 5.6px; min-width: 0; }
-.task-search-title { font-weight: 650; font-size: 1rem; overflow-wrap: anywhere; }
-.task-search-context, .task-search-match, .task-search-meta { font-size: .85rem; color: var(--text-muted, #677184); overflow-wrap: anywhere; }
+.task-search-title { font-weight: 650; font-size: 14px; overflow-wrap: anywhere; }
+.task-search-context, .task-search-match, .task-search-meta { font-size: 11.9px; color: var(--text-muted, #677184); overflow-wrap: anywhere; }
 .task-search-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 9.1px; }
-.task-search-chevron { font-size: 1.4rem; }
+.task-search-chevron { font-size: 19.6px; }
 @media (max-width: 520px) { .task-search-form { flex-wrap: wrap; } .task-search-input-wrap { flex-basis: 100%; } .task-search-result { gap: 7px; } .task-search-meta { display: grid; } }
 
 .task-search-results [aria-disabled="true"] { opacity: .5; cursor: default; }
