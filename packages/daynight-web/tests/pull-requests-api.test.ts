@@ -1,14 +1,34 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
-import { comparePullRequestAuthors, getGitHubStatus, getPullRequestAuthors, getPullRequests, parseGitHubStatus, parsePullRequestAuthorsPage, parsePullRequestPage } from '../src/features/pull-requests/api';
+import { comparePullRequestAuthors, getGitHubStatus, getPullRequestAuthors, getPullRequestRepositories, getPullRequests, parseGitHubStatus, parsePullRequestAuthorsPage, parsePullRequestPage, parsePullRequestRepositoriesPage } from '../src/features/pull-requests/api';
 import { prPage, prProjectId, prResponse, prStatus, prUserId } from './pull-requests-fixtures';
 
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 const admission = () => ({ userId: prUserId, onPrincipalMismatch: vi.fn() });
 
+it('reads ordered repository pages and binds lists and authors to the explicit source', async () => {
+  const repositoryId = '9007199254740993', repository = { repositoryId, fullName: 'owner/repo' };
+  const catalog = { currentRepositoryId: repositoryId, items: [{ repositoryId: '4', fullName: 'old/repo' }, repository], nextCursor: 'next' };
+  expect(parsePullRequestRepositoriesPage(catalog)).toEqual(catalog);
+  expect(() => parsePullRequestRepositoriesPage({ ...catalog, items: [...catalog.items].reverse() })).toThrow();
+  expect(() => parsePullRequestRepositoriesPage({ ...catalog, items: [], nextCursor: 'next' })).toThrow();
+  const page = { ...prPage([]), repository }, authors = { projectId: prProjectId, revision: '1', items: [], nextCursor: null, repository };
+  const fetch = vi.fn().mockResolvedValueOnce(prResponse(catalog)).mockResolvedValueOnce(prResponse(page)).mockResolvedValueOnce(prResponse(authors));
+  vi.stubGlobal('fetch', fetch);
+  const signal = new AbortController().signal;
+  await getPullRequestRepositories(prProjectId, 'cursor', signal, admission());
+  await getPullRequests(prProjectId, { state: 'all', q: '', cursor: null, repositoryId }, signal, admission());
+  await getPullRequestAuthors(prProjectId, { q: '', cursor: null, repositoryId }, signal, admission());
+  expect(new URL(fetch.mock.calls[0]![0] as string, 'https://daynight.test').searchParams.get('cursor')).toBe('cursor');
+  for (const call of fetch.mock.calls.slice(1)) expect(new URL(call[0] as string, 'https://daynight.test').searchParams.get('repositoryId')).toBe(repositoryId);
+  expect(() => parsePullRequestPage({ ...page, repository: { ...repository, repositoryId: '4' } }, prProjectId, null, repositoryId)).toThrow();
+  expect(() => parsePullRequestAuthorsPage({ ...authors, repository: { ...repository, repositoryId: '4' } }, prProjectId, repositoryId)).toThrow();
+});
+
 it('retains exact counts and summaries without requesting or retaining descriptions', () => {
   const page = { ...prPage(['9007199254740993']), total: '9007199254740993', revision: '9007199254740993' };
-  expect(parsePullRequestPage(page, prProjectId)).toEqual({ ...page, authorId: null, projectTotal: page.counts.all });
+  const { repository: _repository, ...legacyPage } = page;
+  expect(parsePullRequestPage(page, prProjectId)).toEqual({ ...legacyPage, authorId: null, projectTotal: page.counts.all });
   const extra = { ...page, items: [{ ...page.items[0], description: 'not a summary field' }] };
   expect(parsePullRequestPage(extra, prProjectId).items[0]).not.toHaveProperty('description');
 });
@@ -16,7 +36,8 @@ it('retains exact counts and summaries without requesting or retaining descripti
 it('binds author pages to the exact account and requires the independent project total', () => {
   const authorId = '9007199254740997';
   const page = { ...prPage(), authorId, projectTotal: '9007199254740998', items: [{ ...prPage().items[0], author: { id: authorId, login: 'example' } }] };
-  expect(parsePullRequestPage(page, prProjectId, authorId)).toEqual(page);
+  const { repository: _repository, ...legacyPage } = page;
+  expect(parsePullRequestPage(page, prProjectId, authorId)).toEqual(legacyPage);
   expect(() => parsePullRequestPage({ ...page, authorId: '4' }, prProjectId, authorId)).toThrow();
   expect(() => parsePullRequestPage({ ...page, authorId: undefined }, prProjectId, authorId)).toThrow();
   expect(() => parsePullRequestPage({ ...page, projectTotal: undefined }, prProjectId, authorId)).toThrow();
