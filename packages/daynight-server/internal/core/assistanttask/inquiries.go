@@ -162,6 +162,14 @@ func (m *Module) Answer(ctx context.Context, dao store.AssistantTaskDAO, actor A
 // expireInquiries processes a bounded, prefiltered batch. Taking task barriers in
 // ID order prevents two target-event reads from reversing multi-task lock order.
 func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string) error {
+	return m.settleTasks(ctx, dao, actor, taskID, targetBotID, false)
+}
+
+// settleTasks expires due inquiries and, when reclaim is set, also reclaims
+// settled inbound material of a bounded set of the owner's tasks. Every task
+// both steps touch is locked once in ascending ID order, so concurrent pulls
+// cannot deadlock on each other's task rows.
+func (m *Module) settleTasks(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID, targetBotID string, reclaim bool) error {
 	if err := authorize(ctx, dao, actor); err != nil {
 		return err
 	}
@@ -182,6 +190,16 @@ func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO
 	ids := map[string]bool{}
 	for _, inquiry := range due {
 		ids[inquiry.TaskID] = true
+	}
+	var reclaimable []string
+	if reclaim {
+		reclaimable, err = dao.InboundReclaimTasks(ctx, actor.Principal.UserID, now.Add(-InboundRetention), InboundReclaimTaskLimit)
+		if err != nil {
+			return err
+		}
+		for _, id := range reclaimable {
+			ids[id] = true
+		}
 	}
 	ordered := make([]string, 0, len(ids))
 	for id := range ids {
@@ -228,6 +246,14 @@ func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO
 			return err
 		}
 		tasks[task.ID] = task
+	}
+	for _, id := range reclaimable {
+		if _, ok := tasks[id]; !ok {
+			continue
+		}
+		if err = ReclaimInbound(ctx, dao, actor.Principal.UserID, id, now); err != nil {
+			return err
+		}
 	}
 	_, err = finish(ctx, dao, actor, nil)
 	return err

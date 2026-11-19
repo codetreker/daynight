@@ -24,6 +24,9 @@ const (
 	InboundBacklogLimit = 500
 	// InboundReclaimLimit bounds each reclamation step of one call.
 	InboundReclaimLimit = 100
+	// InboundReclaimTaskLimit bounds the tasks one cross-task event pull
+	// reclaims, so an owner's backlog is cleaned over successive pulls.
+	InboundReclaimTaskLimit = 20
 	// InboundRetention is how long a settled inbound event is kept.
 	InboundRetention = 30 * 24 * time.Hour
 )

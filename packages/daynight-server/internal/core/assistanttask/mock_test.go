@@ -98,6 +98,11 @@ type daoStub struct {
 	saveInquiry          func(context.Context, model.AssistantTaskInquiry, string) (bool, error)
 	reclaimReceipts      func(context.Context, string, string, int) (int64, error)
 	reclaimEvents        func(context.Context, string, string, time.Time, int) (int64, error)
+	reclaimTasks         func(context.Context, string, time.Time, int) ([]string, error)
+}
+
+func (d *daoStub) InboundReclaimTasks(a0 context.Context, a1 string, a2 time.Time, a3 int) ([]string, error) {
+	return d.reclaimTasks(a0, a1, a2, a3)
 }
 
 func (d *daoStub) ReclaimInboxReceipts(a0 context.Context, a1, a2 string, a3 int) (int64, error) {
@@ -284,6 +289,12 @@ func baseDAO(t *testing.T, task model.AssistantTask) *daoStub {
 			t.Fatalf("wrong receipt reclamation %s %s %d", owner, id, limit)
 		}
 		return 0, ctx.Err()
+	}
+	d.reclaimTasks = func(ctx context.Context, owner string, before time.Time, limit int) ([]string, error) {
+		if owner != ownerID || limit != InboundReclaimTaskLimit || !before.Equal(epoch.Add(-InboundRetention)) {
+			t.Fatalf("wrong reclamation task scope %s %v %d", owner, before, limit)
+		}
+		return nil, ctx.Err()
 	}
 	d.reclaimEvents = func(ctx context.Context, owner, id string, before time.Time, limit int) (int64, error) {
 		if owner != ownerID || id != taskID || limit != InboundReclaimLimit || !before.Equal(epoch.Add(-InboundRetention)) {

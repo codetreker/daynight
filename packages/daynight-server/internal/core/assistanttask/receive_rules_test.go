@@ -128,3 +128,75 @@ func TestTaskEventPullReclaimsUnderTaskLock(t *testing.T) {
 		})
 	}
 }
+
+func TestCrossTaskEventPullReclaimsIdleInboxes(t *testing.T) {
+	m := New()
+	for _, failure := range []string{"", "list", "lock", "reclaim", "deleted"} {
+		t.Run("failure="+failure, func(t *testing.T) {
+			task := baseTask()
+			if failure == "deleted" {
+				task.State = "deleted"
+			}
+			d := baseDAO(t, task)
+			var steps []string
+			list := d.reclaimTasks
+			d.reclaimTasks = func(ctx context.Context, owner string, before time.Time, limit int) ([]string, error) {
+				steps = append(steps, "list")
+				if _, err := list(ctx, owner, before, limit); err != nil {
+					t.Fatal(err)
+				}
+				if failure == "list" {
+					return nil, sentinel
+				}
+				return []string{taskID}, nil
+			}
+			load := d.task
+			d.task = func(ctx context.Context, owner, id string, lock bool) (model.AssistantTask, error) {
+				if !lock {
+					t.Fatal("reclamation must lock its task")
+				}
+				steps = append(steps, "lock")
+				if failure == "lock" {
+					return model.AssistantTask{}, sentinel
+				}
+				return load(ctx, owner, id, lock)
+			}
+			reclaim := d.reclaimReceipts
+			d.reclaimReceipts = func(ctx context.Context, owner, id string, limit int) (int64, error) {
+				steps = append(steps, "reclaim")
+				if _, err := reclaim(ctx, owner, id, limit); err != nil {
+					t.Fatal(err)
+				}
+				if failure == "reclaim" {
+					return 0, sentinel
+				}
+				return 1, nil
+			}
+			d.inquiries = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error) { return nil, nil }
+			d.events = func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskEvent, error) { return nil, nil }
+			_, err := m.ListEvents(context.Background(), d, userActor(), "", PageInput{})
+			want := []string{"list", "lock", "reclaim"}
+			switch failure {
+			case "list":
+				want = want[:1]
+			case "lock", "deleted":
+				want = want[:2]
+			}
+			if failure != "" && failure != "deleted" {
+				if !errors.Is(err, sentinel) {
+					t.Fatal(err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if len(steps) != len(want) {
+				t.Fatalf("steps=%v want=%v", steps, want)
+			}
+			for i := range want {
+				if steps[i] != want[i] {
+					t.Fatalf("steps=%v want=%v", steps, want)
+				}
+			}
+		})
+	}
+}

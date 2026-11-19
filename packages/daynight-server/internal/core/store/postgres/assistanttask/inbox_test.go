@@ -404,6 +404,19 @@ func TestReclamationIsBoundedAndScoped(t *testing.T) {
 				t.Fatalf("receipt insert: %v %v", ok, err)
 			}
 		}
+		reclaimTasks := func(owner string, want ...string) {
+			t.Helper()
+			ids, err := d.InboundReclaimTasks(ctx, owner, cutoff, 10)
+			if err != nil || len(ids) != len(want) || len(want) == 1 && ids[0] != want[0] {
+				t.Fatalf("reclamation tasks of %s: got %v want %v %v", owner, ids, want, err)
+			}
+		}
+		reclaimTasks(f.owner, f.task.ID)
+		reclaimTasks(other.owner, other.task.ID)
+		reclaimTasks(uuid.NewString())
+		if ids, err := d.InboundReclaimTasks(ctx, f.owner, cutoff, 0); err != nil || len(ids) != 0 {
+			t.Fatalf("reclamation task limit ignored: %v %v", ids, err)
+		}
 		if n, err := d.ReclaimInboxReceipts(ctx, uuid.NewString(), f.task.ID, 10); err != nil || n != 0 {
 			t.Fatalf("foreign owner reclaimed receipts: %d %v", n, err)
 		}
@@ -418,6 +431,7 @@ func TestReclamationIsBoundedAndScoped(t *testing.T) {
 				t.Fatalf("event reclamation: got %d want %d %v", n, want, err)
 			}
 		}
+		reclaimTasks(f.owner)
 		if _, err := d.InboxReceipt(ctx, f.owner, inbox.InboxID, "live"); err != nil {
 			t.Fatalf("unexpired receipt reclaimed: %v", err)
 		}
