@@ -226,36 +226,6 @@ func (s *Tasks) ClearAttention(ctx context.Context, actor core.Actor, targetBotI
 	return err
 }
 
-func (s *Tasks) EnableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
-	return execute(ctx, s, "EnableInbox", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
-		return s.operations.EnableInbox(ctx, dao, actor, input)
-	})
-}
-
-func (s *Tasks) DisableInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
-	return execute(ctx, s, "DisableInbox", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
-		return s.operations.DisableInbox(ctx, dao, actor, input)
-	})
-}
-
-func (s *Tasks) RotateInbox(ctx context.Context, actor core.Actor, input core.InboxInput) (core.InboxResult, error) {
-	return execute(ctx, s, "RotateInbox", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
-		return s.operations.RotateInbox(ctx, dao, actor, input)
-	})
-}
-
-func (s *Tasks) InboxOperation(ctx context.Context, actor core.Actor, taskID, operationID string) (core.InboxResult, error) {
-	return execute(ctx, s, "InboxOperation", func(dao store.AssistantTaskDAO) (core.InboxResult, error) {
-		return s.operations.InboxOperation(ctx, dao, actor, taskID, operationID)
-	})
-}
-
-func (s *Tasks) GetInbox(ctx context.Context, actor core.Actor, taskID string) (core.InboxView, error) {
-	return execute(ctx, s, "GetInbox", func(dao store.AssistantTaskDAO) (core.InboxView, error) {
-		return s.operations.GetInbox(ctx, dao, actor, taskID)
-	})
-}
-
 type operations interface {
 	EnablePreset(context.Context, store.AssistantTaskDAO, core.Actor, core.CreateInput, string) (core.TaskResult, error)
 	Create(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.CreateInput) (core.TaskResult, error)
@@ -285,11 +255,6 @@ type operations interface {
 	Ask(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.InquiryInput) (model.AssistantTaskInquiry, error)
 	Answer(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.AnswerInput) (model.AssistantTaskInquiry, error)
 	ClearAttention(context.Context, store.AssistantTaskDAO, core.Actor, string) error
-	EnableInbox(context.Context, store.AssistantTaskDAO, core.Actor, core.InboxInput) (core.InboxResult, error)
-	DisableInbox(context.Context, store.AssistantTaskDAO, core.Actor, core.InboxInput) (core.InboxResult, error)
-	RotateInbox(context.Context, store.AssistantTaskDAO, core.Actor, core.InboxInput) (core.InboxResult, error)
-	InboxOperation(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID, operationID string) (core.InboxResult, error)
-	GetInbox(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (core.InboxView, error)
 }
 
 // RegisterRules installs the application-owned validation boundary used by all
