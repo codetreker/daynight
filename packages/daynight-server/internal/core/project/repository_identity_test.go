@@ -29,6 +29,12 @@ func TestRepositoryIdentity(t *testing.T) {
 		"https://%C3%89XAMPLE/Repo":            "éxample/Repo",
 		"ssh://%67it@HOST/Repo.git":            "ssh://%67it@host/Repo",
 		"git@host:%2F":                         "host/%2F",
+
+		"https://GitHub.com/Org/Repo.git":        "github.com/Org/Repo",
+		"https://github.com/org/Repo.git":        "github.com/org/Repo",
+		"git@github.com:./Org/Repo.git":          "scp://git@github.com:./Org/Repo",
+		"ssh://git@github.com:2222/Org/Repo.git": "ssh://git@github.com:2222/Org/Repo",
+		"https://[::1]/repo":                     "[::1]/repo",
 	}
 	for input, want := range cases {
 		got, err := RepositoryIdentity(input)

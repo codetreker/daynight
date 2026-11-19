@@ -2070,8 +2070,14 @@ query and driver errors. The [Project read error decision](../../.agents/notes/i
 records the split. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
 records the input and error-chain guarantees.
 
-Repository registration tests check target Team and identity propagation, snapshot completion, ambiguity and creation guards. PostgreSQL tests verify persisted creation and reuse, visibility and the bounded lookup; independent resolution retains keyset traversal tests. The [repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
-describes the Service, Core, and Store test boundaries.
+Repository registration tests execute the Service entry point with controlled
+snapshot and write scopes. They check target Team and identity propagation,
+confirmation, reuse, ambiguity, and suppression of the result when completion
+is unconfirmed. Core tests cover the URL identity rules. PostgreSQL tests check
+committed identities and ownership, the bounded Team lookup, and the visible
+Project set. Independent resolution retains keyset traversal tests. The
+[repository lookup decision](../../.agents/notes/implemented/testing/2026-11-10-project-repository-resolution-tests.md)
+describes the Service, Core, and Store test responsibilities.
 
 Project membership tests verify actor preflight with a fail-on-access store.
 Controlled write scopes exercise authorization, direct grant mutation, actor
