@@ -3,6 +3,7 @@ package measure
 
 import (
 	"bufio"
+	"bytes"
 	"encoding"
 	"encoding/json"
 	"fmt"
@@ -96,6 +97,12 @@ func raw(w io.Writer, b []byte) error {
 	start := 0
 	in, escaped := false, false
 	for i := 0; i < len(b); i++ {
+		if in && !escaped {
+			// Valid JSON guarantees a closing quote. Search by rune, retaining
+			// byte offsets and the original bytes of ordinary (even invalid UTF-8)
+			// spans; only these events affect escaping or string state.
+			i += bytes.IndexAny(b[i:], "\"\\<>&\u2028\u2029")
+		}
 		c := b[i]
 		if !in && (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
 			if err := rawSpan(output, b[start:i]); err != nil {
