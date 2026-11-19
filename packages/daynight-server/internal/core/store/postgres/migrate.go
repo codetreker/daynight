@@ -282,6 +282,9 @@ var sessionArchiveCleanupSQL string
 //go:embed schema/migrations/093_github_repository_sources.sql
 var githubRepositorySourcesSQL string
 
+//go:embed schema/migrations/094_worker_review_participation.sql
+var workerReviewParticipationSQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -292,7 +295,7 @@ func (e *githubRepositoryIdentityMigrationError) Error() string {
 }
 func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
 
-//go:embed schema/migrations/094_webhook_event_actor.sql
+//go:embed schema/migrations/095_webhook_event_actor.sql
 var webhookEventActorSQL string
 
 type migration struct {
@@ -394,7 +397,8 @@ var schemaMigrations = []migration{
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
-	{version: 94, sql: webhookEventActorSQL},
+	{version: 94, sql: workerReviewParticipationSQL},
+	{version: 95, sql: webhookEventActorSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

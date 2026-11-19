@@ -154,6 +154,16 @@ type workerHTTPWriteDAO struct {
 	SetWorkerConfigurationObservationCall func(context.Context, string, string, int64, model.WorkerConfigurationObservation) error
 }
 
+func (d *workerHTTPWriteDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	workerHTTPUnexpected(d.t, "WorkerReviewParticipation")
+	return model.WorkerReviewParticipation{}, nil
+}
+
+func (d *workerHTTPWriteDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	workerHTTPUnexpected(d.t, "SetWorkerReviewParticipation")
+	return nil
+}
+
 func (d *workerHTTPWriteDAO) WorkerAlias(ctx context.Context, u, w string) (model.WorkerAlias, error) {
 	if d.WorkerAliasCall == nil {
 		workerHTTPUnexpected(d.t, "WorkerAlias")
@@ -236,6 +246,11 @@ type workerHTTPReader struct {
 	WorkerSummariesCall     func(context.Context, string, time.Time, store.Page) (store.WorkerSummaryPage, error)
 	WorkerCall              func(context.Context, string, string, time.Time) (model.WorkerSnapshot, error)
 	WorkerConfigurationCall func(context.Context, string, string) (model.WorkerConfigurationResource, error)
+}
+
+func (d *workerHTTPReader) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	workerHTTPUnexpected(d.t, "WorkerReviewParticipation")
+	return model.WorkerReviewParticipation{}, nil
 }
 
 func (d *workerHTTPReader) Workers(ctx context.Context, u string, now time.Time, p store.Page) (store.WorkerPage, error) {

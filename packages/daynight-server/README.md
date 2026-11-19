@@ -116,6 +116,13 @@ The qualification records query plans and warm-five/measure-thirty P95 for
 
 ## Contracts
 
+The [Worker review participation resource](../../docs/design/worker-review-participation.md)
+provides an account-owned GET/PUT preference at
+`/api/v1/me/workers/{workerId}/review-participation`. It defaults to disabled,
+uses an independent exact decimal version and preserves report, configuration
+and claim protocols. Editing it does not refresh Worker activity. Existing and
+new Worker rows receive the same defaults through migration and schema snapshot.
+
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
 The [PR read design](../../docs/design/github-pr-reading.md) defines the optional

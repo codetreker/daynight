@@ -996,3 +996,7 @@ func (mock *taskThreadScopeMock) BotBarrierDAO() store.BotBarrierDAO {
 	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
 	return mock.BotBarrierDAOFn()
 }
+
+func (*workerReaderMock) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}

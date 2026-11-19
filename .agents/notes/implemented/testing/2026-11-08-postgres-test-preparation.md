@@ -281,6 +281,14 @@ valid value before reuse. Successful migration cases retain independent fixtures
 including called/uncalled sequence semantics and the 105-row property transform
 that crosses its 100-row page boundary.
 
+The [Session media crash recovery test](../../../../packages/daynight-server/internal/core/store/postgres/session/resource_recovery_test.go)
+kills an actual Redis lease holder and verifies that recovery retains both
+still-protected PostgreSQL leases. It then shortens the remaining TTL of the
+two exact fixture keys, waits for Redis expiry through the real gate, and
+checks that recovery reclaims the rows and restores admission. Keeping the
+TTL change after the retention checks preserves the crash and expiry
+boundaries without waiting for the production lease duration.
+
 Expiry probes whose SQL samples database time retain actual row lock barriers
 and short test deadlines. The grant test arms expiry after its lock receipt,
 preserving rejection of a stale time sampled before the lock. Private Transfer

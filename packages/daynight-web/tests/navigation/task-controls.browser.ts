@@ -128,6 +128,36 @@ async function openDialog(page: Page) {
   return dialog;
 }
 
+test('task menu opens one native tab per Space press and preserves Enter and mouse activation', async ({ page, context }) => {
+  await install(page);
+  const dialog = await openDialog(page);
+  const trigger = dialog.getByRole('button', { name: 'More task actions' });
+  const link = dialog.getByRole('menuitem', { name: 'Open in new tab' });
+  const opened: Page[] = [];
+  context.on('page', tab => opened.push(tab));
+  for (const action of ['Space', 'Space', 'Enter', 'click', 'middle', 'control'] as const) {
+    await trigger.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(link).toBeFocused();
+    const target = await link.getAttribute('href');
+    const nextTab = context.waitForEvent('page');
+    if (action === 'Space') {
+      await page.keyboard.down('Space');
+      await page.keyboard.down('Space');
+      await page.keyboard.up('Space');
+    } else if (action === 'Enter') await page.keyboard.press('Enter');
+    else await link.click(action === 'middle' ? { button: 'middle' } : action === 'control' ? { modifiers: ['ControlOrMeta'] } : {});
+    const tab = await nextTab;
+    await expect(tab).toHaveURL(new URL(target!, page.url()).href);
+    await expect(dialog.getByRole('menu')).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    expect(opened).toHaveLength(1);
+    expect(await tab.evaluate(() => window.opener)).toBeNull();
+    await tab.close();
+    opened.length = 0;
+  }
+});
+
 test('confirms the unblock action with a dual-key service receipt', async ({ page }) => {
   const writes = await install(page, true, false, false, false, true, undefined, {}, { dualPauseReceipt: true });
   const dialog = await openDialog(page);

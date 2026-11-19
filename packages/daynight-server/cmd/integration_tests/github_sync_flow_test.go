@@ -295,7 +295,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err = tx.Exec(f.context, `UPDATE project_github SET enabled=true, sync_enabled=true, app_id=13, installation_id=99, app_resource_id=NULL, team_grant_id=NULL, credential_version=NULL, installation_account_login='example', access_state='available' WHERE project_id=$1`, project.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version`); err != nil {
+		if _, err := tx.Exec(f.context, `ALTER TABLE workers DROP COLUMN archive_sessions, DROP COLUMN alias_value, DROP COLUMN alias_version, DROP COLUMN review_enabled, DROP COLUMN review_version`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity`); err != nil {
@@ -331,7 +331,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE webhook_events DROP COLUMN actor_kind, DROP COLUMN actor_user_id, DROP COLUMN actor_bot_id`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94)`); err != nil || result.RowsAffected() != 16 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94,95)`); err != nil || result.RowsAffected() != 17 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {
