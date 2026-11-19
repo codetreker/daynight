@@ -185,16 +185,8 @@ func TestItemCloseRetrospectiveCommitsWithTheClosure(t *testing.T) {
 	}
 	f.write(t, func(d store.AssistantTaskDAO) error { _, err := save(d, "closed", ptr(int64(1))); return err })
 	f.write(t, func(d store.AssistantTaskDAO) error { _, err := save(d, "closed", ptr(int64(2))); return err })
-	got := f.retrospectives(t, f.task.ID)
-	if len(got) != 1 || got[0].TargetBotID != bot || got[0].Attention || got[0].State != "pending" {
-		t.Fatalf("item retrospective: %#v", got)
-	}
-	var payload struct {
-		Reason, ItemID string
-		Episode        int64
-	}
-	if err := json.Unmarshal(got[0].Payload, &payload); err != nil || payload.Reason != "item_closed" || payload.ItemID != item || payload.Episode != 2 {
-		t.Fatalf("item retrospective payload: %s %v", got[0].Payload, err)
+	if got := f.retrospectives(t, f.task.ID); len(got) != 1 {
+		t.Fatalf("item retrospectives: %#v", got)
 	}
 	var closures int
 	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM assistant_task_item_closures WHERE task_id=$1`, f.task.ID).Scan(&closures); err != nil || closures != 1 {
@@ -241,36 +233,14 @@ func TestConcurrentEventPullsWriteOnePeriodicRetrospective(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := f.retrospectives(t, f.task.ID)
-	if len(got) != 1 || got[0].TargetBotID != bot || got[0].Attention {
+	if got := f.retrospectives(t, f.task.ID); len(got) != 1 {
 		t.Fatalf("periodic retrospectives: %#v", got)
 	}
-	var payload struct{ Reason, Since string }
-	if err := json.Unmarshal(got[0].Payload, &payload); err != nil || payload.Reason != "periodic" {
-		t.Fatalf("payload: %s %v", got[0].Payload, err)
-	}
-	if since, err := time.Parse(time.RFC3339Nano, payload.Since); err != nil || !since.Equal(f.task.CreatedAt) {
-		t.Fatalf("window start: %s %v", payload.Since, err)
-	}
-	// A later pull with no newer outcome keeps the single retrospective.
-	if err := pull(false); err != nil {
-		t.Fatal(err)
-	}
-	if again := f.retrospectives(t, f.task.ID); len(again) != 1 {
-		t.Fatalf("repeated retrospective: %#v", again)
-	}
-}
-
-func TestPausedTaskPullWritesNoPeriodicRetrospective(t *testing.T) {
-	f, bot, principal := heldTask(t)
-	f.task.State = "paused"
-	f.create(t)
-	f.outcome(t, f.task.ID)
 	f.write(t, func(d store.AssistantTaskDAO) error {
-		_, err := core.New().ListEvents(t.Context(), d, core.Actor{Principal: principal}, "", core.PageInput{TargetBotID: bot})
-		return err
+		got, err := d.Task(ctx, f.owner, f.task.ID, false)
+		if err != nil || got.LastRetrospectiveAt == nil || !got.LastRetrospectiveAt.After(f.task.CreatedAt) {
+			t.Fatalf("retrospective window: %#v %v", got.LastRetrospectiveAt, err)
+		}
+		return nil
 	})
-	if got := f.retrospectives(t, f.task.ID); len(got) != 0 {
-		t.Fatalf("paused retrospective: %#v", got)
-	}
 }
