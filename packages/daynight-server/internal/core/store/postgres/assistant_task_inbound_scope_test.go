@@ -202,3 +202,29 @@ func TestAssistantTaskInboundRejectsBacklogAndReclaims(t *testing.T) {
 		t.Fatalf("one call reclaimed beyond its bound: %d events remain", got)
 	}
 }
+
+// The receive scope must expose the Daynight verification readers bound to its
+// transaction: a missing captured event and an inaccessible project report
+// their documented sentinels instead of a storage failure.
+func TestAssistantTaskInboundScopeBindsVerificationReaders(t *testing.T) {
+	parallelRootDatabaseTest(t)
+	f := newInboundFixture(t)
+	ctx := t.Context()
+	completion, err := f.database.WriteAssistantTaskInbound(ctx, func(scope store.AssistantTaskInboundScope) error {
+		if _, err := scope.WebhookInboundSources().CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
+			return errors.Join(errors.New("missing captured event was not reported"), err)
+		}
+		destinations, err := scope.WebhookInboundSources().PersonalDeliveryDestinations(ctx, uuid.NewString(), f.task.OwnerUserID, "https://daynight.example", 8)
+		if err != nil || len(destinations) != 0 {
+			return errors.Join(errors.New("unknown event returned destinations"), err)
+		}
+		_, err = scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: f.task.OwnerUserID}, uuid.NewString())
+		if !errors.Is(err, model.ErrNotFound) && !errors.Is(err, store.ErrProjectDeleted) {
+			return errors.Join(errors.New("missing project was not reported"), err)
+		}
+		return nil
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatal(completion, err)
+	}
+}
