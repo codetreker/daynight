@@ -18,7 +18,7 @@
 
 | 表 | 持久职责 |
 | --- | --- |
-| `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头；迁移 `099_assistant_task_retrospectives.sql` 增加可空的上次周期复盘时间，既有行为空 |
+| `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头；迁移 `101_assistant_task_retrospectives.sql` 增加可空的上次周期复盘时间，既有行为空 |
 | `assistant_task_claim_operations` | `(owner_user_id, task_id, operation_id)` 唯一的成功认领操作回执 |
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
 | `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本 |

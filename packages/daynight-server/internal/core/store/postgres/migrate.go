@@ -288,6 +288,9 @@ var workerReviewParticipationSQL string
 //go:embed schema/migrations/095_project_repository_version.sql
 var projectRepositoryVersionSQL string
 
+//go:embed schema/migrations/096_pr_review_assignment.sql
+var prReviewAssignmentSQL string
+
 type githubRepositoryIdentityMigrationError struct {
 	projectID uuid.UUID
 	cause     error
@@ -301,10 +304,10 @@ func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause
 //go:embed schema/migrations/097_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
-//go:embed schema/migrations/099_assistant_task_item_lifecycle.sql
+//go:embed schema/migrations/100_assistant_task_item_lifecycle.sql
 var assistantTaskItemLifecycleSQL string
 
-//go:embed schema/migrations/100_assistant_task_retrospectives.sql
+//go:embed schema/migrations/101_assistant_task_retrospectives.sql
 var assistantTaskRetrospectivesSQL string
 
 type migration struct {
@@ -408,9 +411,10 @@ var schemaMigrations = []migration{
 	{version: 93, sql: githubRepositorySourcesSQL},
 	{version: 94, sql: workerReviewParticipationSQL},
 	{version: 95, sql: projectRepositoryVersionSQL},
+	{version: 96, sql: prReviewAssignmentSQL},
 	{version: 97, sql: assistantTaskOutcomesSQL},
-	{version: 99, sql: assistantTaskItemLifecycleSQL},
-	{version: 100, sql: assistantTaskRetrospectivesSQL},
+	{version: 100, sql: assistantTaskItemLifecycleSQL},
+	{version: 101, sql: assistantTaskRetrospectivesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
