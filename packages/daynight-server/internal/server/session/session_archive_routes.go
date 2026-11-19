@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/protocol/transport"
@@ -127,6 +128,15 @@ func validateArchiveBody(r *http.Request) error {
 	}
 	return nil
 }
+func archiveReadRequest(r *http.Request, lease io.Closer) (*http.Request, func()) {
+	ctx, cancel := filestorage.GateContext(r.Context(), lease)
+	reading := r.WithContext(ctx)
+	return reading, func() {
+		r.Body = reading.Body
+		cancel()
+	}
+}
+
 func archiveBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return archiveBodyWithTimeout(w, r, transport.ArchiveBodyReadTimeout)
 }
@@ -186,7 +196,9 @@ func (h *Routes) putArchive(w http.ResponseWriter, r *http.Request, p model.Prin
 			h.closeArchive(r, op)
 		}
 	}()
-	body, err := archiveBody(w, r)
+	readRequest, finishRead := archiveReadRequest(r, op)
+	body, err := archiveBody(w, readRequest)
+	finishRead()
 	if err != nil {
 		err = archiveCleanupError(err, op.Close())
 		op = nil
@@ -247,7 +259,13 @@ func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte
 			h.closeArchive(r, lease)
 		}
 	}()
-	if r.Context().Err() != nil {
+	ctx, cancel := filestorage.GateContext(r.Context(), lease)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		if r.Context().Err() == nil {
+			closed = true
+			h.Failure(w, r, archiveCleanupError(context.Cause(ctx), lease.Close()))
+		}
 		return
 	}
 	controller := http.NewResponseController(w)
@@ -258,7 +276,7 @@ func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte
 		return
 	}
 	done := make(chan struct{})
-	stop := context.AfterFunc(r.Context(), func() { _ = controller.SetWriteDeadline(time.Now()); close(done) })
+	stop := context.AfterFunc(ctx, func() { _ = controller.SetWriteDeadline(time.Now()); close(done) })
 	stopped := false
 	defer func() {
 		if !stopped && !stop() {
@@ -282,7 +300,7 @@ func (h *Routes) sendArchive(w http.ResponseWriter, r *http.Request, data []byte
 	}
 	stopped = true
 	if err == nil {
-		err = r.Context().Err()
+		err = context.Cause(ctx)
 	}
 	if err != nil {
 		err = errors.Join(err, lease.Close())

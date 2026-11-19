@@ -25,7 +25,7 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionar
 }
 
 func (s *Storage) deleteNamespace(ctx context.Context, components []string) (result error) {
-	if err := ctx.Err(); err != nil {
+	if err := filestorage.GateError(ctx); err != nil {
 		return err
 	}
 	s.namespace.Lock()
@@ -38,12 +38,15 @@ func (s *Storage) deleteNamespace(ctx context.Context, components []string) (res
 		}
 	}()
 	for i, component := range components {
+		if err := filestorage.GateError(ctx); err != nil {
+			return err
+		}
 		if err := s.checkSpelling(strings.Join(components[:i+1], "/")); err != nil {
 			return err
 		}
 		directory, info, err := openArchiveDirectory(directories[i], component)
 		if errors.Is(err, fs.ErrNotExist) {
-			return s.syncArchiveDirectory(directories[i])
+			return errors.Join(s.syncArchiveDirectory(directories[i]), filestorage.GateError(ctx))
 		}
 		if err != nil {
 			return err
@@ -59,7 +62,7 @@ func (s *Storage) deleteNamespace(ctx context.Context, components []string) (res
 		return err
 	}
 	// A retry repeats this barrier even after the Session directory disappeared.
-	return s.syncArchiveDirectory(directories[last-1])
+	return errors.Join(s.syncArchiveDirectory(directories[last-1]), filestorage.GateError(ctx))
 }
 
 func openArchiveDirectory(parent *os.Root, name string) (*os.Root, fs.FileInfo, error) {
@@ -91,7 +94,7 @@ func removeArchiveContents(ctx context.Context, directory *os.Root) (result erro
 	}
 	defer func() { result = errors.Join(result, file.Close()) }()
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := filestorage.GateError(ctx); err != nil {
 			return err
 		}
 		entries, err := file.ReadDir(128)
@@ -133,7 +136,7 @@ func removeArchiveChild(ctx context.Context, directory *os.Root, name string) er
 }
 
 func removeArchiveEntry(ctx context.Context, directory *os.Root, name string, expected fs.FileInfo) error {
-	if err := ctx.Err(); err != nil {
+	if err := filestorage.GateError(ctx); err != nil {
 		return err
 	}
 	current, err := directory.Lstat(name)
@@ -145,6 +148,9 @@ func removeArchiveEntry(ctx context.Context, directory *os.Root, name string, ex
 	}
 	if !os.SameFile(expected, current) {
 		return fmt.Errorf("%w: %s changed before removal", filestorage.ErrPathConflict, name)
+	}
+	if err := verifyMutation(ctx); err != nil {
+		return err
 	}
 	return directory.Remove(name)
 }
