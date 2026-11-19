@@ -3,19 +3,20 @@
 .bot-list-panel > :not(.bot-list) { flex-shrink: 0; }
 .bot-list-heading, .bot-conversation-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
 .bot-list-heading { justify-content: space-between; gap: 8px; padding-left: 8px; }
-.bot-list-heading h1, .bot-conversation-heading h2 { margin: 0; font-size: 19px; overflow-wrap: anywhere; }
-.bot-list-heading h1 { font-size: 21px; }
+.bot-list-heading h1, .bot-conversation-heading h2 { margin: 0; overflow-wrap: anywhere; }
+.bot-conversation-heading h2 { font-size: var(--text-detail-heading); }
+.bot-list-heading h1 { font-size: var(--text-page-heading); }
 .bot-create, .bot-refresh { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border-radius: 9px; }
-.bot-create:is(:hover, :focus-visible)::after, .bot-refresh:is(:hover, :focus-visible)::after { content: attr(aria-label); position: absolute; z-index: 1; top: calc(100% + 4px); right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); font-size: 12px; font-weight: 400; pointer-events: none; }
+.bot-create:is(:hover, :focus-visible)::after, .bot-refresh:is(:hover, :focus-visible)::after { content: attr(aria-label); position: absolute; z-index: 1; top: calc(100% + 4px); right: 0; width: max-content; max-width: 180px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); font-size: var(--text-interface); font-weight: 400; pointer-events: none; }
 .bot-list-heading .bot-create { border: 1px solid var(--line); background: #fff; }
 .bot-create svg { width: 18px; height: 18px; }
 .bot-search { display: flex; align-items: center; gap: 8px; padding: 0 10px; margin: 0 4px 12px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--muted); }
 .bot-search svg { flex: none; width: 16px; height: 16px; }
-.bot-search input { width: 100%; min-width: 0; padding: 10px 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; }
+.bot-search input { width: 100%; min-width: 0; padding: 10px 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: var(--text-interface); }
 .bot-search:focus-within { outline: 2px solid var(--indigo); outline-offset: 2px; }
 .bot-search input:focus { outline: none; }
 .bot-list-section { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 8px; margin-bottom: 4px; }
-.bot-list-section h2 { min-width: 0; margin: 0; font-size: 12px; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
+.bot-list-section h2 { min-width: 0; margin: 0; font-size: var(--text-section-heading); font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
 .bot-list-count { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .bot-refresh svg { width: 18px; height: 18px; }
 .bot-refresh[aria-busy="true"] { opacity: .5; background: #eeeef9; }
@@ -27,10 +28,10 @@
 .bot-avatar { display: flex; flex: 0 0 34px; align-items: center; justify-content: center; width: 34px; height: 34px; border: 1px solid #dcdaf4; border-radius: 10px; background: #eceafb; color: var(--indigo); }
 .bot-avatar svg { width: 19px; height: 19px; }
 .bot-list-label { display: grid; gap: 5px; flex: 1; min-width: 0; }
-.bot-list-label strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 600; }
-.bot-status { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); }
+.bot-list-label strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-interface); font-weight: 600; }
+.bot-status { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--text-interface); color: var(--muted); }
 .bot-status-failed { color: #a63838; }
-.bot-status-compact { gap: 3px 8px; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.bot-status-compact { gap: 3px 8px; font-size: var(--text-interface); line-height: 1.5; overflow-wrap: anywhere; }
 .bot-status-compact > span { min-width: 0; }
 .bot-startup-failed { color: #a63838; }
 .bot-conversation { container: bot-conversation / inline-size; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
@@ -38,8 +39,8 @@
 .bot-header-identity { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; }
 .bot-conversation .session-header > .bot-header-identity { flex-wrap: nowrap; }
 .bot-conversation-title { flex: 1; min-width: 0; }
-.bot-conversation-title h2 { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 17px; font-weight: 600; }
-.bot-header-state { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.bot-conversation-title h2 { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-detail-heading); font-weight: 600; }
+.bot-header-state { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; margin-top: 4px; color: var(--muted); font-size: var(--text-interface); overflow-wrap: anywhere; }
 .bot-header-state strong { font-weight: 400; }
 .bot-header-state .session-status { font-size: inherit; }
 .bot-header-actions, .bot-conversation .session-header > .bot-header-actions { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: 4px; }
@@ -54,7 +55,7 @@
 @container bot-conversation (max-width: 600px) {
   .bot-conversation-heading, .bot-conversation .session-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 4px; padding: 8px; }
   .bot-conversation .session-header > .bot-header-identity, .bot-header-identity, .bot-conversation-title { display: contents; }
-  .bot-conversation-title h2 { grid-column: 2; grid-row: 1; font-size: 15px; }
+  .bot-conversation-title h2 { grid-column: 2; grid-row: 1; }
   .bot-header-back { grid-column: 1; grid-row: 1; }
   .bot-header-actions { grid-column: 3; grid-row: 1; }
   .bot-header-state { grid-column: 1 / -1; grid-row: 2; margin-top: 0; padding-inline: 4px; }
@@ -95,7 +96,7 @@
 .bot-delete-dialog::backdrop { background: #18223a55; }
 .bot-delete-dialog .dialog-body { line-height: 1.6; }
 .bot-deletions { max-height: 40%; overflow: auto; }
-.bot-deletion-status { margin: 12px 0; overflow-wrap: anywhere; font-size: 13px; }
+.bot-deletion-status { margin: 12px 0; overflow-wrap: anywhere; font-size: var(--text-interface); }
 .bot-deletion-status p { margin: 8px 0; }
 .bot-deletion-status dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; }
 .bot-deletion-status dd { margin: 0; }
@@ -112,4 +113,4 @@
   .bot-conversation-heading, .bot-conversation .session-header { min-height: 52px; padding-block: 4px; }
 }
 
-.bot-attention-count { flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--indigo); color: #fff; font-size: 11px; font-weight: 650; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
+.bot-attention-count { flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--indigo); color: #fff; font-size: var(--text-metadata); font-weight: 650; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
