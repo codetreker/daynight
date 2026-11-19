@@ -69,9 +69,9 @@ func (b *DeadlineBody) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	b.finish()
-	if b.readContext.Err() != nil && time.Now().Before(b.deadline) {
+	if readErr := b.readContext.Err(); readErr != nil && time.Now().Before(b.deadline) {
 		CloseUnreadBody(b.w, b.request)
-		return n, &BodyReadError{Cause: context.Cause(b.readContext), Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
+		return n, &BodyReadError{Cause: readErr, Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
 	}
 	if err == io.EOF {
 		if clearErr := controller.SetReadDeadline(time.Time{}); clearErr != nil && !errors.Is(clearErr, http.ErrNotSupported) {
