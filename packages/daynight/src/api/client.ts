@@ -1,3 +1,5 @@
+import { parseGoalDependencies, parseGoalDependencyReceipt, validGoalRevision } from "./goal-dependencies.js";
+import type { GoalDependencies, GoalDependencyEdit, GoalDependencyReceipt } from "./goal-dependencies.js";
 import { normalizeTaskTagFilter } from "./task-tag-filter.js";
 import { confirmTaskTagIds, normalizeTaskTagIds } from "./task-tags.js";
 import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
@@ -151,6 +153,8 @@ const safeInvitationFailure = (error: unknown, context: Context): ApiError => {
 export type ApiClient = TaskSessionClient & {
   withExpectedUserId(userId: string): ApiClient;
   webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
+  showGoalDependencies(projectId: string, goalId: string, query?: { readonly limit?: number; readonly cursor?: string }): Promise<GoalDependencies>;
+  editGoalDependencies(projectId: string, goalId: string, input: GoalDependencyEdit): Promise<GoalDependencyReceipt>;
   listTags(projectId: string, query?: TagListQuery): Promise<TagPage>;
   getTag(projectId: string, tagId: string): Promise<Tag>;
   createTag(projectId: string, name: string, color?: string): Promise<Tag>;
@@ -789,6 +793,18 @@ export const createApiClient = (options: {
         const serverError = code !== undefined && allowed.includes(code) ? { code, message: "Webhook request failed.", requestId: error.requestId !== undefined && error.requestId === error.responseRequestId && validRequestId(error.requestId) ? error.requestId : "unavailable" } : undefined;
         throw new ApiError(context, error.phase, { cause: safeInvitationCause(error.cause), ...(error.status === undefined ? {} : { status: error.status }), ...(serverError === undefined ? {} : { serverError }), confirmedRefusal: error.confirmedRefusal, outcomeUnconfirmed: error.outcomeUnconfirmed, ...(error.confirmedMutationId === undefined ? {} : { confirmedMutationId: error.confirmedMutationId }) });
       }
+    },
+    showGoalDependencies: (projectId, goalId, query = {}) => {
+      const project = resourceId(projectId), goal = resourceId(goalId), limit = query.limit ?? 20;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("Goal dependency limit must be from 1 to 50.");
+      if (query.cursor !== undefined && !isNonemptyText(query.cursor)) throw new Error("Cursor must be nonempty Unicode text without NUL.");
+      const params = new URLSearchParams({ limit: String(limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
+      return exchange({ operation: "goal-dependencies.show", projectId: project, taskId: goal }, `${resourcePath("projects", project, "tasks", goal, "goal-dependencies")}?${params}`, "GET", { kind: "json", parse: value => parseGoalDependencies(value, goal, limit) }, [200]);
+    },
+    editGoalDependencies: (projectId, goalId, input) => {
+      const project = resourceId(projectId), goal = resourceId(goalId);
+      if (!validGoalRevision(input.ifRevision)) throw new Error("Goal dependency revision must be a canonical positive int64 string.");
+      return exchange({ operation: "goal-dependencies.edit", projectId: project, taskId: goal }, resourcePath("projects", project, "tasks", goal, "goal-dependencies"), "PATCH", { kind: "json", parse: value => parseGoalDependencyReceipt(value, goal, input.ifRevision), confirmMutation: result => result.goalId }, [200], { kind: "json", value: input });
     },
     listTags: async (projectId, input = {}) => {
       const project = resourceId(projectId), context = { operation: "tag.list", projectId: project };

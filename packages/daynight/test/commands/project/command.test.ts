@@ -54,6 +54,7 @@ const fixture = (projects: readonly Project[] = []) => {
     releaseWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     withdrawWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     createTask: unavailable, getTask: unavailable, listTasks: unavailable, searchTasks: unavailable, listReadyTasks: unavailable, updateTask: unavailable, deleteTask: unavailable, setTaskStatus: unavailable, getTaskGraph: unavailable,
+    showGoalDependencies: unavailable, editGoalDependencies: unavailable,
     putTaskAttachment: unavailable, listTaskAttachments: unavailable, readTaskAttachment: unavailable, removeTaskAttachment: unavailable, webhookRequest: unavailable,
   };
   const runServerCommand = vi.fn<ProjectCommandDependencies["runServerCommand"]>(async (current, command) => {
