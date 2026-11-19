@@ -29,11 +29,14 @@
 .bot-avatar svg { width: 19px; height: 19px; }
 .bot-list-label { display: grid; gap: 5px; flex: 1; min-width: 0; }
 .bot-list-label strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-interface); font-weight: 600; }
-.bot-status { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--text-interface); color: var(--muted); }
-.bot-status-failed { color: #a63838; }
-.bot-status-compact { gap: 3px 8px; font-size: var(--text-interface); line-height: 1.5; overflow-wrap: anywhere; }
-.bot-status-compact > span { min-width: 0; }
-.bot-startup-failed { color: #a63838; }
+.bot-status { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--text-interface); line-height: 1.5; color: #556176; overflow-wrap: anywhere; }
+.bot-status > * { min-width: 0; }
+.bot-status-compact { gap: 3px 8px; }
+.bot-observation-machine, .bot-status time { font-size: var(--text-metadata); }
+.bot-status time { flex-basis: 100%; }
+.bot-observation-working > span:first-child { color: #285b9f; }
+.bot-observation-abnormal > span:first-child { color: #a3322b; }
+.bot-observation-connecting > span:first-child, .bot-observation-recovering > span:first-child { color: #805b27; }
 .bot-conversation { container: bot-conversation / inline-size; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .bot-conversation-heading, .bot-conversation .session-header { flex: none; flex-wrap: nowrap; gap: 12px; min-height: 72px; border-bottom: 1px solid var(--line); padding: 12px 18px; margin: 0; background: #fcfcfe; }
 .bot-header-identity { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; }
@@ -42,6 +45,7 @@
 .bot-conversation-title h2 { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-detail-heading); font-weight: 600; }
 .bot-header-state { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; margin-top: 4px; color: var(--muted); font-size: var(--text-interface); overflow-wrap: anywhere; }
 .bot-header-state strong { font-weight: 400; }
+.bot-session-description { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .bot-header-state .session-status { font-size: inherit; }
 .bot-header-actions, .bot-conversation .session-header > .bot-header-actions { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: 4px; }
 .bot-header-back, .bot-header-details, .bot-header-more > .button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; }

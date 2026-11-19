@@ -15,6 +15,7 @@
 .bot-details-panel p { overflow-wrap: anywhere; }
 .bot-details-panel dd p { margin: 6px 0 0; font-size: var(--text-interface); }
 .bot-details-panel code { font-size: var(--text-interface); white-space: pre-wrap; }
+.bot-details-panel .bot-observation-refresh { min-height: 44px; margin-top: 6px; font-size: var(--text-interface); }
 .bot-details-panel > footer { flex: none; padding: 14px 20px; border-top: 1px solid var(--line); }
 .bot-details-panel > footer button { min-height: 44px; width: 100%; }
 .bot-details-drawer { position: fixed; inset: auto; top: var(--bot-details-viewport-top, 0px); left: calc(var(--bot-details-viewport-left, 0px) + max(0px, var(--bot-details-viewport-width, 100vw) - 340px)); width: min(340px, var(--bot-details-viewport-width, 100vw)); max-width: var(--bot-details-viewport-width, 100vw); height: var(--bot-details-viewport-height, 100dvh); max-height: var(--bot-details-viewport-height, 100dvh); border: 0; box-shadow: -8px 0 32px #18203a22; }
