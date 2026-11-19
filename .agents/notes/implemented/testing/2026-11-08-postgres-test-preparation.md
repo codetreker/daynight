@@ -295,6 +295,11 @@ checks that recovery reclaims the rows and restores admission. Keeping the
 TTL change after the retention checks preserves the crash and expiry
 boundaries without waiting for the production lease duration.
 
+The [Redis legacy monitoring frame test](../../../../packages/daynight-server/internal/core/store/redis/monitoring_test.go)
+checks refusals and nonrenewal with the original fixture TTL. After those
+checks it shortens the remaining expiry on that key and observes Redis
+remove it before checking v2 admission and persisted format.
+
 Expiry probes whose SQL samples database time retain actual row lock barriers
 and short test deadlines. The grant test arms expiry after its lock receipt,
 preserving rejection of a stale time sampled before the lock. Private Transfer
@@ -324,6 +329,14 @@ commits before taking the Session row lock because the holder locks the same
 row that stores the credential. The holder leaves that row unchanged. The
 contender waits on the exact holder while the Session is still valid, and
 its fresh read after natural expiry must reject the transaction.
+
+The [Bot runtime write fixture](../../../../packages/daynight-server/internal/core/store/postgres/testdata/testutil/bot.go)
+uses the persisted native credential expiry and explicit caller times on
+either side of that boundary. The first credential read precedes the real
+Bot lock wait. The write and second read occur after the wait, so the DAO
+must accept the original time and reject the later time without committing.
+The Bot Definition fixture uses a database-clock predicate and retains
+actual expiry while the same lock is held.
 
 [Session/PAT deletion storage proofs](../../../../packages/daynight-server/internal/core/store/postgres/session_scope_test.go)
 use a stable stored expiry and explicit caller times on either side of it. The

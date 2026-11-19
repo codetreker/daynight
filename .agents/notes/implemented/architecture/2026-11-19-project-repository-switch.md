@@ -28,6 +28,11 @@ switch. Noninteractive use requires explicit flags for confirmation and that
 choice. A validated receipt establishes success; stale previews require a new
 confirmation and unknown outcomes require observation without replay.
 
+Repository operation diagnostics record the Project, phase, classification and
+transaction outcome without repository addresses or credentials. Worker row
+counts are recorded as committed only when transaction completion confirms it;
+an unknown commit reports the transaction's provisional count instead.
+
 ## Alternatives
 
 **Disconnect and update Worker configuration after saving the address.** A
