@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -21,9 +22,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	redisstore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/google/uuid"
+	redisclient "github.com/redis/go-redis/v9"
 )
 
-func resourceRecoveryGates(t *testing.T, redisURL string) *redisgates.Gates {
+func resourceRecoveryRedis(t *testing.T, redisURL string) *redisclient.Client {
 	t.Helper()
 	client, err := redisstore.NewClient(redisURL)
 	if err != nil {
@@ -34,7 +36,25 @@ func resourceRecoveryGates(t *testing.T, redisURL string) *redisgates.Gates {
 			t.Error(err)
 		}
 	})
-	return redisgates.New(client)
+	return client
+}
+
+func shortenCrashedMediaLease(t *testing.T, ctx context.Context, client *redisclient.Client, id string) {
+	t.Helper()
+	mediaKey, err := filestorage.MediaLeaseKey("session-resource-lease/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("dn:storage-gate:residency:%x", sha256.Sum256([]byte(mediaKey)))
+	const shortenedTTL = 250 * time.Millisecond
+	ttl, err := client.PTTL(ctx, key).Result()
+	if err != nil || ttl <= shortenedTTL {
+		t.Fatalf("crashed media lease %s must have a live expiry: ttl=%v error=%v", id, ttl, err)
+	}
+	updated, err := client.PExpire(ctx, key, shortenedTTL).Result()
+	if err != nil || !updated {
+		t.Fatalf("shorten crashed media lease %s: updated=%t error=%v", id, updated, err)
+	}
 }
 
 func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash(t *testing.T) {
@@ -113,7 +133,8 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 		waited = true
 		t.Fatalf("child did not acquire exact gates: output=%q scan=%v exit=%v stderr=%s", scanner.Text(), scanner.Err(), waitErr, stderr.String())
 	}
-	files, err := local.NewWithGates(t.TempDir(), resourceRecoveryGates(t, redisURL))
+	client := resourceRecoveryRedis(t, redisURL)
+	files, err := local.NewWithGates(t.TempDir(), redisgates.New(client))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,8 +196,11 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 		t.Fatal(err)
 	}
 	requireOriginalOwners()
-	// SIGKILL stops renewal without deleting either key. Wait for Redis to
-	// expire both leases before asking recovery to reconcile their capacities.
+	// Retention after SIGKILL is verified above. Shorten both fixture expiries
+	// before waiting for Redis to release the keys.
+	for _, r := range leases[:2] {
+		shortenCrashedMediaLease(t, ctx, client, r.ID)
+	}
 	for _, r := range leases[:2] {
 		permit, err := files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-resource-lease/"+r.ID)
 		if err != nil {
@@ -202,7 +226,7 @@ func TestMediaLeaseCrashOwnerProcess(t *testing.T) {
 	if redisURL == "" {
 		return
 	}
-	gates := resourceRecoveryGates(t, redisURL)
+	gates := redisgates.New(resourceRecoveryRedis(t, redisURL))
 	for _, id := range strings.Split(os.Getenv("DAYNIGHT_MEDIA_LEASE_IDS"), ",") {
 		gate, e := gates.AcquireGate(t.Context(), filestorage.MediaLeaseGate, "session-resource-lease/"+id)
 		if e != nil {
