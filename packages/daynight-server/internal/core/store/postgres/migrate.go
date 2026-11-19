@@ -304,7 +304,7 @@ func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause
 //go:embed schema/migrations/097_webhook_event_actor.sql
 var webhookEventActorSQL string
 
-//go:embed schema/migrations/098_assistant_task_inboxes.sql
+//go:embed schema/migrations/099_assistant_task_inboxes.sql
 var assistantTaskInboxesSQL string
 
 type migration struct {
@@ -410,7 +410,7 @@ var schemaMigrations = []migration{
 	{version: 95, sql: projectRepositoryVersionSQL},
 	{version: 96, sql: prReviewAssignmentSQL},
 	{version: 97, sql: webhookEventActorSQL},
-	{version: 98, sql: assistantTaskInboxesSQL},
+	{version: 99, sql: assistantTaskInboxesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
