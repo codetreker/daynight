@@ -77,7 +77,7 @@ func TestBotDeclarationRejectsMalformedHeaderBeforeEveryWrite(t *testing.T) {
 }
 
 func TestBotDeclarationReachesWriteOperations(t *testing.T) {
-	refusal := &model.Fault{Code: "forbidden", Message: "The declared Bot is not available to this credential."}
+	refusal := &model.Fault{Code: "forbidden", Message: "The Bot is not available to this credential."}
 	expect := func(t *testing.T, ctx context.Context, declared bool) {
 		t.Helper()
 		botID, ok := taskservice.DeclaredBot(ctx)

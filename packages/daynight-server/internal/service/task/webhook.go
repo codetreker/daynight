@@ -43,7 +43,7 @@ func sourceActor(ctx context.Context, scope interface{ BotBarrierDAO() store.Bot
 	if !declared {
 		return wm.UserActor(principal.UserID), nil
 	}
-	if err := botcore.AdmitDeclaredBot(ctx, scope.BotBarrierDAO(), principal.UserID, botID); err != nil {
+	if err := botcore.AdmitDeclaredBot(ctx, scope.BotBarrierDAO(), principal, botID); err != nil {
 		return wm.Actor{}, err
 	}
 	return wm.BotActor(principal.UserID, botID), nil

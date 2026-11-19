@@ -67,6 +67,31 @@ func TestSourceActorWithoutDeclarationIsTheCredentialUser(t *testing.T) {
 	}
 }
 
+func TestSourceActorOAuthWithoutDeclarationIsTheCredentialUser(t *testing.T) {
+	scope := sourceWriteScope{tasks: &sourceTaskDAO{t: t}}
+	principal := sourcePrincipal()
+	principal.Kind = model.OAuthCredential
+	actor, err := sourceActor(t.Context(), scope, principal)
+	if err != nil || actor != wm.UserActor(sourceUserID) {
+		t.Fatalf("undeclared OAuth actor = %+v, %v", actor, err)
+	}
+}
+
+func TestTaskWriteRefusesOAuthDeclaredBotWithoutBarrierRead(t *testing.T) {
+	current := sourceTask(model.TaskTodo)
+	db, record, ctx, calls := newSourceWrite(t, current, model.Task{})
+	ctx = WithDeclaredBot(ctx, sourceBotID)
+	db.ctx = ctx
+	db.scope.bots = sourceBotDAO{t: t, calls: calls, bot: model.Bot{ID: sourceBotID, OwnerUserID: sourceUserID}}
+	principal := sourcePrincipal()
+	principal.Kind = model.OAuthCredential
+	_, err := NewTasks(db, record).SetStatus(ctx, principal, sourceProjectID, sourceTaskID, taskcore.SetTaskStatus{Version: 7, Status: model.TaskInProgress})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "forbidden" || len(*calls) != 0 || len(record.calls) != 0 {
+		t.Fatalf("OAuth-declared Bot: %v %v %v", err, *calls, record.calls)
+	}
+}
+
 func TestTaskWriteVerifiesDeclaredBotBeforeSessionsAndCapture(t *testing.T) {
 	for _, tc := range sourceBotCases() {
 		t.Run(tc.name, func(t *testing.T) {

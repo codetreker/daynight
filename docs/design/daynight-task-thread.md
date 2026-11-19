@@ -20,7 +20,7 @@ created_at 与 head 时间为 timestamptz(3)，INSERT 使用 `date_trunc('millis
 
 1. 无锁预读目标的 Parent，按 UUID 顺序对目标和存在的 Parent 分别取得 `FOR SHARE`，以新语句复读并核对 Parent，保留 missing/有效删除信息。Parent 变化返回 `resource_conflict`，不补锁或重放。
 2. 锁当前 credential `FOR SHARE`，再通过 `ThreadScope.ProjectDAO().LockProjectAuthorization` 调用 canonical `store.LockProjectAuthorization`，依次锁真实 ownership、当前 owner Team member 和 direct grant `FOR SHARE`。验证认证身份与访问权后才分类任务存在性。
-3. 请求声明了 Bot 时，对该 Bot 行取得 `FOR SHARE` 并以新语句复读，核验其属于认证用户且未删除；规则见 [Webhook 捕获的事件操作者](webhook-capture.md#事件操作者)。
+3. 请求声明了 Bot 时，OAuth 凭据直接返回 403 `forbidden`；其他凭据对该 Bot 行取得 `FOR SHARE` 并以新语句复读，核验其属于认证用户且未删除；规则见 [Webhook 捕获的事件操作者](webhook-capture.md#事件操作者)。
 4. 查询作者名称；仅提供 claimId 时读取当前 worker，复用 core/task 的 ActiveWorker 校验，另验 worker.UserID 与 principal 一致。
 5. 先独立执行 lazy head INSERT ON CONFLICT DO NOTHING，再独立 SELECT FOR UPDATE。不能合成 CTE，否则 ReadCommitted 并发首写可看不到冲突赢家。
 6. 校验同任务 reply，INSERT 省略 message_id，以 RETURNING 获取一次生成的 UUID 和实际数据库毫秒时间。
