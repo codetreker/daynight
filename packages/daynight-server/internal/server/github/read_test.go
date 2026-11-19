@@ -44,6 +44,7 @@ type readerStub struct {
 	status            coregithub.Status
 	page              coregithub.Page
 	detail            coregithub.Detail
+	reviewAssignment  coregithub.ReviewAssignmentResult
 	authorsInput      coregithub.AuthorsRequest
 	authorsPage       coregithub.AuthorsPage
 	statisticsInput   coregithub.StatisticsRequest
@@ -84,6 +85,11 @@ func (s *readerStub) Detail(ctx context.Context, p model.Principal, id string, n
 	s.number = n
 	s.repositoryID = repositoryID
 	return s.detail, s.err
+}
+func (s *readerStub) ReviewAssignment(ctx context.Context, p model.Principal, id string, n int64, repositoryID *int64) (coregithub.ReviewAssignmentResult, error) {
+	s.calls++
+	s.id, s.ctx, s.principal, s.number, s.repositoryID = id, ctx, p, n, repositoryID
+	return s.reviewAssignment, s.err
 }
 func (s *readerStub) Repositories(ctx context.Context, p model.Principal, id string, in coregithub.RepositoriesRequest) (coregithub.RepositoriesPage, error) {
 	s.calls++

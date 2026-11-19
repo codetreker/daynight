@@ -11,7 +11,7 @@ import (
 func TestWebhookEventActorMigrationKeepsLegacyEventsUnknown(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 96 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 97 })
 	if index < 1 {
 		t.Fatal("webhook event actor migration is missing")
 	}

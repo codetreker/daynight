@@ -8,11 +8,11 @@ import (
 func TestProjectRepositoryVersionMigrationPreservesProjects(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 95 })
-	if index < 1 {
+	idx := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 95 })
+	if idx < 0 {
 		t.Fatal("repository version migration is missing")
 	}
-	if err := migrate(ctx, pool, schemaMigrations[:index]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:idx]); err != nil {
 		t.Fatal(err)
 	}
 	db := &Store{Pool: pool}
@@ -21,7 +21,7 @@ func TestProjectRepositoryVersionMigrationPreservesProjects(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT to_jsonb(p)::text FROM projects p WHERE id=$1`, project.ID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:idx+1]); err != nil {
 		t.Fatal(err)
 	}
 	var after string

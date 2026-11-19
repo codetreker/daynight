@@ -108,6 +108,16 @@ type PullRequestDetail struct {
 	PullRequestSummary
 	Description *string `json:"description"`
 }
+type PullRequestReviewAssignmentResult struct {
+	Status     string                       `json:"status"`
+	Assignment *PullRequestReviewAssignment `json:"assignment"`
+}
+type PullRequestReviewAssignment struct {
+	WorkerID      string    `json:"workerId"`
+	AssignedAt    time.Time `json:"assignedAt"`
+	Online        *bool     `json:"online"`
+	ReviewEnabled *bool     `json:"reviewEnabled"`
+}
 type PullRequestCounts struct {
 	Active string `json:"active"`
 	Closed string `json:"closed"`
