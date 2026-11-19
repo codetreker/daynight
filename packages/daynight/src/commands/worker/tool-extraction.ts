@@ -1,3 +1,4 @@
+import { isProcessBirth } from "../controller/linux-process-proof.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createOperation, type Operation } from "../../api/operation.js";
 import { withinOperation } from "../../platform/tool-io.js";
@@ -16,7 +17,7 @@ export async function readExtractionProof(file: string, preparationId: string): 
   const proof = row.proof as ProcessProof;
   if (!proof || Object.keys(proof).sort().join() !== "commandHash,parentPid,pid,processGroupId,startedAt" || !Number.isSafeInteger(proof.pid) || proof.pid < 1
     || !Number.isSafeInteger(proof.parentPid) || proof.parentPid < 1 || proof.processGroupId !== proof.pid
-    || typeof proof.startedAt !== "string" || !proof.startedAt || proof.startedAt.length > 128 || !/^[a-f0-9]{64}$/.test(proof.commandHash)) throw new Error("Invalid extraction process proof.");
+    || !isProcessBirth(proof.startedAt) || proof.startedAt.length > 128 || !/^[a-f0-9]{64}$/.test(proof.commandHash)) throw new Error("Invalid extraction process proof.");
   return proof;
 }
 export async function stopExtraction(proof: ProcessProof): Promise<void> {

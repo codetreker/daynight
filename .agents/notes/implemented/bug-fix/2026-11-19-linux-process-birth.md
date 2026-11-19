@@ -23,13 +23,41 @@ The adopted [Session requirements](../../../../docs/spec/task-sessions.md#linux-
 require Linux boot identity and kernel starttime ticks as the birth identity.
 The [Session design](../../../../docs/design/task-session-protocol.md#linux-稳定出生身份确定方案)
 defines the versioned token, consistent sampling and persistence obligations.
-Runtime integration and product acceptance remain incomplete; adoption of the
-specification does not establish that the running product uses this identity.
+Controller capture, persistent readers and the extraction child share this format.
 
 Birth identity remains separate from command, process group and execution
 ownership. Historical Linux proofs remain readable, but no current PID lookup
 may upgrade them into permission to signal. The records and unknown process
 responsibility survive refusal. macOS and Windows retain their platform paths.
+
+The sampler distinguishes a running proof, an exiting observation and a terminal observation. Boot,
+ticks and process group must agree throughout sampling. A final kernel zombie
+state can prove that instance exited even if its parent, command display or
+zombie state changed during the observation. Capture callers reject this result
+as a running proof; inspection can establish only the saved birth and group's
+single PID as stopped. Descendants and live group members require separate
+confirmation. Requiring all running fields to remain unchanged originally
+prevented mixed-instance proofs, but also rejected genuine exit transitions;
+the terminal branch preserves the birth and group fence without requiring
+fields the exiting process no longer maintains.
+
+Before zombie state, a final kernel `PF_EXITING` flag permits only passive
+waiting when the sampled birth and group also match the saved proof. Capture
+callers reject this observation as a running proof. Inspection waits at most
+25 milliseconds between complete samples, sharing one fixed `performance.now()`
+deadline across waits and reads. The flag itself proves neither stopped nor
+permission to signal: only a later matching zombie or authoritative ESRCH
+confirms the single PID stopped. Unconfirmed expiry retains responsibility.
+The wait can outlive an earlier group inventory. If no original instance remains
+to authorize a signal, Linux reads the group again within the same deadline.
+Only when every inspected original group instance is explicitly stopped may it
+wait for descendants to finish naturally. The wait sends no signal, creates no
+new grace period and retains unconfirmed survivors at expiry; replacements and
+identity conflicts cannot enter it. An empty group still requires the caller's
+final original-instance and group confirmation.
+The kernel sets this flag before address-space teardown, as documented in the
+[Session design](../../../../docs/design/task-session-protocol.md#linux-稳定出生身份确定方案);
+ordinary command conflicts do not receive this waiting exception.
 
 ## Alternatives
 
@@ -49,12 +77,25 @@ process proof with coincidentally equal PID and ticks.
 already be a replacement. Rewriting the original record would manufacture the
 missing relationship instead of proving it.
 
+**Retry every inconsistent sample within a bounded deadline.** Ordinary command
+or identity conflicts have no evidence that waiting will establish an original
+process's exit, so they remain refusals. A kernel `PF_EXITING` observation of
+the saved birth and group instead establishes an exit transition and permits
+bounded resampling to observe its completion. Once the final kernel state proves
+the same instance is a zombie, another sample adds no necessary evidence.
+Both exit paths preserve one observation budget; neither retries an arbitrary
+identity mismatch or treats an exit flag as completion.
+
 ## Consequences
 
 The accepted contract removes dependence on wall-clock rendering for new Linux
 proofs while retaining independent process and execution checks. Consistent
-sampling adds bounded reads and must reject exits or replacement during the
-observation. Every persistent reader and the extraction child must preserve
+sampling adds bounded reads. Exits cannot supply a running proof, and replacement
+still invalidates the entire observation. A verified zombie permits only the
+original single-instance stop conclusion, never a complete process-tree stop or
+permission to signal. A pre-zombie exit may consume the original observation
+budget while remaining unconfirmed; expiry cannot become a stopped result.
+Every persistent reader and the extraction child must preserve
 the token; accepting an unknown version as a historical date would defeat the
 format boundary.
 

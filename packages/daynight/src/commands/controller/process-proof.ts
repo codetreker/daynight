@@ -1,14 +1,22 @@
 import { createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createLinuxProcessCapture, isLinuxProcessBirth, isProcessBirth } from "./linux-process-proof.js";
 import { captureWindowsProcessProof, inspectWindowsProcessProof, withWindowsProcessStopHandles } from "./windows-process-proof.js";
 export type ProcessProof = { readonly pid: number; readonly parentPid: number; readonly processGroupId: number | null; readonly startedAt: string; readonly commandHash: string; readonly jobObjectName?: string };
 // ps localizes lstart, so identity probes need a stable locale. Keep the
 // Controller and native provider environments unchanged.
 const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
+const captureLinuxProcessState = createLinuxProcessCapture(
+  (file, timeout) => readFile(file, { encoding: "utf8", signal: AbortSignal.timeout(timeout) }),
+  (pid, timeout) => run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeout),
+  hash,
+);
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
 const capturePosixProcessState = async (pid: number, timeoutMs: number): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
+  if (process.platform === "linux") return captureLinuxProcessState(pid, timeoutMs);
   const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");
@@ -37,9 +45,29 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
   if (process.platform === "win32") return inspectWindowsProcessProof(proof, timeoutMs, onMismatch);
   try { process.kill(proof.pid, 0); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return "stopped"; throw new Error("Process liveness could not be established.", { cause: error }); }
+  if (!isProcessBirth(proof.startedAt)) throw new Error("The saved process birth identity has an unsupported or invalid format; original evidence is retained.");
+  if (process.platform === "linux" && !isLinuxProcessBirth(proof.startedAt)) throw new Error("The saved Linux process proof lacks a stable kernel birth identity; the live process cannot be authorized for recovery or stopping, and original evidence is retained.");
   let current: ProcessProof, zombie = false, exiting = false, status: string | null = null;
   try {
-    const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;
+    let observed: Awaited<ReturnType<typeof capturePosixProcessState>>;
+    if (process.platform === "linux") {
+      const deadline = performance.now() + timeoutMs;
+      const budget = () => {
+        const left = deadline - performance.now();
+        if (left <= 0) throw new Error("Linux process observation exceeded its deadline; stop remains unconfirmed.");
+        return left;
+      };
+      for (;;) {
+        observed = await capturePosixProcessState(proof.pid, Math.max(1, Math.ceil(budget())));
+        const left = budget();
+        // Linux can clear argv before becoming a zombie. Its kernel exit flag
+        // permits only a bounded wait, never signaling or declaring it stopped.
+        if (!observed.exiting || observed.proof.startedAt !== proof.startedAt
+          || observed.proof.processGroupId !== proof.processGroupId) break;
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, left)));
+      }
+    } else observed = await capturePosixProcessState(proof.pid, timeoutMs);
+    current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;
   }
   catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
   // A zombie's parent and command can change after the original parent exits.
@@ -118,14 +146,26 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
   if (controller.processGroupId !== controller.pid) throw new Error("Refusing a process group not owned by the original controller.");
   const signal = async (value: NodeJS.Signals): Promise<boolean> => {
     if ((await groupMembers(controller.pid, deadline)).length === 0) return false;
-    let attributable = false;
+    let attributable = false, originalsStopped = true;
     for (const proof of [controller, ...native]) {
       if (proof.processGroupId !== controller.pid) continue;
       const state = await bounded(deadline, () => inspectProcessProof(proof, remaining(deadline)));
       remaining(deadline);
       if (state === "running") attributable = true;
+      if (state !== "stopped") originalsStopped = false;
     }
-    if (!attributable) throw new Error("The remaining process group has no original process-instance proof; resources are retained.");
+    if (!attributable) {
+      // Original Linux instances can finish before their descendants. Once all
+      // originals stopped, wait without signaling; conflicts never admit this wait.
+      if (process.platform === "linux") {
+        while ((await groupMembers(controller.pid, deadline)).length > 0) {
+          if (!originalsStopped) throw new Error("The remaining process group has no original process-instance proof; resources are retained.");
+          await new Promise(resolve => setTimeout(resolve, Math.min(25, remaining(deadline))));
+        }
+        return false;
+      }
+      throw new Error("The remaining process group has no original process-instance proof; resources are retained.");
+    }
     remaining(deadline);
     try { process.kill(-controller.pid, value); return true; }
     catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return false; throw error; }
