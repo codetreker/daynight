@@ -123,6 +123,12 @@ checks that the real write scope commits without creating a connection.
 The original catalog identities and fixture rows must match before the
 next case. The missing App and closed-pool checks own a separate Store.
 
+The [root Identity DAO faults](../../../../packages/daynight-server/internal/core/store/postgres/identity_scope_test.go)
+use a single fixture for missing relations and canceled entry. Each committed
+rename is reversed and the original relation OID is verified. A new
+transaction reads the original PAT and Personal Team facts before the next
+case. The fixture shares the reversible catalog helper with Backup Inventory.
+
 [Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_boundaries_test.go)
 share one committed Session for the descriptor, missing relations and canceled
 read. The read-only inventory transaction observes committed faults. Cleanup
