@@ -64,12 +64,13 @@ file's first runtime configuration override, so Vitest snapshots the inherited
 configuration for `vi.resetConfig()`. Vitest captures the fallback when registering
 a hook; the inherited configuration is restored immediately afterward, including
 when registration throws. Other hook and test registrations retain their
-existing defaults. The synthetic cleanup waits 300
-milliseconds and the following case observes its environment, mock and ticket
-path after 350 milliseconds. If the explicit budget is removed, the runner can
-start that case at the short fallback deadline while the first cleanup still
-owns global restoration. Its late restoration is then visible to the following
-case's assertions. The tests use real scheduling and asynchronous yielding.
+existing defaults. The synthetic cleanup schedules its completion 25 milliseconds
+past the fallback and signals completion. The next case prepares its own
+environment and mock, joins that signal, and yields an event-loop turn so that
+the earlier hook has an opportunity to restore globals. If the explicit budget
+is removed, Vitest can start the next case after the fallback expires while
+the earlier hook still owns restoration. Its late restoration then invalidates
+the next case's parent/child ticket paths and mock.
 
 ## Alternatives
 
@@ -101,13 +102,19 @@ under the ordinary ten-second fallback cannot expose a missing explicit budget.
 Changing the default in a runtime hook is too late because the timeout wrapper
 already captured it at registration.
 
+**Wait a fixed interval before observing the next case.** The earlier 350 ms
+observation delay gave the 300 ms synthetic cleanup time to finish. A completion
+signal and event-loop turn preserve the ordering even when scheduling varies and
+reserve the timed portion for crossing the captured hook deadline.
+
 ## Consequences
 
 The hook waits for bounded owned cleanup before restoring globals. The adjacent
-regression cases retain the parent/child ticket-path, mock and completed-cleanup
-assertions while crossing a short captured fallback. Their timing no longer
-requires the former ten-second limit to elapse. Only synthetic waits change;
-real process observations and production deadlines retain their original bounds.
+regression cases still cross a real captured fallback and observe the prepared
+child's ticket path alongside the parent's path and mock value. Joining the
+synthetic completion signal makes the regression sensitive to the ordering of
+restoration. Process observations and production deadlines retain their native
+bounds.
 
 The hook budget is distinct from the production stop deadline. Joined probes can
 finish after a polling deadline, so that deadline is not a strict wall-clock

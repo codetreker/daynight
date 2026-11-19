@@ -11,7 +11,7 @@ import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldEventLoop, setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -135,24 +135,24 @@ try {
 // teardown crosses the hook's captured fallback deadline; the next case
 // must retain both its environment and mock until its own teardown starts.
 describe("fixture teardown isolation", { concurrent: false, shuffle: false }, () => {
-  let teardownCompleted = false;
+  const teardownCompleted = Promise.withResolvers<void>();
   const subject = { read: () => "original" };
   const home = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-teardown-isolation");
   test("joins cleanup beyond the default hook deadline", () => {
     vi.stubEnv("DN_CONFIG_DIR", path.join(home, "first-state"));
     vi.spyOn(subject, "read").mockReturnValue("first");
-    cleanups.push(async () => { await delay(300); teardownCompleted = true; });
+    cleanups.push(async () => { await delay(teardownIsolationDefaultTimeout + 25); teardownCompleted.resolve(); });
   });
   test("keeps the next parent's ticket path aligned with its prepared child", async () => {
     const state = path.join(home, "second-state"), launchId = randomUUID();
     vi.stubEnv("DN_CONFIG_DIR", state);
     vi.spyOn(subject, "read").mockReturnValue("second");
     const preparedEnvironment = { ...process.env, DN_CONFIG_DIR: state };
-    await delay(350);
+    await teardownCompleted.promise;
+    await yieldEventLoop();
     const childTicket = path.join(resolveConfigurationPaths(home, path, preparedEnvironment).stateDirectory, "controller", "launches", `${launchId}.json`);
     expect(controllerTicketPath(home, launchId)).toBe(childTicket);
     expect(subject.read()).toBe("second");
-    expect(teardownCompleted).toBe(true);
   });
 });
 
