@@ -180,6 +180,9 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       yield event;
     }
   }
+  /** A confirmed ACK refusal showing the event was deleted, is no longer pending or was acknowledged by another operation. */
+  const settledAck = (error: unknown): boolean => error instanceof AssistantTaskApiError && !error.outcomeUnconfirmed
+    && (error.status === 404 || ["not_found", "task_deleted", "invalid_transition", "operation_conflict"].includes(error.code ?? ""));
   const deliveryBot = async (bot: BotRecord, signal: AbortSignal): Promise<void> => {
     await withAssistantRuntimeState({ owner: options.owner, stateDirectory: await options.stateDirectory(bot.botId), key: "delivery" }, async (read, save) => {
       const saved = await read();
@@ -244,13 +247,27 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       // showing the event is no longer pending, was deleted or was acknowledged
       // by another operation settles it, as the pending scan it replaces
       // skipped such events.
+      //
+      // A transfer or takeover between Session acceptance and ACK retargets a
+      // still-pending inbound event to the new holder, and the server checks
+      // the target before replaying an acknowledgment, so the ACK is refused
+      // as forbidden. That refusal is ambiguous with a lost Bot identity, so
+      // one single-item read of the same task, which repeats the identity and
+      // task-ownership checks of the ACK, decides it: success leaves only the
+      // event target check, so the event is settled, and a failed read keeps
+      // the journal and reports the original refusal.
       const operationId = delivery.command.operationId;
       for (const event of delivery.events) {
         try {
           await options.withApi(bot.botId, signal, api => api.ackEvent(event.taskId, event.id, { operationId }));
         } catch (error) {
-          if (!(error instanceof AssistantTaskApiError && !error.outcomeUnconfirmed
-            && (error.status === 404 || ["not_found", "task_deleted", "invalid_transition", "operation_conflict"].includes(error.code ?? "")))) throw error;
+          if (settledAck(error)) continue;
+          if (!(error instanceof AssistantTaskApiError && !error.outcomeUnconfirmed && error.code === "forbidden")) throw error;
+          try {
+            await options.withApi(bot.botId, signal, api => api.listEvents(event.taskId, { state: "pending", targetBotId: bot.botId, limit: 1 }));
+          } catch (probe) {
+            if (!settledAck(probe)) throw error;
+          }
         }
       }
       await save(null);

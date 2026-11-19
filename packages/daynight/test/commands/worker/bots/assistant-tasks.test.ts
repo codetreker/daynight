@@ -717,6 +717,44 @@ describe("assistant-task managed loops", () => {
     expect(f.send).toHaveBeenCalledTimes(2); expect(f.onError).not.toHaveBeenCalled();
   });
 
+  it.each(["transfer", "takeover"])("settles a journaled inbound event retargeted by a %s between Session acceptance and ACK", async kind => {
+    const f = await fixture(), body = "z".repeat(16);
+    f.events = [{ ...f.event(51), type: "inbound", payload: { inboxId: id(22), classification: "external", receivedAt: new Date(start).toISOString(), mediaType: "text/plain", idempotencyKey: null, body, byteLength: 16, sha256: createHash("sha256").update(body).digest("hex") } }];
+    const send = f.send.getMockImplementation()!, ack = f.ackEvent.getMockImplementation()!;
+    // The server retargets pending inbound events to the new holder and adds claim_lost for the previous one.
+    f.send.mockImplementationOnce(async (bot, command, abort) => {
+      const result = await send(bot, command, abort);
+      f.events = [...f.events.map(event => event.type === "inbound" ? { ...event, targetBotId: id(90) } : event), { ...f.event(52), type: "claim_lost", payload: { reason: kind } }];
+      return result;
+    });
+    f.ackEvent.mockImplementation(async (taskId, eventId, input) => {
+      if (f.events.find(event => event.id === eventId)!.targetBotId !== f.bot.botId) throw new AssistantTaskApiError(false, "forbidden", 403, true);
+      return ack(taskId, eventId, input);
+    });
+    const first = f.create(); await first.tick("delivery", signal()); await first.shutdown();
+    expect(f.listEvents.mock.calls.at(-1)).toEqual([f.task.id, { state: "pending", targetBotId: f.bot.botId, limit: 1 }]);
+    await f.create().tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(f.send.mock.calls[1]![1])).toContain(id(52));
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(52)]);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps the journal when the task read also refuses the Bot identity after a forbidden ACK", async () => {
+    const f = await fixture(); f.events = [f.event(51)];
+    const list = f.listEvents.getMockImplementation()!;
+    f.ackEvent.mockRejectedValue(new AssistantTaskApiError(false, "forbidden", 403, true));
+    f.listEvents.mockImplementation(async (taskId, query) => { if (taskId !== undefined) throw new AssistantTaskApiError(false, "forbidden", 403, true); return list(taskId, query); });
+    const runtime = f.create(); await runtime.tick("delivery", signal());
+    f.events = [...f.events, f.event(52)];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.ackEvent.mock.calls.map(call => call[1])).toEqual([id(51), id(51)]);
+    expect(f.listEvents.mock.calls.filter(([taskId]) => taskId !== undefined)).toHaveLength(2);
+    expect(f.onError).toHaveBeenCalledTimes(2);
+    expect(f.onError.mock.calls.every(([message]) => String(message).includes("(forbidden)"))).toBe(true);
+  });
+
   it("replays a lost ACK response with its original operation without sending the notification again", async () => {
     const f = await fixture(); f.events = [f.event(51), f.event(52)];
     f.ackEvent.mockImplementationOnce(async (_taskId, eventId, input) => {
