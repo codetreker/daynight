@@ -15,10 +15,10 @@ const taskGraphSelection = `WITH RECURSIVE chain(id) AS (
  SELECT neighbor.id FROM chain member
  CROSS JOIN LATERAL (
   SELECT depends_on_task_id AS id FROM task_dependencies
-   WHERE project_id = $1 AND task_id = member.id AND NOT external AND $3::boolean
+   WHERE project_id = $1 AND task_id = member.id AND dependency_type = 'task' AND NOT external AND $3::boolean
   UNION
   SELECT task_id AS id FROM task_dependencies
-   WHERE project_id = $1 AND depends_on_task_id = member.id AND NOT external AND $4::boolean
+   WHERE project_id = $1 AND depends_on_task_id = member.id AND dependency_type = 'task' AND NOT external AND $4::boolean
  ) neighbor
  JOIN task_resource_rows live ON live.project_id = $1 AND live.id = neighbor.id AND live.type = 'task' AND (NOT $6::boolean OR live.effective_deleted_at IS NULL)
 ), selected(id) AS (
@@ -27,7 +27,7 @@ const taskGraphSelection = `WITH RECURSIVE chain(id) AS (
  SELECT dependency.depends_on_task_id FROM task_dependencies dependency
  JOIN chain member ON member.id = dependency.task_id
  JOIN task_resource_rows live ON live.project_id = $1 AND live.id = dependency.depends_on_task_id AND live.type = 'task' AND (NOT $6::boolean OR live.effective_deleted_at IS NULL)
- WHERE dependency.project_id = $1 AND dependency.external AND $5::boolean
+ WHERE dependency.project_id = $1 AND dependency.dependency_type = 'task' AND dependency.external AND $5::boolean
 ) `
 
 func (s *Reader) TaskGraphTasks(ctx context.Context, projectID, taskID string, selection store.TaskGraphSelection, previewCharacters int) ([]model.GraphTask, error) {

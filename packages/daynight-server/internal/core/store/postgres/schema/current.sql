@@ -1,4 +1,4 @@
--- Schema snapshot version: 90
+-- Schema snapshot version: 91
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -915,6 +915,8 @@ CREATE TABLE "task_dependencies" (
     "task_id" "uuid" NOT NULL,
     "depends_on_task_id" "uuid" NOT NULL,
     "external" boolean DEFAULT false NOT NULL,
+    "dependency_type" "text" DEFAULT 'task'::"text" NOT NULL,
+    "goal_edge_id" "uuid",
     CONSTRAINT "task_dependencies_check" CHECK (("task_id" <> "depends_on_task_id"))
 );
 

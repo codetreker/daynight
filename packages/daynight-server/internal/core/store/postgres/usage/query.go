@@ -79,7 +79,7 @@ func (d *DAO) Members(ctx context.Context, project, kind, id string, limit int) 
 		query = `WITH RECURSIVE members(id) AS (
  SELECT id FROM task_resource_rows WHERE project_id=$1 AND id=$2 AND type='task' AND effective_deleted_at IS NULL
  UNION
- SELECT t.id FROM members m JOIN task_dependencies d ON d.project_id=$1 AND NOT d.external AND (d.task_id=m.id OR d.depends_on_task_id=m.id)
+ SELECT t.id FROM members m JOIN task_dependencies d ON d.project_id=$1 AND d.dependency_type='task' AND NOT d.external AND (d.task_id=m.id OR d.depends_on_task_id=m.id)
  JOIN task_resource_rows t ON t.project_id=$1 AND t.id=CASE WHEN d.task_id=m.id THEN d.depends_on_task_id ELSE d.task_id END AND t.type='task' AND t.effective_deleted_at IS NULL
 ) SELECT t.id::text,t.title FROM members m JOIN task_resource_rows t ON t.project_id=$1 AND t.id=m.id ORDER BY t.id LIMIT $3`
 	}

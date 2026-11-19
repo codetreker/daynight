@@ -6,8 +6,8 @@ Status: implemented
 
 The Session operation-store test independently reads a real Windows file DACL,
 adds an Everyone read ACE, and verifies that the store refuses the altered ACL.
-Its native process deadline must allow that verification to finish while still
-bounding a stalled PowerShell or icacls process.
+Its external-command deadline must allow that verification to finish while
+bounding a stalled command.
 
 Windows [run 42817716869](https://github.com/codetreker/daynight/actions/runs/42817716869/job/129837030633)
 failed the case at
@@ -21,18 +21,20 @@ record do not distinguish process initialization, scheduling, and ACL work.
 
 The test-owned `aclProcessMs` in
 [`operation-store.test.ts`](../../../../packages/daynight/test/commands/task/session/operation-store.test.ts)
-is 30,000 ms. It bounds each complete native command, including startup and its
-body. PowerShell readback and the subsequent icacls public-ACE grant share this
-policy. The case timeout remains derived as `2 * aclProcessMs + 5_000`, allowing
-65,000 ms for two sequential bounded commands and the existing margin.
+is 30,000 ms. The original decision applied that allowance to both PowerShell
+readback and the subsequent icacls public-ACE grant, with a 65,000 ms case guard.
+The [native ACL observer decision](2026-11-19-native-windows-acl-observer.md)
+replaces the PowerShell readback after another timeout before script entry.
+The remaining icacls command retains the complete-command allowance, including
+startup and its body; the case guard is `aclProcessMs + 5_000`.
 
-The independent PowerShell oracle still requires a protected DACL containing
-exactly one explicit, non-inherited current-user FullControl allow ACE and the
-`private` result. The test then adds the real Everyone read ACE and requires the
-operation store to reject it. Native timeouts still use SIGKILL, await actual
-child closure, and preserve the original error as the cause. Stage diagnostics,
-fixture cleanup, production ACL behavior, and unrelated test budgets retain
-their existing ownership. The later
+Independent native readback requires the current-user owner and a present,
+protected DACL containing exactly one current-user FullControl allow ACE with
+zero inheritance flags. The test then adds the real Everyone read ACE and
+requires the operation store to reject it. Native command timeouts use SIGKILL,
+await actual child closure, and preserve the original error as the cause. Stage
+diagnostics, fixture cleanup, production ACL behavior, and unrelated test budgets
+retain their existing ownership. The later
 [oracle phase evidence decision](2026-11-18-windows-oracle-phase-evidence.md)
 adds command lifecycle and script checkpoints after another empty-output
 timeout at the retained 30-second bound; it does not establish a cause for
@@ -61,10 +63,11 @@ The bounded complete-command allowance preserves the existing native probe.
 
 ## Consequences
 
-Windows native process overhead has a larger finite allowance while every real
-permission assertion and rejection remains inside the test. A hung native
-command can take 20 seconds longer to fail, and the derived case guard grows by
-40 seconds. This changes neither production deadlines nor permission policy.
+The original allowance increased a hung command's failure time by 20 seconds
+and the two-command case guard by 40 seconds. The remaining icacls command keeps
+that finite allowance, while private ACL readback no longer launches a shell.
+Every real permission assertion and rejection remains inside the test. This
+changes neither production deadlines nor permission policy.
 
 The failure does not prove a slow ACL implementation or a process-startup cause.
 Windows execution must still complete private readback, public ACE grant, and

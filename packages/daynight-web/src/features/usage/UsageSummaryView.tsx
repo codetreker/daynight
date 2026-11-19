@@ -19,10 +19,11 @@ const reasonLabels: Readonly<Record<string, readonly [string, string]>> = {
 export const usageReasonLabel = (reason: string, locale: string | boolean): string => reasonLabels[reason]?.[locale === true || locale === 'zh-CN' ? 0 : 1] ?? reason;
 export const usageCompletenessLabel = (value: string, zh: boolean): string => ({ complete: zh ? '完整' : 'Complete', partial: zh ? '部分' : 'Partial', collecting: zh ? '采集中' : 'Collecting', unavailable: zh ? '不可用' : 'Unavailable', unsupported: zh ? '不支持' : 'Unsupported', no_data: zh ? '无记录' : 'No data', unregistered: zh ? '未登记' : 'Unregistered' })[value] ?? (zh ? '未知' : 'Unknown');
 export const formatUsageInteger = (value: string | null, locale: string): string => value === null ? (locale === 'zh-CN' ? '未知' : 'Unknown') : BigInt(value).toLocaleString(locale);
+export const usageCompactMetric = (summary: UsageSummary) => (['totalTokens', 'outputTokens', 'inputTokens'] as const).find(key => summary.metrics[key].known !== null) ?? null;
 export const usageCompactReading = (summary: UsageSummary, locale: string) => {
   const zh = locale === 'zh-CN', m = usageWords(zh);
-  const key = summary.metrics.totalTokens.known !== null ? 'totalTokens' : summary.metrics.outputTokens.known !== null ? 'outputTokens' : 'inputTokens';
-  return { label: summary.metrics[key].known === null ? m.title : `${summary.completeness === 'complete' ? '' : zh ? '已知' : 'Known '}${m.metric(key)}`, value: formatUsageInteger(summary.metrics[key].known, locale), state: usageCompletenessLabel(summary.completeness, zh) };
+  const key = usageCompactMetric(summary);
+  return { label: key === null ? m.title : `${summary.completeness === 'complete' ? '' : zh ? '已知' : 'Known '}${m.metric(key)}`, value: formatUsageInteger(key === null ? null : summary.metrics[key].known, locale), state: usageCompletenessLabel(summary.completeness, zh) };
 };
 export const UsageSummaryView = ({ summary, compact = false }: { readonly summary: UsageSummary; readonly compact?: boolean }) => {
   const { locale, format } = useI18n(), m = usageWords(locale === 'zh-CN');
@@ -46,9 +47,10 @@ export const UsageSummaryView = ({ summary, compact = false }: { readonly summar
 const UsageProjectContext = createContext<string | null>(null);
 export const UsageProjectProvider = ({ projectId, children }: { readonly projectId: string; readonly children: ReactNode }) => <UsageProjectContext value={projectId}>{children}</UsageProjectContext>;
 const GraphUsageSummary = ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => {
-  const { summary, error } = useTaskUsage(projectId, taskId), { locale } = useI18n(), zh = locale === 'zh-CN', m = usageWords(zh);
-  const reading = summary === null ? null : usageCompactReading(summary, locale);
-  const text = reading === null ? error === null ? m.title + '…' : m.error : `${reading.label}: ${reading.value} · ${reading.state}`;
+  const { summary } = useTaskUsage(projectId, taskId), { locale } = useI18n();
+  if (summary === null || (summary.metrics.totalTokens.known === null && summary.metrics.outputTokens.known === null && summary.metrics.inputTokens.known === null)) return null;
+  const reading = usageCompactReading(summary, locale);
+  const text = `${reading.label}: ${reading.value} · ${reading.state}`;
   return <span className="task-node-usage" title={text}>
     {text}
   </span>;

@@ -14,7 +14,7 @@ func TestArchiveCleanupMigrationRetainsPendingDeletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 90 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 91 })
 	if index < 1 {
 		t.Fatal("missing cleanup migration")
 	}

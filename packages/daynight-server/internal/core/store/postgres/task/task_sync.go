@@ -108,7 +108,7 @@ func (s *Reader) TaskSyncDependencyStates(ctx context.Context, projectID string,
 	), selected AS (
 		SELECT id FROM changed
 		UNION SELECT d.task_id FROM changed c JOIN task_dependencies d
-			ON d.project_id=$1 AND d.depends_on_task_id=c.id
+			ON d.project_id=$1 AND d.depends_on_task_id=c.id AND d.dependency_type='task'
 		WHERE $2::timestamptz IS NOT NULL
 	)
 	SELECT t.id::text, t.version, `+pg.TaskBlockedBy+`, `+pg.TaskReady+`
