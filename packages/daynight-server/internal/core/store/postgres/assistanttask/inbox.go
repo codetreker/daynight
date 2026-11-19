@@ -9,10 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// inboundEventType matches the inbound event type and the partial index
-// predicate in migration 095.
-const inboundEventType = "inbound"
-
 const inboxColumns = `inbox_id::text,owner_user_id::text,task_id::text,state,token_digest,overlap_token_digest,overlap_until,suppressed_count,version,created_at,rotated_at`
 
 func scanInbox(row pgx.Row) (model.AssistantTaskInbox, error) {
@@ -77,7 +73,7 @@ func (d *DAO) InsertInboxReceipt(ctx context.Context, v model.AssistantTaskInbox
 
 func (d *DAO) PendingInboundEvents(ctx context.Context, owner, task, bot string, limit int) (int, error) {
 	var count int
-	err := d.tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM assistant_task_events WHERE owner_user_id=$1 AND task_id=$2 AND target_bot_id=$3 AND type=$4 AND state='pending' LIMIT $5) pending`, owner, task, bot, inboundEventType, limit).Scan(&count)
+	err := d.tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM assistant_task_events WHERE owner_user_id=$1 AND task_id=$2 AND target_bot_id=$3 AND type='inbound' AND state='pending' LIMIT $4) pending`, owner, task, bot, limit).Scan(&count)
 	return count, pg.AuthQueryError("count pending assistant inbound", err)
 }
 
@@ -91,8 +87,11 @@ func (d *DAO) ReclaimInboxReceipts(ctx context.Context, owner, task string, limi
 	return d.deleted(ctx, "reclaim assistant inbox receipts", `DELETE FROM assistant_task_inbox_receipts WHERE (inbox_id,idempotency_key) IN (SELECT inbox_id,idempotency_key FROM assistant_task_inbox_receipts WHERE task_id=$2 AND expires_at<=clock_timestamp() AND owner_user_id=$1 ORDER BY expires_at LIMIT $3)`, owner, task, limit)
 }
 
+// ReclaimInboundEvents spells the event type and states as literals so every
+// plan, including a generic plan for a cached prepared statement, can prove the
+// predicate of the partial index assistant_task_events_inbound_settled.
 func (d *DAO) ReclaimInboundEvents(ctx context.Context, owner, task string, before time.Time, limit int) (int64, error) {
-	return d.deleted(ctx, "reclaim assistant inbound events", `DELETE FROM assistant_task_events WHERE id IN (SELECT id FROM assistant_task_events WHERE task_id=$2 AND type=$3 AND state IN ('delivered','expired') AND COALESCE(delivered_at,created_at)<$4 AND owner_user_id=$1 ORDER BY COALESCE(delivered_at,created_at) LIMIT $5)`, owner, task, inboundEventType, before, limit)
+	return d.deleted(ctx, "reclaim assistant inbound events", `DELETE FROM assistant_task_events WHERE id IN (SELECT id FROM assistant_task_events WHERE task_id=$2 AND type='inbound' AND state IN ('delivered','expired') AND settled_at<$3 AND owner_user_id=$1 ORDER BY settled_at LIMIT $4)`, owner, task, before, limit)
 }
 
 func (d *DAO) deleted(ctx context.Context, phase, query string, args ...any) (int64, error) {

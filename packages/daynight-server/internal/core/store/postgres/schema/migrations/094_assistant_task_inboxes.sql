@@ -36,6 +36,15 @@ CREATE INDEX assistant_task_inbox_receipts_wake
 CREATE INDEX assistant_task_inbox_receipts_expiry
     ON assistant_task_inbox_receipts (task_id, expires_at);
 
+-- settled_at records when an event left pending. Expiring an event leaves
+-- delivered_at NULL, and a paused task can keep an event pending for a long
+-- time, so neither column measures how long a settled event has been retained.
+-- Existing expired events have no recorded expiry time; they are settled at
+-- migration time so retention never ends before the real settlement age.
+ALTER TABLE assistant_task_events ADD COLUMN settled_at timestamptz;
+UPDATE assistant_task_events SET settled_at = COALESCE(delivered_at, clock_timestamp())
+    WHERE state <> 'pending';
+
 CREATE INDEX assistant_task_events_inbound_settled
-    ON assistant_task_events (task_id, (COALESCE(delivered_at, created_at)))
+    ON assistant_task_events (task_id, settled_at)
     WHERE type = 'inbound' AND state IN ('delivered', 'expired');

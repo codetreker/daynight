@@ -139,7 +139,7 @@ type AssistantTaskInboxDAO interface {
 	// of its inboxes, that expired by current database time.
 	ReclaimInboxReceipts(ctx context.Context, owner, task string, limit int) (int64, error)
 	// ReclaimInboundEvents deletes at most limit delivered or expired inbound
-	// events of the task whose delivery time, or creation time when never
-	// delivered, is before the cutoff.
+	// events of the task that left pending, by delivery or expiry, before the
+	// cutoff.
 	ReclaimInboundEvents(ctx context.Context, owner, task string, before time.Time, limit int) (int64, error)
 }

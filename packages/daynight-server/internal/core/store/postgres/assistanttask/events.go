@@ -30,12 +30,15 @@ func eventValues(v model.AssistantTaskEvent) []any {
 	return []any{v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.SeenAt, v.AckOperationID, v.AckFingerprint}
 }
 func (d *DAO) InsertEvent(ctx context.Context, v model.AssistantTaskEvent) (bool, error) {
-	return d.changed(ctx, "insert assistant event", `INSERT INTO assistant_task_events(id,owner_user_id,task_id,target_bot_id,type,state,request_fingerprint,payload,attention,created_at,delivered_at,seen_at,ack_operation_id,ack_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING`, eventValues(v)...)
+	return d.changed(ctx, "insert assistant event", `INSERT INTO assistant_task_events(id,owner_user_id,task_id,target_bot_id,type,state,request_fingerprint,payload,attention,created_at,delivered_at,seen_at,ack_operation_id,ack_fingerprint,settled_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,CASE WHEN $6='pending' THEN NULL ELSE COALESCE($11,$10) END) ON CONFLICT DO NOTHING`, eventValues(v)...)
 }
 func (d *DAO) SaveEvent(ctx context.Context, v model.AssistantTaskEvent, state string) (bool, error) {
 	// SeenAt is advanced only by MarkAttentionSeen, which can commit independently
 	// of a task-scoped acknowledgement using an earlier event snapshot.
-	return d.changed(ctx, "save assistant event", `UPDATE assistant_task_events SET target_bot_id=$4,type=$5,state=$6,request_fingerprint=$7,payload=$8,attention=$9,created_at=$10,delivered_at=$11,ack_operation_id=$12,ack_fingerprint=$13 WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND state=$14`, v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.AckOperationID, v.AckFingerprint, state)
+	// settled_at is set once, when the event leaves pending; retention of
+	// settled inbound events is measured from it because an expired event has no
+	// delivery time.
+	return d.changed(ctx, "save assistant event", `UPDATE assistant_task_events SET target_bot_id=$4,type=$5,state=$6,request_fingerprint=$7,payload=$8,attention=$9,created_at=$10,delivered_at=$11,ack_operation_id=$12,ack_fingerprint=$13,settled_at=CASE WHEN $6='pending' THEN NULL WHEN state='pending' THEN COALESCE($11,clock_timestamp()) ELSE settled_at END WHERE id=$1 AND owner_user_id=$2 AND task_id=$3 AND state=$14`, v.ID, v.OwnerUserID, v.TaskID, v.TargetBotID, v.Type, v.State, v.RequestFingerprint, v.Payload, v.Attention, v.CreatedAt, v.DeliveredAt, v.AckOperationID, v.AckFingerprint, state)
 }
 func (d *DAO) MarkAttentionSeen(ctx context.Context, owner, target string, at time.Time, exceptTypes []string) error {
 	if exceptTypes == nil {

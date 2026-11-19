@@ -209,18 +209,24 @@ func TestReceiptExpiryReplacementAndOwnerScope(t *testing.T) {
 		if ok, err := d.InsertInboxReceipt(ctx, duplicate); err != nil || ok {
 			t.Fatalf("unexpired key replaced: %v %v", ok, err)
 		}
-		foreign := duplicate
-		foreign.OwnerUserID = uuid.NewString()
-		foreign.ExpiresAt = now.Add(-time.Hour)
-		if ok, err := d.InsertInboxReceipt(ctx, foreign); err != nil || ok {
-			t.Fatalf("foreign owner replaced receipt: %v %v", ok, err)
-		}
 		return nil
 	})
 	awaitDatabaseTime(t, f, expiry)
 	f.write(t, func(d store.AssistantTaskDAO) error {
 		_, err := d.InboxReceipt(ctx, f.owner, inbox.InboxID, "key")
 		notFound(t, err, "receipt at its expiry")
+		// The stored receipt has expired, so only the owner predicate can refuse
+		// another owner's replacement.
+		foreign := f.receipt(inbox.InboxID, "key", expiry, expiry.Add(time.Hour))
+		foreign.OwnerUserID = uuid.NewString()
+		if ok, err := d.InsertInboxReceipt(ctx, foreign); err != nil || ok {
+			t.Fatalf("foreign owner replaced expired receipt: %v %v", ok, err)
+		}
+		var owner, body string
+		var stored time.Time
+		if err := f.db.Pool.QueryRow(ctx, `SELECT owner_user_id::text,body_sha256,expires_at FROM assistant_task_inbox_receipts WHERE inbox_id=$1 AND idempotency_key='key'`, inbox.InboxID).Scan(&owner, &body, &stored); err != nil || owner != f.owner || body != first.BodySHA256 || !stored.Equal(expiry) {
+			t.Fatalf("expired receipt changed by foreign owner: %s %s %v %v", owner, body, stored, err)
+		}
 		replacement := f.receipt(inbox.InboxID, "key", expiry, expiry.Add(time.Hour))
 		replacement.EventID, replacement.Suppressed = nil, true
 		if ok, err := d.InsertInboxReceipt(ctx, replacement); err != nil || !ok {
@@ -429,6 +435,73 @@ func TestReclamationIsBoundedAndScoped(t *testing.T) {
 			if _, err := d.Event(ctx, v.OwnerUserID, v.TaskID, v.ID); err != nil {
 				t.Fatalf("event %s/%s reclaimed: %v", v.Type, v.State, err)
 			}
+		}
+		return nil
+	})
+}
+
+func TestInboundRetentionStartsWhenEventLeavesPending(t *testing.T) {
+	f := setup(t)
+	f.create(t)
+	ctx := t.Context()
+	bot := uuid.NewString()
+	var created time.Time
+	f.write(t, func(d store.AssistantTaskDAO) (err error) {
+		created, err = d.Now(ctx)
+		created = created.Add(-time.Hour)
+		return err
+	})
+	expired := f.event(bot, "inbound", "pending", created, nil)
+	delivered := f.event(bot, "inbound", "pending", created, nil)
+	retargeted := f.event(bot, "inbound", "pending", created, nil)
+	var settledBy time.Time
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		for _, v := range []model.AssistantTaskEvent{expired, delivered, retargeted} {
+			if ok, err := d.InsertEvent(ctx, v); err != nil || !ok {
+				t.Fatalf("event insert: %v %v", ok, err)
+			}
+		}
+		now, err := d.Now(ctx)
+		if err != nil {
+			return err
+		}
+		expired.State = "expired"
+		delivered.State, delivered.DeliveredAt = "delivered", &now
+		retargeted.TargetBotID = uuid.NewString()
+		for _, v := range []model.AssistantTaskEvent{expired, delivered, retargeted} {
+			if ok, err := d.SaveEvent(ctx, v, "pending"); err != nil || !ok {
+				t.Fatalf("event save: %v %v", ok, err)
+			}
+		}
+		settledBy, err = d.Now(ctx)
+		return err
+	})
+	settledAt := func() time.Time {
+		var at time.Time
+		if err := f.db.Pool.QueryRow(ctx, `SELECT settled_at FROM assistant_task_events WHERE id=$1`, expired.ID).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	first := settledAt()
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		if ok, err := d.SaveEvent(ctx, expired, "expired"); err != nil || !ok {
+			t.Fatalf("settled event save: %v %v", ok, err)
+		}
+		return nil
+	})
+	if again := settledAt(); !again.Equal(first) || !first.Before(settledBy) || !first.After(created) {
+		t.Fatalf("settlement time moved: %v then %v", first, again)
+	}
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		if n, err := d.ReclaimInboundEvents(ctx, f.owner, f.task.ID, created.Add(time.Minute), 10); err != nil || n != 0 {
+			t.Fatalf("events reclaimed by creation time: %d %v", n, err)
+		}
+		if n, err := d.ReclaimInboundEvents(ctx, f.owner, f.task.ID, settledBy, 10); err != nil || n != 2 {
+			t.Fatalf("settled events not reclaimed: %d %v", n, err)
+		}
+		if _, err := d.Event(ctx, f.owner, f.task.ID, retargeted.ID); err != nil {
+			t.Fatalf("pending event reclaimed: %v", err)
 		}
 		return nil
 	})

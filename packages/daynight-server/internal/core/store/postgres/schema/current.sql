@@ -1,4 +1,4 @@
--- Schema snapshot version: 93
+-- Schema snapshot version: 94
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -51,7 +51,8 @@ CREATE TABLE "assistant_task_events" (
     "seen_at" timestamp with time zone,
     "ack_operation_id" "uuid",
     "ack_fingerprint" "text",
-    "created_at" timestamp with time zone NOT NULL
+    "created_at" timestamp with time zone NOT NULL,
+    "settled_at" timestamp with time zone
 );
 
 CREATE TABLE "assistant_task_inbox_receipts" (
@@ -1995,7 +1996,7 @@ ALTER TABLE ONLY "workers"
 
 CREATE INDEX "assistant_task_appendix_page" ON "assistant_task_appendix" USING "btree" ("task_id", "created_at", "id");
 
-CREATE INDEX "assistant_task_events_inbound_settled" ON "assistant_task_events" USING "btree" ("task_id", COALESCE("delivered_at", "created_at")) WHERE (("type" = 'inbound'::"text") AND ("state" = ANY (ARRAY['delivered'::"text", 'expired'::"text"])));
+CREATE INDEX "assistant_task_events_inbound_settled" ON "assistant_task_events" USING "btree" ("task_id", "settled_at") WHERE (("type" = 'inbound'::"text") AND ("state" = ANY (ARRAY['delivered'::"text", 'expired'::"text"])));
 
 CREATE INDEX "assistant_task_events_page" ON "assistant_task_events" USING "btree" ("task_id", "created_at", "id");
 
