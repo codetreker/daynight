@@ -159,8 +159,10 @@ func summaryTargets(p *githubpr.PullRequestSummary) []any {
 		&p.State, &p.Draft, &p.BaseRef, &p.HeadRepositoryID, &p.HeadRepositoryFullName, &p.HeadRef, &p.HeadSHA,
 		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID, &p.RepositoryID, &p.RepositoryFullName}
 }
-func (r *reader) PullRequest(ctx context.Context, id string, number int64) (githubpr.PullRequest, error) {
-	var repositoryID *int64
+func (r *reader) PullRequest(ctx context.Context, id string, number int64, repositoryID *int64) (githubpr.PullRequest, error) {
+	if repositoryID != nil {
+		return r.pullRequest(ctx, id, *repositoryID, number)
+	}
 	err := r.tx.QueryRow(ctx, `SELECT legacy_repository_id FROM project_github WHERE project_id=$1`, id).Scan(&repositoryID)
 	if err != nil {
 		return githubpr.PullRequest{}, pg.QueryError("read github pull request", err)
@@ -182,8 +184,7 @@ func (r *reader) pullRequest(ctx context.Context, id string, repositoryID, numbe
 }
 
 // Search uses position rather than SQL LIKE, so wildcard characters are literal.
-const filter = `project_id=$1 AND repository_id=(SELECT legacy_repository_id FROM project_github WHERE project_id=$1)
- AND ($3='' OR strpos(lower(title), lower($3))>0 OR ($4<>'' AND strpos(number::text,$4)>0))`
+const filter = `project_id=$1 AND ($3='' OR strpos(lower(title), lower($3))>0 OR ($4<>'' AND strpos(number::text,$4)>0))`
 
 func numericSearch(q string) string {
 	n := strings.TrimPrefix(q, "#")
@@ -212,16 +213,16 @@ func (r *reader) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store
 	}
 	where := filter + stateFilter + authorFilter
 	// Total covers the entire matching collection, independently of page and upper bound.
-	if err := r.tx.QueryRow(ctx, `SELECT count(*) FROM project_pull_requests WHERE `+where, q.ProjectID, q.State, q.Query, numeric, q.AuthorID).Scan(&page.Total); err != nil {
+	if err := r.tx.QueryRow(ctx, `SELECT count(*) FROM project_pull_requests WHERE `+where+repositoryFilter(q.RepositoryID, 6), q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.RepositoryID).Scan(&page.Total); err != nil {
 		return store.GitHubPRPage{}, pg.QueryError("count github pull requests", err)
 	}
 	order, comparison := "DESC", "<"
 	if q.Previous {
 		order, comparison = "ASC", ">"
 	}
-	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+` FROM project_pull_requests WHERE `+where+
+	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+` FROM project_pull_requests WHERE `+where+repositoryFilter(q.RepositoryID, 9)+
 		` AND ($6::bigint IS NULL OR number <= $6) AND ($7::bigint IS NULL OR number `+comparison+` $7)
-		 ORDER BY number `+order+` LIMIT $8`, q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.UpperNumber, q.AnchorNumber, q.Limit+1)
+		 ORDER BY number `+order+` LIMIT $8`, q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.UpperNumber, q.AnchorNumber, q.Limit+1, q.RepositoryID)
 	if err != nil {
 		return store.GitHubPRPage{}, pg.QueryError("list github pull requests", err)
 	}
@@ -258,7 +259,7 @@ func (r *reader) PullRequestCounts(ctx context.Context, q store.GitHubPRCountsQu
 	 count(*) FILTER (WHERE ($2::bigint IS NULL OR author_id=$2) AND state='closed'),
 	 count(*) FILTER (WHERE ($2::bigint IS NULL OR author_id=$2) AND state='merged'),
 	 count(*) FILTER (WHERE $2::bigint IS NULL OR author_id=$2), count(*)
-	 FROM project_pull_requests WHERE project_id=$1 AND repository_id=(SELECT legacy_repository_id FROM project_github WHERE project_id=$1)`, q.ProjectID, q.AuthorID).
+	 FROM project_pull_requests WHERE project_id=$1`+repositoryFilter(q.RepositoryID, 3), q.ProjectID, q.AuthorID, q.RepositoryID).
 		Scan(&counts.Active, &counts.Closed, &counts.Merged, &counts.All, &counts.ProjectTotal)
 	if err != nil {
 		return store.GitHubPRCounts{}, pg.QueryError("count github pull request states", err)

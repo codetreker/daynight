@@ -116,6 +116,13 @@ The qualification records query plans and warm-five/measure-thirty P95 for
 
 ## Contracts
 
+The [Worker review participation resource](../../docs/design/worker-review-participation.md)
+provides an account-owned GET/PUT preference at
+`/api/v1/me/workers/{workerId}/review-participation`. It defaults to disabled,
+uses an independent exact decimal version and preserves report, configuration
+and claim protocols. Editing it does not refresh Worker activity. Existing and
+new Worker rows receive the same defaults through migration and schema snapshot.
+
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
 The [PR read design](../../docs/design/github-pr-reading.md) defines the optional
@@ -1017,6 +1024,25 @@ The migration rewrites PR rows and indexes under table locks; measure the window
 against actual data before deployment. Start only new writers after migration:
 old writers use an incompatible conflict key. Once new writes are admitted,
 recover forward to retain them. See the [storage design](../../docs/design/github-pr-storage.md#迁移).
+
+
+Project members can read retained PR sources through
+`GET /api/v1/projects/{projectId}/pull-request-repositories`. It accepts
+`limit` (default 100, maximum 100) and `cursor` and returns
+`{currentRepositoryId,items:[{repositoryId,fullName}],nextCursor}` with
+ascending repository IDs. IDs are decimal strings; the current ID and next
+cursor can be null. The cursor is bound to the Project.
+
+The `pull-requests` list and number-detail routes,
+`pull-request-authors` and `pull-request-statistics` accept optional
+`repositoryId` as a canonical positive int64 decimal string. Explicit reads
+require a source saved for that Project. List, author and statistics responses
+then include `repository:{repositoryId,fullName}`. Omitting the selector
+preserves the original response and reads the fixed legacy source. Explicit
+cursors are source-bound; legacy cursors remain valid only on omitted-source
+requests. Historical statistics do not use another repository's current sync
+progress. The [PR reading design](../../docs/design/github-pr-reading.md)
+defines complete parameters, response fields and cursor behavior.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII

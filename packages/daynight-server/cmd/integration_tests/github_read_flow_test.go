@@ -39,6 +39,11 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 			t.Fatalf("initial %s must be null: %+v", key, initial)
 		}
 	}
+	sources := read(base + "/pull-request-repositories")
+	sourceItems, ok := sources["items"].([]any)
+	if sources["currentRepositoryId"] != nil || sources["nextCursor"] != nil || !ok || len(sourceItems) != 0 {
+		t.Fatalf("initial repository directory differs: %+v", sources)
+	}
 
 	db, err := pgxpool.New(f.context, f.databaseURL)
 	if err != nil {
@@ -312,4 +317,5 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	if otherStats["projectId"] != other.ID || otherStats["projectTotal"] != "1" || !ok || len(otherDaily) != 30 || otherDaily[29] != "1" {
 		t.Fatalf("other project statistics differ: %+v", otherStats)
 	}
+	serverAPIGitHubRepositoryReadNormalFlow(t, f, project.ID, db)
 }

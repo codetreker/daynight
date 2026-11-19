@@ -74,6 +74,16 @@ Bot 删除在停证之后将同一派生恢复目录纳入既有精确删除计�
 
 该机制不恢复一般 Claude 支持承诺；初始化断连清理仍受现有暂停声明约束。方案取舍和扩展条件见 [Claude 恢复决策](../../.agents/notes/implemented/architecture/2026-11-19-claude-bot-recovery-points.md)。
 
+## Copilot 原生恢复点
+
+新建专属存储的 Copilot Bot 使用 `copilotBotRecovery` 绑定 `bots/<botId>/native/copilot/`。`recovery.sqlite` 保存服务域、账号、Bot、平台 Session、原生 ID、真实 cwd、原生配置根、版本、dirty 屏障和最后受保护轮次；`snapshots/<id>/` 保存独立的原生目录快照。旧 ticket、普通 Task/Test 保留原行为。Bot 删除计划包含该私有目录，共享 `COPILOT_HOME` 和工作区不在删除集合中。
+
+适配组合限定为 SDK 1.0.11 与实际 CLI 1.0.105。Provider 保持原配置目录及 hooks，核对 `metadata.snapshot().workspacePath` 与原生 Session 目录一致。启动、恢复、输入和设置派发之前，通过 DELETE 日志与 EXTRA 同步持久提交 dirty。成功轮次等待完整会话的 `session.idle`，不以仍可有后台工作的 `assistant.idle` 作为保护信号；随后确认原生输入 ID，检查 processing、activity、后台任务和输入队列，再调用 `sessions.save` 等待原生待写数据落盘并重查空闲。保护期间保留当前轮次，禁止新的输入、设置和取消；快照提交后才报告完成并开放下一轮。发送、设置或保护结果未知时断开执行并保留证据，不以迟到结果自动恢复准入。
+
+快照复制前后对整个目标目录枚举并校验摘要，SQLite 使用在线 backup 包含已提交 WAL；原生执行锁不属于恢复数据。快照须包含原输入、助手完成记录及全部工具结果，提交前再次核对当前执行仍有效；发生变化、材料损坏或未验证的 compact、子 Agent、autopilot 等记录时拒绝保护。新快照同步完成后才原子提交 manifest；旧点清理失败单独报告已提交结果。运行中追加输入被拒绝，避免一个完成事件替另一项未完成输入清除 dirty。空闲设置变更仍需后续成功轮次提供保护边界。
+
+恢复要求原执行已停止且 Bot 归属仍匹配，再验证版本、文件摘要和事件闭包。原目录存在时不覆盖，只接受与快照一致的内容及已识别的 `session.shutdown` 尾部；任何其它更新均保留并明确拒绝。原目录缺失时独占创建目录并逐文件不覆盖发布，完整校验之后才启动原生 resume。该发布不是跨平台单次目录 rename；中断留下的部分目录会阻止启动，并保留私有快照供核对。该能力不单独启用完整 `botRecoveryVersion=1`，不证明跨机恢复、独立 Worker 接管或工作区备份。取舍及扩展条件见 [Copilot 恢复决策](../../.agents/notes/implemented/architecture/2026-11-19-copilot-bot-recovery-points.md)。
+
 ## 原会话恢复
 
 对已提交执行，先用原 ticket 观察 Controller。可观察且仍在 starting、ready 或 working 的执行继续复用，并撤销先前未完成停机的来源标记，避免后来异常退出获得正常重启豁免；无法观察时读取同一 journal 和持久进程证据。恢复路径不为了获得停证主动杀死一个可能存活的 writer。`confirmControllerProcessesStopped` 核对原进程实例及所属进程组或 Windows Job Object，随后通过 journal 的停证写入和 snapshot CAS 固定原 generation 已停止。Windows 复核以出生身份绑定的原进程句柄完成状态为依据；未 signaled 的退出过渡仍不能确认 stopped，ESRCH 和变化的退出码均不能代替完成观察。仍运行的同出生实例若命令行哈希、父 PID 或 process group 冲突，先报告身份不确定并保留原责任，停止确认不能以 Job 查询代替该实例的完整停证。缺失证明或 native ID 时保留责任并报告，不能新建空白会话。
@@ -125,6 +135,8 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 ## 通知与定时事件
 
 事件循环按目标 Bot 和 pending 状态过滤，每页最多读取一个完整事件。任务和事件分页的单响应预算为 32 MiB：事件覆盖合法 1 MiB 输入的 JSON HTML 转义，任务还覆盖分次更新后多个大字段的组合。每页使用独立操作预算；单任务认领动作的累计预算为 256 MiB，覆盖同一动作中至多五次完整任务读取及精简认领回执，不随任务或事件历史总量累计。只有同步、在线、active、idle、没有当前回合且允许发送时，才将事件合为一条 `payload.origin=daynight` 的输入；提交前再次检查 Session fence 和空闲状态，不能 steer 正在工作的助手。通知包含事件类型、任务与事件 ID、事件时间、关键事实及读取手册和记录的 CLI 指引。接手通知要求助手说明从 `previousLeaseUntil` 到事件时间的租约空档；前者不早于后者时没有过期租约空档。历史事件时间不由当前认领时间替代，也不据租约推断助手实际停止工作的时间。大 payload 使用明确标识的摘要并保留完整事件读取指引；一批文本最多 512 KiB，积压超限时停止继续分页并保留后续事件，下一个空闲轮次继续。
+
+`inbound` 事件与其他事件在同一批次中选择与确认，按[助手任务收件箱设计](assistant-task-inbox.md#worker-通知渲染)渲染：负载严格解码，无法解读时只给出读取原事件的命令；同一项目 Task 的 `daynight` 事件合并为一段，`external` 正文只投递围栏内的 4 KiB 预览；入站正文每批最多 32 KiB，超出的 `inbound` 事件按原顺序留在 pending，不阻塞同批其他事件。每批末尾按助手任务给出读取当前手册和附录的命令。
 
 每批先持久化完整 Session 命令、固定 operation ID 和事件集合，再发送一次。accepted/offered/dispatching、unknown、运输中断及重启后都只查询原操作。只有 provider_accepted/confirmed 才确认事件；确认时只扫描目标 Bot 的 pending 事件，逐项确认该批引用，找齐即停止，不要求重新读取 delivered 历史；每次 ACK 使用独立有界操作。部分 ACK 成功或响应丢失不会再次发送 Session 输入。仅当没有 providerResult，且回执为服务端派发前的 rejected/permission_or_state_changed，或没有 error 的 expired 时，才清除该批意图并在下一空闲轮重新选择事件；该固定拒绝证明仅由服务端派发前的授权检查持久生成，普通 Controller 错误仍不落库；历史拒绝缺少证明时不补造证明。原生错误、failed 及其他未证明没有派发的终态保留原操作供核对。历史 generation 的结果仍沿原 Session 和操作身份读取。
 

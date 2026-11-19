@@ -43,7 +43,9 @@ import { useTaskSearch } from "../task-search/useTaskSearch";
 import { ProjectTags } from "../task-tags/ProjectTags";
 import { TagFilter, useTagFilter, matchesTagFilter, type TagFilterValue } from "../task-tags/TagFilter";
 import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
+import { usePullRequestRepositories } from "../pull-requests/usePullRequestRepositories";
 import { NativeSelect } from "../../ui/native-select/NativeSelect";
+import { ValueCopyButton } from "../../ui/copy-button/ValueCopyButton";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -102,6 +104,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   historyRef.current = history;
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
+  const prSources = usePullRequestRepositories({ userId: viewer.userId, projectId,
+    active: (section === "prs" || section === "statistics") && !history.error,
+    canRead: projectRead.project !== null && !viewer.isInvalidated,
+    onPrincipalMismatch: viewer.principalMismatch, onAccessError: () => { void projectAccess.session.revalidate(); } });
   const [tasksMounted, setTasksMounted] = useState(false);
   const [tagsMounted, setTagsMounted] = useState(false);
   const [statisticsMounted, setStatisticsMounted] = useState(false);
@@ -748,7 +754,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <p className="eyebrow">{app.projectTasks}</p>
           <div className="project-title-line">
             <h1 ref={heading} tabIndex={-1}>{projectRead.project?.name ?? app.projectTasks}</h1>
-            {projectRead.project !== null && <p className="project-repository">{projectRead.project.repoUrl}</p>}
+            {projectRead.project !== null && <div className="project-repository">
+              <span className="project-repository-value">{projectRead.project.repoUrl}</span>
+              <ValueCopyButton key={projectRead.project.id} value={projectRead.project.repoUrl} label={m.copyRepositoryUrl} className="project-repository-copy"
+                feedback={state => state === "copied" ? <span className="project-repository-feedback" role="status">{m.repositoryUrlCopied}</span>
+                  : state === "failed" ? <span className="project-repository-feedback" role="alert">{m.copyRepositoryUrlFailed}</span> : null} />
+            </div>}
           </div>
         </div>
         <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={() => { graph.refresh(); if (section === "statistics") setStatisticsRefresh(value => value + 1); }} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
@@ -781,6 +792,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <section className="project-section-panel" id="project-section-panel-statistics" role="tabpanel"
             aria-labelledby="project-section-tab-statistics" hidden={section !== "statistics"} inert={section !== "statistics"} tabIndex={0}>
             {(statisticsMounted || section === "statistics") && <ProjectStatistics userId={viewer.userId} projectId={projectId}
+              repositoryId={prSources.repositoryId}
+              sourceError={prSources.error} sourceLoading={prSources.loading} sourceLoaded={prSources.loaded} retrySources={prSources.retry}
               canRead={projectRead.project !== null && !viewer.isInvalidated} active={section === "statistics" && !history.error}
               snapshot={currentSnapshot} taskError={graph.error} onTaskRetry={graph.refresh} refreshRevision={statisticsRefresh} onScrollReady={setStatisticsScrollReady}
               onPrincipalMismatch={viewer.principalMismatch} onAccessError={() => { void projectAccess.session.revalidate(); }} />}
@@ -806,6 +819,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <section className="project-section-panel project-prs" id="project-section-panel-prs" role="tabpanel"
             aria-labelledby="project-section-tab-prs" hidden={section !== "prs"} inert={section !== "prs"} tabIndex={0}>
             <PullRequestWorkspace userId={viewer.userId} projectId={projectId}
+              repositories={prSources.repositories} currentRepositoryId={prSources.currentRepositoryId} repositoryId={prSources.repositoryId}
+              setRepositoryId={prSources.setRepositoryId} sourceLoading={prSources.loading} sourceLoaded={prSources.loaded}
+              sourceError={prSources.error} retrySources={prSources.retry}
               canRead={projectRead.project !== null && !viewer.isInvalidated}
               active={section === "prs" && !history.error} onScrollReady={setPRScrollReady}
               onPrincipalMismatch={viewer.principalMismatch}

@@ -1,10 +1,10 @@
 import { ApiError, readAuthRequestGeneration, waitForAuthRequests } from '../../api/client';
-import { getGitHubStatus, getPullRequests } from './api';
+import { getGitHubStatus, getPullRequests, getPullRequestRepositories } from './api';
 
 export type ReadToken = { readonly epoch: number; readonly auth: number };
 type Listener = (error?: ApiError) => void;
 type Options = {
-  readonly userId: string; readonly projectId: string;
+  readonly userId: string; readonly projectId: string; readonly repositoryId?: () => string | null | undefined;
   readonly isAllowed: () => boolean;
   readonly onPrincipalMismatch: () => void;
   readonly onAccessError: (error: ApiError) => void;
@@ -60,7 +60,7 @@ export const createReadSession = (options: Options) => {
   };
   const subscribe = (listener: Listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
   const verifyBaseline = async (signal: AbortSignal): Promise<boolean> => {
-    const generation = ++baselineGeneration;
+    const generation = ++baselineGeneration, repositoryId = options.repositoryId?.();
     directoryAuthorized = false;
     const token = capture();
     const admission = (onDispatch: () => void) => ({ userId: options.userId, onPrincipalMismatch: () => {}, onDispatch });
@@ -75,23 +75,27 @@ export const createReadSession = (options: Options) => {
     };
     const results = await Promise.all([
       check((s, dispatch) => getGitHubStatus(options.projectId, s, admission(dispatch))),
-      check((s, dispatch) => getPullRequests(options.projectId, { state: 'all', q: '', cursor: null }, s, admission(dispatch))),
+      check<unknown>((s, dispatch) => repositoryId === null
+        ? getPullRequestRepositories(options.projectId, null, s, admission(dispatch))
+        : getPullRequests(options.projectId, { state: 'all', q: '', cursor: null, repositoryId }, s, admission(dispatch))),
     ]);
-    const verified = results.every(Boolean) && current(token) && generation === baselineGeneration;
+    const verified = results.every(Boolean) && current(token) && generation === baselineGeneration && repositoryId === options.repositoryId?.();
     if (verified) directoryAuthorized = true;
     return verified;
   };
   const recover = async (signal: AbortSignal): Promise<boolean> => {
     if (!revoked || !options.isAllowed()) return false;
-    const token = capture(), generation = ++baselineGeneration;
+    const token = capture(), generation = ++baselineGeneration, repositoryId = options.repositoryId?.();
     const admission = (onDispatch: () => void) => ({ userId: options.userId, onPrincipalMismatch: () => {}, onDispatch });
     const reads = await Promise.allSettled([
       request(signal, (s, dispatch) => getGitHubStatus(options.projectId, s, admission(dispatch))),
-      request(signal, (s, dispatch) => getPullRequests(options.projectId, { state: 'all', q: '', cursor: null }, s, admission(dispatch))),
+      request<unknown>(signal, (s, dispatch) => repositoryId === null
+        ? getPullRequestRepositories(options.projectId, null, s, admission(dispatch))
+        : getPullRequests(options.projectId, { state: 'all', q: '', cursor: null, repositoryId }, s, admission(dispatch))),
     ]);
     if (reads.some(result => result.status === 'rejected') || signal.aborted) return false;
     try { await waitForAuthRequests(signal); } catch { return false; }
-    if (!revoked || generation !== baselineGeneration || token.epoch !== epoch || token.auth !== readAuthRequestGeneration() || !options.isAllowed()) return false;
+    if (!revoked || generation !== baselineGeneration || repositoryId !== options.repositoryId?.() || token.epoch !== epoch || token.auth !== readAuthRequestGeneration() || !options.isAllowed()) return false;
     resume();
     return true;
   };

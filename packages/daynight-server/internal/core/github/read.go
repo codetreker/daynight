@@ -30,8 +30,10 @@ type ListRequest struct {
 	State, Query, Cursor string
 	Limit                int
 	AuthorID             *int64
+	RepositoryID         *int64
 }
 type Page struct {
+	Repository                 *githubpr.Repository
 	Connection                 githubpr.Connection
 	Items                      []githubpr.PullRequestSummary
 	Total                      int64
@@ -40,6 +42,7 @@ type Page struct {
 	NextCursor, PreviousCursor *string
 }
 type Detail struct {
+	Repository  *githubpr.Repository
 	Connection  githubpr.Connection
 	PullRequest githubpr.PullRequest
 }
@@ -87,7 +90,10 @@ func (r *Reader) Get(ctx context.Context, principal model.Principal, projectID s
 	}
 	return result, nil
 }
-func (r *Reader) Detail(ctx context.Context, principal model.Principal, projectID string, number int64) (Detail, error) {
+func (r *Reader) Detail(ctx context.Context, principal model.Principal, projectID string, number int64, repositoryID *int64) (Detail, error) {
+	if repositoryID != nil && *repositoryID <= 0 {
+		return Detail{}, invalid("Repository ID must be positive.")
+	}
 	if number <= 0 {
 		return Detail{}, invalid("Pull request number must be positive.")
 	}
@@ -99,7 +105,11 @@ func (r *Reader) Detail(ctx context.Context, principal model.Principal, projectI
 		if err != nil {
 			return err
 		}
-		result.PullRequest, err = dao.PullRequest(ctx, id, number)
+		result.Repository, err = selectedRepository(ctx, dao, id, repositoryID)
+		if err != nil {
+			return err
+		}
+		result.PullRequest, err = dao.PullRequest(ctx, id, number, repositoryID)
 		if errors.Is(err, model.ErrNotFound) {
 			return &model.Fault{Code: "not_found", Message: "Pull request was not found.", Cause: err}
 		}
@@ -117,6 +127,9 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 	if request.Limit < 1 || request.Limit > 100 {
 		return Page{}, invalid("Limit must be between 1 and 100.")
 	}
+	if request.RepositoryID != nil && *request.RepositoryID <= 0 {
+		return Page{}, invalid("Repository ID must be positive.")
+	}
 	if request.AuthorID != nil && *request.AuthorID <= 0 {
 		return Page{}, invalid("Author ID must be positive.")
 	}
@@ -127,7 +140,7 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 	if err != nil {
 		return Page{}, err
 	}
-	query := store.GitHubPRQuery{ProjectID: id, AuthorID: request.AuthorID, State: request.State, Query: request.Query, Limit: request.Limit}
+	query := store.GitHubPRQuery{ProjectID: id, RepositoryID: request.RepositoryID, AuthorID: request.AuthorID, State: request.State, Query: request.Query, Limit: request.Limit}
 	var cursor *pageCursor
 	if request.Cursor != "" {
 		cursor, err = decodeCursor(request.Cursor, id, request)
@@ -146,7 +159,11 @@ func (r *Reader) List(ctx context.Context, principal model.Principal, projectID 
 		if e != nil {
 			return e
 		}
-		result.Counts, e = dao.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, AuthorID: request.AuthorID})
+		result.Repository, e = selectedRepository(ctx, dao, id, request.RepositoryID)
+		if e != nil {
+			return e
+		}
+		result.Counts, e = dao.PullRequestCounts(ctx, store.GitHubPRCountsQuery{ProjectID: id, RepositoryID: request.RepositoryID, AuthorID: request.AuthorID})
 		if e != nil {
 			return e
 		}

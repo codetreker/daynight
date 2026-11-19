@@ -22,9 +22,14 @@ export const declaredCodexConfiguration = (response: unknown): CodexDeclaredConf
   } catch { return null; }
 };
 
-/** Called only after verifyToolLaunch; fallback and interpreter identities remain unknown. */
+/**
+ * Called only after verifyToolLaunch; fallback and interpreter identities remain unknown.
+ * A direct native entry is a Windows .exe or, on macOS, a Mach-O file whose
+ * executablePath is already the realpath of a symlinked launcher.
+ */
 export const codexExecutableDigest = (launch: ResolvedToolLaunch | undefined, commandFile: string, platform: NodeJS.Platform = process.platform): string | null => {
-  if (platform !== "win32" || !launch || launch.tool !== "codex" || launch.context !== "web" || launch.interpreterPath || launch.command.prefixArgs.length || launch.runtimeProfile || commandFile !== launch.executablePath || !/\.exe$/i.test(commandFile)) return null;
+  const nativeEntry = platform === "win32" ? /\.exe$/i.test(commandFile) : platform === "darwin";
+  if (!nativeEntry || !launch || launch.tool !== "codex" || launch.context !== "web" || launch.interpreterPath || launch.command.prefixArgs.length || launch.runtimeProfile || commandFile !== launch.executablePath) return null;
   const matches = launch.artifacts.filter(item => ["entry", "runtime"].includes(item.role) && item.realPath === commandFile);
   return matches.length === 1 ? matches[0]!.sha256 : null;
 };

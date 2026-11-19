@@ -205,7 +205,7 @@ for (const width of [1440, 800, 390, 320]) test(`connection label follows langua
 test('all 48 summaries are reachable with server cursors, filters and page state survive section history', async ({ page }) => {
   const state = await installPrList(page);
   await open(page);
-  const panel = page.locator('#project-section-panel-prs'), filter = panel.locator('.pr-toolbar select'), search = panel.locator('.pr-toolbar input');
+  const panel = page.locator('#project-section-panel-prs'), filter = panel.locator('#pr-filter'), search = panel.locator('.pr-toolbar input');
   await filter.selectOption('all');
   await expect(panel).toContainText('48');
   const seen: string[] = [];
@@ -306,7 +306,7 @@ test('a background sync status change preserves filtering, pagination and the op
   await page.clock.install();
   await open(page);
   const panel = page.locator('#project-section-panel-prs');
-  const filter = panel.locator('.pr-toolbar select'), search = panel.locator('.pr-toolbar input');
+  const filter = panel.locator('#pr-filter'), search = panel.locator('.pr-toolbar input');
   await filter.selectOption('all');
   await search.fill('Pull request');
   await expect(page.locator('.pr-row')).toHaveCount(6);
@@ -377,7 +377,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 768, 3
     await page.setViewportSize({ width, height: 900 });
     await open(page);
     const filter = page.getByRole('combobox', { name: locale === 'en' ? 'Pull request status' : 'PR 状态' });
-    const arrow = page.locator('.pr-filter-wrap .native-select__arrow');
+    const arrow = filter.locator('..').locator('.native-select__arrow');
     await expect(arrow).toHaveAttribute('aria-hidden', 'true');
     await expect(arrow.locator('path')).toHaveAttribute('d', 'm2 3.5 3 3 3-3');
     await expect(filter.locator('option')).toHaveCount(4);
@@ -582,7 +582,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       const url = new URL(route.request().url()), authorId = url.searchParams.get('authorId');
       const daily = Array(30).fill('0'); daily[29] = '4';
       const authorDaily = Array(30).fill('0'); authorDaily[29] = '2';
-      await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: 'author' } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+      await route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: 'author' } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
     });
     await page.setViewportSize({ width, height: 900 });
     await page.goto(`/projects/${projectId}?tab=statistics`);
@@ -616,7 +616,7 @@ test('statistics charts expose the touched date and count at phone width', async
     await page.route('**/pull-request-statistics?*', async route => {
       const url = new URL(route.request().url()), daily = Array(30).fill('0');
       daily[29] = '4';
-      await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily, authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+      await route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily, authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
     });
     await page.goto(`/projects/${projectId}?tab=statistics`);
     const panel = page.locator('#project-section-panel-statistics');
@@ -670,7 +670,7 @@ test('PR statistics failure leaves task statistics readable and retry restores t
   await page.route('**/pull-request-statistics?*', async route => {
     if (fail) return route.fulfill({ status: 500, json: { error: { code: 'internal_error', message: 'Fixture read failure', requestId: 'statistics-fixture' } }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
     const url = new URL(route.request().url());
-    return route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+    return route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
   });
   await page.goto(`/projects/${projectId}?tab=statistics`);
   const panel = page.locator('#project-section-panel-statistics');
@@ -730,7 +730,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`statistics headings and lon
     const url = new URL(route.request().url()), authorId = url.searchParams.get('authorId');
     const daily = Array(30).fill('0'); daily[29] = '4';
     const authorDaily = Array(30).fill('0'); authorDaily[29] = '2';
-    await route.fulfill({ json: { projectId, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: longLogin } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
+    await route.fulfill({ json: { projectId, repository: { repositoryId: '10', fullName: 'codetreker/daynight' }, endDate: url.searchParams.get('endDate'), revision: '1', projectTotal: '5', availability: 'ready', hasAuthors: true, daily, authorId, author: authorId ? { id: authorId, login: longLogin } : null, authorDaily: authorId ? authorDaily : null }, headers: { 'Daynight-User-ID': '00000000-0000-4000-8000-000000000201' } });
   });
   await page.setViewportSize({ width: 320, height: 800 });
   await page.goto(`/projects/${projectId}?tab=statistics`);
@@ -931,5 +931,46 @@ test('background failure remains retryable during the next check and leaves an o
   await expect(raw).toBeChecked();
   await expect(raw).toBeFocused();
   expect(await body.evaluate(element => element.scrollTop)).toBe(position);
+  expect(state.unexpected).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`repository selection isolates same-number details and statistics at 320px in ${locale}`, async ({ page }) => {
+  const state = await installPrList(page, locale);
+  const reads: string[] = [];
+  const user = '00000000-0000-4000-8000-000000000201';
+  const repository = (id: string) => ({ repositoryId: id, fullName: id === '10' ? 'owner/current' : 'owner/history' });
+  await page.route('**/pull-request-repositories*', route => route.fulfill({ json: { currentRepositoryId: '10', items: [repository('10'), repository('11')], nextCursor: null }, headers: { 'Daynight-User-ID': user } }));
+  await page.route('**/pull-requests?*', route => {
+    const id = new URL(route.request().url()).searchParams.get('repositoryId')!; reads.push(`list:${id}`);
+    const item = { ...records[0]!, number: '123', title: id === '10' ? 'Current 123' : 'Historical 123', url: `https://github.com/${repository(id).fullName}/pull/123`, base: { repositoryId: id, repositoryFullName: repository(id).fullName, ref: 'main' } };
+    return route.fulfill({ json: { projectId, repository: repository(id), revision: '1', items: [item], total: '1', counts: { active: '1', merged: '0', closed: '0', all: '1' }, previousCursor: null, nextCursor: null }, headers: { 'Daynight-User-ID': user } });
+  });
+  await page.route('**/pull-requests/123?*', route => {
+    const id = new URL(route.request().url()).searchParams.get('repositoryId')!; reads.push(`detail:${id}`);
+    return route.fulfill({ json: { ...records[0]!, number: '123', title: id === '10' ? 'Current 123' : 'Historical 123', url: `https://github.com/${repository(id).fullName}/pull/123`, base: { repositoryId: id, repositoryFullName: repository(id).fullName, ref: 'main' }, description: 'Repository-specific description' }, headers: { 'Daynight-User-ID': user } });
+  });
+  await page.route('**/pull-request-statistics?*', route => {
+    const id = new URL(route.request().url()).searchParams.get('repositoryId')!; reads.push(`statistics:${id}`);
+    return route.fulfill({ json: { projectId, repository: repository(id), endDate: new URL(route.request().url()).searchParams.get('endDate'), revision: '1', projectTotal: id === '10' ? '1' : '2', availability: 'ready', hasAuthors: false, daily: Array(30).fill('0'), authorId: null, author: null, authorDaily: null }, headers: { 'Daynight-User-ID': user } });
+  });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(`/projects/${projectId}?tab=prs`);
+  const source = page.locator('#pr-source');
+  await expect(source).toHaveValue('10');
+  await page.locator('#pr-row-123').focus(); await page.keyboard.press('Enter');
+  await expect(page.getByRole('dialog')).toContainText('Current 123');
+  await expect(page.getByRole('dialog').getByRole('link', { name: /GitHub/i })).toHaveAttribute('href', 'https://github.com/owner/current/pull/123');
+  await page.keyboard.press('Escape');
+  await source.focus(); await source.selectOption('11');
+  await expect(page.locator('#pr-row-123')).toContainText('Historical 123');
+  await expect(page.locator('.pr-connected')).toHaveCount(0);
+  await page.locator('#pr-row-123').click();
+  await expect(page.getByRole('dialog')).toContainText('Historical 123');
+  await expect(page.getByRole('dialog').getByRole('link', { name: /GitHub/i })).toHaveAttribute('href', 'https://github.com/owner/history/pull/123');
+  await page.keyboard.press('Escape');
+  await page.locator('#project-section-tab-statistics').click();
+  await expect(page.locator('#project-section-panel-statistics .statistics-total strong').last()).toHaveText('2');
+  expect(reads).toEqual(expect.arrayContaining(['list:10', 'list:11', 'detail:10', 'detail:11', 'statistics:11']));
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(state.unexpected).toEqual([]);
 });

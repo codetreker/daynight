@@ -4,6 +4,7 @@ import { getPullRequestDetail, type PullRequestDetail } from './api';
 
 export type PullRequestDetailOptions = {
   readonly userId: string; readonly projectId: string; readonly number: string;
+  readonly repositoryId?: string | null;
   /** False means the caller has withdrawn Project access; active=false only suspends reads. */
   readonly canRead: boolean; readonly active: boolean;
   readonly onPrincipalMismatch: () => void;
@@ -14,8 +15,8 @@ const empty = (key: string): Snapshot => ({ key, detail: null, loading: false, e
 const READ_TIMEOUT_MS = 30_000;
 
 /** Owns the selected identity's reads. Call refresh for explicit or background revalidation. */
-export const usePullRequestDetail = ({ userId, projectId, number, canRead, active, onPrincipalMismatch, onAccessError }: PullRequestDetailOptions) => {
-  const key = JSON.stringify([userId, projectId, number]);
+export const usePullRequestDetail = ({ userId, projectId, number, repositoryId = null, canRead, active, onPrincipalMismatch, onAccessError }: PullRequestDetailOptions) => {
+  const key = JSON.stringify([userId, projectId, repositoryId, number]);
   const current = useRef({ key, canRead, active, onPrincipalMismatch, onAccessError });
   current.current = { key, canRead, active, onPrincipalMismatch, onAccessError };
   const [snapshot, setSnapshot] = useState<Snapshot>(() => empty(key));
@@ -35,7 +36,7 @@ export const usePullRequestDetail = ({ userId, projectId, number, canRead, activ
           userId,
           onPrincipalMismatch: () => {},
           onDispatch: () => { timer = setTimeout(() => { timedOut = true; controller.abort(); }, READ_TIMEOUT_MS); },
-        });
+        }, repositoryId);
         if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
         await waitForAuthRequests(controller.signal);
         if (!admitted()) return;
@@ -71,7 +72,7 @@ export const usePullRequestDetail = ({ userId, projectId, number, canRead, activ
         if (pending.current === controller) pending.current = null;
       }
     })();
-  }, [key, userId, projectId, number]);
+  }, [key, userId, projectId, number, repositoryId]);
 
   useEffect(() => {
     if (!canRead) setSnapshot(empty(key));

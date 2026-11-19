@@ -32,6 +32,7 @@ test.each(["codex","claude","copilot"] as const)("launches %s in an ordinary cwd
   expect(f.getTicket()).not.toHaveProperty("claimId"); expect(f.getTicket()).not.toHaveProperty("workerId"); expect(f.getTicket().configuration.agentControlMode).toBe("web");
   expect(f.getTicket()).not.toHaveProperty("codexBotRecovery");
   expect(f.getTicket()).not.toHaveProperty("claudeBotRecovery");
+  expect(f.getTicket()).not.toHaveProperty("copilotBotRecovery");
   expect(existsSync(path.join(f.home,".git"))).toBe(false); expect(f.executions.get(f.current())!.launchSubmission).toBe("acknowledged"); expect(f.release).not.toHaveBeenCalled();
   await f.process.advance(f.current(),new AbortController().signal); expect(f.launch).toHaveBeenCalledTimes(1); expect(f.register).toHaveBeenCalledTimes(1); expect(f.prepareEnvironment).toHaveBeenCalledTimes(1);
 });
@@ -49,6 +50,10 @@ test.each(["codex", "claude", "copilot"] as const)("binds dedicated recovery onl
       directory: resolveBotPaths(resolveConfigurationPaths(f.home).stateDirectory, f.current().botId).claudeRecoveryDirectory });
     expect(f.getTicket().nativeHome).toBe(path.join(f.home, ".claude"));
   } else expect(f.getTicket()).not.toHaveProperty("claudeBotRecovery");
+  if (provider === "copilot") {
+    expect(f.getTicket().copilotBotRecovery).toEqual({ botId: f.current().botId,
+      directory: resolveBotPaths(resolveConfigurationPaths(f.home).stateDirectory, f.current().botId).copilotRecoveryDirectory });
+  } else expect(f.getTicket()).not.toHaveProperty("copilotBotRecovery");
 });
 
 test("reconciles an accepted registration with a lost response using the original role and identity",async()=>{
@@ -117,7 +122,7 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3, dedicated = false, provider: "codex" | "claude" = "codex") => {
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}, unacknowledged = false, starting = false, recoveryLimit = 3, dedicated = false, provider: "codex" | "claude" | "copilot" = "codex") => {
   const f = fixture(provider, configuration, false, dedicated), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
   if (unacknowledged) {
@@ -167,7 +172,7 @@ test("shutdown retains Bot artifacts and restart resumes the original native ses
   expect(f.grant.mock.calls.at(-1)).toHaveLength(3);
 });
 
-test.each(["codex", "claude"] as const)("a dedicated %s Bot recovery retains its original binding and shared configuration home", async provider => {
+test.each(["codex", "claude", "copilot"] as const)("a dedicated %s Bot recovery retains its original binding and shared configuration home", async provider => {
   const f = await recoveryFixture({}, false, false, 3, true, provider), first = f.getTicket();
   const field = `${provider}BotRecovery` as const;
   expect(first[field]).toBeDefined();

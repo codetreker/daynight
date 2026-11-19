@@ -282,7 +282,10 @@ var sessionArchiveCleanupSQL string
 //go:embed schema/migrations/093_github_repository_sources.sql
 var githubRepositorySourcesSQL string
 
-//go:embed schema/migrations/094_bot_recovery.sql
+//go:embed schema/migrations/094_worker_review_participation.sql
+var workerReviewParticipationSQL string
+
+//go:embed schema/migrations/095_bot_recovery.sql
 var botRecoverySQL string
 
 type githubRepositoryIdentityMigrationError struct {
@@ -394,7 +397,8 @@ var schemaMigrations = []migration{
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
 	{version: 93, sql: githubRepositorySourcesSQL},
-	{version: 94, sql: botRecoverySQL},
+	{version: 94, sql: workerReviewParticipationSQL},
+	{version: 95, sql: botRecoverySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
