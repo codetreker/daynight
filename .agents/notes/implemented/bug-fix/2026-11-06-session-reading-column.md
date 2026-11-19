@@ -27,8 +27,10 @@ height remains available for exceptionally short panels. This extends the
 without changing menu scroll ownership or measured control minima.
 
 Initial measurement runs in a layout effect. Resize observations of the Session,
-timeline viewport and content schedule a frame to update the distances, including
-when scrollbar occupancy changes. Zero-width hidden content is ignored until it
+timeline viewport, content and composer schedule a frame to update the distances,
+including when scrollbar occupancy or composer geometry changes. Observing the
+composer prevents stale padding when its allocation changes during a short-screen
+menu transition. Zero-width hidden content is ignored until it
 becomes measurable. Identity changes and removal cancel pending work and remove
 the measured properties. The [Session design](../../../../docs/design/task-session-protocol.md)
 owns the mechanism and the [requirements](../../../../docs/spec/task-sessions.md#chatbox-设置命令与运行状态)

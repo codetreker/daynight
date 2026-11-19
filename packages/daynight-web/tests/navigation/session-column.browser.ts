@@ -270,6 +270,21 @@ for (const entry of ['task', 'test', 'assistant'] as const) test(`${entry} short
     await page.locator('.session-command-trigger').click();
     await expect(page.locator('.session-command-menu')).toBeVisible();
     const measured = await assertColumn(page);
+    const samples = await page.locator('.task-agent-session').evaluate(async root => {
+      const content = root.querySelector('.session-timeline-content')!;
+      const surface = root.querySelector('.session-composer-surface')!;
+      const values = [];
+      for (let frame = 0; frame < 10; frame++) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        const a = content.getBoundingClientRect(), b = surface.getBoundingClientRect();
+        values.push([a.left, a.right, b.left, b.right]);
+      }
+      return values;
+    });
+    for (const [left, right, inputLeft, inputRight] of samples) {
+      expect(Math.abs(left! - inputLeft!)).toBeLessThanOrEqual(1);
+      expect(Math.abs(right! - inputRight!)).toBeLessThanOrEqual(1);
+    }
     const compact = await page.locator('.session-composer').evaluate(node => node.classList.contains('session-composer-compact-menus'));
     const scroller = page.locator(compact ? '.session-command-menu' : '.session-command-body');
     expect(await scroller.evaluate(node => node.clientHeight)).toBeGreaterThanOrEqual(36);
@@ -381,7 +396,7 @@ for (const entry of ['task', 'assistant'] as const) test(`${entry} select dimens
       timelinePadding: getComputedStyle(node.closest('.task-agent-session')!.querySelector('.session-timeline')!).paddingLeft,
     }));
     expect(measured.wrapperMode).toBe(entry === 'assistant' ? 'container' : 'none');
-    expect(measured.font).toBe('12px');
+    expect(measured.font).toBe('14px');
     if (entry === 'assistant') {
       expect(measured.readingContainer).toBe('bot-reading native-select-region');
       expect(measured.composerContainer).not.toContain('native-select-region');

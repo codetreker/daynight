@@ -43,7 +43,7 @@
 
 [`bot-session.css`](../../packages/daynight-web/src/features/bots/bot-session.css)将共享内容覆盖限定在 `.bot-session-pane .session-presentation-assistant`；欢迎组件使用独立 `bot-conversation-*` 类。阅读列和输入内容上限为 760px。正文遵循[公共字号标准](../ui-design.md#web-typography)，用户气泡按内容收缩、靠右且不超过列宽的 85%，助手正文直接使用共享安全 Markdown。同一 `.session-presentation-assistant` 元素提供 `container: bot-reading native-select-region / inline-size`，保留阅读样式的容器名称并供公共选择控件查询。`bot-reading` 实际容器宽度不超过 600px 时，阅读区左右留白 18px，正文保持相同字号。代码、表格沿用共享局部滚动，既有完整工具条目保持原文，版本化窗口条目按其省略事实显示预览；长链接、资源名称及错误在列内换行；任务链接不产生额外业务查询。
 
-输入对齐使用共享 `useSessionColumnLayout`，测量 Timeline 内容相对 Composer 内边框的左右距离，写入 `--session-column-left/right`，包括真实滚动条占位。ResizeObserver 在下一帧更新；隐藏 pane 的零宽测量被忽略，恢复可见后继续测量。单独设置相同 max-width 不足以保证对齐。Bot 阅读区使用零 flex basis 为输入和菜单让出高度；高度与横向测量均不改变阅读身份或触发另一个分页机制。
+输入对齐使用共享 `useSessionColumnLayout`，测量 Timeline 内容相对 Composer 内边框的左右距离，写入 `--session-column-left/right`，包括真实滚动条占位。ResizeObserver 观察阅读区域和 Composer 的尺寸并在下一帧更新；隐藏 pane 的零宽测量被忽略，恢复可见后继续测量。单独设置相同 max-width 不足以保证对齐。Bot 阅读区使用零 flex basis 为输入和菜单让出高度；高度与横向测量均不改变阅读身份或触发另一个分页机制。
 
 空态由共享 View 同时检查：可用且 ready、active/current、运行可用、非只读、历史已确认、没有更早历史、分页加载或历史错误、没有会话错误或恢复缺口、原始 entries 为空且 Agent idle。Conversation 过滤后为空不满足初次空对话条件。无助手、未绑定、加载、历史失败与归档保留各自状态，不显示可填写的欢迎建议。
 

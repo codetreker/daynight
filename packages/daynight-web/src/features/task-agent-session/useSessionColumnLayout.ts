@@ -29,6 +29,7 @@ export function useSessionColumnLayout(sectionRef: RefObject<HTMLElement | null>
     observer?.observe(section);
     observer?.observe(viewport);
     observer?.observe(content);
+    observer?.observe(composer);
     return () => {
       observer?.disconnect();
       if (frame !== undefined) cancelAnimationFrame(frame);
