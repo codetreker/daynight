@@ -1,4 +1,4 @@
--- Schema snapshot version: 103
+-- Schema snapshot version: 104
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -239,6 +239,24 @@ CREATE TABLE "bot_model_preferences" (
     CONSTRAINT "bot_model_preferences_creation_order_check" CHECK (("creation_order" > 0)),
     CONSTRAINT "bot_model_preferences_model_check" CHECK ((("octet_length"("model") >= 1) AND ("octet_length"("model") <= 256))),
     CONSTRAINT "bot_model_preferences_provider_check" CHECK (("provider" = ANY (ARRAY['codex'::"text", 'claude'::"text", 'copilot'::"text"])))
+);
+
+CREATE TABLE "bot_recovery" (
+    "bot_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "service_origin" "text" NOT NULL,
+    "machine_id" "text" NOT NULL,
+    "machine_name" "text" NOT NULL,
+    "identity_hash" "bytea" NOT NULL,
+    "hosting_generation" bigint NOT NULL
+);
+
+CREATE TABLE "bot_recovery_operations" (
+    "bot_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "request_hash" "bytea" NOT NULL,
+    "receipt" "jsonb" NOT NULL
 );
 
 CREATE TABLE "bot_worker_preferences" (
@@ -1693,6 +1711,12 @@ ALTER TABLE ONLY "bot_effort_preferences"
 ALTER TABLE ONLY "bot_model_preferences"
     ADD CONSTRAINT "bot_model_preferences_pkey" PRIMARY KEY ("user_id", "worker_id", "provider");
 
+ALTER TABLE ONLY "bot_recovery_operations"
+    ADD CONSTRAINT "bot_recovery_operations_pkey" PRIMARY KEY ("bot_id", "operation_id");
+
+ALTER TABLE ONLY "bot_recovery"
+    ADD CONSTRAINT "bot_recovery_pkey" PRIMARY KEY ("bot_id");
+
 ALTER TABLE ONLY "bot_worker_preferences"
     ADD CONSTRAINT "bot_worker_preferences_pkey" PRIMARY KEY ("user_id");
 
@@ -2079,6 +2103,8 @@ CREATE INDEX "assistant_tasks_holder" ON "assistant_tasks" USING "btree" ("holde
 CREATE UNIQUE INDEX "assistant_tasks_owner_application" ON "assistant_tasks" USING "btree" ("owner_user_id", "application") WHERE (("application" <> ''::"text") AND ("state" <> 'deleted'::"text"));
 
 CREATE INDEX "assistant_tasks_owner_page" ON "assistant_tasks" USING "btree" ("owner_user_id", "created_at", "id");
+
+CREATE INDEX "bot_recovery_operation_tokens" ON "bot_recovery_operations" USING "btree" ("bot_id", (("receipt" ->> 'controllerTokenHash'::"text")));
 
 CREATE INDEX "bots_owner_list" ON "bots" USING "btree" ("owner_user_id", "created_at", "id") WHERE ("deletion" IS NULL);
 

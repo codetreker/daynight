@@ -48,6 +48,9 @@ func AuthorizeRuntime(bot model.Bot, userID, workerID string) error {
 	if bot.Deletion != nil {
 		return &model.Fault{Code: "resource_conflict", Message: "Bot is deleted."}
 	}
+	if bot.Recovery != nil {
+		return &model.Fault{Code: "upgrade_required", Message: "Bot runtime requires the recovery hosting generation."}
+	}
 	return nil
 }
 

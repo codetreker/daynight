@@ -237,6 +237,20 @@ checks both completion receipts and the committed deletion, attachment and
 Task version facts. Each case joins its writer and verifies pool reuse before
 the next case; failure stops reuse.
 
+The [Task deletion and incoming write matrix](../../../../packages/daynight-server/internal/core/store/postgres/task_mutation_witnesses_test.go)
+shares one Store across separate Project and Task identities. Each pair
+waits behind the real Project transaction before either writer can
+proceed. The shared race fixture drains both writers, then the case
+checks the pool and the durable deletion, edge, and version outcomes.
+
+The [Worker Claim configuration admission matrices](../../../../packages/daynight-server/internal/core/store/postgres/worker/claim_admission_test.go)
+share one Store per parent. Each case owns a distinct Worker and owner
+because first-report admission locks the owner across the database.
+The cases observe the exact Worker row or owner advisory lock and keep
+the original commit, rollback, and cancellation results. A waiter exits
+before its transaction is cleaned up, and the parent checks pool reuse
+before starting another case.
+
 The [Thread expiry and exact-message matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_thread_witnesses_test.go)
 use one Store per parent with independent Project, Task, author, and
 credential records. The expiry contender must wait on its exact head

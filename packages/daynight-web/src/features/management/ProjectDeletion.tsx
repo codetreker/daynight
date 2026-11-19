@@ -222,7 +222,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
   return <section className="panel project-settings-panel" aria-labelledby="project-delete-title"><div className="panel-heading"><div><h2 id="project-delete-title">{m.title}</h2></div></div><div className="panel-body">
     {!canDelete && <p>{m.restricted}</p>}
     <button className="button danger" type="button" disabled={!active || guard.isBlocked("delete") || !unknown && (unavailable || !access.ready || !canDelete)} onClick={open}>{m.open}</button>
-  </div>{dialog && <ManagementDialog title={unknown ? m.unknown : m.question} initialFocus="cancel" closeOnBackdrop busy={pending} suspended={!active} onClose={close} footer={<>
+  </div>{dialog && <ManagementDialog className="project-settings-dialog" title={unknown ? m.unknown : m.question} initialFocus="cancel" closeOnBackdrop busy={pending} suspended={!active} onClose={close} footer={<>
     <button className="button" type="button" data-dialog-cancel disabled={pending} onClick={unknown ? () => { close(); navigate("/projects"); } : close}>{unknown ? m.back : m.cancel}</button>
     {unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => load()}>{loading ? m.checking : m.check}</button> : <button className="button danger" type="button" aria-describedby={preview !== null && !unavailable && access.status === "ready" && access.access?.teamRole === "admin" && !scope.isProjectSuspended(projectId) ? warningId : undefined} disabled={pending || loading || preview === null || preview.nextCursor !== null || preview.activeClaims.length !== 0 || !matchesName(typed, preview.project.name) || guard.isBlocked("delete")} onClick={submit}>{pending ? m.submitting : m.delete}</button>}
   </>}>
