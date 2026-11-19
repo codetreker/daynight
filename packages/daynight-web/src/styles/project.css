@@ -9,7 +9,7 @@
 .project-creation-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;max-width:100%}.task-view-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.task-view-summary{font-size:11px;color:#737f93;font-variant-numeric:tabular-nums}
 @media(max-width:1150px){.stats{gap:8px}.stat{padding:15px 12px}.stat-label{font-size:10px}}
 @media(max-width:850px){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}.stat-number{font-size:26px}}
-@media(max-width:600px){.project-navigation{gap:10px;margin-bottom:18px}.back-link{font-size:11px}.snapshot-time{font-size:9px}.project-heading{align-items:flex-start;flex-wrap:wrap}.project-heading>:first-child{flex:1 1 160px}.project-repository{font-size:10px}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:22px 0}.stat{padding:13px 9px}.stat-number{font-size:24px}.stat-foot{font-size:9px}.snapshot-notice{font-size:10px}.project-task-tabs{gap:22px}.project-task-tab{font-size:12px}.task-view-toolbar{align-items:flex-start;flex-wrap:wrap;gap:8px}.task-view-summary{font-size:10px}}
+@media(max-width:600px){.project-navigation{gap:10px;margin-bottom:18px}.back-link{font-size:11px}.snapshot-time{font-size:9px}.project-heading{align-items:flex-start;flex-wrap:wrap}.project-heading>:first-child{flex:1 1 160px}.project-repository{font-size:10px}.stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:22px 0}.stat{padding:13px 9px}.stat-number{font-size:24px}.stat-foot{font-size:9px}.snapshot-notice{font-size:10px}.project-task-tabs{gap:22px}.task-view-toolbar{align-items:flex-start;flex-wrap:wrap;gap:8px}}
 
 .standalone-row .root-meta{display:flex;align-items:center;flex-wrap:wrap;gap:2px 6px}.standalone-execution{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}.standalone-row-stuck,.standalone-row-stuck:hover{background:#fff8eb;border-color:#d48a28;box-shadow:0 0 0 1px #d48a2844,0 3px 8px #8b571216}.standalone-row-stuck .task-duration{color:#805b27}
 
@@ -47,3 +47,22 @@
   .standalone-item:has(> .project-session-status) .task-row-status { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; max-width: 100%; }
   .standalone-item > .project-session-status { right: 8px; top: auto; bottom: 5px; transform: none; width: auto; max-width: calc(100% - 16px); }
 }
+
+.project-task-tab { font-size: var(--text-interface); }
+.project-task-tabs .graph-count-pill, .task-view-summary { font-size: var(--text-metadata); }
+
+.project-tasks .root-list .root-title, .project-tasks .root-list .root-status,
+.project-tasks .root-list .task-assignee-identity, .project-tasks .root-list .assignee-former,
+.project-tasks .root-list .chain-worker-active, .project-tasks .root-list .task-pause-count,
+.project-tasks .root-list .task-paused-badge, .project-tasks .root-list .goal-detail-link { font-size: var(--text-interface); }
+.project-tasks .root-list .root-meta, .project-tasks .root-list .root-progress-label,
+.project-tasks .root-list .goal-in-progress, .project-tasks .root-list .completion-time-label { font-size: var(--text-metadata); line-height: 1.5; }
+.project-tasks .root-list .chain-worker-active { line-height: 1.5; }
+.project-tasks .root-list .session-status-slot { width: auto; max-width: 40%; flex-basis: auto; }
+.project-tasks .root-list .session-status-label { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+@container (max-width: 600px) { .project-tasks .root-list .session-status-slot { max-width: 100%; } }
+
+.project-tasks .project-section-heading h2 { font-size: var(--text-section-heading); }
+.project-tasks .list-pagination { font-size: var(--text-interface); }
+.project-tasks .root-list .session-status-label { display: inline-flex; flex-direction: column; align-items: flex-end; }
+.project-tasks .root-list .session-status-annotation { position: static; height: auto; font-size: var(--text-interface); line-height: 1.5; white-space: normal; }

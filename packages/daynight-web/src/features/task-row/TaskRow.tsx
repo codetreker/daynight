@@ -128,7 +128,7 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
             event.preventDefault(); navigate(usageHref);
           }}><UsageSummaryView summary={usageSummary} compact /></a>
         </section>}
-        {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
+        {typeof model.tags === 'string' ? <span className="task-row-meta task-row-tag-state">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
       </div>
       <div className="task-row-status">
         {model.paused && <TaskPausedBadge />}
