@@ -1368,16 +1368,20 @@ describe("Worker cloud configuration application", () => {
   });
 
   it("bounds asynchronous application jobs while scalar progress and every stable record remain available", async () => {
-    const release = deferred(), prepared = new Set<string>();
+    const release = deferred(), ready = deferred(), prepared = new Set<string>();
     let active = 0, peak = 0, nativeCalls = 0;
-    const work = async (): Promise<void> => { active++; peak = Math.max(peak, active); await release.promise; active--; };
-    const { manager } = await fixture({ applyNative: async () => { nativeCalls++; await work(); } });
+    const work = async (): Promise<void> => { active++; peak = Math.max(peak, active); if (active === 16) ready.resolve(); await release.promise; active--; };
+    const { manager } = await fixture({ persist: persistLifecycleCache, applyNative: async () => { nativeCalls++; await work(); } });
     const target = desired("1", "global", false);
     const projects = Array.from({ length: 40 }, (_, index) => ({ projectId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, nativeOverrides: { model: `project-${index}` } }));
     await manager.configureProjectAdapters({ prepare: async projectId => { await work(); prepared.add(projectId); } });
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await manager.receive(receivedDesired({ ...target, value: { ...target.value, projects } }));
-      await vi.waitFor(() => expect(active).toBe(16));
+      await Promise.race([ready.promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Timed out waiting for 16 adapter entries.")), 15_000); })]);
+      // Drain the already queued applying commits before checking for an excess job.
+      await manager.refreshToolSelections(AbortSignal.timeout(15_000));
+      expect(active).toBe(16);
       expect(peak).toBe(16);
       expect(manager.current().effective.maxConcurrent).toBe(2);
       expect(prepared.size).toBe(0);
@@ -1386,8 +1390,8 @@ describe("Worker cloud configuration application", () => {
       expect(prepared).toEqual(new Set(projects.map(project => project.projectId)));
       expect(nativeCalls).toBe(41);
       expect(manager.current().effective.projects.every(project => project.ready && project.native !== null)).toBe(true);
-    } finally { release.resolve(); }
-  });
+    } finally { clearTimeout(timer); release.resolve(); }
+  }, 30_000);
 
   it("keeps native application independent of an observer failure", async () => {
     const { manager } = await fixture({ onNativeApplication: () => { throw new Error("observer failed"); } });
