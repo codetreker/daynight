@@ -282,7 +282,7 @@ func TestConcurrentReceiptKeyAdmitsOneWriter(t *testing.T) {
 	})
 }
 
-func (f fixture) event(bot, kind, state string, created time.Time, delivered *time.Time) model.AssistantTaskEvent {
+func (f fixture) inboxEvent(bot, kind, state string, created time.Time, delivered *time.Time) model.AssistantTaskEvent {
 	return model.AssistantTaskEvent{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, TargetBotID: bot, Type: kind, State: state, RequestFingerprint: "event", Payload: json.RawMessage(`{}`), CreatedAt: created, DeliveredAt: delivered}
 }
 
@@ -293,12 +293,12 @@ func TestPendingInboundEventsCountsTargetUpToLimit(t *testing.T) {
 	bot, other := uuid.NewString(), uuid.NewString()
 	stamp := f.task.CreatedAt
 	events := []model.AssistantTaskEvent{
-		f.event(bot, "inbound", "pending", stamp, nil),
-		f.event(bot, "inbound", "pending", stamp, nil),
-		f.event(bot, "inbound", "pending", stamp, nil),
-		f.event(bot, "inbound", "delivered", stamp, &stamp),
-		f.event(bot, "update", "pending", stamp, nil),
-		f.event(other, "inbound", "pending", stamp, nil),
+		f.inboxEvent(bot, "inbound", "pending", stamp, nil),
+		f.inboxEvent(bot, "inbound", "pending", stamp, nil),
+		f.inboxEvent(bot, "inbound", "pending", stamp, nil),
+		f.inboxEvent(bot, "inbound", "delivered", stamp, &stamp),
+		f.inboxEvent(bot, "update", "pending", stamp, nil),
+		f.inboxEvent(other, "inbound", "pending", stamp, nil),
 	}
 	f.write(t, func(d store.AssistantTaskDAO) error {
 		for _, v := range events {
@@ -376,16 +376,16 @@ func TestReclamationIsBoundedAndScoped(t *testing.T) {
 	recent := now
 	bot := uuid.NewString()
 	settled := []model.AssistantTaskEvent{
-		f.event(bot, "inbound", "delivered", past, &past),
-		f.event(bot, "inbound", "delivered", past, &past),
-		f.event(bot, "inbound", "expired", past, nil),
+		f.inboxEvent(bot, "inbound", "delivered", past, &past),
+		f.inboxEvent(bot, "inbound", "delivered", past, &past),
+		f.inboxEvent(bot, "inbound", "expired", past, nil),
 	}
 	kept := []model.AssistantTaskEvent{
-		f.event(bot, "inbound", "pending", past, nil),
-		f.event(bot, "inbound", "delivered", past, &recent),
-		f.event(bot, "inbound", "delivered", past, &cutoff),
-		f.event(bot, "update", "delivered", past, &past),
-		other.event(bot, "inbound", "delivered", past, &past),
+		f.inboxEvent(bot, "inbound", "pending", past, nil),
+		f.inboxEvent(bot, "inbound", "delivered", past, &recent),
+		f.inboxEvent(bot, "inbound", "delivered", past, &cutoff),
+		f.inboxEvent(bot, "update", "delivered", past, &past),
+		other.inboxEvent(bot, "inbound", "delivered", past, &past),
 	}
 	f.write(t, func(d store.AssistantTaskDAO) error {
 		for _, v := range append(append([]model.AssistantTaskEvent{}, settled...), kept...) {
@@ -451,9 +451,9 @@ func TestInboundRetentionStartsWhenEventLeavesPending(t *testing.T) {
 		created = created.Add(-time.Hour)
 		return err
 	})
-	expired := f.event(bot, "inbound", "pending", created, nil)
-	delivered := f.event(bot, "inbound", "pending", created, nil)
-	retargeted := f.event(bot, "inbound", "pending", created, nil)
+	expired := f.inboxEvent(bot, "inbound", "pending", created, nil)
+	delivered := f.inboxEvent(bot, "inbound", "pending", created, nil)
+	retargeted := f.inboxEvent(bot, "inbound", "pending", created, nil)
 	var settledBy time.Time
 	f.write(t, func(d store.AssistantTaskDAO) error {
 		for _, v := range []model.AssistantTaskEvent{expired, delivered, retargeted} {

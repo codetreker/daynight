@@ -116,6 +116,13 @@ The qualification records query plans and warm-five/measure-thirty P95 for
 
 ## Contracts
 
+The [Worker review participation resource](../../docs/design/worker-review-participation.md)
+provides an account-owned GET/PUT preference at
+`/api/v1/me/workers/{workerId}/review-participation`. It defaults to disabled,
+uses an independent exact decimal version and preserves report, configuration
+and claim protocols. Editing it does not refresh Worker activity. Existing and
+new Worker rows receive the same defaults through migration and schema snapshot.
+
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
 The [PR read design](../../docs/design/github-pr-reading.md) defines the optional
@@ -3621,8 +3628,17 @@ out releases occupancy. An actual transfer of a legacy NULL identity returns
 HTTP 409 `project_repository_identity_unavailable`; reads, deletion and an
 authorized/version-matched same-Team no-op remain available. Existing request and
 success shapes remain unchanged, and unknown writes must not be replayed.
-UUID IDs are canonicalized to hyphenated lowercase; repository metadata cannot
-be updated after creation.
+UUID IDs are canonicalized to hyphenated lowercase. Project administrators can
+preview `POST /api/v1/projects/{projectId}/repository/preview` with `repoUrl` and
+`expectedUserId`, then submit `PATCH /api/v1/projects/{projectId}/repository` with
+the preview's decimal-string `repositoryVersion`, `ownershipVersion`,
+`classification`, nullable `targetGitHubRepositoryId`, and an explicit
+`treatUnverifiedAsSwitch` for an unverified target. The receipt identifies the
+saved address, version, change and binding invalidation. Stale facts require a
+new preview; unknown writes require observation before another decision. A real
+switch atomically retires the Project GitHub connection and removes the Project
+from selected Worker cloud configurations, retaining historical PR sources and
+local workspaces. Worker application is asynchronous; existing execution may stop.
 
 Every Project resource, including list items and the project embedded in task
 graphs, includes `settings: {version, executionWarningMinutes}`. Migration

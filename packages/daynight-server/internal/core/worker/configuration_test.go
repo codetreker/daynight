@@ -1170,3 +1170,16 @@ func TestLegacyModeReplacementPreservesAbsentSudo(t *testing.T) {
 		t.Fatalf("absent sudo choice invented: %s", d.rawWritten)
 	}
 }
+
+func (*configurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*configurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}
+func (*capacityConfigurationDAO) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*capacityConfigurationDAO) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}

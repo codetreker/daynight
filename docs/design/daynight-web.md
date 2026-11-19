@@ -178,6 +178,8 @@ sudo 清理控件以目标字段的存在性判定服务是否提供配置，不
 
 ### 个人 Worker Prompt 编辑
 
+个人 Prompt 的[容器布局规格](../spec/worker-prompt-layout.md)要求三个入口按实际内容空间切换排版。已确定的布局方案以共享编辑器外层 `.worker-prompt` 为名为 `worker-prompt` 的 inline-size 查询容器，由宿主分配宽度，内部 `.worker-prompt-layout` 消费尺寸查询。实际内容宽度不超过620px时，编辑区和说明区按 DOM 顺序单列排列；超过620px时沿用编辑区与说明区的双列分配。容器必须位于被切换的 grid 外层，使查询宽度来自宿主而不依赖该 grid 的列布局。尺寸变化只调整 CSS 排版，保持编辑节点、焦点、选区和草稿，不引入 JavaScript 宽度监听或改变保存流程。取舍见[容器布局决策](../../.agents/notes/implemented/bug-fix/2026-11-19-prompt-container-layout.md)，实现是否满足约定由规格中的真实几何与交互标准判定。
+
 `features/worker-prompts/` 共用三个个人资源的 API、纯状态转换、hook 和编辑器。账号、项目和 Worker 入口提供资源目标；项目请求等待 `ProjectAccessSession`，普通成员不继承共享设置的管理员限制。Worker prompt 与运行配置分别位于同级页签，读取、校验和保存互不阻塞；[页签组织决策](../../.agents/notes/implemented/architecture/2026-11-12-worker-detail-prompt-tab.md)记录其协调取舍。
 
 状态独立保存最高版本资源、草稿基线、原文、编辑代次和提交快照。GET 按版本单调接纳，PUT 只提交冻结的账号、版本和正文；继续输入不被回执覆盖。冲突保留草稿并要求明确处理最新版本。已发送请求结果未知时保留快照，以 GET 核对当前事实，不重放写入。同账户身份准入暂停保留节点及草稿，确认失权或当前根 owner 失效身份时撤销旧资源和请求。身份错配后若 owner 保留页面，终止旧操作等待并仅记录已确认、明确拒绝或未知结果，不安装回执或重放写入；已确认结果提示刷新后继续。导航聚合 Worker 两份草稿，并在待定、已确认待呈现或未知写入期间保留对应页面 owner；放弃草稿不会撤销已发送写入。[编辑决策](../../.agents/notes/implemented/architecture/2026-11-09-web-personal-prompt-editor.md)记录取舍。
@@ -1003,6 +1005,8 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 共享 request 边界在账户变化时暂停，保留表单并阻止迟到结果发布；真实会话失效仍退休原身份。
 
 GitHub 设置读取独立的 Project GitHub 资源，严格解析必填 boolean `syncEnabled`，并与项目设置、转移和删除共用同步管理 guard。开关位于连接操作之后、渠道状态之前；管理员操作，成员只读。设置页将服务器确认的配置意愿与服务可用性、连接和轮询/Webhook 健康分别呈现。未连接或不可用时不能开启，已有开启意愿仍可在服务或授权不可用时关闭；关闭后的历史错误标为历史事实。PR 页保留已保存列表与详情，刷新只读取数据；其单一主状态提示、独立诊断和读取机制由[PR 读取设计](github-pr-reading.md)拥有。
+
+GitHub panel 的 `.panel-body` 建立名为 `github-settings` 的 inline-size 查询容器，以内容盒而非整个 viewport 决定仓库行排列。内容宽度不超过 480px 时，仓库信息和操作组纵向排列；更宽时恢复横排。操作组可换行并限制在容器范围内，按钮文案允许换行，仓库值保留完整文本和原有断行。容器由宿主设置网格分配宽度，布局不改变导航结构、组件身份或弹窗状态机；选择理由见[容器布局决策](../../.agents/notes/implemented/bug-fix/2026-11-19-github-settings-container-layout.md)。
 
 开关使用独立的 `PATCH /github/sync`，只提交观察到的精确 version 和目标 boolean，不提交间隔草稿。全部管理响应同样严格解析完整状态，配置版本和同步 revision 仲裁观察，管理请求绑定当前身份。写入期间保持已确认的开关值并阻止重复操作；冲突或未知结果触发只读核对，核对成功或作用域结束前保留 guard 和原页面所有权，不重发原写入，草稿不被后台检查覆盖。断开已有绑定不依赖远端可用性；发现安装和重连使用当前 owner Team 授权的 App。服务端连接和调度机制由[连接运行设计](github-connection-runtime.md)拥有，管理交互的取舍见[GitHub 设置决策](../../.agents/notes/implemented/feature/2026-11-13-github-connection-settings.md)。
 
