@@ -1,14 +1,22 @@
 import { createOwnedControllerJob, inspectControllerJobLease, type ControllerJobLease } from "./windows-job.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createLinuxProcessCapture, isLinuxProcessBirth, isProcessBirth } from "./linux-process-proof.js";
 import { captureWindowsProcessProof, inspectWindowsProcessProof, withWindowsProcessStopHandles } from "./windows-process-proof.js";
 export type ProcessProof = { readonly pid: number; readonly parentPid: number; readonly processGroupId: number | null; readonly startedAt: string; readonly commandHash: string; readonly jobObjectName?: string };
 // ps localizes lstart, so identity probes need a stable locale. Keep the
 // Controller and native provider environments unchanged.
 const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
+const captureLinuxProcessState = createLinuxProcessCapture(
+  (file, timeout) => readFile(file, { encoding: "utf8", signal: AbortSignal.timeout(timeout) }),
+  (pid, timeout) => run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeout),
+  hash,
+);
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
 const capturePosixProcessState = async (pid: number, timeoutMs: number): Promise<{ proof: ProcessProof; zombie: boolean; exiting: boolean; status: string }> => {
+  if (process.platform === "linux") return captureLinuxProcessState(pid, timeoutMs);
   const output = await run("ps", ["-p", String(pid), "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "stat=", "-o", "lstart=", "-o", "command="], timeoutMs);
   const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+([^\n]+)\s*$/u.exec(output);
   if (match === null || Number(match[1]) !== pid) throw new Error("Process identity cannot be established.");
@@ -37,6 +45,8 @@ const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMis
   if (process.platform === "win32") return inspectWindowsProcessProof(proof, timeoutMs, onMismatch);
   try { process.kill(proof.pid, 0); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return "stopped"; throw new Error("Process liveness could not be established.", { cause: error }); }
+  if (!isProcessBirth(proof.startedAt)) throw new Error("The saved process birth identity has an unsupported or invalid format; original evidence is retained.");
+  if (process.platform === "linux" && !isLinuxProcessBirth(proof.startedAt)) throw new Error("The saved Linux process proof lacks a stable kernel birth identity; the live process cannot be authorized for recovery or stopping, and original evidence is retained.");
   let current: ProcessProof, zombie = false, exiting = false, status: string | null = null;
   try {
     const observed = await capturePosixProcessState(proof.pid, timeoutMs); current = observed.proof; zombie = observed.zombie; exiting = observed.exiting; status = observed.status;

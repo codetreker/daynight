@@ -23,8 +23,7 @@ The adopted [Session requirements](../../../../docs/spec/task-sessions.md#linux-
 require Linux boot identity and kernel starttime ticks as the birth identity.
 The [Session design](../../../../docs/design/task-session-protocol.md#linux-稳定出生身份确定方案)
 defines the versioned token, consistent sampling and persistence obligations.
-Runtime integration and product acceptance remain incomplete; adoption of the
-specification does not establish that the running product uses this identity.
+Controller capture, persistent readers and the extraction child share this format.
 
 Birth identity remains separate from command, process group and execution
 ownership. Historical Linux proofs remain readable, but no current PID lookup

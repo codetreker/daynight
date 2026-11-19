@@ -122,7 +122,7 @@ Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时�
 
 ### Linux 稳定出生身份确定方案
 
-Linux 稳定出生身份已确定采用下述机制；运行时接入及真实产品验收尚未完成。当前 `process-proof.ts` 的 Linux 路径仍以 `ps lstart` 文本作为出生身份。`LC_ALL=C` 只解决语言与格式差异，不能保证墙钟校正前后的展示值相同。以下要求由[Session 需求](../spec/task-sessions.md#linux-进程出生身份)拥有，取舍由[出生身份决策](../../.agents/notes/implemented/bug-fix/2026-11-19-linux-process-birth.md)记录。
+Linux 的 `process-proof.ts` 路径使用稳定的内核出生身份。`LC_ALL=C` 继续稳定 `ps` 输出的语言与格式；`lstart` 展示不参与 Linux 身份比较。以下要求由[Session 需求](../spec/task-sessions.md#linux-进程出生身份)拥有，取舍由[出生身份决策](../../.agents/notes/implemented/bug-fix/2026-11-19-linux-process-birth.md)记录。
 
 Linux 采集器以 `/proc/sys/kernel/random/boot_id` 的开机身份和 `/proc/<pid>/stat` 字段 22 的 starttime ticks 组成出生 token。`ProcessProof.startedAt` 承载可判别的 `linux:v1:<boot-id>:<ticks>`，该字段在 Linux 上表示身份而非时间戳；ticks 保留十进制整数精度，不转换成 JavaScript 浮点数或墙钟时间。macOS 的日期文本和 Windows 的原生出生时间表示保持不变。读取器须接受历史平台 token，但识别并严格验证保留的 `linux:` 格式；未知版本、缺失组成部分和损坏值不能按旧日期文本处理。
 
