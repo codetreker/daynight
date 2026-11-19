@@ -1,4 +1,3 @@
-import { useWorkerNames } from '../worker-names/useWorkerNames';
 import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { BotDefinition, BotWorkerDefaults } from '../../api/bots';
@@ -12,14 +11,19 @@ import type { SessionTimelineReadingHandle } from '../task-agent-session/Session
 import type { TimelineReadingBookmark } from '../../ui/useTimelineScroll';
 import { botSessionKey, type BotSessionCache, type BotSessionPane } from './session-cache';
 import { useBotMessages } from './messages';
+import { BotStatus } from './BotStatus';
+import { useBotObservationMessages } from './observation-messages';
+import type { BotObservationRead } from './useBotObservations';
+import { useWorkerNames } from '../worker-names/useWorkerNames';
 import './details-panel.css';
 
 /** A responsive information panel; the Session stays in its original sibling. */
-export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener, onClose, cache, onDelete, deleteDisabled = false, modalBlocked = false }: {
+export function BotDetailsPanel({ assistantTasks, id, bot, observation, opener, onClose, cache, onDelete, deleteDisabled = false, modalBlocked = false }: {
   readonly assistantTasks?: ReactNode; readonly id: string;
   readonly bot: BotDefinition | null;
   readonly worker: BotWorkerDefaults | undefined;
   readonly stale: boolean;
+  readonly observation?: BotObservationRead | undefined;
   readonly opener: RefObject<HTMLButtonElement | null>;
   readonly onClose: () => void;
   readonly cache?: BotSessionCache;
@@ -84,8 +88,6 @@ export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener
     viewport?.addEventListener('resize', resize); viewport?.addEventListener('scroll', resize);
     return () => { window.removeEventListener('resize', resize); viewport?.removeEventListener('resize', resize); viewport?.removeEventListener('scroll', resize); };
   }, []);
-  const currentWorker = worker?.workerId === bot?.workerId ? worker : undefined;
-  const names = useWorkerNames([{ userId: bot?.ownerUserId, workerId: bot?.workerId }]);
   const legacyRole = bot?.roleConfiguration?.revision === 'daynight-assistant/1' || bot?.roleConfiguration?.revision === 'daynight-assistant/2';
   return <dialog id={id} ref={dialog} className={`bot-details-panel${narrow ? ' bot-details-drawer' : ''}`} role={narrow ? 'dialog' : 'complementary'} aria-label={m.details} aria-modal={narrow ? true : undefined}
     onCancel={event => { event.preventDefault(); if (!modalBlocked) onClose(); }}
@@ -108,17 +110,48 @@ export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener
         {assistantTasks}
         <div className="bot-details-profile"><span>{m.name}</span><strong>{bot.name}</strong>{legacyRole ? <p>{m.legacyRoleNotice}</p> : null}</div>
         <section className="bot-details-section"><h3>{m.runInformation}</h3><dl>
-          <div><dt>{m.botStartup}</dt><dd><span>{m[bot.startupResult.state]}</span>{bot.startupResult.code !== null ? <p>{m.reason(bot.startupResult.code)}</p> : null}</dd></div>
-          <div><dt>{m.workerObservation}</dt><dd>{stale || !currentWorker ? m.workerUnknown : currentWorker.state === 'available' ? m.workerOnline : m.workerStates[currentWorker.state]}</dd></div>
-          <div><dt>{m.worker}</dt><dd><bdi>{names.name(bot.ownerUserId, bot.workerId, currentWorker?.machine.name ?? bot.workerId, true)}</bdi></dd></div>
+          <BotObservationInformation bot={bot} observation={observation} />
           <div><dt>{m.cwd}</dt><dd><code>{bot.resolvedConfiguration.cwd}</code></dd></div>
-          <div><dt>{m.agent}</dt><dd>{bot.resolvedConfiguration.provider === 'claude' ? 'Claude Code' : bot.resolvedConfiguration.provider === 'copilot' ? 'GitHub Copilot' : 'Codex'}</dd></div>
         </dl></section>
         <section className="bot-details-section"><h3>{m.sessionInformation}</h3>{cache && bot.sessionId && bot.testExecutionId ? <BoundSessionInformation cache={cache} bot={bot} /> : <p>{m.sessionUnavailable}</p>}</section>
       </>}
     </div>
     {bot && onDelete ? <footer><button className="button danger" type="button" disabled={deleteDisabled} onClick={event => onDelete(bot, event.currentTarget)}>{m.delete}</button></footer> : null}
   </dialog>;
+}
+
+function BotObservationInformation({ bot, observation }: { readonly bot: BotDefinition; readonly observation?: BotObservationRead | undefined }) {
+  const m = useBotObservationMessages(), b = useBotMessages();
+  const value = observation?.value?.botId === bot.id ? observation.value : null;
+  const names = useWorkerNames(value ? [{ userId: bot.ownerUserId, workerId: value.workerId }] : []);
+  const machineName = value ? names.name(bot.ownerUserId, value.workerId, value.machine?.name ?? m.machineUnknown, true) : m.machineUnknown;
+  const provider = value?.provider ?? bot.resolvedConfiguration.provider;
+  const time = (value: string | null | undefined) => value ? <time dateTime={value}>{new Date(value).toLocaleString()}</time> : m.unknown;
+  const reason = value?.reason ?? '';
+  let action: string | null = null;
+  if (value && !observation?.stale) {
+    if (reason.startsWith('provider_')) action = m.actions.provider;
+    else if (['native_identity_missing', 'native_session_missing', 'native_record_missing', 'recovery_material_missing', 'recovery_material_invalid', 'recovery_material_incomplete'].includes(reason)) action = m.actions.native;
+    else if (reason.includes('identity_mismatch') || reason.includes('conflict') || reason.includes('ownership')) action = m.actions.identity;
+    else if (reason === 'directory_missing' || reason === 'invalid_cwd') action = m.actions.directory;
+    else if (value.state === 'connecting') action = m.actions.connecting;
+    else if (value.state === 'recovering') action = m.actions.recovering;
+    else if (value.state === 'abnormal') action = m.actions.failure;
+  }
+  return <>
+    <div><dt>{b.status}</dt><dd><BotStatus bot={bot} observation={observation} showWorkerName={false} />{observation?.error ? <p role="alert">{m.readFailed}</p> : null}{observation && <button className="button quiet bot-observation-refresh" type="button" aria-busy={observation.busy} disabled={observation.busy} onClick={observation.refresh}>{m.refresh}</button>}</dd></div>
+    <div><dt>{m.machine}</dt><dd><bdi>{machineName}</bdi>{value?.machine && <p><code>{value.machine.id}</code></p>}</dd></div>
+    <div><dt>{m.workerId}</dt><dd><code>{value?.workerId ?? m.unknown}</code></dd></div>
+    <div><dt>{b.agent}</dt><dd>{provider === 'claude' ? 'Claude Code' : provider === 'copilot' ? 'GitHub Copilot' : 'Codex'}</dd></div>
+    {value && observation?.stale ? <div><dt>{m.lastState}</dt><dd>{m.states[value.state]}<p>{m.staleHelp}</p></dd></div> : null}
+    {value && <div><dt>{m.reason}</dt><dd>{m.describeReason(reason) !== reason && m.describeReason(reason)}<p><code>{reason}</code></p></dd></div>}
+    {value && !observation?.stale && value.state === 'offline' ? <div><dt>{m.action}</dt><dd>{value.machine ? m.actions.offline : m.actions.machineUnknown} <code>daynight worker run</code></dd></div> : action ? <div><dt>{m.action}</dt><dd>{action}</dd></div> : null}
+    <div><dt>{m.platformSession}</dt><dd><code>{value?.sessionId ?? m.unknown}</code></dd></div>
+    <div><dt>{m.nativeSession}</dt><dd><code>{value?.nativeSessionId ?? m.unknown}</code></dd></div>
+    <div><dt>{m.observed}</dt><dd>{time(value?.observedAt)}</dd></div>
+    <div><dt>{m.workerLastSeen}</dt><dd>{time(value?.workerLastSeenAt)}</dd></div>
+    <div><dt>{m.sessionLastSeen}</dt><dd>{time(value?.sessionLastSeenAt)}</dd></div>
+  </>;
 }
 
 function boundPane(cache: BotSessionCache | undefined, bot: BotDefinition | null): BotSessionPane | undefined {

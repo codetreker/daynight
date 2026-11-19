@@ -53,5 +53,7 @@ Offline Bots retain location and native identity beyond the inventory window.
 Observers can distinguish startup, recovery and confirmed failures without
 starting an Agent or changing claims. The endpoint costs two small database
 snapshots per Bot observation. A request handled by a different relay reports
-unavailable live observation instead of inventing activity; cross-relay scalar
-distribution and Web presentation remain separate consumers.
+unavailable live observation instead of inventing activity. Cross-relay scalar
+distribution remains separate; the
+[Web observation decision](2026-11-20-bot-web-observation.md) owns browser
+freshness, shared status presentation and machine-specific remedies.

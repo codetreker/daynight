@@ -3,12 +3,14 @@ import type { BotDefinition, BotWorkerDefaults } from '../../api/bots';
 import type { SessionHeaderSlot } from '../task-agent-session/session-presentation-slots';
 import { BotStatus } from './BotStatus';
 import { useBotMessages } from './messages';
+import type { BotObservationRead } from './useBotObservations';
 
 /** The current admitted Bot read; Session state remains owned by the mounted pane. */
 export type BotConversationTarget = {
   readonly bot: BotDefinition | null;
   readonly worker: BotWorkerDefaults | undefined;
   readonly stale: boolean;
+  readonly observation?: BotObservationRead;
   readonly name: string;
   readonly detailsId: string;
   readonly detailsOpen: boolean;
@@ -45,7 +47,7 @@ export function BotConversationHeader({ target, session }: { readonly target: Bo
       <a className="button quiet bot-header-back" href="/bots" aria-label={m.backToList} title={m.backToList} onClick={target.follow}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="m14 6-6 6 6 6" /></svg></a>
       <div className="bot-conversation-title">
         <h2 title={target.name}>{target.name}</h2>
-        <div className="bot-header-state">{session ? <>{session.provider}{session.runtimeReady && <span>{m.connected}</span>}{session.activity}</> : target.bot ? <BotStatus bot={target.bot} worker={target.worker} stale={target.stale} showWorkerName={false} /> : null}</div>
+        <div className="bot-header-state">{session?.provider}{target.bot ? <BotStatus bot={target.bot} observation={target.observation} /> : null}</div>
       </div>
     </div>
     <div className="bot-header-actions">
