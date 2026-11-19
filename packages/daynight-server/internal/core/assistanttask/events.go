@@ -33,6 +33,13 @@ func (m *Module) systemEventID(ctx context.Context, dao store.AssistantTaskDAO, 
 	if err != nil {
 		return model.AssistantTaskEvent{}, err
 	}
+	return insertSystemEvent(ctx, dao, task, id, target, kind, attention, data, now)
+}
+
+// insertSystemEvent stores already encoded payload bytes unchanged, so callers
+// that own a canonical encoding are not re-escaped by json.Marshal.
+func insertSystemEvent(ctx context.Context, dao store.AssistantTaskDAO, task model.AssistantTask, id, target, kind string, attention bool, data json.RawMessage, now time.Time) (model.AssistantTaskEvent, error) {
+	var err error
 	event := model.AssistantTaskEvent{ID: id, OwnerUserID: task.OwnerUserID, TaskID: task.ID, TargetBotID: target, Type: kind, State: "pending", Payload: data, Attention: attention, CreatedAt: now}
 	event.RequestFingerprint, err = fingerprint(event)
 	if err != nil {

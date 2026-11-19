@@ -34,7 +34,7 @@ func externalInput(body string) InboundInput {
 	return InboundInput{InboxID: inboxID, Classification: InboundExternal, ReceivedAt: epoch, MediaType: "text/plain", Body: []byte(body)}
 }
 func daynightInput(t *testing.T) InboundInput {
-	return InboundInput{InboxID: inboxID, Classification: InboundDaynight, ReceivedAt: epoch, MediaType: protocol.MediaType, Body: cloudEvent(t)}
+	return InboundInput{InboxID: inboxID, Classification: InboundDaynight, ReceivedAt: epoch, MediaType: protocol.MediaType, IdempotencyKey: webhookEventID, Body: cloudEvent(t)}
 }
 func decodePayload(t *testing.T, raw json.RawMessage) map[string]any {
 	t.Helper()
@@ -59,6 +59,29 @@ func TestInboundExternalPayloadStoresBodyDigestAndKey(t *testing.T) {
 	want := map[string]any{"inboxId": inboxID, "classification": "external", "receivedAt": "2026-11-12T12:00:00Z", "mediaType": "application/problem+json", "idempotencyKey": "delivery-1", "body": body, "byteLength": float64(len(body)), "sha256": hex.EncodeToString(sum[:])}
 	if got := decodePayload(t, raw); !reflect.DeepEqual(got, want) {
 		t.Fatalf("payload:\n got %#v\nwant %#v", got, want)
+	}
+	if !strings.Contains(string(raw), `disk <full>`) {
+		t.Fatalf("HTML characters were escaped: %s", raw)
+	}
+}
+
+func TestInboundPayloadSizeIsBoundedForWorstCaseBodies(t *testing.T) {
+	// Control characters are the worst case: each byte becomes \u00XX.
+	const overhead = 1024
+	for name, body := range map[string]string{
+		"control": strings.Repeat("\x01", InboundMaxBodyBytes),
+		"html":    strings.Repeat("<", InboundMaxBodyBytes),
+	} {
+		raw, err := BuildInboundPayload(externalInput(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) > 6*InboundMaxBodyBytes+overhead {
+			t.Fatalf("%s payload has %d bytes", name, len(raw))
+		}
+		if name == "html" && len(raw) > InboundMaxBodyBytes+overhead {
+			t.Fatalf("HTML payload was escaped to %d bytes", len(raw))
+		}
 	}
 }
 
@@ -92,6 +115,8 @@ func TestInboundBodyLimitIsExactly64KiB(t *testing.T) {
 func TestInboundRejectsInvalidBodiesAndMediaTypes(t *testing.T) {
 	for name, input := range map[string]InboundInput{
 		"invalid utf-8":       externalInput("ok\xff"),
+		"nul text":            externalInput("a\x00b"),
+		"nul json":            {InboxID: inboxID, Classification: InboundExternal, ReceivedAt: epoch, MediaType: "application/json", Body: []byte("\"a\x00\"")},
 		"invalid json":        {InboxID: inboxID, Classification: InboundExternal, ReceivedAt: epoch, MediaType: "application/json", Body: []byte(`{"a":`)},
 		"empty json":          {InboxID: inboxID, Classification: InboundExternal, ReceivedAt: epoch, MediaType: "application/vnd.x+json"},
 		"unsupported media":   {InboxID: inboxID, Classification: InboundExternal, ReceivedAt: epoch, MediaType: "text/html", Body: []byte("<p>")},
@@ -135,9 +160,7 @@ func TestInboundIdempotencyKeyBounds(t *testing.T) {
 }
 
 func TestInboundDaynightPayloadDecodesFactsFromSourceBody(t *testing.T) {
-	input := daynightInput(t)
-	input.IdempotencyKey = webhookEventID
-	raw, err := BuildInboundPayload(input)
+	raw, err := BuildInboundPayload(daynightInput(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +221,7 @@ func TestInboundDaynightRejectsUnverifiableSources(t *testing.T) {
 		"text media":       func(i *InboundInput) { i.MediaType = "text/plain" },
 		"not cloudevent":   func(i *InboundInput) { i.Body = []byte(`{"id":"x"}`) },
 		"other key":        func(i *InboundInput) { i.IdempotencyKey = "delivery-1" },
+		"missing key":      func(i *InboundInput) { i.IdempotencyKey = "" },
 		"empty body":       func(i *InboundInput) { i.Body = nil },
 	} {
 		t.Run(name, func(t *testing.T) {

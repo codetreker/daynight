@@ -1,6 +1,7 @@
 package assistanttask
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -64,7 +65,7 @@ type inboundDaynightPayload struct {
 	TaskID         string               `json:"taskId"`
 	OccurredAt     string               `json:"occurredAt"`
 	Actor          *inboundActorPayload `json:"actor"`
-	Data           json.RawMessage      `json:"data"`
+	Data           any                  `json:"data"`
 }
 type inboundExternalPayload struct {
 	InboxID        string  `json:"inboxId"`
@@ -125,6 +126,11 @@ func BuildInboundPayload(input InboundInput) (json.RawMessage, error) {
 	if !utf8.Valid(input.Body) {
 		return nil, invalid("The inbound body must be valid UTF-8.")
 	}
+	// PostgreSQL jsonb cannot store U+0000, so it is a client error here
+	// rather than a storage failure at insert time.
+	if bytes.IndexByte(input.Body, 0) >= 0 {
+		return nil, invalid("The inbound body must not contain NUL characters.")
+	}
 	mediaType, isJSON, err := inboundMediaType(input.MediaType)
 	if err != nil {
 		return nil, err
@@ -151,23 +157,24 @@ func daynightPayload(input InboundInput, mediaType, received string) (json.RawMe
 	if err != nil {
 		return nil, invalid(inboundInvalidBodyMessage)
 	}
-	if input.IdempotencyKey != "" && input.IdempotencyKey != id {
+	if input.IdempotencyKey != id {
 		return nil, invalid("A Daynight inbound idempotency key must be its event ID.")
 	}
 	actor, err := inboundActor(input.Actor)
 	if err != nil {
 		return nil, err
 	}
+	// Decode already proved the envelope shape and data object, so neither
+	// step below can fail.
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
 	}
-	// Decode already proved the envelope shape, so this cannot fail.
 	_ = json.Unmarshal(input.Body, &envelope)
-	data, err := canonicalJSON(envelope.Data)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(inboundDaynightPayload{InboxID: input.InboxID, Classification: InboundDaynight, ReceivedAt: received, MediaType: mediaType, IdempotencyKey: id, EventType: fact.Type, ProjectID: fact.ProjectID, TaskID: fact.TaskID, OccurredAt: fact.OccurredAt.UTC().Format(time.RFC3339Nano), Actor: actor, Data: data})
+	decoder := json.NewDecoder(bytes.NewReader(envelope.Data))
+	decoder.UseNumber()
+	var data any
+	_ = decoder.Decode(&data)
+	return encodeInbound(inboundDaynightPayload{InboxID: input.InboxID, Classification: InboundDaynight, ReceivedAt: received, MediaType: mediaType, IdempotencyKey: id, EventType: fact.Type, ProjectID: fact.ProjectID, TaskID: fact.TaskID, OccurredAt: fact.OccurredAt.UTC().Format(time.RFC3339Nano), Actor: actor, Data: data})
 }
 
 func externalPayload(input InboundInput, mediaType, received string) (json.RawMessage, error) {
@@ -182,7 +189,21 @@ func externalPayload(input InboundInput, mediaType, received string) (json.RawMe
 		key = ptr(input.IdempotencyKey)
 	}
 	sum := sha256.Sum256(input.Body)
-	return json.Marshal(inboundExternalPayload{InboxID: input.InboxID, Classification: InboundExternal, ReceivedAt: received, MediaType: mediaType, IdempotencyKey: key, Body: string(input.Body), ByteLength: len(input.Body), SHA256: hex.EncodeToString(sum[:])})
+	return encodeInbound(inboundExternalPayload{InboxID: input.InboxID, Classification: InboundExternal, ReceivedAt: received, MediaType: mediaType, IdempotencyKey: key, Body: string(input.Body), ByteLength: len(input.Body), SHA256: hex.EncodeToString(sum[:])})
+}
+
+// encodeInbound produces canonical payload bytes without HTML escaping, so
+// '<', '>' and '&' keep their source size. JSON string escaping still expands
+// a body byte to at most six bytes (control characters become \u00XX), so a
+// payload is bounded by six times the 64 KiB body plus fixed fields.
+func encodeInbound(value any) (json.RawMessage, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }
 
 func inboundActor(actor *InboundActor) (*inboundActorPayload, error) {
@@ -212,5 +233,9 @@ func (m *Module) AddInboundEvent(ctx context.Context, dao store.AssistantTaskDAO
 	if err != nil {
 		return model.AssistantTaskEvent{}, err
 	}
-	return m.systemEventID(ctx, dao, task, id, targetBotID, InboundEventType, payload, input.ReceivedAt.UTC())
+	attention, err := eventAttention(InboundEventType)
+	if err != nil {
+		return model.AssistantTaskEvent{}, err
+	}
+	return insertSystemEvent(ctx, dao, task, id, targetBotID, InboundEventType, attention, payload, input.ReceivedAt.UTC())
 }
