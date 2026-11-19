@@ -40,7 +40,7 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 未迁移格式仍使用本文描述的公共位置。`worker migrate-bot` 是离线迁移入口：取得原 Worker 实例锁、Bot 独占锁与 Controller 存储许可，核验原执行已经停止，不主动终止存活助手。未知提交、缺失进程证明或仍持有的锁阻止切换；文件可读或心跳过期不能替代停证。
 
-迁移复制包含已提交 WAL 的一致 SQLite 快照与所属资源。Bot 专属库只接收目标 Bot 的库存及执行行，不复制普通 Task 库存。原始 intent、ticket、Session、native ID、操作 ID 与未确认操作保留；manifest 单独记录物理副本位置及摘要。journal 的 ticket hash 和 Windows 停证继续使用原票据，不能通过重写路径后重算摘要制造新的原执行证据。
+迁移复制包含已提交 WAL 的一致 SQLite 快照与所属资源。Bot 专属库只接收目标 Bot 的库存及执行行，不复制普通 Task 库存。原始 intent、ticket、Session、native ID、操作 ID 与未确认操作保留；manifest 单独记录物理副本位置及摘要。旧 Bot 恢复时可能保留公共 Controller 路径，却在 Bot 专属根创建新一代别名，因此迁移同时接受执行记录中的公共与该 Bot 专属别名目录，并分别存放副本，防止两根下同名目录相互覆盖。journal 的 ticket hash 和 Windows 停证继续使用原票据，不能通过重写路径后重算摘要制造新的原执行证据。
 
 复制和校验阶段持久化后，原 Worker SQLite 在同一事务内删除目标两行并写入绑定 manifest 摘要的迁移回执，作为唯一权威切换点。`019-bot-migration.sql` 引入回执表和源格式门槛。中断后按持久阶段与该回执核对，不能仅凭原行消失推断提交成功。源 schema 升级阻止旧 Worker 再次打开旧格式写入；未完成的迁移由本地存储路由拒绝，避免部分副本进入正常执行。
 

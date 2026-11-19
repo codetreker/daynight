@@ -7,8 +7,12 @@ import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js"
 import { sqliteFilename } from "../../../src/platform/sqlite-filename.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
-import { openControllerLifecycleStore, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
+import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
 import { definition, id, owner, proof } from "./bot-execution-store.fixtures.js";
 
 export { id, owner };
@@ -24,7 +28,7 @@ const retain = <T extends { close(): void }>(handle: T): T => {
   cleanups.push(() => handle.close()); return handle;
 };
 
-export const migrationFixture = async (options: { submitted?: boolean; nativeSessionId?: string | null; keepWal?: boolean } = {}) => {
+export const migrationFixture = async (options: { submitted?: boolean; nativeSessionId?: string | null; keepWal?: boolean; aliasRoot?: "shared" | "bot" } = {}) => {
   const root = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-migration-tests");
   mkdirSync(root, { recursive: true });
   const homeDirectory = mkdtempSync(path.join(root, "case-"));
@@ -73,9 +77,16 @@ export const migrationFixture = async (options: { submitted?: boolean; nativeSes
     lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-19T00:00:01Z",
   });
   journal.close();
+  let aliasDirectory: string | null = null;
+  if (options.aliasRoot !== undefined) {
+    const aliasRoot = options.aliasRoot === "shared" ? stateDirectory : resolveBotPaths(stateDirectory, bot.id).directory;
+    aliasDirectory = path.join(aliasRoot, "agent-cli-aliases", "execution-original");
+    mkdirSync(aliasDirectory, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(aliasDirectory, "daynight.cmd"), "original shared alias bytes", { mode: 0o600 });
+  }
   if (options.submitted !== false) executions.update(record, {
     launchSubmission: "acknowledged", controllerProcess: snapshot.controllerProcess,
-    snapshot,
+    snapshot, aliasDirectory,
   });
   const execution = executions.get(record)!;
   const openRaw = (file: string, readonly = true) => retain(new Database(sqliteFilename(file), { readonly, fileMustExist: true }));
@@ -86,4 +97,29 @@ export const migrationFixture = async (options: { submitted?: boolean; nativeSes
     record, execution, ticket, snapshot, entry, pin, openRaw, confirmStopped, releaseWorker,
     input: { homeDirectory, stateDirectory, legacyDatabaseFile, owner, botId: bot.id, confirmStopped },
   };
+};
+
+/** Old Controller paths survive a recovery while new aliases use the Bot root. */
+export const recoveredAliasFixture = async () => {
+  const f = await migrationFixture({ aliasRoot: "shared" });
+  let stopped = f.snapshot;
+  if (process.platform === "win32") {
+    const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+    try { stopped = await recordStoppedControllerGeneration(f.record.intent!.journalPath, f.ticket, { jobLease: {} as ControllerJobLease }); }
+    finally { confirm.mockRestore(); }
+  }
+  const record = f.executions.beginRecovery(f.record, stopped, f.homeDirectory, frozenToolLaunch());
+  const intent = record.intent!;
+  const ticket: ControllerLaunchTicket = { ...f.ticket, launchId: intent.launchId, controllerInstanceId: intent.controllerInstanceId,
+    executionGeneration: intent.executionGeneration, resumeNativeSessionId: intent.nativeSessionId };
+  await writeLaunchTicket(f.homeDirectory, ticket);
+  const journal = retain(openControllerLifecycleStore(intent.journalPath, ticket, { contentOwnedLocally: true, onMigration: () => {} }));
+  const snapshot = journal.patchSnapshot({ lifecycle: "stopped", activity: "stopped", nativeStopped: true, stoppedAt: "2026-11-19T00:00:02Z",
+    controllerProcess: { ...proof, jobObjectName: `Local\\Daynight-${intent.launchId}` } });
+  journal.close();
+  const aliasDirectory = path.join(resolveBotPaths(f.stateDirectory, f.botId).directory, "agent-cli-aliases", "execution-original");
+  mkdirSync(aliasDirectory, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(aliasDirectory, "daynight.cmd"), "recovered Bot-owned alias bytes", { mode: 0o600 });
+  const execution = f.executions.update(record, { launchSubmission: "acknowledged", snapshot, controllerProcess: snapshot.controllerProcess, aliasDirectory });
+  return { ...f, record, ticket, snapshot, execution };
 };

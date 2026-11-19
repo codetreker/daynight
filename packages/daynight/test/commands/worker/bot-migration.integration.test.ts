@@ -10,11 +10,49 @@ import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import { acquireInstanceLockSync } from "../../../src/platform/instance-lock.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { inspectSqlite, type SqliteFormat } from "../../../src/platform/sqlite-format.js";
-import { cleanupMigrations, migrationFixture, id, owner } from "./bot-migration.fixtures.js";
+import { cleanupMigrations, migrationFixture, recoveredAliasFixture, id, owner } from "./bot-migration.fixtures.js";
 
 afterEach(cleanupMigrations);
 
 describe("legacy Bot storage migration", () => {
+  it.each([null, "prepared", "copied"] as const)("preserves mixed alias ownership after legacy recovery (interrupted=%s)", async interrupted => {
+    const f = await recoveredAliasFixture();
+    const paths = resolveBotPaths(f.stateDirectory, f.botId);
+    expect(f.record.intent!.executionGeneration).toBe("2");
+    expect(f.record.intent!.journalPath.startsWith(paths.directory + path.sep)).toBe(false);
+    expect(f.execution.aliasDirectory!.startsWith(paths.directory + path.sep)).toBe(true);
+    expect(f.execution.retainedAliasDirectories).toEqual([path.join(f.stateDirectory, "agent-cli-aliases", "execution-original")]);
+    if (interrupted !== null) await expect(migrateLegacyBot({ ...f.input, onPhase: phase => {
+      if (phase === interrupted) throw new Error("mixed alias copy interrupted");
+    } })).rejects.toThrow(/mixed alias copy interrupted/);
+    const manifest = await migrateLegacyBot(f.input);
+    const shared = manifest.files.find(file => file.source === path.join(f.execution.retainedAliasDirectories[0]!, "daynight.cmd"))!;
+    const dedicated = manifest.files.find(file => file.source === path.join(f.execution.aliasDirectory!, "daynight.cmd"))!;
+    expect(shared.destination).not.toBe(dedicated.destination);
+    expect(readFileSync(path.join(paths.directory, shared.destination), "utf8")).toBe("original shared alias bytes");
+    expect(readFileSync(path.join(paths.directory, dedicated.destination), "utf8")).toBe("recovered Bot-owned alias bytes");
+    expect(manifest.original.record).toEqual(f.record);
+    expect(manifest.original.execution).toEqual(f.execution);
+    const history = readMigratedBotHistory(f.input);
+    expect(history.snapshot?.executionGeneration).toBe("2");
+    expect(history.snapshot?.nativeSessionId).toBe(id(20));
+    expect(history.entries).toEqual([{ ...f.entry, entrySeq: "1" }]);
+    expect(await migrateLegacyBot(f.input)).toEqual(manifest);
+  });
+
+  it("refuses an alias directory owned by a different Bot", async () => {
+    const f = await migrationFixture();
+    const foreign = path.join(resolveBotPaths(f.stateDirectory, id(99)).directory, "agent-cli-aliases", "execution-original");
+    mkdirSync(foreign, { recursive: true, mode: 0o700 });
+    const file = path.join(foreign, "daynight.cmd"); writeFileSync(file, "another Bot's alias", { mode: 0o600 });
+    const raw = f.openRaw(f.legacyDatabaseFile, false);
+    raw.prepare("UPDATE bot_executions SET record=? WHERE bot_id=?").run(JSON.stringify({ ...f.execution, aliasDirectory: foreign }), f.botId);
+    await expect(migrateLegacyBot(f.input)).rejects.toThrow(/alias.*ownership/i);
+    expect(readFileSync(file, "utf8")).toBe("another Bot's alias");
+    expect(f.bots.get(owner, f.botId)).toEqual(f.record);
+    expect(existsSync(resolveBotPaths(f.stateDirectory, f.botId).databaseFile)).toBe(false);
+  });
+
   it("fences an older Bot reader before it can ignore migration responsibility", async () => {
     const f = await migrationFixture();
     await migrateLegacyBot(f.input);

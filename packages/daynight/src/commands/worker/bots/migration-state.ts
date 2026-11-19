@@ -15,6 +15,19 @@ export type BotMigrationManifest = {
   registration: "pending"; nativeRecovery: "missing" | "unverified";
 };
 export const botMigrationManifestPath = (stateDirectory: string, botId: string): string => path.join(resolveBotPaths(stateDirectory, botId).directory, "migration.json");
+/** A legacy Controller can retain shared aliases and newer Bot-owned aliases. */
+export const botMigrationAliases = (stateDirectory: string, botId: string, execution: BotExecution | null): { source: string; destination: string }[] => {
+  const roots = new Map([
+    [path.join(stateDirectory, "agent-cli-aliases"), "legacy/agent-cli-aliases"],
+    [path.join(resolveBotPaths(stateDirectory, botId).directory, "agent-cli-aliases"), "legacy/bot-agent-cli-aliases"],
+  ]);
+  return [...new Set([...(execution?.retainedAliasDirectories ?? []), ...(execution?.aliasDirectory == null ? [] : [execution.aliasDirectory])])].map(source => {
+    const root = roots.get(path.dirname(source)), name = path.basename(source);
+    if (!path.isAbsolute(source) || path.resolve(source) !== source || root === undefined || !/^execution-[A-Za-z0-9]+$/.test(name)) throw new Error("Bot migration alias lies outside its original ownership.");
+    // Both roots can contain the same basename; retain each original resource.
+    return { source, destination: `${root}/${name}` };
+  });
+};
 export const botMigrationHash = (manifest: BotMigrationManifest): string => {
   const { phase: _phase, ...content } = manifest;
   return controllerPayloadHash(content);

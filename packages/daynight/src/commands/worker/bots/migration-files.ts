@@ -4,7 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { ensureDurableDirectory, syncDurableDirectory } from "../../../platform/durable-directory.js";
 import { sqliteFilename } from "../../../platform/sqlite-filename.js";
-import { assertMigrationPhysicalPath, migrationDestination, type BotMigrationFile, type BotMigrationManifest } from "./migration-state.js";
+import { assertMigrationPhysicalPath, botMigrationAliases, migrationDestination, type BotMigrationFile, type BotMigrationManifest } from "./migration-state.js";
 
 export const migrationFileDigest = (file: string): { sha256: string; bytes: number } => {
   assertMigrationPhysicalPath(file, "file");
@@ -87,8 +87,8 @@ export const verifyMigrationSources = async (stateDirectory: string, manifest: B
     });
   };
   const intent = manifest.original.record.intent, execution = manifest.original.execution;
-  const roots = [...(intent === null || !existsSync(path.dirname(intent.journalPath)) ? [] : [path.dirname(intent.journalPath)]),
-    ...new Set([...(execution?.retainedAliasDirectories ?? []), ...(execution?.aliasDirectory == null ? [] : [execution.aliasDirectory])])];
+  const aliases = botMigrationAliases(stateDirectory, manifest.botId, execution);
+  const roots = [...(intent === null || !existsSync(path.dirname(intent.journalPath)) ? [] : [path.dirname(intent.journalPath)]), ...aliases.map(alias => alias.source)];
   for (const root of roots) {
     const expected = manifest.files.filter(file => { const relative = path.relative(root, file.source); return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative); }).map(file => file.source).sort();
     if (JSON.stringify(listFiles(root).sort()) !== JSON.stringify(expected)) throw new Error("Bot migration original resource inventory changed after its snapshot.");

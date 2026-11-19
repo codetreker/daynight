@@ -19,7 +19,7 @@ import { openBotExecutionStore, validateBotExecutionSnapshot, type BotExecution 
 import { botStoreFormat } from "./store-format.js";
 import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 import { botUUID, parseBot, parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
-import { assertMigrationPhysicalPath, botMigrationHash, botMigrationManifestPath, migrationDestination, readBotMigrationManifest, type BotMigrationManifest, type BotMigrationPhase } from "./migration-state.js";
+import { assertMigrationPhysicalPath, botMigrationAliases, botMigrationHash, botMigrationManifestPath, migrationDestination, readBotMigrationManifest, type BotMigrationManifest, type BotMigrationPhase } from "./migration-state.js";
 import { copyMigrationFile, copyMigrationTree, saveMigrationManifest, verifyMigrationFiles, verifyMigrationSources } from "./migration-files.js";
 
 export type { BotMigrationManifest, BotMigrationPhase } from "./migration-state.js";
@@ -169,6 +169,7 @@ export const migrateLegacyBot = async (options: BotMigrationOptions): Promise<Bo
         throw new Error("Bot migration cannot infer an unsubmitted execution from incomplete process evidence.");
       }
     } else if (record.definition?.sessionId != null || record.definition?.testExecutionId != null) throw new Error("Bound Bot migration requires its original execution intent.");
+    const aliases = botMigrationAliases(options.stateDirectory, botId, execution);
     signal.throwIfAborted();
     if (manifest === null) {
       if (existsSync(paths.databaseFile) || existsSync(path.join(paths.directory, "legacy"))) throw new Error("Bot migration destination already has unowned storage.");
@@ -193,9 +194,8 @@ export const migrateLegacyBot = async (options: BotMigrationOptions): Promise<Bo
           files.push({ source, destination, kind: "file", ...await copyMigrationFile(source, migrationDestination(options.stateDirectory, botId, destination), "file", signal) });
           if (launchId === intent.launchId) copiedTicket = destination;
         }
-        for (const alias of new Set([...(execution?.retainedAliasDirectories ?? []), ...(execution?.aliasDirectory == null ? [] : [execution.aliasDirectory])])) {
-          if (path.dirname(alias) !== path.join(options.stateDirectory, "agent-cli-aliases") || !/^execution-[A-Za-z0-9]+$/.test(path.basename(alias))) throw new Error("Bot migration alias lies outside its original ownership.");
-          files.push(...await copyMigrationTree(alias, `legacy/agent-cli-aliases/${path.basename(alias)}`, options.stateDirectory, botId, signal));
+        for (const alias of aliases) {
+          files.push(...await copyMigrationTree(alias.source, alias.destination, options.stateDirectory, botId, signal));
         }
       }
       copyDedicatedStore(target, manifest);
