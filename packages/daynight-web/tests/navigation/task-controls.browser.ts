@@ -216,6 +216,9 @@ test('ID search keeps long results readable and opens the correct task on narrow
   const result = page.getByRole('button', { name: `Open task: ${title}` });
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 700 });
+    await expect(result.locator('.task-search-title')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.root-status')).toHaveCSS('font-size', '14px');
+    await expect(result.locator('.task-search-meta')).toHaveCSS('font-size', '12px');
     await expect(result).toContainText(taskId);
     await expect(result).toContainText('ID match · Description match');
     await expect(result).toContainText('A long matching description');
@@ -1223,5 +1226,31 @@ for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) for (cons
     await row.locator('.task-row-machine').scrollIntoViewIfNeeded();
     await expect(row.locator('.task-row-machine')).toBeInViewport();
     await page.screenshot({ path: info.outputPath(`${kind}-worker-alias.png`), fullPage: true });
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`search loading, failure and empty states remain usable at ${width}px in ${locale}`, async ({ page }) => {
+    await install(page);
+    let release!: () => void;
+    let calls = 0;
+    await page.route(`**/api/v1/projects/${projectId}/tasks/search`, async route => {
+      calls++;
+      if (calls === 1) { await new Promise<void>(resolve => { release = resolve; }); return route.fulfill({ status: 500, json: { error: { code: 'unavailable', message: 'Unavailable', requestId: 'fixture' } } }); }
+      return route.fulfill({ json: { projectId, total: 0, items: [], nextCursor: null }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+    });
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const input = page.locator('.task-search-form input');
+    await input.fill('missing'); await input.press('Enter');
+    await expect(page.locator('.task-search-results [role=status]')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    release();
+    const error = page.locator('.task-search-error'); await expect(error).toBeVisible();
+    await error.getByRole('button').click();
+    await expect(page.locator('.task-search-results .state-box')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
