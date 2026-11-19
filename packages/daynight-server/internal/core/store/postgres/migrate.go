@@ -277,7 +277,7 @@ var goalDependenciesSQL string
 //go:embed schema/migrations/092_session_archive_cleanup.sql
 var sessionArchiveCleanupSQL string
 
-//go:embed schema/migrations/095_assistant_task_inboxes.sql
+//go:embed schema/migrations/093_assistant_task_inboxes.sql
 var assistantTaskInboxesSQL string
 
 type migration struct {
@@ -378,7 +378,7 @@ var schemaMigrations = []migration{
 	{version: 90, sql: dependencyTypesSQL},
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
-	{version: 95, sql: assistantTaskInboxesSQL},
+	{version: 93, sql: assistantTaskInboxesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

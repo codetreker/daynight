@@ -14,7 +14,7 @@ func TestAssistantTaskInboxMigrationKeepsExistingEvents(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 95 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 93 })
 	if index < 1 {
 		t.Fatal("missing inbox migration")
 	}
