@@ -11,7 +11,7 @@ import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { ListPagination } from "../projects/ListPagination";
 import type { PaginationState } from "../projects/usePagination";
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import type { TaskSummary, WorkerClaim } from '../../api/types';
+import type { TaskSummary, WorkerMachine } from '../../api/types';
 import { compareTaskMembers } from '../projects/task-order';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from './model';
@@ -28,7 +28,7 @@ import '../../styles/task-status-rows.css';
 type ChainListProps = {
   readonly projectId: string;
   readonly index: GraphIndex;
-  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
+  readonly workerMachines: ReadonlyMap<string, WorkerMachine>;
   readonly representativeIds: readonly string[];
   readonly allRepresentativeIds: readonly string[];
   readonly scopedMembers?: ReadonlyMap<string, readonly string[]>;

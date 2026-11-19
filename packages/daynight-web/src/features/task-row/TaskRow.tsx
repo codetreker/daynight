@@ -87,7 +87,8 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
     if (selection !== null && !selection.isCollapsed && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(event.currentTarget)) return;
     if (titleRef.current !== null) onOpenTask(model.id, titleRef.current);
   };
-  const worker = model.worker.kind === 'active' ? graph.claimMachine({ name: model.worker.name })
+  const worker = (model.worker.kind === 'active' || model.worker.kind === 'historical') && model.worker.currentName !== undefined && model.worker.currentName !== model.worker.name ? graph.currentWorkerName({ name: model.worker.currentName })
+    : model.worker.kind === 'active' ? graph.claimMachine({ name: model.worker.name })
     : model.worker.kind === 'historical' ? graph.recordedMachine({ name: model.worker.name })
       : model.worker.kind === 'none' ? graph.noMachineRecord
         : model.worker.kind === 'unknown' ? locale === 'zh-CN' ? 'Worker 记录未知' : 'Worker record unknown'

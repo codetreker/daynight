@@ -46,6 +46,45 @@ async function install(page: Page) {
   return writes;
 }
 
+for (const locale of ['en', 'zh-CN']) for (const width of [1440, 320]) {
+  test(`current alias preserves claim hostname and deletion protection ${locale} ${width}`, async ({ page }, info) => {
+    const writes = await install(page);
+    await page.route(`**/api/v1/projects/${projectId}`, route => route.fulfill({ json: JSON.parse(stringifyWireJson(graphFixture([detailFixture(projectId, taskId)]).project)), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+    await page.route(`**/api/v1/projects/${projectId}/access`, route => route.fulfill({ json: JSON.parse(stringifyWireJson({ ...directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'), teamRole: 'admin', canTransfer: true })), headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+    await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), locale);
+    let value: string | null = '办公室工作机器'.repeat(10), version = 1;
+    await page.route(`**/api/v1/me/workers/${id(4)}/alias`, route => route.fulfill({ json: { workerId: id(4), alias: { value, version: String(version) } }, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+    await page.route(`**/api/v1/projects/${projectId}/deletion-preview*`, route => route.fulfill({
+      json: { observedAt: time, project: { id: projectId, name: 'Project', repoUrl: 'https://example.com/repo', ownerTeam: { id: personalId, kind: 'personal', name: null } },
+        summary: { taskCount: 1, unfinishedTaskCount: 1, attachmentCount: 0 }, activeClaims: [{ taskId, title: 'Claim reading allocation', worker: { userId: TEST_VIEWER_ID, workerId: id(4), machineName: machine, platform: 'linux', phase: 'executing', paused: false, connectivity: 'online' } }], nextCursor: null },
+      headers: { 'Daynight-User-ID': TEST_VIEWER_ID, 'Daynight-Worker-Identity': '1' },
+    }));
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+    const name = page.locator('.task-claim-execution bdi');
+    await expect(name).toHaveText(`${value} · ${machine}`);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath('claim-alias.png'), fullPage: true });
+    value = 'Changed office'; version++;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(name).toHaveText(`${value} · ${machine}`);
+    value = null; version++;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(name).toHaveText(machine);
+    value = 'Deletion office'; version++;
+    await page.goto(`/projects/${projectId}/settings?tab=management`);
+    await page.getByRole('button', { name: locale === 'en' ? 'Delete project' : '删除项目', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(dialog.locator('li bdi')).toHaveText(`${value} · ${machine}`);
+    await dialog.locator('input').fill('Project');
+    await expect(dialog.getByRole('button', { name: locale === 'en' ? 'Confirm deletion' : '确认删除', exact: true })).toBeDisabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath('deletion-alias.png'), fullPage: true });
+    expect(writes).toEqual([]);
+  });
+}
+
 for (const mode of ['dialog', 'page'] as const) {
   test(`active claim retains readable content at 320x240 in ${mode}`, async ({ page }) => {
     const writes = await install(page);

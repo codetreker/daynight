@@ -1,3 +1,4 @@
+import { useWorkerNames } from '../worker-names/useWorkerNames';
 import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { BotDefinition, BotWorkerDefaults } from '../../api/bots';
@@ -84,6 +85,7 @@ export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener
     return () => { window.removeEventListener('resize', resize); viewport?.removeEventListener('resize', resize); viewport?.removeEventListener('scroll', resize); };
   }, []);
   const currentWorker = worker?.workerId === bot?.workerId ? worker : undefined;
+  const names = useWorkerNames([{ userId: bot?.ownerUserId, workerId: bot?.workerId }]);
   const legacyRole = bot?.roleConfiguration?.revision === 'daynight-assistant/1' || bot?.roleConfiguration?.revision === 'daynight-assistant/2';
   return <dialog id={id} ref={dialog} className={`bot-details-panel${narrow ? ' bot-details-drawer' : ''}`} role={narrow ? 'dialog' : 'complementary'} aria-label={m.details} aria-modal={narrow ? true : undefined}
     onCancel={event => { event.preventDefault(); if (!modalBlocked) onClose(); }}
@@ -108,7 +110,7 @@ export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener
         <section className="bot-details-section"><h3>{m.runInformation}</h3><dl>
           <div><dt>{m.botStartup}</dt><dd><span>{m[bot.startupResult.state]}</span>{bot.startupResult.code !== null ? <p>{m.reason(bot.startupResult.code)}</p> : null}</dd></div>
           <div><dt>{m.workerObservation}</dt><dd>{stale || !currentWorker ? m.workerUnknown : currentWorker.state === 'available' ? m.workerOnline : m.workerStates[currentWorker.state]}</dd></div>
-          <div><dt>{m.worker}</dt><dd>{currentWorker?.machine.name ?? bot.workerId}</dd></div>
+          <div><dt>{m.worker}</dt><dd><bdi>{names.name(bot.ownerUserId, bot.workerId, currentWorker?.machine.name ?? bot.workerId, true)}</bdi></dd></div>
           <div><dt>{m.cwd}</dt><dd><code>{bot.resolvedConfiguration.cwd}</code></dd></div>
           <div><dt>{m.agent}</dt><dd>{bot.resolvedConfiguration.provider === 'claude' ? 'Claude Code' : bot.resolvedConfiguration.provider === 'copilot' ? 'GitHub Copilot' : 'Codex'}</dd></div>
         </dl></section>

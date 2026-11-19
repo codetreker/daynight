@@ -3,11 +3,13 @@ import { writeFile } from 'node:fs/promises';
 import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId, botWorkerDefaults } from '../helpers/bots';
 import type { CreateBotInput } from '../../src/api/bots';
 
+const workerAlias = '上海办公室用于界面验证与跨页面机器识别的 Windows 工作站 '.repeat(2).trim();
 const workerName = '工作站 Workstation '.repeat(8), directory = '/projects/' + '很长的目录-long-directory/'.repeat(8);
 async function install(page: Page, options: { nativeDefault?: boolean; hiddenDefault?: boolean } = {}) {
   const personal = { id: botId(100), kind: 'personal', name: null };
   const posts: CreateBotInput[] = [], reads: { worker: string; operation: string; input: Record<string, unknown> }[] = [];
   let unknown = false, noWorker = false, capabilityError = false, paginated = false;
+  let alias: string | null = workerAlias, aliasVersion = 1;
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers(), status) } });
@@ -16,6 +18,7 @@ async function install(page: Page, options: { nativeDefault?: boolean; hiddenDef
     if (path === `/api/v1/teams/${personal.id}`) return send({ ...personal, version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME, membership: { teamId: personal.id, userId: BOT_USER, role: 'admin', version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME } });
     if (path === '/api/v1/assistant-tasks') return send({items:[],nextCursor:null,observedAt:BOT_TIME});
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/me/workers/${botId(20)}/alias` || path === `/api/v1/me/workers/${botId(21)}/alias`) return send({ workerId: path.split('/')[5], alias: { value: path.includes(botId(20)) ? alias : null, version: String(aliasVersion) } });
     if (path === '/api/v1/me/bots/defaults') {
       if (noWorker) return send({ ...botDefaults(), workerId: null, configuration: null, workers: [], reason: 'no_available_worker' });
       const workerId = url.searchParams.get('workerId') ?? botId(20);
@@ -42,7 +45,7 @@ async function install(page: Page, options: { nativeDefault?: boolean; hiddenDef
     if (path === '/api/v1/me/bots') return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'creation-fixture' } }, 404);
   });
-  return { posts, reads, paginate: () => { paginated = true; }, unknown: () => { unknown = true; }, noWorker: () => { noWorker = true; }, capabilityError: () => { capabilityError = true; } };
+  return { posts, reads, setAlias: (value: string | null) => { alias = value; aliasVersion++; }, paginate: () => { paginated = true; }, unknown: () => { unknown = true; }, noWorker: () => { noWorker = true; }, capabilityError: () => { capabilityError = true; } };
 }
 const open = async (page: Page) => { await page.locator('.bot-create').click(); await expect(page.locator('#bot-name')).toBeFocused(); await expect(page.locator('.bot-create-actions .primary')).toBeEnabled(); };
 async function geometry(page: Page) {
@@ -81,6 +84,8 @@ for (const locale of ['en', 'zh-CN']) for (const viewport of [{ width: 1440, hei
       if (viewport.width <= 800) { expect(measured.height).toBeGreaterThanOrEqual(44); expect(measured.fontSize).toBeGreaterThanOrEqual(16); }
     }
     await expect(page.locator('#bot-worker option').first()).toContainText(workerName);
+    await expect(page.locator('#bot-worker option').first()).toContainText(workerAlias);
+    await expect(page.locator('#bot-worker')).toHaveValue('');
     const expanded = await bounded(page);
     await page.screenshot({ path: info.outputPath('expanded.png') });
     await page.locator('#bot-cwd').scrollIntoViewIfNeeded();
@@ -90,6 +95,7 @@ for (const locale of ['en', 'zh-CN']) for (const viewport of [{ width: 1440, hei
     }
     await page.getByRole('button', { name: /^(Browse|浏览)$/ }).click();
     await expect(page.locator('.bot-directory-entry')).toBeVisible();
+    await expect(page.locator('.bot-directory-worker')).toHaveText(`${workerAlias} · ${workerName}`);
     const browsing = await bounded(page);
     await page.screenshot({ path: info.outputPath('browse.png') });
     await page.keyboard.press('Escape');
@@ -238,4 +244,33 @@ for (const hiddenDefault of [false, true]) test(`native default permits effort-o
   await expect.poll(() => fixture.posts.length).toBe(1);
   expect(fixture.posts[0]).toEqual({ id: expect.any(String), name: 'Native effort only', overrides: { workerId: botId(20), reasoningEffort: 'low' } });
   await writeFile(info.outputPath('native-effort-only.json'), JSON.stringify({ boundary: 'Production app and typed clients with controlled HTTP/Worker responses.', hiddenDefault, geometry: measured, posts: fixture.posts, reads: fixture.reads }, null, 2));
+});
+
+
+test('alias refresh and clear preserve the selected Worker and keyboard directory context', async ({ page }) => {
+  const fixture = await install(page); await page.goto('/bots'); await open(page);
+  await page.locator('#bot-name').fill('Alias target remains stable');
+  await page.locator('.bot-create-advanced > summary').click();
+  const worker = page.locator('#bot-worker');
+  await expect(worker.locator('option').first()).toContainText(workerAlias);
+  await worker.focus(); await page.keyboard.press('End'); await page.keyboard.press('Enter');
+  await expect(worker).toHaveValue(botId(21));
+  await expect(page.locator('.bot-create-summary')).toContainText('Second Worker');
+  await worker.selectOption(botId(20));
+  await expect(page.locator('.bot-create-summary')).toContainText(workerAlias);
+  fixture.setAlias('Updated office');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(worker.locator(`option[value="${botId(20)}"]`)).toHaveText(`Updated office · ${workerName}`);
+  await expect(worker).toHaveValue(botId(20));
+  await page.getByRole('button', { name: 'Browse', exact: true }).click();
+  await expect(page.locator('.bot-directory-worker')).toHaveText(`Updated office · ${workerName}`);
+  fixture.setAlias(null);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.locator('.bot-directory-worker')).toHaveText(workerName);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Browse', exact: true })).toBeFocused();
+  await expect(worker).toHaveValue(botId(20));
+  await page.locator('.bot-create-actions .primary').click();
+  await expect.poll(() => fixture.posts.length).toBe(1);
+  expect(fixture.posts[0]).toEqual({ id: expect.any(String), name: 'Alias target remains stable', overrides: { workerId: botId(20) } });
 });

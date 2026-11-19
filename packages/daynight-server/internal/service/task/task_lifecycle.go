@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -24,8 +25,33 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+	ctx, cancel, goal, err := s.lifecycleContext(ctx, principal, projectID, id)
+	if err != nil {
+		return model.Task{}, err
+	}
+	defer cancel()
+	result, err := s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+		if goal {
+			if err := tx.GoalDependencyDAO().LockTeam(ctx); err != nil {
+				return taskcore.Mutation{}, err
+			}
+			if _, err := s.writeOperations.requireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
+				return taskcore.Mutation{}, err
+			}
+		}
 		mutation, err := s.writeOperations.prepareStatus(ctx, tx.TaskDAO(), principal, id, input)
-		return mutation, err
+		if err != nil {
+			return taskcore.Mutation{}, err
+		}
+		if (mutation.Current.Type == model.TaskTypeGoal) != goal {
+			return taskcore.Mutation{}, fmt.Errorf("lifecycle target type changed")
+		}
+		if goal {
+			if err := taskcore.ValidateGoalStatus(ctx, tx.GoalDependencyDAO(), mutation.Current, input.Status); err != nil {
+				return taskcore.Mutation{}, err
+			}
+		}
+		return mutation, nil
 	})
+	return result, goalLifecycleError(err, goal)
 }

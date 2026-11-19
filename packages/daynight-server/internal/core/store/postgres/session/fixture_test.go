@@ -233,6 +233,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"github_app_admins",
 		"github_app_team_grants",
 		"github_apps",
+		"goal_dependency_revisions",
 		"login_transactions",
 		"oauth_access_tokens",
 		"oauth_authorizations",

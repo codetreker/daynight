@@ -271,7 +271,10 @@ var sessionArchiveRetentionSQL string
 //go:embed schema/migrations/090_dependency_types.sql
 var dependencyTypesSQL string
 
-//go:embed schema/migrations/091_session_archive_cleanup.sql
+//go:embed schema/migrations/091_goal_dependencies.sql
+var goalDependenciesSQL string
+
+//go:embed schema/migrations/092_session_archive_cleanup.sql
 var sessionArchiveCleanupSQL string
 
 type migration struct {
@@ -370,7 +373,8 @@ var schemaMigrations = []migration{
 	{version: 88, sql: githubCoverageSQL},
 	{version: 89, sql: sessionArchiveRetentionSQL},
 	{version: 90, sql: dependencyTypesSQL},
-	{version: 91, sql: sessionArchiveCleanupSQL},
+	{version: 91, sql: goalDependenciesSQL},
+	{version: 92, sql: sessionArchiveCleanupSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

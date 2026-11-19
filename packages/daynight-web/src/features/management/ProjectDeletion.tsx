@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useWorkerNames } from '../worker-names/useWorkerNames';
 import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from "../../api/client";
 import { browserNavigation, type BrowserLocation } from "../../app/navigation";
 import { deleteProject, isConfirmedProjectDeletionRefusal, previewProjectDeletion, type ProjectDeletionPreview, type ProjectDeletionReceipt } from "../../api/project-deletion";
@@ -40,6 +41,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
   const access = useProjectAccess(projectId), scope = access.session.scope;
   const { locale, messages: { inspection: { claim } } } = useI18n(), m = labels(locale === "zh-CN");
   const [dialog, setDialog] = useState(false), [preview, setPreview] = useState<ProjectDeletionPreview | null>(null);
+  const names = useWorkerNames(preview?.activeClaims.map(entry => entry.worker) ?? []);
   const [typed, setTyped] = useState(""), [loading, setLoading] = useState(false), [readError, setReadError] = useState<unknown>(null);
   const [pending, setPending] = useState(false), [settling, setSettling] = useState(false), [result, setResult] = useState<Result>(null), [checked, setChecked] = useState<"available" | "unavailable" | null>(null);
   const read = useRef<AbortController | null>(null), operation = useRef<{ controller: AbortController; dispatched: boolean } | null>(null);
@@ -229,7 +231,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
     {preview !== null && !unknown && !unavailable && access.status === "ready" && access.access?.teamRole === "admin" && !scope.isProjectSuspended(projectId) && <>
       <dl className="project-deletion-details"><dt>{m.name}</dt><dd>{needsEscape(preview.project.name) ? encodedName(preview.project.name) : preview.project.name}</dd><dt>{m.id}</dt><dd><code>{preview.project.id}</code></dd><dt>{m.repo}</dt><dd>{preview.project.repoUrl}</dd><dt>{m.team}</dt><dd>{preview.project.ownerTeam.kind === "personal" ? m.personal : preview.project.ownerTeam.name}</dd></dl>
       <p><strong>{m.scope}</strong><br />{m.impact}</p><p>{m.observed} · {preview.summary.taskCount} {m.tasks} · {preview.summary.unfinishedTaskCount} {m.unfinished} · {preview.summary.attachmentCount} {m.attachments} · <time>{preview.observedAt}</time></p><div className="notice warning">{m.retention}</div>
-      {preview.activeClaims.length > 0 && <div className="notice warning"><p>{m.blockers}</p><ul>{preview.activeClaims.map((entry) => <li key={entry.taskId}><a href={`/projects/${projectId}/tasks/${entry.taskId}`}>{entry.title}</a> <code>{entry.taskId}</code> · {entry.worker.machineName} · {entry.worker.platform} · {entry.worker.connectivity === "offline" ? m.offline : entry.worker.paused || entry.worker.phase === "paused" ? m.paused : claim.phase[entry.worker.phase]}</li>)}</ul></div>}
+      {preview.activeClaims.length > 0 && <div className="notice warning"><p>{m.blockers}</p><ul>{preview.activeClaims.map((entry) => <li key={entry.taskId}><a href={`/projects/${projectId}/tasks/${entry.taskId}`}>{entry.title}</a> <code>{entry.taskId}</code> · <bdi>{names.name(entry.worker.userId, entry.worker.workerId, entry.worker.machineName, true)}</bdi> · {entry.worker.platform} · {entry.worker.connectivity === "offline" ? m.offline : entry.worker.paused || entry.worker.phase === "paused" ? m.paused : claim.phase[entry.worker.phase]}</li>)}</ul></div>}
       {preview.nextCursor !== null && <button className="button" type="button" disabled={loading} onClick={() => load(preview.nextCursor!)}>{loading ? m.loading : m.more}</button>}
       <div className="field"><label htmlFor="project-deletion-name">{needsEscape(preview.project.name) ? m.escaped : m.input}</label><p className="project-deletion-challenge">{needsEscape(preview.project.name) ? encodedName(preview.project.name) : preview.project.name}</p><input id="project-deletion-name" type="text" autoComplete="off" spellCheck={false} value={typed} disabled={pending} onChange={(event) => { revision.current++; setTyped(event.target.value); }} /><p className="hint">{m.exact}</p></div>
     </>}

@@ -14,11 +14,13 @@ type ProjectDeletionSummary struct {
 	AttachmentCount     int64 `json:"attachmentCount"`
 }
 type ProjectDeletionWorker struct {
-	MachineName  string `json:"machineName"`
-	Platform     string `json:"platform"`
-	Phase        string `json:"phase"`
-	Paused       bool   `json:"paused"`
-	Connectivity string `json:"connectivity"`
+	UserID       *string `json:"userId,omitempty"`
+	WorkerID     *string `json:"workerId,omitempty"`
+	MachineName  string  `json:"machineName"`
+	Platform     string  `json:"platform"`
+	Phase        string  `json:"phase"`
+	Paused       bool    `json:"paused"`
+	Connectivity string  `json:"connectivity"`
 }
 type ProjectDeletionClaim struct {
 	TaskID string                `json:"taskId"`

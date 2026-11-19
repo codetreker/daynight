@@ -79,6 +79,10 @@ func newOrderedWrite(t *testing.T, h model.TaskHeader, rows []model.TaskStep) *o
 	return f
 }
 func (f *orderedWrite) TaskDAO() store.TaskWriteDAO { f.scoped("taskDAO"); return f }
+func (f *orderedWrite) GoalDependencyDAO() store.GoalDependencyDAO {
+	f.t.Fatal("unexpected GoalDependencyDAO call")
+	return nil
+}
 func (f *orderedWrite) WriteProject(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 	f.event("store")
 	if ctx != f.ctx || id != f.projectID || work == nil || f.active || f.completion == nil {

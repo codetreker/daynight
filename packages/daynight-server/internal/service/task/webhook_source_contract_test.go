@@ -283,10 +283,46 @@ type sourceWriteStore struct {
 	calls int
 }
 
-func (d *sourceWriteStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
-	d.t.Helper()
-	d.t.Error("source write unexpectedly entered a separate snapshot")
-	panic("unexpected source snapshot")
+func (d *sourceWriteStore) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
+	if ctx.Value(sourceContextKey{}) != d.ctx.Value(sourceContextKey{}) || run == nil {
+		d.t.Fatal("lifecycle preflight lost context")
+	}
+	if ctx != d.ctx {
+		d.t.Fatal("lifecycle preflight changed caller context")
+	}
+	return run(sourceSnapshot{t: d.t})
+}
+
+type sourceSnapshot struct {
+	store.SnapshotScope
+	t *testing.T
+}
+
+func (s sourceSnapshot) ProjectDAO() store.ProjectReader { return sourceProjectReader{t: s.t} }
+func (s sourceSnapshot) TaskDAO() store.TaskReader       { return sourceTaskReader{t: s.t} }
+
+type sourceProjectReader struct {
+	store.ProjectReader
+	t *testing.T
+}
+
+func (d sourceProjectReader) ProjectAccess(_ context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+	if p.UserID != sourceUserID || project != sourceProjectID {
+		d.t.Fatal("preflight changed principal or project")
+	}
+	return model.ProjectAccess{ProjectID: project, UserID: p.UserID, Role: model.ProjectAdmin}, nil
+}
+
+type sourceTaskReader struct {
+	store.TaskReader
+	t *testing.T
+}
+
+func (d sourceTaskReader) TaskHeader(_ context.Context, project, id string) (model.TaskHeader, error) {
+	if project != sourceProjectID || id != sourceTaskID {
+		d.t.Fatal("preflight changed task")
+	}
+	return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
 }
 
 func (d *sourceWriteStore) WriteProject(ctx context.Context, project string, work func(store.ProjectWriteScope) error) (store.Completion, error) {

@@ -73,6 +73,9 @@ func TestDeletionServicePreviewPermissionsAndClaims(t *testing.T) {
 	if first.Project.ID != project.ID || first.Summary.TaskCount != 3 || first.Summary.UnfinishedTaskCount != 2 || first.Summary.AttachmentCount != 1 || len(first.ActiveClaims) != 1 || first.ActiveClaims[0].TaskID != ids[0] || !first.ActiveClaims[0].Paused || first.ActiveClaims[0].Connectivity != "unknown" || first.NextCursor == nil {
 		t.Fatalf("first page: %+v", first)
 	}
+	if first.ActiveClaims[0].UserID != claim.UserID || first.ActiveClaims[0].WorkerID != claim.WorkerID {
+		t.Fatalf("claim identity changed: %+v", first.ActiveClaims[0])
+	}
 	exec(`INSERT INTO workers(user_id,worker_id,created_at,last_seen_at,telemetry,task_snapshot) VALUES($1,$2,now(),now()-interval '10 minutes','{}','{}')`, actor.UserID, claim.WorkerID)
 	page.Cursor = first.NextCursor
 	second, err := s.DeletionPreview(ctx, actor, project.ID, page)

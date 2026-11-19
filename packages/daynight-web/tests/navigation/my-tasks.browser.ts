@@ -463,3 +463,30 @@ test('Goal assignee receipt permits a write and refreshes both project graph and
   await expect.poll(() => listReads).toBeGreaterThan(before.list);
   await expect(dialog).toBeVisible();
 });
+
+
+for (const locale of ['en', 'zh-CN']) for (const width of [320, 1280]) {
+  test(`refreshes a Worker alias without replacing personal task history ${locale} ${width}px`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    let alias: string | null = '上海办公室跨页面识别的 Windows 工作站 '.repeat(2).trim(), version = 1;
+    await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: {
+      ...payload, totalTaskCount: 1, totalProjectCount: 1,
+      items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, task: { ...row(1).task, worker: { ...row(1).task.worker!, userId } } }],
+    }, headers: { 'Daynight-User-ID': userId, 'Daynight-Worker-Identity': '1' } }));
+    await page.route(`**/api/v1/me/workers/${taskId(70)}/alias`, route => route.fulfill({ json: { workerId: taskId(70), alias: { value: alias, version: String(version) } }, headers: { 'Daynight-User-ID': userId } }));
+    await page.goto('/tests/navigation/my-tasks-browser.html');
+    await page.getByLabel('Language').selectOption(locale);
+    const machine = page.locator('.task-row-machine');
+    await expect(machine).toContainText(alias!);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    expect(await machine.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath('personal-worker-alias.png') });
+    alias = 'Changed office'; version++;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(machine).toContainText(alias);
+    alias = null; version++;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(machine).toHaveText(`${locale === 'en' ? 'Claim machine: ' : '认领机器：'}${longWorker}`);
+    await expect(page.getByRole('link', { name: longTask, exact: true })).toBeVisible();
+  });
+}

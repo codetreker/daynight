@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -203,4 +204,37 @@ func TestProjectDeletionHTTPPreviewPageCount(t *testing.T) {
 		t.Fatalf("preview %+v", full)
 	}
 	h.assertCalls(map[string]int{"DeletionPreview": 3})
+}
+
+func TestProjectDeletionWorkerIdentityProtocol(t *testing.T) {
+	for _, values := range [][]string{nil, {"1"}, {"2"}, {""}, {"1", "1"}, {"1, 1"}} {
+		t.Run(fmt.Sprint(values), func(t *testing.T) {
+			h := newHTTPHarness(t)
+			h.Projects.DeletionPreviewFunc = func(_ context.Context, _ model.Principal, _ string, _ model.PageRequest) (projectservice.DeletionPreview, error) {
+				return projectservice.DeletionPreview{Project: h.Project, ActiveClaims: []projectservice.DeletionClaim{{TaskID: h.Project.ID, UserID: h.Principal.UserID, WorkerID: h.Project.ID, MachineName: "Retained machine"}}}, nil
+			}
+			request := h.request("GET", "/api/v1/projects/"+h.Project.ID+"/deletion-preview", "")
+			for _, value := range values {
+				request.Header.Add("Daynight-Worker-Identity", value)
+			}
+			response := httptest.NewRecorder()
+			h.Handler.ServeHTTP(response, request)
+			valid := len(values) == 0 || len(values) == 1 && values[0] == "1"
+			if !valid {
+				assertProjectError(t, response, 400, "invalid_input")
+				h.assertCalls(map[string]int{})
+				return
+			}
+			page := decodeResponse[api.ProjectDeletionPreview](t, response, 200)
+			worker := page.ActiveClaims[0].Worker
+			if len(values) == 0 {
+				if worker.UserID != nil || worker.WorkerID != nil || response.Header().Get("Daynight-Worker-Identity") != "" {
+					t.Fatalf("legacy identity leaked: %s", response.Body)
+				}
+			} else if worker.UserID == nil || *worker.UserID != h.Principal.UserID || worker.WorkerID == nil || *worker.WorkerID != h.Project.ID || response.Header().Get("Daynight-Worker-Identity") != "1" || worker.MachineName != "Retained machine" {
+				t.Fatalf("identity response: %s", response.Body)
+			}
+			h.assertCalls(map[string]int{"DeletionPreview": 1})
+		})
+	}
 }

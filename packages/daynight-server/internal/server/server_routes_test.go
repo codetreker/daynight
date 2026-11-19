@@ -2402,6 +2402,20 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 			}
 			return store.Completion{Outcome: store.TransactionCommitted}, nil
 		}
+		reader := &taskHTTPReaderMock{taskHTTPMockBase: base, TaskHeaderFn: func(ctx context.Context, project, id string) (model.TaskHeader, error) {
+			if ctx.Err() != nil || project != current.ProjectID || id != current.ID {
+				unexpectedHTTPCall(t, "delete preflight Task identity")
+			}
+			return model.TaskHeader{ProjectID: project, ID: id, Type: model.TaskTypeTask}, nil
+		}}
+		projectReader := &taskHTTPProjectReaderMock{taskHTTPMockBase: base, ProjectAccessFn: func(ctx context.Context, p model.Principal, project string) (model.ProjectAccess, error) {
+			if ctx.Err() != nil || p != f.principal || project != current.ProjectID {
+				unexpectedHTTPCall(t, "delete preflight authorization")
+			}
+			return taskHTTPMockAccess(f.project, p), nil
+		}}
+		snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: base, ProjectDAOFn: func() store.ProjectReader { return projectReader }, TaskDAOFn: func() store.TaskReader { return reader }}
+		f.store.ReadSnapshotCall = func(ctx context.Context, run func(store.SnapshotScope) error) error { return run(snapshot) }
 	}
 	prepareWrite(false, nil)
 	assertProjectError(t, projectRequest(handler, http.MethodDelete, path, `{"version":2}`), 409, "version_conflict")
@@ -2957,5 +2971,8 @@ func TestRootSharedIdentityAndSessionEngine(t *testing.T) {
 }
 
 func (d projectHTTPCreateDAO) RepositoryOccupied(ctx context.Context, team, identity string) (bool, error) {
- if identity == "" { panic("missing creation identity") }; return false,nil
+	if identity == "" {
+		panic("missing creation identity")
+	}
+	return false, nil
 }

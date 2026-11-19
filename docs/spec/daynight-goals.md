@@ -1,16 +1,16 @@
 # Goal 容器需求
 
-Goal 是具有独立身份、标题、描述、负责人、状态、Thread 和附件的项目资源。普通 Task 可归属于同项目的一个 Goal，也可不归属；Goal 不嵌套，不属于依赖图。现有 Task、资料和依赖不因引入 Goal 而迁移。
+Goal 是具有独立身份、标题、描述、负责人、状态、Thread 和附件的项目资源。普通 Task 可归属于同项目的一个 Goal，也可不归属；Goal 不嵌套，也不属于普通 Task 依赖图。现有 Task、资料和依赖不因引入 Goal 而迁移。
 
 Goal 的描述与附件保存当前有效的整体 spec、架构、任务拆解、关键决策、阶段成果、交付和整体验收结论，并记录已达成结果、剩余范围及重要阻碍。无论这些结论由 Session 直接形成，还是由子 Task 讨论、调研、设计或拆解产出，形成有效结论后都应更新 Goal 并核对保存结果。子 Task 保留自身的工作定义、责任、状态、成果和证据，并引用 Goal 的共享材料；临时操作和原始日志留在 Session。该归属约定由使用者维护，服务不会因子 Task 完成而自动汇总材料；子 Task 的数量进度不能代替整体交付与验收。CLI 和 MCP 的材料手册说明通用规则，各项目自行确定阶段、文件和确认要求。
 
 HTTP 和 MCP 创建接受 `type=goal`；省略类型创建普通 Task。类型创建后不可更改。普通 Task 的 `parentId` 可在创建时指定，更新时省略保持、null 移出、Goal ID 转移；目标必须是同项目中未删除的 Goal。归属变化使用子 Task 的精确版本，不改变依赖、状态或其他 Task 的版本。父 Goal 的状态不限制归属和普通 Task 的手动修改。
 
-Goal 默认 `todo`，负责人默认创建者；显式 `assignedTo:null` 表示未分配。Goal 可在 `todo`、`in_progress`、`done`、`cancelled` 间自由转换，同状态在版本检查后不写入。进入 `in_progress` 记录新的 startedAt；返回 `todo` 清空三个状态时间；进入 done 或 cancelled 保留可空 startedAt，分别记录 completedAt 或 cancelledAt 并清空另一终态时间。Goal 的 ready 始终为 false，不支持依赖、Steps、自动执行、平台要求或 Worker claim；可使用 `pullRequests`、Thread 和附件。
+Goal 默认 `todo`，负责人默认创建者；显式 `assignedTo:null` 表示未分配。Goal 可在 `todo`、`in_progress`、`done`、`cancelled` 间转换，同状态在版本检查后不写入。存在 Goal 验收依赖时，进入 `done` 要求所有直接前置 Goal 为 `done`；已有已完成的下游 Goal 依赖它时，拒绝离开 `done`。取消的前置不能满足完成条件。进入 `in_progress` 记录新的 startedAt；返回 `todo` 清空三个状态时间；进入 done 或 cancelled 保留可空 startedAt，分别记录 completedAt 或 cancelledAt 并清空另一终态时间。Goal 的 ready 始终为 false，不支持普通 Task 依赖、Steps、自动执行、平台要求或 Worker claim；可使用 `pullRequests`、Thread 和附件。
 
 普通子 Task 实际从其他状态进入 `in_progress` 时，无论由人工状态修改还是 Worker 领取触发，若其当前 Parent Goal 为 `todo`，服务端在同一事务中将 Goal 推进为 `in_progress`，按 Goal 自身生命周期更新起点、终态时间、更新时间和版本；任一写入失败时两者均不提交。Goal 已为 `in_progress`、`done` 或 `cancelled` 时保持原状态。没有 Parent 的 Task 正常开始；同状态请求、运行中修改其他字段或归属不触发该规则。子 Task 后续回退、完成、取消或释放领取不自动改变 Goal 状态，也不扫描或补改历史数据。Goal 的变更可由正常读取和增量同步观察，不产生执行 Task Webhook。
 
-Goal 按直接可见普通子 Task 汇总真实总数、done、cancelled 和未结束数量；Web 完成进度使用 done / (total - cancelled)，统计本身不派生 Goal 状态。完成进度的零分母及轨道遵守 [Web 进度规则](daynight-web.md#项目整体进度)。完成或取消 Goal 不改变、隐藏或停止孩子，但阻止后续自动领取；已有 claim 沿用自身规则。删除 Goal 只软删除容器并轮换项目缓存 epoch，保留孩子的 Parent、状态、版本、依赖和执行归属；孩子及其资料从正常入口不可见，原执行由下次成功库存观察进入既有停止和归档流程。删除成功只表示删除已提交，不表示进程已停止。
+Goal 按直接可见普通子 Task 汇总真实总数、done、cancelled 和未结束数量；Web 完成进度使用 done / (total - cancelled)，统计本身不派生 Goal 状态。完成进度的零分母及轨道遵守 [Web 进度规则](daynight-web.md#项目整体进度)。完成或取消 Goal 不改变、隐藏或停止孩子，但阻止后续自动领取；已有 claim 沿用自身规则。被其他未删除 Goal 引用的 Goal 不能直接删除。无入边时，删除 Goal 同事务移除其验收出边、推进实际变化的关系修订，软删除容器并轮换项目缓存 epoch；保留孩子的 Parent、状态、版本、普通 Task 依赖和执行归属；孩子及其资料从正常入口不可见，原执行由下次成功库存观察进入既有停止和归档流程。删除成功只表示删除已提交，不表示进程已停止。
 
 MCP 复用现有 Task 工具管理 Goal，`task_list` 可按类型及 Parent 选择，`task_ready` 保持普通 Task 并可按 Parent 选择。查询 Parent 省略表示不限、null 表示未归属、UUID 表示直接孩子；续页绑定筛选条件。Goal 状态写入不需要额外确认凭证。
 

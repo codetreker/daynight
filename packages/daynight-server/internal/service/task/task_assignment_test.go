@@ -128,6 +128,25 @@ func newAssignmentFixture(t *testing.T, current model.Task, prerequisites []mode
 		}
 		return store.Completion{Outcome: store.TransactionCommitted}, nil
 	}}
+	reader := &taskReaderMock{taskMockBase: base.withLabel("preflight-task"), TaskHeaderFn: func(ctx context.Context, projectID, id string) (model.TaskHeader, error) {
+		if ctx != f.ctx || projectID != project.ID || id != current.ID {
+			t.Fatal("preflight Task identity/context")
+		}
+		return model.TaskHeader{ProjectID: projectID, ID: id, Type: current.Type}, nil
+	}}
+	projects := &projectReaderMock{taskMockBase: base.withLabel("preflight-project"), ProjectAccessFn: func(ctx context.Context, p model.Principal, projectID string) (model.ProjectAccess, error) {
+		if ctx != f.ctx || p != principal || projectID != project.ID {
+			t.Fatal("preflight authorization scope")
+		}
+		return taskMockAccess(project, principal), nil
+	}}
+	snapshot := &taskSnapshotScopeMock{taskMockBase: base.withLabel("preflight-snapshot"), ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return reader }}
+	f.database.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error {
+		if ctx != f.ctx {
+			t.Fatal("preflight changed caller context")
+		}
+		return work(snapshot)
+	}
 	f.tasks = taskservice.NewTasks(f.database, f.capture)
 	return f
 }
