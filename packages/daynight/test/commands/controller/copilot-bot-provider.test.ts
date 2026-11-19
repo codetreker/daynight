@@ -54,7 +54,7 @@ function fixture() {
     onTimeline: () => {}, onSpawn: () => {}, onState: value => states.push(value), onFatalError: error => fatal.push(error),
   };
   const open = async (extra: Partial<ProviderOptions> = {}) => { const provider = await openCopilotProvider({ ...options, ...extra }); providers.push(provider); return provider; };
-  const emit = (type: string, data: unknown = {}) => config.onEvent({ id: randomUUID(), timestamp: new Date().toISOString(), parentId: null, type, data });
+  const emit = (type: string, data: unknown = {}, ephemeral = false) => config.onEvent({ id: randomUUID(), timestamp: new Date().toISOString(), parentId: null, type, data, ...(ephemeral ? { ephemeral: true } : {}) });
   return { open, options, native, client, close, states, fatal, emit, messageId };
 }
 
@@ -127,6 +127,23 @@ test("rechecks native work after flush before copying recovery material", async 
   f.client.rpc.sessions.save.mockImplementation(async () => { f.native.rpc.metadata.activity.mockResolvedValue({ hasActiveWork: true, abortable: true }); return {}; });
   f.emit("session.idle"); await vi.waitFor(() => expect(f.fatal).toHaveLength(1));
   expect(f.client.rpc.sessions.save).toHaveBeenCalledOnce(); expect(recovery.protect).not.toHaveBeenCalled();
+});
+
+test("assistant idle with pending background work waits for complete session idle before protecting", async () => {
+  const f = fixture(), provider = await f.open(), receipt = await provider.send(textNativeInput("one"), randomUUID(), null);
+  f.native.rpc.metadata.activity.mockResolvedValue({ hasActiveWork: true, abortable: true });
+  f.native.rpc.tasks.list.mockResolvedValue({ tasks: [{ id: "attached-shell" }] });
+  let completed = false;
+  const completion = provider.waitForTurn(receipt.turnId!, Date.now() + 1000).then(() => { completed = true; });
+  void completion.catch(() => {});
+  f.emit("assistant.idle"); await Promise.resolve();
+  expect(f.client.rpc.sessions.save).not.toHaveBeenCalled(); expect(recovery.protect).not.toHaveBeenCalled();
+  expect(f.fatal).toHaveLength(0); expect(completed).toBe(false); expect(f.states.at(-1)!.activity).not.toBe("idle");
+  f.native.rpc.metadata.activity.mockResolvedValue({ hasActiveWork: false, abortable: false });
+  f.native.rpc.tasks.list.mockResolvedValue({ tasks: [] });
+  f.emit("session.idle"); await completion;
+  expect(f.client.rpc.sessions.save).toHaveBeenCalledOnce(); expect(recovery.protect).toHaveBeenCalledOnce();
+  expect(completed).toBe(true); expect(f.states.at(-1)!.activity).toBe("idle"); expect(f.fatal).toHaveLength(0);
 });
 
 test("unknown send outcome rejects subsequent input and ignores a late idle event", async () => {
@@ -213,6 +230,21 @@ test.each(["assistant.turn_start", "tool.execution_start"])("%s during snapshot 
   expect(commits).not.toHaveBeenCalled(); expect(f.states.at(-1)!.activity).toBe("unknown");
   await expect(provider.send(textNativeInput("two"), randomUUID(), null)).rejects.toThrow();
   expect(f.native.send).toHaveBeenCalledOnce();
+});
+
+test("empty ephemeral background-task notifications do not invalidate completed work during protection", async () => {
+  const f = fixture(), barrier = deferred<void>(), committed = vi.fn(); releaseBarriers.push(() => barrier.resolve());
+  recovery.protect.mockImplementation(async (_native, _turn, _message, assertCurrent: () => void) => {
+    await barrier.promise; assertCurrent(); committed();
+  });
+  const provider = await f.open(), receipt = await provider.send(textNativeInput("one"), randomUUID(), null);
+  f.emit("session.idle"); await vi.waitFor(() => expect(recovery.protect).toHaveBeenCalledOnce());
+  recovery.markDirty.mockClear();
+  f.emit("session.background_tasks_changed", {}, true);
+  expect(recovery.markDirty).not.toHaveBeenCalled(); expect(f.fatal).toHaveLength(0);
+  barrier.resolve(); await provider.waitForTurn(receipt.turnId!, Date.now() + 1000);
+  expect(committed).toHaveBeenCalledOnce(); expect(f.states.at(-1)!.activity).toBe("idle");
+  await provider.send(textNativeInput("two"), randomUUID(), null); expect(f.native.send).toHaveBeenCalledTimes(2);
 });
 
 test("unrequested tool work after protected idle marks recovery dirty before reporting the failure", async () => {

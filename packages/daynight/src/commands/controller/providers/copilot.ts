@@ -154,7 +154,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       if (event.type === "assistant.turn_start" && !turnStartedAt) { const stamp = Date.parse(event.timestamp); if (Number.isFinite(stamp)) turnStartedAt = new Date(stamp).toISOString(); }
       if (nextInteraction) interactionId = nextInteraction;
       activity = "working"; state();
-    } else if (event.type === "assistant.idle" || event.type === "session.idle") { images.finishHistory(); finish(null); }
+    } else if (event.type === "session.idle" || !recovery && event.type === "assistant.idle") { images.finishHistory(); finish(null); }
     else if (event.type === "abort") finish(new Error("Native Copilot turn was canceled."));
     else if (event.type === "session.error") finish(new Error(string(data.message) || "Native Copilot turn failed."));
     else if (event.type === "session.shutdown") disconnect(new Error("Native Copilot session closed; operation results are unknown."));
@@ -162,7 +162,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   const onEvent = (event: SessionEvent) => {
     if (recovery && !closed && !disconnected && !seen.has(event.id) && (event.type === "user.message" || event.type === "assistant.turn_start"
       || event.type === "tool.execution_start" || event.type === "session.model_change" || event.type === "session.mode_changed"
-      || /compaction|subagent|autopilot|background|task\./.test(event.type))) {
+      || /compaction|subagent|autopilot|task\./.test(event.type))) {
       recoveryEpoch++;
       try { recovery.markDirty(); }
       catch (error) { disconnect(error instanceof Error ? error : new Error(String(error))); return; }

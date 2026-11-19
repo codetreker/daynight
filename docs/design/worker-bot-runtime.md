@@ -78,7 +78,7 @@ Bot 删除在停证之后将同一派生恢复目录纳入既有精确删除计�
 
 新建专属存储的 Copilot Bot 使用 `copilotBotRecovery` 绑定 `bots/<botId>/native/copilot/`。`recovery.sqlite` 保存服务域、账号、Bot、平台 Session、原生 ID、真实 cwd、原生配置根、版本、dirty 屏障和最后受保护轮次；`snapshots/<id>/` 保存独立的原生目录快照。旧 ticket、普通 Task/Test 保留原行为。Bot 删除计划包含该私有目录，共享 `COPILOT_HOME` 和工作区不在删除集合中。
 
-适配组合限定为 SDK 1.0.11 与实际 CLI 1.0.105。Provider 保持原配置目录及 hooks，核对 `metadata.snapshot().workspacePath` 与原生 Session 目录一致。启动、恢复、输入和设置派发之前，通过 DELETE 日志与 EXTRA 同步持久提交 dirty。成功轮次先确认原生输入 ID，检查 processing、activity、后台任务和输入队列，再调用 `sessions.save` 等待原生待写数据落盘并重查空闲。保护期间保留当前轮次，禁止新的输入、设置和取消；快照提交后才报告完成并开放下一轮。发送、设置或保护结果未知时断开执行并保留证据，不以迟到结果自动恢复准入。
+适配组合限定为 SDK 1.0.11 与实际 CLI 1.0.105。Provider 保持原配置目录及 hooks，核对 `metadata.snapshot().workspacePath` 与原生 Session 目录一致。启动、恢复、输入和设置派发之前，通过 DELETE 日志与 EXTRA 同步持久提交 dirty。成功轮次等待完整会话的 `session.idle`，不以仍可有后台工作的 `assistant.idle` 作为保护信号；随后确认原生输入 ID，检查 processing、activity、后台任务和输入队列，再调用 `sessions.save` 等待原生待写数据落盘并重查空闲。保护期间保留当前轮次，禁止新的输入、设置和取消；快照提交后才报告完成并开放下一轮。发送、设置或保护结果未知时断开执行并保留证据，不以迟到结果自动恢复准入。
 
 快照复制前后对整个目标目录枚举并校验摘要，SQLite 使用在线 backup 包含已提交 WAL；原生执行锁不属于恢复数据。快照须包含原输入、助手完成记录及全部工具结果，提交前再次核对当前执行仍有效；发生变化、材料损坏或未验证的 compact、子 Agent、autopilot 等记录时拒绝保护。新快照同步完成后才原子提交 manifest；旧点清理失败单独报告已提交结果。运行中追加输入被拒绝，避免一个完成事件替另一项未完成输入清除 dirty。空闲设置变更仍需后续成功轮次提供保护边界。
 
