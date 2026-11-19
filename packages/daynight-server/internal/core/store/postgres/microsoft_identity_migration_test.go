@@ -95,6 +95,24 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 }
 
 func TestMicrosoftIdentityMigrationRejectsInvalidOrCollidingKeysAtomically(t *testing.T) {
+	pool := emptyPool(t)
+	if err := migrate(t.Context(), pool, schemaMigrations[:63]); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{Pool: pool}
+	for index, identity := range []string{"microsoft:tenant:object", "microsoft:tenant:another"} {
+		mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, queryID(index+1), identity)
+	}
+	readLedger := func(t *testing.T) string {
+		t.Helper()
+		var result string
+		if err := pool.QueryRow(t.Context(), `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m`).Scan(&result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	initialAccounts, ledger := microsoftIdentityRows(t, pool, false), readLedger(t)
+
 	for _, test := range []struct {
 		name, invalid, code string
 	}{
@@ -104,16 +122,9 @@ func TestMicrosoftIdentityMigrationRejectsInvalidOrCollidingKeysAtomically(t *te
 		{"ambiguous standard component", "msft:object@tenant@extra", "P1064"},
 		{"existing account", "msft:object@tenant", "23505"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		if !t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
-			pool := emptyPool(t)
-			if err := migrate(ctx, pool, schemaMigrations[:63]); err != nil {
-				t.Fatal(err)
-			}
-			s := &Store{Pool: pool}
-			for index, identity := range []string{"microsoft:tenant:object", "microsoft:tenant:another", test.invalid} {
-				mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, queryID(index+1), identity)
-			}
+			mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, queryID(3), test.invalid)
 			before := microsoftIdentityRows(t, pool, false)
 			err := migrate(ctx, pool, schemaMigrations)
 			var cause *pgconn.PgError
@@ -123,11 +134,16 @@ func TestMicrosoftIdentityMigrationRejectsInvalidOrCollidingKeysAtomically(t *te
 			if after := microsoftIdentityRows(t, pool, false); after != before {
 				t.Fatalf("failed migration partially changed accounts: before=%s after=%s", before, after)
 			}
-			var version int64
-			if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version != 63 {
-				t.Fatalf("failed migration advanced ledger: version=%d error=%v", version, err)
+			if after := readLedger(t); after != ledger {
+				t.Fatalf("failed migration changed the historical ledger: %s", after)
 			}
-		})
+			mustQueryExec(t, s, `DELETE FROM users WHERE id=$1`, queryID(3))
+			if after := microsoftIdentityRows(t, pool, false); after != initialAccounts {
+				t.Fatalf("account fixture was not restored: %s", after)
+			}
+		}) {
+			return
+		}
 	}
 }
 
