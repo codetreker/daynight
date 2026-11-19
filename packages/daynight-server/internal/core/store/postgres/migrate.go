@@ -307,7 +307,7 @@ var webhookEventActorSQL string
 //go:embed schema/migrations/098_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
-//go:embed schema/migrations/101_assistant_task_appendix_validations.sql
+//go:embed schema/migrations/102_assistant_task_appendix_validations.sql
 var assistantTaskAppendixValidationsSQL string
 
 type migration struct {
@@ -414,7 +414,7 @@ var schemaMigrations = []migration{
 	{version: 96, sql: prReviewAssignmentSQL},
 	{version: 97, sql: webhookEventActorSQL},
 	{version: 98, sql: assistantTaskOutcomesSQL},
-	{version: 101, sql: assistantTaskAppendixValidationsSQL},
+	{version: 102, sql: assistantTaskAppendixValidationsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
