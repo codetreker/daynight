@@ -252,7 +252,9 @@ describe('project dialog focus restoration', () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    await screen.findByRole('heading', { name: '暂无任务链' });
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: '暂无任务链' })).not.toBeNull();
+    }, { container: document.body });
     await waitFor(() => expect(screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
     expectModalReleased();
