@@ -218,6 +218,8 @@ Access-Control-Request-Headers`。GET、HEAD、POST、PUT、PATCH、DELETE 保�
 这些生产者方法的 OPTIONS 无凭据返回 403，不发送 CORS 头，不认证或建立上传预留。
 归档根的用户状态读取、content 与文件字节读取，以及用户图片上传继续使用用户 CORS；
 原读取、写入和生产者凭据规则保持。Controller 和 Worker 生产通道不转换为用户能力。
+公开助手任务收件箱接收路由 `/api/v1/assistant-task-inbox/{inboxId}` 同样不属于用户 CORS，
+其 OPTIONS 落入该路由的 405；接收契约由[助手任务收件箱规格](../spec/assistant-task-inbox.md)维护。
 
 请求头名称按 HTTP 大小写规则匹配，业务头的值、多值拒绝、协商和容量规则仍由原 parser
 拥有。完整允许请求头为：
