@@ -22,7 +22,7 @@ const fixture = async () => {
 };
 
 test("indexes and releases a transcript under a deep Bot execution directory", async () => {
-  const f = await fixture(), indexDirectory = path.join(f.root, "a".repeat(100), "b".repeat(100), "native-index");
+  const f = await fixture(), indexDirectory = path.join(f.root, "a".repeat(160), "b".repeat(160), "native-index");
   expect(indexDirectory.length).toBeGreaterThan(300);
   await mkdir(indexDirectory, { recursive: true, mode: 0o700 });
   await f.write([f.record("user", null, "user", "retained content")]);

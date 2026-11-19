@@ -9,7 +9,7 @@ test("deep SQLite roots retain their identity across lock ownership, WAL commits
   const base = path.resolve(import.meta.dirname, "../../../../.tmp/sqlite-filename");
   mkdirSync(base, { recursive: true });
   const root = mkdtempSync(path.join(base, "h-"));
-  const directory = path.join(root, "a".repeat(100), "b".repeat(100));
+  const directory = path.join(root, "a".repeat(160), "b".repeat(160));
   mkdirSync(directory, { recursive: true });
   const file = path.join(directory, "store.sqlite");
   expect(file.length).toBeGreaterThan(300);
