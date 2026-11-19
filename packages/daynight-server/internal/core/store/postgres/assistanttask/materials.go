@@ -68,9 +68,12 @@ func (d *DAO) DeleteAppendixValidations(ctx context.Context, owner, task, append
 	return d.execute(ctx, "delete assistant appendix validations", `DELETE FROM assistant_task_appendix_validations WHERE owner_user_id=$1 AND task_id=$2 AND appendix_id=$3`, owner, task, appendix)
 }
 
-// relatedAppendixSQL treats each dimension alike: an empty query value is
-// neutral, an empty stored set is unrestricted and neutral, and a nonempty set
-// either contains the queried value (one point) or excludes the appendix.
+// relatedAppendixSQL executes the assistanttask module's
+// RelatedAppendixMatch filter and score and its CompareRelatedAppendices order:
+// an empty query value is neutral, an empty stored set is unrestricted and
+// neutral, and a nonempty set either contains the queried value (one point) or
+// excludes the appendix. Canonical UUID text order equals uuid order, so the
+// final ID tie-break agrees with the module's string comparison.
 const relatedAppendixSQL = `SELECT ` + appendixColumns + ` FROM assistant_task_appendix
 WHERE owner_user_id=$1 AND task_id=$2 AND state<>'deleted'
  AND ($3='' OR scope_project_ids='[]'::jsonb OR scope_project_ids @> jsonb_build_array($3::text))
