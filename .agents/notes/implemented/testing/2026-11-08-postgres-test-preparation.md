@@ -144,6 +144,13 @@ the actual blocking backend and checks committed ownership or its absence.
 The parent verifies pool reuse after the case joins its waiters. Failure stops
 fixture reuse.
 
+Preview SSO retry and redemption refusal matrices own one Store each.
+Each case uses a separate login ID, Session, credential and set of token
+hashes. It still commits authorization before exercising the real refusal,
+rollback or expired-code cleanup and reading the affected login back. The
+cleanup case runs before the other redemption cases seed their logins.
+The parent checks pool reuse after each case.
+
 The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
 share one Store per parent and give each case independent account, Project,
 Task, credential, claim and Session identities. The registration refusal
