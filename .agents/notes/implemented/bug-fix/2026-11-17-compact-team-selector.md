@@ -13,7 +13,8 @@ unbalanced.
 
 The selector uses a centered 12px decorative SVG chevron and a 24px avatar.
 Its trigger is 36px high on wide fine-pointer displays and at least 44×44px
-on narrow or coarse-pointer layouts, including the collapsed rail. The
+on narrow or coarse-pointer layouts, including the desktop collapsed rail and
+the mobile drawer. The
 [single-line decision](../simplification/2026-11-17-single-line-team-selector.md)
 and [popover decision](../feature/2026-11-05-team-switcher-popover.md) retain
 their name, menu and focus contracts.

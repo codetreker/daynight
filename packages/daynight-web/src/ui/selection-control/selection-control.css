@@ -1,22 +1,21 @@
 .selection-control[data-density] {
   --selection-control-height: 38px;
-  --selection-control-font-size: 12px;
+  --selection-control-font-size: var(--text-interface);
   --selection-control-focus: #8c8cf0;
   --selection-control-min-hit-width: 0px;
   --selection-control-count-height: 18px;
-  --selection-control-count-font-size: 10px;
+  --selection-control-count-font-size: var(--text-metadata);
 }
-.selection-control[data-density="compact"] { --selection-control-height: 24px; --selection-control-font-size: 10px; }
-.selection-control[data-density="filter"] { --selection-control-height: 32px; --selection-control-font-size: 11px; }
+.selection-control[data-density="compact"] { --selection-control-height: 24px; }
+.selection-control[data-density="filter"] { --selection-control-height: 32px; }
 .selection-control[data-focus-tone="task"] { --selection-control-focus: #344054; }
 
 @media (max-width: 800px), (pointer: coarse) {
   .selection-control[data-touch-mode="responsive"] {
     --selection-control-height: 44px;
-    --selection-control-font-size: 16px;
+    --selection-control-font-size: max(var(--text-interface), 16px);
     --selection-control-min-hit-width: 44px;
     --selection-control-count-height: 20px;
-    --selection-control-count-font-size: 12px;
   }
 }
 @container native-select-region (max-width: 600px) {
@@ -25,10 +24,9 @@
 @media (pointer: coarse) {
   .selection-control[data-touch-mode="container"] {
     --selection-control-height: 44px;
-    --selection-control-font-size: 16px;
+    --selection-control-font-size: max(var(--text-interface), 16px);
     --selection-control-min-hit-width: 44px;
     --selection-control-count-height: 20px;
-    --selection-control-count-font-size: 12px;
   }
 }
 
@@ -40,7 +38,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  block-size: var(--selection-control-height);
+  block-size: max(var(--selection-control-height), calc(1.5 * var(--selection-control-font-size) + 2px));
   margin: 0;
   padding: 0 10px;
   border: 1px solid #dce0e8;
@@ -65,7 +63,7 @@
   justify-content: center;
   flex: none;
   min-inline-size: var(--selection-control-count-height);
-  block-size: var(--selection-control-count-height);
+  block-size: max(var(--selection-control-count-height), calc(1.5 * var(--selection-control-count-font-size)));
   padding: 0 5px;
   border-radius: 5px;
   background: #52649b;

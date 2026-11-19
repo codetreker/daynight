@@ -114,6 +114,51 @@
     }
   },
   {
+    "name": "project_preview_repository",
+    "description": "Preview a Project repository address change. Show the Project, old and new addresses, classification and binding effects to the user before requesting explicit confirmation. An unverified identity can be treated as a switch only with separate explicit agreement.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {"type": "string", "format": "uuid"},
+        "repoUrl": {"type": "string", "description": "Repository address, at most 4096 UTF-8 bytes."}
+      },
+      "required": ["projectId", "repoUrl"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "project_set_repository",
+    "description": "Save a confirmed Project repository change. First preview and show the Project, old and new addresses, classification and effects. A switch disconnects the Project GitHub App binding and removes existing Worker cloud selections; Worker synchronization has a window and running executions may stop. Obtain explicit user confirmation; for unverified identity also obtain explicit agreement to treat it as a switch. No answer or refusal means no write call. Submit confirm:true and the exact preview versions, classification and nullable target ID without refreshing them. On conflict, preview again and obtain new confirmation. For an unknown outcome, read the current state; never replay automatically.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {"type": "string", "format": "uuid"},
+        "repoUrl": {"type": "string", "description": "Exactly the candidate address from the confirmed preview, at most 4096 UTF-8 bytes."},
+        "repositoryVersion": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$", "description": "Exact positive int64 decimal string from the confirmed preview."},
+        "ownershipVersion": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$", "description": "Exact positive int64 decimal string from the confirmed preview."},
+        "classification": {"enum": ["unchanged", "same_repository", "different_repository", "unverified"]},
+        "targetGitHubRepositoryId": {"anyOf": [{"type": "string", "pattern": "^[1-9][0-9]{0,18}$"}, {"type": "null"}], "description": "Exact nullable target ID from the confirmed preview; a string is a positive decimal int64."},
+        "treatUnverifiedAsSwitch": {"type": "boolean", "description": "True only when the user explicitly agrees to treat an unverified identity as a switch."},
+        "confirm": {"const": true}
+      },
+      "required": ["projectId", "repoUrl", "repositoryVersion", "ownershipVersion", "classification", "targetGitHubRepositoryId", "confirm"],
+      "allOf": [
+        {"if": {"properties": {"classification": {"const": "unverified"}}, "required": ["classification"]}, "then": {"properties": {"treatUnverifiedAsSwitch": {"const": true}}, "required": ["treatUnverifiedAsSwitch"]}, "else": {"properties": {"treatUnverifiedAsSwitch": {"const": false}}}}
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
     "name": "project_list",
     "description": "Read one complete page of accessible projects.",
     "inputSchema": {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ApiError, authRequestsPaused } from '../../api/client';
-import { AssistantTaskWriteUnknown, getAssistantTaskClaimOperation } from '../../api/assistant-tasks';
+import { AssistantTaskWriteUnknown, getAssistantTaskClaimOperation, type AssistantTaskAdmission } from '../../api/assistant-tasks';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { assistantTaskAdmission } from './assistant-task-data';
 import { useAssistantTaskMessages } from './messages';
@@ -13,12 +13,13 @@ class MutationState {
 }
 const states=new WeakMap<TaskCacheScope,Map<string,MutationState>>();
 function stateFor(scope:TaskCacheScope,key:string){let map=states.get(scope);if(!map){map=new Map();states.set(scope,map);}let state=map.get(key);if(!state){state=new MutationState();map.set(key,state);}return state;}
-/** An original write and its unknown outcome remain observable across navigation. */
-export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pending:AssistantTaskWriteUnknown|null)=>Promise<unknown>){
+type ReceiptReader=(taskId:string,operationId:string,signal:AbortSignal,admission:AssistantTaskAdmission)=>Promise<unknown>;
+/** An original write and its unknown outcome remain observable across navigation; readReceipt reads the receipt store that owns the write's operation ID. */
+export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pending:AssistantTaskWriteUnknown|null)=>Promise<unknown>,readReceipt:ReceiptReader=getAssistantTaskClaimOperation){
   const scope=useTaskCacheScope(),m=useAssistantTaskMessages(),state=stateFor(scope,key);
   const {busy,unknown}=useSyncExternalStore(state.subscribe,state.snapshot);
   const [error,setError]=useState<unknown>(null),[checked,setChecked]=useState(false);
-  const live=useRef(true),current=useRef({scope,key,enabled,reload});current.current={scope,key,enabled,reload};
+  const live=useRef(true),current=useRef({scope,key,enabled,reload,readReceipt});current.current={scope,key,enabled,reload,readReceipt};
   useEffect(()=>{live.current=true;return()=>{live.current=false;};},[]);
   useEffect(()=>{setError(null);setChecked(false);},[scope,key,unknown]);
   const allowed=()=>live.current&&current.current.scope===scope&&current.current.key===key&&current.current.enabled&&!scope.isInvalidated&&!authRequestsPaused();
@@ -46,7 +47,7 @@ export function useAssistantTaskMutation(key:string,enabled:boolean,reload:(pend
     try{
       await scope.ready(scope.signal);if(!allowed())return;
       if(unknown?.operationId){
-        try{await getAssistantTaskClaimOperation(unknown.taskId,unknown.operationId,scope.signal,assistantTaskAdmission(scope));}
+        try{await current.current.readReceipt(unknown.taskId,unknown.operationId,scope.signal,assistantTaskAdmission(scope));}
         catch(failure){if(!(failure instanceof ApiError&&failure.status===404))throw failure; /* A missing receipt is an observation, not proof of failure. */}
       }
       await current.current.reload(unknown);if(allowed())setChecked(true);

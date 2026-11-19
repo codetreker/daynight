@@ -18,9 +18,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// inboxDeliveryScan bounds the deliveries read for one verification. One
-// event has at most one delivery per endpoint, and only the owner's personal
-// endpoints at this server's origin are read.
+// inboxDeliveryScan is the page size of the deliveries read for one
+// verification. Verification pages through every candidate, because an owner
+// may have any number of personal endpoints at this server's origin.
 const inboxDeliveryScan = 100
 
 // ReceiveInput is one inbox request after the protocol adapter extracted its
@@ -296,16 +296,9 @@ func (s *Inbox) verifyDaynight(ctx context.Context, scope store.AssistantTaskInb
 	if provenance.FactRemovedAt != nil || !bytes.Equal(provenance.FactSHA256, sum[:]) {
 		return nil, nil
 	}
-	destinations, err := sources.PersonalDeliveryDestinations(ctx, id, inbox.OwnerUserID, s.origin, inboxDeliveryScan)
-	if err != nil {
+	targeted, err := inboxTargeted(ctx, sources, id, inbox, s.origin)
+	if err != nil || !targeted {
 		return nil, err
-	}
-	targeted := false
-	for _, destination := range destinations {
-		targeted = targeted || core.InboxTargetMatches(destination, s.origin, inbox.InboxID)
-	}
-	if !targeted {
-		return nil, nil
 	}
 	_, err = scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: inbox.OwnerUserID}, fact.ProjectID)
 	if errors.Is(err, model.ErrNotFound) {
@@ -315,6 +308,27 @@ func (s *Inbox) verifyDaynight(ctx context.Context, scope store.AssistantTaskInb
 		return nil, err
 	}
 	return &verifiedEvent{eventID: id, taskID: fact.TaskID, actor: inboundActor(provenance.Actor)}, nil
+}
+
+// inboxTargeted reports whether any of the owner's personal deliveries of the
+// event targets this inbox, reading candidates page by page.
+func inboxTargeted(ctx context.Context, sources store.WebhookInboundSourceReader, eventID string, inbox model.AssistantTaskInbox, origin string) (bool, error) {
+	after := ""
+	for {
+		page, err := sources.PersonalDeliveryDestinations(ctx, eventID, inbox.OwnerUserID, origin, after, inboxDeliveryScan)
+		if err != nil {
+			return false, err
+		}
+		for _, destination := range page {
+			if core.InboxTargetMatches(destination.Configuration, origin, inbox.InboxID) {
+				return true, nil
+			}
+		}
+		if len(page) < inboxDeliveryScan {
+			return false, nil
+		}
+		after = page[len(page)-1].DeliveryID
+	}
 }
 
 func inboundActor(actor wm.Actor) *core.InboundActor {

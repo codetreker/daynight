@@ -59,7 +59,7 @@ func itemResponse(value model.AssistantTaskItem) api.AssistantTaskItem {
 		FollowerBotID: value.FollowerBotID, AppState: value.AppState, Version: value.Version, CreatedAt: value.CreatedAt.UTC(), UpdatedAt: value.UpdatedAt.UTC()}
 }
 func recordResponse(value model.AssistantTaskRecord) api.AssistantTaskRecord {
-	return api.AssistantTaskRecord{ID: value.ID, TaskID: value.TaskID, ItemID: value.ItemID, Author: value.Author, AuthorBotID: value.AuthorBotID, Kind: value.Kind, Text: value.Text, Refs: value.Refs, CreatedAt: value.CreatedAt.UTC()}
+	return api.AssistantTaskRecord{ID: value.ID, TaskID: value.TaskID, ItemID: value.ItemID, Author: value.Author, AuthorBotID: value.AuthorBotID, Kind: value.Kind, Text: value.Text, Outcome: value.Outcome, ActionRecordID: value.ActionRecordID, Refs: value.Refs, CreatedAt: value.CreatedAt.UTC()}
 }
 func eventResponse(value model.AssistantTaskEvent) api.AssistantTaskEvent {
 	return api.AssistantTaskEvent{ID: value.ID, TaskID: value.TaskID, TargetBotID: value.TargetBotID, Type: value.Type, Payload: value.Payload, State: value.State,

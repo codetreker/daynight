@@ -203,24 +203,25 @@ func TestAssistantTaskInboundRejectsBacklogAndReclaims(t *testing.T) {
 	}
 }
 
-// The receive scope must expose the Daynight verification readers bound to its
-// transaction: a missing captured event and an inaccessible project report
-// their documented sentinels instead of a storage failure.
-func TestAssistantTaskInboundScopeBindsVerificationReaders(t *testing.T) {
+// The inbound scope exposes the webhook source and project access readers on
+// the receive transaction, so a missing event or project surfaces each
+// reader's documented absence error instead of a generic query failure.
+func TestAssistantTaskInboundScopeExposesSourceReaders(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	f := newInboundFixture(t)
-	ctx := t.Context()
-	completion, err := f.database.WriteAssistantTaskInbound(ctx, func(scope store.AssistantTaskInboundScope) error {
-		if _, err := scope.WebhookInboundSources().CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
-			return errors.Join(errors.New("missing captured event was not reported"), err)
+	database := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	completion, err := database.WriteAssistantTaskInbound(ctx, func(scope store.AssistantTaskInboundScope) error {
+		sources := scope.WebhookInboundSources()
+		if _, err := sources.CapturedEventProvenance(ctx, uuid.NewString()); !errors.Is(err, store.ErrWebhookCapturedEventMissing) {
+			return errors.Join(errors.New("missing captured event"), err)
 		}
-		destinations, err := scope.WebhookInboundSources().PersonalDeliveryDestinations(ctx, uuid.NewString(), f.task.OwnerUserID, "https://daynight.example", 8)
+		destinations, err := sources.PersonalDeliveryDestinations(ctx, uuid.NewString(), uuid.NewString(), "https://daynight.example", "", 1)
 		if err != nil || len(destinations) != 0 {
-			return errors.Join(errors.New("unknown event returned destinations"), err)
+			return errors.Join(errors.New("unknown event had delivery destinations"), err)
 		}
-		_, err = scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: f.task.OwnerUserID}, uuid.NewString())
-		if !errors.Is(err, model.ErrNotFound) && !errors.Is(err, store.ErrProjectDeleted) {
-			return errors.Join(errors.New("missing project was not reported"), err)
+		if _, err := scope.ProjectAccessReader().ProjectAccess(ctx, model.Principal{UserID: uuid.NewString()}, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			return errors.Join(errors.New("missing project"), err)
 		}
 		return nil
 	})

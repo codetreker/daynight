@@ -100,6 +100,17 @@ describe("assistant task HTTP client", () => {
     expect(String(fetch.mock.calls[0]![0])).toContain("cursor=a%2Bb%26c");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it("passes one event type filter and refuses combined filters before sending", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response({ items: [], nextCursor: null, observedAt: now }));
+    const client = setup(fetch);
+    await client.listEvents(taskId, { type: "inbound", state: "pending" });
+    await client.listEvents(undefined, { excludeType: "inbound", cursor: "next" });
+    expect(String(fetch.mock.calls[0]![0])).toBe(`http://localhost:3000/api/v1/assistant-tasks/${taskId}/events?state=pending&type=inbound`);
+    expect(String(fetch.mock.calls[1]![0])).toBe("http://localhost:3000/api/v1/assistant-task-events?cursor=next&excludeType=inbound");
+    const combined = { type: "inbound", excludeType: "inbound" } as unknown as Parameters<ReturnType<typeof createAssistantTaskClient>["listEvents"]>[1];
+    await expect(async () => client.listEvents(undefined, combined)).rejects.toThrow("type and excludeType cannot be combined.");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it("reads the original operation without replaying and checks its fingerprint", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
     await setup(fetch).getClaimOperation(taskId, operationId, { requestFingerprint: receipt.operation.requestFingerprint });
@@ -233,5 +244,32 @@ describe("assistant task request JSON numbers", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     await expect(setup(fetch).addRecord(taskId, { id: operationId, kind: "note", text: "Observation", refs: { value } })).rejects.toMatchObject({ outcomeUnconfirmed: false });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("assistant task outcome records", () => {
+  const outcome = { id: operationId, taskId, itemId: null, author: "bot", authorBotId: botId, kind: "outcome", text: "The retry cleared the failure", outcome: "effective", actionRecordId: other, refs: { eventIds: [operationId] }, createdAt: now };
+  const credential = { claimToken, claimGeneration: "1" };
+  const input = { ...credential, id: operationId, kind: "outcome", text: outcome.text, outcome: "effective", actionRecordId: other, refs: outcome.refs } as const;
+  it("accepts the evaluation only on outcome records", () => {
+    expect(parseAssistantTaskRecord(outcome, taskId)).toEqual(outcome);
+    for (const value of ["effective", "ineffective", "inconclusive"]) expect(parseAssistantTaskRecord({ ...outcome, outcome: value }, taskId).outcome).toBe(value);
+    expect(parseAssistantTaskRecord(record, taskId)).not.toHaveProperty("outcome");
+    const { outcome: _value, ...withoutValue } = outcome, { actionRecordId: _action, ...withoutAction } = outcome;
+    for (const malformed of [withoutValue, withoutAction, { ...outcome, outcome: null }, { ...outcome, outcome: "resolved" }, { ...outcome, actionRecordId: null }, { ...outcome, actionRecordId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" }, { ...record, outcome: "effective" }, { ...record, actionRecordId: other }, { ...record, kind: "action", outcome: "effective", actionRecordId: other }]) expect(() => parseAssistantTaskRecord(malformed, taskId)).toThrow(ProtocolError);
+  });
+  it("sends the evaluation and confirms the server stored the same one", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(outcome));
+    expect(await setup(fetch).addRecord(taskId, input)).toEqual(outcome);
+    expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string)).toEqual(input);
+    for (const stored of [{ ...outcome, outcome: "ineffective" }, { ...outcome, actionRecordId: owner }]) {
+      const mismatch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(stored));
+      await expect(setup(mismatch).addRecord(taskId, input)).rejects.toMatchObject({ code: "invalid_response" });
+    }
+  });
+  it("reads outcome records beside records without an evaluation", async () => {
+    const page = { items: [record, { ...outcome, id: other, actionRecordId: operationId }], nextCursor: null, observedAt: now };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(page));
+    expect(await setup(fetch).listRecords(taskId)).toEqual(page);
   });
 });

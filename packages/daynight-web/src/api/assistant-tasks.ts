@@ -23,8 +23,9 @@ export type AssistantTaskManual = { readonly taskId: string; readonly version: s
 export type AssistantTaskAppendix = { readonly id: string; readonly taskId: string; readonly text: string; readonly sourceRecords: readonly string[]; readonly authorBotId: string | null; readonly state: 'active' | 'edited' | 'deleted'; readonly version: string; readonly createdAt: string; readonly updatedAt: string };
 export type AssistantTaskProposal = { readonly id: string; readonly taskId: string; readonly baseVersion: string; readonly body: string; readonly rules: AssistantTaskJson; readonly reason: string; readonly evidenceRecords: readonly string[]; readonly authorBotId: string | null; readonly widens: boolean; readonly status: 'pending' | 'approved' | 'edited' | 'rejected'; readonly decisionNote: string; readonly createdAt: string; readonly decidedAt: string | null };
 export type AssistantTaskItem = { readonly id: string; readonly taskId: string; readonly key: string; readonly episode: string; readonly state: 'open' | 'closed'; readonly category: string; readonly followerBotId: string | null; readonly appState: AssistantTaskJson; readonly version: string; readonly createdAt: string; readonly updatedAt: string };
-export type AssistantTaskRecord = { readonly id: string; readonly taskId: string; readonly itemId: string | null; readonly author: 'bot' | 'system'; readonly authorBotId: string | null; readonly kind: 'fact' | 'guess' | 'action' | 'unknown' | 'question' | 'answer' | 'note'; readonly text: string; readonly refs: AssistantTaskJson; readonly createdAt: string };
-const eventTypes = ['report', 'escalation', 'result_unknown', 'proposal_pending', 'inquiry_timed_out', 'takeover', 'claim_lost', 'update', 'resolved', 'direct_success', 'proposal_decided', 'appendix_added', 'inquiry', 'answer', 'transfer', 'intervention', 'trigger'] as const;
+export type AssistantTaskRecord = { readonly id: string; readonly taskId: string; readonly itemId: string | null; readonly author: 'bot' | 'system'; readonly authorBotId: string | null; readonly kind: 'fact' | 'guess' | 'action' | 'unknown' | 'question' | 'answer' | 'note' | 'outcome'; readonly text: string; readonly outcome?: AssistantTaskOutcome; readonly actionRecordId?: string; readonly refs: AssistantTaskJson; readonly createdAt: string };
+export type AssistantTaskOutcome = 'effective' | 'ineffective' | 'inconclusive';
+const eventTypes = ['report', 'escalation', 'result_unknown', 'proposal_pending', 'inquiry_timed_out', 'takeover', 'claim_lost', 'update', 'resolved', 'direct_success', 'proposal_decided', 'appendix_added', 'inquiry', 'answer', 'transfer', 'intervention', 'trigger', 'inbound'] as const;
 export type AssistantTaskEvent = { readonly id: string; readonly taskId: string; readonly targetBotId: string; readonly type: typeof eventTypes[number]; readonly payload: AssistantTaskJson; readonly state: 'pending' | 'delivered' | 'expired'; readonly attention: boolean; readonly createdAt: string; readonly deliveredAt: string | null; readonly seenAt: string | null; readonly ackOperationId: string | null };
 export type AssistantTaskPage<T> = { readonly items: readonly T[]; readonly nextCursor: string | null; readonly observedAt: string };
 export type AssistantTaskClaimOperation = { readonly operationId: string; readonly kind: 'claim' | 'bind' | 'renew' | 'transfer' | 'release'; readonly taskId: string; readonly actorBotId: string | null; readonly requestFingerprint: string; readonly admittedAt: string; readonly resultingVersion: string; readonly resultingGeneration: string; readonly holderBotId: string | null; readonly credentialOperationId: string | null; readonly leaseUntil: string | null };
@@ -163,8 +164,11 @@ export const parseAssistantTaskItem = (value: unknown, taskId: string): Assistan
   return { ...entryIdentity(data, taskId), key: text(data.key, true), episode: decimal(data.episode), state: choice(data.state, ['open', 'closed']), category: text(data.category), followerBotId: nullableId(data.followerBotId), appState: jsonValue(data.appState), version: decimal(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
 };
 export const parseAssistantTaskRecord = (value: unknown, taskId: string): AssistantTaskRecord => {
-  const data = fields(value, ['id', 'taskId', 'itemId', 'author', 'authorBotId', 'kind', 'text', 'refs', 'createdAt']);
-  const result = { ...entryIdentity(data, taskId), itemId: nullableId(data.itemId), author: choice(data.author, ['bot', 'system']), authorBotId: nullableId(data.authorBotId), kind: choice(data.kind, ['fact', 'guess', 'action', 'unknown', 'question', 'answer', 'note']), text: text(data.text, true), refs: jsonValue(data.refs), createdAt: timestamp(data.createdAt) };
+  const data = fields(value, ['id', 'taskId', 'itemId', 'author', 'authorBotId', 'kind', 'text', 'refs', 'createdAt'], ['outcome', 'actionRecordId']);
+  const kind = choice(data.kind, ['fact', 'guess', 'action', 'unknown', 'question', 'answer', 'note', 'outcome']);
+  // Only outcome records carry the evaluation; the server omits both keys on every other kind.
+  const evaluation = kind === 'outcome' ? { outcome: choice(data.outcome, ['effective', 'ineffective', 'inconclusive'] as const), actionRecordId: uuid(data.actionRecordId) } : Object.hasOwn(data, 'outcome') || Object.hasOwn(data, 'actionRecordId') ? malformed() : {};
+  const result = { ...entryIdentity(data, taskId), itemId: nullableId(data.itemId), author: choice(data.author, ['bot', 'system']), authorBotId: nullableId(data.authorBotId), kind, text: text(data.text, true), ...evaluation, refs: jsonValue(data.refs), createdAt: timestamp(data.createdAt) };
   if ((result.author === 'bot') !== (result.authorBotId !== null)) return malformed();
   return result;
 };
@@ -336,3 +340,43 @@ export async function rollbackAssistantTaskManual(taskId: string, value: { reado
   const body = input(() => { fields(value, ['ifVersion', 'manualVersion']); return { ifVersion: decimal(value.ifVersion), manualVersion: decimal(value.manualVersion) }; });
   return write(taskId, '/manual/rollback', 'POST', body, signal, admission, result => { const manual = parseAssistantTaskManual(result, taskId); if (manual.source !== 'rollback' || BigInt(manual.version) <= BigInt(body.manualVersion)) return malformed(); return manual; });
 }
+
+/** Readable inbox state. It never carries a token; a task without an enabled inbox has enabled=false and null identity and times. */
+export type AssistantTaskInbox = { readonly inboxId: string | null; readonly enabled: boolean; readonly createdAt: string | null; readonly rotatedAt: string | null; readonly overlapUntil: string | null; readonly suppressedCount: string };
+export type AssistantTaskInboxOperation = { readonly operationId: string; readonly kind: 'inbox_enable' | 'inbox_disable' | 'inbox_rotate_overlap' | 'inbox_rotate_immediate'; readonly taskId: string; readonly requestFingerprint: string; readonly admittedAt: string; readonly resultingVersion: string };
+/** Token is present only in the enable or rotate response that generated it; a replay returns null. */
+export type AssistantTaskInboxResult = { readonly operation: AssistantTaskInboxOperation; readonly inbox: AssistantTaskInbox; readonly token: string | null };
+export type AssistantTaskInboxRotation = 'overlap' | 'immediate';
+export const parseAssistantTaskInbox = (value: unknown): AssistantTaskInbox => {
+  const data = fields(value, ['inboxId', 'enabled', 'createdAt', 'rotatedAt', 'overlapUntil', 'suppressedCount']);
+  const inbox = { inboxId: nullableId(data.inboxId), enabled: boolean(data.enabled), createdAt: nullableTimestamp(data.createdAt), rotatedAt: nullableTimestamp(data.rotatedAt), overlapUntil: nullableTimestamp(data.overlapUntil), suppressedCount: decimal(data.suppressedCount, true) };
+  if (inbox.enabled !== (inbox.inboxId !== null) || inbox.enabled !== (inbox.createdAt !== null) || !inbox.enabled && (inbox.rotatedAt !== null || inbox.overlapUntil !== null)) return malformed();
+  return inbox;
+};
+const inboxResult = (value: unknown, taskId: string, operationId: string, token: boolean): AssistantTaskInboxResult => {
+  const data = fields(value, ['operation', 'inbox', ...(token ? ['token'] : [])]), op = fields(data.operation, ['operationId', 'kind', 'taskId', 'requestFingerprint', 'admittedAt', 'resultingVersion']);
+  const operation = { operationId: uuid(op.operationId), kind: choice(op.kind, ['inbox_enable', 'inbox_disable', 'inbox_rotate_overlap', 'inbox_rotate_immediate']), taskId: taskIdentity(op, taskId), requestFingerprint: text(op.requestFingerprint), admittedAt: timestamp(op.admittedAt), resultingVersion: decimal(op.resultingVersion) };
+  if (operation.operationId !== requestId(operationId) || !/^[a-f0-9]{64}$/.test(operation.requestFingerprint)) return malformed();
+  const result = { operation, inbox: parseAssistantTaskInbox(data.inbox), token: token && data.token !== null ? text(data.token, true) : null };
+  if (result.token !== null && !/^dnib_[A-Za-z0-9_-]{43}$/.test(result.token)) return malformed();
+  return result;
+};
+export const getAssistantTaskInbox = (taskId: string, signal: AbortSignal, admission: AssistantTaskAdmission) => read(`${path(taskId)}/inbox`, signal, admission, parseAssistantTaskInbox);
+export const getAssistantTaskInboxOperation = (taskId: string, operationId: string, signal: AbortSignal, admission: AssistantTaskAdmission) => read(`${path(taskId)}/inbox-operations/${target(operationId)}`, signal, admission, value => inboxResult(value, taskId, operationId, false));
+/** The receiving URL carries no token, so it may be shown, copied and used as an outbound Webhook target. */
+export const assistantTaskInboxUrl = (inboxId: string, origin = globalThis.location?.origin ?? '') => `${origin}/api/v1/assistant-task-inbox/${encodeURIComponent(inboxId)}`;
+async function manageInbox(taskId: string, kind: 'enable' | 'disable' | 'rotate', value: { readonly operationId: string; readonly ifVersion: string; readonly mode?: AssistantTaskInboxRotation }, signal: AbortSignal, admission: AssistantTaskAdmission): Promise<AssistantTaskInboxResult> {
+  const body = input(() => {
+    fields(value, ['operationId', 'ifVersion', ...(kind === 'rotate' ? ['mode'] : [])]);
+    return { operationId: target(value.operationId), ifVersion: decimal(value.ifVersion), ...(kind === 'rotate' ? { mode: choice(value.mode, ['overlap', 'immediate']) } : {}) };
+  });
+  const expected = kind === 'rotate' ? `inbox_rotate_${body.mode}` : `inbox_${kind}`;
+  return write(taskId, `/inbox/${kind}`, 'POST', body, signal, admission, value => {
+    const result = inboxResult(value, taskId, body.operationId, kind !== 'disable');
+    if (result.operation.kind !== expected || BigInt(result.operation.resultingVersion) !== BigInt(body.ifVersion) + 1n || result.inbox.enabled !== (kind !== 'disable')) return malformed();
+    return result;
+  });
+}
+export const enableAssistantTaskInbox = (taskId: string, value: { readonly operationId: string; readonly ifVersion: string }, signal: AbortSignal, admission: AssistantTaskAdmission) => manageInbox(taskId, 'enable', value, signal, admission);
+export const disableAssistantTaskInbox = (taskId: string, value: { readonly operationId: string; readonly ifVersion: string }, signal: AbortSignal, admission: AssistantTaskAdmission) => manageInbox(taskId, 'disable', value, signal, admission);
+export const rotateAssistantTaskInbox = (taskId: string, value: { readonly operationId: string; readonly ifVersion: string; readonly mode: AssistantTaskInboxRotation }, signal: AbortSignal, admission: AssistantTaskAdmission) => manageInbox(taskId, 'rotate', value, signal, admission);
