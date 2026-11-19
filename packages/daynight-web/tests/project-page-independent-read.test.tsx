@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { ApiError, getTaskSync } from '../src/api/client';
 import { getProjectAccess } from '../src/api/auth';
 import { getProject } from '../src/api/project-settings';
@@ -26,8 +27,8 @@ const scope = (userId = TEST_VIEWER_ID) => {
   const value = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
   scopes.push(value); return value;
 };
-const page = (value: TaskCacheScope) => <LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={value}>
-  <ProjectPage projectId={projectId} renderActions={item => <a href={`/projects/${item.id}/settings`}>Manage {item.name}</a>} />
+const page = (value: TaskCacheScope, id = projectId, locale: 'en' | 'zh-CN' = 'en') => <LocaleProvider initial={{ locale, issue: null }}><TestTaskCacheBoundary scope={value}>
+  <ProjectPage projectId={id} renderActions={item => <a href={`/projects/${item.id}/settings`}>Manage {item.name}</a>} />
 </TestTaskCacheBoundary></LocaleProvider>;
 
 beforeEach(() => {
@@ -37,6 +38,83 @@ beforeEach(() => {
   vi.mocked(getTaskSync).mockReset();
 });
 afterEach(() => { for (const value of scopes.splice(0)) value.dispose(); });
+
+it.each([
+  ['en', 'Copy repository URL', 'Copied', 'Could not copy repository URL. Try again.'],
+  ['zh-CN', '复制仓库地址', '已复制', '复制仓库地址失败，请重试。'],
+] as const)('copies the exact repository URL with keyboard activation and retry in %s', async (locale, label, success, failure) => {
+  const user = userEvent.setup();
+  const clipboard = vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValueOnce(new Error('denied')).mockResolvedValue();
+  const repoUrl = `git@github.com:example/${'long-repository-'.repeat(20)}.git`;
+  vi.mocked(getProject).mockResolvedValue({ ...project, repoUrl });
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  render(page(scope(), projectId, locale));
+  const button = await screen.findByRole('button', { name: label });
+  expect(button).toHaveAttribute('title', label);
+  const location = window.location.href;
+  button.focus();
+  await user.tab({ shift: true });
+  await user.tab();
+  expect(button).toHaveFocus();
+  await user.keyboard('{Enter}');
+  expect(await screen.findByRole('alert')).toHaveTextContent(failure);
+  expect(button).toBeEnabled();
+  await user.keyboard(' ');
+  expect(await screen.findByText(success)).toHaveAttribute('role', 'status');
+  expect(clipboard.mock.calls).toEqual([[repoUrl], [repoUrl]]);
+  expect(window.location.href).toBe(location);
+});
+
+it('disables duplicate copying and ignores completion after the repository URL changes', async () => {
+  userEvent.setup();
+  const pending = Promise.withResolvers<void>();
+  const clipboard = vi.spyOn(navigator.clipboard, 'writeText').mockReturnValueOnce(pending.promise).mockResolvedValue();
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  render(page(scope()));
+  const button = await screen.findByRole('button', { name: 'Copy repository URL' });
+  const projectReads = vi.mocked(getProject).mock.calls.length;
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(button).toBeDisabled();
+  expect(clipboard).toHaveBeenCalledOnce();
+  expect(getProject).toHaveBeenCalledTimes(projectReads);
+  const repoUrl = 'https://github.com/example/replacement.git';
+  vi.mocked(getProject).mockResolvedValue({ ...project, repoUrl });
+  fireEvent(window, new Event('focus'));
+  await screen.findByText(repoUrl);
+  expect(button).toBeEnabled();
+  await act(async () => pending.resolve());
+  expect(screen.queryByText('Copied')).toBeNull();
+  fireEvent.click(button);
+  expect(await screen.findByText('Copied')).toHaveAttribute('role', 'status');
+  expect(clipboard.mock.calls).toEqual([[project.repoUrl], [repoUrl]]);
+});
+
+it('clears successful copy feedback when switching to another project with the same URL', async () => {
+  userEvent.setup();
+  vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  const current = scope();
+  const view = render(page(current));
+  fireEvent.click(await screen.findByRole('button', { name: 'Copy repository URL' }));
+  await screen.findByText('Copied');
+  const nextId = '00000000-0000-4000-8000-000000000032';
+  vi.mocked(getProject).mockResolvedValue({ ...project, id: nextId, name: 'Next project' });
+  vi.mocked(getProjectAccess).mockImplementation(async (id, _signal, admission) => directAccessFixture(id, admission.userId));
+  history.replaceState(null, '', `/projects/${nextId}`);
+  view.rerender(page(current, nextId));
+  await screen.findByRole('heading', { name: 'Next project' });
+  expect(screen.getByRole('button', { name: 'Copy repository URL' })).toBeEnabled();
+  expect(screen.queryByText('Copied')).toBeNull();
+});
+
+it('has no copy entry before project data is readable', async () => {
+  vi.mocked(getProject).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  render(page(scope()));
+  await waitFor(() => expect(getProject).toHaveBeenCalledOnce());
+  expect(screen.queryByRole('button', { name: 'Copy repository URL' })).toBeNull();
+});
 
 it('keeps project facts and management available in both sections when the graph is pending or fails', async () => {
   const pending = Promise.withResolvers<typeof sync>();
@@ -99,6 +177,7 @@ it('withdraws project facts on access revocation and rejects a late read', async
   expect(oldSignal.aborted).toBe(true);
   expect(screen.queryByRole('heading', { name: 'Independent project' })).toBeNull();
   expect(screen.queryByText(project.repoUrl)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Copy repository URL' })).toBeNull();
   expect(screen.queryByRole('link', { name: 'Manage Independent project' })).toBeNull();
   await waitFor(() => expect(getProject).toHaveBeenCalledTimes(3));
   await act(async () => { old.resolve(project); });

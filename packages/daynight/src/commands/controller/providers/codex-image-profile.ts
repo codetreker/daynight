@@ -9,7 +9,7 @@ export const unknownCodexGeometry: ImageGeometry = Object.freeze({ version: 1, k
 /** Protocol compatibility is necessary but does not establish image admission. */
 export const supportsCodexImageProfile = (response: unknown, platform: NodeJS.Platform = process.platform): boolean => {
   const initialized = record(response);
-  return /^daynight\/0\.167\.0 \(/.test(string(initialized.userAgent)) && initialized.platformOs === "macos" && platform === "darwin"
+  return /^daynight\/0\.(?:167|170)\.0 \(/.test(string(initialized.userAgent)) && initialized.platformOs === "macos" && platform === "darwin"
     || /^daynight\/0\.169\.0 \(/.test(string(initialized.userAgent)) && initialized.platformOs === "windows" && platform === "win32";
 };
 

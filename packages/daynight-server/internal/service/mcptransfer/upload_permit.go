@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
@@ -116,6 +117,8 @@ func (s *Lifecycle) admittedUploadRecord(ctx context.Context, p *Permit) (model.
 }
 
 func (s *Lifecycle) markAdmittedUnknown(ctx context.Context, p *Permit, opID string, data json.RawMessage) error {
+	ctx, cancel := filestorage.GateContext(ctx, p.gate)
+	defer cancel()
 	return s.admittedUpload(ctx, p, func(d store.PrivateTransferDAO, r model.PrivateTransfer) error {
 		next, e := transfer.UploadMarkUnknown(r, opID, data)
 		if e != nil {
@@ -129,6 +132,8 @@ func (s *Lifecycle) markAdmittedUnknown(ctx context.Context, p *Permit, opID str
 // requestAdmittedCleanup records a terminal operation's cleanup barrier while
 // its original permit still prevents physical removal. A later sweep reclaims it.
 func (s *Lifecycle) requestAdmittedCleanup(ctx context.Context, p *Permit, opID string) error {
+	ctx, cancel := filestorage.GateContext(ctx, p.gate)
+	defer cancel()
 	return s.admittedUpload(ctx, p, func(d store.PrivateTransferDAO, r model.PrivateTransfer) error {
 		next, e := transfer.UploadRequestCleanup(r, opID)
 		if e != nil {

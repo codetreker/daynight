@@ -572,7 +572,8 @@ CREATE TABLE "project_github" (
     "sync_enabled" boolean DEFAULT false NOT NULL,
     "app_resource_id" "uuid",
     "team_grant_id" "uuid",
-    "credential_version" bigint
+    "credential_version" bigint,
+    "legacy_repository_id" bigint
 );
 
 CREATE TABLE "project_github_coverage" (
@@ -582,6 +583,12 @@ CREATE TABLE "project_github_coverage" (
     "ended_at" timestamp with time zone,
     CONSTRAINT "project_github_coverage_check" CHECK ((("ended_at" IS NULL) OR (("ended_at" = "date_trunc"('second'::"text", "ended_at")) AND ("ended_at" > "started_at")))),
     CONSTRAINT "project_github_coverage_started_at_check" CHECK (("started_at" = "date_trunc"('second'::"text", "started_at")))
+);
+
+CREATE TABLE "project_github_repositories" (
+    "project_id" "uuid" NOT NULL,
+    "repository_id" bigint NOT NULL,
+    "full_name" "text" NOT NULL
 );
 
 CREATE TABLE "project_github_pending_prs" (
@@ -658,7 +665,8 @@ CREATE TABLE "project_pull_requests" (
     "description" "text",
     "observed_at" timestamp with time zone NOT NULL,
     "revision" bigint NOT NULL,
-    "seen_poll_id" "uuid"
+    "seen_poll_id" "uuid",
+    "repository_id" bigint NOT NULL
 );
 
 CREATE TABLE "project_tags" (
@@ -1754,6 +1762,9 @@ ALTER TABLE ONLY "private_upload_chunks"
 ALTER TABLE ONLY "project_github_coverage"
     ADD CONSTRAINT "project_github_coverage_pkey" PRIMARY KEY ("project_id", "repository_id", "started_at");
 
+ALTER TABLE ONLY "project_github_repositories"
+    ADD CONSTRAINT "project_github_repositories_pkey" PRIMARY KEY ("project_id", "repository_id");
+
 ALTER TABLE ONLY "project_github_pending_prs"
     ADD CONSTRAINT "project_github_pending_prs_pkey" PRIMARY KEY ("project_id", "number");
 
@@ -1773,7 +1784,7 @@ ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
 
 ALTER TABLE ONLY "project_pull_requests"
-    ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "number");
+    ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "repository_id", "number");
 
 ALTER TABLE ONLY "project_tags"
     ADD CONSTRAINT "project_tags_pkey" PRIMARY KEY ("id");
@@ -2112,9 +2123,9 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
-CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
+CREATE INDEX "project_pull_requests_author_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "author_id", "number" DESC) WHERE ("author_id" IS NOT NULL);
 
-CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "state", "number" DESC);
+CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "repository_id", "state", "number" DESC);
 
 CREATE UNIQUE INDEX "project_tags_project_name_key_idx" ON "project_tags" USING "btree" ("project_id", "name_key");
 

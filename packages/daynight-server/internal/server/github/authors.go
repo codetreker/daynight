@@ -14,11 +14,15 @@ import (
 
 func (h *handler) authors(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.run(w, r, p, "authors", func(id string) (any, error) {
-		v, err := query(r, "q", "limit", "cursor")
+		v, err := query(r, "q", "limit", "cursor", "repositoryId")
 		if err != nil {
 			return nil, err
 		}
 		input := coregithub.AuthorsRequest{Limit: 50}
+		input.RepositoryID, err = repositoryParameter(v)
+		if err != nil {
+			return nil, err
+		}
 		if x, ok := v["q"]; ok {
 			input.Query = x[0]
 		}
@@ -40,6 +44,7 @@ func (h *handler) authors(w http.ResponseWriter, r *http.Request, p model.Princi
 			return nil, err
 		}
 		out := api.PullRequestAuthorPage{ProjectID: result.Connection.ProjectID, Revision: decimal(result.Connection.Revision), Items: make([]api.PullRequestDirectoryAuthor, 0, len(result.Items)), NextCursor: result.NextCursor}
+		out.Repository = repositoryResponse(result.Repository)
 		for _, item := range result.Items {
 			out.Items = append(out.Items, api.PullRequestDirectoryAuthor{ID: decimal(item.ID), Login: item.Login, LoginAmbiguous: item.LoginAmbiguous})
 		}

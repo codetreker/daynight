@@ -117,7 +117,9 @@ func (h *Routes) prepareArchive(w http.ResponseWriter, r *http.Request, p model.
 		h.Failure(w, r, err)
 		return
 	}
-	body, err := readUnifiedArchiveBody(w, r, "application/json", 32768, false)
+	readRequest, finishRead := archiveReadRequest(r, op)
+	body, err := readUnifiedArchiveBody(w, readRequest, "application/json", 32768, false)
+	finishRead()
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
@@ -166,7 +168,9 @@ func (h *Routes) putArchiveManifest(w http.ResponseWriter, r *http.Request, p mo
 		h.Failure(w, r, err)
 		return
 	}
-	body, err := readUnifiedArchiveBody(w, r, "application/json", sp.MaxArchiveManifestBytes, false)
+	readRequest, finishRead := archiveReadRequest(r, op)
+	body, err := readUnifiedArchiveBody(w, readRequest, "application/json", sp.MaxArchiveManifestBytes, false)
+	finishRead()
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
@@ -203,7 +207,9 @@ func (h *Routes) putArchiveBundleFile(w http.ResponseWriter, r *http.Request, p 
 		h.Failure(w, r, err)
 		return
 	}
-	data, err := readUnifiedArchiveBody(w, r, "application/octet-stream", 1048576, legacyResource && length == 0)
+	readRequest, finishRead := archiveReadRequest(r, op)
+	data, err := readUnifiedArchiveBody(w, readRequest, "application/octet-stream", 1048576, legacyResource && length == 0)
+	finishRead()
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return
@@ -281,7 +287,9 @@ func (h *Routes) archiveSourceTail(w http.ResponseWriter, r *http.Request, p mod
 		h.Failure(w, r, err)
 		return
 	}
-	body, err := readUnifiedArchiveBody(w, r, "application/json", sp.MaxArchiveSourceTailBytes, false)
+	readRequest, finishRead := archiveReadRequest(r, op)
+	body, err := readUnifiedArchiveBody(w, readRequest, "application/json", sp.MaxArchiveSourceTailBytes, false)
+	finishRead()
 	if err != nil {
 		h.Failure(w, r, archiveCleanupError(err, op.Close()))
 		return

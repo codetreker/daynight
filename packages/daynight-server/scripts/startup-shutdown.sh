@@ -7,6 +7,7 @@ if (( $# != 0 )); then
 fi
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/validation-env.sh"
+: "${DAYNIGHT_TEST_REDIS_URL:?Set DAYNIGHT_TEST_REDIS_URL to an isolated Redis test instance}"
 profile="$DAYNIGHT_MODULE_ROOT/startup-shutdown-coverage.out"
 rm -f -- "$profile"
 

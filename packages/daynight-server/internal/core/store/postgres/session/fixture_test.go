@@ -249,6 +249,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"project_github",
 		"project_github_coverage",
 		"project_github_pending_prs",
+		"project_github_repositories",
 		"project_grants",
 		"project_invitations",
 		"project_ownership",

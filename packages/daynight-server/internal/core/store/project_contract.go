@@ -55,6 +55,7 @@ type ProjectCreationTeam struct {
 }
 
 type ProjectWriteScope interface {
+	GoalRelationDAO() GoalRelationEditor
 	ProjectGoalDependencyDAO() ProjectGoalDependencyDAO
 	EligibilityDAO() WebhookEligibilityDAO
 	CaptureDAO() WebhookCaptureDAO

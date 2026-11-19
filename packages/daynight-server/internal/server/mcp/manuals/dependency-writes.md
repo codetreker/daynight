@@ -57,3 +57,14 @@ Compute the full desired sets, submit one replacement and verify the resulting g
 | Unknown write/transport outcome | Retain original scope, decision version and proposed sets; inspect current facts without automatic replay or attributing matching arrays to that operation. |
 
 Deletion differs from cancellation. Removing incoming references changes dependent versions and possibly readiness, and needs scope covering those effects; follow [Task writes](daynight://manuals/task-writes.md).
+
+## Edit Goal acceptance relationships
+
+Read `goal_dependencies_show` for the same Project and Goal, then call `goal_dependencies_edit` once with `projectId`, `goalId`, the observed `ifRevision` and a mode. `ifRevision` is a canonical positive int64 decimal string, including values beyond JavaScript's safe integer range; never convert it to a number. The Goal relationship revision is independent of the Task version. A read followed by an edit normally takes two tool calls.
+
+- `mode: "edit"` accepts `add` entries `{projectId, goalId}` and `remove` edge UUIDs; at least one operation is required.
+- `mode: "replace"` requires `prerequisites`, the complete desired set. Entries are either `{projectId, goalId}` or `{edgeId}` to retain an existing edge, including a hidden one. An empty array explicitly clears the set.
+
+Each array has at most 30 entries and the resulting prerequisite set has at most 30 edges. Adding a readable existing edge is a no-op; retained edges preserve their IDs. An opaque edge ID can remove one hidden prerequisite without disclosing its target. New targets must be readable Goals in the same owner Team; edits require permission on the source. Invalid endpoints, cycles, cross-Team edges and an unfinished prerequisite for an already completed Goal are refused atomically.
+
+The receipt includes `goalId`, exact `revision` and `changed`. A no-op keeps the revision; stale revisions conflict even for no-ops. On conflict, re-read and make a new decision. An unknown write outcome must not be replayed automatically: retain the original intent and observe current facts without attributing a matching state to the original request.

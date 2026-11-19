@@ -77,6 +77,10 @@ func (s configurationReadScope) UserCandidateDAO() store.UserCandidateReader {
 	configurationUnexpected(s.calls.t, "UserCandidateDAO")
 	return nil
 }
+func (s configurationReadScope) GoalRelationDAO() store.GoalRelationReader {
+	panic("unexpected GoalRelationDAO access")
+}
+
 func (s configurationReadScope) CredentialDAO() store.CredentialReader {
 	configurationUnexpected(s.calls.t, "CredentialDAO")
 	return nil
