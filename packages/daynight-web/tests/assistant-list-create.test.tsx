@@ -153,6 +153,7 @@ it('submits only the name and original ID through the real API, then checks the 
       throw new TypeError('Response lost after dispatch');
     }
     if (path.endsWith('/defaults')) return botResponse(botDefaults());
+    if (path === `/api/v1/me/workers/${botId(20)}/alias`) return botResponse({ workerId: botId(20), alias: { value: null, version: '1' } });
     if (path.includes('?')) return botResponse({ items: [], nextCursor: null });
     checked.push(path);
     return found ? botResponse({ ...botDefinition(), id: posted[0]!.id, name: 'Only 名称' }) : botError(404, 'not_found');
@@ -241,6 +242,7 @@ it('restores an unknown creation into a fresh scope and blocks its check during 
       throw new TypeError('Response lost');
     }
     if (String(url).includes('/defaults')) return botResponse(botDefaults());
+    if (String(url) === `/api/v1/me/workers/${botId(20)}/alias`) return botResponse({ workerId: botId(20), alias: { value: null, version: '1' } });
     if (String(url).includes('?')) return botResponse({ items: [], nextCursor: null });
     checked.push(String(url));
     return botError(404, 'not_found');
