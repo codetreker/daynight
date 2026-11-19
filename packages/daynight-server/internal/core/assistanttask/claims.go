@@ -253,6 +253,9 @@ func (m *Module) ClaimOperation(ctx context.Context, dao store.AssistantTaskDAO,
 	if err != nil {
 		return result, err
 	}
+	if isInboxKind(op.Kind) {
+		return result, model.ErrNotFound
+	}
 	task, err = loadTask(ctx, dao, actor, taskID, false)
 	if err != nil {
 		return result, err
