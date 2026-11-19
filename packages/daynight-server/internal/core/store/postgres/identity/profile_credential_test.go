@@ -3,6 +3,7 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -70,81 +71,111 @@ func TestProfileCredentialNativeKindsOwnerAndExpiry(t *testing.T) {
 	requireMissing(t, err)
 }
 
-func waitProfileCredentialQuery(t *testing.T, ctx context.Context, db *postgres.Store, pid uint32) {
-	t.Helper()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var waiting bool
-		requireNoError(t, db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')`, pid).Scan(&waiting))
-		if waiting {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-ticker.C:
+func TestProfileCredentialSharesReadersAndBlocksNativeMutation(t *testing.T) {
+	db := isolatedStore(t)
+	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
+		for _, mutation := range []string{"revoke", "expiry"} {
+			if !t.Run(string(kind)+"/"+mutation, func(t *testing.T) {
+				testProfileCredentialMutation(t, db, kind, mutation)
+			}) {
+				return
+			}
+			testutil.AssertPoolReusable(t, db.Pool)
 		}
 	}
 }
 
-func TestProfileCredentialSharesReadersAndBlocksNativeMutation(t *testing.T) {
-	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
-		for _, mutation := range []string{"revoke", "expiry"} {
-			t.Run(string(kind)+"/"+mutation, func(t *testing.T) {
-				db := isolatedStore(t)
-				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-				defer cancel()
-				user, actor, _ := testutil.AuthRecords(t, db)
-				now := time.Now().UTC()
-				if kind == model.PATCredential {
-					actor = model.Principal{Kind: kind, UserID: user.ID, CredentialID: uuid.NewString()}
-					identityScopeTest(t, db, func(scope store.IdentityScope) error {
-						return scope.IdentityDAO().InsertPAT(ctx, model.PersonalAccessToken{ID: actor.CredentialID, UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now})
-					})
-				}
-				holder, err := db.Pool.Begin(ctx)
-				requireNoError(t, err)
-				defer holder.Rollback(context.Background())
-				requireNoError(t, profileCredentialDAO(holder).LockProfileCredential(ctx, actor, now))
-				reader, err := db.Pool.Begin(ctx)
-				requireNoError(t, err)
-				defer reader.Rollback(context.Background())
-				requireNoError(t, profileCredentialDAO(reader).LockProfileCredential(ctx, actor, now))
-				requireNoError(t, reader.Rollback(ctx))
-				writer, err := db.Pool.Begin(ctx)
-				requireNoError(t, err)
-				defer writer.Rollback(context.Background())
-				pid := writer.Conn().PgConn().PID()
-				done := make(chan error, 1)
-				go func() {
-					table := "sessions"
-					if kind == model.PATCredential {
-						table = "personal_access_tokens"
-					}
-					sql := `DELETE FROM ` + table + ` WHERE id=$1`
-					if mutation == "expiry" {
-						sql = `UPDATE ` + table + ` SET expires_at=clock_timestamp() WHERE id=$1`
-					}
-					_, err := writer.Exec(ctx, sql, actor.CredentialID)
-					done <- err
-				}()
-				waitProfileCredentialQuery(t, ctx, db, pid)
-				select {
-				case err := <-done:
-					t.Fatalf("mutation bypassed shared profile lock: %v", err)
-				default:
-				}
-				requireNoError(t, holder.Commit(ctx))
-				requireNoError(t, <-done)
-				requireNoError(t, writer.Commit(ctx))
-				_, err = db.WriteIdentity(ctx, func(scope store.IdentityScope) error {
-					return scope.IdentityDAO().LockProfileCredential(ctx, actor, now)
-				})
-				requireMissing(t, err)
-			})
-		}
+func testProfileCredentialMutation(t *testing.T, db *postgres.Store, kind model.CredentialKind, mutation string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	user, actor, _ := testutil.AuthRecords(t, db)
+	now := time.Now().UTC()
+	table := "sessions"
+	if kind == model.PATCredential {
+		table = "personal_access_tokens"
+		actor = model.Principal{Kind: kind, UserID: user.ID, CredentialID: uuid.NewString()}
+		identityScopeTest(t, db, func(scope store.IdentityScope) error {
+			return scope.IdentityDAO().InsertPAT(ctx, model.PersonalAccessToken{ID: actor.CredentialID, UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now})
+		})
 	}
+	statement := `DELETE FROM ` + table + ` WHERE id=$1`
+	if mutation == "expiry" {
+		statement = `UPDATE ` + table + ` SET expires_at=clock_timestamp() WHERE id=$1`
+	}
+
+	holder, err := db.Pool.Begin(ctx)
+	requireNoError(t, err)
+	var writerTask sync.WaitGroup
+	holderCommitAttempted := false
+	defer func() {
+		cancel()
+		if !holderCommitAttempted {
+			rollbackProfileCredentialTransaction(t, ctx, holder)
+		}
+		writerTask.Wait()
+	}()
+	holderPID := holder.Conn().PgConn().PID()
+	requireNoError(t, profileCredentialDAO(holder).LockProfileCredential(ctx, actor, now))
+	checkCompatibleProfileCredentialReader(t, ctx, db, actor, now)
+
+	ready := make(chan uint32, 1)
+	result := make(chan error, 1)
+	writerTask.Go(func() {
+		writer, err := db.Pool.Begin(ctx)
+		if err != nil {
+			result <- err
+			return
+		}
+		commitAttempted := false
+		defer func() {
+			if !commitAttempted {
+				rollbackProfileCredentialTransaction(t, ctx, writer)
+			}
+		}()
+		ready <- writer.Conn().PgConn().PID()
+		tag, err := writer.Exec(ctx, statement, actor.CredentialID)
+		if err != nil {
+			result <- err
+			return
+		}
+		if tag.RowsAffected() != 1 {
+			result <- fmt.Errorf("credential mutation affected %d rows", tag.RowsAffected())
+			return
+		}
+		commitAttempted = true
+		result <- writer.Commit(ctx)
+	})
+
+	var writerPID uint32
+	select {
+	case writerPID = <-ready:
+	case err := <-result:
+		t.Fatalf("credential writer finished without observing the lock: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	waitProfileCredentialLock(t, ctx, db, statement, writerPID, holderPID, result)
+	holderCommitAttempted = true
+	requireNoError(t, holder.Commit(ctx))
+	requireNoError(t, testutil.ReceiveQueryResult(t, ctx, result))
+
+	completion, err := db.WriteIdentity(ctx, func(scope store.IdentityScope) error {
+		return scope.IdentityDAO().LockProfileCredential(ctx, actor, now)
+	})
+	requireMissing(t, err)
+	if completion.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("missing credential completed with %q", completion.Outcome)
+	}
+}
+
+func checkCompatibleProfileCredentialReader(t *testing.T, ctx context.Context, db *postgres.Store, actor model.Principal, now time.Time) {
+	t.Helper()
+	reader, err := db.Pool.Begin(ctx)
+	requireNoError(t, err)
+	defer rollbackProfileCredentialTransaction(t, ctx, reader)
+	requireNoError(t, profileCredentialDAO(reader).LockProfileCredential(ctx, actor, now))
 }
 
 func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) {
@@ -174,7 +205,7 @@ func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) 
 			defer func() {
 				cancel()
 				if !holderCommitAttempted {
-					rollbackProfileExpiryTransaction(t, ctx, holder)
+					rollbackProfileCredentialTransaction(t, ctx, holder)
 				}
 				readerTask.Wait()
 			}()
@@ -195,7 +226,7 @@ func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) 
 					result <- err
 					return
 				}
-				defer rollbackProfileExpiryTransaction(t, ctx, reader)
+				defer rollbackProfileCredentialTransaction(t, ctx, reader)
 				ready <- reader.Conn().PgConn().PID()
 				result <- profileCredentialDAO(reader).LockProfileCredential(ctx, actor, now)
 			})
@@ -208,7 +239,12 @@ func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) 
 				t.Fatal(ctx.Err())
 			}
 
-			waitProfileCredentialRowLock(t, ctx, db, table, readerPID, holderPID, result)
+			predicate := "expires_at > clock_timestamp()"
+			if kind == model.PATCredential {
+				predicate = "(expires_at IS NULL OR expires_at > clock_timestamp())"
+			}
+			statement := "SELECT expires_at FROM " + table + " WHERE id=$1 AND user_id=$2 AND " + predicate + " FOR SHARE"
+			waitProfileCredentialLock(t, ctx, db, statement, readerPID, holderPID, result)
 			testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
 			holderCommitAttempted = true
 			requireNoError(t, holder.Commit(ctx))
@@ -221,30 +257,29 @@ func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) 
 	}
 }
 
-func waitProfileCredentialRowLock(t *testing.T, ctx context.Context, db *postgres.Store, table string, readerPID, holderPID uint32, result <-chan error) {
+func waitProfileCredentialLock(t *testing.T, ctx context.Context, db *postgres.Store, statement string, waiterPID, holderPID uint32, result <-chan error) {
 	t.Helper()
-	query := "SELECT expires_at FROM " + table + " WHERE id=$1 AND user_id=$2 AND % FOR SHARE"
 	for {
 		select {
 		case err := <-result:
-			t.Fatalf("credential reader finished without observing the lock: %v", err)
+			t.Fatalf("credential operation %q finished without observing the lock: %v", statement, err)
 		default:
 		}
 		var waiting bool
 		requireNoError(t, db.Pool.QueryRow(ctx, `SELECT EXISTS (
-			SELECT FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND query LIKE $2
+			SELECT FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND query=$2
 				AND $3=ANY(pg_blocking_pids(pid))
-		)`, readerPID, query, holderPID).Scan(&waiting))
+		)`, waiterPID, statement, holderPID).Scan(&waiting))
 		if waiting {
 			return
 		}
 		if err := testutil.WaitThreadClock(ctx); err != nil {
-			t.Fatalf("credential reader %d did not wait for holder %d: %v", readerPID, holderPID, err)
+			t.Fatalf("credential operation %q on backend %d did not wait for holder %d: %v", statement, waiterPID, holderPID, err)
 		}
 	}
 }
 
-func rollbackProfileExpiryTransaction(t *testing.T, operationCtx context.Context, tx pgx.Tx) {
+func rollbackProfileCredentialTransaction(t *testing.T, operationCtx context.Context, tx pgx.Tx) {
 	t.Helper()
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(operationCtx), 5*time.Second)
 	defer cancel()
@@ -264,5 +299,5 @@ func rollbackProfileExpiryTransaction(t *testing.T, operationCtx context.Context
 			err = errors.Join(err, cleanup.Err())
 		}
 	}
-	t.Errorf("rollback credential expiry transaction: %v", err)
+	t.Errorf("rollback profile credential transaction: %v", err)
 }

@@ -174,11 +174,14 @@ The malformed ready archive has its own schema because it removes the archive
 body constraint. Failed restoration stops fixture reuse.
 
 [Identity profile contention](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_contract_test.go)
-uses one Store per matrix with a distinct identity per case. The tests verify
-that the intended SQL waits on the exact holder before committing or rolling
-back. Each contender exits before the durable result is read and the next
-case starts. Failure cancels the contender, releases the holder and stops
-reuse.
+and [credential mutation](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_credential_test.go)
+share one Store per matrix with distinct case identities. The tests verify
+the SQL waits on the exact holder before committing or rolling back. The
+credential cases admit a compatible second reader while the holder is active,
+then verify the committed revocation or expiry through a fresh transaction.
+Each contender completes its database work before the durable read and exits
+before the next case starts. Failure cancels the contender, releases the
+holder, and stops reuse.
 
 The [first image-chunk inventory matrix](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_test.go)
 shares one parent-owned Store across its sequential cases. Each case retains its
