@@ -107,6 +107,18 @@ func (s *completionProjectReadPlan) TransferTeam(ctx context.Context, id string)
 	}
 	return value, call.err
 }
+
+func (s *completionProjectReadPlan) TransferRole(ctx context.Context, userID, projectID, teamID string) (*model.ProjectRole, error) {
+	call := s.take(ctx, "transfer role", userID, projectID, teamID)
+	if call.err != nil {
+		return nil, call.err
+	}
+	role, ok := call.result.(*model.ProjectRole)
+	if !ok {
+		s.t.Fatal("transfer role requires an explicit nullable role")
+	}
+	return role, nil
+}
 func (s *completionProjectReadPlan) Invitation(ctx context.Context, hash []byte) (model.ProjectInvitation, error) {
 	call := s.take(ctx, "invitation", hash)
 	value, ok := call.result.(model.ProjectInvitation)

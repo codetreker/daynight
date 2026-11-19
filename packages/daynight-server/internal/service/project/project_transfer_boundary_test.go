@@ -41,9 +41,10 @@ func requireTransferRefusal[T comparable](t *testing.T, result T, err error, cod
 
 func TestTransferValidationBeforeDomainSQL(t *testing.T) {
 	actor, other := projectProjectionPrincipal(1), projectProjectionPrincipal(2)
-	result, err := NewProjects(projectValidationStore{}).Transfer(t.Context(), actor, transferBoundaryProject, coreproject.TransferInput{
-		ExpectedUserID: other.UserID,
-	})
+	input := boundaryTransferInput(actor)
+	input.TargetTeam.ID = transferBoundaryTarget
+	input.ExpectedUserID = other.UserID
+	result, err := NewProjects(projectValidationStore{}).Transfer(t.Context(), actor, transferBoundaryProject, input)
 	requireTransferRefusal(t, result, err, "identity_mismatch")
 }
 
@@ -107,7 +108,9 @@ type transferBoundaryWriter struct {
 	scope         *transferBoundaryScope
 	enterErr      error
 	callbackFault string
+	callbackErr   error
 	completion    store.Completion
+	finishErr     error
 	calls         int
 }
 
@@ -120,6 +123,9 @@ func newTransferBoundaryWriter(t *testing.T, ctx context.Context, projectID stri
 		}
 		if db.scope != nil && len(db.scope.pending) != 0 {
 			t.Errorf("unconsumed transfer scope calls: %v", db.scope.pending)
+		}
+		if db.scope != nil && len(db.scope.access) != 0 {
+			t.Errorf("unconsumed transfer access results: %v", db.scope.access)
 		}
 	})
 	return db
@@ -139,11 +145,24 @@ func (s *transferBoundaryWriter) WriteProject(ctx context.Context, projectID str
 		transferFault(s.t, err, s.callbackFault)
 		return s.completion, &store.TransactionError{Phase: "operation", Outcome: s.completion.Outcome, Cause: err}
 	}
+	if s.callbackErr != nil {
+		if !errors.Is(err, s.callbackErr) {
+			s.t.Fatalf("transfer callback error: %v, want %v", err, s.callbackErr)
+		}
+		return s.completion, &store.TransactionError{Phase: "operation", Outcome: s.completion.Outcome, Cause: err}
+	}
 	if err != nil {
 		s.t.Fatalf("transfer callback failed: %v", err)
 	}
-	return s.completion, nil
+	return s.completion, s.finishErr
 }
+
+type transferAccessResult struct {
+	access model.ProjectAccess
+	err    error
+}
+
+const transferRepositoryIdentity = "github.com/Org/Repo"
 
 type transferBoundaryScope struct {
 	store.ProjectWriteScope
@@ -157,6 +176,8 @@ type transferBoundaryScope struct {
 	source    store.TransferTeam
 	target    store.TransferTeam
 	pending   []string
+	access    []transferAccessResult
+	moved     model.ProjectOwnership
 }
 
 func (s *transferBoundaryScope) take(ctx context.Context, call string) {
@@ -190,12 +211,33 @@ func (s *transferBoundaryScope) ProjectAccess(ctx context.Context, actor model.P
 	if actor != s.actor {
 		s.t.Fatalf("transfer access actor=%#v, want %#v", actor, s.actor)
 	}
-	return boundaryTransferAccess(actor, s.ownership, s.source.Ref), nil
+	if len(s.access) == 0 {
+		s.t.Fatal("transfer access requires explicit result facts")
+	}
+	result := s.access[0]
+	s.access = s.access[1:]
+	return result.access, result.err
 }
 
-func (s *transferBoundaryScope) MoveOwnership(context.Context, string) (model.ProjectOwnership, error) {
-	s.t.Fatal("no-op or refused transfer attempted to move ownership")
-	return model.ProjectOwnership{}, nil
+func (s *transferBoundaryScope) RepositoryIdentity(ctx context.Context) (*string, error) {
+	s.take(ctx, "RepositoryIdentity")
+	return pointer(transferRepositoryIdentity), nil
+}
+
+func (s *transferBoundaryScope) RepositoryOccupied(ctx context.Context, teamID, identity string) (bool, error) {
+	s.take(ctx, "RepositoryOccupied")
+	if teamID != s.targetID || identity != transferRepositoryIdentity {
+		s.t.Fatalf("transfer occupancy Team=%q identity=%q, want %q %q", teamID, identity, s.targetID, transferRepositoryIdentity)
+	}
+	return false, nil
+}
+
+func (s *transferBoundaryScope) MoveOwnership(ctx context.Context, targetID string) (model.ProjectOwnership, error) {
+	s.take(ctx, "MoveOwnership")
+	if targetID != s.targetID {
+		s.t.Fatalf("transfer moved to %q, want %q", targetID, s.targetID)
+	}
+	return s.moved, nil
 }
 
 func (s *transferBoundaryScope) EligibilityDAO() store.WebhookEligibilityDAO {
@@ -304,12 +346,14 @@ func TestTransferUnavailableAndVersionExhaustion(t *testing.T) {
 				t: t, ctx: ctx, actor: actor, targetID: test.inputTeam.ID,
 				ownership: test.ownership, source: source, target: test.target,
 				pending: []string{"ProjectDAO", "LockTransferOwnership", "LockTransferTeams", "ProjectAccess"},
+				access:  []transferAccessResult{{access: boundaryTransferAccess(actor, test.ownership, source.Ref)}},
 			}
 			write.scope = scope
 			write.callbackFault = test.fault
 			write.completion = store.Completion{Outcome: store.TransactionNotCommitted}
 			if test.fault == "" {
 				scope.pending = append(scope.pending, "ProjectAccess", "EligibilityDAO", "LockAffected")
+				scope.access = append(scope.access, scope.access[0])
 				write.completion = store.Completion{Outcome: store.TransactionCommitted}
 			}
 			input := coreproject.TransferInput{Ownership: test.ownership, TargetTeam: test.inputTeam, ExpectedUserID: actor.UserID}

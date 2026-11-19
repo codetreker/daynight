@@ -160,6 +160,7 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 	}{
 		{"not owner administrator", func(d *transferTestDAO, _ *TransferInput) { d.access.TeamRole = nil }, "forbidden"},
 		{"stale ownership", func(_ *transferTestDAO, i *TransferInput) { i.Ownership.Version-- }, "version_conflict"},
+		{"higher ownership version", func(_ *transferTestDAO, i *TransferInput) { i.Ownership.Version++ }, "version_conflict"},
 		{"missing target", func(d *transferTestDAO, _ *TransferInput) { d.target.Ref.ID = "" }, "not_found"},
 		{"stale team", func(_ *transferTestDAO, i *TransferInput) { i.TargetTeam.Version-- }, "version_conflict"},
 		{"exhausted ownership", func(d *transferTestDAO, i *TransferInput) {
@@ -172,8 +173,11 @@ func TestTransferLockOrderVersionsAndLostAccess(t *testing.T) {
 			d := newTransferTestDAO()
 			i := transferTestInput()
 			tc.modify(d, &i)
-			_, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, i)
+			receipt, err := Transfer(ctx, d, p, transferTestProject, transferTestSource, transferTestTarget, i)
 			transferTestFault(t, err, tc.code)
+			if receipt != (TransferReceipt{}) {
+				t.Fatalf("refused transfer returned receipt %#v", receipt)
+			}
 			for _, call := range d.calls {
 				if call == "move" {
 					t.Fatal("refused transfer moved ownership")
