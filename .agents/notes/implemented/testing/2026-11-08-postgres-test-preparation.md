@@ -238,6 +238,13 @@ trigger and function are removed and their absence is checked. Case-specific
 records preserve independent committed-state checks. A failed case stops
 reuse.
 
+The [Project Thread authorization matrices](../../../../packages/daynight-server/internal/core/store/postgres/project/authorization_contract_test.go)
+share one Store per parent and give each case its own actor, Project, Team,
+and Task records. Each reader waits on the exact grant or ownership writer
+and observes the committed authorization facts when it resumes. A reader
+exits before schema cleanup, and the parent checks pool reuse before the
+next case.
+
 The [Tag deletion and Task write matrix](../../../../packages/daynight-server/internal/core/store/postgres/tag_concurrency_witnesses_test.go)
 shares a Store with distinct Project, Task and Tag identities. The actual
 Project row holder blocks the second write until the first commits. The test

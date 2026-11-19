@@ -8,12 +8,11 @@ import (
 	"testing"
 	"time"
 
-	pgtask "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	pgproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
+	pgtask "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,18 +20,112 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func authorizationRead(ctx context.Context, pool *pgxpool.Pool, operation func(pgx.Tx) error) error {
-	raw, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return err
+func rollbackAuthorizationTransaction(t *testing.T, tx pgx.Tx) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		t.Errorf("roll back authorization transaction: %v", err)
 	}
-	defer raw.Rollback(context.Background())
-	return operation(raw)
 }
+
+func rollbackAuthorizationReader(t *testing.T, readCtx context.Context, tx pgx.Tx) {
+	t.Helper()
+	cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn := tx.Conn().PgConn()
+	closedBefore, cleanupDone := conn.IsClosed(), conn.CleanupDone()
+	err := tx.Rollback(cleanup)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, pgconn.ErrConnClosed) && (closedBefore || readCtx.Err() != nil) {
+		select {
+		case <-cleanupDone:
+			return
+		case <-cleanup.Done():
+			err = errors.Join(err, cleanup.Err())
+		}
+	}
+	t.Errorf("roll back authorization reader: %v", err)
+}
+
+func authorizationAfterWriterCommit(t *testing.T, ctx context.Context, pool *pgxpool.Pool, writer pgx.Tx,
+	principal model.Principal, projectID, taskID, waitQuery string,
+) (model.ProjectAccess, error) {
+	t.Helper()
+	writerPID := writer.Conn().PgConn().PID()
+	readerCtx, cancel := context.WithCancel(ctx)
+	started := make(chan uint32, 1)
+	finished := make(chan struct{})
+	var access model.ProjectAccess
+	var readErr error
+	go func() {
+		defer close(finished)
+		reader, err := pool.BeginTx(readerCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+		if err != nil {
+			readErr = err
+			return
+		}
+		defer rollbackAuthorizationReader(t, readerCtx, reader)
+		started <- reader.Conn().PgConn().PID()
+		dao := pgtask.NewThreadDAO(reader)
+		if _, readErr = dao.LockTaskPresence(readerCtx, projectID, taskID); readErr != nil {
+			return
+		}
+		if _, readErr = dao.Credential(readerCtx, principal); readErr != nil {
+			return
+		}
+		access, readErr = pgproject.NewThreadDAO(reader).LockProjectAuthorization(readerCtx, principal, projectID)
+	}()
+	defer func() {
+		cancel()
+		rollbackAuthorizationTransaction(t, writer)
+		<-finished
+	}()
+
+	var readerPID uint32
+	select {
+	case readerPID = <-started:
+	case <-finished:
+		t.Fatalf("thread finished before waiting for %s: %v", waitQuery, readErr)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	for {
+		select {
+		case <-finished:
+			t.Fatalf("thread finished before waiting for %s: %v", waitQuery, readErr)
+		default:
+		}
+		var waiting bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity WHERE pid=$1
+ AND query LIKE $3 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))`, readerPID, writerPID, "%"+waitQuery+"%").Scan(&waiting); err != nil {
+			t.Fatalf("inspect %s lock wait for thread backend %d and writer %d: %v", waitQuery, readerPID, writerPID, err)
+		}
+		if waiting {
+			break
+		}
+		if err := testutil.WaitThreadClock(ctx); err != nil {
+			t.Fatalf("thread backend %d did not wait for writer %d on %s: %v", readerPID, writerPID, waitQuery, err)
+		}
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		return access, readErr
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		return model.ProjectAccess{}, ctx.Err()
+	}
+}
+
 func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
-	for _, mutation := range []string{"role", "delete"} {
-		t.Run(mutation, func(t *testing.T) {
-			database := testutil.OpenStore(t, postgres.Open)
+	database := testutil.OpenStore(t, postgres.Open)
+	for index, mutation := range []string{"role", "delete"} {
+		if !t.Run(mutation, func(t *testing.T) {
 			_, principal, project := testutil.ProjectMembershipFixture(t, database)
 			if err := testutil.WriteProject(context.Background(), database, project.ID, func(tx ProjectWriteScope) error {
 				_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
@@ -40,14 +133,14 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			task := testutil.QueryTask(t, database, project.ID, 10, model.TaskTodo)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			task := testutil.QueryTask(t, database, project.ID, 10+index, model.TaskTodo)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			writer, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer writer.Rollback(context.Background())
+			defer rollbackAuthorizationTransaction(t, writer)
 			var version int64
 			if mutation == "role" {
 				err = writer.QueryRow(ctx, `UPDATE project_grants SET role='member',version=nextval('project_grant_versions')
@@ -58,52 +151,32 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			started := make(chan uint32, 1)
-			completed := make(chan error, 1)
-			var access model.ProjectAccess
-			go func() {
-				completed <- authorizationRead(ctx, database.Pool, func(raw pgx.Tx) error {
-					started <- raw.Conn().PgConn().PID()
-					if _, err := pgtask.NewThreadDAO(raw).LockTaskPresence(ctx, project.ID, task.ID); err != nil {
-						return err
-					}
-					if _, err := pgtask.NewThreadDAO(raw).Credential(ctx, principal); err != nil {
-						return err
-					}
-					var err error
-					access, err = pgproject.NewThreadDAO(raw).LockProjectAuthorization(ctx, principal, project.ID)
-					return err
-				})
-			}()
-			testutil.WaitThreadBackendLock(t, database.Pool, <-started)
-			if err := writer.Commit(ctx); err != nil {
-				t.Fatal(err)
-			}
-			err = <-completed
+			access, err := authorizationAfterWriterCommit(t, ctx, database.Pool, writer, principal, project.ID, task.ID, "FROM project_grants")
 			if mutation == "delete" {
 				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("revoked grant admitted: %#v %v", access, err)
 				}
-				return
-			}
-			if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != model.ProjectMemberRole ||
+			} else if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != model.ProjectMemberRole ||
 				access.DirectGrant == nil || access.DirectGrant.ProjectID != project.ID || access.DirectGrant.UserID != principal.UserID ||
 				access.DirectGrant.Role != access.Role || access.DirectGrant.Version != version {
 				t.Fatalf("authorization retained pre-wait grant: %#v %v", access, err)
 			}
-		})
+			testutil.AssertPoolReusable(t, database.Pool)
+		}) {
+			return
+		}
 	}
 }
 
 func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) {
-	for _, destinationCreatedLate := range []bool{false, true} {
-		for _, destinationMember := range []bool{false, true} {
-			t.Run(fmt.Sprintf("late=%t/member=%t", destinationCreatedLate, destinationMember), func(t *testing.T) {
-				database := testutil.OpenStore(t, postgres.Open)
+	database := testutil.OpenStore(t, postgres.Open)
+	for lateIndex, destinationCreatedLate := range []bool{false, true} {
+		for memberIndex, destinationMember := range []bool{false, true} {
+			if !t.Run(fmt.Sprintf("late=%t/member=%t", destinationCreatedLate, destinationMember), func(t *testing.T) {
 				_, principal, project := testutil.ProjectMembershipFixture(t, database)
 				sourceID := testutil.OrdinaryProjectTeam(t, database.Pool, project.ID)
 				testutil.MustExec(t, database.Pool, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, sourceID, principal.UserID)
-				task := testutil.QueryTask(t, database, project.ID, 10, model.TaskTodo)
+				task := testutil.QueryTask(t, database, project.ID, 10+2*lateIndex+memberIndex, model.TaskTodo)
 				destinationID := uuid.NewString()
 				if !destinationCreatedLate {
 					testutil.MustExec(t, database.Pool, `INSERT INTO teams(id,name) VALUES($1,'Destination')`, destinationID)
@@ -111,13 +184,13 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 						testutil.MustExec(t, database.Pool, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, destinationID, principal.UserID)
 					}
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 				defer cancel()
 				writer, err := database.Pool.Begin(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer writer.Rollback(context.Background())
+				defer rollbackAuthorizationTransaction(t, writer)
 				var locked string
 				if err := writer.QueryRow(ctx, `SELECT team_id::text FROM project_ownership WHERE project_id=$1 FOR UPDATE`, project.ID).Scan(&locked); err != nil || locked != sourceID {
 					t.Fatalf("lock source ownership: %s %v", locked, err)
@@ -136,48 +209,9 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 				if err := writer.QueryRow(ctx, `UPDATE project_ownership SET team_id=$2,version=version+1 WHERE project_id=$1 RETURNING version`, project.ID, destinationID).Scan(&destinationVersion); err != nil {
 					t.Fatal(err)
 				}
-				started := make(chan uint32, 1)
-				completed := make(chan error, 1)
-				var access model.ProjectAccess
-				go func() {
-					completed <- authorizationRead(ctx, database.Pool, func(raw pgx.Tx) error {
-						started <- raw.Conn().PgConn().PID()
-						if _, err := pgtask.NewThreadDAO(raw).LockTaskPresence(ctx, project.ID, task.ID); err != nil {
-							return err
-						}
-						if _, err := pgtask.NewThreadDAO(raw).Credential(ctx, principal); err != nil {
-							return err
-						}
-						var err error
-						access, err = pgproject.NewThreadDAO(raw).LockProjectAuthorization(ctx, principal, project.ID)
-						return err
-					})
-				}()
-				var readerPID uint32
-				select {
-				case readerPID = <-started:
-				case err := <-completed:
-					t.Fatalf("thread failed before admission: %v", err)
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
 				// The blocked ownership statement has its old snapshot before
 				// the writer publishes the destination.
-				testutil.WaitThreadBackendLock(t, database.Pool, readerPID)
-				var waitingOnOwnership bool
-				err = database.Pool.QueryRow(ctx, `SELECT query LIKE '%FROM project_ownership%' AND $2=ANY(pg_blocking_pids(pid))
- FROM pg_stat_activity WHERE pid=$1`, readerPID, writer.Conn().PgConn().PID()).Scan(&waitingOnOwnership)
-				if err != nil || !waitingOnOwnership {
-					t.Fatalf("thread did not wait for the ownership writer: %v", err)
-				}
-				if err := writer.Commit(ctx); err != nil {
-					t.Fatal(err)
-				}
-				select {
-				case err = <-completed:
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
+				access, err := authorizationAfterWriterCommit(t, ctx, database.Pool, writer, principal, project.ID, task.ID, "FROM project_ownership")
 				if !destinationMember {
 					if !errors.Is(err, model.ErrNotFound) {
 						t.Fatalf("source-only access retained: %#v %v", access, err)
@@ -187,7 +221,10 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 					access.DirectGrant != nil || access.TeamRole == nil || *access.TeamRole != model.ProjectMemberRole || access.CanTransfer {
 					t.Fatalf("destination-only access: %#v %v", access, err)
 				}
-			})
+				testutil.AssertPoolReusable(t, database.Pool)
+			}) {
+				return
+			}
 		}
 	}
 }
