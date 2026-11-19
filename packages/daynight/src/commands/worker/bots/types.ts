@@ -43,6 +43,7 @@ export type BotCleanup = {
 export type BotRecord = {
   owner: BotOwner; botId: string; observed: Bot; definition: BotDefinition | null;
   observedAt: number; intent: BotLaunchIntent | null; cleanup?: BotCleanup;
+  migration?: { state: "registration_pending"; manifestPath: string };
 };
 
 export const botUUID = (value: unknown, field: string): string => {

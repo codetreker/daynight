@@ -88,6 +88,7 @@ describe("minimal worker SQLite schema", () => {
     const f = fixture();
     close(f.store);
     const db = connect(f.file);
+    db.exec("DROP TABLE bot_migrations");
     db.exec("DROP TABLE archive_backfill_schedules");
     const steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
     const old = steps.find(step => step.version === 13)!;
@@ -111,6 +112,7 @@ describe("minimal worker SQLite schema", () => {
   it("preserves version 17 Markdown repair schedules when upgrading to version 18", () => {
     const f = fixture(); close(f.store);
     const db = connect(f.file);
+    db.exec("DROP TABLE bot_migrations");
     db.exec("DROP TABLE archive_backfill_schedules");
     const schema = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(17)!;
     db.exec(schema.find(object => object.name === "archive_backfill_schedules")!.sql!);

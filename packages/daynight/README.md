@@ -3117,6 +3117,32 @@ Each command acquires the same instance lock; an occupied lock returns an
 instruction to stop the runner. Retry and release synchronously handle
 one specified claim without a background request queue.
 
+### Legacy Bot storage migration
+
+After the original Worker and assistant execution have stopped, migrate one
+Bot's legacy Worker/Controller data with:
+
+```bash
+daynight worker migrate-bot <bot-id> --confirm
+daynight worker migrated-bot-history <bot-id> --json
+```
+
+Migration verifies the configured service, signed-in owner, original Worker,
+Bot identity and execution stop evidence under exclusive locks. It copies
+consistent SQLite snapshots, including committed WAL content, and owned
+resources into the Bot directory. Original tickets, Session IDs and unknown
+operation records remain unchanged. Unknown processes, conflicting locks or
+missing evidence refuse the switch; this command does not stop a running Bot.
+
+The source transaction records a migration receipt together with removal of
+the original inventory rows. Interrupted invocations reconcile persisted phases
+and that receipt before continuing. Source files remain available as evidence.
+Local completion leaves recovery registration pending and blocks execution
+through the original paths until the takeover mechanism verifies the remote
+identity. It does not certify Provider native recovery or start a replacement
+conversation. The history command reads the verified dedicated copy without
+starting an Agent; it does not add browser offline history.
+
 ### Completed Web resources
 
 `worker resources recover <task-id> --project <project-id> --claim-id <claim-id>`

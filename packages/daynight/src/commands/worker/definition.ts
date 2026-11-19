@@ -61,6 +61,18 @@ export const workerDefinition: CommandDefinition = {
       details: "Stop worker run first. Without --confirm, verify original service, owner, Worker, terminal claim, Web journal, native stop, ready archive and preserved Git content without deletion. With --confirm, repeat verification and remove only the matching clean worktree without force; keep its branch and journals. Missing original evidence, successor claims, dirty/untracked/ignored files and commits without an observed remote reference refuse recovery. Restore original evidence from backup; a Git marker or done Task alone is insufficient.",
     }],
   }, {
+    name: "migrate-bot",
+    description: "Move one stopped legacy Bot into its dedicated local storage",
+    arguments: [{ name: "bot-id", description: "Original Bot UUID" }],
+    options: [{ names: ["--confirm"], description: "Commit the verified migration of this original Bot" }, help],
+    details: "Stop the original worker run and Bot execution first. Requires --confirm and the original signed-in service, account and local Worker identity. Takes Worker, Bot and Controller storage locks; unknown process stop refuses migration. Copies consistent SQLite snapshots including committed WAL, original tickets and resources, then commits one local authority. An interrupted attempt resumes with the same Bot ID. Original source resources remain retained. Recovery identity registration and Provider verification remain pending; this command never starts or resumes an Agent.",
+  }, {
+    name: "migrated-bot-history",
+    description: "Read the latest 50 preserved entries from a migrated Bot without starting it",
+    arguments: [{ name: "bot-id", description: "Original Bot UUID" }],
+    options: [{ names: ["--json"], description: "Print preserved history as JSON (the default)" }, help],
+    details: "Uses the current service, account and original local Worker binding. Verifies the committed dedicated copy and reads its original Session history without starting a Controller or Provider. Prints Session IDs, recovery availability and timeline entries; private tickets and credentials are excluded.",
+  }, {
     name: "repair-markdown",
     description: "Repair failed Markdown images in one stopped original Web execution and archive it",
     arguments: task,

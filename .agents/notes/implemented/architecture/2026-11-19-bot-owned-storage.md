@@ -64,7 +64,7 @@ responsibility instead of depending on already deleted evidence.
 New Bot persistence no longer depends on shared Worker or Controller data.
 Each opened Bot costs a dedicated database and lock; directory enumeration must
 validate identities rather than trusting a directory name. Existing shared data
-requires a separate guarded migration, and Provider native records still need
+uses the [guarded migration](2026-11-19-bot-storage-migration.md), and Provider native records still need
 their own verified isolation and resume implementation. This storage change
 does not advertise complete native recovery or independent Worker takeover.
 

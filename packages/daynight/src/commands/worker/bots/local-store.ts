@@ -11,6 +11,7 @@ import { botStoreFormat } from "./store-format.js";
 import { openBotStore, type BotStore } from "./store.js";
 import { openBotExecutionStore, type BotExecutionStore } from "./execution-store.js";
 import { parseBot, parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
+import { botMigrationHash, readBotMigrationManifest } from "./migration-state.js";
 
 type LocalIdentity = { server_origin: string; owner_user_id: string; bot_id: string };
 type Stores = { store: BotStore; executions: BotExecutionStore; storeClosed: boolean; executionsClosed: boolean; release(): void };
@@ -111,6 +112,15 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
   };
   const selected = (value: BotOwner, botId: string, create = false): Pick<Stores, "store" | "executions"> | null => {
     assertOwner(value);
+    const manifest = readBotMigrationManifest(options.stateDirectory, value, botId);
+    if (manifest !== null && manifest.phase !== "committed") throw new Error("Bot migration is incomplete; run worker migrate-bot for the original Bot before any storage writes.");
+    if (legacyStore !== undefined) {
+      const db = new Database(sqliteFilename(options.legacyDatabaseFile), { readonly: true, fileMustExist: true });
+      try {
+        const receipt = db.prepare("SELECT manifest_hash FROM bot_migrations WHERE bot_id = ?").get(botId) as { manifest_hash: string } | undefined;
+        if (receipt !== undefined && (manifest === null || receipt.manifest_hash !== botMigrationHash(manifest))) throw new Error("Bot migration source receipt requires its original committed manifest.");
+      } finally { db.close(); }
+    }
     const original = legacyStore?.get(value, botId);
     if (original != null) {
       if (localIdentity(botId) !== null) throw new Error("Bot has both legacy and dedicated storage; migration must establish one authoritative location.");
@@ -122,7 +132,10 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
         if (db.prepare("SELECT 1 FROM bots WHERE bot_id = ? LIMIT 1").get(botId) !== undefined) throw new Error("Bot retains a legacy service/account/Worker binding; explicit migration or takeover is required.");
       } finally { db.close(); }
     }
-    return local(botId, create);
+    const result = local(botId, create);
+    const migrated = result?.store.get(value, botId)?.migration;
+    if (migrated !== undefined && manifest === null || manifest !== null && (result === null || migrated?.state !== "registration_pending")) throw new Error("Bot migration storage has lost its authority fence.");
+    return result;
   };
   const required = (record: BotRecord) => {
     const stores = selected(record.owner, record.botId);
@@ -149,6 +162,7 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
     list: value => {
       assertOwner(value);
       const records = legacyStore?.list(value) ?? [], root = path.join(options.stateDirectory, "bots");
+      for (const record of records) selected(value, record.botId);
       if (!existsSync(root)) return records;
       physicalDirectory(root);
       for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -156,7 +170,7 @@ export const openLocalBotStores = (options: { stateDirectory: string; legacyData
         const identity = localIdentity(entry.name);
         if (identity === null || !sameAccount(identity, owner)) continue;
         if (records.some(record => record.botId === entry.name)) throw new Error("Bot has both legacy and dedicated storage; explicit migration is required.");
-        const record = local(entry.name, false)!.store.get(value, entry.name);
+        const record = selected(value, entry.name)!.store.get(value, entry.name);
         if (record !== null) records.push(record);
       }
       return records.sort((left, right) => left.botId.localeCompare(right.botId));

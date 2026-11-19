@@ -4,7 +4,7 @@
 
 ## 数据与句柄
 
-`bots/local-store.ts` 为新 Bot 在配置根下建立 `bots/<botId>/store.sqlite`。专属格式包含 `bot_identity`、`bots` 和 `bot_executions`；身份与初始 schema 在同一事务提交。身份固定服务域、账号和 Bot，目录打开时拒绝不匹配、符号链接及未知格式。每个 Bot 的 `instance.lock` 与 `ownership.sqlite` 排除另一持有者，锁保留到两份数据库连接及其执行使用者关闭。
+`bots/local-store.ts` 为新 Bot 在配置根下建立 `bots/<botId>/store.sqlite`。专属格式包含 `bot_identity`、`bots` 和 `bot_executions`；身份与初始 schema 在同一事务提交。格式 2 保留迁移责任，拒绝会丢弃该字段的旧 reader/writer；从格式 1 升级不改原记录。身份固定服务域、账号和 Bot，目录打开时拒绝不匹配、符号链接及未知格式。每个 Bot 的 `instance.lock` 与 `ownership.sqlite` 排除另一持有者，锁保留到两份数据库连接及其执行使用者关闭。
 
 `bots/store.ts` 保持冻结定义和首次注册意图；`bots/execution-store.ts` 在同一个 Bot SQLite 中维护执行证据。恢复代际切换的 intent 与 execution 行仍在单一事务提交。发现扫描专属目录，不依赖公共 Worker 库保存新 Bot 行；不同服务或账号的目录不进入当前库存，已有不同 Worker 绑定须经独立接管流程处理。
 
@@ -38,7 +38,13 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 清除公共 Worker/Controller 目录不会删除新 Bot 的这些文件。Provider 原生恢复材料的隔离、旧数据迁移和新 Worker 接管仍由各自机制负责；目录发现不等于已取得服务端执行权，不授权创建替代会话。
 
-未迁移格式仍使用本文描述的公共位置。迁移协调器取得 Bot 独占锁后核验旧执行已停止，再复制含已提交 WAL 的一致快照并核验身份和资源，持久记录阶段后原子切换唯一写入位置；恢复身份的远端登记和回执确认单独对账。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。存活 Controller 优先接回，启动替代进程仍沿用下面的停证和原 native ID 条件。
+未迁移格式仍使用本文描述的公共位置。`worker migrate-bot` 是离线迁移入口：取得原 Worker 实例锁、Bot 独占锁与 Controller 存储许可，核验原执行已经停止，不主动终止存活助手。未知提交、缺失进程证明或仍持有的锁阻止切换；文件可读或心跳过期不能替代停证。
+
+迁移复制包含已提交 WAL 的一致 SQLite 快照与所属资源。Bot 专属库只接收目标 Bot 的库存及执行行，不复制普通 Task 库存。原始 intent、ticket、Session、native ID、操作 ID 与未确认操作保留；manifest 单独记录物理副本位置及摘要。旧 Bot 恢复时可能保留公共 Controller 路径，却在 Bot 专属根创建新一代别名，因此迁移同时接受执行记录中的公共与该 Bot 专属别名目录，并分别存放副本，防止两根下同名目录相互覆盖。journal 的 ticket hash 和 Windows 停证继续使用原票据，不能通过重写路径后重算摘要制造新的原执行证据。
+
+复制和校验阶段持久化后，原 Worker SQLite 在同一事务内删除目标两行并写入绑定 manifest 摘要的迁移回执，作为唯一权威切换点。`019-bot-migration.sql` 引入回执表和源格式门槛。中断后按持久阶段与该回执核对，不能仅凭原行消失推断提交成功。源 schema 升级阻止旧 Worker 再次打开旧格式写入；未完成的迁移由本地存储路由拒绝，避免部分副本进入正常执行。
+
+本地提交保留独立的 `registration_pending` 状态。启动、观察、续期、停止和删除入口不再依据原 intent 访问旧目录；接管模块完成跨端恢复身份登记与回执核对后才能建立后续执行。`worker migrated-bot-history` 通过副本映射和原 ticket 校验读取保留历史，不启动 Provider，也不声明新增浏览器离线历史服务。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。迁移取舍由[决策记录](../../.agents/notes/implemented/architecture/2026-11-19-bot-storage-migration.md)说明。
 
 新位置的精确删除使用同一归属解析器，Bot 私有原生副本随其私有资料处理，共享 native home 和 cwd 保留。最小删除责任必须在执行 journal 删除后仍可读取，直至两端确认；不能通过先删整个 Bot 目录丢弃原回执和未完成责任。存储、迁移、接管和 Provider 验证分别完成前，不声明该能力或同机恢复验收成功。
 

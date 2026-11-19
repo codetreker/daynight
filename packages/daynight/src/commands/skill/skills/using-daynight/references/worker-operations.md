@@ -10,6 +10,30 @@ Current execution monitoring uses direct POST with fresh observations; it does n
 read or replay an earlier snapshot. Deploy a compatible Server before upgrading a
 Worker. A monitoring failure does not establish that execution or cleanup stopped.
 
+## Legacy Bot storage migration
+
+Explicitly authorized migration moves one stopped original Bot's Worker and
+Controller records into its dedicated directory. Stop the original Worker and
+assistant execution first; unknown process state or an occupied lock refuses
+migration rather than terminating a process.
+
+```bash
+daynight worker migrate-bot <bot-id> --confirm
+daynight worker migrated-bot-history <bot-id> --json
+```
+
+The command verifies the configured service, authenticated account, original
+Worker and Bot. It snapshots committed SQLite/WAL data and owned resources,
+retaining original tickets, Session IDs and unresolved operations. Durable
+phases and the source transaction's receipt distinguish copied data from a
+committed transfer. After an interruption, inspect the original result and
+identity before continuing the same migration; do not create a replacement Bot.
+
+Local completion leaves recovery registration pending. It grants no remote
+execution authority and proves no Provider resume. The history command reads
+the verified copy without starting an Agent. Source evidence, ordinary working
+directories and shared Provider homes are not implicitly deleted.
+
 ## Tool path configuration
 
 Worker-level choices cover `codex` and `copilot`; they do not configure
