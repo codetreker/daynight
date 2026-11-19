@@ -3,7 +3,7 @@ import { ApiError, listProjects } from '../../api/client';
 import { assistantTaskInboxUrl, type AssistantTask } from '../../api/assistant-tasks';
 import { listTeams, type Team } from '../../api/teams';
 import type { Project } from '../../api/types';
-import { getWebhook, listWebhooks, type WebhookActiveEndpoint, type WebhookAdmission, type WebhookEndpointSummary, type WebhookEventType, type WebhookOwner } from '../../api/webhooks';
+import { getWebhook, listWebhooks, type WebhookActiveEndpoint, type WebhookAdmission, type WebhookEndpointSummary, type WebhookEventType, type WebhookOwner, type WebhookSubscriptionInput } from '../../api/webhooks';
 import { webhookUrl } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
@@ -192,8 +192,9 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const primary = data?.personal.find(endpoint => endpoint.enabled) ?? data?.personal[0] ?? null;
   const [draft, setDraft] = useState<{ readonly projects: readonly string[]; readonly events: readonly WebhookEventType[] } | null>(null);
   // The event choices show the union over projects. Saving applies only the events the user added or removed to each
-  // existing project, so per-project selections made on the Webhook page survive an unchanged save.
-  const baseline = useMemo(() => ({ projects: primary?.subscriptions.map(item => item.projectId) ?? [], events: EVENT_TYPES.filter(event => primary?.subscriptions.some(item => item.eventTypes.includes(event))) }), [primary]);
+  // existing project, so per-project selections made on the Webhook page survive an unchanged save. A project may hold
+  // several independent subscriptions; it appears once here, and saving keeps every one of them by its own id.
+  const baseline = useMemo(() => ({ projects: [...new Set(primary?.subscriptions.map(item => item.projectId) ?? [])], events: EVENT_TYPES.filter(event => primary?.subscriptions.some(item => item.eventTypes.includes(event))) }), [primary]);
   // An edit in progress survives background reloads; a confirmed save adopts the service's configuration again.
   const lastRevision = useRef(revision);
   useEffect(() => { if (lastRevision.current !== revision) { lastRevision.current = revision; setDraft(null); } }, [revision]);
@@ -206,10 +207,14 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const save = async () => {
     if (inboxUrl === null || primary === null && awaitingCreated) return;
     const added = selection.events.filter(event => !baseline.events.includes(event)), removed = baseline.events.filter(event => !selection.events.includes(event));
-    const subscriptions = selection.projects.map(projectId => {
-      const existing = primary?.subscriptions.find(item => item.projectId === projectId);
-      const eventTypes = existing === undefined ? EVENT_TYPES.filter(event => selection.events.includes(event)) : [...existing.eventTypes.filter(event => !removed.includes(event)), ...added.filter(event => !existing.eventTypes.includes(event))];
-      return { id: existing?.id ?? null, projectId, eventTypes };
+    // PATCH replaces the whole subscription list, so each existing subscription of a selected project is resubmitted under
+    // its own id. A removed event leaves every one of them; an added event joins the project's first subscription only
+    // when none of them carries it yet.
+    const subscriptions = [...new Set(selection.projects)].flatMap((projectId): WebhookSubscriptionInput[] => {
+      const existing = primary?.subscriptions.filter(item => item.projectId === projectId) ?? [];
+      if (existing.length === 0) return [{ id: null, projectId, eventTypes: EVENT_TYPES.filter(event => selection.events.includes(event)) }];
+      const missing = added.filter(event => !existing.some(item => item.eventTypes.includes(event)));
+      return existing.map((item, index) => ({ id: item.id, projectId, eventTypes: [...item.eventTypes.filter(event => !removed.includes(event)), ...(index === 0 ? missing : [])] }));
     }).filter(item => item.eventTypes.length > 0);
     if (selection.events.length === 0 || subscriptions.length === 0) { setInvalid(true); return; }
     await submit(primary === null

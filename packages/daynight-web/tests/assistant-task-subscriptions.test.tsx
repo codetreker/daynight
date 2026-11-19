@@ -169,6 +169,32 @@ it('preserves per-project event selections and applies only the changed events',
   ]);
 });
 
+it('keeps every independent subscription of a project when saving', async () => {
+  const second = botId(85);
+  const linked = endpoint(personalId, inboxUrl, [
+    { id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' },
+    { id: second, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.deleted'], eligibility: 'eligible' },
+  ]);
+  const s = server({ personal: [linked] }); mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Save subscription' }));
+  expect(screen.getAllByRole('checkbox', { name: 'Alpha' })).toHaveLength(1);
+  await waitFor(() => expect(s.writes).toHaveLength(1));
+  expect(s.writes[0]!.body.subscriptions).toEqual([
+    { id: subscriptionId, projectId: alpha, eventTypes: ['task.created'] },
+    { id: second, projectId: alpha, eventTypes: ['task.deleted'] },
+  ]);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save subscription' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(2));
+  expect(s.writes[1]!.body.subscriptions).toEqual([
+    { id: subscriptionId, projectId: alpha, eventTypes: ['task.created', 'task.paused'] },
+    { id: second, projectId: alpha, eventTypes: ['task.deleted'] },
+  ]);
+});
+
 it('adopts a created endpoint while the directory refresh fails', async () => {
   const s = server(); mount();
   await screen.findByText('No Webhook endpoint targets this inbox yet.');
