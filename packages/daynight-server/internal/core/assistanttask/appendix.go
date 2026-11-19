@@ -16,7 +16,10 @@ const (
 )
 
 // appendixScope validates a declared scope and returns it with non-nil sets.
-// A nil scope is the unrestricted scope.
+// A nil scope is the unrestricted scope. Item categories are compared verbatim
+// with the free-text categories items store, so a scope category is only
+// required to be nonblank and bounded; trimming or refusing surrounding
+// whitespace would make such stored categories impossible to name.
 func appendixScope(scope *model.AssistantTaskAppendixScope) (model.AssistantTaskAppendixScope, error) {
 	result := model.AssistantTaskAppendixScope{ProjectIDs: []string{}, EventTypes: []string{}, ItemCategories: []string{}}
 	if scope == nil {
@@ -30,7 +33,7 @@ func appendixScope(scope *model.AssistantTaskAppendixScope) (model.AssistantTask
 		{scope.ProjectIDs, &result.ProjectIDs, strictID},
 		{scope.EventTypes, &result.EventTypes, knownEventType},
 		{scope.ItemCategories, &result.ItemCategories, func(value string) bool {
-			return keyValid(value) && len(value) <= MaxAppendixCategoryBytes
+			return textValid(value, true) && len(value) <= MaxAppendixCategoryBytes
 		}},
 	}
 	for _, check := range checks {

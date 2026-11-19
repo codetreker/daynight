@@ -35,8 +35,10 @@ func TestAppendixScopeAcceptsBoundedKnownSets(t *testing.T) {
 		limit[i] = strings.Repeat("c", i+1)
 	}
 	limit[0] = strings.Repeat("x", MaxAppendixCategoryBytes)
-	if _, err = appendixScope(&model.AssistantTaskAppendixScope{ItemCategories: limit}); err != nil {
-		t.Fatalf("boundary categories refused: %v", err)
+	limit[1] = " build "
+	got, err = appendixScope(&model.AssistantTaskAppendixScope{ItemCategories: limit})
+	if err != nil || !reflect.DeepEqual(got.ItemCategories, limit) {
+		t.Fatalf("boundary or padded categories not kept verbatim: %#v %v", got.ItemCategories, err)
 	}
 }
 
@@ -51,7 +53,6 @@ func TestAppendixScopeRefusesInvalidSets(t *testing.T) {
 		"duplicate-project":    {ProjectIDs: []string{targetID, targetID}},
 		"unknown-event":        {EventTypes: []string{"retro"}},
 		"blank-category":       {ItemCategories: []string{" "}},
-		"padded-category":      {ItemCategories: []string{" build"}},
 		"long-category":        {ItemCategories: []string{strings.Repeat("x", MaxAppendixCategoryBytes+1)}},
 		"nul-category":         {ItemCategories: []string{"a\x00b"}},
 		"duplicate-category":   {ItemCategories: []string{"build", "build"}},
