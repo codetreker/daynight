@@ -42,7 +42,8 @@ func TestProjectTransferPreviewProtocol(t *testing.T) {
 		{name: "same owner", target: testTeamID},
 		{name: "invalid destination", target: "https://another.test/teams/" + testTargetID, code: "invalid_input"},
 		{name: "not authorized", target: testTargetID, previewErr: &model.Fault{Code: "forbidden", Message: "Owner Team administrator access is required."}, code: "forbidden"},
-		{name: "project read fails", target: testTargetID, getErr: model.ErrNotFound, code: "not_found"},
+		{name: "project read fails", target: testTargetID, getErr: &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: model.ErrNotFound}, code: "not_found"},
+		{name: "project read operational failure", target: testTargetID, getErr: errors.New("Project snapshot failed"), code: "internal_error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newEntryFixture(t)
@@ -285,7 +286,8 @@ func TestProjectTransferProtocolUsesAtomicGoalCleanup(t *testing.T) {
 			if tc.sameOwner {
 				target = testTeamID
 			}
-			actor := model.Principal{Kind: model.PATCredential, UserID: "alice", CredentialID: "credential-alice"}
+			actor := model.Principal{Kind: model.PATCredential, UserID: testUserID, CredentialID: testTeamID}
+			f.entry.auth = transferAuthenticator{"alice": actor}
 			previewReads := mcpOrgCount(t, 1)
 			teamReads := mcpOrgCount(t, 1)
 			roleReads := mcpOrgCount(t, 1)
@@ -378,12 +380,14 @@ func TestProjectTransferProtocolUsesAtomicGoalCleanup(t *testing.T) {
 
 func TestProjectTransferPreviewRequiresOwnerTeamAdmin(t *testing.T) {
 	f := newEntryFixture(t)
+	actor := model.Principal{Kind: model.PATCredential, UserID: testUserID, CredentialID: testTeamID}
+	f.entry.auth = transferAuthenticator{"alice": actor}
 	tx := newHTTPTestStore(t)
 	project := sampleProject(testProjectID)
 	accesses := mcpOrgCount(t, 1)
 	mcpOrgRead(t, tx, 1, mcpOrgProjectReader{ProjectAccessCall: func(ctx context.Context, p model.Principal, id string) (model.ProjectAccess, error) {
 		accesses()
-		projectHTTPCheck(t, p.UserID, "alice")
+		projectHTTPCheck(t, p, actor)
 		projectHTTPCheck(t, id, project.ID)
 		access := projectHTTPAccess(p, project)
 		access.TeamRole = nil
