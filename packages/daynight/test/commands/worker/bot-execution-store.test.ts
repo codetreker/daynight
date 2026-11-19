@@ -123,6 +123,6 @@ describe("Bot recovery storage", () => {
 
 it("refuses recovery into a different private execution home", () => {
   const f = fixture(); submitted(f);
-  expect(() => f.store.beginRecovery(f.record, stopped(f.record), path.join(f.home, "replacement"))).toThrow(/home/);
+  expect(() => f.store.beginRecovery(f.record, stopped(f.record), path.join(f.home, "replacement"))).toThrow(/home|private paths/);
   expect(f.bots.get(owner, id(3))).toEqual(f.record);
 });

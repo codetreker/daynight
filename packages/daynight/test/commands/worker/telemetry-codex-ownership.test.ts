@@ -23,8 +23,7 @@ vi.mock("../../../src/commands/controller/providers/copilot-runtime.js", () => (
 vi.mock("../../../src/commands/worker/owned-command.js", async original => ({ ...await original<object>(), runOwnedCommand: (command: OwnedCommand, operation: Operation) => command.environment.DN_CONFIG_DIR === undefined ? mocks.ordinary(command, operation) : mocks.assistant(command, operation), spawnOwnedProcess: () => { throw new Error("Native spawning is forbidden in this fixture."); } }));
 
 vi.mock("../../../src/commands/worker/diagnostics.js", () => ({ workerSqliteMigrationEvent: () => undefined }));
-vi.mock("../../../src/commands/worker/bots/store.js", () => ({ openBotStore: () => ({ close: () => {} }) }));
-vi.mock("../../../src/commands/worker/bots/execution-store.js", () => ({ openBotExecutionStore: () => ({ close: () => {} }) }));
+vi.mock("../../../src/commands/worker/bots/local-store.js", () => ({ openLocalBotStores: () => ({ store: { close: () => {} }, executions: { close: () => {} }, close: () => {} }) }));
 vi.mock("../../../src/commands/worker/bots/process.js", () => ({ createBotProcess: () => ({ close: async () => {} }) }));
 vi.mock("../../../src/commands/worker/bots/delete.js", () => ({ createBotDeletion: () => ({}) }));
 vi.mock("../../../src/commands/worker/bots/remote.js", () => ({ createBotRemote: () => ({}) }));

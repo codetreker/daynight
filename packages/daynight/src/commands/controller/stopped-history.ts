@@ -1,3 +1,4 @@
+import { sqliteFilename } from "../../platform/sqlite-filename.js";
 import { ArchiveRepairRequiredError, archiveRepairCode } from "./archive-error.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -21,7 +22,7 @@ export const replayStoppedControllerHistory = async (options: {
 }): Promise<void> => {
   const { ticket, journalPath } = options;
   const identity = { fence: { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration }, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId };
-  const initial = new Database(journalPath, { readonly: true, fileMustExist: true });
+  const initial = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true });
   let original!: string;
   const assertStopped = (db: Database.Database): void => {
     const row = db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as { snapshot: string; ticket_hash: string; owner_pid: number | null } | undefined;

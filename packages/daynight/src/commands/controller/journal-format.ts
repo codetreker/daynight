@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../platform/sqlite-filename.js";
 import type Database from "better-sqlite3";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { currentSqliteVersion, type SqliteFormat, type SqliteSource } from "../../platform/sqlite-format.js";
@@ -32,11 +33,11 @@ export const controllerJournalFormatForMigration = (context: (db: Database.Datab
   const assertWrite = (db: Database.Database): void => {
     const permission = context(db);
     assertControllerStoragePermit(permission.storagePermit, permission.storagePermit.journalFile);
-    if (!db.memory && db.name !== permission.storagePermit.journalFile) throw new Error("Controller journal migration permit belongs to another database.");
+    if (!db.memory && sqliteDisplayFilename(db.name) !== permission.storagePermit.journalFile) throw new Error("Controller journal migration permit belongs to another database.");
   };
   return {
     name: "controller-journal",
-    baseline: { version: baseline.version, create: (db) => { assertNoOrphanTimelineSource(db.name); assertWrite(db); db.exec(baseline.sql); } },
+    baseline: { version: baseline.version, create: (db) => { assertNoOrphanTimelineSource(sqliteDisplayFilename(db.name)); assertWrite(db); db.exec(baseline.sql); } },
     migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database, source: SqliteSource): undefined => {
       assertWrite(db);
       if (step.version === 10) return importControllerTimeline(db, context(db), step.sql);

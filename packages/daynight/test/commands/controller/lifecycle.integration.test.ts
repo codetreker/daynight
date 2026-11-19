@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -289,7 +290,7 @@ it("publishes the first generation and its Controller proof in one visible commi
   const execute = Database.prototype.exec;
   let observedInitialCommit = false;
   const spy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
+    if (sqliteDisplayFilename(this.name) === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
       const observer = new Database(file, { readonly: true });
       try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(15); }
       finally { observer.close(); }
@@ -328,7 +329,7 @@ it("retains the storage permit when a rejected business transaction cannot close
   const exec = Database.prototype.exec, close = Database.prototype.close;
   let immediate = 0, businessDb: Database.Database | undefined, unclosed: Database.Database | undefined;
   const execSpy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === file && sql === "BEGIN IMMEDIATE" && ++immediate === 2) businessDb = this;
+    if (sqliteDisplayFilename(this.name) === file && sql === "BEGIN IMMEDIATE" && ++immediate === 2) businessDb = this;
     return exec.call(this, sql);
   });
   const closeSpy = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {

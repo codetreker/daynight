@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import Database from "better-sqlite3";
@@ -293,7 +294,7 @@ test("a committed lease release reports close failure and can close again withou
   const file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite"), originalClose = Database.prototype.close;
   let fail = true;
   const closing = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
-    if (this.name === file && fail) { fail = false; throw new Error("Injected close failure"); }
+    if (sqliteDisplayFilename(this.name) === file && fail) { fail = false; throw new Error("Injected close failure"); }
     return originalClose.call(this);
   });
   try {
@@ -345,8 +346,8 @@ test.each(["before", "after"] as const)("lease acquisition commit failure %s SQL
   const file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite"), commitFailure = new Error("Commit acknowledgment lost"), originalExec = Database.prototype.exec;
   let immediate = 0, target = false, injected = false;
   const committing = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === file && sql === "BEGIN IMMEDIATE") { immediate++; target = immediate === 2; }
-    if (this.name === file && sql === "COMMIT" && target && !injected) {
+    if (sqliteDisplayFilename(this.name) === file && sql === "BEGIN IMMEDIATE") { immediate++; target = immediate === 2; }
+    if (sqliteDisplayFilename(this.name) === file && sql === "COMMIT" && target && !injected) {
       injected = true;
       if (when === "after") originalExec.call(this, sql);
       throw commitFailure;
@@ -368,12 +369,12 @@ test("a lease transaction and close failure preserve both causes and the unconfi
   const file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite"), commitFailure = new Error("Commit failed"), closeFailure = new Error("Close failed"), originalExec = Database.prototype.exec, originalClose = Database.prototype.close;
   let immediate = 0, target = false, connection: Database.Database | undefined;
   const committing = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === file && sql === "BEGIN IMMEDIATE") { immediate++; target = immediate === 2; }
-    if (this.name === file && sql === "COMMIT" && target) throw commitFailure;
+    if (sqliteDisplayFilename(this.name) === file && sql === "BEGIN IMMEDIATE") { immediate++; target = immediate === 2; }
+    if (sqliteDisplayFilename(this.name) === file && sql === "COMMIT" && target) throw commitFailure;
     return originalExec.call(this, sql);
   });
   const closing = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
-    if (this.name === file) { connection = this; throw closeFailure; }
+    if (sqliteDisplayFilename(this.name) === file) { connection = this; throw closeFailure; }
     return originalClose.call(this);
   });
   try {

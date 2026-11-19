@@ -11,6 +11,7 @@ import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/p
 import type { BotExecution } from "../../../src/commands/worker/bots/execution-store.js";
 import { removeOwnedSourceDirectory } from "../../../src/commands/worker/owned-source-directory.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
+import { resolveBotPaths } from "../../../src/commands/worker/bots/paths.js";
 
 vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>() }));
 
@@ -18,16 +19,17 @@ const id = (value: number): string => `00000000-0000-4000-8000-${String(value).p
 const signal = () => new AbortController().signal;
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const fixture = async () => {
+const fixture = async (dedicated = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/t15/files");
   await mkdir(base, { recursive: true });
   const home = await realpath(await mkdtemp(path.join(base, "h-")));
   cleanups.push(() => rm(home, { recursive: true, force: true }));
   vi.stubEnv("DN_CONFIG_DIR", path.join(home, "state"));
   const executionId = id(5), launchId = id(6), previousId = id(7);
-  const directory = controllerExecutionDirectory(home, executionId), ticket = controllerTicketPath(home, launchId), previousTicket = controllerTicketPath(home, previousId);
-  const alias = path.join(home, "state", "agent-cli-aliases", "execution-current");
-  const retainedAlias = path.join(home, "state", "agent-cli-aliases", "execution-previous");
+  const storage = dedicated ? resolveBotPaths(path.join(home, "state"), id(3)).directory : undefined;
+  const directory = controllerExecutionDirectory(home, executionId, storage), ticket = controllerTicketPath(home, launchId, storage), previousTicket = controllerTicketPath(home, previousId, storage);
+  const alias = path.join(storage ?? path.join(home, "state"), "agent-cli-aliases", "execution-current");
+  const retainedAlias = path.join(storage ?? path.join(home, "state"), "agent-cli-aliases", "execution-previous");
   const state = path.join(home, "state", "bots", id(3), "state");
   for (const target of [state, directory, path.dirname(ticket), alias, retainedAlias]) await mkdir(target, { recursive: true });
   for (const target of [path.join(state, "claim.json"), ticket, previousTicket, path.join(directory, "journal.sqlite"), path.join(directory, "journal.sqlite-wal"), path.join(directory, "credential.json"), path.join(directory, "pending.json"), path.join(directory, "receipt.json"), path.join(alias, "daynight"), path.join(retainedAlias, "dn")]) await writeFile(target, "private");
@@ -122,6 +124,21 @@ describe.skipIf(process.platform === "win32")("durable original execution remova
 });
 
 describe("Bot private file deletion", () => {
+  it("removes dedicated Bot payloads while retaining its SQLite receipt and other Bot and public files", async () => {
+    const f = await fixture(true);
+    const botPaths = resolveBotPaths(path.join(f.home, "state"), f.record.botId);
+    const retained = [botPaths.databaseFile, botPaths.lockFile,
+      path.join(resolveBotPaths(path.join(f.home, "state"), id(60)).directory, "store.sqlite"),
+      controllerTicketPath(f.home, f.record.intent!.launchId)];
+    for (const file of retained) { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, "retained"); }
+    const targets = await captureBotDeletionFiles(f.home, f.record, f.execution, signal());
+    for (const target of targets) await removeBotDeletionFile(target, signal());
+    for (const file of retained) expect(await readFile(file, "utf8")).toBe("retained");
+    for (const file of [f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias]) {
+      await expect(lstat(file)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it("captures only owned execution, launch and aliases while leaving cwd, native home and task worktrees intact", async () => {
     const f = await fixture();
     const unrelated = [path.join(f.home, "state", "bots", id(4), "state"), path.join(f.home, "state", "bots", id(3), "other"), path.join(f.home, "cwd"), path.join(f.home, ".codex"), path.join(f.home, ".worktrees", "task"), controllerExecutionDirectory(f.home, id(50))];
@@ -148,6 +165,19 @@ describe("Bot private file deletion", () => {
     expect(targets.map(target => target.path)).toEqual([f.state]);
     await removeBotDeletionFile(targets[0]!, signal());
     await expect(lstat(f.state)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
+  });
+
+  it("cleans Bot aliases left by interrupted preparation before launch intent persistence", async () => {
+    const f = await fixture();
+    f.record.intent = null;
+    const aliasRoot = path.join(resolveBotPaths(path.join(f.home, "state"), f.record.botId).directory, "agent-cli-aliases");
+    const alias = path.join(aliasRoot, "execution-interrupted", "daynight");
+    await mkdir(path.dirname(alias), { recursive: true }); await writeFile(alias, "private shim");
+    const targets = await captureBotDeletionFiles(f.home, f.record, null, signal());
+    expect(targets.map(target => target.path)).toEqual([f.state, aliasRoot]);
+    for (const target of targets) await removeBotDeletionFile(target, signal());
+    await expect(lstat(aliasRoot)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
   });
 

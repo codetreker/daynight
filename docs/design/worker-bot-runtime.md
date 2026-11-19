@@ -1,10 +1,14 @@
 # Worker Bot 执行层设计
 
-[需求](../spec/worker-bot-runtime.md)定义启动、维护、恢复和删除保证，[决策记录](../../.agents/notes/implemented/architecture/2026-11-05-worker-bot-runtime.md)说明隔离、共享机制与停证取舍。本文公共 Worker SQLite 和 `controller/executions/` 路径描述未迁移格式；`botRecoveryVersion=1` 的目标归属由[助手本地存储合同](../spec/assistant.md#bot-本地存储与恢复合同)拥有，不能据此把尚未迁移的执行视为已支持独立接管。
+[需求](../spec/worker-bot-runtime.md)定义启动、维护、恢复和删除保证，[执行决策](../../.agents/notes/implemented/architecture/2026-11-05-worker-bot-runtime.md)说明共享机制与停证取舍，[存储决策](../../.agents/notes/implemented/architecture/2026-11-19-bot-owned-storage.md)说明新 Bot 的专属数据归属。`botRecoveryVersion=1` 的完整要求由[助手本地存储合同](../spec/assistant.md#bot-本地存储与恢复合同)拥有；专属存储不单独证明 Provider 原生恢复或新 Worker 接管能力。
 
 ## 数据与句柄
 
-`bots/store.ts` 保持冻结定义和首次注册意图；`bots/execution-store.ts` 在同一个 Worker SQLite 中维护独立 `bot_executions` 表。`009-bot-executions.sql` 引入执行证据；`010-bot-recovery.sql` 将 Worker 格式升级到 10，为旧意图补充当前 `controllerInstanceId`，并初始化恢复计数、正常关停来源、阻止原因、前代停证及保留路径。旧 Worker 拒绝打开不理解的格式，不能忽略恢复字段后重复启动。
+`bots/local-store.ts` 为新 Bot 在配置根下建立 `bots/<botId>/store.sqlite`。专属格式包含 `bot_identity`、`bots` 和 `bot_executions`；身份与初始 schema 在同一事务提交。身份固定服务域、账号和 Bot，目录打开时拒绝不匹配、符号链接及未知格式。每个 Bot 的 `instance.lock` 与 `ownership.sqlite` 排除另一持有者，锁保留到两份数据库连接及其执行使用者关闭。
+
+`bots/store.ts` 保持冻结定义和首次注册意图；`bots/execution-store.ts` 在同一个 Bot SQLite 中维护执行证据。恢复代际切换的 intent 与 execution 行仍在单一事务提交。发现扫描专属目录，不依赖公共 Worker 库保存新 Bot 行；不同服务或账号的目录不进入当前库存，已有不同 Worker 绑定须经独立接管流程处理。
+
+未迁移 Bot 继续使用原 Worker SQLite 与公共 Controller 路径。旧库的 `009-bot-executions.sql` 引入执行证据；`010-bot-recovery.sql` 为旧意图补充当前 `controllerInstanceId`、恢复计数、正常关停来源、阻止原因、前代停证及保留路径。旧 Worker 拒绝打开不理解的格式。工厂拒绝同时存在旧行与专属库的双权威，也拒绝为已绑定 Session 但没有原本地记录的 Bot 新建空白来源。
 
 执行行按服务、账号、Worker、Bot 隔离。首次 `registration` 保持不变，`intent.controllerInstanceId` 表示当前代 Controller；换代只改变当前 generation、launchId、Controller instance 和对应 ticket 路径。Session、testExecutionId、initialOperationId、已知 native ID、角色及冻结配置延续原身份。
 
@@ -30,7 +34,9 @@ ticket 复用 Controller 的私有不可变 launch 文件和原路径规则，�
 
 ## Bot 专属位置与迁移责任
 
-支持 `botRecoveryVersion=1` 的存储工厂须把执行意图、SQLite、票据、journal、缓存和恢复材料统一解析到服务及账号作用域内的 `bots/<botId>/`。Worker 公共索引可从该目录重建；发现入口不能只依赖按新 workerId 返回的远端清单。目录身份、当前账号、服务端恢复身份及 Bot 本机锁共同约束接管，公共索引丢失不授权创建替代会话。
+`bots/paths.ts` 统一派生新 Bot 的 SQLite、锁、CLI 私有状态与 Controller 存储根。Controller 接受显式存储根，将票据放在 `bots/<botId>/controller/launches/`，journal、媒体和同步材料放在 `bots/<botId>/controller/executions/<executionId>/`。Worker 与 Controller 的临时 CLI 别名也位于该 Bot 目录。子进程通过内部 `DAYNIGHT_CONTROLLER_STORAGE_DIR` 接收位置，Provider 环境移除该变量；`DN_CONFIG_DIR`、正常账号认证与冻结 `nativeHome` 保持各自原用途。普通 Task/Test 未传专属根时继续使用公共位置。
+
+清除公共 Worker/Controller 目录不会删除新 Bot 的这些文件。Provider 原生恢复材料的隔离、旧数据迁移和新 Worker 接管仍由各自机制负责；目录发现不等于已取得服务端执行权，不授权创建替代会话。
 
 未迁移格式仍使用本文描述的公共位置。迁移协调器取得 Bot 独占锁后核验旧执行已停止，再复制含已提交 WAL 的一致快照并核验身份和资源，持久记录阶段后原子切换唯一写入位置；恢复身份的远端登记和回执确认单独对账。Provider 原生数据的最小文件集与版本由适配器实测确定，只有公共目录路径或时间线副本不构成恢复材料。存活 Controller 优先接回，启动替代进程仍沿用下面的停证和原 native ID 条件。
 
@@ -64,7 +70,7 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 首次清理调用同锁内的停止函数，复用原 ticket、认证 IPC 和 OS 进程树停证。已提交执行的当前代 journal 停证提供 receipt 所需的 sessionId、testExecutionId、generation、Controller identity、recordId 和 stoppedAt；IPC 已回执但进程仍活时不进入文件删除。已经确认 sessionId、未提交或被 OS 明确拒绝且没有进程或 snapshot 证据的首次执行可以使用 `never_started`。存在持久 intent 但 sessionId 未确认时，注册可能已经提交，删除保留原注册身份并报错；恢复目标尚未提交而远端可能仍在前代或已换代时同样保留责任，不猜测远端 fence。
 
-停止完成后，`prepareDeletion` 在 Worker SQLite 中保存停证、文件计划、清理进度和固定完成回执所需的身份，位置独立于执行私有目录。重试优先读取该责任，不要求已删除的 journal 再次生成 stopProof。`delete-files.ts` 根据原 intent、执行记录保存的历史 launch/别名归属和配置根捕获文件计划，不接收远端提供的任意删除路径。执行目录只能是 `controller/executions/<executionId>`，ticket 由各 `launchId` 重新推导；存在的正式 ticket 还须解析并核对账号、服务、独立执行、Session、Controller 和代际归属。当前与保留 launch 的 `<launchId>.json.<uuid>.tmp` 也进入计划，其中临时 UUID 必须规范，不能据此扩大到共享 launch 目录的其它文件。IPC 使用原端点规则处理长路径下的 Unix socket；Windows pipe 不当作磁盘目录递归删除。
+停止完成后，`prepareDeletion` 在该 Bot 的权威 SQLite 中保存停证、文件计划、清理进度和固定完成回执所需的身份。专属 `store.sqlite` 与锁位于待删 Controller 执行目录之外，删除后保留最小责任；未迁移记录继续使用 Worker SQLite。重试优先读取该责任，不要求已删除的 journal 再次生成 stopProof。`delete-files.ts` 根据原 intent、执行记录保存的历史 launch/别名归属和配置根捕获文件计划，不接收远端提供的任意删除路径。执行目录只能是原存储根下的 `controller/executions/<executionId>`，ticket 由各 `launchId` 重新推导；存在的正式 ticket 还须解析并核对账号、服务、独立执行、Session、Controller 和代际归属。当前与保留 launch 的 `<launchId>.json.<uuid>.tmp` 也进入计划，其中临时 UUID 必须规范，不能据此扩大到 launch 目录的其它文件。IPC 使用原端点规则处理长路径下的 Unix socket；Windows pipe 不当作磁盘目录递归删除。
 
 目录清理复用受限物理目录遍历和 inode 校验，拒绝符号链接、Git 元数据和替换后的目标。计划同时检查冻结 cwd、各正式 ticket 的 cwd 与 native home，拒绝把这些目录本身或包含它们的目录作为删除目标；检查包括原路径与物理解析路径。单个 ticket、临时文件与 socket 按原文件身份删除。POSIX execution 目录删除后，核对并同步原捕获的父目录，成功后才允许 `completeDeletionTarget` 持久保存该项目进度；重试时原 execution 已不存在也须完成该同步。此耐久性屏障独立于已撤销的媒体账本，打开、同步或关闭失败均保留原删除责任。再次处理同一 `deletionId` 时跳过已经完成的目标，不能因为旧路径被新文件占用而重复清理。journal 所在执行目录排在其它私有目标之后。文件或权限错误保留未完成目标和停证，不删除普通 cwd、native home、Task 或 worktree，也不调用 cleanup prompt、StopTest 或归档上传。
 

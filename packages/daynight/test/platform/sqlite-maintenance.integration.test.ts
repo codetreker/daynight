@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../src/platform/sqlite-filename.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,12 +41,12 @@ describe("SQLite maintenance ownership", () => {
   });
   it("retains its new lock when acquisition gate close is unknown", () => {
     const paths = fixture(), close = Database.prototype.close;
-    vi.spyOn(Database.prototype, "close").mockImplementation(function(this: Database.Database) { connections.add(this); if (this.name === paths.ownershipGateFile) throw new Error("gate close failed"); return close.call(this); });
+    vi.spyOn(Database.prototype, "close").mockImplementation(function(this: Database.Database) { connections.add(this); if (sqliteDisplayFilename(this.name) === paths.ownershipGateFile) throw new Error("gate close failed"); return close.call(this); });
     expect(() => acquireMaintenanceLock(paths)).toThrow("gate close failed"); expect(existsSync(paths.lockFile)).toBe(true);
   });
   it("confirms release gate close before unlinking the live own record", () => {
     const paths = fixture(), permit = acquireMaintenanceLock(paths), before = readFileSync(paths.lockFile, "utf8"), close = Database.prototype.close;
-    vi.spyOn(Database.prototype, "close").mockImplementation(function(this: Database.Database) { connections.add(this); if (this.name === paths.ownershipGateFile) throw new Error("release close failed"); return close.call(this); });
+    vi.spyOn(Database.prototype, "close").mockImplementation(function(this: Database.Database) { connections.add(this); if (sqliteDisplayFilename(this.name) === paths.ownershipGateFile) throw new Error("release close failed"); return close.call(this); });
     expect(() => permit.release()).toThrow("release close failed"); expect(readFileSync(paths.lockFile, "utf8")).toBe(before);
   });
 });

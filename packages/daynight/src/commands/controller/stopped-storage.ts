@@ -1,3 +1,4 @@
+import { sqliteFilename } from "../../platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
@@ -22,7 +23,7 @@ export const withStoppedControllerStorage = <T>(options: {
   let phase: "read" | "open" | "admission" | "operation" = "read";
   const observation: ControllerStorageObservation = { role: "stopped-maintenance", roleResult: "pending" }, started = Date.now(), migrationId = randomUUID();
   try {
-    db = new Database(journalPath, { readonly: true, fileMustExist: true });
+    db = new Database(sqliteFilename(journalPath), { readonly: true, fileMustExist: true });
     sourceVersion = Number(db.pragma("user_version", { simple: true }));
     observeControllerStorage(observation, db);
     closeSqliteDatabase(db, { file: journalPath, format: controllerJournalFormat }, "not-started");

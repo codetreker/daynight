@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import sharp from "sharp";
 import { mkdtemp, mkdir, rm, unlink, stat, readFile, writeFile, open, readdir } from "node:fs/promises";
@@ -636,7 +637,7 @@ test.each(["none", "transport", "close", "acquire", "descriptor", "verify", "rea
   const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
   const connections = new Set<Database.Database>(), prepare = Database.prototype.prepare;
   vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === f.journalPath) connections.add(this);
+    if (sqliteDisplayFilename(this.name) === f.journalPath) connections.add(this);
     return prepare.call(this, sql);
   });
   const acquireFailure = new Error("Resource acquire failed"), readFailure = new Error("Resource read failed"), leaseCloseFailure = new Error("Resource close failed");
@@ -660,7 +661,7 @@ test.each(["none", "transport", "close", "acquire", "descriptor", "verify", "rea
   const closeFailure = new Error("SQL close report lost"), close = sqliteAccess.closeSqliteDatabase;
   if (failure === "close") vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((db, options, outcome) => {
     close(db, options, outcome);
-    if (db.name === f.journalPath && validatedSnapshots > 0) throw closeFailure;
+    if (sqliteDisplayFilename(db.name) === f.journalPath && validatedSnapshots > 0) throw closeFailure;
   });
   const receiver = archiveTestReceiver({ bodies: [], sourceThrough });
   let requests = 0, resourceRetried = false;

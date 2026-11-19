@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../src/platform/sqlite-filename.js";
 import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,7 +48,7 @@ describe("SQLite access lifecycle", () => {
     let interleaved = false, preflightInTransaction = false, second: string | undefined;
     vi.spyOn(Database.prototype, "pragma").mockImplementation(function(this: Database.Database, command: string, pragmaOptions?: Database.PragmaOptions) {
       const value = pragma.call(this, command, pragmaOptions);
-      if (!interleaved && this.name === file && !this.readonly && command === "user_version") {
+      if (!interleaved && sqliteDisplayFilename(this.name) === file && !this.readonly && command === "user_version") {
         interleaved = true; preflightInTransaction = this.inTransaction;
         second = readSqliteDatabase(options, read);
       }
@@ -136,7 +137,7 @@ describe("SQLite access lifecycle", () => {
     if (originalMode === 0) {
       const pragma = Database.prototype.pragma;
       vi.spyOn(Database.prototype, "pragma").mockImplementation(function(this: Database.Database, command: string, pragmaOptions?: Database.PragmaOptions) {
-        if (this.name === file && command === "journal_mode = WAL") pragma.call(this, "foreign_keys = OFF");
+        if (sqliteDisplayFilename(this.name) === file && command === "journal_mode = WAL") pragma.call(this, "foreign_keys = OFF");
         return pragma.call(this, command, pragmaOptions);
       });
     }
@@ -166,7 +167,7 @@ describe("SQLite access lifecycle", () => {
     const exec = Database.prototype.exec;
     let interleaved = false;
     vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
-      if (!interleaved && this.name === file && sql === "BEGIN IMMEDIATE") {
+      if (!interleaved && sqliteDisplayFilename(this.name) === file && sql === "BEGIN IMMEDIATE") {
         interleaved = true; expect(this.pragma("foreign_keys", { simple: true })).toBe(0);
         const competitor = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); competitor.close();
       }
@@ -180,7 +181,7 @@ describe("SQLite access lifecycle", () => {
     const exec = Database.prototype.exec, assertMigrationAllowed = vi.fn();
     let subject: Database.Database | undefined, attempts = 0;
     vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
-      if (this.name === file && sql === "BEGIN IMMEDIATE" && (subject === undefined || subject === this)) {
+      if (sqliteDisplayFilename(this.name) === file && sql === "BEGIN IMMEDIATE" && (subject === undefined || subject === this)) {
         subject = this; attempts++;
         if (attempts === 1) { const competitor = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); competitor.close(); }
         else { const competitor = connect(file); competitor.exec("INSERT INTO records(id,value) VALUES(1,'retained'); PRAGMA user_version=0"); competitor.close(); }

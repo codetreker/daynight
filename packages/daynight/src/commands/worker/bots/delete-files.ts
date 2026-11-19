@@ -10,6 +10,7 @@ import { removeOwnedSourceDirectory } from "../owned-source-directory.js";
 import type { BotExecution } from "./execution-store.js";
 import { botStateDirectory } from "./environment.js";
 import { botUUID, parseBot, type BotRecord } from "./types.js";
+import { resolveBotControllerStateDirectory, resolveBotPaths } from "./paths.js";
 
 /** Persist this plan outside the sources before removing any entry. */
 export type BotDeletionTarget = {
@@ -75,19 +76,27 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   const paths = resolveConfigurationPaths(homeDirectory);
   const protectedPaths = record.definition === null ? [] : [{ directory: record.definition.resolvedConfiguration.cwd, label: "working directory" }];
   const targets = [await capture(botStateDirectory(paths, record.botId), "directory", signal)];
+  // Preparation can create shims before its launch intent is committed. This
+  // private root belongs to the Bot even when no individual alias was recorded.
+  const botAliasRoot = path.join(resolveBotPaths(paths.stateDirectory, record.botId).directory, "agent-cli-aliases");
+  const botAliases = await capture(botAliasRoot, "directory", signal);
+  if (!botAliases.completed) targets.push(botAliases);
   if (intent === null) {
     if (execution !== null) throw new Error("Bot private execution has lost its original launch intent.");
     await protectDirectories(targets, protectedPaths, signal);
     return targets;
   }
-  const directory = controllerExecutionDirectory(homeDirectory, intent.executionId);
-  if (intent.executionId !== intent.registration.testExecutionId || intent.ticketPath !== controllerTicketPath(homeDirectory, intent.launchId)
+  const storage = resolveBotControllerStateDirectory(homeDirectory, record);
+  const directory = controllerExecutionDirectory(homeDirectory, intent.executionId, storage);
+  if (intent.executionId !== intent.registration.testExecutionId || intent.ticketPath !== controllerTicketPath(homeDirectory, intent.launchId, storage)
     || intent.journalPath !== path.join(directory, "journal.sqlite") || intent.credentialFile !== path.join(directory, "credential.json")) throw new Error("Bot private paths differ from the original derived execution paths.");
   if (execution !== null && (execution.executionId !== intent.executionId || execution.launchId !== intent.launchId || execution.executionGeneration !== intent.executionGeneration)) throw new Error("Bot private execution identity differs from the original launch intent.");
-  const { stateDirectory } = paths, aliasRoot = path.join(stateDirectory, "agent-cli-aliases");
+  const { stateDirectory } = paths;
+  const aliasRoots = [botAliasRoot,
+    ...(storage === undefined ? [path.join(stateDirectory, "agent-cli-aliases")] : [])];
   const aliases = [...new Set([...(execution?.retainedAliasDirectories ?? []), ...(execution?.aliasDirectory == null ? [] : [execution.aliasDirectory])])];
   for (const alias of aliases) {
-    if (!path.isAbsolute(alias) || path.dirname(alias) !== aliasRoot || !/^execution-[A-Za-z0-9]+$/.test(path.basename(alias))) throw new Error("Bot aliases must be original execution directories directly under the private alias root.");
+    if (!path.isAbsolute(alias) || !aliasRoots.includes(path.dirname(alias)) || !/^execution-[A-Za-z0-9]+$/.test(path.basename(alias))) throw new Error("Bot aliases must be original execution directories directly under the private alias root.");
   }
   const launches = [...new Set([intent.launchId, ...(execution?.retainedLaunchIds ?? [])])];
   for (const launch of launches) botUUID(launch, "Bot retained launch ID");
@@ -95,18 +104,18 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   const launchFiles = launchParent === null ? [] : await readdir(launchRoot);
   for (const launch of launches) {
     if (process.platform !== "win32") {
-      const endpoint = resolveControllerIpcEndpoint(homeDirectory, launch);
+      const endpoint = resolveControllerIpcEndpoint(homeDirectory, launch, process.platform, storage);
       // macOS resolves its system /tmp through /private/tmp. Only normalize that
       // fixed system prefix; the private IPC root and socket cannot be symlinks.
       const target = endpoint.startsWith("/tmp/") ? path.join(await realpath("/tmp"), path.relative("/tmp", endpoint)) : endpoint;
       targets.push(await capture(target, "socket", signal));
     }
   }
-  for (const alias of aliases) targets.push(await capture(alias, "directory", signal));
+  for (const alias of aliases) if (path.dirname(alias) !== botAliasRoot) targets.push(await capture(alias, "directory", signal));
   for (const launch of launches) {
-    const file = controllerTicketPath(homeDirectory, launch), target = await capture(file, "file", signal);
+    const file = controllerTicketPath(homeDirectory, launch, storage), target = await capture(file, "file", signal);
     if (!target.completed) {
-      const ticket = await readLaunchTicket(homeDirectory, launch);
+      const ticket = await readLaunchTicket(homeDirectory, launch, storage);
       const current = await stat(file);
       if (current === null || identity(current) !== target.identity) throw new Error("Bot launch ticket identity changed during capture.");
       if (ticket.executionId !== intent.executionId || ticket.testExecutionId !== intent.executionId || ticket.claimId !== undefined

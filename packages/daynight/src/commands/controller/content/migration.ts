@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../platform/sqlite-filename.js";
 import type Database from "better-sqlite3";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -38,13 +39,13 @@ export const importControllerTimeline = (db: Database.Database, context: Journal
   const assertMigration = (): void => {
     if (!db.inTransaction) throw new Error("Timeline import requires the journal migration transaction.");
     assertControllerStoragePermit(context.storagePermit, context.storagePermit.journalFile);
-    if (!db.memory && db.name !== context.storagePermit.journalFile) throw new Error("Timeline import permit belongs to another database.");
+    if (!db.memory && sqliteDisplayFilename(db.name) !== context.storagePermit.journalFile) throw new Error("Timeline import permit belongs to another database.");
   };
   assertMigration();
   // Capture committed pointers before the DDL drops their table. The body and
   // SQL metadata remain independent; only kind is needed by the target schema.
   const pointers = db.prepare("SELECT id,revision,entry_seq,content_hash,content_file FROM content_index ORDER BY id").all() as { id: unknown; revision: unknown; entry_seq: unknown; content_hash: unknown; content_file: unknown }[];
-  const root = `${db.name}.pending-content`;
+  const root = `${sqliteDisplayFilename(db.name)}.pending-content`;
   let sourceExists: boolean | undefined;
   db.exec(schemaSql);
   const insert = db.prepare("INSERT INTO timeline_entries(id,entry_seq,revision,kind,value,content_hash,byte_length) VALUES(?,?,?,?,?,?,?)");

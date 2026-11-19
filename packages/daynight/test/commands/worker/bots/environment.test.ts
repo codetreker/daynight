@@ -186,13 +186,15 @@ describe("Bot CLI environment preparation", () => {
     await f.config(`agentCliAliases:\n  daynight: ${JSON.stringify(executable)}\n`);
     const prepared = await prepareBotEnvironment(f.options, { fetch: f.fetch }); resources.push(prepared);
     expect(prepared.bindings[0]?.target).toBe(executable);
+    expect(prepared.environment.DN_CONFIG_DIR).toBe(f.options.workerPaths.stateDirectory);
+    expect(path.dirname(prepared.aliasDirectory!)).toBe(path.join(f.options.workerPaths.stateDirectory, "bots", other, "agent-cli-aliases"));
     expect(prepared.environment.PATH).toBe(`${prepared.aliasDirectory}${path.delimiter}${f.options.environment.PATH}`);
     expect((await stat(prepared.aliasDirectory!)).isDirectory()).toBe(true);
     await prepared.release(); await prepared.release();
     await expect(stat(prepared.aliasDirectory!)).rejects.toMatchObject({ code: "ENOENT" });
     f.runCommand.mockRejectedValue(new Error("missing executable"));
     await expect(prepareBotEnvironment(f.options, f.dependencies)).rejects.toThrow(/CLI capability/);
-    expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "agent-cli-aliases"))).toEqual([]);
+    expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "bots", other, "agent-cli-aliases"))).toEqual([]);
   }, 30_000);
 
   it("joins a cancelled CLI probe and propagates cancellation", async () => {
@@ -281,7 +283,7 @@ describe("Bot CLI environment preparation", () => {
       await expect(prepareBotEnvironment(f.options, { fetch: f.fetch })).rejects.toThrow(/advertise/);
       const pids = await readPids(); expect(pids.length).toBeGreaterThan(0);
       expect(await Promise.all(pids.map(live))).toEqual(pids.map(() => false));
-      expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "agent-cli-aliases"))).toEqual([]);
+      expect(await readdir(path.join(f.options.workerPaths.stateDirectory, "bots", other, "agent-cli-aliases"))).toEqual([]);
     } finally {
       for (const pid of await readPids().catch(() => [])) if (await live(pid)) {
         try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }

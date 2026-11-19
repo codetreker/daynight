@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
@@ -105,7 +106,7 @@ test("writer admission retains a changed format error and closes the transaction
   const permit = acquireControllerStoragePermit(f.file), exec = Database.prototype.exec;
   let subject: Database.Database | undefined, immediate = 0;
   vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === f.file && sql === "BEGIN IMMEDIATE") {
+    if (sqliteDisplayFilename(this.name) === f.file && sql === "BEGIN IMMEDIATE") {
       subject ??= this;
       if (this === subject && ++immediate === 2) this.pragma(`user_version=${currentSqliteVersion(controllerJournalFormat) + 1}`);
     }
@@ -130,7 +131,7 @@ test("invalid admission snapshot keeps parser cause without exposing its content
   const permit = acquireControllerStoragePermit(f.file), exec = Database.prototype.exec;
   let subject: Database.Database | undefined;
   vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === f.file && sql === "BEGIN IMMEDIATE") subject ??= this;
+    if (sqliteDisplayFilename(this.name) === f.file && sql === "BEGIN IMMEDIATE") subject ??= this;
     return exec.call(this, sql);
   });
   try {
@@ -363,7 +364,7 @@ test("a deadline crossed after schema commit preserves the conversion and closes
   const f = await fixture(), permit = acquireControllerStoragePermit(f.file), now = Date.now(), deadline = now + 1000;
   const clock = vi.spyOn(Date, "now").mockReturnValue(now), close = Database.prototype.close;
   let closed = false, committed = false;
-  vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) { const result = close.call(this); if (committed && this.name === f.file) closed = true; return result; });
+  vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) { const result = close.call(this); if (committed && sqliteDisplayFilename(this.name) === f.file) closed = true; return result; });
   try {
     let failure: unknown;
     try { prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket, deadline }, permit, event => { if (event.kind === "completed") { committed = event.outcome === "committed"; clock.mockReturnValue(deadline); } }); }
@@ -441,7 +442,7 @@ test("a real held gate with a close failure stays a cleanup error and retains it
   const f = await fixture(), permit = acquireControllerStoragePermit(f.file), leaked: Database.Database[] = [];
   const closeFailure = new Error("ownership gate close failed"), originalClose = Database.prototype.close;
   const close = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
-    if (this.name === f.file && leaked.length === 0) { leaked.push(this); throw closeFailure; }
+    if (sqliteDisplayFilename(this.name) === f.file && leaked.length === 0) { leaked.push(this); throw closeFailure; }
     return originalClose.call(this);
   });
   try {

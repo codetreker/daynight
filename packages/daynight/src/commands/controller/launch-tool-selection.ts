@@ -14,7 +14,7 @@ import { controllerExecutionDirectory, controllerPayloadHash, parseLaunchTicket,
 const MAX_SELECTION_BYTES = 1024 * 1024;
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 const privateEntry = (entry: BigIntStats): boolean => process.platform === "win32" || entry.uid === BigInt(process.geteuid!()) && (entry.mode & 0o077n) === 0n;
-const filename = (home: string, ticket: ControllerLaunchTicket): string => path.join(controllerExecutionDirectory(home, ticket.executionId), "tool-selections", `${ticket.launchId}.json`);
+const filename = (home: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): string => path.join(controllerExecutionDirectory(home, ticket.executionId, storageStateDirectory), "tool-selections", `${ticket.launchId}.json`);
 /** Legacy tickets retain their bytes after the Worker freezes a sidecar selection. */
 export const matchesLaunchConfiguration = (ticket: ExecutionConfiguration, frozen: ExecutionConfiguration): boolean => {
   const { toolLaunch, toolObservation, ...configuration } = frozen;
@@ -38,10 +38,10 @@ const parseSelection = (value: unknown, ticket: ControllerLaunchTicket): Resolve
 };
 
 /** Read the original selection only; Controllers never create sidecars or consult Worker targets. */
-export const readLaunchToolSelection = async (home: string, ticket: ControllerLaunchTicket): Promise<ResolvedToolLaunch | undefined> => {
+export const readLaunchToolSelection = async (home: string, ticket: ControllerLaunchTicket, storageStateDirectory?: string): Promise<ResolvedToolLaunch | undefined> => {
   parseLaunchTicket(ticket);
   if (ticket.configuration.toolLaunch !== undefined) return parseResolvedToolLaunch(ticket.configuration.toolLaunch, { tool: ticket.provider as "codex" | "copilot", context: "web" });
-  const file = filename(home, ticket), directory = path.dirname(file);
+  const file = filename(home, ticket, storageStateDirectory), directory = path.dirname(file);
   const operation = createOperation({ limits: { totalMs: 5000 } });
   try {
     try { await withinOperation(checkDirectory(directory), operation); }
@@ -59,7 +59,7 @@ export const readLaunchToolSelection = async (home: string, ticket: ControllerLa
  * Recheck that proof before publication and after readback; an existing sidecar is
  * immutable and cannot be rebound even when the caller's current target changes.
  */
-export const writeLaunchToolSelection = async (home: string, ticket: ControllerLaunchTicket, launch: ResolvedToolLaunch, assertUnsubmitted: () => void | Promise<void>): Promise<void> => {
+export const writeLaunchToolSelection = async (home: string, ticket: ControllerLaunchTicket, launch: ResolvedToolLaunch, assertUnsubmitted: () => void | Promise<void>, storageStateDirectory?: string): Promise<void> => {
   parseLaunchTicket(ticket);
   if (ticket.configuration.toolLaunch !== undefined) throw new Error("An inline tool selection cannot acquire a sidecar.");
   const value = { schemaVersion: 1, launchId: ticket.launchId, executionId: ticket.executionId, ticketHash: controllerPayloadHash(ticket), toolLaunch: launch };
@@ -67,7 +67,7 @@ export const writeLaunchToolSelection = async (home: string, ticket: ControllerL
   const serialized = `${JSON.stringify(value)}\n`;
   if (Buffer.byteLength(serialized) > MAX_SELECTION_BYTES) throw new Error("Controller tool selection exceeds its private record limit.");
   await assertUnsubmitted();
-  const file = filename(home, ticket), directory = path.dirname(file);
+  const file = filename(home, ticket, storageStateDirectory), directory = path.dirname(file);
   ensureDurableDirectory(directory);
   await checkDirectory(path.dirname(directory)); await checkDirectory(directory);
   const temporary = `${file}.${randomUUID()}.tmp`, handle = await open(temporary, "wx", 0o600);
@@ -79,7 +79,7 @@ export const writeLaunchToolSelection = async (home: string, ticket: ControllerL
     try { await link(temporary, file); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     syncDurableDirectory(directory);
-    const saved = await readLaunchToolSelection(home, ticket);
+    const saved = await readLaunchToolSelection(home, ticket, storageStateDirectory);
     if (controllerPayloadHash(saved) !== controllerPayloadHash(launch)) throw new Error("The original launch is already bound to another tool selection.");
     await assertUnsubmitted();
   } finally {

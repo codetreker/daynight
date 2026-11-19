@@ -1,3 +1,4 @@
+import { sqliteDisplayFilename } from "../../../src/platform/sqlite-filename.js";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -190,7 +191,7 @@ test.each(["active", "unknown"] as const)("archive migration rejects an %s write
 test("v6 DDL failure rolls back every intermediate version while preserving exported files for retry", async () => {
   const f = await fixture(2), bodies: string[] = [], original = Database.prototype.exec;
   const exec = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Injected content schema failure");
+    if (sqliteDisplayFilename(this.name) === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Injected content schema failure");
     return original.call(this, sql);
   });
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "migration-failed", outcome: "rolled-back", connectionClosed: true });
@@ -225,7 +226,7 @@ test("interrupted legacy export retains SQL originals and skips a conflicting ca
   inspect(f.journalPath, db => db.prepare("INSERT INTO projection VALUES(?,?,1,?)").run(second.entryId, "second", JSON.stringify(second)));
   const execute = Database.prototype.exec;
   const interrupted = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Legacy SQL transition interrupted after durable export");
+    if (sqliteDisplayFilename(this.name) === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Legacy SQL transition interrupted after durable export");
     return execute.call(this, sql);
   });
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow();
