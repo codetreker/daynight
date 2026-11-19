@@ -52,7 +52,7 @@ func (f *propertyWriteFixture) expectClaimAdmission(workerID string) {
 	}
 }
 
-func (capture *propertyCapturer) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, facts []protocol.Fact) error {
+func (capture *propertyCapturer) CaptureBatch(ctx context.Context, _ store.WebhookCaptureDAO, _ webhookmodel.Actor, facts []protocol.Fact) error {
 	capture.calls++
 	if !capture.expected {
 		capture.t.Fatal("unexpected property source capture")

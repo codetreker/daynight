@@ -24,7 +24,7 @@ func TaskThreadRoutes(mux *http.ServeMux, threads ThreadService, auth RouteAuthe
 	handler := &taskThreadHandler{threads: threads, logger: logger}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/thread/messages"
 	mux.HandleFunc("GET "+path, auth.Require(handler.list))
-	mux.HandleFunc("POST "+path, auth.Require(handler.post))
+	mux.HandleFunc("POST "+path, auth.Require(declaredBot(logger, threadBotRefusal, handler.post)))
 	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 }
 

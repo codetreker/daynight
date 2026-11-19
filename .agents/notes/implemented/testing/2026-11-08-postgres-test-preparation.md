@@ -129,6 +129,12 @@ rename is reversed and the original relation OID is verified. A new
 transaction reads the original PAT and Personal Team facts before the next
 case. The fixture shares the reversible catalog helper with Backup Inventory.
 
+The [Identity initialization rollback matrix](../../../../packages/daynight-server/internal/core/store/postgres/identity_boundaries_test.go)
+shares an initially empty Store. Each case commits its own login consumption,
+then exercises a different real insert fault. The global empty-state check
+detects partial identity or replayable login rows. The fault trigger and
+function are removed and checked in the catalog before reuse.
+
 [Backup inventory faults](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_boundaries_test.go)
 share one committed Session for the descriptor, missing relations and canceled
 read. The read-only inventory transaction observes committed faults. Cleanup
@@ -218,6 +224,13 @@ Project row holder blocks the second write until the first commits. The test
 checks both completion receipts and the committed deletion, attachment and
 Task version facts. Each case joins its writer and verifies pool reuse before
 the next case; failure stops reuse.
+
+The [Thread expiry and exact-message matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_thread_witnesses_test.go)
+use one Store per parent with independent Project, Task, author, and
+credential records. The expiry contender must wait on its exact head
+holder and exit before the pool is reused. The message cases compare
+the original serialized boundary and the retained history after rollback.
+A failed case stops reuse.
 
 The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
 share one Store per parent and give each case independent account, Project,
