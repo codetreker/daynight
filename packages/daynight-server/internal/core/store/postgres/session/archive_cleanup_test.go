@@ -13,7 +13,75 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestArchiveCleanupDatabaseFailuresPreserveOriginalOwnership(t *testing.T) {
+	for _, stage := range []string{"expire", "retire", "mark", "complete", "metadata"} {
+		t.Run(stage, func(t *testing.T) {
+			db := isolatedStore(t)
+			target, at := cleanupFixture(t, db)
+			ctx := t.Context()
+			finishing := stage == "complete" || stage == "metadata"
+			resource := uuid.NewString()
+			if finishing {
+				expireCleanup(t, db, target, at)
+			} else {
+				mustQueryExec(t, db, `INSERT INTO session_resources(session_id,resource_id,descriptor) VALUES($1,$2,'{}')`, target.SessionID, resource)
+				mustQueryExec(t, db, `INSERT INTO session_resource_references(session_id,resource_id,kind,reference_id) VALUES($1,$2,'archive','original')`, target.SessionID, resource)
+			}
+			mustQueryExec(t, db, `CREATE FUNCTION refuse_cleanup_fixture() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'cleanup storage refused'; END$$`)
+			trigger := "BEFORE UPDATE ON session_archive_retention FOR EACH ROW WHEN (NEW.expired_at IS NOT NULL AND OLD.expired_at IS NULL)"
+			switch stage {
+			case "retire":
+				trigger = "BEFORE DELETE ON session_resource_references FOR EACH ROW"
+			case "mark":
+				trigger = "BEFORE UPDATE ON session_resources FOR EACH ROW WHEN (NEW.gc_pending)"
+			case "complete":
+				trigger = "BEFORE UPDATE ON session_archive_retention FOR EACH ROW WHEN (NEW.cleaned_at IS NOT NULL)"
+			case "metadata":
+				trigger = "BEFORE DELETE ON session_archive_chunks FOR EACH STATEMENT"
+			}
+			mustQueryExec(t, db, "CREATE TRIGGER refuse_cleanup_fixture "+trigger+" EXECUTE FUNCTION refuse_cleanup_fixture()")
+			// Caller-supplied lifecycle hints are not trusted scope facts.
+			claimed := target
+			claimed.ExpiredAt, claimed.CleanedAt = &at, &at
+			completion, err := db.WriteArchiveCleanup(ctx, claimed, func(s store.ArchiveCleanupScope) error {
+				observed := s.Target()
+				if observed.ProjectID != target.ProjectID || observed.TaskID != target.TaskID || observed.SessionID != target.SessionID || observed.OwnerID != target.OwnerID || observed.CleanedAt != nil || (observed.ExpiredAt != nil) != finishing {
+					t.Fatalf("scope trusted caller hints or changed ownership: %+v", observed)
+				}
+				if finishing {
+					return s.CompleteArchiveCleanup(ctx, at)
+				}
+				retention, err := core.RefreshArchiveRetention(ctx, s.RetentionDAO(), target.ProjectID, target.TaskID, target.SessionID)
+				if err != nil {
+					return err
+				}
+				return s.ExpireArchive(ctx, retention.Version, at)
+			})
+			var databaseError *pgconn.PgError
+			if completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &databaseError) || databaseError.Code != "P0001" || databaseError.Message != "cleanup storage refused" {
+				t.Fatalf("lost database refusal: %+v %v", completion, err)
+			}
+			var expired, cleaned, pending bool
+			var references int
+			if err := db.Pool.QueryRow(ctx, `SELECT expired_at IS NOT NULL,cleaned_at IS NOT NULL,
+ EXISTS(SELECT 1 FROM session_resources WHERE session_id=$1 AND gc_pending),
+ (SELECT count(*) FROM session_resource_references WHERE session_id=$1)
+ FROM session_archive_retention WHERE session_id=$1`, target.SessionID).Scan(&expired, &cleaned, &pending, &references); err != nil {
+				t.Fatal(err)
+			}
+			wantReferences := 1
+			if finishing {
+				wantReferences = 0
+			}
+			if expired != finishing || cleaned || pending || references != wantReferences {
+				t.Fatalf("failed cleanup changed durable ownership: expired=%v cleaned=%v pending=%v refs=%d", expired, cleaned, pending, references)
+			}
+		})
+	}
+}
 
 func cleanupFixture(t *testing.T, db *postgres.Store) (store.ArchiveCleanupTarget, time.Time) {
 	t.Helper()
