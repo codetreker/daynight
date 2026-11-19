@@ -28,10 +28,10 @@ const defaults: AssistantTaskCommandDependencies = {
   createClient: createAssistantTaskClient, runClaimOperation, recoverClaimOperation, readClaimCredential,
   environment: process.env,
 };
-const userActions = new Set(["create", "update", "pause", "resume", "delete", "manual rollback", "appendix update", "appendix delete", "proposal decide", "events clear-attention"]);
+const userActions = new Set(["create", "update", "pause", "resume", "delete", "manual rollback", "appendix update", "appendix delete", "proposal decide", "events clear-attention", "inbox enable", "inbox rotate", "inbox disable", "inbox operation"]);
 const botActions = new Set(["claim", "bind", "renew", "appendix add", "propose", "record add", "item add", "item update", "ask", "answer", "events add", "events ack"]);
 const claimActions = new Set(["claim", "bind", "renew", "release", "transfer"]);
-const readActions = new Set(["list", "show", "claim-operation show", "manual show", "manual list", "appendix list", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull"]);
+const readActions = new Set(["list", "show", "claim-operation show", "manual show", "manual list", "appendix list", "proposal list", "record list", "item list", "item show", "inquiry list", "events pull", "inbox show", "inbox operation"]);
 const idOptions = new Set(["--operation-id", "--target-bot", "--item", "--source-record", "--evidence-record"]);
 const integerOptions = new Set(["--if-version", "--base-version", "--manual-version", "--version", "--episode", "--expected-generation"]);
 const jsonOptions = new Set(["--rules", "--trigger", "--app-state", "--refs", "--payload"]);
@@ -83,6 +83,7 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
   if (action === "create") taskId = operationId;
   const reconcile = taskId === undefined ? "daynight assistant-task events pull --json" : claimActions.has(action)
     ? `daynight assistant-task claim-operation show ${taskId} ${operationId} --json`
+    : write && action.startsWith("inbox ") ? `daynight assistant-task inbox operation ${taskId} ${operationId} --json`
     : `daynight assistant-task show ${taskId} --json`;
   let confirmed = false;
   try {
@@ -102,6 +103,11 @@ export const runAssistantTaskCommand = async (args: readonly string[], context: 
           case "delete": return api.deleteTask(taskId!, option("--if-version")!);
           case "claim": case "bind": case "renew": case "release": case "transfer": return deps.runClaimOperation({ ...scope, kind: action as AssistantTaskClaimKind, operationId: operationId!, ...(option("--if-version") === undefined ? {} : { ifVersion: option("--if-version")! }), ...(option("--expected-generation") === undefined ? {} : { expectedGeneration: option("--expected-generation")! }), ...(option("--target-bot") === undefined ? {} : { targetBotId: option("--target-bot")! }) });
           case "claim-operation show": return deps.recoverClaimOperation({ ...scope, operationId: resourceId! });
+          case "inbox show": return api.getInbox(taskId!);
+          case "inbox enable": return api.enableInbox(taskId!, { operationId: operationId!, ifVersion: option("--if-version")! });
+          case "inbox rotate": return api.rotateInbox(taskId!, { operationId: operationId!, ifVersion: option("--if-version")!, mode: option("--mode")! as "overlap" | "immediate" });
+          case "inbox disable": return api.disableInbox(taskId!, { operationId: operationId!, ifVersion: option("--if-version")! });
+          case "inbox operation": return api.getInboxOperation(taskId!, resourceId!);
           case "manual show": return api.getManual(taskId!, option("--version"));
           case "manual list": return api.listManuals(taskId!, query);
           case "manual rollback": return api.rollback(taskId!, { ifVersion: option("--if-version")!, manualVersion: option("--manual-version")! });

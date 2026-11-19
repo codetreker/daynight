@@ -72,6 +72,24 @@ export const parseAssistantTaskClaimResult = (value: unknown, taskId: string, op
   if (BigInt(currentClaim.claimGeneration) < BigInt(operation.resultingGeneration) || instant(currentClaim.observedAt) < instant(operation.admittedAt)) return malformed();
   return { operation, currentClaim };
 };
+export const parseAssistantTaskInbox = (value: unknown): T.AssistantTaskInbox => {
+  const d = fields(value, ["inboxId", "enabled", "createdAt", "rotatedAt", "overlapUntil", "suppressedCount"]);
+  const result = { inboxId: nullableId(d.inboxId), enabled: bool(d.enabled), createdAt: nullableTimestamp(d.createdAt), rotatedAt: nullableTimestamp(d.rotatedAt), overlapUntil: nullableTimestamp(d.overlapUntil), suppressedCount: assistantTaskInteger(d.suppressedCount, true) };
+  if (result.enabled ? result.inboxId === null || result.createdAt === null : result.inboxId !== null || result.createdAt !== null || result.rotatedAt !== null || result.overlapUntil !== null || result.suppressedCount !== "0") return malformed();
+  return result;
+};
+const inboxKinds = { enable: ["inbox_enable"], disable: ["inbox_disable"], rotate: ["inbox_rotate_overlap", "inbox_rotate_immediate"] } as const;
+/** expected narrows the receipt to the submitted management action; a receipt read accepts any inbox kind. */
+export const parseAssistantTaskInboxResult = (value: unknown, taskId: string, operationId: string, expected?: "enable" | "disable" | "rotate", withToken = false): T.AssistantTaskInboxTokenResult => {
+  const d = fields(value, withToken ? ["operation", "inbox", "token"] : ["operation", "inbox"]), o = fields(d.operation, ["operationId", "kind", "taskId", "requestFingerprint", "admittedAt", "resultingVersion"]);
+  const kinds: readonly T.AssistantTaskInboxOperationKind[] = expected === undefined ? [...inboxKinds.enable, ...inboxKinds.disable, ...inboxKinds.rotate] : inboxKinds[expected];
+  const operation = { operationId: assistantTaskId(o.operationId), kind: choice(o.kind, kinds), taskId: assistantTaskId(o.taskId), requestFingerprint: text(o.requestFingerprint), admittedAt: timestamp(o.admittedAt), resultingVersion: assistantTaskInteger(o.resultingVersion) };
+  if (operation.taskId !== taskId || operation.operationId !== operationId || !/^[a-f0-9]{64}$/.test(operation.requestFingerprint)) return malformed();
+  const token = withToken && d.token !== null ? text(d.token) : null;
+  if (token !== null && !/^dnib_[A-Za-z0-9_-]{43}$/.test(token)) return malformed();
+  if (withToken && d.token === undefined) return malformed();
+  return { operation, inbox: parseAssistantTaskInbox(d.inbox), token };
+};
 export const parseAssistantTaskManual = (value: unknown, taskId: string, version?: string): T.AssistantTaskManual => {
   const d = fields(value, ["taskId", "version", "body", "rules", "source", "proposalId", "createdAt"]);
   const result = { taskId: checkScope(d, taskId), version: assistantTaskInteger(d.version), body: text(d.body, true), rules: json(d.rules), source: choice(d.source, ["initial", "revision", "rollback"]), proposalId: nullableId(d.proposalId), createdAt: timestamp(d.createdAt) };

@@ -16,6 +16,16 @@ export type AssistantTaskClaimOperation = {
   holderBotId: string | null; credentialOperationId: string | null; leaseUntil: string | null;
 };
 export type AssistantTaskClaimResult = { operation: AssistantTaskClaimOperation; currentClaim: AssistantTaskClaim };
+export type AssistantTaskInbox = {
+  inboxId: string | null; enabled: boolean; createdAt: string | null; rotatedAt: string | null; overlapUntil: string | null; suppressedCount: string;
+};
+export type AssistantTaskInboxOperationKind = "inbox_enable" | "inbox_disable" | "inbox_rotate_overlap" | "inbox_rotate_immediate";
+export type AssistantTaskInboxOperation = { operationId: string; kind: AssistantTaskInboxOperationKind; taskId: string; requestFingerprint: string; admittedAt: string; resultingVersion: string };
+export type AssistantTaskInboxResult = { operation: AssistantTaskInboxOperation; inbox: AssistantTaskInbox };
+/** token is the full inbox token; it is returned only by the request that generated it and is null on a replay. */
+export type AssistantTaskInboxTokenResult = AssistantTaskInboxResult & { token: string | null };
+export type AssistantTaskInboxInput = { operationId: string; ifVersion: string };
+export type AssistantTaskInboxRotateMode = "overlap" | "immediate";
 export type AssistantTaskClaimInput = {
   operationId: string; ifVersion?: string; expectedGeneration?: string; claimGeneration?: string;
   claimToken?: string; targetBotId?: string;

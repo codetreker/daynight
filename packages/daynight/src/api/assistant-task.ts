@@ -129,6 +129,11 @@ export const createAssistantTaskClient = (options: AssistantTaskClientOptions) =
       });
     },
     getClaimOperation: (taskId: string, operationId: string, expected?: T.AssistantTaskClaimExpectation) => request(entryPath(taskId, "claim-operations", operationId), "GET", undefined, v => P.parseAssistantTaskClaimResult(v, taskId, operationId, expected)),
+    getInbox: (taskId: string) => request(`${taskPath(taskId)}/inbox`, "GET", undefined, P.parseAssistantTaskInbox),
+    enableInbox: (taskId: string, input: T.AssistantTaskInboxInput) => request(`${taskPath(taskId)}/inbox/enable`, "POST", input, v => P.parseAssistantTaskInboxResult(v, taskId, input.operationId, "enable", true)),
+    rotateInbox: (taskId: string, input: T.AssistantTaskInboxInput & { mode: T.AssistantTaskInboxRotateMode }) => request(`${taskPath(taskId)}/inbox/rotate`, "POST", input, v => P.parseAssistantTaskInboxResult(v, taskId, input.operationId, "rotate", true)),
+    disableInbox: (taskId: string, input: T.AssistantTaskInboxInput): Promise<T.AssistantTaskInboxResult> => request(`${taskPath(taskId)}/inbox/disable`, "POST", input, v => { const { token: _token, ...result } = P.parseAssistantTaskInboxResult(v, taskId, input.operationId, "disable"); return result; }),
+    getInboxOperation: (taskId: string, operationId: string): Promise<T.AssistantTaskInboxResult> => request(entryPath(taskId, "inbox-operations", operationId), "GET", undefined, v => { const { token: _token, ...result } = P.parseAssistantTaskInboxResult(v, taskId, operationId); return result; }),
     getManual: (taskId: string, version?: string) => request(`${taskPath(taskId)}/manual${version === undefined ? "" : `/versions/${P.assistantTaskInteger(version)}`}`, "GET", undefined, v => P.parseAssistantTaskManual(v, taskId, version)),
     listManuals: (taskId: string, query?: T.AssistantTaskQuery) => list(`${taskPath(taskId)}/manual/versions`, query, v => P.parseAssistantTaskManual(v, taskId)),
     rollback: (taskId: string, input: { ifVersion: string; manualVersion: string }) => request(`${taskPath(taskId)}/manual/rollback`, "POST", input, v => P.parseAssistantTaskManual(v, taskId)),
