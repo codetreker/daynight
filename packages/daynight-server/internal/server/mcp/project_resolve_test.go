@@ -453,8 +453,16 @@ func (s mcpOrgTeamScope) EligibilityDAO() store.WebhookEligibilityDAO {
 type mcpOrgProjectScope struct {
 	t *testing.T
 	store.ProjectWriteScope
-	project     store.ProjectWriteDAO
-	eligibility store.WebhookEligibilityDAO
+	project          store.ProjectWriteDAO
+	eligibility      store.WebhookEligibilityDAO
+	goalDependencies store.ProjectGoalDependencyDAO
+}
+
+func (s mcpOrgProjectScope) ProjectGoalDependencyDAO() store.ProjectGoalDependencyDAO {
+	if s.goalDependencies == nil {
+		unexpectedHTTPCall(s.t, "MCP Scope.ProjectGoalDependencyDAO")
+	}
+	return s.goalDependencies
 }
 
 func (s mcpOrgProjectScope) ProjectDAO() store.ProjectWriteDAO {
@@ -509,12 +517,12 @@ func mcpOrgWriteTeam(t *testing.T, tx *httpTestStore, id string, dao store.TeamW
 	}
 	tx.WriteTeamCall = mcpOrgWrite[store.TeamWriteScope](t, id, mcpOrgTeamScope{t: t, team: dao, eligibility: eligibility})
 }
-func mcpOrgWriteProject(t *testing.T, tx *httpTestStore, id string, dao store.ProjectWriteDAO, eligibility store.WebhookEligibilityDAO) {
+func mcpOrgWriteProject(t *testing.T, tx *httpTestStore, id string, dao store.ProjectWriteDAO, eligibility store.WebhookEligibilityDAO, goalDependencies store.ProjectGoalDependencyDAO) {
 	if d, ok := dao.(mcpOrgProjectWriter); ok {
 		d.t = t
 		dao = d
 	}
-	tx.WriteProjectCall = mcpOrgWrite[store.ProjectWriteScope](t, id, mcpOrgProjectScope{t: t, project: dao, eligibility: eligibility})
+	tx.WriteProjectCall = mcpOrgWrite[store.ProjectWriteScope](t, id, mcpOrgProjectScope{t: t, project: dao, eligibility: eligibility, goalDependencies: goalDependencies})
 }
 
 type httpTestStore struct {

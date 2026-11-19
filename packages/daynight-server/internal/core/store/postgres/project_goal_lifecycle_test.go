@@ -170,6 +170,10 @@ func TestProjectLifecycleGraphWaitPrecedesTaskLocksAndReleasesResources(t *testi
 					result <- err
 				}()
 				waitGoalAdvisoryWait(t, ctx, f.db)
+				var waitingPID int32
+				if err := f.db.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE '%pg_advisory_xact_lock%'`).Scan(&waitingPID); err != nil {
+					t.Fatal(err)
+				}
 				probe, err := f.db.Pool.Begin(ctx)
 				if err != nil {
 					t.Fatal(err)
@@ -184,6 +188,22 @@ func TestProjectLifecycleGraphWaitPrecedesTaskLocksAndReleasesResources(t *testi
 				stopWaiting()
 				if err = testutil.ReceiveQueryResult(t, ctx, result); !errors.Is(err, context.Canceled) {
 					t.Fatalf("cancellation lost: %v", err)
+				}
+				// Canceled pgx calls return before their closed socket finishes cleanup.
+				// https://github.com/jackc/pgx/blob/5e583fa7aabfa88b796292f849fc9d7d75ac159d/pgconn/pgconn.go#L804-L813
+				cleanup, stopCleanup := context.WithTimeout(ctx, cleanupTimeout)
+				defer stopCleanup()
+				for {
+					var stopped bool
+					if err := f.db.Pool.QueryRow(cleanup, `SELECT NOT EXISTS(SELECT FROM pg_stat_activity WHERE pid=$1)`, waitingPID).Scan(&stopped); err != nil {
+						t.Fatalf("canceled backend did not finish cleanup: %v", err)
+					}
+					if stopped {
+						break
+					}
+					if err := testutil.WaitThreadClock(cleanup); err != nil {
+						t.Fatalf("canceled backend retained resources: %v", err)
+					}
 				}
 				probe, err = f.db.Pool.Begin(ctx)
 				if err != nil {

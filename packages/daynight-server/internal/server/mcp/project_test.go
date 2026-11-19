@@ -567,7 +567,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 		access()
 		projectHTTPCheck(t, actor, actors[0])
 		return projectHTTPAccess(actor, project), nil
-	}}, nil)
+	}}, nil, mcpOrgEmptyGoalDependencies(t, false))
 	response, failed = call(0, "project_transfer", map[string]any{"projectId": id, "toTeam": target.ID, "ifVersion": "999", "confirm": true})
 	if !failed || obj(response["error"])["code"] != "version_conflict" {
 		t.Fatalf("stale transfer: %+v", response)
@@ -594,7 +594,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 			return prior, nil
 		}
 		return model.ProjectAccess{}, model.ErrNotFound
-	}}, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: id}))
+	}}, mcpOrgNoEligibility(t, store.WebhookEligibilityFilter{ProjectID: id}), mcpOrgEmptyGoalDependencies(t, true))
 	response, failed = call(0, "project_transfer", map[string]any{"projectId": id, "toTeam": origin + "/teams/" + target.ID, "confirm": true})
 	if failed {
 		t.Fatalf("transfer: %+v", response)
