@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -530,5 +531,53 @@ func TestPullRequestKeysetTraversalAcrossSnapshots(t *testing.T) {
 	closed := read(store.GitHubPRQuery{ProjectID: id, State: "closed", Limit: 100})
 	if !reflect.DeepEqual(numbers(closed.Items), []int64{11, 9, 7, 5, 3, 1}) || closed.Total != 6 || closed.HasMore {
 		t.Fatalf("closed page: %+v", closed)
+	}
+}
+
+func TestPullRequestRequiresFixedLegacySource(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	tx := begin(t, db, pgx.TxOptions{})
+	r := github.NewReader(tx)
+	if _, err := r.PullRequest(ctx, id, 42); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing connection: %v", err)
+	}
+	mustExec(t, tx, `INSERT INTO project_github(project_id) VALUES($1)`, id)
+	mustExec(t, tx, `INSERT INTO project_pull_requests(project_id,repository_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,30,42,42,'url','current','open',false,'main','sha',now(),now(),now(),1)`, id)
+	if _, err := r.PullRequest(ctx, id, 42); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("unfixed legacy source returned a current PR: %v", err)
+	}
+	mustExec(t, tx, `ALTER TABLE project_github RENAME TO inaccessible_project_github`)
+	if _, err := r.PullRequest(ctx, id, 42); err == nil || errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("connection read failure was hidden as not found: %v", err)
+	}
+}
+
+func TestSourceWriteFailureRollsBackConnection(t *testing.T) {
+	for _, fault := range []struct {
+		name, sql, want string
+	}{
+		{"directory unavailable", `ALTER TABLE project_github_repositories RENAME TO inaccessible_repositories`, "save github repository source"},
+		{"legacy update rejected", `ALTER TABLE project_github ADD CONSTRAINT reject_legacy_source CHECK (legacy_repository_id IS NULL)`, "save legacy github repository"},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			f := newProjectAppFixture(t)
+			ctx := t.Context()
+			tx := begin(t, f.db, pgx.TxOptions{})
+			mustExec(t, tx, fault.sql)
+			write := store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true,
+				AppID: ptr(int64(9)), InstallationID: ptr(int64(7)), RepositoryID: ptr(int64(8)), InstallationAccountLogin: ptr("o"), RepositoryFullName: ptr("o/r"), RepositoryPrivate: ptr(false), PollIntervalMinutes: 5, AccessState: "available"}
+			ok, err := github.NewProjectAppWriter(tx, f.project).Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))})
+			if err == nil || ok || !strings.Contains(err.Error(), fault.want) {
+				t.Fatalf("source write: ok=%v err=%v", ok, err)
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var connections, sources int
+			if err := f.db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_github WHERE project_id=$1), (SELECT count(*) FROM project_github_repositories WHERE project_id=$1)`, f.project).Scan(&connections, &sources); err != nil || connections != 0 || sources != 0 {
+				t.Fatalf("failed source write persisted state: connections=%d sources=%d err=%v", connections, sources, err)
+			}
+		})
 	}
 }
