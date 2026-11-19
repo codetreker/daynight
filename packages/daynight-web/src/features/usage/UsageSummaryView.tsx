@@ -46,9 +46,10 @@ export const UsageSummaryView = ({ summary, compact = false }: { readonly summar
 const UsageProjectContext = createContext<string | null>(null);
 export const UsageProjectProvider = ({ projectId, children }: { readonly projectId: string; readonly children: ReactNode }) => <UsageProjectContext value={projectId}>{children}</UsageProjectContext>;
 const GraphUsageSummary = ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => {
-  const { summary, error } = useTaskUsage(projectId, taskId), { locale } = useI18n(), zh = locale === 'zh-CN', m = usageWords(zh);
-  const reading = summary === null ? null : usageCompactReading(summary, locale);
-  const text = reading === null ? error === null ? m.title + '…' : m.error : `${reading.label}: ${reading.value} · ${reading.state}`;
+  const { summary } = useTaskUsage(projectId, taskId), { locale } = useI18n();
+  if (summary === null || (summary.metrics.totalTokens.known === null && summary.metrics.outputTokens.known === null && summary.metrics.inputTokens.known === null)) return null;
+  const reading = usageCompactReading(summary, locale);
+  const text = `${reading.label}: ${reading.value} · ${reading.state}`;
   return <span className="task-node-usage" title={text}>
     {text}
   </span>;
