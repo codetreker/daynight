@@ -196,6 +196,13 @@ trigger and function are removed and their absence is checked. Case-specific
 records preserve independent committed-state checks. A failed case stops
 reuse.
 
+The [Tag deletion and Task write matrix](../../../../packages/daynight-server/internal/core/store/postgres/tag_concurrency_witnesses_test.go)
+shares a Store with distinct Project, Task and Tag identities. The actual
+Project row holder blocks the second write until the first commits. The test
+checks both completion receipts and the committed deletion, attachment and
+Task version facts. Each case joins its writer and verifies pool reuse before
+the next case; failure stops reuse.
+
 The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
 share one Store per parent and give each case independent account, Project,
 Task, credential, claim and Session identities. The registration refusal
