@@ -325,7 +325,7 @@ func testCapturedEventProvenanceRoundTripsActorAndFactState(t *testing.T, conn *
 	if err := f.conn.QueryRow(ctx, `SELECT event_id::text FROM webhook_deliveries WHERE id=$1`, f.delivery).Scan(&legacy); err != nil {
 		t.Fatal(err)
 	}
-	// The fixture event has no actor, like rows captured before migration 93.
+	// The fixture event has no actor, like rows captured before migration 94.
 	got, err := read(legacy)
 	if err != nil || got.EventID != legacy || got.Actor != (model.Actor{}) || len(got.FactSHA256) != 32 || got.FactRemovedAt != nil {
 		t.Fatalf("legacy provenance = %+v err=%v", got, err)

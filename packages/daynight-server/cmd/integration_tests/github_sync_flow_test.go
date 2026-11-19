@@ -301,7 +301,13 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE projects DROP COLUMN repository_identity`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.Exec(f.context, `DROP INDEX project_pull_requests_author_number`); err != nil {
+		if _, err := tx.Exec(f.context, `DROP INDEX project_pull_requests_state_number, project_pull_requests_author_number;
+			ALTER TABLE project_pull_requests DROP CONSTRAINT project_pull_requests_pkey;
+			ALTER TABLE project_pull_requests DROP COLUMN repository_id;
+			ALTER TABLE project_pull_requests ADD PRIMARY KEY (project_id,number);
+			CREATE INDEX project_pull_requests_state_number ON project_pull_requests (project_id,state,number DESC);
+			ALTER TABLE project_github DROP COLUMN legacy_repository_id;
+			DROP TABLE project_github_repositories`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.Exec(f.context, `DROP TABLE usage_records`); err != nil {
@@ -325,7 +331,7 @@ func TestServerAPIGitHubSyncNormalFlow(t *testing.T) {
 		if _, err := tx.Exec(f.context, `ALTER TABLE webhook_events DROP COLUMN actor_kind, DROP COLUMN actor_user_id, DROP COLUMN actor_bot_id`); err != nil {
 			t.Fatal(err)
 		}
-		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93)`); err != nil || result.RowsAffected() != 15 {
+		if result, err := tx.Exec(f.context, `DELETE FROM schema_migrations WHERE version IN (77,78,79,80,81,82,83,86,87,88,89,90,91,92,93,94)`); err != nil || result.RowsAffected() != 16 {
 			t.Fatalf("restore migration boundary: %v %v", result, err)
 		}
 		if err := tx.Commit(f.context); err != nil {

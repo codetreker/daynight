@@ -1009,6 +1009,34 @@ preserves existing PRs and hints, and schedules available connections for a new
 full poll. Start only the matching new service after migration; restoring the old
 binary requires a matching database backup.
 
+Before migration 093, stop all old Server writers and drain GitHub workers. The
+migration requires a trustworthy repository ID and full name for every Project
+with retained PRs; a missing identity reports the Project ID and rolls back the
+migration without changing the old table. Correct the source facts before retrying.
+The migration rewrites PR rows and indexes under table locks; measure the window
+against actual data before deployment. Start only new writers after migration:
+old writers use an incompatible conflict key. Once new writes are admitted,
+recover forward to retain them. See the [storage design](../../docs/design/github-pr-storage.md#迁移).
+
+
+Project members can read retained PR sources through
+`GET /api/v1/projects/{projectId}/pull-request-repositories`. It accepts
+`limit` (default 100, maximum 100) and `cursor` and returns
+`{currentRepositoryId,items:[{repositoryId,fullName}],nextCursor}` with
+ascending repository IDs. IDs are decimal strings; the current ID and next
+cursor can be null. The cursor is bound to the Project.
+
+The `pull-requests` list and number-detail routes,
+`pull-request-authors` and `pull-request-statistics` accept optional
+`repositoryId` as a canonical positive int64 decimal string. Explicit reads
+require a source saved for that Project. List, author and statistics responses
+then include `repository:{repositoryId,fullName}`. Omitting the selector
+preserves the original response and reads the fixed legacy source. Explicit
+cursors are source-bound; legacy cursors remain valid only on omitted-source
+requests. Historical statistics do not use another repository's current sync
+progress. The [PR reading design](../../docs/design/github-pr-reading.md)
+defines complete parameters, response fields and cursor behavior.
+
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
 bytes (0x21–0x7e), without whitespace or a required prefix. Invalid values stop

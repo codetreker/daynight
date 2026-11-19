@@ -9,7 +9,9 @@ import (
 
 	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -277,7 +279,20 @@ var goalDependenciesSQL string
 //go:embed schema/migrations/092_session_archive_cleanup.sql
 var sessionArchiveCleanupSQL string
 
-//go:embed schema/migrations/093_webhook_event_actor.sql
+//go:embed schema/migrations/093_github_repository_sources.sql
+var githubRepositorySourcesSQL string
+
+type githubRepositoryIdentityMigrationError struct {
+	projectID uuid.UUID
+	cause     error
+}
+
+func (e *githubRepositoryIdentityMigrationError) Error() string {
+	return fmt.Sprintf("migration 93: missing trustworthy GitHub repository identity for project %s", e.projectID)
+}
+func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
+
+//go:embed schema/migrations/094_webhook_event_actor.sql
 var webhookEventActorSQL string
 
 type migration struct {
@@ -378,7 +393,8 @@ var schemaMigrations = []migration{
 	{version: 90, sql: dependencyTypesSQL},
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
-	{version: 93, sql: webhookEventActorSQL},
+	{version: 93, sql: githubRepositorySourcesSQL},
+	{version: 94, sql: webhookEventActorSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
@@ -430,6 +446,12 @@ func replayMigrations(ctx context.Context, conn *pgxpool.Conn, migrations []migr
 			_, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)", next.version, next.checksum())
 			return err
 		}); err != nil {
+			var pgErr *pgconn.PgError
+			if next.version == 93 && errors.As(err, &pgErr) && pgErr.Code == "DN093" {
+				if id, parseErr := uuid.Parse(pgErr.Detail); parseErr == nil {
+					return &githubRepositoryIdentityMigrationError{projectID: id, cause: err}
+				}
+			}
 			return err
 		}
 	}

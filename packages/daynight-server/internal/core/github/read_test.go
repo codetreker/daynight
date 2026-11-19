@@ -27,6 +27,9 @@ type fixture struct {
 	query                                                                  store.GitHubPRQuery
 	countsQuery                                                            store.GitHubPRCountsQuery
 	wantCtx                                                                context.Context
+	repository                                                             func(context.Context, string, int64) (githubpr.Repository, error)
+	repositories                                                           func(context.Context, store.GitHubRepositoriesQuery) ([]githubpr.Repository, error)
+	detailRepositoryID                                                     *int64
 }
 
 func (f *fixture) ReadSnapshot(ctx context.Context, fn func(store.SnapshotScope) error) error {
@@ -55,12 +58,21 @@ func (f *fixture) Connection(ctx context.Context, id string) (githubpr.Connectio
 	}
 	return githubpr.Connection{ProjectID: id, Revision: 7}, f.connectionErr
 }
-func (f *fixture) PullRequest(ctx context.Context, id string, n int64) (githubpr.PullRequest, error) {
+func (f *fixture) PullRequest(ctx context.Context, id string, n int64, repositoryID *int64) (githubpr.PullRequest, error) {
+	f.detailRepositoryID = repositoryID
 	f.trace = append(f.trace, "detail")
 	if ctx != f.wantCtx || id != projectID || n != 42 {
 		panic("incorrect detail arguments")
 	}
 	return githubpr.PullRequest{PullRequestSummary: githubpr.PullRequestSummary{Number: n}}, f.detailErr
+}
+func (f *fixture) Repository(ctx context.Context, id string, repositoryID int64) (githubpr.Repository, error) {
+	f.trace = append(f.trace, "repository")
+	return f.repository(ctx, id, repositoryID)
+}
+func (f *fixture) Repositories(ctx context.Context, q store.GitHubRepositoriesQuery) ([]githubpr.Repository, error) {
+	f.trace = append(f.trace, "repositories")
+	return f.repositories(ctx, q)
 }
 func (f *fixture) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store.GitHubPRPage, error) {
 	f.trace = append(f.trace, "list")
@@ -141,19 +153,19 @@ func TestReadStatusAndDetail(t *testing.T) {
 		t.Fatalf("status=%+v trace=%v error=%v", status, f.trace, err)
 	}
 	f = fixtureFor(ctx)
-	detail, err := NewReader(f, false).Detail(ctx, principal, projectID, 42)
+	detail, err := NewReader(f, false).Detail(ctx, principal, projectID, 42, nil)
 	if err != nil || detail.PullRequest.Number != 42 || detail.Connection.Revision != 7 || !reflect.DeepEqual(f.trace, []string{"snapshot", "access", "connection", "detail"}) {
 		t.Fatalf("detail=%+v trace=%v error=%v", detail, f.trace, err)
 	}
 	f = fixtureFor(ctx)
 	f.detailErr = model.ErrNotFound
-	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 42)
+	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 42, nil)
 	faultCode(t, err, "not_found")
 	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing cause: %v", err)
 	}
 	f = fixtureFor(ctx)
-	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 0)
+	_, err = NewReader(f, false).Detail(ctx, principal, projectID, 0, nil)
 	faultCode(t, err, "invalid_input")
 	if len(f.trace) != 0 {
 		t.Fatalf("invalid number read database: %v", f.trace)

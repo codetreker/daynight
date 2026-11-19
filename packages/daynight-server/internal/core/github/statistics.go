@@ -17,12 +17,14 @@ type StatisticsSegment struct {
 }
 
 type StatisticsRequest struct {
-	EndDate  string
-	Window   []StatisticsSegment
-	AuthorID *int64
+	RepositoryID *int64
+	EndDate      string
+	Window       []StatisticsSegment
+	AuthorID     *int64
 }
 
 type Statistics struct {
+	Repository   *githubpr.Repository
 	Connection   githubpr.Connection
 	ProjectTotal int64
 	Availability string
@@ -35,6 +37,9 @@ type Statistics struct {
 
 // Statistics reads authorization, connection and counts from one snapshot.
 func (r *Reader) Statistics(ctx context.Context, principal model.Principal, projectID string, request StatisticsRequest) (Statistics, error) {
+	if request.RepositoryID != nil && *request.RepositoryID <= 0 {
+		return Statistics{}, invalid("Repository ID must be positive.")
+	}
 	query, err := statisticsQuery(request)
 	if err != nil {
 		return Statistics{}, err
@@ -50,7 +55,12 @@ func (r *Reader) Statistics(ctx context.Context, principal model.Principal, proj
 		if e != nil {
 			return e
 		}
+		result.Repository, e = selectedRepository(ctx, dao, id, request.RepositoryID)
+		if e != nil {
+			return e
+		}
 		query.ProjectID = id
+		query.RepositoryID = request.RepositoryID
 		data, e := dao.PullRequestStatistics(ctx, query)
 		if e != nil {
 			return e
@@ -81,7 +91,11 @@ func (r *Reader) Statistics(ctx context.Context, principal model.Principal, proj
 		if result.Connection.Revision < 0 || (result.Author != nil && (request.AuthorID == nil || result.Author.ID != *request.AuthorID)) {
 			return fmt.Errorf("invalid persisted GitHub statistics identity")
 		}
-		result.Availability = statisticsAvailability(result.Connection, r.available, result.ProjectTotal)
+		if request.RepositoryID == nil {
+			result.Availability = statisticsAvailability(result.Connection, r.available, result.ProjectTotal)
+		} else {
+			result.Availability = sourceStatisticsAvailability(result.Connection, request.RepositoryID, r.available, result.ProjectTotal)
+		}
 		return nil
 	})
 	if err != nil {
@@ -91,11 +105,25 @@ func (r *Reader) Statistics(ctx context.Context, principal model.Principal, proj
 }
 
 func statisticsAvailability(c githubpr.Connection, available bool, total int64) string {
+	if total == 0 && c.InstallationID == nil {
+		return "not_connected"
+	}
+	return sourceStatisticsAvailability(c, c.LegacyRepositoryID, available, total)
+}
+
+func sourceStatisticsAvailability(c githubpr.Connection, repositoryID *int64, available bool, total int64) string {
 	if total > 0 {
 		return "ready"
 	}
+	// Synchronization facts belong exclusively to the active repository.
+	if repositoryID != nil && (c.RepositoryID == nil || *repositoryID != *c.RepositoryID) {
+		return "no_saved_data"
+	}
 	if c.InstallationID == nil {
 		return "not_connected"
+	}
+	if repositoryID == nil {
+		return "no_saved_data"
 	}
 	initializing := c.Enabled && c.SyncEnabled && (c.LastFullGeneration == nil || *c.LastFullGeneration != c.Generation)
 	if c.Enabled && c.AccessState != "unavailable" && c.SyncEnabled && available && initializing {
