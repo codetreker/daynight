@@ -188,3 +188,12 @@ type AssistantTaskInboxTokenResult struct {
 	AssistantTaskInboxResult
 	Token *string `json:"token"`
 }
+
+// AssistantTaskInboxReceipt answers an accepted public inbox request. EventID
+// is null only for a suppressed request, which writes no event.
+type AssistantTaskInboxReceipt struct {
+	EventID        *string `json:"eventId"`
+	Classification string  `json:"classification"`
+	Duplicate      bool    `json:"duplicate"`
+	Suppressed     bool    `json:"suppressed"`
+}
