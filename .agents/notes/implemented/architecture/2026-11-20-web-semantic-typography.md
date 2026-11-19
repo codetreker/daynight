@@ -13,7 +13,11 @@ preferences must remain effective without unexpectedly enlarging existing layout
 The Web entry stylesheet loads six shared `rem` roles defined in
 [typography.css](../../../../packages/daynight-web/src/styles/typography.css).
 The browser sets the root size and the body uses the interface role as its
-baseline. The shared shell uses the semantic roles at all viewport widths.
+baseline. The shared shell, dependency graphs, project overview and statistics use the
+semantic roles at all viewport widths. Graph layout coordinates grow with the
+root font size so fixed node boxes accommodate text independently of graph zoom.
+Overview progress rows rearrange at narrow widths; chart axes preserve horizontal
+scrolling and provide room for enlarged labels.
 The [UI standard](../../../../docs/ui-design.md#web-typography) owns role uses
 and sizes. Fixed geometry that depended on the former 14px root is independent
 of that root; text-related spacing remains relative. The earlier
@@ -26,12 +30,16 @@ records the preparatory changes.
 preference from controlling rem-based text and would retain the implicit link
 between the root and unrelated geometry.
 
+**Keep the smaller fixed graph cards.** Larger labels and actions would collide or
+be clipped, especially when the browser font preference increases. Scaling the
+node geometry costs canvas space and can reduce the initial zoom on narrow screens.
+
 **Define sizes in each component.** This permits equal semantic roles to drift
 and makes changing a reading size require edits across consumers.
 
 ## Consequences
 
-The shell and inherited interface baseline respond to browser font preferences;
+The migrated surfaces and inherited interface baseline respond to browser font preferences;
 fixed layouts retain their intended geometry. Existing feature-specific font
 sizes remain until those consumers migrate, so the shared definitions alone do
 not establish whole-site consistency. Narrow layouts must accommodate text

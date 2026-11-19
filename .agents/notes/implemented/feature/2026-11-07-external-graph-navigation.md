@@ -73,8 +73,8 @@ The one-hop boundary limits context depth without limiting the number of direct
 external prerequisites or removing ordinary Goal members. The complete project
 snapshot and its client structural checks remain required. A large ordinary
 component increases traversal and layout work without a stored node/edge limit,
-as recorded in the [batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md). Context cards use the existing 136px
-action-footer geometry so their navigation is available even when no local
+as recorded in the [batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md). Context cards use the shared 244px action-footer geometry at the default root
+size so their navigation is available even when no local
 neighbors are hidden.
 
 Navigating to another unparented chain initializes that resource's graph

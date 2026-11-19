@@ -184,7 +184,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       expect(await node.locator('.task-node').evaluate(element => {
         const card = element.getBoundingClientRect(), timing = element.querySelector('.task-duration')!.getBoundingClientRect(), detail = element.querySelector('.task-node-details')!.getBoundingClientRect();
         const decorations = [...element.querySelectorAll('.task-stuck-label, .task-agent-permission')];
-        return (element as HTMLElement).offsetWidth === 220 && [96, 136].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && (timing.right <= detail.left || timing.bottom <= detail.top || timing.top >= detail.bottom) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && item.scrollWidth <= item.clientWidth; });
+        return (element as HTMLElement).offsetWidth === 360 && [184, 244].includes((element as HTMLElement).offsetHeight) && timing.left >= card.left && timing.right <= card.right && timing.top >= card.top && timing.bottom <= card.bottom && (timing.right <= detail.left || timing.bottom <= detail.top || timing.top >= detail.bottom) && decorations.every(item => { const box = item.getBoundingClientRect(); return box.left >= card.left && box.right <= card.right && item.scrollWidth <= item.clientWidth; });
       })).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole('button', { name: locale === 'en' ? 'Close dependency graph' : '关闭依赖图' }).click();
