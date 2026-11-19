@@ -19,6 +19,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// unknownMigrationVersion stays far above every shipped migration so the
+// unknown-history scenario never collides with a real ledger row.
+const unknownMigrationVersion = "2147483647"
+
 func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 	for _, scenario := range []string{"unknown history", "migration SQL failure", "snapshot SQL failure"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -51,7 +55,7 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 				if err := initial.stop(); err != nil {
 					t.Fatalf("initial process stop: %v", err)
 				}
-				if _, err := observer.Exec(ctx, "INSERT INTO schema_migrations(version,checksum) VALUES (99,repeat('0',64))"); err != nil {
+				if _, err := observer.Exec(ctx, "INSERT INTO schema_migrations(version,checksum) VALUES ("+unknownMigrationVersion+",repeat('0',64))"); err != nil {
 					t.Fatal(err)
 				}
 			} else if scenario == "migration SQL failure" {
@@ -117,7 +121,7 @@ func TestServerProcessMigrationFailuresNeverListenAndRecover(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "unknown history" {
-				_, err = observer.Exec(ctx, "DELETE FROM schema_migrations WHERE version=99")
+				_, err = observer.Exec(ctx, "DELETE FROM schema_migrations WHERE version="+unknownMigrationVersion)
 			} else if scenario == "migration SQL failure" {
 				var versions []int64
 				if err := observer.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1}) {

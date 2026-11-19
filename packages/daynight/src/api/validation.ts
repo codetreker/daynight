@@ -16,6 +16,13 @@ export const bool = (value: unknown): boolean => typeof value === "boolean" ? va
 export const count = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : malformed();
 export const resourceVersion = (value: unknown): bigint => typeof value === "bigint" && value >= 1n && value <= 9_223_372_036_854_775_807n ? value : malformed();
 export const canonicalId = (value: string): string | null => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : null;
+// Request-side identifiers, such as assistant-task path IDs and the declared
+// Bot identity, must already use the exact canonical lowercase spelling of a
+// nonzero UUID; the service rejects any other spelling.
+export const nonzeroCanonicalId = (value: string): string => {
+  if (canonicalId(value) !== value || value === "00000000-0000-0000-0000-000000000000") throw new Error("Expected a nonzero canonical lowercase UUID.");
+  return value;
+};
 export const id = (value: unknown): string => {
   const parsed = text(value);
   if (canonicalId(parsed) !== parsed) return malformed();

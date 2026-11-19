@@ -14,7 +14,7 @@
 
 ## 存储与事务
 
-迁移 `071_assistant_tasks.sql` 增加下列独立资源，`096_assistant_task_inboxes.sql` 增加收件箱的两张表与入站事件结算时间；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
+迁移 `071_assistant_tasks.sql` 增加下列独立资源，`099_assistant_task_inboxes.sql` 增加收件箱的两张表与入站事件结算时间；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
 
 | 表 | 持久职责 |
 | --- | --- |
@@ -42,7 +42,7 @@
 
 ## 认领与完成结果
 
-认领、转交、绑定、续约及释放全部由 core 生成候选和回执，DAO 在同一事务保存。首次认领或接手推进 generation 并绑定调用 Bot 的预存令牌；转交推进 generation、指定目标并清空旧凭据，进入 pending。绑定仅写入目标自己的摘要和绑定操作 ID；续约仅延长期限。转交与接手在同事务中更新打开事项的 follower，保留应用状态和既有操作身份。
+认领、转交、绑定、续约及释放全部由 core 生成候选和回执，DAO 在同一事务保存。首次认领或接手推进 generation 并绑定调用 Bot 的预存令牌；转交推进 generation、指定目标并清空旧凭据，进入 pending。绑定仅写入目标自己的摘要和绑定操作 ID；续约仅延长期限。转交与接手在同事务中更新打开事项的 follower，并把仍为 pending 的 `inbound` 事件改投新的负责 Bot，保留应用状态和既有操作身份；其他类型的事件保持原目标。
 
 DAO 的认领预期条件包括版本、holder、generation、摘要和需要时的活租约。权限与 Bot 删除屏障覆盖整个事务；最终租约复核失败使材料和成功回执一起回滚。返回结果把不可变的 `operation` 和独立的 `currentClaim` 分开，回放不重复修改或延长租约。
 
@@ -75,13 +75,17 @@ service 区分 `committed`、`not_committed`、`unknown` 及清理失败。只�
 | `proposals, proposals/{id}/decision` | GET 列表；POST 负责 Bot 提案；POST 用户决定，带任务 `ifVersion` |
 | `items, items/{id}` | GET 列表/详情；POST/PATCH 负责 Bot 写入，更新另带事项 `ifVersion` |
 | `records` | GET 可按事项分页；POST 有明确作者的追加记录 |
-| `events, events/{id}/ack` | GET 可按目标和状态分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
+| `events, events/{id}/ack` | GET 可按目标、状态和事件类型分页；POST 负责 Bot 产生事件；POST 目标 Bot 用 `operationId` 确认 |
 | `inquiries, inquiries/{id}/answer` | GET 列表；POST Bot 提问；POST 负责目标 Bot 回答 |
 | `inbox` | GET 收件箱状态：`inboxId,enabled,createdAt,rotatedAt,overlapUntil,suppressedCount`，未开启时 `inboxId` 与时间为 `null`；不返回令牌或摘要，用户与已核验 Bot 均可读取 |
 | `inbox/enable, inbox/rotate, inbox/disable` | POST 用户管理，请求为 `operationId,ifVersion`，轮换另需 `mode`（`overlap` 或 `immediate`）；返回 `operation` 回执与 `inbox`，开启与轮换另返回 `token`，只有实际生成令牌的请求为字符串，重放为 `null` |
 | `inbox-operations/{id}` | GET 用户核对收件箱管理操作的原回执及当前 `inbox`，不返回令牌 |
 
-跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。收件箱管理与回执读取在解析请求体之前拒绝 `X-Daynight-Bot-Id`，返回 403 `forbidden`，请求不进入 service。
+跨任务事件拉取使用 `/api/v1/assistant-task-events`，以 `targetBotId` 筛选；Bot 请求省略时使用自身身份。`POST /api/v1/assistant-task-events/attention` 接受目标 Bot，执行用户查看后的关注清除。
+
+两种事件拉取都接受一个类型筛选：`type` 只保留该类型，`excludeType` 排除该类型，二者不能同时出现，取值须为已知事件类型，其他资源拒绝这两个参数。`type=inbound` 时，服务端在同一条数据库查询中排除暂停任务的事件；这些事件保持 pending，任务恢复后重新可选，Worker 不需要逐个读取再跳过。分页游标绑定所选筛选，换用不同筛选续读会被拒绝。
+
+所有查询参数、请求键、UUID、版本类型和 Bot header 均严格解析；不得通过多余字段表达另一种操作。收件箱管理与回执读取在解析请求体之前拒绝 `X-Daynight-Bot-Id`，返回 403 `forbidden`，请求不进入 service。
 
 ## 验证责任
 

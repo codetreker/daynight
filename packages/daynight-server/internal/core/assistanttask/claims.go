@@ -79,6 +79,17 @@ func ClaimFingerprint(actor Actor, input ClaimInput) (string, string, error) {
 	return digest, hash, err
 }
 
+// moveFollowers hands open items and pending inbound events to the task's new
+// responsible Bot inside the transaction that changed the holder, so inbound
+// work admitted for an earlier holder is never stranded with a Bot that can no
+// longer act on the task. task.HolderBotID must be set.
+func moveFollowers(ctx context.Context, dao store.AssistantTaskDAO, task model.AssistantTask) error {
+	if err := dao.TransferOpenItems(ctx, task.OwnerUserID, task.ID, task.HolderBotID); err != nil {
+		return err
+	}
+	return dao.RetargetPendingInbound(ctx, task.OwnerUserID, task.ID, *task.HolderBotID)
+}
+
 func (m *Module) Claim(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, input ClaimInput) (model.AssistantTaskClaimResult, error) {
 	var result model.AssistantTaskClaimResult
 	requestHash, tokenHash, err := ClaimFingerprint(actor, input)
@@ -207,7 +218,7 @@ func (m *Module) Claim(ctx context.Context, dao store.AssistantTaskDAO, actor Ac
 		return result, err
 	}
 	if input.Kind == "claim" || input.Kind == "transfer" {
-		if err = dao.TransferOpenItems(ctx, task.OwnerUserID, task.ID, task.HolderBotID); err != nil {
+		if err = moveFollowers(ctx, dao, task); err != nil {
 			return result, err
 		}
 	}

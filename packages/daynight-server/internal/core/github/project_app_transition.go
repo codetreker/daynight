@@ -15,7 +15,7 @@ func projectAppTransition(ctx context.Context, dao store.GitHubProjectAppWriteDA
 		if err != nil {
 			return false, false, err
 		}
-		if f.Project.RepoURL != expectedRepo {
+		if f.Project.RepoURL != expectedRepo || f.RepositoryVersion != in.RepositoryVersion {
 			return false, false, &model.Fault{Code: "github_repository_mismatch", Message: "Project repository changed during verification."}
 		}
 		if candidate.Installation.ID != in.InstallationID || candidate.Installation.ID < 1 || candidate.Installation.AccountLogin == "" || candidate.Repository.ID < 1 || candidate.Repository.FullName == "" {

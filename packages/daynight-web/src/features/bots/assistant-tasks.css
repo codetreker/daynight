@@ -32,6 +32,11 @@
 .assistant-task-panel pre, .assistant-task-rules { overflow: auto; max-width: 100%; padding: 12px; border-radius: 7px; background: #f5f6fa; font-size: 12px; }
 .assistant-task-panel img, .assistant-task-proposal img { max-width: 100%; }
 .assistant-task-appendix, .assistant-task-history, .assistant-task-records { padding: 0; list-style: none; }
+.assistant-task-inbound-facts { display: grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap: 8px 12px; margin: 8px 0 0; }
+.assistant-task-inbound-facts dt { font-size: 11px; color: var(--muted); }
+.assistant-task-inbound-facts dd { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.assistant-task-inbound-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; }
+.assistant-task-badge[data-untrusted] { border-color: #C9D0D7; background: #F1F3F5; color: #52606D; }
 .assistant-task-form { display: grid; gap: 14px; min-width: 0; }
 .assistant-task-form label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
 .assistant-task-form :is(textarea,input) { max-width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--line); border-radius: 7px; padding: 9px; font: inherit; background: #fff; color: var(--ink); }

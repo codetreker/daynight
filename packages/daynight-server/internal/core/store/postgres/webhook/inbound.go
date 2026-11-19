@@ -10,28 +10,42 @@ import (
 
 var _ store.WebhookInboundSourceReader = (*DAO)(nil)
 
-// PersonalDeliveryDestinations reads the destination snapshots captured on
-// the event's deliveries. The snapshot, not the endpoint's current
-// configuration, names the target that delivery attempts use.
-func (d *DAO) PersonalDeliveryDestinations(ctx context.Context, eventID, owner, origin string, limit int) ([][]byte, error) {
+// PersonalDeliveryDestinations reads one page of the destination snapshots
+// captured on the event's deliveries. The snapshot, not the endpoint's current
+// configuration, names the target that delivery attempts use. The stored
+// origin keeps the configured host case, so the comparison folds case; an
+// origin has no path, so folding never relaxes the inbox path match.
+func (d *DAO) PersonalDeliveryDestinations(ctx context.Context, eventID, owner, origin, after string, limit int) ([]store.WebhookDeliveryDestination, error) {
 	if _, err := model.CanonicalID(eventID); err != nil {
 		return nil, nil
 	}
-	rows, err := d.tx.Query(ctx, `SELECT destination_configuration FROM webhook_deliveries WHERE event_id=$1 AND owner_kind='personal' AND owner_id=$2 AND destination_origin=$3 ORDER BY id LIMIT $4`, eventID, owner, origin, limit)
+	if after != "" {
+		if _, err := model.CanonicalID(after); err != nil {
+			return nil, nil
+		}
+	}
+	rows, err := d.tx.Query(ctx, `SELECT id::text,destination_configuration FROM webhook_deliveries WHERE event_id=$1 AND owner_kind='personal' AND owner_id=$2 AND lower(destination_origin)=lower($3) AND ($4::uuid IS NULL OR id>$4::uuid) ORDER BY id LIMIT $5`, eventID, owner, origin, nullableID(after), limit)
 	if err != nil {
 		return nil, pg.QueryError("read webhook inbound deliveries", err)
 	}
 	defer rows.Close()
-	var out [][]byte
+	var out []store.WebhookDeliveryDestination
 	for rows.Next() {
-		var configuration []byte
-		if err := rows.Scan(&configuration); err != nil {
+		var destination store.WebhookDeliveryDestination
+		if err := rows.Scan(&destination.DeliveryID, &destination.Configuration); err != nil {
 			return nil, pg.QueryError("scan webhook inbound delivery", err)
 		}
-		out = append(out, configuration)
+		out = append(out, destination)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, pg.QueryError("read webhook inbound deliveries", err)
 	}
 	return out, nil
+}
+
+func nullableID(id string) *string {
+	if id == "" {
+		return nil
+	}
+	return &id
 }
