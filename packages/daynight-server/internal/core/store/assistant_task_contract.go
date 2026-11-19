@@ -103,6 +103,9 @@ type AssistantTaskDAO interface {
 	// InsertRecord obtains a real monotonically increasing database timestamp,
 	// under the task's record-head barrier, and returns the persisted position.
 	InsertRecord(context.Context, model.AssistantTaskRecord) (model.AssistantTaskRecord, error)
+	// Metrics aggregates the task's trailing window ending at current database
+	// time in one statement, so every count comes from the same snapshot.
+	Metrics(context.Context, string, string, time.Duration) (model.AssistantTaskMetrics, error)
 	Event(context.Context, string, string, string) (model.AssistantTaskEvent, error)
 	Events(context.Context, AssistantTaskQuery) ([]model.AssistantTaskEvent, error)
 	InsertEvent(context.Context, model.AssistantTaskEvent) (bool, error)

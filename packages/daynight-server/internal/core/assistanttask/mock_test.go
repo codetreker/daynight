@@ -88,6 +88,7 @@ type daoStub struct {
 	saveItem             func(context.Context, model.AssistantTaskItem, int64) (bool, error)
 	transferOpenItems    func(context.Context, string, string, *string) error
 	insertItemClosure    func(context.Context, model.AssistantTaskItemClosure) error
+	metrics              func(context.Context, string, string, time.Duration) (model.AssistantTaskMetrics, error)
 	retargetInbound      func(context.Context, string, string, string) error
 	record               func(context.Context, string, string, string) (model.AssistantTaskRecord, error)
 	records              func(context.Context, store.AssistantTaskQuery) ([]model.AssistantTaskRecord, error)
@@ -224,6 +225,10 @@ func (d *daoStub) TransferOpenItems(a0 context.Context, a1 string, a2 string, a3
 
 func (d *daoStub) InsertItemClosure(a0 context.Context, a1 model.AssistantTaskItemClosure) error {
 	return d.insertItemClosure(a0, a1)
+}
+
+func (d *daoStub) Metrics(a0 context.Context, a1, a2 string, a3 time.Duration) (model.AssistantTaskMetrics, error) {
+	return d.metrics(a0, a1, a2, a3)
 }
 
 func (d *daoStub) RetargetPendingInbound(a0 context.Context, a1 string, a2 string, a3 string) error {
