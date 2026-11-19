@@ -2093,12 +2093,14 @@ insertion and rollback, and SQL filtering before pagination. The
 [Project member fixture decision](../../.agents/notes/implemented/testing/2026-11-18-project-member-creation-tests.md)
 records the proof boundary.
 
-Project transfer tests use controlled scopes for preflight, cancellation,
-missing targets and exhausted versions. They execute the real transfer rules,
-including confirmed same-team saves at the version limit. Real PostgreSQL
-tests retain cross-team transfer, persisted access changes and rollback.
-The [Project transfer boundary decision](../../.agents/notes/implemented/testing/2026-11-18-project-transfer-boundary-tests.md)
-records the proof boundary.
+Project transfer tests use controlled scopes to exercise the real preview and
+write paths, including authorization, version conflicts, receipt contents,
+eligibility refresh, and unconfirmed completion. PostgreSQL tests verify
+destination roles, committed ownership and access changes, grant and
+invitation continuity, and actual query and transaction failures. A real
+same-Team save checks the complete Project from independent reads. The
+[Project transfer boundary decision](../../.agents/notes/implemented/testing/2026-11-18-project-transfer-boundary-tests.md)
+records where these guarantees are tested.
 
 Project deletion error tests use controlled read and completion outcomes to
 verify error propagation and receipt suppression. PostgreSQL tests retain
