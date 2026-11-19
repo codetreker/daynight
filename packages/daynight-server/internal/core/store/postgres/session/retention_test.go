@@ -11,7 +11,34 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestArchiveRetentionRecordingFailureRollsBackPublication(t *testing.T) {
+	db := isolatedStore(t)
+	_, id := prepareArchiveSession(t, db)
+	ctx := t.Context()
+	mustQueryExec(t, db, `CREATE FUNCTION refuse_retention_fixture() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'retention storage failure'; END$$;
+ CREATE TRIGGER refuse_retention_fixture BEFORE INSERT ON session_archive_retention FOR EACH ROW EXECUTE FUNCTION refuse_retention_fixture()`)
+	var recordingError error
+	completion, err := db.WriteSession(ctx, func(scope store.SessionScope) error {
+		dao := scope.SessionDAO()
+		if err := dao.SetSessionArchiveReady(ctx, id, archiveHashOf("archive"), 7, "archive/path"); err != nil {
+			return err
+		}
+		recordingError = dao.(store.SessionArchiveRetentionDAO).RecordSessionArchiveSuccess(ctx, id, time.Now())
+		return recordingError
+	})
+	var databaseError *pgconn.PgError
+	var queryError *store.Error
+	if completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &databaseError) || databaseError.Code != "P0001" || !errors.Is(err, recordingError) || !errors.As(recordingError, &queryError) || queryError.Phase != "record first session archive success" {
+		t.Fatalf("publication lost recording failure: %+v %v", completion, err)
+	}
+	var archiveRows, retentionRows int
+	if err := db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM session_archives WHERE session_id=$1),(SELECT count(*) FROM session_archive_retention WHERE session_id=$1)`, id).Scan(&archiveRows, &retentionRows); err != nil || archiveRows != 0 || retentionRows != 0 {
+		t.Fatalf("failed recording retained publication: %d %d %v", archiveRows, retentionRows, err)
+	}
+}
 
 func TestArchiveRetentionPersistence(t *testing.T) {
 	db := isolatedStore(t)
