@@ -45,17 +45,21 @@ export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = nu
   const records = useBotRead(`assistant-task-records:${taskId}:${itemId}`, enabled, loadRecords);
   const referenced = useRef<string | null>(null);
   const region = useRef<HTMLElement>(null);
-  useLayoutEffect(() => {
-    if (recordId === null) return;
+  // Each reveal request counts separately because following the current record
+  // leaves the URL, and therefore recordId, unchanged.
+  const [reveals, setReveals] = useState(0);
+  const reveal = useCallback(() => {
     // Following evidence selects that record independently of retained filters.
     referenced.current = null;
     setSelection({ taskId, itemId: '', pages: 1 }); setKind(''); setAuthor('');
-  }, [taskId, recordId]);
+  }, [taskId]);
+  useLayoutEffect(() => { if (recordId !== null) reveal(); }, [recordId, reveal]);
+  const follow = (id: string) => { reveal(); setReveals(count => count + 1); onRecords?.(id); };
   useEffect(() => {
     if (!enabled || !recordId || referenced.current === `${taskId}:${recordId}` || !records.value?.records.some(entry => entry.id === recordId)) return;
     const target = region.current?.querySelector<HTMLElement>(`[id="record-${recordId}"]`);
     if (target) { target.scrollIntoView?.({ block: 'center' }); target.focus({ preventScroll: true }); referenced.current = `${taskId}:${recordId}`; }
-  }, [taskId, recordId, records.value, enabled]);
+  }, [taskId, recordId, records.value, enabled, reveals]);
   const authors = new Set((records.value?.records ?? []).map(entry => entry.authorBotId ?? 'system'));
   const name = (id: string) => id === 'system' ? m.system : bots.find(bot => bot.id === id)?.name ?? m.unknownAssistant.replace('{id}', id);
   const filtered = (records.value?.records ?? []).filter(entry => (!kind || entry.kind === kind) && (!author || (entry.authorBotId ?? 'system') === author));
@@ -78,7 +82,7 @@ export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = nu
       return <section className="assistant-task-panel" key={groupId}><header><h3>{groupId ? item?.key ?? groupId : m.general}</h3>{item ? <span className="assistant-task-badge">{m[item.state]}</span> : null}</header>
         <ol className="assistant-task-records">{entries.map(entry => <li id={`record-${entry.id}`} tabIndex={-1} key={entry.id} className="assistant-task-record">
           <header><span className="assistant-task-badge" data-kind={entry.kind}>{m[entry.kind]}</span><span>{name(entry.authorBotId ?? 'system')}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString(m.locale)}</time></header>
-          {entry.outcome && entry.actionRecordId ? <p className="assistant-task-evidence"><span className="assistant-task-badge" data-outcome={entry.outcome}>{m[entry.outcome]}</span><span>{m.evaluatedAction}</span>{onRecords ? <button className="button quiet" type="button" onClick={() => onRecords(entry.actionRecordId!)}>{m.record.replace('{id}', entry.actionRecordId)}</button> : <code>{entry.actionRecordId}</code>}</p> : null}
+          {entry.outcome && entry.actionRecordId ? <p className="assistant-task-evidence"><span className="assistant-task-badge" data-outcome={entry.outcome}>{m[entry.outcome]}</span><span>{m.evaluatedAction}</span>{onRecords ? <button className="button quiet" type="button" onClick={() => follow(entry.actionRecordId!)}>{m.record.replace('{id}', entry.actionRecordId)}</button> : <code>{entry.actionRecordId}</code>}</p> : null}
           <AssistantTaskMarkdown text={entry.text} />
           {entry.refs !== null && stringifyAssistantTaskJson(entry.refs) !== '[]' && stringifyAssistantTaskJson(entry.refs) !== '{}' ? <details><summary>{m.references}</summary><pre className="assistant-task-rules">{stringifyAssistantTaskJson(entry.refs, 2)}</pre></details> : null}
         </li>)}</ol>
