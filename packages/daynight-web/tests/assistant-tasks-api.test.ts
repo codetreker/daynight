@@ -104,7 +104,8 @@ describe('assistant task response contracts', () => {
     expect(String(fetch.mock.calls[0]![0])).toBe(`/api/v1/assistant-tasks/${taskId}/metrics`);
     const untimed = { ...metrics, closureCount: 0, untimedClosureCount: 0, averageResolutionMs: null };
     expect(api.parseAssistantTaskMetrics(untimed)).toEqual(untimed);
-    for (const patch of [{ untimedClosureCount: 4 }, { averageResolutionMs: null }, { untimedClosureCount: 3 }, { windowEnd: '2026-01-02T00:00:00Z' }, { windowStart: '2099-01-01T00:00:00Z' }, { actionCount: -1 }, { actionCount: 1.5 }, { outcomes: { effective: 1, ineffective: 0 } }, { extra: 1 }])
+    expect(api.parseAssistantTaskMetrics({ ...metrics, averageResolutionMs: -5_000 }).averageResolutionMs).toBe(0);
+    for (const patch of [{ untimedClosureCount: 4 }, { averageResolutionMs: null }, { averageResolutionMs: 1.5 }, { averageResolutionMs: '90000' }, { untimedClosureCount: 3 }, { windowEnd: '2026-01-02T00:00:00Z' }, { windowStart: '2099-01-01T00:00:00Z' }, { actionCount: -1 }, { actionCount: 1.5 }, { outcomes: { effective: 1, ineffective: 0 } }, { extra: 1 }])
       expect(() => api.parseAssistantTaskMetrics({ ...metrics, ...patch })).toThrow();
   });
   it('accepts outcome records only with their evaluation and refuses evaluation keys on other kinds', () => {

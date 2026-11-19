@@ -177,10 +177,13 @@ export const parseAssistantTaskRecord = (value: unknown, taskId: string): Assist
   if ((result.author === 'bot') !== (result.authorBotId !== null)) return malformed();
   return result;
 };
+// The server averages database-time closure intervals without a lower bound, so a backward clock step can yield a
+// negative average; the panel shows it as zero instead of discarding otherwise valid counters.
+const resolutionMs = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) ? Math.max(value, 0) : malformed();
 export const parseAssistantTaskMetrics = (value: unknown): AssistantTaskMetrics => {
   const data = fields(value, ['observedAt', 'windowStart', 'windowEnd', 'actionCount', 'outcomes', 'escalationCount', 'resultUnknownCount', 'closureCount', 'untimedClosureCount', 'averageResolutionMs', 'recurringItemCount']);
   const outcomes = fields(data.outcomes, ['effective', 'ineffective', 'inconclusive']);
-  const result = { observedAt: timestamp(data.observedAt), windowStart: timestamp(data.windowStart), windowEnd: timestamp(data.windowEnd), actionCount: count(data.actionCount), outcomes: { effective: count(outcomes.effective), ineffective: count(outcomes.ineffective), inconclusive: count(outcomes.inconclusive) }, escalationCount: count(data.escalationCount), resultUnknownCount: count(data.resultUnknownCount), closureCount: count(data.closureCount), untimedClosureCount: count(data.untimedClosureCount), averageResolutionMs: data.averageResolutionMs === null ? null : count(data.averageResolutionMs), recurringItemCount: count(data.recurringItemCount) };
+  const result = { observedAt: timestamp(data.observedAt), windowStart: timestamp(data.windowStart), windowEnd: timestamp(data.windowEnd), actionCount: count(data.actionCount), outcomes: { effective: count(outcomes.effective), ineffective: count(outcomes.ineffective), inconclusive: count(outcomes.inconclusive) }, escalationCount: count(data.escalationCount), resultUnknownCount: count(data.resultUnknownCount), closureCount: count(data.closureCount), untimedClosureCount: count(data.untimedClosureCount), averageResolutionMs: data.averageResolutionMs === null ? null : resolutionMs(data.averageResolutionMs), recurringItemCount: count(data.recurringItemCount) };
   // Every closure is either timed or untimed, and only timed closures produce an average.
   if (result.untimedClosureCount > result.closureCount || (result.averageResolutionMs === null) !== (result.untimedClosureCount === result.closureCount) || Date.parse(result.windowEnd) !== Date.parse(result.observedAt) || Date.parse(result.windowStart) > Date.parse(result.windowEnd)) return malformed();
   return result;
