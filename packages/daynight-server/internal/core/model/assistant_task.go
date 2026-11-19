@@ -109,3 +109,30 @@ type AssistantTaskPage[T any] struct {
 	NextCursor *string
 	ObservedAt time.Time
 }
+
+// Assistant task inbox states. A tombstone keeps only its identity after the
+// inbox was disabled or its task deleted, and never returns to enabled.
+const (
+	AssistantTaskInboxEnabled   = "enabled"
+	AssistantTaskInboxTombstone = "tombstone"
+)
+
+// AssistantTaskInbox is the stored inbox of an assistant task. Token fields hold
+// digests only; a tombstone has no digests or overlap deadline.
+type AssistantTaskInbox struct {
+	InboxID, OwnerUserID, TaskID, State string
+	TokenDigest, OverlapTokenDigest     *string
+	OverlapUntil, RotatedAt             *time.Time
+	SuppressedCount, Version            int64
+	CreatedAt                           time.Time
+}
+
+// AssistantTaskInboxReceipt records one accepted inbox request by idempotency
+// key. EventID is nil when the request was suppressed. SubjectTaskID is the
+// project Task of a verified Daynight event.
+type AssistantTaskInboxReceipt struct {
+	InboxID, IdempotencyKey, OwnerUserID, TaskID, BodySHA256, TargetBotID string
+	EventID, SubjectTaskID                                                *string
+	Suppressed                                                            bool
+	ReceivedAt, ExpiresAt                                                 time.Time
+}

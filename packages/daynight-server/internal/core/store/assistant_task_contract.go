@@ -62,6 +62,8 @@ type AssistantTaskDAO interface {
 	Tasks(context.Context, AssistantTaskQuery) ([]model.AssistantTask, error)
 	InsertTask(context.Context, model.AssistantTask) (bool, error)
 	SaveTask(context.Context, model.AssistantTask, AssistantTaskCondition) (bool, error)
+	// DeleteTaskContent deletes task material and inbox receipts and turns the
+	// task's enabled inbox into a tombstone in the caller's transaction.
 	DeleteTaskContent(context.Context, string, string) error
 	ClaimOperation(context.Context, string, string, string) (model.AssistantTaskClaimOperation, error)
 	InsertClaimOperation(context.Context, model.AssistantTaskClaimOperation) error
@@ -95,4 +97,49 @@ type AssistantTaskDAO interface {
 	Inquiries(context.Context, AssistantTaskQuery) ([]model.AssistantTaskInquiry, error)
 	InsertInquiry(context.Context, model.AssistantTaskInquiry) (bool, error)
 	SaveInquiry(context.Context, model.AssistantTaskInquiry, string) (bool, error)
+	AssistantTaskInboxDAO
+}
+
+// AssistantTaskInboxDAO stores task inboxes, their receipts, and the inbound
+// event facts used by inbox admission. Every method except InboxIdentity is
+// owner scoped. Lock order is the task row (Task with lock=true) before the
+// inbox row, for management and inbound admission alike, so rotation or
+// disabling interleaved with admission cannot deadlock.
+type AssistantTaskInboxDAO interface {
+	// InsertInbox returns false when the inbox ID exists or the task already has
+	// an enabled inbox.
+	InsertInbox(context.Context, model.AssistantTaskInbox) (bool, error)
+	// CurrentInbox reads the task's enabled inbox without locking it.
+	CurrentInbox(ctx context.Context, owner, task string) (model.AssistantTaskInbox, error)
+	// InboxIdentity reads an inbox by ID without owner scope or lock for the
+	// public route. It returns only identity, owner, task and state; tombstones
+	// are returned with their state, and an ID that never existed is not found.
+	InboxIdentity(ctx context.Context, inbox string) (model.AssistantTaskInbox, error)
+	// LockInbox locks and reads the inbox row. The caller already holds the
+	// task lock.
+	LockInbox(ctx context.Context, owner, task, inbox string) (model.AssistantTaskInbox, error)
+	// SaveInbox writes state, digests, overlap deadline, rotation time and
+	// version when the stored version equals the expected version.
+	SaveInbox(ctx context.Context, inbox model.AssistantTaskInbox, version int64) (bool, error)
+	// AddInboxSuppressed increments the suppressed count of an enabled inbox.
+	AddInboxSuppressed(ctx context.Context, owner, task, inbox string) (bool, error)
+	// InboxReceipt reads a receipt whose expiry is after current database time.
+	InboxReceipt(ctx context.Context, owner, inbox, key string) (model.AssistantTaskInboxReceipt, error)
+	// InsertInboxReceipt inserts a receipt or replaces an expired receipt with
+	// the same key. It returns false while an unexpired receipt holds the key.
+	InsertInboxReceipt(context.Context, model.AssistantTaskInboxReceipt) (bool, error)
+	// PendingInboundEvents counts, up to limit, pending inbound events of the
+	// task targeted at bot.
+	PendingInboundEvents(ctx context.Context, owner, task, bot string, limit int) (int, error)
+	// ReceivedInbound reports whether bot was the target of an unsuppressed
+	// receipt about the project Task subject at or after since, across the
+	// owner's assistant tasks.
+	ReceivedInbound(ctx context.Context, owner, bot, subject string, since time.Time) (bool, error)
+	// ReclaimInboxReceipts deletes at most limit receipts of the task, from any
+	// of its inboxes, that expired by current database time.
+	ReclaimInboxReceipts(ctx context.Context, owner, task string, limit int) (int64, error)
+	// ReclaimInboundEvents deletes at most limit delivered or expired inbound
+	// events of the task whose delivery time, or creation time when never
+	// delivered, is before the cutoff.
+	ReclaimInboundEvents(ctx context.Context, owner, task string, before time.Time, limit int) (int64, error)
 }
