@@ -3,6 +3,7 @@ package reviewassignment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
@@ -57,16 +58,23 @@ func (s *DAO) ReviewScanStart(ctx context.Context) (time.Time, *store.ReviewWork
 	return now.UTC(), &store.ReviewWorkerKey{UserID: *userID, WorkerID: *workerID}, nil
 }
 
-const reviewWorkersSQL = `SELECT user_id::text,worker_id::text,created_at,last_seen_at,review_enabled,desired_configuration FROM workers
-        WHERE review_enabled AND created_at <= $1 AND (user_id,worker_id)<=($2::uuid,$3::uuid)
-        AND ($4::uuid IS NULL OR (user_id,worker_id)>($4::uuid,$5::uuid)) ORDER BY workers.user_id,workers.worker_id LIMIT $6`
+const reviewWorkersBaseSQL = `SELECT user_id::text,worker_id::text,created_at,last_seen_at,review_enabled,desired_configuration FROM workers
+        WHERE review_enabled AND created_at <= $1 AND (user_id,worker_id)<=($2::uuid,$3::uuid)`
+
+func reviewWorkersSQL(hasAfter bool) string {
+	if hasAfter {
+		return reviewWorkersBaseSQL + ` AND (user_id,worker_id)>($4::uuid,$5::uuid) ORDER BY workers.user_id,workers.worker_id LIMIT $6`
+	}
+	return reviewWorkersBaseSQL + ` ORDER BY workers.user_id,workers.worker_id LIMIT $4`
+}
 
 func (s *DAO) ReviewWorkers(ctx context.Context, start time.Time, upper store.ReviewWorkerKey, after *store.ReviewWorkerKey, limit int) ([]store.ReviewWorker, error) {
-	var afterUser, afterWorker any
+	args := []any{start, upper.UserID, upper.WorkerID}
 	if after != nil {
-		afterUser, afterWorker = after.UserID, after.WorkerID
+		args = append(args, after.UserID, after.WorkerID)
 	}
-	rows, err := s.db.Query(ctx, reviewWorkersSQL, start, upper.UserID, upper.WorkerID, afterUser, afterWorker, limit)
+	args = append(args, limit)
+	rows, err := s.db.Query(ctx, reviewWorkersSQL(after != nil), args...)
 	if err != nil {
 		return nil, pg.QueryError("list review workers", err)
 	}
@@ -97,15 +105,37 @@ func (s *DAO) ReviewRepository(ctx context.Context, projectID string) (*int64, e
 	return id, nil
 }
 
-const reviewOpenPRsSQL = `SELECT p.number,p.github_id,p.state,(a.found IS NOT NULL)
+const reviewOpenPRsBaseSQL = `SELECT p.number,p.github_id,p.state,(a.found IS NOT NULL)
         FROM project_pull_requests p LEFT JOIN LATERAL (
             SELECT 1 AS found FROM project_pr_review_assignments a
             WHERE a.user_id=$1 AND a.project_id=p.project_id AND a.repository_id=p.repository_id AND a.github_pr_id=p.github_id LIMIT 1
         ) a ON true
-        WHERE p.project_id=$2 AND p.repository_id=$3 AND p.state='open' AND ($4::bigint IS NULL OR p.number<=$4) AND ($5::bigint IS NULL OR p.number<$5) ORDER BY p.number DESC LIMIT $6`
+        WHERE p.project_id=$2 AND p.repository_id=$3 AND p.state='open'`
+
+func reviewOpenPRsSQL(hasUpper, hasAfter bool) string {
+	query := reviewOpenPRsBaseSQL
+	n := 4
+	if hasUpper {
+		query += fmt.Sprintf(" AND p.number<=$%d", n)
+		n++
+	}
+	if hasAfter {
+		query += fmt.Sprintf(" AND p.number<$%d", n)
+		n++
+	}
+	return query + fmt.Sprintf(" ORDER BY p.number DESC LIMIT $%d", n)
+}
 
 func (s *DAO) ReviewOpenPRs(ctx context.Context, userID, projectID string, repositoryID int64, upper, after *int64, limit int) ([]store.ReviewPR, error) {
-	rows, err := s.db.Query(ctx, reviewOpenPRsSQL, userID, projectID, repositoryID, upper, after, limit)
+	args := []any{userID, projectID, repositoryID}
+	if upper != nil {
+		args = append(args, *upper)
+	}
+	if after != nil {
+		args = append(args, *after)
+	}
+	args = append(args, limit)
+	rows, err := s.db.Query(ctx, reviewOpenPRsSQL(upper != nil, after != nil), args...)
 	if err != nil {
 		return nil, pg.QueryError("list review PRs", err)
 	}
