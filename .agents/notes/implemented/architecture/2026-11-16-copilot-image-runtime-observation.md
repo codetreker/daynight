@@ -50,7 +50,7 @@ unchanged declaration must not create a different qualification identity.
 The endpoint digest identifies the native-declared visible route configuration.
 It does not prove the final HTTP destination, a hidden backend deployment, model
 weights or an internal image-processing algorithm. Observation alone does not
-grant qualification; the production registry remains empty until the exact
+grant qualification; the production registry has no Copilot row until the exact
 combination has its required input, receipt, history and product evidence.
 
 ## Alternatives
