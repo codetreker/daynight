@@ -30,6 +30,12 @@ func transferInput(w http.ResponseWriter, r *http.Request) (coreproject.Transfer
 	if _, err := httpx.QueryValues(r); err != nil {
 		return input, err
 	}
+	confirmed, err := goalDependencyRemovalConfirmation(r.Header)
+	if err != nil {
+		httpx.CloseUnreadBody(w, r)
+		return input, err
+	}
+	input.ConfirmGoalDependencyRemoval = confirmed
 	fields, err := httpx.DecodeObject(w, r, "ownership", "targetTeam", "expectedUserId")
 	if err != nil {
 		return input, err

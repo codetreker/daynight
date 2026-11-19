@@ -36,6 +36,82 @@ const install = async (page: Page, name = 'Example project') => {
 
 const section = (page: Page, name: string) => page.getByRole('navigation', { name: 'Project settings sections' }).getByRole('link', { name });
 
+const expectSelectedVisible = async (page: Page) => {
+  await expect.poll(() => page.locator('.project-settings-tabs').evaluate(element => {
+    const nav = element.getBoundingClientRect(), link = element.querySelector('[aria-current="page"]')!.getBoundingClientRect();
+    const left = nav.left + element.clientLeft + 4, right = left + element.clientWidth - 8;
+    return getComputedStyle(element).flexDirection === 'column'
+      ? element.scrollLeft === 0
+      : link.width > right - left ? Math.abs(link.left - left) <= 1 : link.left >= left - 1 && link.right <= right + 1;
+  })).toBe(true);
+};
+
+test('keeps the current settings link visible through resizing and language changes', async ({ page }) => {
+  const writes = await install(page);
+  await page.setViewportSize({ width: 1360, height: 720 });
+  await page.goto(`${base}?tab=members`);
+  await expect(section(page, 'Members & invitations')).toHaveAttribute('aria-current', 'page');
+  for (const locale of ['en', 'zh-CN']) {
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    for (const width of [320, 375, 390, 740, 741, 768, 1360]) {
+      await page.setViewportSize({ width, height: 720 });
+      await expectSelectedVisible(page);
+      await expect(page.locator('.project-settings-tabs [aria-current="page"]')).toHaveAttribute('href', `${base}?tab=members`);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    }
+  }
+  await page.setViewportSize({ width: 320, height: 720 });
+  await expectSelectedVisible(page);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  await expectSelectedVisible(page);
+  expect(writes).toEqual([]);
+});
+
+test('responds to container and link geometry without changing focus or the selected section', async ({ page }) => {
+  await install(page); await page.setViewportSize({ width: 390, height: 720 });
+  await page.goto(`${base}?tab=members`);
+  const search = page.getByRole('searchbox', { name: 'Search and add members' });
+  await expect(search).toBeVisible(); await search.focus();
+  const nav = page.locator('.project-settings-tabs');
+  await expectSelectedVisible(page);
+  // A parent layout can narrow the navigation without a viewport resize.
+  await nav.evaluate(element => { element.style.width = '200px'; });
+  await expectSelectedVisible(page); await expect(search).toBeFocused();
+  // Earlier links can grow when fonts or status text change, moving the selected link.
+  await nav.locator('a').first().evaluate(element => { element.style.paddingInline = '80px'; });
+  await expectSelectedVisible(page); await expect(search).toBeFocused();
+  await nav.evaluate(element => { element.style.width = '100px'; });
+  await expectSelectedVisible(page);
+  await nav.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+  const manualPosition = await nav.evaluate(element => element.scrollLeft);
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await nav.evaluate(element => element.scrollLeft)).toBe(manualPosition);
+  await expect(search).toBeFocused();
+  await nav.locator('[aria-current="page"]').dispatchEvent('click');
+  await expectSelectedVisible(page);
+  await expect(page).toHaveURL(`${base}?tab=members`);
+});
+
+test('reveals changed status text while unchanged rerenders preserve manual navigation scrolling', async ({ page }) => {
+  const writes = await install(page); await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto(`${base}?tab=github`);
+  const interval = page.getByLabel('Poll interval'); await expect(interval).toHaveValue('5');
+  await expectSelectedVisible(page);
+  await interval.fill('0');
+  await expect(section(page, 'GitHub integration')).toContainText('Unsaved · Needs attention');
+  await expectSelectedVisible(page); await expect(interval).toBeFocused();
+  const nav = page.locator('.project-settings-tabs');
+  await nav.evaluate(element => { element.scrollLeft = 0; });
+  const y = await page.evaluate(() => window.scrollY);
+  await interval.fill('-1');
+  await expect(interval).toHaveValue('-1');
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await nav.evaluate(element => element.scrollLeft)).toBe(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(y);
+  await expect(interval).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
 test('preserves independent drafts and history without issuing writes', async ({ page }) => {
   const writes = await install(page); await page.goto(base);
   const threshold = page.getByLabel('Alert threshold'); await expect(threshold).toHaveValue('60'); await threshold.fill('75');
@@ -210,3 +286,44 @@ test('project members without administrator access do not see search', async ({ 
   await expect(page.getByText('Project administrators manage members and invitations.', { exact: false })).toBeVisible();
   await expect(page.getByRole('searchbox', { name: 'Search and add members' })).toHaveCount(0);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) for (const role of ['admin', 'member'] as const) {
+  test(`project management headings and controls at ${width}px (${locale}, ${role})`, async ({ page }) => {
+    const writes = await install(page);
+    if (role === 'member') {
+      const memberAccess = { ...access, effectiveRole: 'member', teamRole: null, canTransfer: false, directGrant: { ...access.directGrant, role: 'member' } };
+      await page.route(`**/api/v1/projects/${projectId}/access`, route => route.fulfill({ status: 200, body: stringifyWireJson(memberAccess), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } }));
+    }
+    await page.route(`**/api/v1/projects/${projectId}/deletion-preview`, route => route.fulfill({ status: 200, body: stringifyWireJson({ observedAt: time, project: { id: projectId, name: project.name, repoUrl: project.repoUrl, ownerTeam: team }, summary: { taskCount: 2, unfinishedTaskCount: 1, attachmentCount: 3 }, activeClaims: [], nextCursor: null }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } }));
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto(`${base}?tab=management`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const zh = locale === 'zh-CN';
+    const owner = page.getByRole('region', { name: zh ? '项目归属' : 'Project ownership' });
+    const deletion = page.getByRole('region', { name: zh ? '删除项目' : 'Delete project' });
+    for (const panel of [owner, deletion]) {
+      await expect(panel).toBeVisible();
+      await expect(panel.locator('.panel-heading h2')).toHaveCount(1);
+      await expect(panel.locator('.panel-heading p')).toHaveCount(0);
+    }
+    await expect(owner.getByText(teamId)).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (role === 'member') {
+      await expect(owner.getByText(zh ? '只有所属 Team 的 admin 可以转移项目。' : 'Only an admin of the owner Team can transfer this project.')).toBeVisible();
+      await expect(owner.getByRole('button', { name: zh ? '转移项目' : 'Transfer project' })).toHaveCount(0);
+      await expect(deletion.getByText(zh ? '只有所属 Team 的 admin 可以删除项目。' : 'Only an admin of the owner Team can delete this project.')).toBeVisible();
+      await expect(deletion.getByRole('button', { name: zh ? '删除项目' : 'Delete project' })).toBeDisabled();
+    } else {
+      await owner.getByRole('button', { name: zh ? '转移项目' : 'Transfer project' }).click();
+      const transfer = page.getByRole('dialog', { name: zh ? '转移项目' : 'Transfer project' });
+      await expect(transfer.getByLabel(zh ? '目标 Team ID 或链接' : 'Team ID or link')).toBeVisible();
+      await transfer.getByRole('button', { name: zh ? '取消' : 'Cancel' }).click();
+      await deletion.getByRole('button', { name: zh ? '删除项目' : 'Delete project' }).click();
+      const dialog = page.getByRole('dialog', { name: zh ? '删除此项目？' : 'Delete this project?' });
+      await expect(dialog.getByText(zh ? '项目及其全部任务、依赖、Steps、讨论、附件和 Session 将退出访问；项目授权和旧邀请不再生效。' : 'The project and all its tasks, dependencies, Steps, discussions, attachments and Sessions will become inaccessible. Project grants and old invitations will no longer grant access.')).toBeVisible();
+      await expect(dialog.getByText(zh ? '服务端保留历史数据和文件，产品内没有恢复入口。Git 仓库、PR、分支和本地文件不受影响。' : 'Historical data and files remain on the server; recovery is not available in the product. The Git repository, PRs, branches and local files are unaffected.')).toBeVisible();
+      await dialog.getByRole('button', { name: zh ? '取消' : 'Cancel' }).click();
+    }
+    expect(writes).toEqual([]);
+  });
+}

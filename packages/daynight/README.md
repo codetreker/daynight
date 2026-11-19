@@ -8,6 +8,15 @@ browser-connected native Controllers, and run a local GitHub PR reviewer
 through Copilot CLI. Both command names share configuration and behavior. Supported native platforms are Linux, Windows
 and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
+Claude Code is temporarily unsupported for managed Task Sessions, Test Sessions
+and assistants. Existing `claude` options and adapter code remain available,
+but initialization disconnect cleanup is not reliable on macOS. The ordinary
+SDK startup suite excludes that Claude disconnect case; passing CI does not
+certify Claude Code support. Restoring support requires fixing and reinstating
+the case with successful macOS validation. Other retained Claude tests provide
+regression coverage only. See the
+[support decision](../../.agents/notes/implemented/testing/2026-11-19-claude-support-suspension.md).
+
 See the [project overview](../../README.md) for the browser workspace and service,
 and the [development guide](../../docs/development.md) for source builds,
 validation, package versions and npm publication. The
@@ -161,8 +170,8 @@ daynight project
 daynight project create <name> [--repo <repo>] [--team <uuid|personal>] [--confirm]
 daynight project list [--json]
 daynight project show <project-id> [--json]
-daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]
-daynight project delete [--project <uuid>] [--confirm] [--json]
+daynight project transfer --to-team <uuid|same-service-link> --confirm [--project <uuid>] [--if-version <version>] [--json]
+daynight project delete --confirm [--project <uuid>] [--json]
 daynight tag list [--query <query>] [--limit <1-100>] [--cursor <cursor>] [--project <project-id>] [--json]
 daynight tag show <tag-id> [--project <project-id>] [--json]
 daynight tag create <name> [--color '#RRGGBB'] [--project <project-id>] [--json]
@@ -614,8 +623,10 @@ behavior and remaining task-command scope.
 `/teams/<uuid>` link. It resolves the explicit Project or current repository
 without changing its binding or default Team. Only the current owner Team admin
 can transfer; destination membership is not required. The preview identifies the
-source, destination and expected access before confirmation. `--confirm` skips
-the prompt but retains the preview's exact versions and identity checks. An
+source, destination and expected access on stderr. `--confirm` is required;
+an actual transfer permanently removes all Goal dependencies involving the
+Project, within and across Projects, and those relationships cannot be restored.
+The request retains the preview's exact versions and identity checks. An
 optional `--if-version` rejects a preview with a different ownership version.
 A successful receipt may report no remaining access. Conflicts require a fresh
 preview and decision; a lost receipt remains unknown even if a later read is 404.
@@ -625,8 +636,10 @@ Project grants and invitations are preserved.
 then reads the complete deletion preview. Only an administrator of the current
 owner Team can delete it. The Project becomes unavailable without a product
 recovery option; server history and files are retained. Active Worker claims
-block deletion. Interactive use requires the displayed JSON string literal of the
-Project name, even with `--confirm`; noninteractive use requires `--confirm`.
+block deletion. `--confirm` is required; interactive use also requires the
+displayed JSON string literal of the Project name. Deletion permanently removes
+all Goal dependencies involving the Project, within and across Projects, and
+those relationships cannot be restored.
 The preview is an observation, not a condition on the deletion. JSON output
 contains only the confirmed receipt; preview text goes to stderr. An unknown
 outcome is never automatically retried, and a later 404 cannot prove success.
@@ -1345,6 +1358,7 @@ mutation receipts retain their original reads and output.
 ```bash
 daynight task session current TASK --project PROJECT --json
 daynight task session list TASK --project PROJECT --limit 20 --json
+daynight task session list TASK --project PROJECT --directory-version 1 --json
 daynight task session show TASK SESSION --project PROJECT --json
 daynight task session read TASK SESSION --project PROJECT --json
 daynight task session read TASK SESSION --project PROJECT --before TOKEN --conversation --json
@@ -1359,6 +1373,16 @@ directory page with execution and archive facts, `currentBinding`, and
 Session's inspection, including its original fence, readable live/archive source
 and independent observation and send eligibility. A changed Task claim does not
 redirect a historical read.
+
+Default `list` preserves the legacy endpoint and JSON on old and new services.
+`--directory-version 1` selects the separate retention directory and requires
+the service's version-1 capability response. Its JSON retains `version`, exact
+string `graphVersion`, `observedAt`, and each original Session's archive state,
+retention reason and nullable expiry times. Text distinguishes pending archival
+and confirmed expiry. Keep `--directory-version 1` with its continuation cursor;
+legacy and versioned cursors are not interchangeable. A `reset_required` result
+requires restarting the directory without a cursor. Unsupported responses,
+permission failures and expired cursors never trigger a legacy fallback.
 
 `read` returns the latest 20 timeline entries by default, with a 1–200 limit.
 Entries include tools and interactions, and are ordered oldest to newest within
@@ -1381,7 +1405,9 @@ contains references only; these commands do not emit media bytes or base64.
 Valid archives remain readable while the original Worker is offline. `coverage`
 preserves visible gaps in original entries, resources or archives; `complete`
 does not prove exhaustive native history capture. Pending/unavailable history,
-corrupt archives and empty history are distinct results. Every page and block is reauthorized.
+corrupt archives, expired content and empty history are distinct results. Expired
+content keeps the original `history_unavailable` error with an explicit expiry
+diagnostic; it never redirects to another Session. Every page and block is reauthorized.
 `reset_required` rejects changed epochs or live/archive sources;
 `content_changed` rejects changed entry content. Discard the old continuation
 and explicitly read the same Session again. The CLI never switches targets or
@@ -1884,6 +1910,16 @@ the same Bot, Session, frozen role and native identity when verified stop eviden
 permits recovery. Missing native identity or uncertain stopping remains an error,
 without creating a blank replacement or resending a previous request. Bots use Web sessions and do not consume task
 `maxConcurrent` slots; their processes still consume machine resources.
+
+New Claude Bots with dedicated storage mirror their native root transcript in
+`bots/<botId>/native/claude/recovery.sqlite`, while retaining the original
+account configuration directory. Recovery requires the verified SDK 0.3.247 /
+CLI 2.1.247 combination, an intact protected turn and proof that the original
+execution stopped. Missing or conflicting records and unknown operation results
+fail explicitly. This profile rejects image input and overlapping turns;
+compaction and additional native resource dependencies are not verified.
+Claude's temporary support suspension remains in effect. See the
+[recovery design](../../docs/design/worker-bot-runtime.md#claude-原生恢复点).
 
 The assistant receives additional native role instructions and uses the normal
 Daynight CLI for queries and authorized operations. Its capabilities follow CLI
@@ -2870,7 +2906,8 @@ recovery ledger. The
 
 ## Web worker sessions
 
-Select Agent `codex`, `claude` or `copilot` in My Workers → Configuration. Before enrollment, omitting `worker.agentControlMode`
+Select Agent `codex` or `copilot` in My Workers → Configuration. The retained
+`claude` option is temporarily unsupported. Before enrollment, omitting `worker.agentControlMode`
 uses `web` for bootstrap. A saved explicit `herdr` target is not converted or
 applied. The service freezes the mode on each claim; existing claim identity is
 not changed by configuration updates.
@@ -3031,11 +3068,11 @@ cannot be combined with standalone prompt or provider options.
 ## Standalone Controller sessions
 
 Start a Test Session in the current directory with the configured Daynight
-service:
+service. Claude Code Test Sessions are temporarily unsupported; the retained
+`claude` commands do not establish a supported startup or cleanup guarantee.
 
 ```bash
 daynight controller codex
-daynight controller claude
 daynight controller copilot
 daynight controller codex "Explain this project"
 ```
@@ -3046,6 +3083,17 @@ options use their native names where the adapter supports them; unsupported
 options are rejected rather than ignored. Use the provider subcommand's help
 for its supported options. These commands do not implement a native TUI or change
 `worker.agentControlMode`.
+
+Before registering a session, standalone Codex resolves its tool from the current
+directory and captured PATH. Windows Copilot resolves the bundled Web runtime
+when it is a direct native executable. The new private launch ticket freezes the
+command, interpreter and artifact identities; the Provider verifies them again
+before spawning. Resolution failure creates no Test Session or Controller
+credential, and does not fall back to another installation. These selections do
+not read Worker tool targets or mutate Worker state. Copilot on other platforms
+or requiring runtime materialization retains its existing read-authority path;
+Claude retains its existing launch path. Tool identity alone grants neither model
+validation nor image qualification.
 
 The command prints the Test Session URL and remains in the foreground. Sign in
 to Daynight as the account that started it; the URL itself grants no access.
@@ -3092,7 +3140,6 @@ Resume a stopped Test Session with its native context:
 
 ```bash
 daynight controller codex resume
-daynight controller claude resume <test-session-id>
 daynight controller copilot resume <test-session-id>
 ```
 
@@ -3103,6 +3150,16 @@ Session URL with the same native conversation. It restores history without
 replaying the original prompt or unknown operations. The old URL stays archived.
 An active or uncertain native writer is refused; resume does not take control
 of another process.
+
+Resume verifies and retains an existing inline or ticket-bound sidecar tool
+selection. Missing or changed artifacts and invalid bindings are refused rather
+than replaced through current PATH discovery. For a legacy ticket with no tool
+binding, the supported standalone path resolves and freezes the actual selection
+only in the new ticket; the old ticket and sidecars remain unchanged. This proves
+the new launch, not the old executable. Native arguments and home remain those of
+the original session, and resume does not set a new model or run an extra model
+probe. Existing materialized selections still require their original trusted
+runtime directory verification.
 
 Standalone sessions do not create tasks, claims or worktrees, and do not provide
 a background daemon, automatic recovery scheduler or arbitrary native-session

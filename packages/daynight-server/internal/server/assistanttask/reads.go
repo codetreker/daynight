@@ -14,7 +14,7 @@ func readPage(r *http.Request, allowed ...string) (core.PageInput, error) {
 		return core.PageInput{}, err
 	}
 	query := r.URL.Query()
-	result := core.PageInput{Limit: page.Limit, State: query.Get("state"), ItemID: query.Get("itemId"), TargetBotID: query.Get("targetBotId")}
+	result := core.PageInput{Limit: page.Limit, State: query.Get("state"), ItemID: query.Get("itemId"), TargetBotID: query.Get("targetBotId"), Type: query.Get("type"), ExcludeType: query.Get("excludeType")}
 	if page.Cursor != nil {
 		result.Cursor = *page.Cursor
 	}
@@ -130,7 +130,7 @@ func (h *handler) records(_ http.ResponseWriter, r *http.Request, a core.Actor, 
 }
 
 func (h *handler) events(_ http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
-	page, err := readPage(r, "state", "targetBotId")
+	page, err := readPage(r, "state", "targetBotId", "type", "excludeType")
 	if err != nil {
 		return nil, err
 	}

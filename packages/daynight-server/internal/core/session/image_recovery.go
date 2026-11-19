@@ -12,8 +12,8 @@ func (s *Engine) SetMediaLeaseRecovery(recover func(context.Context) error) {
 	s.recoverMediaLeasesRun = recover
 }
 
-// RecoverMediaLeases reclaims only owners proven to have exited by the same
-// exact filesystem gate acquired before their durable lease was inserted.
+// RecoverMediaLeases reclaims durable leases after acquiring the exact storage
+// gate held by each previous owner.
 // A busy gate is left intact. The release callback must confirm its transaction
 // before returning; unknown completion and gate-close failures remain errors.
 func (s *Engine) RecoverMediaLeases(ctx context.Context, leases []store.SessionResourceLease, release func(context.Context, string, string) error) error {
@@ -25,7 +25,9 @@ func (s *Engine) RecoverMediaLeases(ctx context.Context, leases []store.SessionR
 		if err != nil {
 			return err
 		}
-		err = release(ctx, lease.SessionID, lease.ID)
+		gateCtx, cancelGate := filestorage.GateContext(ctx, gate)
+		err = release(gateCtx, lease.SessionID, lease.ID)
+		cancelGate()
 		if err = errors.Join(err, gate.Close()); err != nil {
 			return err
 		}

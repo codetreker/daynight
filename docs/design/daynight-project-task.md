@@ -170,6 +170,15 @@ CLI 登录/退出在锁内共同核对 origin/token，保留其他能力已完�
 服务 401 给出 `daynight login` 指导，不自动登录、匿名回退或重放写请求；403/404/409、精确 int64、
 分页、二进制输出与既有预算保持。凭据不写仓库关联，命令定义、登录实现和业务 HTTP 分工独立。
 
+在设置了 `DAYNIGHT_BOT_ID` 的助手环境中（Worker 为每个助手设置该变量，见
+[Bot 角色环境](bot-role-environment.md)），`daynight task` 在请求前按助手任务命令相同的规则
+校验该值：必须是非零、规范小写的 UUID，否则以使用错误拒绝整个命令且不发送请求，不静默丢弃
+声明。合法值交给 `runServerCommand`，API 客户端只为 Task 创建、更新（含标签关联）、删除、状态与属性写入、
+认领完成，Step 的增删改、状态与移动，以及 Thread 发帖附加 `X-Daynight-Bot-Id`；读取、附件、
+标签定义和其他资源请求从不携带。服务端据此把操作者记为 Bot，供
+[助手任务收件箱](assistant-task-inbox.md)过滤助手自身的写入。Bot 身份是同一用户内的协作声明，
+不是安全边界。请求头拼装与[助手任务 CLI](assistant-task-cli.md)共用 `api/bot-identity.ts`。
+
 完成参数分派后，`runServerCommand` 在首次配置读取前创建取消控制器及 `Operation`，
 配置与业务共享五分钟总期限。业务预算覆盖配置读取、Git 定位、缓存验证、全部分页、本地锁、
 文件准备、HTTP 和结果渲染。所有步骤共享剩余预算，不能因翻页或重新发现重置。每个请求期限为 30 秒与命令剩余期限的较小值，覆盖连接和
@@ -384,8 +393,8 @@ flowchart TD
 | `project create <name> [--repo <repo>] [--team <uuid\|personal>] [--confirm]` | 读取 `/me` 并解析目标 Team；完整 `GET /api/v1/projects` 预检按归属与仓库匹配；仅零匹配时验证 Team 成员资格，确认后提交 `teamId`、真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
-| `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
-| `project delete` | 使用相同的中性 Project 选择，完整读取 `GET /api/v1/projects/{id}/deletion-preview`，确认后最多一次无条件 `DELETE /api/v1/projects/{id}` |
+| `project transfer` | 要求 `--confirm`，确定 Project 与 `/me`，读取目标预览，在 stderr 展示清理影响后提交 `POST /api/v1/projects/{id}/transfer` |
+| `project delete` | 要求 `--confirm`，使用相同的中性 Project 选择，完整读取 `GET /api/v1/projects/{id}/deletion-preview`，在 stderr 展示清理影响，交互时核对名称后最多一次无条件 `DELETE /api/v1/projects/{id}` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
 | `team default set <uuid\|personal>` | `GET /api/v1/me` 与指定 Team；验证成员资格并确认后更新本地配置，不提交远程 mutation |
@@ -482,7 +491,8 @@ request ID 和读取当前状态的提示，避免递归格式化原始响应及
 
 项目转移按现有仓库解析规则只读选择 Project，不持久化绑定，也不解析默认 Team。
 目标解析器只接受规范 UUID 或当前 origin 的精确 Team 页面链接。预览绑定当前主体，
-显示来源、目标与预期角色；确认后提交预览的 ownership 和目标版本。typed API 校验
+显示来源、目标与预期角色；提交预览的 ownership 和目标版本。转移和删除的实际写请求
+携带 `Daynight-Confirm-Goal-Dependency-Removal: true`，预览请求不携带。typed API 校验
 主体、目标和回执，直接消费提交结果，包括失权的 null access；未知结果不能由后续
 读取恢复。服务事务和权限机制由[鉴权架构](daynight-auth.md#数据与并发)拥有。
 

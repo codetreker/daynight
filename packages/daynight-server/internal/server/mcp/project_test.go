@@ -230,7 +230,7 @@ func TestProjectToolHTTPDiscoveryAndInputs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	listing, err := client.ListTools(ctx, nil)
-	if err != nil || len(listing.Tools) != 6 {
+	if err != nil || len(listing.Tools) != 7 {
 		t.Fatalf("tools: %+v %v", listing, err)
 	}
 	call := func(name string, args any) *sdk.CallToolResult {
@@ -283,7 +283,7 @@ func TestProjectRegistrationRejectsMissingOrCorruptToolDefinitions(t *testing.T)
 	if err := json.Unmarshal(original, &tools); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"project_create", "project_transfer", "project_list", "project_resolve", "project_show"} {
+	for _, name := range []string{"project_create", "project_transfer_preview", "project_transfer", "project_list", "project_resolve", "project_show"} {
 		t.Run(name, func(t *testing.T) {
 			var filtered []map[string]any
 			for _, tool := range tools {
@@ -666,7 +666,7 @@ func TestMCPOrganizationAdapterHostCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"project_create": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
+		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
 		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true, "team_list": true, "team_show": true, "team_projects": true, "team_member_list": true, "team_member_set_role": true, "team_member_remove": true,
 		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true, "invitation_inspect": true, "invitation_accept": true,
 	}

@@ -57,9 +57,9 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 			projection = `(to_jsonb(t)-'last_used_at')`
 		}
 		if table == "projects" {
-			// Later migrations add lifecycle, catalog and repository identity fields.
+			// Later migrations add lifecycle, catalog and repository fields.
 			// Compare original columns and check lifecycle after the full upgrade.
-			projection = `(to_jsonb(t)-'deleted_at'-'tag_catalog_epoch'-'repository_identity')`
+			projection = `(to_jsonb(t)-'deleted_at'-'tag_catalog_epoch'-'repository_identity'-'repository_version')`
 		}
 		if err := s.Pool.QueryRow(context.Background(), `SELECT coalesce(jsonb_agg(`+projection+` ORDER BY `+projection+`::text),'[]'::jsonb)::text FROM `+table+` t`).Scan(&value); err != nil {
 			t.Fatal(err)
@@ -107,6 +107,11 @@ func TestPersonalOwnershipMigrationPreservesFactsAndSequence(t *testing.T) {
 			var allLive bool
 			if err := s.Pool.QueryRow(ctx, `SELECT bool_and(deleted_at IS NULL) FROM projects`).Scan(&allLive); err != nil || !allLive {
 				t.Fatalf("existing projects are not live after lifecycle migration: %v %v", allLive, err)
+			}
+			var projectCount int
+			var versionsValid bool
+			if err := s.Pool.QueryRow(ctx, `SELECT count(*),coalesce(bool_and(repository_version=1),false) FROM projects`).Scan(&projectCount, &versionsValid); err != nil || projectCount != 2 || !versionsValid {
+				t.Fatalf("migrated repository versions: count=%d valid=%v error=%v", projectCount, versionsValid, err)
 			}
 			var catalogValid bool
 			if err := s.Pool.QueryRow(ctx, `SELECT to_regclass('project_member_versions') IS NULL

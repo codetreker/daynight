@@ -25,7 +25,7 @@
 .pr-row { display: flex; width: 100%; min-width: 0; gap: 12px; align-items: flex-start; text-align: left; background: #fafbfc; border: 1px solid #d5dce5; border-radius: 8px; padding: 10px 15px; }
 .pr-row:hover { background: #f0f3f7; }
 .pr-row:focus-visible { outline: 3px solid #344054; outline-offset: -3px; }
-.pr-status-icon { flex: none; margin-top: 1px; color: #357558; }
+.pr-status-icon { flex: none; align-self: center; color: #357558; }
 .pr-status-icon.draft { color: #657187; }
 .pr-status-icon.merged { color: #79519f; }
 .pr-status-icon.closed { color: #9c5062; }
@@ -58,3 +58,8 @@
 @media (max-width: 740px) { .pr-chevron, .pr-row-time { display: none; } .pr-toolbar { gap: 9px; } .pr-search-wrap { max-width: none; flex: 1; } .pr-row-branch code { max-width: 245px; } .pr-heading { margin-bottom: 16px; } .pr-sync-status { font-size: 10px; line-height: 1.8; margin-bottom: 15px; } }
 @media (max-width: 800px), (pointer: coarse) { .pr-toolbar { flex-wrap: wrap; } .pr-search-wrap { flex: 1 1 100%; max-width: none; } .pr-search-wrap input { min-height: 44px; font-size: 16px; } .pr-search-wrap svg { top: 15px; } }
 @media (max-width: 480px) { .pr-toolbar { flex-wrap: wrap; } .pr-filter-group { flex-basis: 100%; flex-wrap: wrap; gap: 9px; } .pr-filter-wrap { width: 100%; } .pr-search-wrap { flex-basis: 100%; } .pr-status-icon { width: 15px; height: 18px; } .pr-row-branch code { max-width: 132px; font-size: 9px; } .pr-heading { gap: 10px; } .pr-heading .button { padding: 7px 9px; } .pr-pagination { gap: 10px; align-items: stretch; } .pr-pagination .list-pagination-controls { width: 100%; justify-content: space-between; } .pr-empty-state { padding: 30px 16px; min-height: 240px; } .pr-empty-state h3 { font-size: 12px; } }
+
+.pr-source-wrap {
+  max-width: 100%;
+  min-width: 0;
+}

@@ -1,32 +1,61 @@
 # 项目 GitHub PR 读取
 
-Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配置及持久化同步事实，通过 `GET /api/v1/projects/{projectId}/pull-requests` 读取摘要页，通过 `GET /api/v1/projects/{projectId}/pull-requests/{number}` 读取完整详情，通过 `GET /api/v1/projects/{projectId}/pull-request-authors` 读取作者目录，并通过 `GET /api/v1/projects/{projectId}/pull-request-statistics` 读取项目每日统计。读取不访问 GitHub；服务未配置、同步关闭或连接断开时仍可读取保留的数据。没有连接行时返回虚拟未连接状态，不创建存储行。部署配置决定 `serviceAvailable`，与连接和观测版本无关；必填 boolean `syncEnabled` 表示 Project 保存的同步意愿，不随服务禁用或访问撤权自动改写。
+## 读取边界与来源
 
-项目读取权限、连接、计数和页面或详情在同一只读快照内验证与读取。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要不包含 description，详情保留原始 Markdown，空字符串和 null 不合并。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
+Project 成员通过以下只读 HTTP 接口读取 Daynight 保存的 GitHub 事实。读取不访问 GitHub；服务未配置、同步关闭或连接断开时仍可读取保留的数据。没有连接行时返回虚拟未连接状态，不创建存储行。
 
-列表按 number 降序读取，支持 `state=active|closed|merged|all`（默认 active）、字面大小写不敏感的标题或编号子串 `q`（最多 1024 UTF-8 bytes）、`limit`（默认 20，范围 1–100）、可选 `authorId` 和 cursor。`authorId` 必须是正 int64 规范十进制字符串，省略表示全部作者；不存在的合法 ID 返回实际零匹配。作者、状态和查询在分页前组合，`total` 统计完整组合，不受页锚点和上界限制。
+| 路由（前缀为 `/api/v1/projects/{projectId}`） | 内容 |
+| --- | --- |
+| `GET /github` | 当前连接配置及持久化同步事实 |
+| `GET /pull-request-repositories` | 项目曾验证的 PR 仓库来源目录 |
+| `GET /pull-requests` | 所选来源的摘要页及计数 |
+| `GET /pull-requests/{number}` | 所选来源的完整详情 |
+| `GET /pull-request-authors` | 所选来源的作者目录 |
+| `GET /pull-request-statistics` | 所选来源的每日统计 |
 
-省略作者时响应保持原有字段及全项目 `counts`；指定作者时 `counts` 统计该作者各状态，不受状态或查询限制，并返回相同的 `authorId` 和全项目 `projectTotal`，后者包括缺失作者的记录。所有数字均为十进制字符串。无作者请求使用严格八字段 v1 cursor；具体作者使用包含 `authorId` 的严格九字段 v2 cursor。游标绑定 Project、作者、条件、页大小、首次读取上界、锚点和方向，条件不匹配或格式错误予以拒绝。后续新编号不会插入已有页；已有记录变化仍可改变页面和计数，空锚定页保留返回路径。
+列表、详情、作者和统计接受可选 `repositoryId`，必须是正 int64 规范十进制字符串。显式来源必须属于该项目；不存在或属于其他项目均返回 `not_found`。省略来源始终读取迁移或首次连接时固定的旧来源，不随当前连接变化。没有固定旧来源时返回空集合或详情不存在。项目读取权限、来源归属、连接、计数和页面或详情在同一只读快照内验证与读取。
 
-作者目录覆盖项目全部已保存 PR 中的作者，按稳定 GitHub ID 去重；同一 ID 取 `observed_at`、`revision`、`number` 依次降序的最新保存登录名。完整规范集合先标记不区分大小写的同名，再应用字面子串 `q`（默认空、最多 1024 UTF-8 bytes）、`limit`（默认 50、范围 1–100）和可选 cursor。响应包含十进制字符串 `revision` 和作者 `id`、`login`、`loginAmbiguous` 及可空 `nextCursor`，没有总数。SQL 按 C 排序键和 ID 进行 keyset 分页，只返回有界目录页；生成目录仍需检查项目范围的保存记录，响应有界不代表查询成本固定。游标绑定 Project、查询、页大小、revision 和最后的排序键；格式或请求不匹配返回 `invalid_input`，同一读取快照中的 revision 变化返回 `resource_conflict`，调用方须从头读取。目录不读取正文或访问 GitHub，权限与保存事实使用同一快照；错误日志不记录查询、游标或作者内容。
+显式来源的列表、作者和统计响应包含 `repository:{repositoryId,fullName}`，即该来源最后验证的身份。省略来源时省略这个字段，保持旧响应结构。PR 摘要及详情的 `base.repositoryId` 与 `base.repositoryFullName` 始终来自记录所属来源。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要不包含 description，详情保留原始 Markdown，空字符串和 null 不合并。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
 
-统计接口接受唯一的 `endDate`、`window` 和可选 `authorId`。`endDate` 是严格的四位年份 `YYYY-MM-DD`；以其为末日的 30 个日期均须处于该范围。原始查询最多 4096 bytes。`window` 由 2–64 个逗号分隔的 `<dateIndex>@<startMillis>` 组成，日期编号为 0–29 或代表窗口外的 `-`，时间为规范有符号十进制 Unix 毫秒。边界严格递增，末项为 `-`，相邻编号不同，至少一个有效日期；各边界和日期段均限制在对应 UTC 日期范围外各 24 小时之内。每段右端由下一个边界确定，半开区间允许同一日期多段或缺失日期。调用方提供浏览器本地日期对应的 UTC 区间，服务端不依赖自己的时区数据。
+## 来源目录
 
-响应包含 `projectId`、`endDate`、`revision`、`projectTotal`、`availability`、`hasAuthors` 和 30 项 `daily`；指定作者时返回 `authorId`、该 ID 最新保存登录名 `author`（不存在时为 null）及 30 项 `authorDaily`，未指定时后三者均为 null。计数、ID 和 revision 均为精确十进制字符串。总数包括窗口外和缺失作者的记录；日桶以 GitHub 创建时间计算，不连接任务或访问 GitHub。项目权限、连接事实、聚合和作者登录名属于同一只读快照。非空保存记录优先为 `ready`；空集合区分 `not_connected`、`initializing`、确认空的 `ready` 和 `no_saved_data`。PostgreSQL 按项目扫描并使用 `width_bucket` 聚合，最多返回 30 个日期桶及一个窗口外桶；最新作者按保存观测、revision 和 PR number 降序选择。查询沿请求 context 取消，日志不记录查询内容。
+来源目录接受 `limit`（默认 100、范围 1–100）和可选 `cursor`，返回 `{currentRepositoryId,items:[{repositoryId,fullName}],nextCursor}`。当前仓库 ID 和 nextCursor 可为 null，items 始终是数组。当前仓库 ID 表达连接中保存的仓库身份，普通断开保留的身份仍可返回；来源目录独立保留历史。ID 以精确十进制字符串返回。目录按 repository ID 升序进行 keyset 分页，游标严格绑定 Project ID 和最后返回的 repository ID，格式或项目不匹配返回 `invalid_input`。目录变化不冻结集合，后续请求读取其快照中锚点之后的来源。
 
-连接状态、初始化、渠道运行标记和错误来自已保存事实；完整成功属于特定 generation，旧 generation 的成功不能证明新代次完成。同步关闭时 `initializing`、poll 和 webhook 的 `running` 为 false，`poll.nextAttemptAt` 为 null；历史时间和错误仍保留。读取不启动连接或后台同步。存储字段与快照约束见 [GitHub PR 存储](github-pr-storage.md)。
+## 列表与详情
+
+列表按 number 降序读取，支持 `state=active|closed|merged|all`（默认 active）、字面大小写不敏感的标题或编号子串 `q`（最多 1024 UTF-8 bytes）、`limit`（默认 20，范围 1–100）、可选 `authorId` 和 cursor。`authorId` 必须是正 int64 规范十进制字符串，省略表示全部作者；不存在的合法 ID 返回实际零匹配。来源、作者、状态和查询在分页前组合，`total` 统计完整组合，不受页锚点和上界限制。
+
+省略作者时响应保持原有字段及来源内全部作者的 `counts`；指定作者时 `counts` 统计该作者各状态，不受状态或查询限制，并返回相同的 `authorId` 和来源内的 `projectTotal`，后者包括缺失作者的记录。所有数字均为十进制字符串。省略来源的无作者请求使用严格八字段 v1 cursor；具体作者使用包含 `authorId` 的严格九字段 v2 cursor。显式来源使用 v3 cursor 并绑定 `repositoryId` 及可选作者。旧 v1/v2 仅接受于省略来源的固定旧来源请求；显式来源 cursor 不能用于另一来源或省略来源的请求。游标还绑定 Project、条件、页大小、首次读取上界、锚点和方向，条件不匹配或格式错误予以拒绝。后续新编号不会插入已有页；已有记录变化仍可改变页面和计数，空锚定页保留返回路径。
+
+详情以 `(Project ID, repository ID, number)` 读取。两个来源拥有同号 PR 时，各自保留 URL、标题、作者、正文和 base 仓库身份。详情路径中的 number 与可选 repositoryId 均严格解析，不从 URL 或当前连接猜测来源。
+
+## 作者目录
+
+作者目录覆盖所选来源全部已保存 PR 中的作者，按稳定 GitHub ID 去重；同一 ID 取 `observed_at`、`revision`、`number` 依次降序的最新保存登录名。完整规范集合先标记不区分大小写的同名，再应用字面子串 `q`（默认空、最多 1024 UTF-8 bytes）、`limit`（默认 50、范围 1–100）和可选 cursor。响应包含十进制字符串 `revision` 和作者 `id`、`login`、`loginAmbiguous` 及可空 `nextCursor`，没有总数。SQL 按 C 排序键和 ID 进行 keyset 分页，只返回有界目录页；生成目录仍需检查来源范围的保存记录，响应有界不代表查询成本固定。游标绑定 Project、查询、页大小、项目连接 revision 和最后的排序键；显式来源使用包含 repositoryId 的 v2，省略来源保留 v1，二者不能互用。格式或请求不匹配返回 `invalid_input`，同一读取快照中的 revision 变化返回 `resource_conflict`，调用方须从头读取。其他来源的同步仍可能推进项目 revision，使目录需要重读。目录不读取正文或访问 GitHub，错误日志不记录查询、游标或作者内容。
+
+## 统计与同步事实
+
+统计接口接受唯一的 `endDate`、`window`、可选 `authorId` 和 `repositoryId`。`endDate` 是严格的四位年份 `YYYY-MM-DD`；以其为末日的 30 个日期均须处于该范围。原始查询最多 4096 bytes。`window` 由 2–64 个逗号分隔的 `<dateIndex>@<startMillis>` 组成，日期编号为 0–29 或代表窗口外的 `-`，时间为规范有符号十进制 Unix 毫秒。边界严格递增，末项为 `-`，相邻编号不同，至少一个有效日期；各边界和日期段均限制在对应 UTC 日期范围外各 24 小时之内。每段右端由下一个边界确定，半开区间允许同一日期多段或缺失日期。调用方提供浏览器本地日期对应的 UTC 区间，服务端不依赖自己的时区数据。
+
+响应包含 `projectId`、`endDate`、`revision`、`projectTotal`、`availability`、`hasAuthors` 和 30 项 `daily`；指定作者时返回 `authorId`、该 ID 最新保存登录名 `author`（不存在时为 null）及 30 项 `authorDaily`，未指定时后三者均为 null。总数包括窗口外和缺失作者的记录；日桶以 GitHub 创建时间计算，不连接任务或访问 GitHub。PostgreSQL 按项目和来源扫描并使用 `width_bucket` 聚合，最多返回 30 个日期桶及一个窗口外桶；最新作者按保存观测、revision 和 PR number 降序选择。查询沿请求 context 取消，日志不记录查询内容。
+
+非空保存记录优先为 `ready`；空集合区分 `not_connected`、`initializing`、确认空的 `ready` 和 `no_saved_data`。初始化及完整成功事实只有在所选来源与当前仓库身份相同时才参与判断，历史来源不能借用另一仓库的同步成功或初始化状态。部署配置决定连接接口的 `serviceAvailable`，与连接和观测版本无关；必填 boolean `syncEnabled` 表示 Project 保存的同步意愿，不随服务禁用或访问撤权自动改写。
+
+连接状态、渠道运行标记和错误来自已保存事实；完整成功属于特定 generation，旧 generation 的成功不能证明新代次完成。同步关闭时 `initializing`、poll 和 webhook 的 `running` 为 false，`poll.nextAttemptAt` 为 null；历史时间和错误仍保留。连接接口描述当前连接，历史来源的展示须对照来源身份。读取不启动连接或后台同步。存储字段与快照约束见 [GitHub PR 存储](github-pr-storage.md)。
 
 ## Web 工作区与列表
 
 Project 导航按“概览 → 任务列表 → PR 列表”排列，桌面纵向、手机横向。section 的类型、偏好和历史解码共同接受 `prs`，方向键、Home/End 按同一顺序导航。项目头部独立读取 Project；任务图的加载和失败只属于概览与任务面板，不阻断 PR 工作区。PR 工作区标题区包含标题、连接状态和刷新操作，同步信息独立呈现。
 
+项目页面读取完整分页来源目录，按当前有效来源默认选择；没有当前来源时选择可读历史。PR 工作区和统计页共享该选择，列表、详情、作者、统计及授权恢复读取显式携带 repositoryId，校验返回来源身份。切换来源丢弃旧来源的游标、作者与详情，保留状态和搜索；请求代次与取消阻止旧来源响应覆盖新观察。历史来源不呈现当前连接的同步状态。目录失败提供重试，空目录不回退到隐式旧来源。
+
 `features/pull-requests/` 拥有独立的状态与摘要 API、内存读取 session 和列表。工作区按 userId/projectId 保持挂载，不写 TaskSync 或 IndexedDB；切换 tab 通过 hidden/inert 和 active 暂停请求，保留筛选、游标页面、选中项和阅读位置。Project 独立读取资格撤销时取消请求并清空旧内容。列表或状态的权限拒绝清除当前 PR session 并要求 Project 权限复核；身份头不符进入现有身份撤销流程。
 
-PR 列表由独立圆角卡片组成，沿用任务列表的中性表面、间距和文字层级，但状态、图标与标签仍由 PR 模型定义。PR 局部样式负责卡片布局；列表容器宽度不超过 650px 时采用紧凑内边距和间距。标题和辅助信息可换行，分支在自身区域省略并保留完整提示与详情读取路径。原生行按钮保留键盘焦点和详情入口。
+PR 列表由独立圆角卡片组成，沿用任务列表的中性表面、间距和文字层级，但状态、图标与标签仍由 PR 模型定义。PR 局部样式负责卡片布局；状态图标单独相对整张卡片垂直居中，其他子项维持各自的对齐方式。列表容器宽度不超过 650px 时采用紧凑内边距和间距。标题和辅助信息可换行，分支在自身区域省略并保留完整提示与详情读取路径。原生行按钮保留键盘焦点和详情入口。
 
-默认 active 包含 Draft，支持 merged、closed、all、创建者单选和标题/编号查询，每次明确请求 6 条摘要。创建者以稳定 GitHub ID 选择，目录独立于 PR 条件读取；状态数量归属当前作者及 revision，结果和分页归属完整条件。改变作者立即清除旧条件页及数字并重置上界，保留状态、查询和详情；重选同一 ID 不翻页。项目是否有保存记录由 projectTotal 而非作者计数判断。状态筛选使用[公共原生选择组件](native-select.md)，创建者菜单使用 SelectTrigger 的 filter 密度、Task 焦点及响应式触控；状态、计数及权限禁用由工作区控制。计数和 PR 编号保留十进制字符串精度。页码和总页数只表达当前观察，前后导航使用服务端游标；记录变化导致锚定页为空时，仍保留服务端提供的上一页或下一页路径；任一游标存在时分页栏保持可见。首次同步且无保存记录时隐藏未知数字，完整成功空集合、未连接、读取失败和保留记录分别呈现。连接状态为 `connected` 时，标题旁以绿色纯文字显示随页面语言切换的“Connected”或“已连接”；连接事实独立于同步是否运行，其他连接状态及尚无状态时不显示。主要配置与同步提示最多显示一条，依次选择同步关闭、服务未配置、授权不可用、连接断开、已连接且初始化；健康或尚无状态时不显示主提示。关闭意愿优先于其他阻碍，完整健康信息仍可在设置页查看。提示保留设置入口，授权不可用使用 danger 样式。轮询和 Webhook 的诊断独立显示，历史错误与当前失败区分；状态或列表读取失败及新记录提醒也独立呈现。最近完整成功与渠道更新仍保留。开启新代次的初始化期间已有记录继续可读。刷新只重新读取保存数据，不启动同步；开关变化及后台核对保留列表、筛选、分页、详情、焦点和位置。
+默认 active 包含 Draft，支持 merged、closed、all、创建者单选和标题/编号查询，每次明确请求 6 条摘要。创建者以稳定 GitHub ID 选择，目录独立于 PR 条件读取；状态数量归属当前作者及 revision，结果和分页归属完整条件。改变作者立即清除旧条件页及数字并重置上界，保留状态、查询和详情；重选同一 ID 不翻页。项目是否有保存记录由 projectTotal 而非作者计数判断。状态筛选使用[公共原生选择组件](native-select.md)，创建者菜单使用 SelectTrigger 的 filter 密度、Task 焦点及响应式触控；状态、计数及权限禁用由工作区控制。计数和 PR 编号保留十进制字符串精度。页码和总页数只表达当前观察，前后导航使用服务端游标；记录变化导致锚定页为空时，仍保留服务端提供的上一页或下一页路径；任一游标存在时分页栏保持可见。首次同步且无保存记录时隐藏未知数字，完整成功空集合、未连接、读取失败和保留记录分别呈现。所选来源是当前来源且连接状态为 `connected` 时，标题旁以绿色纯文字显示随页面语言切换的“Connected”或“已连接”；连接事实独立于同步是否运行，其他连接状态及尚无状态时不显示。主要配置与同步提示最多显示一条，依次选择同步关闭、服务未配置、授权不可用、连接断开、已连接且初始化；健康或尚无状态时不显示主提示。关闭意愿优先于其他阻碍，完整健康信息仍可在设置页查看。提示保留设置入口，授权不可用使用 danger 样式。轮询和 Webhook 的诊断独立显示，历史错误与当前失败区分；状态或列表读取失败也独立呈现。最近完整成功与渠道更新仍保留。开启新代次的初始化期间已有记录继续可读。刷新只重新读取保存数据，不启动同步；开关变化及后台核对保留列表、筛选、分页、详情、焦点和位置。
 
-活动且文档可见时每 15 秒核对，focus 或恢复可见时重新核对；隐藏时取消在途请求并停止读取。请求有 30 秒派发期限，generation、响应身份及精确 revision 阻止迟到页面和低版本回退。后台核对保留首次读取上界和当前锚点。初始无游标页面以合同允许的 `upperNumber + 1` next 锚点重读，只清除该合成读取产生的人工上一页游标；用户导航后的页面始终使用原服务端游标，并保留响应提供的前后路径。展示页码不决定是否位于集合边界；已有记录重新进入筛选时，即使页码为 1，服务端返回的上一页仍可继续访问上界内的记录。同时读取无游标首页以发现上界外的新记录，仅提示有更新；显式刷新才重建首页上界。初始空集合后新增记录也先提示，显式刷新后纳入。摘要始终不取 description，打开行后直接挂载详情组件。
+活动且文档可见时每 15 秒核对，focus 或恢复可见时重新核对；隐藏时取消在途请求并停止读取。请求有 30 秒派发期限，generation、响应身份及精确 revision 阻止迟到页面和低版本回退。每次核对各读取一次状态和当前条件列表：实际首页使用无游标读取并直接发布同一响应的记录、计数和游标，空首页也接收新匹配记录；后续锚定页使用实际服务端游标，不因新编号跳页。展示页码不决定集合边界；显式上一页成功返回非空且没有上一页游标的首页时，后续核对改用无游标，空锚定页保留返回路径。显式刷新回到当前条件首页，翻页失败保留旧页面和可重试目标。已加载数据的后台核对不显示忙碌状态，等待中保留错误直至对应读取成功；用户操作可以替换后台请求。摘要始终不取 description，打开行后直接挂载详情组件。
 
 ### 创建者目录与读取资格
 
@@ -38,6 +67,6 @@ PR 列表由独立圆角卡片组成，沿用任务列表的中性表面、间�
 
 ## Web 详情组件
 
-`PullRequestDetailDialog` 接收当前 userId、Project、PR number 和关闭回调，独立读取详情，不复用 Task UUID 详情。调用方负责 Project 读取资格与后台核对时机；核对中的读取可暂停，已展示的对话框和交互状态保持挂载。身份或资格撤销时清除详情并取消请求。响应通过用户身份头和目标编号校验，读取 generation 及精确 revision 防止旧结果覆盖新观察。读取失败与空正文分别呈现，恢复性失败保留已显示数据。
+`PullRequestDetailDialog` 接收当前 userId、Project、repositoryId、PR number 和关闭回调，独立读取详情，不复用 Task UUID 详情。调用方负责 Project 读取资格与后台核对时机；核对中的读取可暂停，已展示的对话框和交互状态保持挂载。身份或资格撤销时清除详情并取消请求。响应通过用户身份头和目标来源及编号校验，读取 generation 及精确 revision 防止旧结果覆盖新观察。读取失败与空正文分别呈现，恢复性失败保留已显示数据。
 
 详情显示状态、作者、源与目标分支、完整 SHA、时间及 GitHub 外链，缺失作者或来源明确标识。description 使用[公共 Markdown 渲染器](shared-markdown.md)，包含受限静态 Mermaid 图表；来源图片不加载，raw HTML 和嵌入内容不执行。原文以文本节点展示。后台内容更新保留对话框、原文选择、焦点和阅读位置。列表负责挂载和调度核对；切换 tab 时关闭原生 modal 的可见性与滚动锁，保持组件和原文状态，返回时恢复同一详情。关闭详情以 preventScroll 返回仍可见的原列表行，否则回到 PR tab。

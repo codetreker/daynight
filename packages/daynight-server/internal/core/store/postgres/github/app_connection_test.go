@@ -46,7 +46,7 @@ func newProjectAppFixture(t *testing.T) projectAppFixture {
 	return f
 }
 func (f projectAppFixture) write(ctx context.Context, action string, version int64, extra error) (core.ProjectAppStatus, store.Completion, error) {
-	in := core.ProjectAppConnect{ProjectAppSelection: core.ProjectAppSelection{AppResourceID: f.app, GrantID: f.grant, AppVersion: 1, OwnershipVersion: 1}, Version: version, InstallationID: 7}
+	in := core.ProjectAppConnect{ProjectAppSelection: core.ProjectAppSelection{AppResourceID: f.app, GrantID: f.grant, AppVersion: 1, OwnershipVersion: 1}, Version: version, InstallationID: 7, RepositoryVersion: 1}
 	proof := core.InstallationCandidate{Installation: githubpr.InstallationObservation{ID: 7, AccountLogin: "o"}, Repository: githubpr.RepositoryObservation{ID: 8, FullName: "o/r"}}
 	var out core.ProjectAppStatus
 	c, err := f.db.WriteGitHubProjectApp(ctx, f.project, f.p.UserID, f.app, func(d store.GitHubProjectAppWriteDAO) error {
@@ -188,10 +188,12 @@ func TestProjectAppConnectionWaitsForDeletionAndRereads(t *testing.T) {
 				t.Fatal(err)
 			}
 			var fault *model.Fault
-			if err := <-done; !errors.As(err,&fault) || fault.Code!="version_conflict" {
+			if err := <-done; !errors.As(err, &fault) || fault.Code != "version_conflict" {
 				t.Fatalf("stale disconnect did not observe cleanup version: %v", err)
 			}
-			if _,_,err:=f.write(ctx,"disconnect",3,nil);err!=nil {t.Fatalf("cleaned binding reread: %v",err)}
+			if _, _, err := f.write(ctx, "disconnect", 3, nil); err != nil {
+				t.Fatalf("cleaned binding reread: %v", err)
+			}
 			var version int64
 			var cleared bool
 			if err := f.db.Pool.QueryRow(ctx, `SELECT version,app_resource_id IS NULL AND NOT enabled FROM project_github WHERE project_id=$1`, f.project).Scan(&version, &cleared); err != nil || version != 3 || !cleared {

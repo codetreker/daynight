@@ -414,6 +414,17 @@ export class SessionDraftStore {
       const next = { ...upload, outcomeUnknown: true, storeVersion: increment(upload.storeVersion) }; await tx.objectStore('uploads').put(next); return next;
     });
   }
+  /** Records the service's definitive in-use answer to the original release request. */
+  async retainRelease(handle: DraftHandle, uploadId: string, requestSequence: number): Promise<DraftUpload> {
+    return this.transaction('readwrite', async (tx) => {
+      const owner = await this.owner(tx, handle); const upload = await tx.objectStore('uploads').get([owner.ownerKey, uploadId]);
+      if (!upload) return fail('invalid', 'The original upload is missing.');
+      if (requestSequence !== upload.requestSequence || requestSequence <= upload.observedSequence) return upload;
+      if (!upload.releaseIntent || upload.pendingAction?.kind !== 'release') return fail('invalid', 'Only a release request can be retained by another reference.');
+      const next: DraftUpload = { ...upload, releaseRetained: true, observedSequence: requestSequence, pendingAction: null, outcomeUnknown: false, storeVersion: increment(upload.storeVersion) };
+      await tx.objectStore('uploads').put(next); await this.collect(tx, owner); return next;
+    });
+  }
   async requestRelease(handle: DraftHandle, uploadId: string): Promise<DraftUpload> {
     return this.transaction('readwrite', async (tx) => {
       const owner = await this.owner(tx, handle); const upload = await tx.objectStore('uploads').get([owner.ownerKey, uploadId]);

@@ -498,3 +498,10 @@ func TestWorkerAdmissionConstructorsBindProductionOperations(t *testing.T) {
 		}
 	}
 }
+
+func (*admissionServiceFixture) WorkerReviewParticipation(context.Context, string, string) (model.WorkerReviewParticipation, error) {
+	panic("unexpected review participation read")
+}
+func (*admissionServiceFixture) SetWorkerReviewParticipation(context.Context, string, string, int64, model.WorkerReviewParticipation) error {
+	panic("unexpected review participation write")
+}

@@ -9,7 +9,9 @@ import (
 
 	migration026 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/026"
 	migration083 "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/schema/migrations/083"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -277,13 +279,32 @@ var goalDependenciesSQL string
 //go:embed schema/migrations/092_session_archive_cleanup.sql
 var sessionArchiveCleanupSQL string
 
-//go:embed schema/migrations/094_assistant_task_outcomes.sql
+//go:embed schema/migrations/093_github_repository_sources.sql
+var githubRepositorySourcesSQL string
+
+//go:embed schema/migrations/094_worker_review_participation.sql
+var workerReviewParticipationSQL string
+
+//go:embed schema/migrations/095_project_repository_version.sql
+var projectRepositoryVersionSQL string
+
+type githubRepositoryIdentityMigrationError struct {
+	projectID uuid.UUID
+	cause     error
+}
+
+func (e *githubRepositoryIdentityMigrationError) Error() string {
+	return fmt.Sprintf("migration 93: missing trustworthy GitHub repository identity for project %s", e.projectID)
+}
+func (e *githubRepositoryIdentityMigrationError) Unwrap() error { return e.cause }
+
+//go:embed schema/migrations/097_assistant_task_outcomes.sql
 var assistantTaskOutcomesSQL string
 
-//go:embed schema/migrations/098_assistant_task_item_lifecycle.sql
+//go:embed schema/migrations/099_assistant_task_item_lifecycle.sql
 var assistantTaskItemLifecycleSQL string
 
-//go:embed schema/migrations/101_assistant_task_metrics.sql
+//go:embed schema/migrations/102_assistant_task_metrics.sql
 var assistantTaskMetricsSQL string
 
 type migration struct {
@@ -384,9 +405,12 @@ var schemaMigrations = []migration{
 	{version: 90, sql: dependencyTypesSQL},
 	{version: 91, sql: goalDependenciesSQL},
 	{version: 92, sql: sessionArchiveCleanupSQL},
-	{version: 94, sql: assistantTaskOutcomesSQL},
-	{version: 98, sql: assistantTaskItemLifecycleSQL},
-	{version: 101, sql: assistantTaskMetricsSQL},
+	{version: 93, sql: githubRepositorySourcesSQL},
+	{version: 94, sql: workerReviewParticipationSQL},
+	{version: 95, sql: projectRepositoryVersionSQL},
+	{version: 97, sql: assistantTaskOutcomesSQL},
+	{version: 99, sql: assistantTaskItemLifecycleSQL},
+	{version: 102, sql: assistantTaskMetricsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
@@ -438,6 +462,12 @@ func replayMigrations(ctx context.Context, conn *pgxpool.Conn, migrations []migr
 			_, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)", next.version, next.checksum())
 			return err
 		}); err != nil {
+			var pgErr *pgconn.PgError
+			if next.version == 93 && errors.As(err, &pgErr) && pgErr.Code == "DN093" {
+				if id, parseErr := uuid.Parse(pgErr.Detail); parseErr == nil {
+					return &githubRepositoryIdentityMigrationError{projectID: id, cause: err}
+				}
+			}
 			return err
 		}
 	}
