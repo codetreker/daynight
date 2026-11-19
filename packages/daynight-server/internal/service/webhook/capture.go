@@ -113,8 +113,9 @@ func (c *Capturer) schedule(at time.Time, p wm.Policy) ([]time.Time, error) {
 }
 
 // CaptureBatch freezes the audience once for one source operation and never
-// opens a separate transaction. Errors abort the caller's source write.
-func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, facts []protocol.Fact) (failure error) {
+// opens a separate transaction. Errors abort the caller's source write. The
+// actor is stored with every captured event and never rendered.
+func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO, actor wm.Actor, facts []protocol.Fact) (failure error) {
 	phase, eventID := "source", ""
 	var project, request, deliveryID, endpointID, ownerKind, ownerID string
 	var adapterVersion int64
@@ -128,6 +129,9 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 	}
 	types := make([]string, 0, len(facts))
 	project = facts[0].ProjectID
+	if err := actor.Validate(); err != nil {
+		return err
+	}
 	if c.RequestID != nil {
 		request = c.RequestID(ctx)
 		if len(request) > 128 {
@@ -191,7 +195,7 @@ func (c *Capturer) CaptureBatch(ctx context.Context, dao store.WebhookCaptureDAO
 		hash := sha256.Sum256(body)
 		phase = "capture"
 		subject := "tasks/" + f.TaskID
-		event := store.WebhookCapturedEvent{ID: eventID, EventType: f.Type, Source: "urn:daynight:project:" + project, Subject: subject, ProjectID: project, TaskID: f.TaskID, WireVersion: 1, SchemaVersion: 1, FactCodecVersion: 1, OccurredAt: f.OccurredAt, RecordedAt: recorded, OriginRequestID: requestID, FactBytes: body, FactSHA256: hash[:]}
+		event := store.WebhookCapturedEvent{ID: eventID, EventType: f.Type, Source: "urn:daynight:project:" + project, Subject: subject, ProjectID: project, TaskID: f.TaskID, WireVersion: 1, SchemaVersion: 1, FactCodecVersion: 1, OccurredAt: f.OccurredAt, RecordedAt: recorded, OriginRequestID: requestID, FactBytes: body, FactSHA256: hash[:], Actor: actor}
 		if f.Type != protocol.ThreadPosted {
 			v := f.TaskVersion
 			event.TaskVersion = &v

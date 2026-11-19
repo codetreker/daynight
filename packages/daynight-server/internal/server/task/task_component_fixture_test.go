@@ -230,6 +230,7 @@ func (mock *taskHTTPSnapshotScopeMock) ObservedAt(p0 context.Context) (time.Time
 
 type taskHTTPProjectScopeMock struct {
 	taskHTTPMockBase
+	BotBarrierDAOFn            func() store.BotBarrierDAO
 	CaptureDAOFn               func() store.WebhookCaptureDAO
 	ProjectDAOFn               func() store.ProjectWriteDAO
 	TaskDAOFn                  func() store.TaskWriteDAO
@@ -1190,4 +1191,9 @@ type taskHTTPClaimAdmission struct {
 
 func (m taskHTTPClaimAdmission) ClaimWorkerConfiguration(ctx context.Context, user, worker string) (*model.WorkerDesiredConfiguration, error) {
 	return m.read(ctx, user, worker)
+}
+
+func (mock *taskHTTPProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
 }

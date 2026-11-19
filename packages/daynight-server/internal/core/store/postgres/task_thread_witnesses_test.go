@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -114,10 +115,11 @@ func threadWitnessAppend(ctx context.Context, database *Store, principal model.P
 
 func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
-		t.Run(string(kind), func(t *testing.T) {
-			database, principal, _, project := membershipFixture(t)
-			task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	database := isolatedStore(t)
+	for i, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
+		if !t.Run(string(kind), func(t *testing.T) {
+			principal, _, project := testutil.ProjectMembershipFixture(t, database)
+			task := queryTask(t, database, project.ID, 10+i, model.TaskTodo)
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			first, _, err := threadWitnessAppend(ctx, database, principal, project.ID, task.ID, "before", nil)
@@ -215,6 +217,10 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 				t.Fatalf("thread write did not enter its callback: %v", ctx.Err())
 			}
 			waitThreadBackendLock(t, database, pid)
+			var blockedByHead bool
+			if err := database.Pool.QueryRow(ctx, `SELECT $1::int = ANY(pg_blocking_pids($2))`, blocker.Conn().PgConn().PID(), pid).Scan(&blockedByHead); err != nil || !blockedByHead {
+				t.Fatalf("thread writer did not wait for the head holder: %t %v", blockedByHead, err)
+			}
 			for {
 				var expired bool
 				if err := database.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expiry).Scan(&expired); err != nil {
@@ -249,7 +255,15 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-		})
+			select {
+			case <-drained:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			testutil.AssertPoolReusable(t, database.Pool)
+		}) {
+			return
+		}
 	}
 }
 
@@ -299,10 +313,11 @@ func TestThreadCancellationBeforeCommitRollsBackEveryWriteStage(t *testing.T) {
 
 func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 	parallelRootDatabaseTest(t)
-	for _, agent := range []bool{false, true} {
-		t.Run(fmt.Sprintf("agent=%t", agent), func(t *testing.T) {
-			database, principal, _, project := membershipFixture(t)
-			task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	database := isolatedStore(t)
+	for i, agent := range []bool{false, true} {
+		if !t.Run(fmt.Sprintf("agent=%t", agent), func(t *testing.T) {
+			principal, _, project := testutil.ProjectMembershipFixture(t, database)
+			task := queryTask(t, database, project.ID, 10+i, model.TaskTodo)
 			beforeTask := snapshotTask(t, database, project.ID, task.ID)
 			reply := appendStoredThread(t, database, task.ID, principal.UserID, "reply target")
 			author := model.ThreadAuthor{UserID: principal.UserID, Agent: agent}
@@ -375,7 +390,10 @@ func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 			if afterTask := snapshotTask(t, database, project.ID, task.ID); afterTask.Version != beforeTask.Version || !afterTask.UpdatedAt.Equal(beforeTask.UpdatedAt) {
 				t.Fatal("Thread candidate rollback changed parent Task metadata")
 			}
-		})
+			testutil.AssertPoolReusable(t, database.Pool)
+		}) {
+			return
+		}
 	}
 }
 
