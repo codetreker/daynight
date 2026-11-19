@@ -152,6 +152,7 @@ var _ store.SnapshotScope = (*taskSnapshotScopeMock)(nil)
 
 type taskProjectScopeMock struct {
 	taskMockBase
+	BotBarrierDAOFn            func() store.BotBarrierDAO
 	EligibilityDAOFn           func() store.WebhookEligibilityDAO
 	CaptureDAOFn               func() store.WebhookCaptureDAO
 	ProjectDAOFn               func() store.ProjectWriteDAO
@@ -201,6 +202,7 @@ var _ store.ProjectWriteScope = (*taskProjectScopeMock)(nil)
 
 type taskThreadScopeMock struct {
 	taskMockBase
+	BotBarrierDAOFn func() store.BotBarrierDAO
 	CaptureDAOFn    func() store.WebhookCaptureDAO
 	TaskDAOFn       func() store.ThreadTaskDAO
 	CredentialDAOFn func() store.ThreadCredentialDAO
@@ -975,4 +977,14 @@ func (mock *projectWriterMock) RepositoryOccupied(ctx context.Context, team, ide
 func (mock *taskProjectScopeMock) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	mock.need("WorkerClaimAdmissionDAO", mock.WorkerClaimAdmissionDAOFn != nil)
 	return mock.WorkerClaimAdmissionDAOFn()
+}
+
+func (mock *taskProjectScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
+}
+
+func (mock *taskThreadScopeMock) BotBarrierDAO() store.BotBarrierDAO {
+	mock.need("BotBarrierDAO", mock.BotBarrierDAOFn != nil)
+	return mock.BotBarrierDAOFn()
 }

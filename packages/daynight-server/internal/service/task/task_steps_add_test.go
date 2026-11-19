@@ -623,6 +623,11 @@ func (p *strictWriteProject) RepositoryOccupied(context.Context, string, string)
 	return false, nil
 }
 
+func (f *strictStepWrite) BotBarrierDAO() store.BotBarrierDAO {
+	f.t.Fatal("unexpected BotBarrierDAO call")
+	return nil
+}
+
 func (f *strictStepWrite) WorkerClaimAdmissionDAO() store.WorkerClaimAdmissionDAO {
 	f.t.Fatal("unexpected WorkerClaimAdmissionDAO call")
 	return nil

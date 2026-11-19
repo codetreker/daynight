@@ -65,6 +65,9 @@ type ProjectWriteScope interface {
 	GoalDependencyDAO() GoalDependencyDAO
 	SessionDAO() ProjectSessionDAO
 	WorkerClaimAdmissionDAO() WorkerClaimAdmissionDAO
+	// BotBarrierDAO verifies a declared Bot after Project write admission and
+	// before any Task Session lock, matching Bot deletion's Bot-then-Session order.
+	BotBarrierDAO() BotBarrierDAO
 }
 
 type ProjectWriteDAO interface {
