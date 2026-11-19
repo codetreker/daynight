@@ -41,6 +41,72 @@ const expectRole = async (page: Page, selector: string, role: string) => {
 };
 
 for (const locale of ['en', 'zh-CN']) {
+  test(`landing keeps an anchored heading clear when identity fails later (${locale})`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), locale);
+    for (const rootSize of ['16px', '20px']) {
+      const identity = Promise.withResolvers<void>();
+      await page.route('**/api/v1/me', async route => {
+        await identity.promise;
+        return route.fulfill({ status: 503, json: error });
+      });
+      await page.goto('/');
+      await expect(page.locator('.landing-page h1')).toBeVisible();
+      await page.evaluate(size => { document.documentElement.style.fontSize = size; }, rootSize);
+      await page.locator('.hero .button[href="#demo"]').click({ timeout: 5000 });
+      await expect(page.locator('#demo')).toBeFocused();
+      identity.resolve();
+      await expect(page.locator('.identity-notice')).toBeVisible();
+      await expect.poll(() => page.locator('#demo-heading').evaluate(heading => {
+        const header = document.querySelector<HTMLElement>('.site-header')!;
+        const obstruction = getComputedStyle(header).position === 'sticky' ? header.getBoundingClientRect().bottom : 0;
+        return heading.getBoundingClientRect().top >= obstruction - 1;
+      })).toBe(true);
+      await page.unroute('**/api/v1/me');
+    }
+  });
+
+  test(`landing anchors remain reachable when enlarged identity notices fill the header (${locale})`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), locale);
+    const identity = Promise.withResolvers<void>();
+    await page.route('**/api/v1/me', async route => {
+      await identity.promise;
+      return route.fulfill({ status: 503, json: error });
+    });
+    await page.goto('/');
+    await expect(page.locator('.landing-page h1')).toBeVisible();
+    await page.evaluate(() => { document.documentElement.style.fontSize = '32px'; });
+    identity.resolve();
+    const header = page.locator('.site-header');
+    await expect(header.locator('.identity-notice')).toBeVisible();
+    await expectRole(page, '.identity-notice', '--text-interface');
+    await expect(header).toHaveCSS('position', 'relative');
+
+    const followDemo = async () => {
+      await page.locator('.hero .button[href="#demo"]').click({ timeout: 5000 });
+      await expect(page.locator('#demo')).toBeFocused();
+      await expect.poll(() => page.locator('#demo-heading').evaluate(heading => {
+        const title = heading.getBoundingClientRect();
+        const header = document.querySelector<HTMLElement>('.site-header')!;
+        const obstruction = getComputedStyle(header).position === 'sticky' ? header.getBoundingClientRect().bottom : 0;
+        return title.top >= obstruction - 1 && title.bottom <= innerHeight;
+      })).toBe(true);
+      await page.locator('.scene-tab').first().click();
+      await expect(page.locator('.scene-tab').first()).toHaveAttribute('aria-selected', 'true');
+      await expectFits(page);
+    };
+    await followDemo();
+    expect(await header.evaluate(element => element.getBoundingClientRect().bottom)).toBeLessThan(0);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => { document.documentElement.style.fontSize = '16px'; });
+    await expect(header).toHaveCSS('position', 'sticky');
+    await followDemo();
+    await header.getByRole('combobox').selectOption(locale === 'en' ? 'zh-CN' : 'en');
+    await followDemo();
+  });
+
   test(`public pages retain semantic text and actions at narrow and enlarged sizes (${locale})`, async ({ page }, testInfo) => {
     await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), locale);
     await page.route('**/api/v1/me', route => route.fulfill({ status: 401, json: error }));
