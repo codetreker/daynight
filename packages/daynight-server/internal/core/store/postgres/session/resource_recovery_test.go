@@ -14,14 +14,34 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	redisgates "github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	redisstore "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/google/uuid"
 )
 
+func resourceRecoveryGates(t *testing.T, redisURL string) *redisgates.Gates {
+	t.Helper()
+	client, err := redisstore.NewClient(redisURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return redisgates.New(client)
+}
+
 func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash(t *testing.T) {
+	redisURL := os.Getenv("DAYNIGHT_TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Fatal("DAYNIGHT_TEST_REDIS_URL is required for Session media lease crash recovery")
+	}
 	db := isolatedStore(t)
 	_, actor, _ := testAuthRecords(t, db)
 	project := queryProject(t, db, 1)
@@ -63,11 +83,13 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 	requireLimited(sessions[0], owners[0])
 	requireLimited(sessions[32], owners[0])
 	requireLimited(sessions[32], owners[8])
-	root := t.TempDir()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMediaLeaseCrashOwnerProcess$")
-	child.Env = append(os.Environ(), "DAYNIGHT_MEDIA_LEASE_HELPER="+root, "DAYNIGHT_MEDIA_LEASE_IDS="+leases[0].ID+","+leases[1].ID)
+	child.Env = append(os.Environ(),
+		"DAYNIGHT_MEDIA_LEASE_REDIS="+redisURL,
+		"DAYNIGHT_MEDIA_LEASE_IDS="+leases[0].ID+","+leases[1].ID,
+	)
 	output, err := child.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -86,9 +108,12 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 	}()
 	scanner := bufio.NewScanner(output)
 	if !scanner.Scan() || scanner.Text() != "locked" {
-		t.Fatalf("child did not acquire exact gates: %s %v", stderr.String(), scanner.Err())
+		_ = child.Process.Kill()
+		waitErr := child.Wait()
+		waited = true
+		t.Fatalf("child did not acquire exact gates: output=%q scan=%v exit=%v stderr=%s", scanner.Text(), scanner.Err(), waitErr, stderr.String())
 	}
-	files, err := local.New(root)
+	files, err := local.NewWithGates(t.TempDir(), resourceRecoveryGates(t, redisURL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,13 +137,22 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 		}
 		return e
 	}
+	requireOriginalOwners := func() {
+		t.Helper()
+		remaining := list()
+		if len(remaining) != 2 {
+			t.Fatalf("original owners reaped or orphaned deployment rows retained: %v", remaining)
+		}
+		for _, r := range remaining {
+			if r.ID != leases[0].ID && r.ID != leases[1].ID {
+				t.Fatalf("recovery retained an unrelated owner: %v", r)
+			}
+		}
+	}
 	if err = engine.RecoverMediaLeases(ctx, list(), release); err != nil {
 		t.Fatal(err)
 	}
-	remaining := list()
-	if len(remaining) != 2 {
-		t.Fatalf("live physical owners reaped or orphaned deployment rows retained: %d", len(remaining))
-	}
+	requireOriginalOwners()
 	requireLimited(sessions[0], owners[0])
 	// The account and deployment no longer inherit unrelated crashed owners.
 	for _, owner := range []string{owners[0], owners[8]} {
@@ -140,7 +174,22 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 	if err = engine.RecoverMediaLeases(ctx, list(), release); err != nil {
 		t.Fatal(err)
 	}
-	if remaining = list(); len(remaining) != 0 {
+	requireOriginalOwners()
+	// SIGKILL stops renewal without deleting either key. Wait for Redis to
+	// expire both leases before asking recovery to reconcile their capacities.
+	for _, r := range leases[:2] {
+		permit, err := files.AcquireGate(ctx, filestorage.MediaLeaseGate, "session-resource-lease/"+r.ID)
+		if err != nil {
+			t.Fatalf("media gate %s did not expire after owner exit: %v", r.ID, err)
+		}
+		if err := permit.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = engine.RecoverMediaLeases(ctx, list(), release); err != nil {
+		t.Fatal(err)
+	}
+	if remaining := list(); len(remaining) != 0 {
 		t.Fatalf("crash-released owners retained: %v", remaining)
 	}
 	sessionDAOTransaction(t, db, func(d store.SessionDAO) error {
@@ -149,17 +198,13 @@ func TestMediaLeaseRecoveryRestoresSessionAccountAndDeploymentCapacityAfterCrash
 }
 
 func TestMediaLeaseCrashOwnerProcess(t *testing.T) {
-	root := os.Getenv("DAYNIGHT_MEDIA_LEASE_HELPER")
-	if root == "" {
+	redisURL := os.Getenv("DAYNIGHT_MEDIA_LEASE_REDIS")
+	if redisURL == "" {
 		return
 	}
-	files, err := local.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer files.Close()
+	gates := resourceRecoveryGates(t, redisURL)
 	for _, id := range strings.Split(os.Getenv("DAYNIGHT_MEDIA_LEASE_IDS"), ",") {
-		gate, e := files.AcquireGate(t.Context(), filestorage.MediaLeaseGate, "session-resource-lease/"+id)
+		gate, e := gates.AcquireGate(t.Context(), filestorage.MediaLeaseGate, "session-resource-lease/"+id)
 		if e != nil {
 			t.Fatal(e)
 		}

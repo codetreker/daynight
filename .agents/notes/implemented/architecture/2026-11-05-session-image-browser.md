@@ -94,7 +94,10 @@ capacity. Scoped adapters provide verified leases to one preview host per real
 Session or read-only record. Bounded page caches remain separate from durable
 service references and browser draft storage. Preview lives inside the actual
 Session presentation root, with explicit coordination for higher authentication
-and deletion dialogs.
+and deletion dialogs. Opening a preview synchronizes the timeline's reading
+anchor with its current DOM scroll position. The browser can scroll a trigger
+into view before delivering the scroll event. If the preview locks the timeline
+first, that event is ignored and the older anchor can move the page on close.
 
 Pane lifetime retains its existing cache ownership; the
 [Bot cache decision](../../archived/architecture/2026-11-04-bot-session-cache.md)

@@ -16,6 +16,7 @@ import (
 type DeadlineBody struct {
 	w            http.ResponseWriter
 	request      *http.Request
+	readContext  context.Context
 	source       io.ReadCloser
 	timeout      time.Duration
 	deadline     time.Time
@@ -29,7 +30,13 @@ func NewDeadlineBody(w http.ResponseWriter, r *http.Request, timeout time.Durati
 	if source == nil {
 		source = http.NoBody
 	}
-	return &DeadlineBody{w: w, request: r, source: source, timeout: timeout}
+	return &DeadlineBody{w: w, request: r, readContext: r.Context(), source: source, timeout: timeout}
+}
+
+// SetReadContext binds the operation that consumes the body. The caller sets
+// it before reading, while the original request still owns the connection.
+func (b *DeadlineBody) SetReadContext(ctx context.Context) {
+	b.readContext = ctx
 }
 
 func (b *DeadlineBody) finish() {
@@ -55,16 +62,16 @@ func (b *DeadlineBody) Read(p []byte) (int, error) {
 			return 0, &BodyReadError{Cause: err, Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
 		}
 		b.callbackDone = make(chan struct{})
-		b.stop = context.AfterFunc(b.request.Context(), func() { _ = controller.SetReadDeadline(time.Now()); close(b.callbackDone) })
+		b.stop = context.AfterFunc(b.readContext, func() { _ = controller.SetReadDeadline(time.Now()); close(b.callbackDone) })
 	}
 	n, err := b.source.Read(p)
 	if err == nil {
 		return n, nil
 	}
 	b.finish()
-	if b.request.Context().Err() != nil && time.Now().Before(b.deadline) {
+	if readErr := b.readContext.Err(); readErr != nil && time.Now().Before(b.deadline) {
 		CloseUnreadBody(b.w, b.request)
-		return n, &BodyReadError{Cause: b.request.Context().Err(), Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
+		return n, &BodyReadError{Cause: readErr, Status: http.StatusBadRequest, Code: "invalid_input", Message: "unable to read request body"}
 	}
 	if err == io.EOF {
 		if clearErr := controller.SetReadDeadline(time.Time{}); clearErr != nil && !errors.Is(clearErr, http.ErrNotSupported) {

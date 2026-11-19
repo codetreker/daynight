@@ -666,6 +666,12 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     const toolLaunch = await readLaunchToolSelection(options.homeDirectory, ticket, options.storageStateDirectory);
     if (stopping) return;
     const nativeOptions: ProviderOptions = {
+      ...(ticket.claudeBotRecovery === undefined ? {} : { claudeBotRecovery: { directory: ticket.claudeBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.claudeBotRecovery.botId, sessionId: ticket.sessionId } } }),
+      ...(ticket.copilotBotRecovery === undefined ? {} : { copilotBotRecovery: { directory: ticket.copilotBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.copilotBotRecovery.botId, sessionId: ticket.sessionId } } }),
+      ...(ticket.codexBotRecovery === undefined ? {} : { codexBotRecovery: { directory: ticket.codexBotRecovery.directory,
+        identity: { serverOrigin: ticket.serverOrigin, ownerUserId: ticket.ownerUserId!, botId: ticket.codexBotRecovery.botId, sessionId: ticket.sessionId } } }),
       ...(usage ? { usageRuntime: usage } : {}),
       ...(toolLaunch ? { toolLaunch, toolRuntimeRoot: path.join(paths.stateDirectory, "worker", "tool-runtimes") } : {}),
       ...(ticket.instructions === undefined ? {} : { instructions: ticket.instructions }),

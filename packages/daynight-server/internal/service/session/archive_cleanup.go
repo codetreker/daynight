@@ -12,7 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-// ArchiveCleanup coordinates committed expiry with crash-released filesystem
+// ArchiveCleanup coordinates committed expiry with crash-released storage
 // permits. It borrows both dependencies; its caller must drain it before closing
 // either. Each call processes one bounded page and returns the next scan cursor.
 type ArchiveCleanup struct {
@@ -49,7 +49,15 @@ func (s *ArchiveCleanup) Sweep(ctx context.Context, after string) (string, error
 }
 
 func (s *ArchiveCleanup) write(ctx context.Context, target store.ArchiveCleanupTarget, work func(store.ArchiveCleanupScope) error) error {
-	completion, err := s.db.WriteArchiveCleanup(ctx, target, work)
+	if err := filestorage.GateError(ctx); err != nil {
+		return err
+	}
+	completion, err := s.db.WriteArchiveCleanup(ctx, target, func(scope store.ArchiveCleanupScope) error {
+		if err := work(scope); err != nil {
+			return err
+		}
+		return filestorage.VerifyGates(ctx)
+	})
 	if err != nil {
 		return err
 	}
@@ -81,6 +89,8 @@ func (s *ArchiveCleanup) clean(ctx context.Context, target store.ArchiveCleanupT
 		return err
 	}
 	defer func() { result = errors.Join(result, permit.Close()) }()
+	ctx, cancel := filestorage.GateContext(ctx, permit)
+	defer cancel()
 	var resources []store.SessionResourceRecord
 	var leases []store.SessionResourceLease
 	if err := s.write(ctx, target, func(scope store.ArchiveCleanupScope) error {
@@ -110,6 +120,9 @@ func (s *ArchiveCleanup) clean(ctx context.Context, target store.ArchiveCleanupT
 			return err
 		}
 		defer func() { result = errors.Join(result, gate.Close()) }()
+		var cancel context.CancelFunc
+		ctx, cancel = filestorage.GateContext(ctx, gate)
+		defer cancel()
 		if err := s.write(ctx, target, func(scope store.ArchiveCleanupScope) error {
 			return scope.SessionDAO().(store.SessionResourceDAO).ReleaseSessionResourceLease(ctx, target.SessionID, lease.ID)
 		}); err != nil {

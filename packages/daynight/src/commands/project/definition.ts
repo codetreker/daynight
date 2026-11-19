@@ -25,10 +25,10 @@ export const projectDefinition: CommandDefinition = {
       description: "Delete a project while retaining its history",
       options: [
         { names: ["--project"], description: "Project UUID (defaults to the current repository)", value: { name: "project-id", kind: "text" } },
-        { names: ["--confirm"], description: "Confirm in non-interactive use" },
+        { names: ["--confirm"], description: "Required: confirm permanent Goal dependency removal" },
         { names: ["--json"], description: "Print only the deletion receipt as JSON" }, helpOption,
       ],
-      details: "Only an administrator of the current owner Team can delete a Project.\nThe Project becomes unavailable with no in-product recovery; its history and files remain on the server.\nInteractive use always requires the exact JSON string literal of its name, even with --confirm.\nNon-interactive use requires --confirm. The preview is written to stderr.\nA lost or invalid receipt leaves the outcome unknown; a later 404 does not establish success.",
+      details: "Only an administrator of the current owner Team can delete a Project.\nThe Project becomes unavailable with no in-product recovery; its history and files remain on the server.\nDeletion permanently removes all Goal dependencies involving the Project, within and across Projects; they cannot be restored.\n--confirm is required. Interactive use also requires the exact JSON string literal of its name.\nThe preview is written to stderr.\nA lost or invalid receipt leaves the outcome unknown; a later 404 does not establish success.",
     },
     {
       name: "transfer",
@@ -37,10 +37,10 @@ export const projectDefinition: CommandDefinition = {
         { names: ["--to-team"], description: "Destination Team UUID or same-service Team link", value: { name: "team", kind: "text" }, required: true },
         { names: ["--project"], description: "Project UUID (defaults to the current repository)", value: { name: "project-id", kind: "text" } },
         { names: ["--if-version"], description: "Require the observed ownership version", value: { name: "version", kind: "text" } },
-        { names: ["--confirm"], description: "Confirm without an interactive prompt" },
+        { names: ["--confirm"], description: "Required: confirm permanent Goal dependency removal" },
         jsonOption, helpOption,
       ],
-      details: "Only an administrator of the current owner Team can transfer a Project. The destination need not include you.\nWithout --confirm, review the preview and confirm interactively.\nA lost receipt leaves the outcome unknown; a later 404 does not establish success.\nThe transfer does not change Team defaults or repository bindings.",
+      details: "Only an administrator of the current owner Team can transfer a Project. The destination need not include you.\n--confirm is required. An actual transfer permanently removes all Goal dependencies involving the Project, within and across Projects; they cannot be restored.\nThe preview is written to stderr.\nA lost receipt leaves the outcome unknown; a later 404 does not establish success.\nThe transfer does not change Team defaults or repository bindings.",
     },
     {
       name: "list",

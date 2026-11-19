@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 )
@@ -51,7 +52,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 				}
 				return projectservice.DeletionPreview{}, fault
 			}
-			h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+			h.Projects.DeleteWithInputFunc = func(_ context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 				if id != h.Project.ID {
 					t.Fatal(id)
 				}
@@ -65,7 +66,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 			assertProjectError(t, response, tc.status, tc.code)
 			calls := map[string]int{}
 			if tc.status != 400 && tc.status != 401 {
-				operation := "Delete"
+				operation := "DeleteWithInput"
 				if tc.method == "GET" {
 					operation = "GetWithAccess"
 					if strings.HasPrefix(tc.suffix, "/deletion-preview") {
@@ -79,7 +80,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 	}
 	t.Run("confirmed receipt", func(t *testing.T) {
 		h := newHTTPHarness(t)
-		h.Projects.DeleteFunc = func(_ context.Context, _ model.Principal, id string) (projectservice.DeletionReceipt, error) {
+		h.Projects.DeleteWithInputFunc = func(_ context.Context, _ model.Principal, id string, input coreproject.DeletionInput) (projectservice.DeletionReceipt, error) {
 			if id != h.Project.ID {
 				t.Fatal(id)
 			}
@@ -97,7 +98,7 @@ func TestProjectDeletionHTTP(t *testing.T) {
 		if strings.Contains(h.Logs.String(), "Shared project") || strings.Contains(h.Logs.String(), "example.com/shared") {
 			t.Fatalf("private text in logs: %s", &h.Logs)
 		}
-		h.assertCalls(map[string]int{"Delete": 1})
+		h.assertCalls(map[string]int{"DeleteWithInput": 1})
 	})
 }
 

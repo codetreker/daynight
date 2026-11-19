@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 	servergithub "github.com/codetreker/daynight/packages/daynight-server/internal/server/github"
 	servicegithub "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -184,51 +186,78 @@ func TestGitHubSignalDeadlineReleasesBlockedConnection(t *testing.T) {
 	project := queryProject(t, db, 1)
 	b2Configure(t, db, project.ID, 10, 20, 30)
 	configureWebhookApp(t, db, project.ID)
-	lock, err := db.Pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Rollback(context.Background())
-	if _, err = lock.Exec(t.Context(), `SELECT project_id FROM project_github WHERE project_id=$1 FOR UPDATE`, project.ID); err != nil {
-		t.Fatal(err)
-	}
+
 	pool, err := pgxpool.NewWithConfig(t.Context(), db.Pool.Config().Copy())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	done := make(chan error, 1)
 	receiver, err := servicegithub.NewAppWebhookReceiver(&Store{Pool: pool}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		done <- receiver.ReceiveAppWebhook(ctx, servicegithub.AppWebhookIdentity{AppID: testWebhookAppID, CredentialVersion: 1}, coregithub.WebhookEvent{Kind: "pull_request", DeliveryID: "blocked", InstallationID: 20, RepositoryID: 30, Number: 7})
+	receiverConn, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverConn.Release()
+
+	lock, err := db.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lock.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("release signal row lock: %v", err)
+		}
 	}()
-	waitForQueryLock(t, db, "SELECT c.project_id FROM project_github c")
+	if _, err := lock.Exec(t.Context(), `SELECT project_id FROM project_github WHERE project_id=$1 FOR UPDATE`, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	observer, err := db.Pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer.Release()
+
+	watchdog, stop := context.WithTimeout(t.Context(), 4*time.Second)
+	defer stop()
+	request, cancel := context.WithTimeout(watchdog, 750*time.Millisecond)
+	done := make(chan error, 1)
+	stopped := make(chan struct{})
+	defer releaseRowLockAndDrain(t, cancel, lock, stopped)
+	go func() {
+		defer close(stopped)
+		done <- receiver.ReceiveAppWebhook(request, servicegithub.AppWebhookIdentity{AppID: testWebhookAppID, CredentialVersion: 1}, coregithub.WebhookEvent{Kind: "pull_request", DeliveryID: "blocked", InstallationID: 20, RepositoryID: 30, Number: 7})
+	}()
+	waitTransferTeamLock(t, request, db, "SELECT c.project_id FROM project_github c", lock.Conn().PgConn().PID())
+	if err := request.Err(); err != nil {
+		t.Fatalf("request expired before the lock was observed: %v", err)
+	}
 	select {
 	case err = <-done:
-		if err == nil {
-			t.Fatal("blocked signal unexpectedly succeeded")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("blocked signal lost its request deadline: %v", err)
 		}
-	case <-time.After(4 * time.Second):
+	case <-watchdog.Done():
 		t.Fatal("signal exceeded deadline")
 	}
+
 	// pgxpool releases a closed connection after its transport cleanup finishes.
-	until := time.Now().Add(2 * time.Second)
-	for pool.Stat().AcquiredConns() != 0 && time.Now().Before(until) {
-		time.Sleep(10 * time.Millisecond)
+	drain, stopDrain := context.WithTimeout(t.Context(), 2*time.Second)
+	defer stopDrain()
+	for pool.Stat().AcquiredConns() != 0 {
+		if err := waitThreadClock(drain); err != nil {
+			t.Fatalf("connection still acquired: %+v, %v", pool.Stat(), err)
+		}
 	}
-	if pool.Stat().AcquiredConns() != 0 {
-		t.Fatalf("connection still acquired: %+v", pool.Stat())
-	}
-	if err = lock.Rollback(t.Context()); err != nil {
+	if err := lock.Rollback(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	if err = db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, project.ID).Scan(&count); err != nil || count != 0 {
+	if err := db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, project.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("pending=%d err=%v", count, err)
 	}
 }

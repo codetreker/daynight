@@ -32,7 +32,8 @@ never revived, and migration replay does not renew the grace period.
 Reclamation starts only after confirmed expiration commit. It acquires the
 original owner's archive residency permit and joins each exact media lease
 gate outside database transactions. A busy permit leaves the durable intent for
-the next pass. The typed archive namespace includes staging and legacy files;
+the next pass. [Redis storage gates](2026-11-19-redis-storage-gates.md) cancel
+protected cleanup on lease loss. File removal verifies the held permits. The typed archive namespace includes staging and legacy files;
 image blobs are removed individually only after reference-based GC admission.
 Committed capture records identify history-owned message references. Unknown
 message pins and upload, operation, and native-resume references survive.

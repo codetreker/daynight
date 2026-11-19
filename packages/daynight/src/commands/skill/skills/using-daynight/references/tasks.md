@@ -270,6 +270,41 @@ absent graph node does not prove a missing dependency.
 Hidden prerequisites retain physical state for readiness, reopening and cycles;
 new dependency targets must be visible ordinary Tasks.
 
+### Goal acceptance dependencies
+
+```bash
+daynight task goal-dependencies show <goal-id> --project <project-id> --limit 20 --json
+daynight task goal-dependencies add <goal-id> --target <project-id>/<goal-id> --if-revision <revision>
+daynight task goal-dependencies remove <goal-id> --edge <edge-id> --if-revision <revision>
+daynight task goal-dependencies replace <goal-id> --edge <edge-id> --target <project-id>/<goal-id> --if-revision <revision>
+daynight task goal-dependencies replace <goal-id> --clear --if-revision <revision>
+```
+
+These are Goal acceptance relationships, independent of ordinary Task
+dependencies and Task metadata versions. The source Project is selected through
+`--project` or repository discovery. Show reads one page: prerequisites are
+complete on each page, while `--cursor` and `--limit` (1–50, default 20) page
+visible successors. Each page is independently authorized. Text and JSON expose
+the relationship kind and readable Goal status; an inaccessible prerequisite
+has no target details. Editors receive its opaque edge ID and the relationship
+revision, while readers without edit permission receive neither.
+
+Repeat `--target` to add or replace targets and `--edge` to remove or retain
+edges. Replace describes the complete desired set: `--edge` retains an existing
+edge, including a hidden one; `--clear` explicitly supplies an empty set and
+cannot be combined with targets or edges. A missing replacement set is rejected.
+Targets must be readable Goals in the same owner Team. The service validates
+cycles, permissions and completion constraints.
+
+`--if-revision` is an exact positive int64 decimal string without leading zeroes.
+Without it, the CLI reads the relationship once and uses its revision; a reader
+without edit permission cannot obtain one. One edit submits at most one PATCH.
+An edit receipt contains the Goal ID, resulting revision and whether the set
+changed; `--json` returns those fields.
+Conflicts and unknown outcomes are not replayed; a later read establishes only
+current state, not the result of an uncertain submission. A service without the
+relationship route requires an upgrade.
+
 ## Properties
 
 ```bash

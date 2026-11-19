@@ -1771,7 +1771,7 @@ func mcpPATClientWithOrigin(t *testing.T, address, token, origin string) *sdk.Cl
 func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 	t.Helper()
 	want := map[string]bool{
-		"project_create": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
+		"project_create": true, "project_transfer_preview": true, "project_transfer": true, "project_list": true, "project_resolve": true, "project_show": true,
 		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true,
 		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true,
 		"team_member_set_role": true, "team_member_remove": true,
@@ -1787,6 +1787,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
 		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true, "task_attachment_put": true,
 		"task_list": true, "task_ready": true, "task_search": true, "task_graph": true, "task_work_list": true,
+		"goal_dependencies_show": true, "goal_dependencies_edit": true,
 		"task_session_current": true, "task_session_list": true, "task_session_show": true,
 		"task_session_read": true, "task_session_entry": true,
 	}
@@ -2496,27 +2497,28 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		t.Fatal("server.New not found")
 	}
 	want := map[string]int{
-		"oauthauthorization.NewAuthorizationHTTP": 1,
-		"granthttp.RegisterRoutes":                2,
-		"projecthttp.NewMembershipRoutes":         1,
-		"projecthttp.RegisterRoutes":              2,
-		"taghttp.RegisterRoutes":                  2,
-		"teamhttp.RegisterRoutes":                 2,
-		"workerhttp.RegisterRoutes":               2,
-		"prompthttp.RegisterRoutes":               2,
-		"workerhttp.NewReadOnlyRoutes":            1,
-		"taskhttp.TaskRoutes":                     3,
-		"sessionhttp.RegisterInspectionRoutes":    2,
-		"sessionhttp.RegisterHistoryRoutes":       2,
-		"taskhttp.TaskSearchRoutes":               2,
-		"taskhttp.TaskStepsRoutes":                2,
-		"taskhttp.TaskThreadRoutes":               2,
-		"taskhttp.TaskSyncRoutes":                 2,
-		"attachmenthttp.RegisterRoutes":           2,
-		"webhookhttp.NewRoutes":                   1,
-		"sessionhttp.NewRoutes":                   1,
-		"bothttp.RegisterRoutes":                  3,
-		"bothttp.RegisterRuntimeRoutes":           3,
+		"oauthauthorization.NewAuthorizationHTTP":  1,
+		"granthttp.RegisterRoutes":                 2,
+		"projecthttp.NewMembershipRoutes":          1,
+		"projecthttp.RegisterRoutes":               2,
+		"taghttp.RegisterRoutes":                   2,
+		"teamhttp.RegisterRoutes":                  2,
+		"workerhttp.RegisterRoutes":                2,
+		"prompthttp.RegisterRoutes":                2,
+		"workerhttp.NewReadOnlyRoutes":             1,
+		"taskhttp.TaskRoutes":                      3,
+		"sessionhttp.RegisterInspectionRoutes":     2,
+		"sessionhttp.RegisterHistoryRoutes":        2,
+		"sessionhttp.RegisterGroupDirectoryRoutes": 2,
+		"taskhttp.TaskSearchRoutes":                2,
+		"taskhttp.TaskStepsRoutes":                 2,
+		"taskhttp.TaskThreadRoutes":                2,
+		"taskhttp.TaskSyncRoutes":                  2,
+		"attachmenthttp.RegisterRoutes":            2,
+		"webhookhttp.NewRoutes":                    1,
+		"sessionhttp.NewRoutes":                    1,
+		"bothttp.RegisterRoutes":                   3,
+		"bothttp.RegisterRuntimeRoutes":            3,
 	}
 	seen := make(map[string]int)
 	constructors, authRoutes, authBindings := 0, 0, 0

@@ -52,6 +52,9 @@ func (tx *ProjectTx) ProjectGoalDependencyDAO() ProjectGoalDependencyDAO {
 func (tx *ProjectTx) GoalDependencyDAO() GoalDependencyDAO {
 	return task.NewGoalDependencyWriter(tx.tx, tx.projectID)
 }
+func (tx *ProjectTx) GoalRelationDAO() GoalRelationEditor {
+	return task.NewGoalRelationEditor(tx.tx, tx.projectID)
+}
 func (tx *ProjectTx) SessionDAO() ProjectSessionDAO {
 	return session.NewProjectDAO(tx.tx, tx.projectID)
 }

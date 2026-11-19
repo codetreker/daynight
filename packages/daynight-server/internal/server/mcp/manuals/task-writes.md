@@ -8,7 +8,7 @@ Read with [Write safety](daynight://manuals/write-safety.md) for Task/Goal creat
 
 `task_create` defaults to ordinary `type: "task"`. New ordinary Tasks default to `proposed`, automatic execution disabled and the current Account as omitted assignee. Explicit initial status is `proposed` or `todo`; use `todo` for confirmed work. Registration does not start execution. Creation has no `allowAgents` input; enable automatic permission only through its separate authorized update.
 
-For `type: "goal"`, status defaults to `todo` and may initially be `todo`, `in_progress`, `done` or `cancelled`. Omitted `assignedTo` selects the current Account; explicit null leaves it unassigned. A Goal has no Parent, dependencies or execution platform and owns its description, properties, Thread and attachments independently of children.
+For `type: "goal"`, status defaults to `todo` and may initially be `todo`, `in_progress`, `done` or `cancelled`. Omitted `assignedTo` selects the current Account; explicit null leaves it unassigned. A Goal has no Parent, ordinary Task dependencies or execution platform and owns its description, properties, Thread and attachments independently of children. New Goals start with no acceptance relationships; use [Dependency writes](daynight://manuals/dependency-writes.md) to edit those separately.
 
 `task_update` changes metadata atomically; omitted fields remain unchanged and null clears nullable fields. Supplied `description` replaces the whole field. Dependencies are the whole-set exception explained in [Dependency writes](daynight://manuals/dependency-writes.md).
 
@@ -42,7 +42,7 @@ Ordinary completion requires actual outputs and acceptance for the selected scop
 
 ## Goal transitions
 
-A Goal moves freely among `todo`, `in_progress`, `done` and `cancelled`, including reopening. Submit status and exact version in one `task_set_status` call; no separate confirmation token is required. Same-status at the current version is a no-op.
+A Goal may move among `todo`, `in_progress`, `done` and `cancelled`, including reopening. Entering `done` requires every direct acceptance prerequisite to be `done`; leaving `done` is refused while a completed Goal depends on it. Submit status and exact version in one `task_set_status` call; no separate confirmation token is required. Same-status at the current version is a no-op.
 
 A child actually entering `in_progress`, manually or through a Worker claim, also starts its `todo` Parent in the same transaction. Other Goal states remain unchanged. Same-status requests and membership edits do not trigger this. Child completion, cancellation, rollback or claim release neither ends nor reverts the Goal; child progress does not derive Goal status.
 
@@ -54,7 +54,7 @@ Cancellation retains readable material, history and dependencies under current a
 
 `task_delete` hides stored resources from ordinary reads/list/ready/graph while retaining records and attachment bytes. Ordinary deletion is refused for an active Worker claim and, by default, undeleted dependents. Explicitly authorized `removeDepends: true` removes incoming ordinary/external references in the same transaction, changing dependent versions and potentially readiness. Deletion authority alone does not cover that added effect.
 
-Goal deletion hides the Goal and children while preserving parent links, child states, versions and dependencies; `removeDepends: true` is rejected. Active executions stop later through existing cleanup. Deletion is distinct from completion/cancellation and synchronous process termination. A `task_deleted` response differs from `not_found` or inaccessible; authentication, permission and transport failures leave absence/deletion unconfirmed.
+Goal deletion is refused while another Goal references it. Otherwise it removes its acceptance prerequisites and hides the Goal and children while preserving parent links, child states, versions and ordinary Task dependencies; `removeDepends: true` is rejected. Active executions stop later through existing cleanup. Deletion is distinct from completion/cancellation and synchronous process termination. A `task_deleted` response differs from `not_found` or inaccessible; authentication, permission and transport failures leave absence/deletion unconfirmed.
 
 ## Property mutations
 
