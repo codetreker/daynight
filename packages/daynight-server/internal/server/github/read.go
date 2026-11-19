@@ -22,7 +22,8 @@ import (
 
 type ReadOperations interface {
 	List(context.Context, model.Principal, string, coregithub.ListRequest) (coregithub.Page, error)
-	Detail(context.Context, model.Principal, string, int64) (coregithub.Detail, error)
+	Detail(context.Context, model.Principal, string, int64, *int64) (coregithub.Detail, error)
+	Repositories(context.Context, model.Principal, string, coregithub.RepositoriesRequest) (coregithub.RepositoriesPage, error)
 	Authors(context.Context, model.Principal, string, coregithub.AuthorsRequest) (coregithub.AuthorsPage, error)
 	Statistics(context.Context, model.Principal, string, coregithub.StatisticsRequest) (coregithub.Statistics, error)
 }
@@ -38,10 +39,12 @@ type handler struct {
 func RegisterPullRequestRoutes(mux *http.ServeMux, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &handler{reader: reader, logger: logger}
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests", auth.Require(h.list))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-repositories", auth.Require(h.repositories))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(h.detail))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-authors", auth.Require(h.authors))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-request-statistics", auth.Require(h.statistics))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-repositories", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-authors", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-request-statistics", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
@@ -63,11 +66,15 @@ func (h *handler) run(w http.ResponseWriter, r *http.Request, p model.Principal,
 }
 func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.run(w, r, p, "list", func(id string) (any, error) {
-		v, err := query(r, "state", "q", "limit", "cursor", "authorId")
+		v, err := query(r, "state", "q", "limit", "cursor", "authorId", "repositoryId")
 		if err != nil {
 			return nil, err
 		}
 		input := coregithub.ListRequest{State: "active", Limit: 20}
+		input.RepositoryID, err = repositoryParameter(v)
+		if err != nil {
+			return nil, err
+		}
 		if x, ok := v["authorId"]; ok {
 			n, e := strconv.ParseInt(x[0], 10, 64)
 			if e != nil || n <= 0 || strconv.FormatInt(n, 10) != x[0] {
@@ -106,7 +113,12 @@ func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal
 }
 func (h *handler) detail(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.run(w, r, p, "detail", func(id string) (any, error) {
-		if _, err := query(r); err != nil {
+		v, err := query(r, "repositoryId")
+		if err != nil {
+			return nil, err
+		}
+		repositoryID, err := repositoryParameter(v)
+		if err != nil {
 			return nil, err
 		}
 		s := r.PathValue("number")
@@ -114,7 +126,7 @@ func (h *handler) detail(w http.ResponseWriter, r *http.Request, p model.Princip
 		if err != nil || n <= 0 || strconv.FormatInt(n, 10) != s {
 			return nil, httpx.InvalidInput("number must be a positive decimal integer")
 		}
-		result, err := h.reader.Detail(r.Context(), p, id, n)
+		result, err := h.reader.Detail(r.Context(), p, id, n, repositoryID)
 		if err != nil {
 			return nil, err
 		}
@@ -254,6 +266,7 @@ func summaryResponse(p githubpr.PullRequestSummary) (api.PullRequestSummary, err
 }
 func pageResponse(p coregithub.Page) (api.PullRequestPage, error) {
 	out := api.PullRequestPage{ProjectID: p.Connection.ProjectID, Revision: decimal(p.Connection.Revision), Items: make([]api.PullRequestSummary, 0, len(p.Items)), Total: decimal(p.Total), Counts: api.PullRequestCounts{Active: decimal(p.Counts.Active), Closed: decimal(p.Counts.Closed), Merged: decimal(p.Counts.Merged), All: decimal(p.Counts.All)}, NextCursor: p.NextCursor, PreviousCursor: p.PreviousCursor}
+	out.Repository = repositoryResponse(p.Repository)
 	if p.AuthorID != nil {
 		out.AuthorID = optionalDecimal(p.AuthorID)
 		out.ProjectTotal = optionalDecimal(&p.Counts.ProjectTotal)

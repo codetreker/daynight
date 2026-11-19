@@ -8,7 +8,7 @@ A Project can retain observations from different GitHub repositories. PR numbers
 
 ## Decision
 
-Store verified repository identities per Project and key observations by Project, repository ID and number. Publication and terminal discovery use the active lease's repository; unqualified reads use the source fixed during migration or the first verified connection. The [storage design](../../../../docs/design/github-pr-storage.md) describes the migration, indexes and deployment boundary.
+Store verified repository identities per Project and key observations by Project, repository ID and number. Publication and terminal discovery use the active lease's repository; unqualified reads use the source fixed during migration or the first verified connection. Explicit reads validate source membership in the authorized Project snapshot. The source directory pages by repository ID, and explicit PR and author cursors bind the chosen source. Omitted-source responses and legacy cursors retain their fixed meaning. The [reading design](../../../../docs/design/github-pr-reading.md) owns the HTTP and cursor contracts. The [storage design](../../../../docs/design/github-pr-storage.md) describes the migration, indexes and deployment boundary.
 
 ## Alternatives
 
@@ -18,4 +18,4 @@ Store verified repository identities per Project and key observations by Project
 
 ## Consequences
 
-Historical observations remain readable independently of connection state and preserve their source identity. The source directory and composite indexes add storage and write cost. Migration requires trustworthy existing identities and a window without old writers; missing identity aborts the transaction instead of guessing. Explicit source selection is a separate capability.
+Historical observations remain readable independently of connection state and preserve their source identity. The source directory and composite indexes add storage and write cost. Migration requires trustworthy existing identities and a window without old writers; missing identity aborts the transaction instead of guessing. Explicit source selection preserves overlapping PR numbers and source-local authors and statistics. Author cursors still use the Project connection revision, so synchronization of another source can require a directory restart.

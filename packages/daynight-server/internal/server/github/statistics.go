@@ -17,7 +17,7 @@ func (h *handler) statistics(w http.ResponseWriter, r *http.Request, p model.Pri
 		if len(r.URL.RawQuery) > 4096 {
 			return nil, &httpx.URITooLongError{}
 		}
-		v, err := query(r, "endDate", "window", "authorId")
+		v, err := query(r, "endDate", "window", "authorId", "repositoryId")
 		if err != nil {
 			return nil, err
 		}
@@ -31,6 +31,10 @@ func (h *handler) statistics(w http.ResponseWriter, r *http.Request, p model.Pri
 			return nil, err
 		}
 		input := coregithub.StatisticsRequest{EndDate: end[0], Window: segments}
+		input.RepositoryID, err = repositoryParameter(v)
+		if err != nil {
+			return nil, err
+		}
 		if value, ok := v["authorId"]; ok {
 			n, e := strconv.ParseInt(value[0], 10, 64)
 			if e != nil || n <= 0 || strconv.FormatInt(n, 10) != value[0] {
@@ -103,7 +107,8 @@ func parseStatisticsWindow(endDate, window string) ([]coregithub.StatisticsSegme
 
 func statisticsResponse(endDate string, result coregithub.Statistics) api.PullRequestStatistics {
 	out := api.PullRequestStatistics{
-		ProjectID: result.Connection.ProjectID, EndDate: endDate,
+		Repository: repositoryResponse(result.Repository),
+		ProjectID:  result.Connection.ProjectID, EndDate: endDate,
 		Revision: decimal(result.Connection.Revision), ProjectTotal: decimal(result.ProjectTotal),
 		Availability: result.Availability, HasAuthors: result.HasAuthors, AuthorID: optionalDecimal(result.AuthorID),
 	}
