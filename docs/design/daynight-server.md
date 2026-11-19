@@ -434,6 +434,7 @@ MCP 身份确认后非阻塞取得独立的 16 个输入名额，再有界预读
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |
 | `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
 | `GET, PUT /api/v1/me/workers/{workerId}/configuration` | 独立于任务状态的目标 CAS 与实际应用观测，查询不续活 |
+| `GET, PUT /api/v1/me/workers/{workerId}/review-participation` | 独立的账号级参与设置及版本 CAS，默认关闭；[设计](worker-review-participation.md)拥有字段和写入边界 |
 
 创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
 目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。

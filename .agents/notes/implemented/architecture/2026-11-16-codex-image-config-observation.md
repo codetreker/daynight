@@ -33,7 +33,7 @@ Resume remains unknown until the original thread binding has independent evidenc
 The native executable digest belongs to the verified direct Windows launch
 artifact and its child process. An interpreter or fallback cannot borrow that
 digest. Protocol compatibility remains version- and platform-specific, separate
-from the empty production qualification registry and its required receipt,
+from the production qualification registry and its required receipt,
 history, input-boundary and product evidence.
 
 Runtime generations revoke stale asynchronous reads and image grants. Optional

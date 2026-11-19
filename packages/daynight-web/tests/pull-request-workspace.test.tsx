@@ -10,7 +10,7 @@ const summary = (number = '123', changes: Partial<PullRequestSummary> = {}): Pul
   number, id: number, url: `https://github.com/example/repo/pull/${number}`, title: `Preserve ${number}`, author: { id: '42', login: 'author' },
   state: 'open', draft: false, base: { repositoryId: '4', repositoryFullName: 'example/repo', ref: 'main' },
   head: { repositoryId: '8', repositoryFullName: 'fork/repo', ref: 'feature/full-branch', sha: '1234567890abcdef' },
-  createdAt: time, updatedAt: time, observedAt: time, closedAt: null, mergedAt: null, revision: '4', ...changes,
+  createdAt: time, updatedAt: time, observedAt: time, closedAt: null, mergedAt: null, revision: '4', ...{ repository: { repositoryId: '4', fullName: 'example/repo' } }, ...changes,
 });
 const status = (changes: Partial<GitHubStatus> = {}): GitHubStatus => ({
   projectId, version: '2', revision: '4', serviceAvailable: true, syncEnabled: true, connection: 'connected', repository: { id: '4', fullName: 'example/repo', private: true },
@@ -19,9 +19,9 @@ const status = (changes: Partial<GitHubStatus> = {}): GitHubStatus => ({
   webhook: { running: false, lastReceivedAt: time, lastAttemptAt: time, lastSuccessAt: time, error: null }, ...changes,
 });
 const page = (items: readonly PullRequestSummary[], changes: Partial<PullRequestPage> = {}): PullRequestPage => ({
-  projectId, revision: '4', items, total: String(items.length), counts: { active: String(items.length), merged: '0', closed: '0', all: String(items.length) }, authorId: null, projectTotal: String(items.length), nextCursor: null, previousCursor: null, ...changes,
+  projectId, revision: '4', items, total: String(items.length), counts: { active: String(items.length), merged: '0', closed: '0', all: String(items.length) }, authorId: null, projectTotal: String(items.length), nextCursor: null, previousCursor: null, ...{ repository: { repositoryId: '4', fullName: 'example/repo' } }, ...changes,
 });
-const options = (changes: Partial<PullRequestWorkspaceProps> = {}): PullRequestWorkspaceProps => ({ userId, projectId, active: true, canRead: true, onPrincipalMismatch: vi.fn(), ...changes });
+const options = (changes: Partial<PullRequestWorkspaceProps> = {}): PullRequestWorkspaceProps => ({ userId, projectId, active: true, canRead: true, onPrincipalMismatch: vi.fn(), repositories: [{ repositoryId: '4', fullName: 'example/repo' }], currentRepositoryId: '4', repositoryId: '4', setRepositoryId: vi.fn(), sourceLoading: false, sourceLoaded: true, sourceError: null, retrySources: vi.fn(), ...changes });
 const response = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
 const mockReads = (read: (url: URL) => unknown | Promise<unknown>) => {
   const fetch = vi.fn(async (input: string) => response(await read(new URL(input, 'https://daynight.cc'))));
@@ -334,4 +334,73 @@ describe('pull request workspace', () => {
     await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+});
+
+it('isolates a late source response while preserving unrelated filters', async () => {
+  const { useState } = await import('react');
+  let release!: (value: unknown) => void;
+  const delayed = new Promise<unknown>(resolve => { release = resolve; });
+  let hold = false, dispatched = false;
+  mockReads(url => {
+    if (url.pathname.endsWith('/github')) return status();
+    const source = url.searchParams.get('repositoryId');
+    if (hold && source === '4') { dispatched = true; return delayed; }
+    const record = source === '5'
+      ? summary('123', { title: 'Other repository', base: { repositoryId: '5', repositoryFullName: 'example/other', ref: 'main' } })
+      : summary();
+    return { ...page([record]), repository: { repositoryId: source, fullName: source === '5' ? 'example/other' : 'example/repo' } };
+  });
+  const View = () => {
+    const [repositoryId, setRepositoryId] = useState('4');
+    return <PullRequestWorkspace {...options({ repositories: [{ repositoryId: '4', fullName: 'example/repo' }, { repositoryId: '5', fullName: 'example/other' }], repositoryId, setRepositoryId })} />;
+  };
+  renderWithLocale(<View />, { locale: 'en' });
+  await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Pull request status' }), { target: { value: 'all' } });
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Pull request status' })).toHaveValue('all'));
+  hold = true; fireEvent.focus(window);
+  await waitFor(() => expect(dispatched).toBe(true));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Repository source' }), { target: { value: '5' } });
+  await screen.findByRole('button', { name: '#123 Other repository, Open' });
+  expect(screen.getByRole('combobox', { name: 'Pull request status' })).toHaveValue('all');
+  expect(screen.queryByText('Connected')).toBeNull();
+  expect(screen.queryByText(/Last complete sync/)).toBeNull();
+  await act(async () => { release({ ...page([summary()]), repository: { repositoryId: '4', fullName: 'example/repo' } }); });
+  expect(screen.getByRole('button', { name: '#123 Other repository, Open' })).toBeVisible();
+});
+
+it('does not associate a newly changed GitHub status with the previously listed current source', async () => {
+  const failure = { code: 'network', message: 'other repository failure', at: time };
+  mockReads(url => url.pathname.endsWith('/github')
+    ? status({ repository: { id: '5', fullName: 'example/other', private: true }, poll: { ...status().poll, error: failure } })
+    : page([summary()]));
+  renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+  await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+  expect(screen.queryByText('Connected')).toBeNull();
+  expect(screen.queryByText(/Last complete sync/)).toBeNull();
+  expect(screen.queryByText(/Polling temporarily failed/)).toBeNull();
+});
+
+it('labels a retained repository as historical when its connection is disconnected', async () => {
+  mockReads(url => url.pathname.endsWith('/github') ? status({ connection: 'disconnected' }) : page([summary()]));
+  renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+  await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+  expect(screen.getByRole('option', { name: 'example/repo · Historical source' })).toBeInTheDocument();
+  expect(screen.getByText(/GitHub is disconnected/)).toBeVisible();
+});
+
+it('offers a retry when the initial current repository synchronization status fails', async () => {
+  let fail = true;
+  vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    const url = new URL(input, 'https://daynight.cc');
+    if (url.pathname.endsWith('/github') && fail) return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'test' } }), { status: 503, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    return response(url.pathname.endsWith('/github') ? status() : page([summary()]));
+  }));
+  renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+  await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+  expect(await screen.findByText('Could not read synchronization status.')).toBeVisible();
+  fail = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(screen.queryByText('Could not read synchronization status.')).toBeNull());
+  expect(screen.getByText('Connected')).toBeVisible();
 });

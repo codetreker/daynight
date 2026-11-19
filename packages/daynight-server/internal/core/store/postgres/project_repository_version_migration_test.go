@@ -5,7 +5,7 @@ import "testing"
 func TestProjectRepositoryVersionMigrationPreservesProjects(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	if len(schemaMigrations) == 0 || schemaMigrations[len(schemaMigrations)-1].version != 94 {
+	if len(schemaMigrations) == 0 || schemaMigrations[len(schemaMigrations)-1].version != 95 {
 		t.Fatal("repository version migration is missing")
 	}
 	if err := migrate(ctx, pool, schemaMigrations[:len(schemaMigrations)-1]); err != nil {

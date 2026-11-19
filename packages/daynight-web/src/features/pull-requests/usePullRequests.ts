@@ -4,7 +4,7 @@ import { getGitHubStatus, getPullRequests, type GitHubStatus, type PullRequestAu
 import { createReadSession } from './read-session';
 
 export type PullRequestsOptions = {
-  readonly userId: string; readonly projectId: string; readonly canRead: boolean; readonly active: boolean;
+  readonly userId: string; readonly projectId: string; readonly canRead: boolean; readonly active: boolean; readonly repositoryId?: string | null;
   readonly onPrincipalMismatch: () => void; readonly onAccessError?: ((error: ApiError) => void) | undefined;
 };
 type Counts = Readonly<Record<PullRequestState, string>>;
@@ -17,14 +17,17 @@ type Snapshot = {
 const empty = (): Snapshot => ({ status: null, page: null, counts: null, projectTotal: null, statusError: null, error: null, loading: false, author: null, filter: 'active', query: '', pageNumber: 1, refreshKey: 0 });
 /** Keeps one authorized Project's cursor workspace in memory while its tab is hidden. */
 export const usePullRequests = (options: PullRequestsOptions) => {
-  const { userId, projectId, canRead, active } = options;
+  const { userId, projectId, canRead, active, repositoryId } = options;
   const key = JSON.stringify([userId, projectId]);
+  const sourceKey = JSON.stringify([userId, projectId, repositoryId]);
   const current = useRef(options); current.current = options;
   const currentKey = useRef(key); currentKey.current = key;
   const permitted = useCallback(() => currentKey.current === key && current.current.canRead && current.current.active && document.visibilityState !== 'hidden', [key]);
-  const scope = useMemo(() => createReadSession({ userId, projectId, isAllowed: permitted,
+  const scope = useMemo(() => createReadSession({ userId, projectId, isAllowed: permitted, repositoryId: () => current.current.repositoryId,
     onPrincipalMismatch: () => current.current.onPrincipalMismatch(), onAccessError: error => current.current.onAccessError?.(error) }), [userId, projectId, permitted]);
-  const session = useMemo(() => ({ key, snapshot: empty(), cursor: null as string | null, target: null as { cursor: string | null; page: number; direction: 'next' | 'previous' | 'refresh' } | null, generation: 0, pending: null as AbortController | null, pageRevision: null as string | null, countRevision: null as string | null, projectRevision: null as string | null }), [key]);
+  const prior = useRef<Snapshot | null>(null);
+  const session = useMemo(() => ({ key: sourceKey, snapshot: { ...empty(), filter: prior.current?.filter ?? 'active', query: prior.current?.query ?? '' }, cursor: null as string | null, target: null as { cursor: string | null; page: number; direction: 'next' | 'previous' | 'refresh' } | null, generation: 0, pending: null as AbortController | null, pageRevision: null as string | null, countRevision: null as string | null, projectRevision: null as string | null }), [sourceKey]);
+  prior.current = session.snapshot;
   const [, render] = useState(0);
   const publish = useCallback((snapshot: Snapshot) => { session.snapshot = snapshot; render(value => value + 1); }, [session]);
   const cancel = useCallback(() => { session.generation += 1; session.pending?.abort(); session.pending = null; }, [session]);
@@ -46,7 +49,7 @@ export const usePullRequests = (options: PullRequestsOptions) => {
   useLayoutEffect(() => () => { if (currentKey.current !== key) scope.revoke(); }, [scope, key]);
 
   const run = useCallback((replace: boolean, explicit = false) => {
-    if (!permitted() || !replace && session.pending !== null) return;
+    if (!permitted() || current.current.repositoryId !== repositoryId || repositoryId === null || !replace && session.pending !== null) return;
     if (!scope.isAllowed()) {
       if (session.pending !== null) return;
       const recovery = new AbortController(); session.pending = recovery;
@@ -59,7 +62,7 @@ export const usePullRequests = (options: PullRequestsOptions) => {
     if (replace) cancel();
     const controller = new AbortController(), generation = ++session.generation, token = scope.capture();
     session.pending = controller;
-    const admitted = () => permitted() && session.generation === generation && scope.current(token);
+    const admitted = () => permitted() && current.current.repositoryId === repositoryId && session.generation === generation && scope.current(token);
     const initial = session.snapshot, target = session.target, cursor = target === null ? session.cursor : target.cursor, targetPage = target?.page ?? initial.pageNumber;
     const authorId = initial.author?.id ?? null;
     if (explicit || initial.page === null) publish({ ...initial, loading: true });
@@ -92,7 +95,7 @@ export const usePullRequests = (options: PullRequestsOptions) => {
         publish({ ...session.snapshot, counts: page.counts });
       }
     };
-    const query = { state: initial.filter, q: initial.query, authorId };
+    const query = { state: initial.filter, q: initial.query, authorId, repositoryId };
     const reads: Promise<void>[] = [
       load((signal, dispatch) => getGitHubStatus(projectId, signal, admission(dispatch)), status => {
         const previous = session.snapshot.status;
@@ -115,7 +118,7 @@ export const usePullRequests = (options: PullRequestsOptions) => {
       publish({ ...session.snapshot, loading: false });
       if (recoverAuth) run(false);
     });
-  }, [session, userId, projectId, permitted, cancel, publish, scope]);
+  }, [session, userId, projectId, repositoryId, permitted, cancel, publish, scope]);
 
   const reset = useCallback((filter: PullRequestState, query: string, author: PullRequestAuthor | null, authorChanged: boolean) => {
     cancel(); session.cursor = null; session.target = null;
@@ -155,5 +158,5 @@ export const usePullRequests = (options: PullRequestsOptions) => {
   }, [session, canRead, active, permitted, run, cancel, publish]);
 
   const snapshot = canRead ? session.snapshot : empty();
-  return { ...snapshot, scope, loading: snapshot.loading || active && canRead && snapshot.page === null && snapshot.error === null && snapshot.statusError === null, setAuthor, setFilter, setQuery, next, previous, refresh, reconcile };
+  return { ...snapshot, scope, loading: snapshot.loading || repositoryId !== null && active && canRead && snapshot.page === null && snapshot.error === null && snapshot.statusError === null, setAuthor, setFilter, setQuery, next, previous, refresh, reconcile };
 };

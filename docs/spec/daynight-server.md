@@ -287,6 +287,7 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET` | `/api/v1/me/workers/{workerId}` | 返回近期 Worker telemetry 与按当前权限过滤的任务观测 |
 | `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | 读取账号拥有的云端目标与逐项应用观测，不受近期窗口限制 |
 | `PUT` | `/api/v1/me/workers/{workerId}/configuration` | 精确目标版本保存完整配置，返回当前配置资源 |
+| `GET, HEAD, PUT` | `/api/v1/me/workers/{workerId}/review-participation` | 读取或按独立版本修改账号自己的 PR review 参与开关，默认关闭；[资源合同](../design/worker-review-participation.md) |
 
 项目成员和管理员可管理标签库。标签名称去除 Unicode 首尾空白后为 1–64 个 code point，拒绝控制字符及 U+2028/U+2029；同项目名称按 ASCII 大小写不区分重名，展示拼写保留。目录默认每页 50 条、最多 100 条，按名称键和 ID 排序；cursor 绑定项目、principal、查询、limit 与目录 epoch。目录名称、颜色或成员变化后旧 cursor 明确失效。使用计数是读取快照中的提示，不属于标签 version；确认删除包括之后新增的关联。resolve 的编码结果最多 512 KiB，超限拒绝而不截断。创建可省略 `color`，默认 `#9AA3B2`；更新必须提供精确 `version` 和至少一个 `name`、`color`，省略字段保持原值。颜色输入经校验规范化为大写 `#RRGGBB`，拒绝无效值和 null。成功回执的 ID 和 version 确认请求的规范颜色已随事务提交；后续读取只证明当前状态。旧 REST 标签和 Task/Goal 引用响应不包含颜色。
 

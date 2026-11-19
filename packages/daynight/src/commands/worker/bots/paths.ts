@@ -19,6 +19,7 @@ export const resolveBotPaths = (stateDirectory: string, botId: string) => {
     controllerStateDirectory: directory,
     codexRecoveryDirectory: path.join(directory, "native", "codex"),
     claudeRecoveryDirectory: path.join(directory, "native", "claude"),
+    copilotRecoveryDirectory: path.join(directory, "native", "copilot"),
   };
 };
 
