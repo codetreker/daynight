@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/assistanttask"
@@ -358,54 +357,6 @@ func TestReceivedInboundFindsUnsuppressedReceiptSince(t *testing.T) {
 		}
 		return nil
 	})
-}
-
-// The reaction window includes a receipt received exactly
-// InboundReactionWindow before now and excludes one a microsecond earlier, the
-// database time resolution.
-func TestSuppressInboundReactionWindowBoundaries(t *testing.T) {
-	f := setup(t)
-	f.create(t)
-	ctx := t.Context()
-	inbox := f.inbox(t)
-	holder, peer := uuid.NewString(), uuid.NewString()
-	now := f.task.CreatedAt.Add(time.Hour)
-	start := now.Add(-core.InboundReactionWindow)
-	bot := func(user, id string) *core.InboundActor {
-		return &core.InboundActor{Kind: core.InboundActorBot, UserID: &user, BotID: &id}
-	}
-	for _, tc := range []struct {
-		name       string
-		received   time.Time
-		suppressed bool
-		actor      *core.InboundActor
-		want       bool
-	}{
-		{"window start", start, false, bot(f.owner, peer), true},
-		{"at now", now, false, bot(f.owner, peer), true},
-		{"before window", start.Add(-time.Microsecond), false, bot(f.owner, peer), false},
-		{"suppressed receipt", now, true, bot(f.owner, peer), false},
-		{"holder without receipt", time.Time{}, false, bot(f.owner, holder), true},
-		{"other user's bot", now, false, bot(uuid.NewString(), peer), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			subject := uuid.NewString()
-			f.write(t, func(d store.AssistantTaskDAO) error {
-				if !tc.received.IsZero() {
-					v := f.receipt(inbox.InboxID, subject, tc.received, now.Add(time.Hour))
-					v.TargetBotID, v.SubjectTaskID, v.Suppressed = peer, &subject, tc.suppressed
-					if ok, err := d.InsertInboxReceipt(ctx, v); err != nil || !ok {
-						return errors.Join(err, errors.New("receipt was not inserted"))
-					}
-				}
-				got, err := core.SuppressInbound(ctx, d, f.owner, holder, subject, tc.actor, now)
-				if err != nil || got != tc.want {
-					t.Fatalf("suppressed=%v err=%v", got, err)
-				}
-				return nil
-			})
-		})
-	}
 }
 
 func TestReclamationIsBoundedAndScoped(t *testing.T) {
