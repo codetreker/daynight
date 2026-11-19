@@ -96,7 +96,9 @@ export class ClaudeBotRecovery {
     this.db = new Database(sqliteFilename(filename));
     try {
       await chmod(filename, 0o600);
-      this.db.pragma("journal_mode = DELETE"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 0");
+      // DELETE commits need the journal directory sync so power loss cannot undo
+      // a dirty barrier after native dispatch: https://www.sqlite.org/pragma.html#pragma_synchronous
+      this.db.pragma("journal_mode = DELETE"); this.db.pragma("synchronous = EXTRA"); this.db.pragma("busy_timeout = 0");
       if (!exists) this.db.exec("CREATE TABLE state(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL); CREATE TABLE entries(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,uuid TEXT UNIQUE,data TEXT NOT NULL);");
       const saved = this.db.prepare("SELECT data FROM state WHERE id=1").get() as { data: string } | undefined;
       if (!saved) {

@@ -38,7 +38,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const capabilities = { send: true, steer: false, cancel: true, respond: true };
   let currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, verified = false, disconnected = false;
   let controls: ClaudeControls | undefined, turnStartedAt: string | null = null, native: ClaudeLiveQuery | undefined;
-  let settingInFlight = false;
+  let settingInFlight = false, settingDispatched = false;
   let historyReader: ClaudeTranscriptReader | undefined;
   const pendingInputMessages = new Map<string, string>();
   const projectionOptions: ProviderOptions = { ...options, onInputMessage: (operationId, sessionId, entryId) => {
@@ -212,7 +212,12 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     }, stderr: line => options.onDiagnostic?.(line),
   } }, options); } catch (error) { recovery?.close(); await projection.close(); await historyReader?.close(); throw error; }
   controls = new ClaudeControls(native as ClaudeControlQuery, options.resumeNativeSessionId ? null : options.model, options.resumeNativeSessionId ? undefined : config.effort, state, options.onControlConfirmed, !!options.resumeNativeSessionId, options.controlsRevisionFloor,
-    () => { options.assertNativeDispatch?.(); recovery?.markDirty(); });
+    () => {
+      options.assertNativeDispatch?.();
+      if (recovery && (closed || disconnected)) throw new NativeRpcError(-32602, "Claude recovery cannot dispatch an unconfirmed setting operation.");
+      recovery?.markDirty();
+      if (recovery && settingInFlight) settingDispatched = true;
+    });
   const disconnect = (error: Error) => {
     if (disconnected || closed) return;
     disconnected = true; controls?.close(); input.close(); native?.close(); identityReject(error);
@@ -320,9 +325,15 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     async setSetting(id, value, operationId, revision) {
       if (closed || disconnected) throw new NativeRpcError(-32602, "Native session unavailable.");
       if (recovery && (currentTurnId !== null || settingInFlight)) throw new NativeRpcError(-32602, "Claude Bot recovery requires an idle session for configuration changes.");
-      settingInFlight = true;
+      settingInFlight = true; settingDispatched = false;
       try { await controls!.set(id, value, operationId, revision); return { disposition: "handled" }; }
-      finally { settingInFlight = false; }
+      catch (error) {
+        // A control deadline does not cancel the underlying native setter. No
+        // later turn can certify a recovery point while that mutation is unknown.
+        if (recovery && settingDispatched) disconnect(new Error("Claude setting result is unknown; recovery cannot accept further operations.", { cause: error }));
+        throw error;
+      }
+      finally { settingInFlight = false; settingDispatched = false; }
     },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (currentTurnId !== null || expectedTurnId !== null || interactions.size) throw new NativeRpcError(-32602, "Claude commands require an idle session.");

@@ -13,7 +13,7 @@ vi.mock("../../../src/commands/controller/providers/claude-transcript-helper.js"
 import { openClaudeProvider } from "../../../src/commands/controller/providers/claude.js";
 beforeEach(() => { vi.resetAllMocks(); });
 
-const fixture = async (resumeNativeSessionId: string | null = null) => {
+const fixture = async (resumeNativeSessionId: string | null = null, nativeOverrides: Record<string, unknown> = {}) => {
   let options!: Options, emit!: (value: unknown) => void, wake: (() => void) | undefined, closed = false;
   const events: unknown[] = [], states: ProviderState[] = [], fatal: Error[] = [], inputs: SDKUserMessage[] = [];
   sdk.query.mockImplementation((request: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => {
@@ -24,6 +24,7 @@ const fixture = async (resumeNativeSessionId: string | null = null) => {
       initializationResult: async () => { await options.hooks!.SessionStart![0]!.hooks[0]!({ hook_event_name: "SessionStart", session_id: options.sessionId ?? String(options.extraArgs?.resume), cwd: process.cwd(), source: resumeNativeSessionId ? "resume" : "startup", transcript_path: "" }, undefined, { signal: new AbortController().signal }); },
       async *[Symbol.asyncIterator]() { while (!closed) { const event = events.shift(); if (event) yield event; else await new Promise<void>(resolve => { wake = resolve; }); } },
       close: () => { closed = true; wake?.(); }, supportedModels: async () => [], supportedCommands: async () => [], reloadSkills: async () => {}, getSettings: async () => ({}),
+      ...nativeOverrides,
     };
   });
   const env = { CLAUDE_CONFIG_DIR: process.cwd(), ANTHROPIC_BASE_URL: "https://fixture.invalid" };
@@ -111,5 +112,43 @@ test("Claude Bot declares its image recovery limit and rejects input before disp
     await expect(f.provider.send({ content: [{ type: "image", imageId: randomUUID(), resourceId: randomUUID(), mediaType: "image/png",
       byteLength: "1", sha256: "a".repeat(64), localPath: process.cwd() }] }, randomUUID(), null)).rejects.toThrow("does not support image input");
     expect(recovery.markDirty).not.toHaveBeenCalled(); expect(f.inputs).toEqual([]);
+  } finally { await f.provider.close(); }
+});
+
+test.each(["permissions", "sandbox", "bypass"])("Claude Bot never clears recovery uncertainty after a pending %s setting times out", async phase => {
+  const setter = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+  const setPermissionMode = vi.fn(async () => { if (phase !== "sandbox") { entered.resolve(); await setter.promise; } });
+  const applyFlagSettings = vi.fn(async () => { if (phase === "sandbox") { entered.resolve(); await setter.promise; } });
+  const f = await fixture(null, { setPermissionMode, ...(phase !== "permissions" ? { applyFlagSettings } : {}) });
+  try {
+    const first = randomUUID();
+    await f.provider.send(textNativeInput("first"), first, null);
+    f.emit({ type: "result", subtype: "success", session_id: f.provider.nativeSessionId, user_message_uuid: first, is_error: false });
+    await f.provider.waitForTurn(first, Date.now() + 1000);
+    recovery.protect.mockClear(); f.inputs.length = 0;
+    vi.useFakeTimers();
+    const setting = f.provider.setSetting!("permissions", phase === "bypass" ? "bypassPermissions" : "acceptEdits", randomUUID(), f.states.at(-1)!.controls!.revision).catch(error => error as Error);
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await setting).toMatchObject({ message: "Claude setting update was not confirmed. Check native state before retrying." });
+    await expect(f.provider.send(textNativeInput("unsafe next turn"), randomUUID(), null)).rejects.toThrow("cannot accept");
+    expect(f.states.at(-1)?.activity).toBe("unknown");
+    expect(f.states.at(-1)?.capabilities.send).toBe(false);
+    setter.resolve(); await vi.advanceTimersByTimeAsync(0);
+    f.emit({ type: "result", subtype: "success", session_id: f.provider.nativeSessionId, is_error: false });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(f.provider.send(textNativeInput("late setter is not recovery"), randomUUID(), null)).rejects.toThrow("cannot accept");
+    expect(f.inputs).toEqual([]); expect(recovery.protect).not.toHaveBeenCalled();
+    if (phase === "sandbox") expect(setPermissionMode).not.toHaveBeenCalled();
+    if (phase === "bypass") expect(applyFlagSettings).not.toHaveBeenCalled();
+  } finally { setter.resolve(); vi.useRealTimers(); await f.provider.close(); }
+});
+
+test("Claude Bot remains usable after a setting is rejected before native dispatch", async () => {
+  const f = await fixture(); recovery.markDirty.mockClear();
+  try {
+    await expect(f.provider.setSetting!("missing", "value", randomUUID(), f.states.at(-1)!.controls!.revision)).rejects.toThrow("unavailable");
+    expect(recovery.markDirty).not.toHaveBeenCalled(); expect(f.fatal).toEqual([]);
+    await expect(f.provider.send(textNativeInput("continue"), randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
   } finally { await f.provider.close(); }
 });

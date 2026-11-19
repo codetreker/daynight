@@ -25,6 +25,10 @@ records. The protected point includes the original service, owner, Bot,
 Session, native ID, cwd, configuration root, versions and content digest.
 Unknown, interrupted or failed turns cannot clear the barrier. Confirmed idle
 settings remain dirty until a later successful turn supplies a flush boundary.
+SQLite uses DELETE journals with EXTRA synchronization so the journal directory
+is synced after commit; FULL alone can lose the last dirty transaction after
+power loss on some filesystems. An unconfirmed setting failure fences further
+native dispatch and protection even if the underlying setter later completes.
 
 Recovery validates the mirror and original stopped execution. It recreates a
 missing native transcript through atomic exclusive publication; conflicting
