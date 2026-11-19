@@ -200,6 +200,9 @@ func (s *Execution) putArchive(ctx context.Context, op *ArchiveOperation, data [
 		if err != nil {
 			return err
 		}
+		if err = s.recordArchiveSuccess(ctx, tx, id); err != nil {
+			return err
+		}
 		// A disconnected controller may have created the native session after its
 		// last acknowledged state. Final archival may establish that identity,
 		// but can never replace an identity the relay already observed.

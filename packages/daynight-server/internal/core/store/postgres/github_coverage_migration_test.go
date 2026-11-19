@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -8,7 +9,7 @@ import (
 func TestGitHubCoverageMigrationRetainsWorkAndInitializesIntent(t *testing.T) {
 	ctx := t.Context()
 	pool := emptyPool(t)
-	index := len(schemaMigrations) - 1
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 88 })
 	if index < 1 || schemaMigrations[index].version != 88 {
 		t.Fatal("unexpected migration boundary")
 	}
