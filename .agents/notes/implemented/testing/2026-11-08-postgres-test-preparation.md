@@ -219,6 +219,13 @@ checks both completion receipts and the committed deletion, attachment and
 Task version facts. Each case joins its writer and verifies pool reuse before
 the next case; failure stops reuse.
 
+The [Thread expiry and exact-message matrices](../../../../packages/daynight-server/internal/core/store/postgres/task_thread_witnesses_test.go)
+use one Store per parent with independent Project, Task, author, and
+credential records. The expiry contender must wait on its exact head
+holder and exit before the pool is reused. The message cases compare
+the original serialized boundary and the retained history after rollback.
+A failed case stops reuse.
+
 The [Usage lifetime matrices](../../../../packages/daynight-server/internal/core/store/postgres/usage/lifetime_failures_test.go)
 share one Store per parent and give each case independent account, Project,
 Task, credential, claim and Session identities. The registration refusal
