@@ -9,7 +9,7 @@ import (
 func TestAssistantTaskAppendixValidationMigrationLeavesExistingAppendicesUnrestricted(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 104 })
+	index := slices.IndexFunc(schemaMigrations, func(m migration) bool { return m.version == 103 })
 	if index < 1 {
 		t.Fatal("assistant task appendix validation migration is missing")
 	}

@@ -21,7 +21,7 @@
 | `assistant_tasks` | 定义、状态、当前手册版本、认领字段、版本及记录时钟头 |
 | `assistant_task_claim_operations` | `(owner_user_id, task_id, operation_id)` 唯一的成功认领操作回执 |
 | `assistant_task_manual_versions` | 只追加的正文、规则、来源及提案引用 |
-| `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本；迁移 `101_assistant_task_appendix_validations.sql` 增加以 JSON 数组保存的适用范围（项目 ID、事件类型、事项类别）、成功与失败计数和可空的最近验证时间，既有行范围为空数组、计数为 0 |
+| `assistant_task_appendix` | 引用工作记录的经验、作者、编辑状态及版本；迁移 `103_assistant_task_appendix_validations.sql` 增加以 JSON 数组保存的适用范围（项目 ID、事件类型、事项类别）、成功与失败计数和可空的最近验证时间，既有行范围为空数组、计数为 0 |
 | `assistant_task_appendix_validations` | 附录验证登记：结果记录 ID、结果取值、登记 Bot 与时间；主键 `(appendix_id, outcome_record_id)` 保证同一结果记录对同一附录只登记一次 |
 | `assistant_task_proposals` | 基准版本、候选正文与规则、证据、扩大标记及用户决定 |
 | `assistant_task_items` | 应用键、episode、跟进 Bot、状态、应用私有 JSON 与版本 |
