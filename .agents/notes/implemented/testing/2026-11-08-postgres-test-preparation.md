@@ -369,11 +369,13 @@ within the window. The eligibility and Profile Patch cases join the worker
 before checking that the membership or profile changes were rolled back.
 
 [AssistantTask credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/assistanttask/concurrency_test.go)
-uses the same PostgreSQL clock and connection preparation. The expiry update
-commits before taking the Session row lock because the holder locks the same
-row that stores the credential. The holder leaves that row unchanged. The
-contender waits on the exact holder while the Session is still valid, and
-its fresh read after natural expiry must reject the transaction.
+and [Profile credential expiry](../../../../packages/daynight-server/internal/core/store/postgres/identity/profile_credential_test.go)
+use the same PostgreSQL clock and connection preparation. The expiry update
+commits before taking the credential row lock. The holder leaves that row
+unchanged. The contender waits on the exact holder while the credential is
+still valid, then the post-lock expiry check must reject it. The Profile
+test covers both Session and PAT and distinguishes the post-lock rejection
+from an empty result in the initial credential lookup.
 
 The [Bot runtime write fixture](../../../../packages/daynight-server/internal/core/store/postgres/testdata/testutil/bot.go)
 uses the persisted native credential expiry and explicit caller times on

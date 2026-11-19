@@ -2,6 +2,8 @@ package identity_test
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func profileCredentialDAO(tx pgx.Tx) store.IdentityDAO {
@@ -160,37 +163,106 @@ func TestProfileCredentialExpiryIsRecheckedAfterCredentialRowWait(t *testing.T) 
 					return scope.IdentityDAO().InsertPAT(ctx, model.PersonalAccessToken{ID: actor.CredentialID, UserID: user.ID, TokenHash: hash(uuid.NewString()), Name: "profile", CreatedAt: now})
 				})
 			}
-			expires := now.Add(time.Second)
-			_, err := db.Pool.Exec(ctx, `UPDATE `+table+` SET expires_at=$2 WHERE id=$1`, actor.CredentialID, expires)
-			requireNoError(t, err)
+			expires := testutil.ArmCredentialExpiry(t, ctx, db.Pool, table, actor.CredentialID, 3)
+			if !now.Before(expires) {
+				t.Fatalf("caller time %v must precede credential expiry %v", now, expires)
+			}
 			holder, err := db.Pool.Begin(ctx)
 			requireNoError(t, err)
-			defer holder.Rollback(context.Background())
-			_, err = holder.Exec(ctx, `SELECT id FROM `+table+` WHERE id=$1 FOR UPDATE`, actor.CredentialID)
-			requireNoError(t, err)
-			reader, err := db.Pool.Begin(ctx)
-			requireNoError(t, err)
-			defer reader.Rollback(context.Background())
-			done := make(chan error, 1)
-			readerPID := reader.Conn().PgConn().PID()
-			go func() { done <- profileCredentialDAO(reader).LockProfileCredential(ctx, actor, now) }()
-			waitProfileCredentialQuery(t, ctx, db, readerPID)
-			ticker := time.NewTicker(5 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				var expired bool
-				requireNoError(t, db.Pool.QueryRow(ctx, `SELECT clock_timestamp()>=$1::timestamptz`, expires).Scan(&expired))
-				if expired {
-					break
+			var readerTask sync.WaitGroup
+			holderCommitAttempted := false
+			defer func() {
+				cancel()
+				if !holderCommitAttempted {
+					rollbackProfileExpiryTransaction(t, ctx, holder)
 				}
-				select {
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				case <-ticker.C:
-				}
+				readerTask.Wait()
+			}()
+			// Updating the locked tuple could cause the initial lookup to recheck its own predicate.
+			var lockedExpiry time.Time
+			requireNoError(t, holder.QueryRow(ctx, `SELECT expires_at FROM `+table+` WHERE id=$1 AND user_id=$2 FOR UPDATE`,
+				actor.CredentialID, actor.UserID).Scan(&lockedExpiry))
+			if !lockedExpiry.Equal(expires) {
+				t.Fatalf("locked credential expiry = %v, want %v", lockedExpiry, expires)
 			}
+			holderPID := holder.Conn().PgConn().PID()
+
+			ready := make(chan uint32, 1)
+			result := make(chan error, 1)
+			readerTask.Go(func() {
+				reader, err := db.Pool.Begin(ctx)
+				if err != nil {
+					result <- err
+					return
+				}
+				defer rollbackProfileExpiryTransaction(t, ctx, reader)
+				ready <- reader.Conn().PgConn().PID()
+				result <- profileCredentialDAO(reader).LockProfileCredential(ctx, actor, now)
+			})
+			var readerPID uint32
+			select {
+			case readerPID = <-ready:
+			case err := <-result:
+				t.Fatalf("credential reader finished without observing the lock: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+
+			waitProfileCredentialRowLock(t, ctx, db, table, readerPID, holderPID, result)
+			testutil.WaitForCredentialExpiry(t, ctx, db.Pool, expires)
+			holderCommitAttempted = true
 			requireNoError(t, holder.Commit(ctx))
-			requireMissing(t, <-done)
+			err = testutil.ReceiveQueryResult(t, ctx, result)
+			requireMissing(t, err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("initial credential lookup returned no row: %v", err)
+			}
 		})
 	}
+}
+
+func waitProfileCredentialRowLock(t *testing.T, ctx context.Context, db *postgres.Store, table string, readerPID, holderPID uint32, result <-chan error) {
+	t.Helper()
+	query := "SELECT expires_at FROM " + table + " WHERE id=$1 AND user_id=$2 AND % FOR SHARE"
+	for {
+		select {
+		case err := <-result:
+			t.Fatalf("credential reader finished without observing the lock: %v", err)
+		default:
+		}
+		var waiting bool
+		requireNoError(t, db.Pool.QueryRow(ctx, `SELECT EXISTS (
+			SELECT FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND query LIKE $2
+				AND $3=ANY(pg_blocking_pids(pid))
+		)`, readerPID, query, holderPID).Scan(&waiting))
+		if waiting {
+			return
+		}
+		if err := testutil.WaitThreadClock(ctx); err != nil {
+			t.Fatalf("credential reader %d did not wait for holder %d: %v", readerPID, holderPID, err)
+		}
+	}
+}
+
+func rollbackProfileExpiryTransaction(t *testing.T, operationCtx context.Context, tx pgx.Tx) {
+	t.Helper()
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(operationCtx), 5*time.Second)
+	defer cancel()
+
+	// Rollback returns the connection to the pool. Retain the cleanup signal while we own it.
+	conn := tx.Conn().PgConn()
+	closedBefore, cleanupDone := conn.IsClosed(), conn.CleanupDone()
+	err := tx.Rollback(cleanup)
+	if err == nil || errors.Is(err, pgx.ErrTxClosed) {
+		return
+	}
+	if errors.Is(err, pgconn.ErrConnClosed) && (closedBefore || operationCtx.Err() != nil) {
+		select {
+		case <-cleanupDone:
+			return
+		case <-cleanup.Done():
+			err = errors.Join(err, cleanup.Err())
+		}
+	}
+	t.Errorf("rollback credential expiry transaction: %v", err)
 }
