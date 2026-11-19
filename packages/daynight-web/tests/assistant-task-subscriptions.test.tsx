@@ -67,7 +67,9 @@ afterEach(() => { scopes.splice(0).forEach(scope => scope.dispose()); invalidate
 it('only offers self-subscription on public HTTPS origins and matches targets by origin and path', () => {
   expect(canSelfSubscribe(origin)).toBe(true);
   for (const value of ['http://daynight.example', 'https://localhost:8443', 'https://app.localhost', 'https://127.0.0.1', 'https://[::1]', 'not a url']) expect(canSelfSubscribe(value)).toBe(false);
-  expect(targetsInbox(`${inboxUrl}/?trace=1`, inboxUrl)).toBe(true);
+  expect(targetsInbox(`${inboxUrl}?trace=1`, inboxUrl)).toBe(true);
+  // The public route and its target check require the exact inbox path.
+  expect(targetsInbox(`${inboxUrl}/`, inboxUrl)).toBe(false);
   expect(targetsInbox(`https://other.example/api/v1/assistant-task-inbox/${inboxId}`, inboxUrl)).toBe(false);
   expect(targetsInbox(`${origin}/api/v1/assistant-task-inbox/${botId(1)}`, inboxUrl)).toBe(false);
   expect(targetsInbox(null, inboxUrl)).toBe(false);
@@ -107,11 +109,12 @@ it('creates a personal endpoint targeting the token-free inbox URL', async () =>
 
 it('updates the linked personal endpoint and warns about Team endpoints targeting the inbox', async () => {
   directories.teams = [team];
-  const linked = endpoint(personalId, `${inboxUrl}/`, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
-  const s = server({ personal: [linked], team: [endpoint(teamEndpointId, inboxUrl, []), endpoint(botId(81), 'https://receiver.example/team', [])] }); mount();
+  const linked = endpoint(personalId, `${inboxUrl}?source=daynight`, [{ id: subscriptionId, projectId: alpha, projectName: 'Alpha', eventTypes: ['task.created'], eligibility: 'eligible' }]);
+  const s = server({ personal: [linked, endpoint(otherId, `${inboxUrl}/`, [])], team: [endpoint(teamEndpointId, inboxUrl, []), endpoint(botId(81), 'https://receiver.example/team', [])] }); mount();
   expect(await screen.findByRole('alert')).toHaveTextContent('A Team endpoint targets this inbox.');
   expect(screen.getByText(/Team · Ops · Enabled/)).toBeVisible();
   expect(screen.queryByText('Endpoint 81')).toBeNull();
+  expect(screen.queryByText(`Endpoint ${otherId.slice(-2)}`)).toBeNull();
   expect(screen.getByRole('checkbox', { name: 'Alpha' })).toBeChecked();
   expect(screen.getByRole('checkbox', { name: 'Task created' })).toBeChecked();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Beta' }));
@@ -162,6 +165,36 @@ it('adopts a created endpoint while the directory refresh fails', async () => {
   expect(screen.queryByRole('button', { name: 'Create subscription' })).toBeNull();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Task paused' }));
   fireEvent.click(screen.getByRole('button', { name: 'Save subscription' }));
+  await waitFor(() => expect(s.writes).toHaveLength(2));
+  expect(s.writes[1]).toMatchObject({ method: 'PATCH', path: `/api/v1/me/webhooks/${botId(80)}`, body: { ifVersion: '1' } });
+});
+
+it('adopts a create confirmed by a manual operation check while the directory refresh fails', async () => {
+  const s = server(); mount();
+  await screen.findByText('No Webhook endpoint targets this inbox yet.');
+  const original = s.fetch.getMockImplementation()!;
+  let receipt: unknown = null, lookups = 0, directoryFails = true;
+  s.fetch.mockImplementation(async (url, options) => {
+    const path = String(url), method = options?.method ?? 'GET';
+    if (method === 'POST') { receipt = (await (await original(url, options)).json() as { operation: unknown }).operation; throw new TypeError('Response lost'); }
+    if (path.startsWith('/api/v1/me/webhooks/operations/')) return lookups++ === 0 ? botError(500, 'internal') : botResponse(receipt);
+    if (directoryFails && path.startsWith('/api/v1/me/webhooks')) return botError(500, 'internal');
+    return original(url, options);
+  });
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Alpha' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task created' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create subscription' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Check operation' }));
+  expect(await screen.findByText('Could not load Webhook subscriptions.')).toBeVisible();
+  expect(lookups).toBe(2);
+  expect(screen.getByRole('button', { name: 'Create subscription' })).toBeDisabled();
+  fireEvent.submit(screen.getByRole('button', { name: 'Create subscription' }).closest('form')!);
+  expect(s.writes).toHaveLength(1);
+  directoryFails = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  const save = await screen.findByRole('button', { name: 'Save subscription' });
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Task paused' }));
+  fireEvent.click(save);
   await waitFor(() => expect(s.writes).toHaveLength(2));
   expect(s.writes[1]).toMatchObject({ method: 'PATCH', path: `/api/v1/me/webhooks/${botId(80)}`, body: { ifVersion: '1' } });
 });

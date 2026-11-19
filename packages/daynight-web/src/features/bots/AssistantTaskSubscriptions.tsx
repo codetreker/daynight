@@ -51,12 +51,15 @@ export const canSelfSubscribe = (origin: string): boolean => {
   const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
   return url.protocol === 'https:' && host !== 'localhost' && !host.endsWith('.localhost') && host !== '::1' && host !== '0.0.0.0' && !/^127\./.test(host);
 };
-/** The inbox verifies the Delivery target by origin and path, so query strings and a trailing slash do not separate endpoints. */
+/**
+ * The inbox route and its Delivery target check accept only the exact inbox path, so a query string does not separate
+ * endpoints but a trailing slash names a different, non-working target.
+ */
 export const targetsInbox = (target: string | null, inboxUrl: string): boolean => {
   if (target === null) return false;
   try {
     const left = new URL(target), right = new URL(inboxUrl);
-    return left.origin === right.origin && left.pathname.replace(/\/+$/, '') === right.pathname;
+    return left.origin === right.origin && left.pathname === right.pathname;
   } catch { return false; }
 };
 
@@ -144,23 +147,25 @@ export function AssistantTaskSubscriptions({ task, inboxId, inboxEnabled, active
   const intent = useSyncExternalStore(controller?.subscribe ?? inertSubscribe, controller?.getSnapshot ?? (() => idle));
   const busy = intent.phase === 'preparing' || intent.phase === 'submitting' || intent.phase === 'unknown' || intent.reconciling;
   const [failure, setFailure] = useState<unknown>(null);
+  // Both a direct submit and a manual reconciliation can confirm a create; either way the endpoint is adopted.
+  const confirm = useCallback((state: WebhookIntentState) => {
+    if (state.result?.operation.kind === 'endpoint.create' && matchKey !== null) {
+      const endpoint = state.result.endpoint?.lifecycle === 'active' ? state.result.endpoint : null;
+      setCreated({ url: matchKey, endpointId: state.result.operation.endpointId, endpoint });
+    }
+    setRevision(value => value + 1);
+  }, [matchKey]);
   const submit = useCallback(async (input: WebhookIntentInput) => {
     if (controller === null) return false;
     setFailure(null);
     try {
       const state = await controller.submit(input);
       if (state.phase === 'rejected') { setFailure(state.error); return false; }
-      if (state.phase === 'confirmed') {
-        if (input.kind === 'endpoint.create' && state.result !== null && matchKey !== null) {
-          const endpoint = state.result.endpoint?.lifecycle === 'active' ? state.result.endpoint : null;
-          setCreated({ url: matchKey, endpointId: state.result.operation.endpointId, endpoint });
-        }
-        setRevision(value => value + 1); return true;
-      }
+      if (state.phase === 'confirmed') { confirm(state); return true; }
       return false;
     } catch (error) { setFailure(error); return false; }
-  }, [controller, matchKey]);
-  const reconcile = async () => { if ((await controller?.reconcile())?.phase === 'confirmed') setRevision(value => value + 1); };
+  }, [controller, confirm]);
+  const reconcile = async () => { const state = await controller?.reconcile(); if (state?.phase === 'confirmed') confirm(state); };
 
   const primary = data?.personal.find(endpoint => endpoint.enabled) ?? data?.personal[0] ?? null;
   const [draft, setDraft] = useState<{ readonly projects: readonly string[]; readonly events: readonly WebhookEventType[] } | null>(null);
