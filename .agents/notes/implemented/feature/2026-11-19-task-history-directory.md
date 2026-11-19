@@ -26,6 +26,9 @@ validates the response capability header and body version, and preserves that
 selection in continuation commands. Default `list` retains its legacy endpoint
 and JSON. Strict decoders remain separate. Original-Session content failures
 retain explicit expiry diagnostics without looking up the current claim.
+The versioned decoder preserves valid RFC3339 numeric offsets from PostgreSQL
+timestamps, validating calendar and offset fields independently; requiring UTC
+text would reject valid archives served from a non-UTC environment.
 
 ## Alternatives
 

@@ -53,6 +53,15 @@ describe("Task Session history directory version 1", () => {
     expect(await fixture(value).api.listTaskSessionHistoryDirectory(projectId, taskId)).toEqual(value);
   });
 
+  it.each(["createdAt", "endedAt", "expiresAt", "expiredAt", "scopeEndedAt", "firstArchivedAt", "legacyGraceStartedAt"])("preserves valid offset timestamps in %s from non-UTC servers", async field => {
+    const value = { ...page, observedAt: "2026-11-19T08:00:00+08:00", items: [{ ...item, [field]: "2026-11-19T03:04:05.123456789-05:30" }] };
+    expect(await fixture(value).api.listTaskSessionHistoryDirectory(projectId, taskId)).toEqual(value);
+  });
+
+  it.each(["2026-11-19T08:00:00+24:00", "2026-11-19T08:00:00+08:60", "2026-11-19T08:00:00+8:00", "2026-02-30T08:00:00+08:00", "2026-11-19T24:00:00+08:00", "2026-11-19T08:00:00"])("rejects invalid offset timestamp %s", async firstArchivedAt => {
+    await expect(fixture({ ...page, items: [{ ...item, firstArchivedAt }] }).api.listTaskSessionHistoryDirectory(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
+  });
+
   it.each([null, "0", "2", "1, 1"])("rejects missing or unsupported capability %s without legacy fallback", async header => {
     const f = fixture(page, 200, header);
     await expect(f.api.listTaskSessionHistoryDirectory(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });

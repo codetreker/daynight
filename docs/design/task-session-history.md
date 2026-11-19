@@ -74,7 +74,7 @@ Session 页用同快照的当前完整链及首次归档、宽限和实际过期
 
 组查询计算当前连通分量；成员及期限查询只遍历目标链。Session 查询只投影执行代次和末次终止时间，不返回完整快照或终端运行记录。目录事实摘要需要扫描项目历史元数据，组计算的成本随项目图增长；页大小只限制返回条数，不代表图计算成本。机制取舍见[分组目录决策](../../.agents/notes/implemented/feature/2026-11-19-task-history-directory.md)。
 
-CLI 的 `list --directory-version 1` 消费独立的 Task Session 页，GET 成功响应必须同时具有 `Daynight-Task-History-Directory-Version: 1` 与正文 `version: 1`。独立 DTO 解码器验证原 Task、Session 唯一性、模式与内容类型、分页上限及字段类型，并拒绝未知字段；`graphVersion` 保持十进制字符串。默认 `list` 仍消费旧 inspection 目录，不混入新增字段。版本化续页命令携带相同版本选项，失败保留服务端拒绝，不自动切换入口或重试。正文与 `show` 继续走原 Session 入口；正文 `history_unavailable` 的已知过期原因映射为固定诊断，其他不可用原因不被误判为过期。
+CLI 的 `list --directory-version 1` 消费独立的 Task Session 页，GET 成功响应必须同时具有 `Daynight-Task-History-Directory-Version: 1` 与正文 `version: 1`。独立 DTO 解码器验证原 Task、Session 唯一性、模式与内容类型、分页上限及字段类型，并拒绝未知字段；`graphVersion` 保持十进制字符串。新版目录时间保留有效 RFC3339 的 `Z` 或数值时区偏移，并分别校验日历时间和偏移范围，以兼容 PostgreSQL 返回非 UTC 时区的归档时间。默认 `list` 仍消费旧 inspection 目录，不混入新增字段。版本化续页命令携带相同版本选项，失败保留服务端拒绝，不自动切换入口或重试。正文与 `show` 继续走原 Session 入口；正文 `history_unavailable` 的已知过期原因映射为固定诊断，其他不可用原因不被误判为过期。
 
 首次读取通过 inspection 确定可用来源；带 cursor 的请求必须维持其来源。归档走 `ArchiveContentReserved` 的权限、预留、大小、摘要及格式检查，然后只投影请求页或块。schema3 在同一个归档操作中验证 manifest 并读取其独立 timeline，不生成 schema1 兼容副本；共享归档许可和 timeline 读取 lease 均随结果句柄保留到响应交付完成或取消。旧格式仍可能完整物化最多 64 MiB，因此 MCP read/entry 选择 `BudgetLarge`。预检与驻留许可随结果句柄保留到 HTTP 响应完成或取消；MCP 绑定请求交付作用域，不能在工具 callback 返回时提前释放。
 
