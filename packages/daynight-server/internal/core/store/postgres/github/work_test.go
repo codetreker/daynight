@@ -97,6 +97,11 @@ func TestGitHubWorkRuntimeAndConditionalHints(t *testing.T) {
 	if ok, err = w.PublishRepository(ctx, lease, observed); err != nil || !ok {
 		t.Fatalf("same observation: %v %v", ok, err)
 	}
+	var legacy int64
+	var sourceName string
+	if err = tx.QueryRow(ctx, `SELECT g.legacy_repository_id,r.full_name FROM project_github g JOIN project_github_repositories r ON r.project_id=g.project_id AND r.repository_id=g.legacy_repository_id WHERE g.project_id=$1`, id).Scan(&legacy, &sourceName); err != nil || legacy != 30 || sourceName != "org/renamed" {
+		t.Fatalf("recovered legacy source: %d %q %v", legacy, sourceName, err)
+	}
 	c, err = w.Connection(ctx)
 	if err != nil || c.Revision != 9 || *c.RepositoryID != 30 || *c.RepositoryFullName != "org/renamed" || !*c.RepositoryPrivate || *c.InstallationAccountLogin != "org" || c.AccessHintID != nil || c.AccessDeliveryID != nil {
 		t.Fatalf("repository and hint: %+v %v", c, err)

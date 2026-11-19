@@ -101,7 +101,7 @@ func TestStatisticsAvailability(t *testing.T) {
 	id := int64(1)
 	now := time.Now()
 	generation := int64(2)
-	connected := githubpr.Connection{InstallationID: &id, Enabled: true, SyncEnabled: true, Generation: 2}
+	connected := githubpr.Connection{InstallationID: &id, RepositoryID: &id, LegacyRepositoryID: &id, Enabled: true, SyncEnabled: true, Generation: 2}
 	for _, tc := range []struct {
 		name      string
 		c         githubpr.Connection
@@ -109,7 +109,14 @@ func TestStatisticsAvailability(t *testing.T) {
 		total     int64
 		want      string
 	}{
-		{"saved", githubpr.Connection{}, false, 1, "ready"}, {"missing", githubpr.Connection{}, false, 0, "not_connected"}, {"initializing", connected, true, 0, "initializing"}, {"disabled service", connected, false, 0, "no_saved_data"}, {"success", func() githubpr.Connection {
+		{"saved", githubpr.Connection{}, false, 1, "ready"}, {"missing", githubpr.Connection{}, false, 0, "not_connected"}, {"initializing", connected, true, 0, "initializing"}, {"disabled service", connected, false, 0, "no_saved_data"}, {"different source", func() githubpr.Connection { c := connected; other := int64(2); c.RepositoryID = &other; return c }(), true, 0, "no_saved_data"}, {"different source completed", func() githubpr.Connection {
+			c := connected
+			other := int64(2)
+			c.RepositoryID = &other
+			c.LastFullGeneration = &generation
+			c.LastFullSuccessAt = &now
+			return c
+		}(), true, 0, "no_saved_data"}, {"unbound legacy", func() githubpr.Connection { c := connected; c.LegacyRepositoryID = nil; return c }(), true, 0, "no_saved_data"}, {"success", func() githubpr.Connection {
 			c := connected
 			c.LastFullGeneration = &generation
 			c.LastFullSuccessAt = &now
