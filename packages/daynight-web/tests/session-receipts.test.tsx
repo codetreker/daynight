@@ -166,8 +166,10 @@ it('keeps an uncertain result visible and its draft intact when delivery fails',
   act(() => f.client.setDraft('Unconfirmed input'));
   fireEvent.submit(container.querySelector('form')!);
   await waitFor(() => expect(screen.getAllByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toHaveLength(1));
+  // The receipt is published when the request ends; the composer error follows once the rejected submit settles.
+  await waitFor(() => expect(container.querySelector('.session-composer .session-error')).toHaveTextContent('Connection interrupted'));
+  expect(screen.getAllByText('Delivery outcome is unknown. Check this operation; do not resend it.')).toHaveLength(1);
   expect(container.querySelector('.session-composer .session-notice')).toBeNull();
-  expect(container.querySelector('.session-composer .session-error')).toHaveTextContent('Connection interrupted');
   expect(screen.getByRole('button', { name: 'Check original operation' })).toBeEnabled();
   expect(screen.getByRole('textbox')).toHaveValue('Unconfirmed input');
   expect(container.querySelector('.session-receipt-progress')).toBeNull();
