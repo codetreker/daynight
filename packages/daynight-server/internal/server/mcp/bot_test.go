@@ -683,6 +683,37 @@ func TestBotUnknownWriteRetainsOriginalIDs(t *testing.T) {
 	}
 }
 
+func TestBotScopeRefusalMCPEnvelope(t *testing.T) {
+	f := newEntryFixture(t)
+	refused := &model.Fault{Code: "insufficient_scope", Message: "Credential scope does not permit this Bot operation."}
+	ops := &fakeBotOperations{err: refused}
+	relay := &fakeBotDeletion{err: refused}
+	if err := RegisterBotTools(f.entry, ops, relay); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, tc := range []struct {
+		name    string
+		args    map[string]any
+		outcome any
+	}{
+		{"bot_show", map[string]any{"botId": botTestID}, nil},
+		{"bot_create", map[string]any{"name": "new", "requestId": botTestID}, "not_committed"},
+		{"bot_delete", map[string]any{"botId": botTestID, "ifVersion": "1", "requestId": botTestID}, "not_committed"},
+	} {
+		result, err := client.CallTool(ctx, &sdk.CallToolParams{Name: tc.name, Arguments: tc.args})
+		if err != nil || !result.IsError {
+			t.Fatalf("%s: %+v %v", tc.name, result, err)
+		}
+		failure := object(t, structured(t, result)["error"])
+		if failure["code"] != "insufficient_scope" || failure["writeOutcome"] != tc.outcome {
+			t.Fatalf("%s: %+v", tc.name, failure)
+		}
+	}
+}
+
 func TestBotWriteOutputFailurePreservesCompletion(t *testing.T) {
 	f := newEntryFixture(t)
 	bot := sampleBot()

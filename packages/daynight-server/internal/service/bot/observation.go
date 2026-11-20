@@ -6,6 +6,7 @@ import (
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/scopepolicy"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -33,6 +34,9 @@ func (s *Bots) readObservation(ctx context.Context, principal model.Principal, i
 		var err error
 		out.bot, err = s.operations.get(ctx, scope, principal, id)
 		if err != nil {
+			return err
+		}
+		if err := s.readAdmission(ctx, scope, principal, scopepolicy.BotRead, scopepolicy.SessionRead); err != nil {
 			return err
 		}
 		if out.bot.Deletion != nil {
@@ -63,7 +67,7 @@ func (s *Bots) Observation(ctx context.Context, principal model.Principal, id st
 	}
 	before, err := s.readObservation(ctx, principal, id)
 	if err != nil {
-		return botcore.Observation{}, botcore.ResultError("observe", err)
+		return botcore.Observation{}, definitionResultError("observe", err)
 	}
 	live, err := s.observer.ObserveBotSession(ctx, before.source.Session)
 	if err != nil {
@@ -79,7 +83,7 @@ func (s *Bots) Observation(ctx context.Context, principal model.Principal, id st
 	// publish activity from the former binding.
 	after, err := s.readObservation(ctx, principal, id)
 	if err != nil {
-		return botcore.Observation{}, botcore.ResultError("observe", err)
+		return botcore.Observation{}, definitionResultError("observe", err)
 	}
 	if before.bot.Version != after.bot.Version {
 		live.Available = false

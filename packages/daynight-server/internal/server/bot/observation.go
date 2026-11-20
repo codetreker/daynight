@@ -28,7 +28,7 @@ func (h *botsHandler) observation(w http.ResponseWriter, request *http.Request, 
 		}
 	}
 	if err != nil {
-		httpx.WriteError(w, request, logger, "bot", "observe", err)
+		writeBotError(w, request, logger, "observe", err)
 		return
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, observationResponse(result))

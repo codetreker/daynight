@@ -49,11 +49,38 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 `insufficient_scope`，写入拒绝为 `not_committed`。提交未知和清理失败继续
 使用原有完成语义，不能表述为确定的权限拒绝。
 
+## Bot 定义准入
+
+`service/bot` 的 scoped 构造入口接收授权事实来源；读取使用当前快照，创建和
+删除在各自写事务中取得与原 Principal 绑定的当前策略。OAuth 事务按 grant、
+access 的顺序锁定，原凭据、归属和删除协调检查继续生效。缺少策略、身份
+不匹配或所需 scope 时不能作为固定 profile 放行。
+
+| 操作 | 所需 scope | 响应 |
+| --- | --- | --- |
+| 定义 Get、List、ListWorker | `bot:read`、`session:read` | 原完整 Bot 投影，包含 Session 标识和启动结果 |
+| Create、CreateResolved | `bot:write`、`bot:read`、`session:read` | 原完整 Bot 投影；在解析及写入前检查，并在写事务内复核 |
+| Delete | `bot:delete`、`bot:read` | 原删除责任和清理状态；沿用 Session 准入撤销及清理协调 |
+| Defaults | `bot:read`、`worker:read` | 原 Worker 和默认配置投影；主动模型发现另需 `worker:inspect` |
+| Observation | `bot:read`、`session:read` | 原 Bot 与 Session 运行观测；采样前后复核 |
+
+HTTP 请求显式携带 `Daynight-Bot-Attention: 1` 并请求完整定义投影时，另需
+`assistant-task:read`；创建在写入前复核该权限。MCP 的 `bot_list`、`bot_show`、
+`bot_create`、`bot_delete` 保留既有输出，不请求该投影。创建所需的内部模型
+发现遵守 Bot 准入及原 Worker 资源检查，并在每次发现前复核当前权限；它不把
+独立 Worker 检查能力授予 Bot 定义凭据。
+
+既有 Bot 或指定 Worker 的可见性检查先于 scope 拒绝，分页读取、定义写入和
+删除屏障在授权后执行。可靠的 scope 拒绝在 REST 保留 403 `forbidden` 并附加
+`Daynight-Scope-Status: insufficient_scope`；MCP 返回 `insufficient_scope`，确定
+拒绝的写入标为 `not_committed`。提交或清理结果不确定时保留原错误语义。
+
 ## 装配边界
 
 生产仍使用原有 `tag.New`、REST 和 MCP 注册，尚未启用受限凭据签发或
 scoped Tag 装配。scoped 入口只接受显式授权事实，不以缺失 policy 放行。
 凭据持久化、认证时读取最新策略、完整入口分类、迁移和公开启用由相应
-实现接入；Tag 的直接操作使用调用方已认证的策略快照。
+实现接入；Tag 的直接操作使用调用方已认证的策略快照。生产 Bot 组装也保持
+原有入口；scoped Bot 授权事实来源由启用阶段接入事务绑定的权威读取。
 
 目录准入的取舍见[决策记录](../../.agents/notes/implemented/architecture/2026-11-20-tag-scope-admission.md)。
