@@ -120,6 +120,13 @@ REST 对可靠的权限拒绝保留 HTTP 403 与 `forbidden` 错误对象，附�
 内容和文件副作用均在 scope 准入之后访问。项目可见性检查不要求额外的
 `project:read` 或 `task:read` scope。
 
+MCP 私有传输的显式 scoped 服务在每个新读和分块写入准入中，按原 PAT ID 或
+OAuth Grant ID 锁定当前凭据并读取策略；同一 Grant 的新 access 可续取。下载的
+读后 Touch 与快照发布在原事务内复核 `attachment:read`，上传块和最终发布复核
+`attachment:upload`。完整附件元数据回执另需 `attachment:read`。最终发布在
+附件事务中、文件副作用前复核；原内部回执结算和清理不因后续权限收窄而中断。
+传输记录不保存 scope，生产装配继续使用原入口。
+
 | 操作 | 所需 scope | 准入与输出 |
 | --- | --- | --- |
 | List | `attachment:read` | 同一读取快照中准入后获取目录及分页元数据 |
