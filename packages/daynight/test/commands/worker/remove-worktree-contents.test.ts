@@ -1,6 +1,6 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -9,7 +9,7 @@ import { removeWorktreeContents } from "../../../src/commands/worker/remove-work
 
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, open: vi.fn(actual.open) };
+  return { ...actual, open: vi.fn(actual.open), rmdir: vi.fn(actual.rmdir) };
 });
 
 const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -46,9 +46,13 @@ const deferred = () => {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 };
+const busy = (): NodeJS.ErrnoException => Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+// One initial call plus the module's five retry delays.
+const busyAttempts = 6;
 
 afterEach(async () => {
   vi.mocked(open).mockImplementation(actualFs.open);
+  vi.mocked(rmdir).mockImplementation(actualFs.rmdir);
   try { operations.splice(0).forEach(entry => entry.dispose()); }
   finally { vi.useRealTimers(); vi.restoreAllMocks(); }
   for (const target of restoreModes.splice(0)) {
@@ -258,5 +262,79 @@ describe("owned worktree content removal", () => {
     finishClose.resolve();
     expect(await result).toBe(op.signal.reason);
     expect(closed).toBe(true);
+  });
+
+  it("completes an entry removal once a transient holder releases it", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "remove");
+    let attempts = 0;
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async (target, options) => {
+      if (String(target) === held && ++attempts < 3) throw busy();
+      await rm(target, options);
+    });
+    expect(attempts).toBe(3);
+    expect(await readdir(f.target)).toEqual([".git"]);
+  });
+
+  it("completes a directory removal once a transient holder releases it", async () => {
+    const f = await fixture();
+    const nested = path.join(f.target, "nested");
+    await mkdir(nested);
+    let attempts = 0;
+    vi.mocked(rmdir).mockImplementation(async (target, options) => {
+      if (String(target) === nested && ++attempts < 3) throw busy();
+      return actualFs.rmdir(target, options);
+    });
+    await removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() });
+    expect(attempts).toBe(3);
+    expect(await readdir(f.target)).toEqual([".git"]);
+  });
+
+  it("surfaces the original busy failure after exhausting retries and retains the entry", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "retained");
+    const failure = busy();
+    let attempts = 0;
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async target => {
+      if (String(target) !== held) throw new Error(`Unexpected removal target: ${String(target)}`);
+      attempts++;
+      throw failure;
+    })).rejects.toBe(failure);
+    expect(attempts).toBe(busyAttempts);
+    expect(await readFile(held, "utf8")).toBe("retained");
+  });
+
+  it("does not retry a failure that is not transient", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "retained");
+    let attempts = 0;
+    await expect(removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: operation() }, async () => {
+      attempts++;
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    })).rejects.toThrow(/permission/i);
+    expect(attempts).toBe(1);
+    expect(await readFile(held, "utf8")).toBe("retained");
+  });
+
+  it("stops retrying a busy removal after cancellation and starts no further mutations", async () => {
+    const f = await fixture();
+    const held = path.join(f.target, "held");
+    await writeFile(held, "retained");
+    const controller = new AbortController();
+    const entered = deferred();
+    let attempts = 0;
+    const op = operation(controller.signal);
+    const result = removeWorktreeContents({ target: f.target, expectedIdentity: f.identity, operation: op }, async () => {
+      if (++attempts === 1) entered.resolve();
+      throw busy();
+    }).then(() => null, error => error);
+    await entered.promise;
+    controller.abort(new Error("stop"));
+    expect(await result).toBe(op.signal.reason);
+    expect(attempts).toBeLessThan(busyAttempts);
+    expect(await readFile(held, "utf8")).toBe("retained");
   });
 });
