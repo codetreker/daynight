@@ -168,3 +168,22 @@ test("complete new-ID retry retires a failed stream without accepting provisiona
   expect(mapClaudeUsageEvent(facts[0])?.metrics.inputTokens).toBe("60");
   expect(mapClaudeUsageEvent(facts[0])?.sourceKey).toBe("claude-message-input-v1:msg_native");
 });
+
+test("local command wrappers neither manufacture zero usage nor retire a native stream", () => {
+  const facts: unknown[] = [], gaps: string[] = [];
+  const collector = createClaudeUsageCollector(value => facts.push(value), () => gaps.push("gap"));
+  const local = { ...event(), message: { ...event().message, id: "local-command", model: "<synthetic>", usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 } } };
+  expect(mapClaudeUsageEvent(local)).toBeNull();
+  collector.observe(local);
+  expect(facts).toEqual([]); expect(gaps).toEqual([]);
+  const stream = (event: unknown) => collector.observe({ type: "stream_event", parent_tool_use_id: null, event });
+  stream({ type: "message_start", message: event().message });
+  collector.observe(local);
+  stream({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: 40 } });
+  stream({ type: "message_stop" });
+  expect(facts).toHaveLength(1); expect(gaps).toEqual([]);
+  expect(mapClaudeUsageEvent(facts[0])?.metrics.inputTokens).toBe("90");
+  collector.observe({ ...local, message: { ...local.message, id: "msg_real_zero", model: "claude-test" } });
+  expect(facts).toHaveLength(2);
+  expect(mapClaudeUsageEvent(facts[1])?.metrics.inputTokens).toBe("0");
+});

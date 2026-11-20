@@ -81,6 +81,16 @@ explicit and automatic recording discard. Local conflicts have no uploadable
 event; acknowledging the accepted measurement and partial state cannot resolve
 or delete that evidence even after the outbox becomes empty.
 
+Controller metering admits Task claim tickets and explicitly identified
+standalone Test tickets before creating any Provider's usage runtime. The
+standalone launcher writes usageScope=standalone_test on fresh and resumed
+tickets; the optional field is restricted to testExecutionId tickets without a
+Bot recovery binding. Bot and Test tickets otherwise share the same identity
+kind, and retained Bot tickets can lack recovery bindings. Legacy ambiguous
+tickets therefore continue native execution without collecting usage. Normal
+standalone Test resume creates a new, identified execution; immutable retained
+tickets are not rewritten to infer a purpose they never recorded.
+
 Provider identity is fixed at journal state admission and checked across recovery.
 The uploader selects the fixed profile by that identity. Qualified connected
 Codex versions register unsupported coverage without emitting measurements;
@@ -108,6 +118,9 @@ A complete new-ID wrapper retires an unfinished stream with a recovery gap;
 the CLI consumes its streaming-fallback marker internally and cannot emit a
 tombstone when the failed stream produced no completed block. Same-ID wrappers
 cannot finalize a pending stream.
+Local-command wrappers use the synthetic model sentinel without a model call.
+They are excluded by both collector and mapper before retiring pending native
+input, preserving no measurement instead of manufacturing a zero-valued fact.
 
 CLI 2.1.247 can replace a message's model during server refusal fallback without
 changing its native ID, while filtering the internal fallback block from public
@@ -121,6 +134,17 @@ public fallback notice. Refusal closures and wrappers therefore record a gap
 and suppress the old message immediately, including when no notice arrives.
 
 ## Alternatives
+
+**Recognizing Bots only by their recovery bindings.** These fields are absent
+from some retained Bot tickets, and the launcher can reuse those tickets
+directly. A botId added only to new tickets would leave the same ambiguity.
+Positive standalone Test provenance protects the existing Task/Test-only scope
+for all Providers without reconstructing Bot history or changing Bot recovery.
+
+**Disabling all testExecutionId collection.** This would exclude standalone
+Tests together with Bots. An explicit local ticket marker preserves newly
+launched and normally resumed Test collection; the deliberate cost is no new
+usage from legacy ambiguous tickets until a classified execution is created.
 
 **Committing each completed Claude content block.** A completed text or tool
 block is useful timeline evidence, which originally made its assistant wrapper

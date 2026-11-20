@@ -157,6 +157,7 @@ test.each([false, true])("writes the selected recipe into the new ticket without
   expect(await readLaunchToolSelection(v.home, ticket)).toEqual(launch);
   expect(f.selectTool).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", homeDirectory: v.home, cwd: v.home, environment: process.env, ...(resume ? { resumeTicket: prior } : {}) }));
   expect(ticket.resumeNativeSessionId).toBe(resume ? id : null);
+  expect(ticket.usageScope).toBe("standalone_test");
   expect(f.request.mock.calls.some(([, action]) => action.kind === "submit_initial")).toBe(false);
   expect(prior.configuration.model).toBe("old-model");
 });

@@ -176,6 +176,14 @@ Task 摘要再相加。Chain/Goal 图通过原生展开入口惰性加载，Goal
 
 ## Controller 采集与上传
 
+创建任何 Provider 的 usage runtime 前，先按 launch ticket 的执行范围准入。
+Task 沿用已有 claim 身份；独立 Test 启动器在新建和 resume 的新票据中明确写入
+`usageScope=standalone_test`。该可选字段仅允许在 testExecutionId 票据上出现，
+并与 Bot recovery 绑定互斥。Bot 同样使用 testExecutionId，且旧票据未必带 recovery
+绑定，不能仅凭 ID 类型或恢复目录判断用途。缺少明确用途的旧 Test/Bot 票据不创建
+usage runtime、不向 Provider 传递采集器；原生执行继续。独立 Test 通过正常 resume
+生成带用途的新执行后恢复采集，不补写或改造不可变旧票据。
+
 Copilot SDK `1.0.11` 的实时 `assistant.usage` 在历史恢复缓冲之前进入独立用量入口。
 Provider 先公布原生 Session 和 `SDK/runtime` 精确版本；事件映射仅保留 UUID、
 模型、时间及指标白名单。`sourceKey=copilot-event-v1:<event.id>`，immutable 修订为
@@ -252,6 +260,9 @@ immutable 事实。子代理流不结束 root 缓冲；缺少 start、完成证�
 先为旧流记录缺口，再接收独立完成的新消息。CLI 的 streaming_fallback_began
 不会转发给 SDK 消费者，没有完成 block 的失败流也没有 tombstone，不能依赖这两种
 信号清理旧流。同 ID 包装消息不能替代待完成流；中途 block 包装消息不入账。
+CLI 本地命令（例如 /context）的完整 assistant 包装消息使用 model=`<synthetic>`，
+没有真实模型调用。collector 在替换 pending 前忽略该消息，mapper 同样拒绝计量；
+本地命令既不制造零用量事实，也不清除无关原生流。真实模型的合法零值仍可计量。
 原生流语义以固定发布包
 [SDK 0.3.247 类型](https://unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.247/sdk.d.ts)
 中的 SDKAssistantMessage 与 SDKPartialAssistantMessage 为准。

@@ -25,6 +25,7 @@ export const mapClaudeUsageEvent = (input: unknown) => {
   if (event.type !== "assistant" || event.parent_tool_use_id !== null) return null;
   if (event.aborted === true || event.isApiErrorMessage === true || event.error !== undefined && event.error !== null) return null;
   const message = object(event.message), usage = object(message.usage);
+  if (message.model === "<synthetic>") return null;
   if (!text(message.stop_reason, 128) || message.stop_reason === "refusal") return null;
   if (!text(message.id, 232) || !text(message.model, 128)) throw new Error("collector_failed");
   const reasons = new Set(["subagent_scope_unknown"]);
@@ -64,11 +65,14 @@ export const createClaudeUsageCollector = (observe: (event: unknown) => void, ga
       if (wrapper.parent_tool_use_id !== null) return;
       if (wrapper.type === "assistant") {
         if (suppressed) return;
+        const message = object(wrapper.message);
+        // Local commands use complete synthetic wrappers without a model call.
+        // They cannot replace an unrelated in-flight native message.
+        if (message.model === "<synthetic>") return;
         if (wrapper.aborted === true || wrapper.error !== undefined && wrapper.error !== null || wrapper.isApiErrorMessage === true) { discard(); return; }
         // A failed stream can be replaced by an independently complete
         // non-streamed retry without exposing the CLI's internal fallback marker.
         // A same-ID block wrapper cannot finalize the pending stream.
-        const message = object(wrapper.message);
         if (message.stop_reason === "refusal") { suppress(); return; }
         if (text(message.stop_reason, 128) && text(message.id, 232) && (!pending || message.id !== pending.id)) {
           discard();
