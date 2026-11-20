@@ -53,7 +53,7 @@ room for enlarged labels.
 
 Public landing and Setup pages, and standalone login, invitation, device
 authorization and OAuth consent pages, select public sizes at all viewport
-widths. Public reading copy and demo prose use `base`; commands, status, errors
+widths. Public reading copy and the demo introduction use `base`; commands, status, errors
 and actions use `sm`. Authorization codes use `xl`, with the input using `lg`. Account
 actions and command copying reflow to accommodate larger text. The public header
 remains sticky only while it occupies at most half the viewport; larger headers
