@@ -120,6 +120,19 @@ test('Worker task table uses its container width at the boundary', async ({ page
   }
 });
 
+for (const width of [768, 1360]) test(`Worker task table retains desktop navigation at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page, false, 'en'); state.detail.worker.tasks[0]!.title = releaseTitle;
+  await page.goto(`/workers/${target}`);
+  const table = page.locator('.worker-task-table'); const link = table.getByRole('link', { name: releaseTitle });
+  await expect(table.locator('tbody tr')).toHaveCSS('display', 'table-row');
+  await link.scrollIntoViewIfNeeded();
+  const before = await link.boundingBox();
+  await link.click(); await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  await page.goBack(); await expect(link).toBeVisible();
+  await expect.poll(async () => Math.abs((await link.boundingBox())!.y - before!.y)).toBeLessThan(4);
+});
+
 test('Worker task metadata reflows without overlap at a large browser font', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 900 });
   const state = await install(page, false, 'en'); state.detail.worker.tasks[0]!.agent = 'claude';
@@ -143,7 +156,7 @@ test.describe('Worker task snapshot interactions', () => {
     state.detail.worker.tasks[0]!.title = releaseTitle; state.detail.worker.tasks[0]!.agent = 'claude';
     state.detail.worker.lastReportedAt = '2026-10-29T11:50:00.123456789Z';
     await page.goto(`/workers/${target}`);
-    await expect(page.getByText('This Worker is offline. The last reported snapshot is shown below.')).toBeVisible();
+    await expect(page.locator('[data-worker-panel="overview"]').getByText('This Worker is offline. The last reported snapshot is shown below.')).toBeVisible();
     const link = page.getByRole('link', { name: releaseTitle }); await expect(link).toBeVisible();
     state.detailFail = true; await page.getByRole('button', { name: 'Refresh', exact: true }).click();
     const alert = page.getByRole('alert').filter({ hasText: 'Worker updates could not be synchronized.' }); await expect(alert).toBeVisible();
